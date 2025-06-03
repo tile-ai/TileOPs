@@ -1,11 +1,11 @@
 import torch
 import tilelang
-from tilelang.autotuner import *
 import tilelang.language as T
 import torch.nn as nn
 
 
-def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, num_split):
+def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H,
+         num_split):
     scale = (1.0 / (dim + pe_dim))**0.5 * 1.44269504  # log2(e)
     dtype = "float16"
     accum_dtype = "float"
@@ -21,7 +21,8 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
             K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
             Output: T.Tensor([batch, heads, dim], dtype),
     ):
-        with T.Kernel(batch, heads // min(block_H, kv_group_num), threads=256) as (bx, by):
+        with T.Kernel(batch, heads // min(block_H, kv_group_num),
+                      threads=256) as (bx, by):
             Q_shared = T.alloc_shared([block_H, dim], dtype)
             S_shared = T.alloc_shared([block_H, block_N], dtype)
             Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -39,46 +40,59 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
             cur_kv_head = by // (kv_group_num // block_H)
             T.use_swizzle(10)
             T.annotate_layout({
-                O_shared: tilelang.layout.make_swizzled_layout(O_shared),
+                O_shared:
+                tilelang.layout.make_swizzled_layout(O_shared),
             })
 
-            T.copy(Q[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
-            T.copy(Q_pe[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
+            T.copy(Q[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :],
+                   Q_shared)
+            T.copy(Q_pe[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :],
+                   Q_pe_shared)
             T.fill(acc_o, 0)
             T.fill(logsum, 0)
             T.fill(scores_max, -T.infinity(accum_dtype))
 
             loop_range = T.ceildiv(seqlen_kv, block_N)
             for k in T.Pipelined(loop_range, num_stages=2):
-                T.copy(KV[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :], KV_shared)
-                T.copy(K_pe[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :], K_pe_shared)
+                T.copy(KV[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :],
+                       KV_shared)
+                T.copy(K_pe[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :],
+                       K_pe_shared)
                 T.clear(acc_s)
-                T.gemm(
-                    Q_shared, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
-                T.gemm(
-                    Q_pe_shared,
-                    K_pe_shared,
-                    acc_s,
-                    transpose_B=True,
-                    policy=T.GemmWarpPolicy.FullCol)
+                T.gemm(Q_shared,
+                       KV_shared,
+                       acc_s,
+                       transpose_B=True,
+                       policy=T.GemmWarpPolicy.FullCol)
+                T.gemm(Q_pe_shared,
+                       K_pe_shared,
+                       acc_s,
+                       transpose_B=True,
+                       policy=T.GemmWarpPolicy.FullCol)
                 T.copy(scores_max, scores_max_prev)
                 T.fill(scores_max, -T.infinity(accum_dtype))
                 T.reduce_max(acc_s, scores_max, dim=1, clear=False)
                 for i in T.Parallel(block_H):
-                    scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+                    scores_scale[i] = T.exp2(scores_max_prev[i] * scale -
+                                             scores_max[i] * scale)
                 for i, j in T.Parallel(block_H, block_N):
-                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale -
+                                         scores_max[i] * scale)
                 T.reduce_sum(acc_s, scores_sum, dim=1)
                 T.copy(acc_s, S_shared)
                 for i in T.Parallel(block_H):
                     logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] *= scores_scale[i]
-                T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
+                T.gemm(S_shared,
+                       KV_shared,
+                       acc_o,
+                       policy=T.GemmWarpPolicy.FullCol)
             for i, j in T.Parallel(block_H, dim):
                 acc_o[i, j] /= logsum[i]
             T.copy(acc_o, O_shared)
-            T.copy(O_shared, Output[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :])
+            T.copy(O_shared,
+                   Output[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :])
 
     @T.macro
     def _mla_split(
@@ -89,8 +103,10 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
             glse: T.Tensor([batch, heads, num_split], dtype),
             Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
     ):
-        with T.Kernel(
-                batch, heads // min(block_H, kv_group_num), num_split, threads=256) as (bx, by, bz):
+        with T.Kernel(batch,
+                      heads // min(block_H, kv_group_num),
+                      num_split,
+                      threads=256) as (bx, by, bz):
             Q_shared = T.alloc_shared([block_H, dim], dtype)
             S_shared = T.alloc_shared([block_H, block_N], dtype)
             Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -109,12 +125,16 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
             cur_kv_head = by // (kv_group_num // block_H)
             T.use_swizzle(10)
             T.annotate_layout({
-                O_shared: tilelang.layout.make_swizzled_layout(O_shared),
-                S_shared: tilelang.layout.make_swizzled_layout(S_shared),
+                O_shared:
+                tilelang.layout.make_swizzled_layout(O_shared),
+                S_shared:
+                tilelang.layout.make_swizzled_layout(S_shared),
             })
 
-            T.copy(Q[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_shared)
-            T.copy(Q_pe[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :], Q_pe_shared)
+            T.copy(Q[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :],
+                   Q_shared)
+            T.copy(Q_pe[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :],
+                   Q_pe_shared)
             T.fill(acc_o, 0)
             T.fill(logsum, 0)
             T.fill(scores_max, -T.infinity(accum_dtype))
@@ -126,21 +146,25 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
                 T.copy(KV[bx, kv_start:kv_end, cur_kv_head, :], KV_shared)
                 T.copy(K_pe[bx, kv_start:kv_end, cur_kv_head, :], K_pe_shared)
                 T.clear(acc_s)
-                T.gemm(
-                    Q_shared, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
-                T.gemm(
-                    Q_pe_shared,
-                    K_pe_shared,
-                    acc_s,
-                    transpose_B=True,
-                    policy=T.GemmWarpPolicy.FullCol)
+                T.gemm(Q_shared,
+                       KV_shared,
+                       acc_s,
+                       transpose_B=True,
+                       policy=T.GemmWarpPolicy.FullCol)
+                T.gemm(Q_pe_shared,
+                       K_pe_shared,
+                       acc_s,
+                       transpose_B=True,
+                       policy=T.GemmWarpPolicy.FullCol)
                 T.copy(scores_max, scores_max_prev)
                 T.fill(scores_max, -T.infinity(accum_dtype))
                 T.reduce_max(acc_s, scores_max, dim=1, clear=False)
                 for i in T.Parallel(block_H):
-                    scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+                    scores_scale[i] = T.exp2(scores_max_prev[i] * scale -
+                                             scores_max[i] * scale)
                 for i, j in T.Parallel(block_H, block_N):
-                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale -
+                                         scores_max[i] * scale)
                 T.reduce_sum(acc_s, scores_sum, dim=1)
                 T.copy(acc_s, S_shared)
                 T.copy(S_shared, acc_s_cast)
@@ -148,14 +172,21 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
                     logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] *= scores_scale[i]
-                T.gemm(acc_s_cast, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
+                T.gemm(acc_s_cast,
+                       KV_shared,
+                       acc_o,
+                       policy=T.GemmWarpPolicy.FullCol)
             for i, j in T.Parallel(block_H, dim):
                 acc_o[i, j] /= logsum[i]
             for i in T.Parallel(block_H):
                 logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-            T.copy(logsum, glse[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz])
+            T.copy(logsum,
+                   glse[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz])
             T.copy(acc_o, O_shared)
-            T.copy(O_shared, Output_partial[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz, :])
+            T.copy(
+                O_shared,
+                Output_partial[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H,
+                               bz, :])
 
     @T.macro
     def combine(
@@ -172,7 +203,9 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
             scale_local = T.alloc_local([1], accum_dtype)
 
             T.annotate_layout({
-                lse_logsum_local: T.Fragment(lse_logsum_local.shape, forward_thread_fn=lambda i: i),
+                lse_logsum_local:
+                T.Fragment(lse_logsum_local.shape,
+                           forward_thread_fn=lambda i: i),
             })
 
             T.clear(lse_logsum_local)
@@ -182,13 +215,16 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
                 lse_max_local[0] = T.max(lse_max_local[0], glse[bz, by, k])
             for k in T.Pipelined(num_split, num_stages=1):
                 lse_local_split[0] = glse[bz, by, k]
-                lse_logsum_local[0] += T.exp2(lse_local_split[0] - lse_max_local[0])
-            lse_logsum_local[0] = T.log2(lse_logsum_local[0]) + lse_max_local[0]
+                lse_logsum_local[0] += T.exp2(lse_local_split[0] -
+                                              lse_max_local[0])
+            lse_logsum_local[0] = T.log2(
+                lse_logsum_local[0]) + lse_max_local[0]
             for k in T.serial(num_split):
                 for i in T.Parallel(dim):
                     po_local[i] = Output_partial[bz, by, k, i]
                 lse_local_split[0] = glse[bz, by, k]
-                scale_local[0] = T.exp2(lse_local_split[0] - lse_logsum_local[0])
+                scale_local[0] = T.exp2(lse_local_split[0] -
+                                        lse_logsum_local[0])
                 for i in T.Parallel(dim):
                     o_accum_local[i] += po_local[i] * scale_local[0]
             for i in T.Parallel(dim):
@@ -225,21 +261,42 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
         return main_no_split
 
 
-
 class MLA_kernel(nn.Module):
 
-    def __init__(self, batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, num_split, dtype=torch.float16, device="cuda"):
+    def __init__(self,
+                 batch,
+                 heads,
+                 kv_head_num,
+                 seqlen_kv,
+                 dim,
+                 pe_dim,
+                 block_N,
+                 block_H,
+                 num_split,
+                 dtype=torch.float16,
+                 device="cuda"):
         super().__init__()
-        self.program = _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, num_split)
+        self.program = _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim,
+                            block_N, block_H, num_split)
         self.kernel = tilelang.compile(self.program, out_idx=[6])
-        self.profiler = self.kernel.get_profiler(tensor_supply_type=tilelang.TensorSupplyType.Randn)
+        self.profiler = self.kernel.get_profiler(
+            tensor_supply_type=tilelang.TensorSupplyType.Randn)
         self.intermediate_tensor = {}
-        self.intermediate_tensor['glse'] = torch.empty(batch, heads, num_split, device=device, dtype=dtype)
-        self.intermediate_tensor['output_partial'] = torch.empty(batch, heads, num_split, dim, device=device, dtype=dtype)
-
+        self.intermediate_tensor['glse'] = torch.empty(batch,
+                                                       heads,
+                                                       num_split,
+                                                       device=device,
+                                                       dtype=dtype)
+        self.intermediate_tensor['output_partial'] = torch.empty(batch,
+                                                                 heads,
+                                                                 num_split,
+                                                                 dim,
+                                                                 device=device,
+                                                                 dtype=dtype)
 
     def forward(self, q, q_pe, kv, k_pe):
-        o = self.kernel(q, q_pe, kv, k_pe, self.intermediate_tensor['glse'], self.intermediate_tensor['output_partial'])
+        o = self.kernel(q, q_pe, kv, k_pe, self.intermediate_tensor['glse'],
+                        self.intermediate_tensor['output_partial'])
         return o
 
     def profile(self, warmup=500):
