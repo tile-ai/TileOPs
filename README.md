@@ -17,7 +17,7 @@
 ### Install (editable mode for development)
 
 ```bash
-git clone https://github.com/yourname/TileAttention.git
+git clone https://github.com/tile-ai/TileAttention
 cd TileAttention
 pip install -e .
 ```
