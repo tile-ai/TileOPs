@@ -18,8 +18,8 @@
 
 ```bash
 git clone https://github.com/tile-ai/TileAttention
-git submodule update --init --recursive
 cd TileAttention
+git submodule update --init --recursive
 pip install -e .
 ```
 
