@@ -428,19 +428,4 @@ class GQA_kernel(nn.Module):
         # assert torch.allclose(dV, dV_ref, rtol=1e-2, atol=1e-2)
         assert torch.allclose(dk, dk_ref, rtol=1e-2, atol=1e-2)
         assert torch.allclose(dq, dq_ref, rtol=1e-2, atol=1e-2)
-
-        def run():
-            o_ref.backward(do, retain_graph=True)
-
-        def run1():
-            o.backward(do, retain_graph=True)
-
-        from tilelang.profiler import do_bench
-
-        latency = do_bench(run, warmup=500)
-        print("torch: {:.2f} ms".format(latency))
-        print("torch: {:.2f} TFlops".format(self.total_flops / latency * 1e-9))
-        latency = do_bench(run1, warmup=500)
-        print("tilelang: {:.2f} ms".format(latency))
-        print("tilelang: {:.2f} TFlops".format(self.total_flops / latency *
-                                               1e-9))
+        print("GQA kernel check passed!")
