@@ -4,7 +4,7 @@
 import torch
 import torch.nn.functional as F
 import tilelang
-from tilelang.autotuner import *
+from tilelang.autotuner import autotune
 import tilelang.language as T
 from einops import rearrange, repeat
 import itertools
@@ -29,7 +29,14 @@ def get_configs():
     return configs
 
 
-def _chunk_state_fwd(batch, seqlen, chunk_size, ngroups, nheads, headdim, dstate, tune=False):
+def _chunk_state_fwd(batch,
+                     seqlen,
+                     chunk_size,
+                     ngroups,
+                     nheads,
+                     headdim,
+                     dstate,
+                     tune=False):
     dtype = "float16"
     accum_dtype = "float"
     nchunks = T.ceildiv(seqlen, chunk_size)
@@ -38,18 +45,19 @@ def _chunk_state_fwd(batch, seqlen, chunk_size, ngroups, nheads, headdim, dstate
     def kernel_func(block_M, block_N, block_K, num_stages, threads):
 
         @T.prim_func
-        def main(
-            B: T.Tensor((batch, seqlen, ngroups, dstate), dtype), 
-            x: T.Tensor((batch, seqlen, nheads, headdim), dtype), 
-            dt: T.Tensor((batch, nheads, nchunks, chunk_size), dtype), 
-            dA_cumsum: T.Tensor((batch, nheads, nchunks, chunk_size), dtype), 
-            Output: T.Tensor((batch, nchunks, nheads, headdim, dstate), dtype)
-        ):
-            with T.Kernel(
-                    nheads,
-                    T.ceildiv(headdim, block_M) * T.ceildiv(dstate, block_N),
-                    batch * nchunks,
-                    threads=threads) as (bz, bx, by):
+        def main(B: T.Tensor(
+            (batch, seqlen, ngroups, dstate), dtype), x: T.Tensor(
+                (batch, seqlen, nheads, headdim), dtype), dt: T.Tensor(
+                    (batch, nheads, nchunks, chunk_size), dtype),
+                 dA_cumsum: T.Tensor((batch, nheads, nchunks, chunk_size),
+                                     dtype),
+                 Output: T.Tensor((batch, nchunks, nheads, headdim, dstate),
+                                  dtype)):
+            with T.Kernel(nheads,
+                          T.ceildiv(headdim, block_M) *
+                          T.ceildiv(dstate, block_N),
+                          batch * nchunks,
+                          threads=threads) as (bz, bx, by):
                 x_shared = T.alloc_shared((block_K, block_M), dtype)
                 x_local = T.alloc_fragment((block_K, block_M), dtype)
                 xt_local = T.alloc_fragment((block_M, block_K), dtype)
@@ -71,35 +79,47 @@ def _chunk_state_fwd(batch, seqlen, chunk_size, ngroups, nheads, headdim, dstate
                 n_idx = bx % T.ceildiv(dstate, block_N)
 
                 T.annotate_layout({
-                    x_shared: tilelang.layout.make_swizzled_layout(x_shared),
-                    acc_o_shared: tilelang.layout.make_swizzled_layout(acc_o_shared)
+                    x_shared:
+                    tilelang.layout.make_swizzled_layout(x_shared),
+                    acc_o_shared:
+                    tilelang.layout.make_swizzled_layout(acc_o_shared)
                 })
 
-                dA_cs_last[0] = dA_cumsum[batch_idx, bz, chunk_idx, chunk_size - 1]
+                dA_cs_last[0] = dA_cumsum[batch_idx, bz, chunk_idx,
+                                          chunk_size - 1]
                 T.clear(acc_o)
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(
-                        x[batch_idx, chunk_idx * chunk_size + k * block_K:chunk_idx * chunk_size +
-                          (k + 1) * block_K, bz, m_idx * block_M:(m_idx + 1) * block_M], x_shared)
-                    T.copy(dA_cumsum[batch_idx, bz, chunk_idx, k * block_K:(k + 1) * block_K],
-                           dA_cumsum_shared)
-                    T.copy(dt[batch_idx, bz, chunk_idx, k * block_K:(k + 1) * block_K], dt_shared)
+                        x[batch_idx, chunk_idx * chunk_size +
+                          k * block_K:chunk_idx * chunk_size +
+                          (k + 1) * block_K, bz,
+                          m_idx * block_M:(m_idx + 1) * block_M], x_shared)
+                    T.copy(
+                        dA_cumsum[batch_idx, bz, chunk_idx,
+                                  k * block_K:(k + 1) * block_K],
+                        dA_cumsum_shared)
+                    T.copy(
+                        dt[batch_idx, bz, chunk_idx,
+                           k * block_K:(k + 1) * block_K], dt_shared)
                     T.copy(dA_cumsum_shared, dA_cumsum_local)
                     T.copy(dt_shared, dt_local)
                     for i in T.Parallel(block_K):
-                        scale[i] = T.exp2(dA_cs_last[0] * p - dA_cumsum_local[i] * p) * dt_local[i]
+                        scale[i] = T.exp2(dA_cs_last[0] * p -
+                                          dA_cumsum_local[i] * p) * dt_local[i]
                     T.copy(x_shared, x_local)
                     for i, j in T.Parallel(block_M, block_K):
                         xt_local[i, j] = x_local[j, i] * scale[j]
                     T.copy(
-                        B[batch_idx, chunk_idx * chunk_size + k * block_K:chunk_idx * chunk_size +
+                        B[batch_idx, chunk_idx * chunk_size +
+                          k * block_K:chunk_idx * chunk_size +
                           (k + 1) * block_K, bz // (nheads // ngroups),
                           n_idx * block_N:(n_idx + 1) * block_N], B_shared)
                     T.gemm(xt_local, B_shared, acc_o)
                 T.copy(acc_o, acc_o_shared)
                 T.copy(
                     acc_o_shared,
-                    Output[batch_idx, chunk_idx, bz, m_idx * block_M:(m_idx + 1) * block_M,
+                    Output[batch_idx, chunk_idx, bz,
+                           m_idx * block_M:(m_idx + 1) * block_M,
                            n_idx * block_N:(n_idx + 1) * block_N])
 
         return main
@@ -108,16 +128,22 @@ def _chunk_state_fwd(batch, seqlen, chunk_size, ngroups, nheads, headdim, dstate
 
         @autotune(configs=get_configs(), warmup=10, rep=10)
         @tilelang.jit(out_idx=[4])
-        def kernel(block_M=None, block_N=None, block_K=None, num_stages=None, threads=None):
+        def kernel(block_M=None,
+                   block_N=None,
+                   block_K=None,
+                   num_stages=None,
+                   threads=None):
             return kernel_func(block_M, block_N, block_K, num_stages, threads)
 
         return kernel()
     else:
+
         @tilelang.jit(out_idx=[4])
         def kernel(block_M, block_N, block_K, num_stages, threads):
             return kernel_func(block_M, block_N, block_K, num_stages, threads)
 
         return kernel
+
 
 @torch.compile
 class _MAMBA_CHUNK_STATE_attention(torch.autograd.Function):
@@ -128,13 +154,14 @@ class _MAMBA_CHUNK_STATE_attention(torch.autograd.Function):
         _, _, NHEADS, HEADDIM = x.shape
         CHUNK_SIZE = dt.shape[-1]
         mod = _chunk_state_fwd(BATCH, SEQLEN, CHUNK_SIZE, NGROUPS, NHEADS,
-                              HEADDIM, DSTATE)(**config)
+                               HEADDIM, DSTATE)(**config)
         o = mod(B, x, dt, dA_cumsum)
         return o
 
     @staticmethod
     def backward(ctx, do):
         pass
+
 
 MAMBA_CHUNK_STATE_attention = _MAMBA_CHUNK_STATE_attention.apply
 
@@ -181,7 +208,8 @@ class MAMBA_CHUNK_STATE_kernel(nn.Module):
         self.tune = tune
         self.tune_config = None
         self.total_flops = 2 * batch * seq_len * heads * dim * dstate
-        self.fwd_program = _chunk_state_fwd(batch, seq_len, chunk_size, groups, heads, dim, dstate)(**self.config)
+        self.fwd_program = _chunk_state_fwd(batch, seq_len, chunk_size, groups,
+                                            heads, dim, dstate)(**self.config)
         self.fwd_profiler = self.fwd_program.get_profiler(
             tilelang.TensorSupplyType.Normal)
 
@@ -189,11 +217,9 @@ class MAMBA_CHUNK_STATE_kernel(nn.Module):
         if self.tune_config is None and self.tune:
             self.autotune()
         if self.tune_config:
-            o = self.attention(B, x, dt, dA_cumsum,
-                               self.tune_config)
+            o = self.attention(B, x, dt, dA_cumsum, self.tune_config)
             return o
-        o = self.attention(B, x, dt, dA_cumsum,
-                           self.config)
+        o = self.attention(B, x, dt, dA_cumsum, self.config)
         return o
 
     def backward(self, B, x, dt, dA_cumsum, do):
@@ -201,13 +227,13 @@ class MAMBA_CHUNK_STATE_kernel(nn.Module):
 
     def autotune(self):
         best_result = _chunk_state_fwd(self.batch,
-                                      self.seq_len,
-                                      self.chunk_size,
-                                      self.groups,
-                                      self.heads,
-                                      self.dim,
-                                      self.dstate,
-                                      tune=True)
+                                       self.seq_len,
+                                       self.chunk_size,
+                                       self.groups,
+                                       self.heads,
+                                       self.dim,
+                                       self.dstate,
+                                       tune=True)
         best_latency = best_result.latency
         best_config = best_result.config
         ref_latency = best_result.ref_latency
@@ -222,10 +248,9 @@ class MAMBA_CHUNK_STATE_kernel(nn.Module):
         if self.tune_config is None and self.tune:
             self.autotune()
         if self.tune_config:
-            self.fwd_program = _chunk_state_fwd(self.batch, self.seq_len,
-                                               self.chunk_size, self.groups,
-                                               self.heads, self.dim,
-                                               self.dstate)(**self.tune_config)
+            self.fwd_program = _chunk_state_fwd(
+                self.batch, self.seq_len, self.chunk_size, self.groups,
+                self.heads, self.dim, self.dstate)(**self.tune_config)
             self.fwd_profiler = self.fwd_program.get_profiler(
                 tilelang.TensorSupplyType.Normal)
         latency = self.fwd_profiler.do_bench(warmup=warmup)
@@ -259,20 +284,18 @@ class MAMBA_CHUNK_STATE_kernel(nn.Module):
         x = rearrange(x, "b (c l) h p -> b c l h p", l=chunk_size)
         B = rearrange(B, "b (c l) ... -> b c l ...", l=chunk_size)
         decay_states = torch.exp((dA_cumsum[:, :, :, -1:] - dA_cumsum))
-        return torch.einsum("bclhn,bhcl,bhcl,bclhp->bchpn", B.to(x.dtype), decay_states.to(x.dtype),
-                            dt.to(x.dtype), x)
+        return torch.einsum("bclhn,bhcl,bhcl,bclhp->bchpn", B.to(x.dtype),
+                            decay_states.to(x.dtype), dt.to(x.dtype), x)
 
     def check(self, B, x, dt, dA_cumsum):
         if self.tune_config:
-            o = self.attention(B, x, dt, dA_cumsum,
-                               self.tune_config)
+            o = self.attention(B, x, dt, dA_cumsum, self.tune_config)
         else:
-            o = self.attention(B, x, dt, dA_cumsum,
-                               self.config)
+            o = self.attention(B, x, dt, dA_cumsum, self.config)
         o_ref = self.ref_program(B, x, dt, dA_cumsum)
         torch_assert_close(o,
                            o_ref,
                            rtol=1e-2,
                            atol=1e-2,
                            max_mismatched_ratio=0.01)
-        print("MAMBA CHUNK SCAN kernel check passed!")
+        print("MAMBA CHUNK STATE kernel check passed!")

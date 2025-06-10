@@ -236,7 +236,7 @@ MAMBA_CHUNK_SCAN_attention = _MAMBA_CHUNK_SCAN_attention.apply
 
 
 class MAMBA_CHUNK_SCAN_kernel(nn.Module):
-    #batch, seqlen, chunk_size, ngroups, nheads, headdim, dstate
+
     def __init__(self,
                  batch,
                  heads,
