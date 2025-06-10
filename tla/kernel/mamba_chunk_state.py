@@ -45,14 +45,13 @@ def _chunk_state_fwd(batch,
     def kernel_func(block_M, block_N, block_K, num_stages, threads):
 
         @T.prim_func
-        def main(B: T.Tensor(
-            (batch, seqlen, ngroups, dstate), dtype), x: T.Tensor(
-                (batch, seqlen, nheads, headdim), dtype), dt: T.Tensor(
-                    (batch, nheads, nchunks, chunk_size), dtype),
-                 dA_cumsum: T.Tensor((batch, nheads, nchunks, chunk_size),
-                                     dtype),
-                 Output: T.Tensor((batch, nchunks, nheads, headdim, dstate),
-                                  dtype)):
+        def main(
+            B: T.Tensor((batch, seqlen, ngroups, dstate), dtype), # type: ignore
+            x: T.Tensor((batch, seqlen, nheads, headdim), dtype), # type: ignore
+            dt: T.Tensor((batch, nheads, nchunks, chunk_size), dtype), # type: ignore
+            dA_cumsum: T.Tensor((batch, nheads, nchunks, chunk_size),dtype), # type: ignore
+            Output: T.Tensor((batch, nchunks, nheads, headdim, dstate),dtype) # type: ignore
+        ):
             with T.Kernel(nheads,
                           T.ceildiv(headdim, block_M) *
                           T.ceildiv(dstate, block_N),

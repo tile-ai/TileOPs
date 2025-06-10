@@ -48,20 +48,16 @@ def _chunk_scan_fwd(batch,
                     threads):
 
         @T.prim_func
-        def _chunk_scan_fwd_main(cb: T.Tensor(
-            (batch, nchunks, ngroups, chunk_size, chunk_size),
-            dtype), x: T.Tensor(
-                (batch, seqlen, nheads, headdim), dtype), dt: T.Tensor(
-                    (batch, nheads, nchunks, chunk_size),
-                    dtype), dA_cumsum: T.Tensor(
-                        (batch, nheads, nchunks, chunk_size),
-                        dtype), C: T.Tensor((batch, seqlen, ngroups, dstate),
-                                            dtype),
-                                 prev_states: T.Tensor(
-                                     (batch, nchunks, nheads, headdim, dstate),
-                                     dtype), D: T.Tensor((nheads), dtype),
-                                 Output: T.Tensor(
-                                     (batch, seqlen, nheads, headdim), dtype)):
+        def _chunk_scan_fwd_main(
+            cb: T.Tensor((batch, nchunks, ngroups, chunk_size, chunk_size),dtype), # type: ignore
+            x: T.Tensor((batch, seqlen, nheads, headdim), dtype), # type: ignore
+            dt: T.Tensor((batch, nheads, nchunks, chunk_size),dtype), # type: ignore
+            dA_cumsum: T.Tensor((batch, nheads, nchunks, chunk_size),dtype), # type: ignore
+            C: T.Tensor((batch, seqlen, ngroups, dstate),dtype), # type: ignore
+            prev_states: T.Tensor((batch, nchunks, nheads, headdim, dstate),dtype), # type: ignore
+            D: T.Tensor((nheads), dtype), # type: ignore
+            Output: T.Tensor((batch, seqlen, nheads, headdim), dtype) # type: ignore
+        ):
             with T.Kernel(nheads,
                           T.ceildiv(chunk_size, block_M) *
                           T.ceildiv(headdim, block_N),
