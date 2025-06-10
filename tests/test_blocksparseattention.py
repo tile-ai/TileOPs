@@ -47,6 +47,12 @@ def main():
                      D_HEAD_V,
                      dtype=torch.half,
                      device="cuda").normal_().requires_grad_())
+    dO = (torch.empty(BATCH,
+                      N_CTX,
+                      H,
+                      D_HEAD_V,
+                      dtype=torch.half,
+                      device="cuda").normal_().requires_grad_())
 
     M_BLOCKS = N_CTX // BLOCK_M
     N_BLOCKS = N_CTX // BLOCK_N
@@ -56,13 +62,6 @@ def main():
                                size=(BATCH, H, M_BLOCKS, N_BLOCKS),
                                dtype=torch.bool,
                                device="cuda")
-
-    # dO = (torch.empty(BATCH,
-    #                   N_CTX,
-    #                   H,
-    #                   D_HEAD_V,
-    #                   dtype=torch.half,
-    #                   device="cuda").normal_().requires_grad_())
 
     attention = BlockSparseAttention_kernel(BATCH,
                                             H,
@@ -74,12 +73,13 @@ def main():
                                             causal=causal,
                                             groups=groups)
 
-    o = attention(Q, K, V, block_mask)
+    o = attention.backward(Q, K, V, dO, block_mask)
     print(o)
     # latency = gqa.profile()
     # print(f"Latency: {latency:.4f} ms")
-    attention.check(Q, K, V, block_mask)
-
+    attention.check(Q, K, V, dO, block_mask)
+    attention.profile(Q, K, V, dO, block_mask)
+    
 
 if __name__ == "__main__":
     main()
