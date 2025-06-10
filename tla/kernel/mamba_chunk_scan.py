@@ -46,17 +46,22 @@ def _chunk_scan_fwd(batch,
 
     def kernel_func(block_M, block_N, block_K, block_Dstate, num_stages,
                     threads):
+
         @T.prim_func
-        def _chunk_scan_fwd_main(
-            cb: T.Tensor((batch, nchunks, ngroups, chunk_size, chunk_size), dtype),
-            x: T.Tensor((batch, seqlen, nheads, headdim), dtype),
-            dt: T.Tensor((batch, nheads, nchunks, chunk_size), dtype),
-            dA_cumsum: T.Tensor((batch, nheads, nchunks, chunk_size), dtype),
-            C: T.Tensor((batch, seqlen, ngroups, dstate), dtype),
-            prev_states: T.Tensor((batch, nchunks, nheads, headdim, dstate), dtype),
-            D: T.Tensor((nheads), dtype),
-            Output: T.Tensor((batch, seqlen, nheads, headdim), dtype)
-        ):
+        def _chunk_scan_fwd_main(cb: T.Tensor(
+            (batch, nchunks, ngroups, chunk_size, chunk_size),
+            dtype), x: T.Tensor(
+                (batch, seqlen, nheads, headdim), dtype), dt: T.Tensor(
+                    (batch, nheads, nchunks, chunk_size),
+                    dtype), dA_cumsum: T.Tensor(
+                        (batch, nheads, nchunks, chunk_size),
+                        dtype), C: T.Tensor((batch, seqlen, ngroups, dstate),
+                                            dtype),
+                                 prev_states: T.Tensor(
+                                     (batch, nchunks, nheads, headdim, dstate),
+                                     dtype), D: T.Tensor((nheads), dtype),
+                                 Output: T.Tensor(
+                                     (batch, seqlen, nheads, headdim), dtype)):
             with T.Kernel(nheads,
                           T.ceildiv(chunk_size, block_M) *
                           T.ceildiv(headdim, block_N),
@@ -231,7 +236,7 @@ MAMBA_CHUNK_SCAN_attention = _MAMBA_CHUNK_SCAN_attention.apply
 
 
 class MAMBA_CHUNK_SCAN_kernel(nn.Module):
-
+    #batch, seqlen, chunk_size, ngroups, nheads, headdim, dstate
     def __init__(self,
                  batch,
                  heads,
