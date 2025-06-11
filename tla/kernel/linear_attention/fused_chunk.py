@@ -28,10 +28,12 @@ def _fused_chunk_fwd(B,
         scale = D**-0.5
 
     @T.prim_func
-    def main(Q: T.Tensor([B, S, H, D], dtype), K: T.Tensor([B, S, H, D],
-                                                           dtype),
-             V: T.Tensor([B, S, H, D],
-                         dtype), Output: T.Tensor([NK, B, S, H, D], dtype)):
+    def main(
+        Q: T.Tensor([B, S, H, D], dtype), # type: ignore
+        K: T.Tensor([B, S, H, D], dtype), # type: ignore
+        V: T.Tensor([B, S, H, D], dtype), # type: ignore
+        Output: T.Tensor([NK, B, S, H, D], dtype) # type: ignore
+    ): 
         with T.Kernel(NV, NK, B * H) as (i_v, i_k, i_bh):
             i_b = i_bh // H
             i_h = i_bh % H
@@ -95,13 +97,13 @@ def _fused_chunk_bwd(B,
 
     @T.prim_func
     def main(
-            Q: T.Tensor([B, S, H, D], dtype),
-            K: T.Tensor([B, S, H, D], dtype),
-            V: T.Tensor([B, S, H, D], dtype),
-            dO: T.Tensor([B, S, H, D], dtype),
-            dQ: T.Tensor([NV, B, S, H, D], dtype),
-            dK: T.Tensor([NV, B, S, H, D], dtype),
-            dV: T.Tensor([NK, B, S, H, D], dtype),
+        Q: T.Tensor([B, S, H, D], dtype), # type: ignore
+        K: T.Tensor([B, S, H, D], dtype), # type: ignore
+        V: T.Tensor([B, S, H, D], dtype), # type: ignore
+        dO: T.Tensor([B, S, H, D], dtype), # type: ignore
+        dQ: T.Tensor([NV, B, S, H, D], dtype), # type: ignore
+        dK: T.Tensor([NV, B, S, H, D], dtype), # type: ignore
+        dV: T.Tensor([NK, B, S, H, D], dtype), # type: ignore
     ):
         with T.Kernel(NV, NK, B * H) as (i_v, i_k, i_bh):
             i_b = i_bh // H
@@ -237,8 +239,8 @@ class _fused_chunk_linear_attention(torch.autograd.Function):
 fused_chunk_linear_attention = _fused_chunk_linear_attention.apply
 
 
-class FusedChunk_kernel(nn.Module):
-    '''In the FusedChunk attention kernel, we calculate the results in one pass without materializing intermediate hidden states.'''
+class linear_attention_fused_chunk_kernel(nn.Module):
+    '''We calculate the results in one pass without materializing intermediate hidden states.'''
 
     def __init__(self,
                  batch_size,
