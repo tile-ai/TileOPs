@@ -142,7 +142,7 @@ class _MAMBA_CHUNK_STATE_attention(torch.autograd.Function):
 MAMBA_CHUNK_STATE_attention = _MAMBA_CHUNK_STATE_attention.apply
 
 
-class MAMBA_CHUNK_STATE_kernel(nn.Module):
+class MambaChunkStateKernel(nn.Module):
 
     def __init__(self,
                  batch,

@@ -1,6 +1,6 @@
 import argparse
 import torch
-from tla import MAMBA_CHUNK_SCAN_kernel
+from tla import MambaChunkScanKernel
 import math
 
 
@@ -31,7 +31,7 @@ def main():
     D = torch.empty((HEADS,), dtype=torch.half).cuda().normal_(-1.0, 1.0)
 
     if args.tune:
-        mamba_chunk_scan = MAMBA_CHUNK_SCAN_kernel(
+        mamba_chunk_scan = MambaChunkScanKernel(
             BATCH, HEADS, GROUPS, SEQ_LEN, CHUNK_SIZE, DIM, DSTATE, tune=True)
 
     else:
@@ -42,7 +42,7 @@ def main():
         num_stages = 2
         threads = 128
 
-        mamba_chunk_scan = MAMBA_CHUNK_SCAN_kernel(
+        mamba_chunk_scan = MambaChunkScanKernel(
             BATCH,
             HEADS,
             GROUPS,

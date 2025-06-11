@@ -1,9 +1,9 @@
 import argparse
-from tla import linear_attention_fused_chunk_kernel
+from tla import LinearAttentionFusedChunkKernel
 
 
 def test_fused_chunk(B, S, H, D):
-    kernel = linear_attention_fused_chunk_kernel(B, S, H, D)
+    kernel = LinearAttentionFusedChunkKernel(B, S, H, D)
     kernel.check()
     kernel.profile()
 

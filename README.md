@@ -28,7 +28,7 @@ pip install -e .
 ```python
 import torch
 import tla
-from tla import MLA_kernel
+from tla import MLAKernel
 
 device = "cuda"
 dtype = torch.float16
@@ -57,7 +57,7 @@ block_N = 64
 block_H = 64
 num_split = 1
 
-mla = MLA_kernel(batch, heads, kv_heads, kv_ctx, dim, pe_dim, block_N, block_H, num_split)
+mla = MLAKernel(batch, heads, kv_heads, kv_ctx, dim, pe_dim, block_N, block_H, num_split)
 
 out = mla(q, q_pe, kv, k_pe)
 ```
