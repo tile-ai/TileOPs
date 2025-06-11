@@ -9,14 +9,8 @@ def main():
     parser.add_argument('--batch', type=int, default=8, help='batch size')
     parser.add_argument('--heads', type=int, default=80, help='heads')
     parser.add_argument('--groups', type=int, default=1, help='groups')
-    parser.add_argument('--seq_len',
-                        type=int,
-                        default=4096,
-                        help='sequence length')
-    parser.add_argument('--chunk_size',
-                        type=int,
-                        default=256,
-                        help='chunk size')
+    parser.add_argument('--seq_len', type=int, default=4096, help='sequence length')
+    parser.add_argument('--chunk_size', type=int, default=256, help='chunk size')
     parser.add_argument('--dim', type=int, default=64, help='dim')
     parser.add_argument('--dstate', type=int, default=128, help='dstate')
     parser.add_argument('--tune', action='store_true', help='tune configs')
@@ -26,27 +20,19 @@ def main():
 
     cb = torch.empty((BATCH, NCHUNKS, GROUPS, CHUNK_SIZE, CHUNK_SIZE),
                      dtype=torch.half).cuda().normal_(-1.0, 1.0)
-    x = torch.empty((BATCH, SEQ_LEN, HEADS, DIM),
-                    dtype=torch.half).cuda().normal_(-1.0, 1.0)
+    x = torch.empty((BATCH, SEQ_LEN, HEADS, DIM), dtype=torch.half).cuda().normal_(-1.0, 1.0)
     dt = torch.empty((BATCH, HEADS, NCHUNKS, CHUNK_SIZE),
                      dtype=torch.half).cuda().normal_(-1.0, 1.0)
     dA_cumsum = torch.empty((BATCH, HEADS, NCHUNKS, CHUNK_SIZE),
                             dtype=torch.half).cuda().normal_(-1.0, 1.0)
-    C = torch.empty((BATCH, SEQ_LEN, GROUPS, DSTATE),
-                    dtype=torch.half).cuda().normal_(-1.0, 1.0)
+    C = torch.empty((BATCH, SEQ_LEN, GROUPS, DSTATE), dtype=torch.half).cuda().normal_(-1.0, 1.0)
     prev_states = torch.empty((BATCH, NCHUNKS, HEADS, DIM, DSTATE),
                               dtype=torch.half).cuda().normal_(-1.0, 1.0)
-    D = torch.empty((HEADS, ), dtype=torch.half).cuda().normal_(-1.0, 1.0)
+    D = torch.empty((HEADS,), dtype=torch.half).cuda().normal_(-1.0, 1.0)
 
     if args.tune:
-        mamba_chunk_scan = MAMBA_CHUNK_SCAN_kernel(BATCH,
-                                                   HEADS,
-                                                   GROUPS,
-                                                   SEQ_LEN,
-                                                   CHUNK_SIZE,
-                                                   DIM,
-                                                   DSTATE,
-                                                   tune=True)
+        mamba_chunk_scan = MAMBA_CHUNK_SCAN_kernel(
+            BATCH, HEADS, GROUPS, SEQ_LEN, CHUNK_SIZE, DIM, DSTATE, tune=True)
 
     else:
         block_M = 64
@@ -56,19 +42,20 @@ def main():
         num_stages = 2
         threads = 128
 
-        mamba_chunk_scan = MAMBA_CHUNK_SCAN_kernel(BATCH,
-                                                   HEADS,
-                                                   GROUPS,
-                                                   SEQ_LEN,
-                                                   CHUNK_SIZE,
-                                                   DIM,
-                                                   DSTATE,
-                                                   block_M=block_M,
-                                                   block_N=block_N,
-                                                   block_K=block_K,
-                                                   block_Dstate=block_Dstate,
-                                                   num_stages=num_stages,
-                                                   threads=threads)
+        mamba_chunk_scan = MAMBA_CHUNK_SCAN_kernel(
+            BATCH,
+            HEADS,
+            GROUPS,
+            SEQ_LEN,
+            CHUNK_SIZE,
+            DIM,
+            DSTATE,
+            block_M=block_M,
+            block_N=block_N,
+            block_K=block_K,
+            block_Dstate=block_Dstate,
+            num_stages=num_stages,
+            threads=threads)
 
     o = mamba_chunk_scan(cb, x, dt, dA_cumsum, C, prev_states, D)
     print(o)
