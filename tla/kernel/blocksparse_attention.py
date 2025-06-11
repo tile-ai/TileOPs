@@ -323,7 +323,7 @@ class _blocksparse_attention(torch.autograd.Function):
 blocksparse_attention = _blocksparse_attention.apply
 
 
-class BlockSparseAttention_kernel(nn.Module):
+class BlockSparseAttentionKernel(nn.Module):
 
     def __init__(self,
                  batch,
@@ -364,8 +364,8 @@ class BlockSparseAttention_kernel(nn.Module):
         causal = self.causal
         groups = self.groups
 
-        assert HQ == HK * groups, f"Q heads {HQ} != K heads {HK} * groups {groups}"
-        assert HQ == HV * groups, f"Q heads {HQ} != V heads {HV} * groups {groups}"
+        assert HK * groups == HQ, f"Q heads {HQ} != K heads {HK} * groups {groups}"
+        assert HV * groups == HQ, f"Q heads {HQ} != V heads {HV} * groups {groups}"
 
         k_expanded = k.repeat_interleave(groups, dim=2)  # [B, T, HQ, D_QK]
         v_expanded = v.repeat_interleave(groups, dim=2)  # [B, T, HQ, D_V]
@@ -417,7 +417,6 @@ class BlockSparseAttention_kernel(nn.Module):
 
         assert torch.allclose(o, o_ref, rtol=1e-2, atol=1e-2)
         torch.testing.assert_close(dv, dv_ref, rtol=1e-2, atol=1e-2)
-        # assert torch.allclose(dV, dV_ref, rtol=1e-2, atol=1e-2)
         assert torch.allclose(dk, dk_ref, rtol=1e-2, atol=1e-2)
         assert torch.allclose(dq, dq_ref, rtol=1e-2, atol=1e-2)
         print("BlockSparseAttention kernel check passed!")
