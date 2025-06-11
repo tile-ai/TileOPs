@@ -239,8 +239,8 @@ class _fused_chunk_linear_attention(torch.autograd.Function):
 fused_chunk_linear_attention = _fused_chunk_linear_attention.apply
 
 
-class FusedChunk_kernel(nn.Module):
-    '''In the FusedChunk attention kernel, we calculate the results in one pass without materializing intermediate hidden states.'''
+class linear_attention_fused_chunk_kernel(nn.Module):
+    '''We calculate the results in one pass without materializing intermediate hidden states.'''
 
     def __init__(self,
                  batch_size,
