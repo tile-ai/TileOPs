@@ -185,7 +185,7 @@ class _MAMBA_CHUNK_SCAN_attention(torch.autograd.Function):
 MAMBA_CHUNK_SCAN_attention = _MAMBA_CHUNK_SCAN_attention.apply
 
 
-class MAMBA_CHUNK_SCAN_kernel(nn.Module):
+class MambaChunkScanKernel(nn.Module):
 
     def __init__(self,
                  batch,

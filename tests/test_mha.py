@@ -1,9 +1,9 @@
 import argparse
-from tla import MHA_kernel
+from tla import MHAKernel
 
 
 def test_mha_kernel(B, S, H, D, causal):
-    kernel = MHA_kernel(B, H, S, D, causal)
+    kernel = MHAKernel(B, H, S, D, causal)
     kernel.check()
     kernel.profile()
 

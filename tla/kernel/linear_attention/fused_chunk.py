@@ -18,11 +18,11 @@ def _fused_chunk_fwd(B, S, H, D, scale=None, dtype='float16', BK=64, BV=64, chun
 
     @T.prim_func
     def main(
-        Q: T.Tensor([B, S, H, D], dtype), # type: ignore
-        K: T.Tensor([B, S, H, D], dtype), # type: ignore
-        V: T.Tensor([B, S, H, D], dtype), # type: ignore
-        Output: T.Tensor([NK, B, S, H, D], dtype) # type: ignore
-    ): 
+            Q: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            K: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            V: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            Output: T.Tensor([NK, B, S, H, D], dtype)  # type: ignore
+    ):
         with T.Kernel(NV, NK, B * H) as (i_v, i_k, i_bh):
             i_b = i_bh // H
             i_h = i_bh % H
@@ -72,13 +72,13 @@ def _fused_chunk_bwd(B, S, H, D, scale=None, dtype='float16', BK=64, BV=64, chun
 
     @T.prim_func
     def main(
-        Q: T.Tensor([B, S, H, D], dtype), # type: ignore
-        K: T.Tensor([B, S, H, D], dtype), # type: ignore
-        V: T.Tensor([B, S, H, D], dtype), # type: ignore
-        dO: T.Tensor([B, S, H, D], dtype), # type: ignore
-        dQ: T.Tensor([NV, B, S, H, D], dtype), # type: ignore
-        dK: T.Tensor([NV, B, S, H, D], dtype), # type: ignore
-        dV: T.Tensor([NK, B, S, H, D], dtype), # type: ignore
+            Q: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            K: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            V: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            dO: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            dQ: T.Tensor([NV, B, S, H, D], dtype),  # type: ignore
+            dK: T.Tensor([NV, B, S, H, D], dtype),  # type: ignore
+            dV: T.Tensor([NK, B, S, H, D], dtype),  # type: ignore
     ):
         with T.Kernel(NV, NK, B * H) as (i_v, i_k, i_bh):
             i_b = i_bh // H
@@ -197,7 +197,7 @@ class _fused_chunk_linear_attention(torch.autograd.Function):
 fused_chunk_linear_attention = _fused_chunk_linear_attention.apply
 
 
-class linear_attention_fused_chunk_kernel(nn.Module):
+class LinearAttentionFusedChunkKernel(nn.Module):
     '''We calculate the results in one pass without materializing intermediate hidden states.'''
 
     def __init__(self,

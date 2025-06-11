@@ -263,7 +263,7 @@ class _MHA_attention(torch.autograd.Function):
 MHA_attention = _MHA_attention.apply
 
 
-class MHA_kernel:
+class MHAKernel:
 
     def __init__(self,
                  batch_size,
@@ -305,14 +305,23 @@ class MHA_kernel:
         output = torch.einsum('bhqk,bkhd->bqhd', attention_weights, v)
         return output
 
-    def gen_inputs(self, n: int):
-        return (torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-                            device=self.device,
-                            dtype=self.dtype,
-                            requires_grad=True) for _ in range(n))
+    def gen_inputs(self):
+        q = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
+                        device=self.device,
+                        dtype=self.dtype)
+        k = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
+                        device=self.device,
+                        dtype=self.dtype)
+        v = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
+                        device=self.device,
+                        dtype=self.dtype)
+        do = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
+                         device=self.device,
+                         dtype=self.dtype)
+        return q, k, v, do
 
     def check(self):
-        q, k, v, do = self.gen_inputs(4)
+        q, k, v, do = self.gen_inputs()
         o = self.forward(q, k, v)
         o.backward(do)
         dq, q.grad = q.grad.clone(), None
