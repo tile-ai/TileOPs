@@ -1,10 +1,9 @@
-from sympy import false
 import torch
-from torch import nn 
 from torch.nn import functional as F
-import tilelang as tl 
+import tilelang as tl
 import tilelang.language as T
 from tilelang.profiler import do_bench
+
 
 @tl.jit(out_idx=[3, 4])
 def _mha_fwd(batch, heads, seq_len, dim, is_casual, block_M, block_N):
@@ -15,11 +14,11 @@ def _mha_fwd(batch, heads, seq_len, dim, is_casual, block_M, block_N):
 
     @T.prim_func
     def flash_fwd(
-        Q: T.Tensor(shape, dtype),  # type: ignore
-        K: T.Tensor(shape, dtype),  # type: ignore
-        V: T.Tensor(shape, dtype),  # type: ignore
-        Output: T.Tensor(shape, dtype),  # type: ignore
-        lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+            Q: T.Tensor(shape, dtype),  # type: ignore
+            K: T.Tensor(shape, dtype),  # type: ignore
+            V: T.Tensor(shape, dtype),  # type: ignore
+            Output: T.Tensor(shape, dtype),  # type: ignore
+            lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
     ):
         with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch, threads=128) as (bx, by, bz):
             Q_shared = T.alloc_shared([block_M, dim], dtype)
@@ -74,6 +73,7 @@ def _mha_fwd(batch, heads, seq_len, dim, is_casual, block_M, block_N):
 
     return flash_fwd
 
+
 @tl.jit(out_idx=[2])
 def _mha_bwd_preprocess(batch, heads, seq_len, dim):
     dtype = "float16"
@@ -83,9 +83,9 @@ def _mha_bwd_preprocess(batch, heads, seq_len, dim):
 
     @T.prim_func
     def flash_bwd_prep(
-        O: T.Tensor(shape, dtype),  # type: ignore
-        dO: T.Tensor(shape, dtype),  # type: ignore
-        Delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+            O: T.Tensor(shape, dtype),  # type: ignore
+            dO: T.Tensor(shape, dtype),  # type: ignore
+            Delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
     ):
         with T.Kernel(heads, T.ceildiv(seq_len, blk), batch) as (bx, by, bz):
             o = T.alloc_fragment([blk, blk], dtype)
@@ -165,7 +165,8 @@ def _mha_bwd(batch, heads, seq_len, dim, is_casual, block_M, block_N):
             T.clear(dk)
             loop_st = T.floordiv(by * block_M, block_N) if is_casual else 0
             loop_ed = T.ceildiv(seq_len, block_N)
-            for k in T.Pipelined(loop_st, loop_ed, num_stages=0): # On 4090 this will exceed the limit of smem
+            for k in T.Pipelined(
+                    loop_st, loop_ed, num_stages=0):  # On 4090 this will exceed the limit of smem
                 T.copy(Q[bz, k * block_N:(k + 1) * block_N, bx, :], q)
                 T.clear(qkT)
                 T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
@@ -211,8 +212,8 @@ def _mha_bwd_postprocess(batch, heads, seq_len, dim):
 
     @T.prim_func
     def flash_bwd_post(
-        dQ: T.Tensor(shape, accum_dtype),  # type: ignore
-        dQ_out: T.Tensor(shape, dtype),  # type: ignore
+            dQ: T.Tensor(shape, accum_dtype),  # type: ignore
+            dQ_out: T.Tensor(shape, dtype),  # type: ignore
     ):
         with T.Kernel(T.ceildiv(seq_len, blk), heads, batch, threads=128) as (bx, by, bz):
             T.annotate_layout({dQ: make_dq_layout(dQ)})
@@ -263,6 +264,7 @@ MHA_attention = _MHA_attention.apply
 
 
 class MHA_kernel:
+
     def __init__(self,
                  batch_size,
                  num_heads,
@@ -282,14 +284,14 @@ class MHA_kernel:
         self.device = device
         flops_per_matmul = 2.0 * batch_size * num_heads * seq_len * seq_len * head_dim
         self.fwd_flops = 2 * flops_per_matmul
-        self.bwd_flops = 5 * flops_per_matmul 
+        self.bwd_flops = 5 * flops_per_matmul
         if causal:
             self.fwd_flops *= 0.5
             self.bwd_flops *= 0.5
 
-    def forward(self, q, k, v): # Layout: BSHD
+    def forward(self, q, k, v):  # Layout: BSHD
         return self.attention(q, k, v, self.causal)
-    
+
     def ref_program(self, q, k, v, is_causal: bool):
         dim = q.size(-1)
         scores = torch.einsum('bqhd,bkhd->bhqk', q, k)
@@ -302,14 +304,13 @@ class MHA_kernel:
         attention_weights = F.softmax(scores, dim=-1)
         output = torch.einsum('bhqk,bkhd->bqhd', attention_weights, v)
         return output
-        
+
     def gen_inputs(self, n: int):
-        return (torch.randn(
-            (self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-            device=self.device,
-            dtype=self.dtype,
-            requires_grad=True) for _ in range(n))
-        
+        return (torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
+                            device=self.device,
+                            dtype=self.dtype,
+                            requires_grad=True) for _ in range(n))
+
     def check(self):
         q, k, v, do = self.gen_inputs(4)
         o = self.forward(q, k, v)
@@ -325,13 +326,12 @@ class MHA_kernel:
         assert torch.allclose(dk, dk_ref, rtol=1e-2, atol=1e-2), "dk does not match reference"
         assert torch.allclose(dv, dv_ref, rtol=1e-2, atol=1e-2), "dv does not match reference"
         print("All checks passed! ✅")
-        
+
     def profile(self, warmup=500):
         q, k, v, do = self.gen_inputs(4)
         # fwd
         with torch.no_grad():
-            fwd_latency = do_bench(lambda: self.forward(q, k, v),
-                                   warmup=warmup)
+            fwd_latency = do_bench(lambda: self.forward(q, k, v), warmup=warmup)
             print(f"Fwd latency: {fwd_latency:.2f} ms")
             print(f"Fwd FLOPs: {self.fwd_flops / fwd_latency * 1e-9:.2f} TFLOPs")
         # bwd
@@ -339,9 +339,3 @@ class MHA_kernel:
         bwd_latency = do_bench(lambda: o.backward(do, retain_graph=True), warmup=warmup)
         print(f"Bwd latency: {bwd_latency:.2f} ms")
         print(f"Bwd FLOPs: {self.bwd_flops / bwd_latency * 1e-9:.2f} TFLOPs")
-        
-if __name__ == "__main__":
-    kernel = MHA_kernel(8, 32, 1024, 64, False)
-    kernel.check()
-    kernel.profile()
-        
