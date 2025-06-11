@@ -6,10 +6,6 @@ from .mamba_chunk_state import MAMBA_CHUNK_STATE_kernel
 from .linear_attention.fused_chunk import linear_attention_fused_chunk_kernel
 
 __all__ = [
-    "MHA_kernel", 
-    "MLA_kernel", 
-    "GQA_kernel",
-    "MAMBA_CHUNK_SCAN_kernel",
-    "MAMBA_CHUNK_STATE_kernel",
+    "MHA_kernel", "MLA_kernel", "GQA_kernel", "MAMBA_CHUNK_SCAN_kernel", "MAMBA_CHUNK_STATE_kernel",
     "linear_attention_fused_chunk_kernel"
 ]
