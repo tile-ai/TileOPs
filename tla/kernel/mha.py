@@ -1,3 +1,6 @@
+# Copyright (c) Tile-AI Corporation.
+# Licensed under the MIT License.
+
 import torch
 from torch.nn import functional as F
 import tilelang as tl

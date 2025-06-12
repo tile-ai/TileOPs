@@ -1,3 +1,6 @@
+# Copyright (c) Tile-AI Corporation.
+# Licensed under the MIT License.
+
 from .kernel.mha import MHAKernel
 from .kernel.mla import MLAKernel
 from .kernel.gqa import GQAKernel
