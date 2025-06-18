@@ -1,3 +1,6 @@
+# Copyright (c) Tile-AI Corporation.
+# Licensed under the MIT License.
+
 import subprocess
 from setuptools import setup, find_packages
 from setuptools.command.install import install

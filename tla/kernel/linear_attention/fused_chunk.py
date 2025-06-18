@@ -10,15 +10,7 @@ import fla.ops.linear_attn  # We compare with Triton implementation in FLA
 
 
 @tl.jit(out_idx=[3])
-def _fused_chunk_fwd(B,
-                     S,
-                     H,
-                     D,
-                     scale=None,
-                     dtype='float16',
-                     BK=64,
-                     BV=64,
-                     chunk_size=64):
+def _fused_chunk_fwd(B, S, H, D, scale=None, dtype='float16', BK=64, BV=64, chunk_size=64):
     accum_dtype = "float"
     NK = D // BK
     NV = D // BV
@@ -28,10 +20,12 @@ def _fused_chunk_fwd(B,
         scale = D**-0.5
 
     @T.prim_func
-    def main(Q: T.Tensor([B, S, H, D], dtype), K: T.Tensor([B, S, H, D],
-                                                           dtype),
-             V: T.Tensor([B, S, H, D],
-                         dtype), Output: T.Tensor([NK, B, S, H, D], dtype)):
+    def main(
+            Q: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            K: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            V: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            Output: T.Tensor([NK, B, S, H, D], dtype)  # type: ignore
+    ):
         with T.Kernel(NV, NK, B * H) as (i_v, i_k, i_bh):
             i_b = i_bh // H
             i_h = i_bh % H
@@ -50,41 +44,27 @@ def _fused_chunk_fwd(B,
 
             for i in T.serial(0, NT):
                 for row, col in T.Parallel(chunk_size, BK):
-                    q[row, col] = Q[i_b, i * chunk_size + row, i_h,
-                                    i_k * BK + col] * scale
-                T.copy(
-                    K[i_b, i * chunk_size:(i + 1) * chunk_size, i_h,
-                      i_k * BK:(i_k + 1) * BK], k)
-                T.copy(
-                    V[i_b, i * chunk_size:(i + 1) * chunk_size, i_h,
-                      i_v * BV:(i_v + 1) * BV], v)
+                    q[row, col] = Q[i_b, i * chunk_size + row, i_h, i_k * BK + col] * scale
+                T.copy(K[i_b, i * chunk_size:(i + 1) * chunk_size, i_h, i_k * BK:(i_k + 1) * BK], k)
+                T.copy(V[i_b, i * chunk_size:(i + 1) * chunk_size, i_h, i_v * BV:(i_v + 1) * BV], v)
 
                 T.gemm(q, k, s, clear_accum=True, transpose_B=True)
                 for row, col in T.Parallel(chunk_size, chunk_size):
-                    s_shared[row,
-                             col] = T.if_then_else(row >= col, s[row, col], 0)
+                    s_shared[row, col] = T.if_then_else(row >= col, s[row, col], 0)
 
                 T.gemm(s_shared, v, o, clear_accum=True)
                 T.copy(h, h_shared)
                 T.gemm(q, h_shared, o)
                 T.gemm(k, v, h, transpose_A=True)
                 T.copy(
-                    o, Output[i_k, i_b, i * chunk_size:(i + 1) * chunk_size,
-                              i_h, i_v * BV:(i_v + 1) * BV])
+                    o, Output[i_k, i_b, i * chunk_size:(i + 1) * chunk_size, i_h,
+                              i_v * BV:(i_v + 1) * BV])
 
     return main
 
 
 @tl.jit(out_idx=[4, 5, 6])
-def _fused_chunk_bwd(B,
-                     S,
-                     H,
-                     D,
-                     scale=None,
-                     dtype='float16',
-                     BK=64,
-                     BV=64,
-                     chunk_size=64):
+def _fused_chunk_bwd(B, S, H, D, scale=None, dtype='float16', BK=64, BV=64, chunk_size=64):
     accum_dtype = "float"
     NK = D // BK
     NV = D // BV
@@ -95,13 +75,13 @@ def _fused_chunk_bwd(B,
 
     @T.prim_func
     def main(
-            Q: T.Tensor([B, S, H, D], dtype),
-            K: T.Tensor([B, S, H, D], dtype),
-            V: T.Tensor([B, S, H, D], dtype),
-            dO: T.Tensor([B, S, H, D], dtype),
-            dQ: T.Tensor([NV, B, S, H, D], dtype),
-            dK: T.Tensor([NV, B, S, H, D], dtype),
-            dV: T.Tensor([NK, B, S, H, D], dtype),
+            Q: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            K: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            V: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            dO: T.Tensor([B, S, H, D], dtype),  # type: ignore
+            dQ: T.Tensor([NV, B, S, H, D], dtype),  # type: ignore
+            dK: T.Tensor([NV, B, S, H, D], dtype),  # type: ignore
+            dV: T.Tensor([NK, B, S, H, D], dtype),  # type: ignore
     ):
         with T.Kernel(NV, NK, B * H) as (i_v, i_k, i_bh):
             i_b = i_bh // H
@@ -127,21 +107,14 @@ def _fused_chunk_bwd(B,
 
             # Calculate dQ
             for i in T.serial(0, NT):
-                T.copy(
-                    dO[i_b, i * chunk_size:(i + 1) * chunk_size, i_h,
-                       i_v * BV:(i_v + 1) * BV], do)
-                T.copy(
-                    K[i_b, i * chunk_size:(i + 1) * chunk_size, i_h,
-                      i_k * BK:(i_k + 1) * BK], k)
-                T.copy(
-                    V[i_b, i * chunk_size:(i + 1) * chunk_size, i_h,
-                      i_v * BV:(i_v + 1) * BV], v)
+                T.copy(dO[i_b, i * chunk_size:(i + 1) * chunk_size, i_h, i_v * BV:(i_v + 1) * BV],
+                       do)
+                T.copy(K[i_b, i * chunk_size:(i + 1) * chunk_size, i_h, i_k * BK:(i_k + 1) * BK], k)
+                T.copy(V[i_b, i * chunk_size:(i + 1) * chunk_size, i_h, i_v * BV:(i_v + 1) * BV], v)
 
                 T.gemm(do, v, ds, transpose_B=True, clear_accum=True)
                 for row, col in T.Parallel(chunk_size, chunk_size):
-                    ds_shared[row,
-                              col] = T.if_then_else(row >= col, ds[row, col],
-                                                    0)
+                    ds_shared[row, col] = T.if_then_else(row >= col, ds[row, col], 0)
 
                 T.gemm(ds_shared, k, dq, clear_accum=True)
                 T.copy(h, h_shared)
@@ -149,15 +122,13 @@ def _fused_chunk_bwd(B,
                 if i < NT - 1:
                     T.gemm(v, k, h, transpose_A=True)
                 for row, col in T.Parallel(chunk_size, BK):
-                    dQ[i_v, i_b, i * chunk_size + row, i_h,
-                       i_k * BK + col] = dq[row, col] * scale
+                    dQ[i_v, i_b, i * chunk_size + row, i_h, i_k * BK + col] = dq[row, col] * scale
 
             # Calculate dK, dV (reversely)
             for i in T.Pipelined(1, NT + 1, num_stages=1):
                 start = NT - i
                 for row, col in T.Parallel(chunk_size, BK):
-                    q[row, col] = Q[i_b, start * chunk_size + row, i_h,
-                                    i_k * BK + col] * scale
+                    q[row, col] = Q[i_b, start * chunk_size + row, i_h, i_k * BK + col] * scale
                 T.copy(
                     K[i_b, start * chunk_size:(start + 1) * chunk_size, i_h,
                       i_k * BK:(i_k + 1) * BK], k)
@@ -174,18 +145,14 @@ def _fused_chunk_bwd(B,
                     v, do, ds, transpose_B=True, clear_accum=True
                 )  # ds here actually means `s`, but we simply reuse the buffer `ds`
                 for row, col in T.Parallel(chunk_size, chunk_size):
-                    ds_shared[row,
-                              col] = T.if_then_else(row <= col, ds[row, col],
-                                                    0)
+                    ds_shared[row, col] = T.if_then_else(row <= col, ds[row, col], 0)
                 T.gemm(ds_shared, q, dk, clear_accum=True)
                 T.gemm(v, dh_shared, dk, transpose_B=True)
 
                 # Calculate dv
                 T.gemm(k, q, ds, transpose_B=True, clear_accum=True)
                 for row, col in T.Parallel(chunk_size, chunk_size):
-                    ds_shared[row,
-                              col] = T.if_then_else(row <= col, ds[row, col],
-                                                    0)
+                    ds_shared[row, col] = T.if_then_else(row <= col, ds[row, col], 0)
                 T.gemm(ds_shared, do, dv, clear_accum=True)
                 T.gemm(k, dh_shared, dv)
 
@@ -194,13 +161,11 @@ def _fused_chunk_bwd(B,
                     T.gemm(q, do, dh, transpose_A=True)
 
                 T.copy(
-                    dk,
-                    dK[i_v, i_b, start * chunk_size:(start + 1) * chunk_size,
-                       i_h, i_k * BK:(i_k + 1) * BK])
+                    dk, dK[i_v, i_b, start * chunk_size:(start + 1) * chunk_size, i_h,
+                           i_k * BK:(i_k + 1) * BK])
                 T.copy(
-                    dv,
-                    dV[i_k, i_b, start * chunk_size:(start + 1) * chunk_size,
-                       i_h, i_v * BV:(i_v + 1) * BV])
+                    dv, dV[i_k, i_b, start * chunk_size:(start + 1) * chunk_size, i_h,
+                           i_v * BV:(i_v + 1) * BV])
 
     return main
 
@@ -220,10 +185,8 @@ class _fused_chunk_linear_attention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, do):
-        B, S, H, D, scale, dtype, BK, BV, chunk_size = (ctx.B, ctx.S, ctx.H,
-                                                        ctx.D, ctx.scale,
-                                                        ctx.dtype, ctx.BK,
-                                                        ctx.BV, ctx.chunk_size)
+        B, S, H, D, scale, dtype, BK, BV, chunk_size = (ctx.B, ctx.S, ctx.H, ctx.D, ctx.scale,
+                                                        ctx.dtype, ctx.BK, ctx.BV, ctx.chunk_size)
         q, k, v = ctx.saved_tensors
 
         mod = _fused_chunk_bwd(B, S, H, D, scale, dtype, BK, BV, chunk_size)
@@ -237,8 +200,8 @@ class _fused_chunk_linear_attention(torch.autograd.Function):
 fused_chunk_linear_attention = _fused_chunk_linear_attention.apply
 
 
-class FusedChunk_kernel(nn.Module):
-    '''In the FusedChunk attention kernel, we calculate the results in one pass without materializing intermediate hidden states.'''
+class LinearAttentionFusedChunkKernel(nn.Module):
+    '''We calculate the results in one pass without materializing intermediate hidden states.'''
 
     def __init__(self,
                  batch_size,
@@ -267,41 +230,32 @@ class FusedChunk_kernel(nn.Module):
         self.attention = fused_chunk_linear_attention
 
     def forward(self, q, k, v, scale=None):  # Layout: [B, S, H, D]
-        return self.attention(q, k, v, scale, self.dtype, self.block_K,
-                              self.block_V, self.chunk_size)
+        return self.attention(q, k, v, scale, self.dtype, self.block_K, self.block_V,
+                              self.chunk_size)
 
     def ref_program(self, q, k, v, scale=None):
-        return fla.ops.linear_attn.fused_chunk_linear_attn(q,
-                                                           k,
-                                                           v,
-                                                           scale,
-                                                           normalize=False)
+        return fla.ops.linear_attn.fused_chunk_linear_attn(q, k, v, scale, normalize=False)
 
     def gen_inputs(self, n: int):
-        return (torch.randn(
-            (self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-            device='cuda',
-            dtype=self._dtype,
-            requires_grad=True) for _ in range(n))
+        return (torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
+                            device='cuda',
+                            dtype=self._dtype,
+                            requires_grad=True) for _ in range(n))
 
     def profile(self, warmup=100):
         q, k, v, do = self.gen_inputs(4)
         # fwd
         with torch.no_grad():
-            fwd_latency = do_bench(lambda: self.forward(q, k, v),
-                                   warmup=warmup)
+            fwd_latency = do_bench(lambda: self.forward(q, k, v), warmup=warmup)
             print(f"Fwd latency: {fwd_latency:.2f} ms")
-            fwd_ref_latency = do_bench(lambda: self.ref_program(q, k, v),
-                                       warmup=warmup)
+            fwd_ref_latency = do_bench(lambda: self.ref_program(q, k, v), warmup=warmup)
             print(f"Fwd ref latency: {fwd_ref_latency:.2f} ms")
         # bwd
         o = self.forward(q, k, v)
-        bwd_latency = do_bench(lambda: o.backward(do, retain_graph=True),
-                               warmup=warmup)
+        bwd_latency = do_bench(lambda: o.backward(do, retain_graph=True), warmup=warmup)
         print(f"Bwd latency: {bwd_latency:.2f} ms")
         o_ref, _ = self.ref_program(q, k, v)
-        bwd_ref_latency = do_bench(
-            lambda: o_ref.backward(do, retain_graph=True), warmup=warmup)
+        bwd_ref_latency = do_bench(lambda: o_ref.backward(do, retain_graph=True), warmup=warmup)
         print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
 
     def check(self):

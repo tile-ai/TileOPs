@@ -1,9 +1,8 @@
 # Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
+# Licensed under the MIT License.import argparse
 
-import argparse
 import torch
-from tla import MambaChunkScanKernel
+from tla import MambaChunkStateKernel
 import math
 
 
@@ -21,31 +20,25 @@ def main():
     BATCH, HEADS, GROUPS, SEQ_LEN, CHUNK_SIZE, DIM, DSTATE = args.batch, args.heads, args.groups, args.seq_len, args.chunk_size, args.dim, args.dstate
     NCHUNKS = math.ceil(SEQ_LEN / CHUNK_SIZE)
 
-    cb = torch.empty((BATCH, NCHUNKS, GROUPS, CHUNK_SIZE, CHUNK_SIZE),
-                     dtype=torch.half).cuda().normal_(-1.0, 1.0)
+    B = torch.empty((BATCH, SEQ_LEN, GROUPS, DSTATE), dtype=torch.half).cuda().normal_(-1.0, 1.0)
     x = torch.empty((BATCH, SEQ_LEN, HEADS, DIM), dtype=torch.half).cuda().normal_(-1.0, 1.0)
     dt = torch.empty((BATCH, HEADS, NCHUNKS, CHUNK_SIZE),
                      dtype=torch.half).cuda().normal_(-1.0, 1.0)
     dA_cumsum = torch.empty((BATCH, HEADS, NCHUNKS, CHUNK_SIZE),
                             dtype=torch.half).cuda().normal_(-1.0, 1.0)
-    C = torch.empty((BATCH, SEQ_LEN, GROUPS, DSTATE), dtype=torch.half).cuda().normal_(-1.0, 1.0)
-    prev_states = torch.empty((BATCH, NCHUNKS, HEADS, DIM, DSTATE),
-                              dtype=torch.half).cuda().normal_(-1.0, 1.0)
-    D = torch.empty((HEADS,), dtype=torch.half).cuda().normal_(-1.0, 1.0)
 
     if args.tune:
-        mamba_chunk_scan = MambaChunkScanKernel(
+        mamba_chunk_state = MambaChunkStateKernel(
             BATCH, HEADS, GROUPS, SEQ_LEN, CHUNK_SIZE, DIM, DSTATE, tune=True)
 
     else:
         block_M = 64
-        block_N = 64
+        block_N = 128
         block_K = 64
-        block_Dstate = 128
-        num_stages = 2
+        num_stages = 4
         threads = 128
 
-        mamba_chunk_scan = MambaChunkScanKernel(
+        mamba_chunk_state = MambaChunkStateKernel(
             BATCH,
             HEADS,
             GROUPS,
@@ -56,15 +49,14 @@ def main():
             block_M=block_M,
             block_N=block_N,
             block_K=block_K,
-            block_Dstate=block_Dstate,
             num_stages=num_stages,
             threads=threads)
 
-    o = mamba_chunk_scan(cb, x, dt, dA_cumsum, C, prev_states, D)
+    o = mamba_chunk_state(B, x, dt, dA_cumsum)
     print(o)
-    latency = mamba_chunk_scan.profile()
+    latency = mamba_chunk_state.profile()
     print(f"Latency: {latency:.4f} ms")
-    mamba_chunk_scan.check(cb, x, dt, dA_cumsum, C, prev_states, D)
+    mamba_chunk_state.check(B, x, dt, dA_cumsum)
 
 
 if __name__ == "__main__":
