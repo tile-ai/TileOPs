@@ -2,11 +2,15 @@
 # Licensed under the MIT License.
 
 import torch
+import torch.nn.functional as F
 import tilelang
 import tilelang.language as T
 import torch.nn as nn
+from einops import rearrange, einsum
+from tilelang.utils.tensor import torch_assert_close
 
 
+@tilelang.jit(out_idx=[6])
 def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, num_split):
     scale = (1.0 / (dim + pe_dim))**0.5 * 1.44269504  # log2(e)
     dtype = "float16"
@@ -23,7 +27,7 @@ def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, nu
             K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
             Output: T.Tensor([batch, heads, dim], dtype),
     ):
-        with T.Kernel(batch, heads // min(block_H, kv_group_num), threads=256) as (bx, by):
+        with T.Kernel(batch, heads // min(block_H, kv_group_num), threads=128) as (bx, by):
             Q_shared = T.alloc_shared([block_H, dim], dtype)
             S_shared = T.alloc_shared([block_H, block_N], dtype)
             Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -242,9 +246,8 @@ class MLAKernel(nn.Module):
                  dtype=torch.float16,
                  device="cuda"):
         super().__init__()
-        self.program = _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H,
-                            num_split)
-        self.kernel = tilelang.compile(self.program, out_idx=[6])
+        self.kernel = _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H,
+                           num_split)
         self.profiler = self.kernel.get_profiler(tensor_supply_type=tilelang.TensorSupplyType.Randn)
         self.intermediate_tensor = {}
         self.intermediate_tensor['glse'] = torch.empty(
@@ -261,5 +264,51 @@ class MLAKernel(nn.Module):
         latency = self.profiler.do_bench(warmup=warmup)
         return latency
 
-    def check(self):
-        pass
+    def ref_program(self, q, q_pe, kv, k_pe):
+        #     """
+        #     Inputs:
+        #     - q (Tensor): [batch, heads, dim]
+        #     - q_pe (Tensor): [batch, heads, pe_dim]
+        #     - kv (Tensor): [batch, seqlen_kv, kv_head_num, dim]
+        #     - k_pe (Tensor): [batch, seqlen_kv, kv_head_num, pe_dim]
+        #     Outputs:
+        #     - output (Tensor): [batch, heads, dim]
+        #     """
+        dim = q.shape[-1]
+        pe_dim = q_pe.shape[-1]
+        num_head_groups = q.shape[1] // kv.shape[2]
+        scale = (dim + pe_dim)**0.5
+        q = rearrange(
+            q, 'b (h g) d -> b g h d',
+            g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+
+        q_pe = rearrange(
+            q_pe, 'b (h g) d -> b g h d',
+            g=num_head_groups)  # [batch_size, num_head_groups, groups, pe_dim]
+
+        kv = rearrange(kv, 'b n h d -> b h n d')  # [batch_size, groups, seqlen_kv, dim]
+
+        k_pe = rearrange(k_pe,
+                         'b n h d -> b h n d')  # [batch_size, num_head_groups, groups, pe_dim]
+
+        query = torch.concat([q, q_pe], dim=-1)
+        key = torch.concat([kv, k_pe], dim=-1)
+
+        scores = einsum(
+            query, key,
+            'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, groups, seqlen_kv]
+
+        attention = F.softmax(
+            scores / scale, dim=-1)  # [batch_size, num_head_groups, groups, seqlen_kv]
+
+        out = einsum(attention, kv,
+                     'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, groups, dim]
+        out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
+        return out
+
+    def check(self, q, q_pe, kv, k_pe):
+        o = self.kernel(q, q_pe, kv, k_pe, self.intermediate_tensor['glse'],
+                        self.intermediate_tensor['output_partial'])
+        o_ref = self.ref_program(q, q_pe, kv, k_pe)
+        torch_assert_close(o, o_ref, rtol=1e-2, atol=1e-2, max_mismatched_ratio=0.01)
+        print("MLA kernel check passed!")
