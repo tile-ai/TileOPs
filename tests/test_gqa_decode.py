@@ -18,21 +18,23 @@ def main():
     BLOCK_N = 128
     BLOCK_H = 64
     threads = 128
-    
+
     Q = torch.randn(batch, heads, dim, device="cuda", dtype=torch.float16)
     K = torch.randn(batch, kv_seqlen, groups, dim, device="cuda", dtype=torch.float16)
     V = torch.randn(batch, kv_seqlen, groups, dim, device="cuda", dtype=torch.float16)
 
-    gqa_decode = GQA_decode_kernel(
-        batch, heads, kv_seqlen, dim, BLOCK_N, BLOCK_H, threads, num_split, groups)
+    gqa_decode = GQA_decode_kernel(batch, heads, kv_seqlen, dim, BLOCK_N, BLOCK_H, threads,
+                                   num_split, groups)
+    if tune:
+        gqa_decode.autotune()
     o = gqa_decode.decode(Q, K, V)
     print(o)
-    
+
     latency = gqa_decode.profile()
     print(f"Latency: {latency:.4f} ms")
-    
+
     gqa_decode.check(Q, K, V)
-    
+
     gqa_decode.autotune()
     latency_ = gqa_decode.profile()
     print(f"Latency: {latency_:.4f} ms")

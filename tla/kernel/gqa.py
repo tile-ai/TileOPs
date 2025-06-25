@@ -694,8 +694,7 @@ def gqa_decode_ref_program(query, key, value, mask, glse, Output_partial):
     return out
 
 
-def gqa_decode_split_ref(Q, K, V, mask):
-    num_split = 16
+def gqa_decode_split_ref(Q, K, V, mask, num_split):
     batch = Q.size(0)
     nheads = Q.size(1)
     groups = K.size(2)
@@ -762,8 +761,7 @@ def gqa_decode_split_ref(Q, K, V, mask):
     return glogsum.to(torch.float16).permute(1, 2, 0), gacc_o.to(torch.float16).permute(1, 2, 0, 3)
 
 
-def gqa_decode_reduce_ref(Q, K, V, mask, glse, Output_partial):
-    num_split = 16
+def gqa_decode_reduce_ref(Q, K, V, mask, glse, Output_partial, num_split):
     o = torch.empty_like(Output_partial[:, :, 0, :]).fill_(0)
     lse_logsum = torch.empty_like(glse[:, :, 0]).fill_(0)  # [batch, heads]
     lse_max = glse.max(dim=2, keepdim=False).values
@@ -883,9 +881,10 @@ class GQA_decode_kernel(nn.Module):
         return ref
 
     def ref_program_split(self, Q, K, V):
-        glse_, Output_partial_ = gqa_decode_split_ref(Q, K, V, self.intermediate_tensor['mask'])
+        glse_, Output_partial_ = gqa_decode_split_ref(Q, K, V, self.intermediate_tensor['mask'],
+                                                      self.num_split)
         return gqa_decode_reduce_ref(Q, K, V, self.intermediate_tensor['mask'], glse_,
-                                     Output_partial_)
+                                     Output_partial_, self.num_split)
 
     def check(self, q, k, v):
         o = self.decode(q, k, v)
