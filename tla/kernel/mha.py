@@ -8,13 +8,12 @@ import tilelang as tl
 import tilelang.language as T
 from tilelang.profiler import do_bench
 
-
 __all__ = ['MHAKernel', 'MHADecodeKernel']
 
 
 @tl.jit(out_idx=[3, 4])
 def _mha_fwd(batch, heads, seq_len, dim, is_causal, block_M, block_N):
-    scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e)
+    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     shape = [batch, seq_len, heads, dim]
     dtype = "float16"
     accum_dtype = "float"
@@ -304,7 +303,7 @@ class MHAKernel:
         dim = q.size(-1)
         scores = torch.einsum('bqhd,bkhd->bhqk', q, k)
         scores = scores / torch.sqrt(torch.tensor(dim, dtype=scores.dtype))
-        if causal:     
+        if causal:
             seq_len = q.size(1)
             mask = torch.tril(torch.ones(seq_len, seq_len, device=scores.device))
             mask = mask.unsqueeze(0).unsqueeze(0)
@@ -367,7 +366,7 @@ num_split = 4
 @tl.jit(out_idx=[5])
 def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N):
     """This kernel is directly adapted from tilelang/examples/example_mha_inference.py. """
-    scale = (1.0 / dim) ** 0.5 * 1.44269504  # log2(e)
+    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     shape_q = [batch, seqlen_q, heads, dim]
     shape_kv = [batch, seqlen_kv, heads, dim]
     part_shape = [batch, seqlen_q, heads, num_split, dim]
@@ -376,10 +375,10 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N):
 
     @T.macro
     def MMA0(
-        K: T.Tensor(shape_kv, dtype), # type: ignore
-        Q_shared: T.SharedBuffer([block_M, dim], dtype), # type: ignore
-        K_shared: T.SharedBuffer([block_N, dim], dtype), # type: ignore
-        acc_s: T.FragmentBuffer([block_M, block_N], accum_dtype), # type: ignore
+        K: T.Tensor(shape_kv, dtype),  # type: ignore
+        Q_shared: T.SharedBuffer([block_M, dim], dtype),  # type: ignore
+        K_shared: T.SharedBuffer([block_N, dim], dtype),  # type: ignore
+        acc_s: T.FragmentBuffer([block_M, block_N], accum_dtype),  # type: ignore
         k: T.int32,
         mid: T.int32,
         hid: T.int32,
@@ -394,10 +393,10 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N):
 
     @T.macro
     def MMA1(
-        V: T.Tensor(shape_kv, dtype), # type: ignore
-        V_shared: T.SharedBuffer([block_M, dim], dtype), # type: ignore
-        acc_s_cast: T.FragmentBuffer([block_M, block_N], dtype), # type: ignore
-        acc_o: T.FragmentBuffer([block_M, dim], accum_dtype), # type: ignore
+        V: T.Tensor(shape_kv, dtype),  # type: ignore
+        V_shared: T.SharedBuffer([block_M, dim], dtype),  # type: ignore
+        acc_s_cast: T.FragmentBuffer([block_M, block_N], dtype),  # type: ignore
+        acc_o: T.FragmentBuffer([block_M, dim], accum_dtype),  # type: ignore
         k: T.int32,
         hid: T.int32,
         bid: T.int32,
@@ -410,13 +409,13 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N):
 
     @T.macro
     def Softmax(
-        acc_s: T.FragmentBuffer([block_M, block_N], accum_dtype), # type: ignore
-        acc_s_cast: T.FragmentBuffer([block_M, block_N], dtype), # type: ignore
-        scores_max: T.FragmentBuffer([block_M], accum_dtype), # type: ignore
-        scores_max_prev: T.FragmentBuffer([block_M], accum_dtype), # type: ignore
-        scores_scale: T.FragmentBuffer([block_M], accum_dtype), # type: ignore
-        scores_sum: T.FragmentBuffer([block_M], accum_dtype), # type: ignore
-        logsum: T.FragmentBuffer([block_M], accum_dtype), # type: ignore
+            acc_s: T.FragmentBuffer([block_M, block_N], accum_dtype),  # type: ignore
+            acc_s_cast: T.FragmentBuffer([block_M, block_N], dtype),  # type: ignore
+            scores_max: T.FragmentBuffer([block_M], accum_dtype),  # type: ignore
+            scores_max_prev: T.FragmentBuffer([block_M], accum_dtype),  # type: ignore
+            scores_scale: T.FragmentBuffer([block_M], accum_dtype),  # type: ignore
+            scores_sum: T.FragmentBuffer([block_M], accum_dtype),  # type: ignore
+            logsum: T.FragmentBuffer([block_M], accum_dtype),  # type: ignore
     ):
         T.copy(scores_max, scores_max_prev)
         T.fill(scores_max, -T.infinity(accum_dtype))
@@ -440,19 +439,19 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N):
 
     @T.macro
     def Rescale(
-        acc_o: T.FragmentBuffer([block_M, dim], accum_dtype), # type: ignore
-        scores_scale: T.FragmentBuffer([block_M], accum_dtype), # type: ignore
+            acc_o: T.FragmentBuffer([block_M, dim], accum_dtype),  # type: ignore
+            scores_scale: T.FragmentBuffer([block_M], accum_dtype),  # type: ignore
     ):
         for i, j in T.Parallel(block_M, dim):
             acc_o[i, j] *= scores_scale[i]
 
     @T.macro
     def flash_attn_split(
-        Q: T.Tensor(shape_q, dtype), # type: ignore
-        K: T.Tensor(shape_kv, dtype), # type: ignore
-        V: T.Tensor(shape_kv, dtype), # type: ignore
-        glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype), # type: ignore
-        Output_partial: T.Tensor(part_shape, dtype), # type: ignore
+            Q: T.Tensor(shape_q, dtype),  # type: ignore
+            K: T.Tensor(shape_kv, dtype),  # type: ignore
+            V: T.Tensor(shape_kv, dtype),  # type: ignore
+            glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype),  # type: ignore
+            Output_partial: T.Tensor(part_shape, dtype),  # type: ignore
     ):
         with T.Kernel(
                 T.ceildiv(seqlen_q, block_M), heads * batch, num_split,
@@ -500,9 +499,9 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N):
 
     @T.macro
     def combine(
-        glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype), # type: ignore
-        Output_partial: T.Tensor(part_shape, dtype), # type: ignore
-        Output: T.Tensor(shape_q, dtype), # type: ignore
+            glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype),  # type: ignore
+            Output_partial: T.Tensor(part_shape, dtype),  # type: ignore
+            Output: T.Tensor(shape_q, dtype),  # type: ignore
     ):
         with T.Kernel(T.ceildiv(seqlen_q, block_M), heads, batch, threads=128) as (bx, by, bz):
             po_local = T.alloc_fragment([block_M, dim], dtype)
@@ -550,12 +549,12 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N):
 
     @T.prim_func
     def main(
-        Q: T.Tensor(shape_q, dtype), # type: ignore
-        K: T.Tensor(shape_kv, dtype), # type: ignore
-        V: T.Tensor(shape_kv, dtype), # type: ignore
-        glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype), # type: ignore
-        Output_partial: T.Tensor(part_shape, dtype), # type: ignore
-        Output: T.Tensor(shape_q, dtype), # type: ignore
+            Q: T.Tensor(shape_q, dtype),  # type: ignore
+            K: T.Tensor(shape_kv, dtype),  # type: ignore
+            V: T.Tensor(shape_kv, dtype),  # type: ignore
+            glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype),  # type: ignore
+            Output_partial: T.Tensor(part_shape, dtype),  # type: ignore
+            Output: T.Tensor(shape_q, dtype),  # type: ignore
     ):
         flash_attn_split(Q, K, V, glse, Output_partial)
         combine(glse, Output_partial, Output)
@@ -568,7 +567,7 @@ class _MHA_decode_attention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, glse, Output_partial):
         BATCH, KV_CTX, H, D_HEAD = k.shape
-        block_M = 64 # GEMM requires M to be a multiple of 64, so we pad seqlen_q to 64
+        block_M = 64  # GEMM requires M to be a multiple of 64, so we pad seqlen_q to 64
         block_N = 64 if D_HEAD <= 128 else 32
 
         mod = _mha_decode(BATCH, H, 1, KV_CTX, D_HEAD, block_M, block_N)
@@ -577,10 +576,10 @@ class _MHA_decode_attention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         raise NotImplementedError("This kernel is used for decoding only!")
-    
+
 
 MHA_decode_attention = _MHA_decode_attention.apply
-    
+
 
 class MHADecodeKernel(nn.Module):
 
@@ -602,24 +601,13 @@ class MHADecodeKernel(nn.Module):
         flops_per_matmul = 2.0 * batch_size * num_heads * seqlen_kv * head_dim
         self.total_flops = 2 * flops_per_matmul
 
-    def forward(
-        self,
-        Q: torch.Tensor, 
-        K: torch.Tensor,
-        V: torch.Tensor, 
-        glse: torch.Tensor, 
-        Output_partial: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, glse: torch.Tensor,
+                Output_partial: torch.Tensor) -> torch.Tensor:
         assert Q.dim() == 4 and Q.size(1) == 1, "Q must have shape (bsz, 1, H, D)"
         return self.attention(Q, K, V, glse, Output_partial)
 
     @classmethod
-    def ref_program(
-        cls, 
-        Q: torch.Tensor, 
-        K: torch.Tensor, 
-        V: torch.Tensor
-    )-> torch.Tensor:
+    def ref_program(cls, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         assert Q.dim() == 4 and Q.size(1) == 1, "Q must have shape (bsz, 1, H, D)"
         dim = Q.size(-1)
         scores = torch.einsum('bqhd,bkhd->bqhk', Q, K)
@@ -637,9 +625,7 @@ class MHADecodeKernel(nn.Module):
         Q = torch.randn(shape_q, dtype=self.dtype, device=self.device)
         K = torch.randn(shape_kv, dtype=self.dtype, device=self.device)
         V = torch.randn(shape_kv, dtype=self.dtype, device=self.device)
-        glse = torch.randn(glse_shape,
-                           dtype=self.dtype,
-                           device=self.device)
+        glse = torch.randn(glse_shape, dtype=self.dtype, device=self.device)
         Output_partial = torch.randn(part_shape, dtype=self.dtype, device=self.device)
         return Q, K, V, glse, Output_partial
 
@@ -647,7 +633,9 @@ class MHADecodeKernel(nn.Module):
         Q, K, V, glse, Output_partial = self.gen_inputs()
         o = self.forward(Q, K, V, glse, Output_partial)
         o_ref = self.ref_program(Q, K, V)
-        assert torch.allclose(o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference, max diff: {:.4f}".format(torch.max(torch.abs(o - o_ref)))
+        assert torch.allclose(
+            o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference, max diff: {:.4f}".format(
+                torch.max(torch.abs(o - o_ref)))
         print("All checks passed! ✅")
 
     def profile(self, warmup=500):
@@ -666,4 +654,3 @@ class MHADecodeKernel(nn.Module):
             )
             print(f'Latency: {latency:.2f} ms')
             print(f"FLOPs: {self.total_flops / latency * 1e-9:.2f} TFLOPs")
-

@@ -11,12 +11,7 @@ from .kernel.linear_attention.fused_chunk import LinearAttentionFusedChunkKernel
 from .kernel.bitnet import Bitnet_158_int8xint2_kernel
 
 __all__ = [
-    "MHAKernel", "MHADecodeKernel",
-    "MLAKernel", 
-    "GQAKernel", 
-    "MambaChunkScanKernel", 
-    "MambaChunkStateKernel",
-    "BlockSparseAttentionKernel", 
-    "LinearAttentionFusedChunkKernel", 
+    "MHAKernel", "MHADecodeKernel", "MLAKernel", "GQAKernel", "MambaChunkScanKernel",
+    "MambaChunkStateKernel", "BlockSparseAttentionKernel", "LinearAttentionFusedChunkKernel",
     "Bitnet_158_int8xint2_kernel"
 ]
