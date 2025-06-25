@@ -360,11 +360,8 @@ class MHAKernel:
         print(f"Bwd FLOPs: {self.bwd_flops / bwd_latency * 1e-9:.2f} TFLOPs")
 
 
-num_split = 4
-
-
 @tl.jit(out_idx=[5])
-def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N):
+def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N, num_split):
     """This kernel is directly adapted from tilelang/examples/example_mha_inference.py. """
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     shape_q = [batch, seqlen_q, heads, dim]
@@ -565,12 +562,18 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, block_M, block_N):
 class _MHA_decode_attention(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, k, v, glse, Output_partial):
+    def forward(ctx, q, k, v, num_split):
         BATCH, KV_CTX, H, D_HEAD = k.shape
         block_M = 64  # GEMM requires M to be a multiple of 64, so we pad seqlen_q to 64
         block_N = 64 if D_HEAD <= 128 else 32
 
-        mod = _mha_decode(BATCH, H, 1, KV_CTX, D_HEAD, block_M, block_N)
+        mod = _mha_decode(BATCH, H, 1, KV_CTX, D_HEAD, block_M, block_N, num_split)
+        glse = torch.empty((BATCH, H, num_split, 1),
+                           dtype=q.dtype,
+                           device=q.device)
+        Output_partial = torch.empty((BATCH, 1, H, num_split, D_HEAD),
+                                     dtype=q.dtype,
+                                     device=q.device)
         return mod(q, k, v, glse, Output_partial)
 
     @staticmethod
@@ -588,6 +591,7 @@ class MHADecodeKernel(nn.Module):
                  num_heads,
                  seqlen_kv,
                  head_dim,
+                 num_split=4,
                  dtype=torch.float16,
                  device="cuda"):
         super().__init__()
@@ -596,15 +600,15 @@ class MHADecodeKernel(nn.Module):
         self.num_heads = num_heads
         self.seqlen_kv = seqlen_kv
         self.head_dim = head_dim
+        self.num_split = num_split
         self.dtype = dtype
         self.device = device
         flops_per_matmul = 2.0 * batch_size * num_heads * seqlen_kv * head_dim
         self.total_flops = 2 * flops_per_matmul
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, glse: torch.Tensor,
-                Output_partial: torch.Tensor) -> torch.Tensor:
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         assert Q.dim() == 4 and Q.size(1) == 1, "Q must have shape (bsz, 1, H, D)"
-        return self.attention(Q, K, V, glse, Output_partial)
+        return self.attention(Q, K, V, self.num_split)
 
     @classmethod
     def ref_program(cls, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
@@ -619,19 +623,14 @@ class MHADecodeKernel(nn.Module):
     def gen_inputs(self):
         shape_q = self.batch_size, 1, self.num_heads, self.head_dim
         shape_kv = self.batch_size, self.seqlen_kv, self.num_heads, self.head_dim
-        part_shape = self.batch_size, 1, self.num_heads, num_split, self.head_dim
-        glse_shape = (self.batch_size, self.num_heads, num_split, 1)
-
         Q = torch.randn(shape_q, dtype=self.dtype, device=self.device)
         K = torch.randn(shape_kv, dtype=self.dtype, device=self.device)
         V = torch.randn(shape_kv, dtype=self.dtype, device=self.device)
-        glse = torch.randn(glse_shape, dtype=self.dtype, device=self.device)
-        Output_partial = torch.randn(part_shape, dtype=self.dtype, device=self.device)
-        return Q, K, V, glse, Output_partial
+        return Q, K, V
 
     def check(self):
-        Q, K, V, glse, Output_partial = self.gen_inputs()
-        o = self.forward(Q, K, V, glse, Output_partial)
+        Q, K, V = self.gen_inputs()
+        o = self.forward(Q, K, V)
         o_ref = self.ref_program(Q, K, V)
         assert torch.allclose(
             o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference, max diff: {:.4f}".format(
@@ -639,7 +638,7 @@ class MHADecodeKernel(nn.Module):
         print("All checks passed! ✅")
 
     def profile(self, warmup=500):
-        Q, K, V, glse, Output_partial = self.gen_inputs()
+        Q, K, V = self.gen_inputs()
         with torch.no_grad():
             ref_latency = do_bench(
                 lambda: self.ref_program(Q, K, V),
@@ -649,7 +648,7 @@ class MHADecodeKernel(nn.Module):
             print(f"Reference FLOPs: {self.total_flops / ref_latency * 1e-9:.2f} TFLOPs")
 
             latency = do_bench(
-                lambda: self.forward(Q, K, V, glse, Output_partial),
+                lambda: self.forward(Q, K, V),
                 warmup=warmup,
             )
             print(f'Latency: {latency:.2f} ms')
