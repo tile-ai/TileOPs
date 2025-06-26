@@ -1,6 +1,6 @@
 import argparse
 import torch
-from tla import MLAKernel
+from top import MLAKernel
 
 
 def main():

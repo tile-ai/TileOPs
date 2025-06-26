@@ -65,7 +65,7 @@ format_changed() {
     #
     # `diff-filter=ACM` and $MERGEBASE is to ensure we only format files that
     # exist on both branches.
-    UPSTREAM_REPO="https://github.com/tile-ai/TileAttention"
+    UPSTREAM_REPO="https://github.com/tile-ai/TileOPs"
     
     if git ls-remote --exit-code "$UPSTREAM_REPO" main &>/dev/null; then
         # First try to use the upstream repository directly

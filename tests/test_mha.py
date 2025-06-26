@@ -1,5 +1,5 @@
 import argparse
-from tla import MHAKernel
+from top import MHAKernel
 
 
 def test_mha_kernel(B, S, H, D, causal):

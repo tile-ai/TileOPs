@@ -1,6 +1,6 @@
 import argparse
 import torch
-from tla import MambaChunkStateKernel
+from top import MambaChunkStateKernel
 import math
 
 

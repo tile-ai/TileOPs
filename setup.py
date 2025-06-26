@@ -23,7 +23,7 @@ class CustomInstall(install):
         install.run(self)
 
 
-setup(name="tla",
+setup(name="top",
       version="0.1.0",
       packages=find_packages(),
       install_requires=["torch"],
