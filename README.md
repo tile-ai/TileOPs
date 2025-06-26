@@ -1,6 +1,6 @@
-# TileAttention (TLA)
+# TileOPs (TOP)
 
-**TileAttention (TLA)** is a high-performance attention kernel library built to run on the [TileLang](https://github.com/tile-ai/tilelang) backend. It offers efficient, modular, and composable attention implementations optimized for AI workloads.
+**TileOPs (TOP)** is a high-performance machine learning operator collections built to run on the [TileLang](https://github.com/tile-ai/tilelang) backend. It offers efficient, modular, and composable implementations optimized for AI workloads.
 
 ---
 
