@@ -117,7 +117,7 @@ def make_dq_layout(dQ):
 
 
 @tl.jit(out_idx=[6, 7, 8])
-def _mha_bwd(batch, heads, seq_len, dim, is_casual, block_M, block_N):
+def _mha_bwd(batch, heads, seq_len, dim, is_causal, block_M, block_N):
     sm_scale = (1.0 / dim)**0.5
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     shape = [batch, seq_len, heads, dim]
@@ -169,7 +169,7 @@ def _mha_bwd(batch, heads, seq_len, dim, is_casual, block_M, block_N):
             T.copy(V[bz, by * block_M:(by + 1) * block_M, bx, :], V_shared)
             T.clear(dv)
             T.clear(dk)
-            loop_st = T.floordiv(by * block_M, block_N) if is_casual else 0
+            loop_st = T.floordiv(by * block_M, block_N) if is_causal else 0
             loop_ed = T.ceildiv(seq_len, block_N)
             for k in T.Pipelined(
                     loop_st, loop_ed, num_stages=0):  # On 4090 this will exceed the limit of smem
@@ -179,7 +179,7 @@ def _mha_bwd(batch, heads, seq_len, dim, is_casual, block_M, block_N):
                 T.copy(lse[bz, bx, k * block_N:(k + 1) * block_N], lse_shared)
                 for i, j in T.Parallel(block_M, block_N):
                     qkT[i, j] = T.exp2(qkT[i, j] * scale - lse_shared[j])
-                if is_casual:
+                if is_causal:
                     for i, j in T.Parallel(block_M, block_N):
                         qkT[i, j] = T.if_then_else(by * block_M + i <= k * block_N + j, qkT[i, j],
                                                    0)
