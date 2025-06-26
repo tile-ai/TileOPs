@@ -17,8 +17,8 @@
 ### Install (editable mode for development)
 
 ```bash
-git clone https://github.com/tile-ai/TileAttention
-cd TileAttention
+git clone https://github.com/tile-ai/TileOPs
+cd TileOPs
 git submodule update --init --recursive
 pip install -e .
 ```
@@ -27,8 +27,8 @@ pip install -e .
 
 ```python
 import torch
-import tla
-from tla import MLAKernel
+import top
+from top import MLAKernel
 
 device = "cuda"
 dtype = torch.float16
