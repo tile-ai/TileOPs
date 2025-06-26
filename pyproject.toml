@@ -1,7 +1,7 @@
 [project]
-name = "tla"
+name = "top"
 version = "0.1.0"
-description = "TileAttention kernels for efficient inference"
+description = "TileOPs kernels for efficient inference"
 authors = [{ name="Your Name", email="you@example.com" }]
 dependencies = ["torch", "triton"]
 

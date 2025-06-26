@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 import argparse
-from tla import LinearAttentionFusedChunkKernel
+from top import LinearAttentionFusedChunkKernel
 
 
 def test_fused_chunk(B, S, H, D):

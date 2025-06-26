@@ -3,7 +3,7 @@
 
 import argparse
 import torch
-from tla import MambaChunkScanKernel
+from top import MambaChunkScanKernel
 import math
 
 

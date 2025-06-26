@@ -3,7 +3,7 @@
 
 import argparse
 import torch
-from tla import GQAKernel
+from top import GQAKernel
 
 
 def main():
