@@ -5,7 +5,6 @@ from torch import nn
 import tilelang as tl
 from tilelang.profiler import do_bench
 import tilelang.language as T
-import warnings
 import fla.ops.linear_attn  # We compare with Triton implementation in FLA
 
 
