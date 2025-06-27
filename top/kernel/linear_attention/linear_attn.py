@@ -484,7 +484,7 @@ class LinearAttentionFusedRecurrentKernel(nn.Module):
         print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
 
     def check(self):
-        #TODO: This kernel still has some numerical differences compared with FLA implementation.
+        #TODO: This kernel still has some minor numerical differences compared with FLA implementation.
         q, k, v, do = self.gen_inputs(4)
         o = self.forward(q, k, v)
         o.backward(do)
