@@ -6,24 +6,12 @@ import tilelang as tl
 from tilelang.profiler import do_bench
 import tilelang.language as T
 import fla.ops.linear_attn  # We compare with Triton implementation in FLA
-
+from top.utils import str2dtype, reduce_on_dim0
 
 __all__ = [
     'LinearAttentionFusedChunkKernel',
     'LinearAttentionFusedRecurrentKernel'
 ]
-
-
-# A mapping from string dtype names to torch dtypes
-dtype_map = {
-    'float16': torch.float16,
-    'bfloat16': torch.bfloat16,
-    'float32': torch.float32
-}
-
-def reduce_on_dim0(x: torch.Tensor) -> torch.Tensor:
-    """Reduce a tensor on dimension 0."""
-    return x[0] if x.size(0) == 1 else x.sum(dim=0)
 
 
 @tl.jit(out_idx=[3])
@@ -231,7 +219,7 @@ class LinearAttentionFusedChunkKernel(nn.Module):
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.dtype = dtype
-        self.torch_dtype = dtype_map[dtype]
+        self.torch_dtype = str2dtype[dtype]
         self.block_K = block_K
         self.block_V = block_V
         self.chunk_size = chunk_size
@@ -444,7 +432,7 @@ class LinearAttentionFusedRecurrentKernel(nn.Module):
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.dtype = dtype
-        self.torch_dtype = dtype_map[dtype]
+        self.torch_dtype = str2dtype[dtype]
         self.block_K = block_K
         self.block_V = block_V
         assert self.head_dim % self.block_K == 0, "head_dim must be divisible by block_K"
