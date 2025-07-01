@@ -47,7 +47,7 @@ def _fused_chunk_fwd(B, S, H, D, scale=None, dtype='float16', BK=64, BV=64, chun
 
             T.use_swizzle(8)
 
-            for i in T.serial(0, NT):
+            for i in T.Pipelined(0, NT, num_stages=1):
                 for row, col in T.Parallel(chunk_size, BK):
                     q[row, col] = Q[i_b, i * chunk_size + row, i_h, i_k * BK + col] * scale
                 T.copy(K[i_b, i * chunk_size:(i + 1) * chunk_size, i_h, i_k * BK:(i_k + 1) * BK], k)

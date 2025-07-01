@@ -12,6 +12,7 @@ str2dtype = {
 dtype2str = {v: k for k, v in str2dtype.items()}
 
 
+@torch.compile
 def reduce_on_dim0(x: torch.Tensor) -> torch.Tensor:
     """Reduce a tensor on dimension 0.
     Arguments:
@@ -21,6 +22,7 @@ def reduce_on_dim0(x: torch.Tensor) -> torch.Tensor:
     return x[0] if x.size(0) == 1 else x.sum(dim=0)
 
 
+@torch.compile
 def zero_pad(x: torch.Tensor, pad_size: int, dim: int) -> torch.Tensor:
     """Pad a tensor with 0 to a be divisible by `pad_size` along a specified dimension.
     Arguments:
