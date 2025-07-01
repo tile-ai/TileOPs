@@ -23,8 +23,8 @@ def main():
     K = torch.randn(batch, kv_seqlen, groups, dim, device="cuda", dtype=torch.float16)
     V = torch.randn(batch, kv_seqlen, groups, dim, device="cuda", dtype=torch.float16)
 
-    gqa_decode = GQADecodeKernel(batch, heads, kv_seqlen, dim, BLOCK_N, BLOCK_H, threads,
-                                   num_split, groups)
+    gqa_decode = GQADecodeKernel(batch, heads, kv_seqlen, dim, BLOCK_N, BLOCK_H, threads, num_split,
+                                 groups)
     if tune:
         gqa_decode.autotune()
     o = gqa_decode.decode(Q, K, V)

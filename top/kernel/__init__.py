@@ -11,7 +11,8 @@ from .linear_attention.linear_attn import LinearAttentionFusedChunkKernel, Linea
 from .bitnet import Bitnet_158_int8xint2_kernel
 
 __all__ = [
-    "MHAKernel", "MHADecodeKernel", "MLAKernel", "GQAKernel", "GQADecodeKernel", "MambaChunkScanKernel",
-    "MambaChunkStateKernel", "BlockSparseAttentionKernel", "LinearAttentionFusedChunkKernel",
-    "LinearAttentionFusedRecurrentKernel", "Bitnet_158_int8xint2_kernel"
+    "MHAKernel", "MHADecodeKernel", "MLAKernel", "GQAKernel", "GQADecodeKernel",
+    "MambaChunkScanKernel", "MambaChunkStateKernel", "BlockSparseAttentionKernel",
+    "LinearAttentionFusedChunkKernel", "LinearAttentionFusedRecurrentKernel",
+    "Bitnet_158_int8xint2_kernel"
 ]
