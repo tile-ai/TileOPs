@@ -172,7 +172,7 @@ def _mha_bwd(batch, heads, seq_len, dim, is_causal, block_M, block_N):
             loop_st = T.floordiv(by * block_M, block_N) if is_causal else 0
             loop_ed = T.ceildiv(seq_len, block_N)
             for k in T.Pipelined(
-                    loop_st, loop_ed, num_stages=0):  # On 4090 this will exceed the limit of smem
+                    loop_st, loop_ed, num_stages=1):  # On RTX-4090 this will exceed the limit of smem
                 T.copy(Q[bz, k * block_N:(k + 1) * block_N, bx, :], q)
                 T.clear(qkT)
                 T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
@@ -313,22 +313,10 @@ class MHAKernel:
         return output
 
     def gen_inputs(self):
-        q = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
+        return (torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
                         device=self.device,
                         dtype=self.dtype,
-                        requires_grad=True)
-        k = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-                        device=self.device,
-                        dtype=self.dtype,
-                        requires_grad=True)
-        v = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-                        device=self.device,
-                        dtype=self.dtype,
-                        requires_grad=True)
-        do = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-                         device=self.device,
-                         dtype=self.dtype)
-        return q, k, v, do
+                        requires_grad=True) for _ in range(4))
 
     def check(self):
         q, k, v, do = self.gen_inputs()
