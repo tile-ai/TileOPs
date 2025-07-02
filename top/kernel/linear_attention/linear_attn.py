@@ -237,10 +237,14 @@ class LinearAttentionFusedChunkKernel(nn.Module):
 
     def gen_inputs(self):
         shape = (self.batch_size, self.seq_len, self.num_heads, self.head_dim)
-        return (torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True) for _ in range(3)) + (torch.randn(shape, device='cuda', dtype=self.torch_dtype))
+        q = torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True)
+        k = torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True)
+        v = torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True)
+        do = torch.randn(shape, device='cuda', dtype=self.torch_dtype)
+        return q, k, v, do
 
     def profile(self, warmup=100):
-        q, k, v, do = self.gen_inputs(4)
+        q, k, v, do = self.gen_inputs()
         # fwd
         with torch.no_grad():
             fwd_latency = do_bench(lambda: self.forward(q, k, v), warmup=warmup)
@@ -256,7 +260,7 @@ class LinearAttentionFusedChunkKernel(nn.Module):
         print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
 
     def check(self):
-        q, k, v, do = self.gen_inputs(4)
+        q, k, v, do = self.gen_inputs()
         o = self.forward(q, k, v)
         o.backward(do)
         dq, q.grad = q.grad.clone(), None
@@ -449,10 +453,14 @@ class LinearAttentionFusedRecurrentKernel(nn.Module):
 
     def gen_inputs(self):
         shape = (self.batch_size, self.seq_len, self.num_heads, self.head_dim)
-        return (torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True) for _ in range(3)) + (torch.randn(shape, device='cuda', dtype=self.torch_dtype))
+        q = torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True)
+        k = torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True)
+        v = torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True)
+        do = torch.randn(shape, device='cuda', dtype=self.torch_dtype)
+        return q, k, v, do
 
     def profile(self, warmup=100):
-        q, k, v, do = self.gen_inputs(4)
+        q, k, v, do = self.gen_inputs()
         # fwd
         with torch.no_grad():
             fwd_latency = do_bench(lambda: self.forward(q, k, v), warmup=warmup)
@@ -468,7 +476,7 @@ class LinearAttentionFusedRecurrentKernel(nn.Module):
         print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
 
     def check(self):
-        q, k, v, do = self.gen_inputs(4)
+        q, k, v, do = self.gen_inputs()
         o = self.forward(q, k, v)
         o.backward(do)
         dq, q.grad = q.grad.clone(), None
