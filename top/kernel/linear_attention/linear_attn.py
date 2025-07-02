@@ -235,11 +235,9 @@ class LinearAttentionFusedChunkKernel(nn.Module):
     def ref_program(cls, q, k, v, scale=None):
         return fla.ops.linear_attn.fused_chunk_linear_attn(q, k, v, scale, normalize=False)
 
-    def gen_inputs(self, n: int = 4):
-        return (torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-                            device='cuda',
-                            dtype=self.torch_dtype,
-                            requires_grad=True) for _ in range(n))
+    def gen_inputs(self):
+        shape = (self.batch_size, self.seq_len, self.num_heads, self.head_dim)
+        return (torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True) for _ in range(3)) + (torch.randn(shape, device='cuda', dtype=self.torch_dtype))
 
     def profile(self, warmup=100):
         q, k, v, do = self.gen_inputs(4)
@@ -449,11 +447,9 @@ class LinearAttentionFusedRecurrentKernel(nn.Module):
         return fla.ops.linear_attn.fused_recurrent_linear_attn(
             q, k, v, scale, normalize=False, head_first=True)
 
-    def gen_inputs(self, n: int = 4):
-        return (torch.randn((self.batch_size, self.num_heads, self.seq_len, self.head_dim),
-                            device='cuda',
-                            dtype=self.torch_dtype,
-                            requires_grad=True) for _ in range(n))
+    def gen_inputs(self):
+        shape = (self.batch_size, self.seq_len, self.num_heads, self.head_dim)
+        return (torch.randn(shape, device='cuda', dtype=self.torch_dtype, requires_grad=True) for _ in range(3)) + (torch.randn(shape, device='cuda', dtype=self.torch_dtype))
 
     def profile(self, warmup=100):
         q, k, v, do = self.gen_inputs(4)
