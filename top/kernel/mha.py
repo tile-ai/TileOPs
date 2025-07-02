@@ -169,7 +169,8 @@ def _mha_bwd(batch, heads, seq_len, dim, is_causal, block_M, block_N):
             loop_st = T.floordiv(by * block_M, block_N) if is_causal else 0
             loop_ed = T.ceildiv(seq_len, block_N)
             for k in T.Pipelined(
-                    loop_st, loop_ed, num_stages=0):  # On 4090 this will exceed the limit of smem
+                    loop_st, loop_ed,
+                    num_stages=1):  # On RTX-4090 this will exceed the limit of smem
                 T.copy(Q[bz, k * block_N:(k + 1) * block_N, bx, :], q)
                 T.clear(qkT)
                 T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
@@ -310,22 +311,10 @@ class MHAKernel:
         return output
 
     def gen_inputs(self):
-        q = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-                        device=self.device,
-                        dtype=self.dtype,
-                        requires_grad=True)
-        k = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-                        device=self.device,
-                        dtype=self.dtype,
-                        requires_grad=True)
-        v = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-                        device=self.device,
-                        dtype=self.dtype,
-                        requires_grad=True)
-        do = torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
-                         device=self.device,
-                         dtype=self.dtype)
-        return q, k, v, do
+        return (torch.randn((self.batch_size, self.seq_len, self.num_heads, self.head_dim),
+                            device=self.device,
+                            dtype=self.dtype,
+                            requires_grad=True) for _ in range(4))
 
     def check(self):
         q, k, v, do = self.gen_inputs()
@@ -565,9 +554,7 @@ class _MHA_decode_attention(torch.autograd.Function):
         block_N = 64 if D_HEAD <= 128 else 32
 
         mod = _mha_decode(BATCH, H, 1, KV_CTX, D_HEAD, block_M, block_N, num_split)
-        glse = torch.empty((BATCH, H, num_split, 1),
-                           dtype=q.dtype,
-                           device=q.device)
+        glse = torch.empty((BATCH, H, num_split, 1), dtype=q.dtype, device=q.device)
         Output_partial = torch.empty((BATCH, 1, H, num_split, D_HEAD),
                                      dtype=q.dtype,
                                      device=q.device)
