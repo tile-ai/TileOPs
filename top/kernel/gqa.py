@@ -727,7 +727,7 @@ def gqa_decode_split_ref(Q, K, V, mask, num_split):
         logsum.fill_(0)
         scores_max.fill_(float('-inf'))
         scores_max_prev.fill_(float('-inf'))
-        for i in range(int((seqlen_kv // num_split) / block_N)):
+        for i in range(((seqlen_kv // num_split) + block_N - 1) // block_N):
             acc_s.fill_(0)
             acc_s = torch.einsum('bghd,bkhd->bghk', Q_,
                                  K[:, (seqlen_kv // num_split) * ks +
