@@ -1,9 +1,16 @@
 [project]
-name = "top"
-version = "0.1.0"
+name = "tileops"
+version = "0.0.1.dev0"
 description = "TileOPs kernels for efficient inference"
-authors = [{ name="Your Name", email="you@example.com" }]
-dependencies = ["torch", "triton"]
+authors = [{ name="Tile-AI" }]
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+dependencies = ["torch", "tilelang"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3"
+]
 
 [build-system]
 requires = ["setuptools", "wheel"]
@@ -22,6 +29,13 @@ skip = [
     "dist",
     ".venv"
 ]
+
+[tool.setuptools]
+packages = ["top"]
+
+[project.urls]
+"Homepage" = "https://github.com/tile-ai/tileops"
+"Bug Tracker" = "https://github.com/tile-ai/tileops/issues"
 
 [tool.ruff.lint]
 select = [
