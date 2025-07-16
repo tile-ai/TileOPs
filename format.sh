@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright (c) Tile-AI Corporation.
+# Copyright (c) Tile-AI.
 # Licensed under the MIT License.
 
 # Usage:

@@ -1,4 +1,4 @@
-# Copyright (c) Tile-AI Corporation.
+# Copyright (c) Tile-AI.
 # Licensed under the MIT License.
 
 from .mha import MHAKernel, MHADecodeKernel
