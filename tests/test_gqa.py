@@ -15,8 +15,10 @@ def main():
     args = parser.parse_args()
     BATCH, H, N_CTX, D_HEAD_QK, D_HEAD_V, groups, causal = args.batch, args.h, args.n_ctx, args.d_head_qk, args.d_head_v, args.groups, args.causal
 
-    BLOCK_M = 128
-    BLOCK_N = 64
+    fwd_BLOCK_M = 128
+    fwd_BLOCK_N = 32
+    bwd_BLOCK_M = 64
+    bwd_BLOCK_N = 32
     # q = torch.randn(batch, heads, dim, device='cuda', dtype=torch.float16)
     Q = (
         torch.empty(BATCH, N_CTX, H, D_HEAD_QK, dtype=torch.half,
@@ -34,12 +36,26 @@ def main():
                     device="cuda").normal_().requires_grad_())
 
     gqa = GQAKernel(
-        BATCH, H, N_CTX, D_HEAD_QK, D_HEAD_V, BLOCK_M, BLOCK_N, causal=causal, groups=groups)
+        BATCH,
+        H,
+        N_CTX,
+        D_HEAD_QK,
+        D_HEAD_V,
+        fwd_BLOCK_M,
+        fwd_BLOCK_N,
+        bwd_BLOCK_M,
+        bwd_BLOCK_N,
+        fwd_tune=True,
+        bwd_tune=True,
+        causal=causal,
+        groups=groups)
     o = gqa.backward(Q, K, V, dO)
     print(o)
-    latency = gqa.profile()
-    print(f"Latency: {latency:.4f} ms")
+    gqa.profile(Q, K, V, dO)
     gqa.check(Q, K, V, dO)
+    # gqa.fwd_autotune(Q, K, V)
+    # gqa.bwd_autotune(Q, K, V)
+    # gqa.profile(Q, K, V, dO)
 
 
 if __name__ == "__main__":

@@ -8,8 +8,23 @@ from einops import rearrange, einsum
 import itertools
 
 
-@tilelang.jit(out_idx=[3, 4])
-def _gqa_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, block_N, groups=1):
+def get_configs():
+    block_M = [32, 64, 128]
+    block_N = [32, 64, 128]
+    num_stages = [1, 2, 3]
+    threads = [128]
+    _configs = list(itertools.product(block_M, block_N, num_stages, threads))
+
+    configs = [{
+        'block_M': c[0],
+        'block_N': c[1],
+        'num_stages': c[2],
+        'threads': c[3]
+    } for c in _configs]
+    return configs
+
+
+def _gqa_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, tune=False, groups=1):
     scale = (1.0 / dim_qk)**0.5 * 1.44269504  # log2(e)
     dtype = "float16"
     accum_dtype = "float"
@@ -19,66 +34,90 @@ def _gqa_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, block_N, 
     v_shape = [batch, seq_len, head_kv, dim_v]
     assert groups <= heads, "groups must <= heads"
 
-    @T.prim_func
-    def _gqa_fwd_main(
-            Q: T.Tensor(q_shape, dtype),  # type: ignore
-            K: T.Tensor(k_shape, dtype),  # type: ignore
-            V: T.Tensor(v_shape, dtype),  # type: ignore
-            Output: T.Tensor([batch, seq_len, heads, dim_v], dtype),  # type: ignore
-            lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
-    ):
-        with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch, threads=128) as (bx, by, bz):
-            Q_shared = T.alloc_shared([block_M, dim_qk], dtype)
-            K_shared = T.alloc_shared([block_N, dim_qk], dtype)
-            V_shared = T.alloc_shared([block_N, dim_v], dtype)
-            acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-            acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
-            acc_o = T.alloc_fragment([block_M, dim_v], accum_dtype)
-            scores_max = T.alloc_fragment([block_M], accum_dtype)
-            scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
-            scores_scale = T.alloc_fragment([block_M], accum_dtype)
-            scores_sum = T.alloc_fragment([block_M], accum_dtype)
-            logsum = T.alloc_fragment([block_M], accum_dtype)
+    def _gqa_fwd_func(block_M, block_N, num_stages, threads):
 
-            T.annotate_layout({Q_shared: tilelang.layout.make_swizzled_layout(Q_shared)})
-            T.copy(Q[bz, bx * block_M:(bx + 1) * block_M, by, :], Q_shared)
-            T.fill(acc_o, 0)
-            T.fill(logsum, 0)
-            T.fill(scores_max, -T.infinity(accum_dtype))
-            loop_range = (
-                T.ceildiv(
-                    (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
-            for k in T.Pipelined(loop_range, num_stages=1):
-                T.copy(K[bz, k * block_N:(k + 1) * block_N, by // groups, :], K_shared)
-                if is_causal:
+        @T.prim_func
+        def _gqa_fwd_main(
+                Q: T.Tensor(q_shape, dtype),  # type: ignore
+                K: T.Tensor(k_shape, dtype),  # type: ignore
+                V: T.Tensor(v_shape, dtype),  # type: ignore
+                Output: T.Tensor([batch, seq_len, heads, dim_v], dtype),  # type: ignore
+                lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                    T.ceildiv(seq_len, block_M), heads, batch, threads=threads) as (bx, by, bz):
+                Q_shared = T.alloc_shared([block_M, dim_qk], dtype)
+                K_shared = T.alloc_shared([block_N, dim_qk], dtype)
+                V_shared = T.alloc_shared([block_N, dim_v], dtype)
+                acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
+                acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
+                acc_o = T.alloc_fragment([block_M, dim_v], accum_dtype)
+                scores_max = T.alloc_fragment([block_M], accum_dtype)
+                scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
+                scores_scale = T.alloc_fragment([block_M], accum_dtype)
+                scores_sum = T.alloc_fragment([block_M], accum_dtype)
+                logsum = T.alloc_fragment([block_M], accum_dtype)
+
+                T.annotate_layout({Q_shared: tilelang.layout.make_swizzled_layout(Q_shared)})
+                T.copy(Q[bz, bx * block_M:(bx + 1) * block_M, by, :], Q_shared)
+                T.fill(acc_o, 0)
+                T.fill(logsum, 0)
+                T.fill(scores_max, -T.infinity(accum_dtype))
+                loop_range = (
+                    T.ceildiv(
+                        (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
+                for k in T.Pipelined(loop_range, num_stages=num_stages):
+                    T.copy(K[bz, k * block_N:(k + 1) * block_N, by // groups, :], K_shared)
+                    if is_causal:
+                        for i, j in T.Parallel(block_M, block_N):
+                            acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
+                                                         -T.infinity(acc_s.dtype))
+                    else:
+                        T.clear(acc_s)
+                    T.gemm(
+                        Q_shared,
+                        K_shared,
+                        acc_s,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullRow)
+                    T.copy(V[bz, k * block_N:(k + 1) * block_N, by // groups, :], V_shared)
+                    T.copy(scores_max, scores_max_prev)
+                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+                    for i in T.Parallel(block_M):
+                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+                    for i, j in T.Parallel(block_M, dim_v):
+                        acc_o[i, j] *= scores_scale[i]
                     for i, j in T.Parallel(block_M, block_N):
-                        acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
-                                                     -T.infinity(acc_s.dtype))
-                else:
-                    T.clear(acc_s)
-                T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                T.copy(V[bz, k * block_N:(k + 1) * block_N, by // groups, :], V_shared)
-                T.copy(scores_max, scores_max_prev)
-                T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                for i in T.Parallel(block_M):
-                    scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+                    T.copy(acc_s, acc_s_cast)
+                    T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    T.reduce_sum(acc_s, scores_sum, dim=1)
+                    for i in T.Parallel(block_M):
+                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                 for i, j in T.Parallel(block_M, dim_v):
-                    acc_o[i, j] *= scores_scale[i]
-                for i, j in T.Parallel(block_M, block_N):
-                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-                T.copy(acc_s, acc_s_cast)
-                T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                T.reduce_sum(acc_s, scores_sum, dim=1)
+                    acc_o[i, j] /= logsum[i]
+                T.copy(acc_o, Output[bz, bx * block_M:(bx + 1) * block_M, by, :])
                 for i in T.Parallel(block_M):
-                    logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-            for i, j in T.Parallel(block_M, dim_v):
-                acc_o[i, j] /= logsum[i]
-            T.copy(acc_o, Output[bz, bx * block_M:(bx + 1) * block_M, by, :])
-            for i in T.Parallel(block_M):
-                logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-            T.copy(logsum, lse[bz, by, bx * block_M:(bx + 1) * block_M])
+                    logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
+                T.copy(logsum, lse[bz, by, bx * block_M:(bx + 1) * block_M])
 
-    return _gqa_fwd_main
+        return _gqa_fwd_main
+
+    if tune:
+
+        @autotune(configs=get_configs(), warmup=10, rep=10)
+        @jit(out_idx=[3, 4])
+        def _gqa_fwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
+            return _gqa_fwd_func(block_M, block_N, num_stages, threads)
+
+        return _gqa_fwd_kernel()
+    else:
+
+        @tilelang.jit(out_idx=[3, 4])
+        def _gqa_fwd_kernel(block_M, block_N, num_stages, threads):
+            return _gqa_fwd_func(block_M, block_N, num_stages, threads)
+
+        return _gqa_fwd_kernel
 
 
 @tilelang.jit(out_idx=[2])
@@ -139,8 +178,7 @@ def _gqa_bwd_postprocess(batch, heads, seq_len, dim_qk):
     return _gqa_bwd_post
 
 
-@tilelang.jit
-def _gqa_bwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, block_N, groups=1):
+def _gqa_bwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, tune=False, groups=1):
     sm_scale = (1.0 / dim_qk)**0.5
     scale = (1.0 / dim_qk)**0.5 * 1.44269504  # log2(e)
     head_kv = heads // groups
@@ -150,98 +188,118 @@ def _gqa_bwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, block_N, 
     dtype = "float16"
     accum_dtype = "float"
 
-    @T.prim_func
-    def _gqa_bwd_main(
-            Q: T.Tensor(q_shape, dtype),  # type: ignore
-            K: T.Tensor(k_shape, dtype),  # type: ignore
-            V: T.Tensor(v_shape, dtype),  # type: ignore
-            dO: T.Tensor([batch, seq_len, heads, dim_v], dtype),  # type: ignore
-            lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
-            Delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
-            dQ: T.Tensor(q_shape, accum_dtype),  # type: ignore
-            dK: T.Tensor(k_shape, dtype),  # type: ignore
-            dV: T.Tensor(v_shape, dtype),  # type: ignore
-    ):
-        with T.Kernel(heads, T.ceildiv(seq_len, block_M), batch, threads=128) as (bx, by, bz):
-            K_shared = T.alloc_shared([block_M, dim_qk], dtype)
-            dsT_shared = T.alloc_shared([block_M, block_N], dtype)
-            q = T.alloc_shared([block_N, dim_qk], dtype)
-            V_shared = T.alloc_shared([block_M, dim_v], dtype)
-            qkT = T.alloc_fragment([block_M, block_N], accum_dtype)
-            dsT = T.alloc_fragment([block_M, block_N], accum_dtype)
-            qkT_cast = T.alloc_fragment([block_M, block_N], dtype)
-            dsT_cast = T.alloc_fragment([block_M, block_N], dtype)
-            lse_shared = T.alloc_shared([block_N], accum_dtype)
-            delta = T.alloc_shared([block_N], accum_dtype)
-            do = T.alloc_shared([block_N, dim_v], dtype)
-            dv = T.alloc_fragment([block_M, dim_v], accum_dtype)
-            dk = T.alloc_fragment([block_M, dim_qk], accum_dtype)
-            dq = T.alloc_fragment([block_N, dim_qk], accum_dtype)
-            dv_shared = T.alloc_shared([block_N, dim_v], dtype)
-            dk_shared = T.alloc_shared([block_N, dim_qk], dtype)
+    def _gqa_bwd_func(block_M, block_N, num_stages, threads):
 
-            T.annotate_layout({
-                dQ: make_dq_layout(dQ),
-                K_shared: tilelang.layout.make_swizzled_layout(K_shared),
-                dv_shared: tilelang.layout.make_swizzled_layout(dv_shared),
-                dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
-            })
+        @T.prim_func
+        def _gqa_bwd_main(
+                Q: T.Tensor(q_shape, dtype),  # type: ignore
+                K: T.Tensor(k_shape, dtype),  # type: ignore
+                V: T.Tensor(v_shape, dtype),  # type: ignore
+                dO: T.Tensor([batch, seq_len, heads, dim_v], dtype),  # type: ignore
+                lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+                Delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+                dQ: T.Tensor(q_shape, accum_dtype),  # type: ignore
+                dK: T.Tensor(k_shape, dtype),  # type: ignore
+                dV: T.Tensor(v_shape, dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                    heads, T.ceildiv(seq_len, block_M), batch, threads=threads) as (bx, by, bz):
+                K_shared = T.alloc_shared([block_M, dim_qk], dtype)
+                dsT_shared = T.alloc_shared([block_M, block_N], dtype)
+                q = T.alloc_shared([block_N, dim_qk], dtype)
+                V_shared = T.alloc_shared([block_M, dim_v], dtype)
+                qkT = T.alloc_fragment([block_M, block_N], accum_dtype)
+                dsT = T.alloc_fragment([block_M, block_N], accum_dtype)
+                qkT_cast = T.alloc_fragment([block_M, block_N], dtype)
+                dsT_cast = T.alloc_fragment([block_M, block_N], dtype)
+                lse_shared = T.alloc_shared([block_N], accum_dtype)
+                delta = T.alloc_shared([block_N], accum_dtype)
+                do = T.alloc_shared([block_N, dim_v], dtype)
+                dv = T.alloc_fragment([block_M, dim_v], accum_dtype)
+                dk = T.alloc_fragment([block_M, dim_qk], accum_dtype)
+                dq = T.alloc_fragment([block_N, dim_qk], accum_dtype)
+                dv_shared = T.alloc_shared([block_N, dim_v], dtype)
+                dk_shared = T.alloc_shared([block_N, dim_qk], dtype)
 
-            T.copy(K[bz, by * block_M:(by + 1) * block_M, bx // groups, :], K_shared)
-            T.copy(V[bz, by * block_M:(by + 1) * block_M, bx // groups, :], V_shared)
-            T.clear(dv)
-            T.clear(dk)
-            loop_st = T.floordiv(by * block_M, block_N) if is_causal else 0
-            loop_ed = T.ceildiv(seq_len, block_N)
-            for k in T.Pipelined(loop_st, loop_ed, num_stages=1):
-                T.copy(Q[bz, k * block_N:(k + 1) * block_N, bx, :], q)
-                T.clear(qkT)
-                T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                T.copy(lse[bz, bx, k * block_N:(k + 1) * block_N], lse_shared)
-                for i, j in T.Parallel(block_M, block_N):
-                    qkT[i, j] = T.exp2(qkT[i, j] * scale - lse_shared[j])
-                if is_causal:
+                T.annotate_layout({
+                    dQ: make_dq_layout(dQ),
+                    K_shared: tilelang.layout.make_swizzled_layout(K_shared),
+                    dv_shared: tilelang.layout.make_swizzled_layout(dv_shared),
+                    dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
+                })
+
+                T.copy(K[bz, by * block_M:(by + 1) * block_M, bx // groups, :], K_shared)
+                T.copy(V[bz, by * block_M:(by + 1) * block_M, bx // groups, :], V_shared)
+                T.clear(dv)
+                T.clear(dk)
+                loop_st = T.floordiv(by * block_M, block_N) if is_causal else 0
+                loop_ed = T.ceildiv(seq_len, block_N)
+                for k in T.Pipelined(loop_st, loop_ed, num_stages):
+                    T.copy(Q[bz, k * block_N:(k + 1) * block_N, bx, :], q)
+                    T.clear(qkT)
+                    T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                    T.copy(lse[bz, bx, k * block_N:(k + 1) * block_N], lse_shared)
                     for i, j in T.Parallel(block_M, block_N):
-                        qkT[i, j] = T.if_then_else(by * block_M + i <= k * block_N + j, qkT[i, j],
-                                                   0)
-                T.copy(dO[bz, k * block_N:(k + 1) * block_N, bx, :], do)
-                T.clear(dsT)
-                T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                T.copy(qkT, qkT_cast)
-                T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
+                        qkT[i, j] = T.exp2(qkT[i, j] * scale - lse_shared[j])
+                    if is_causal:
+                        for i, j in T.Parallel(block_M, block_N):
+                            qkT[i, j] = T.if_then_else(by * block_M + i <= k * block_N + j,
+                                                       qkT[i, j], 0)
+                    T.copy(dO[bz, k * block_N:(k + 1) * block_N, bx, :], do)
+                    T.clear(dsT)
+                    T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                    T.copy(qkT, qkT_cast)
+                    T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
 
-                T.copy(Delta[bz, bx, k * block_N:(k + 1) * block_N], delta)
+                    T.copy(Delta[bz, bx, k * block_N:(k + 1) * block_N], delta)
 
-                for i, j in T.Parallel(block_M, block_N):
-                    dsT_cast[i, j] = qkT[i, j] * (dsT[i, j] - delta[j]) * sm_scale
-                T.gemm(dsT_cast, q, dk, policy=T.GemmWarpPolicy.FullRow)
+                    for i, j in T.Parallel(block_M, block_N):
+                        dsT_cast[i, j] = qkT[i, j] * (dsT[i, j] - delta[j]) * sm_scale
+                    T.gemm(dsT_cast, q, dk, policy=T.GemmWarpPolicy.FullRow)
 
-                T.copy(dsT_cast, dsT_shared)
-                T.clear(dq)
-                T.gemm(dsT_shared, K_shared, dq, transpose_A=True)
-                for i, j in T.Parallel(block_N, dim_qk):
-                    if k * block_N + i < seq_len:
-                        T.atomic_add(dQ[bz, k * block_N + i, bx, j], dq[i, j])
+                    T.copy(dsT_cast, dsT_shared)
+                    T.clear(dq)
+                    T.gemm(dsT_shared, K_shared, dq, transpose_A=True)
+                    for i, j in T.Parallel(block_N, dim_qk):
+                        if k * block_N + i < seq_len:
+                            T.atomic_add(dQ[bz, k * block_N + i, bx, j], dq[i, j])
 
-            for i, j in T.Parallel(block_M, dim_v):
-                T.atomic_add(dV[bz, by * block_M + i, bx // groups, j], dv[i, j])
-            for i, j in T.Parallel(block_M, dim_qk):
-                T.atomic_add(dK[bz, by * block_M + i, bx // groups, j], dk[i, j])
+                for i, j in T.Parallel(block_M, dim_v):
+                    T.atomic_add(dV[bz, by * block_M + i, bx // groups, j], dv[i, j])
+                for i, j in T.Parallel(block_M, dim_qk):
+                    T.atomic_add(dK[bz, by * block_M + i, bx // groups, j], dk[i, j])
 
-    return _gqa_bwd_main
+        return _gqa_bwd_main
+
+    if tune:
+
+        @autotune(configs=get_configs(), warmup=10, rep=10)
+        @jit()
+        def _gqa_bwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
+            return _gqa_bwd_func(block_M, block_N, num_stages, threads)
+
+        return _gqa_bwd_kernel()
+    else:
+
+        @tilelang.jit
+        def _gqa_bwd_kernel(block_M, block_N, num_stages, threads):
+            return _gqa_bwd_func(block_M, block_N, num_stages, threads)
+
+        return _gqa_bwd_kernel
 
 
 @torch.compile
 class _GQA_attention(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, k, v, block_M, block_N, causal, groups=1):
+    def forward(ctx, q, k, v, causal, config, bwd_config, groups=1):
         BATCH, N_CTX, H, D_HEAD_QK = q.shape
         D_HEAD_V = v.shape[-1]
-        mod = _gqa_fwd(BATCH, H, N_CTX, D_HEAD_QK, D_HEAD_V, causal, block_M, block_N, groups)
+        mod = _gqa_fwd(BATCH, H, N_CTX, D_HEAD_QK, D_HEAD_V, causal, groups=groups)(**config)
         o, lse = mod(q, k, v)
         ctx.save_for_backward(q, k, v, o, lse)
         ctx.causal = causal
+        ctx.bwd_config = bwd_config
         return o
 
     @staticmethod
@@ -257,13 +315,11 @@ class _GQA_attention(torch.autograd.Function):
             return x
 
         do, q, k, v, o = [maybe_contiguous(x) for x in (do, q, k, v, o)]
-        block_M = 64
-        block_N = 32
         mod_prep = _gqa_bwd_preprocess(BATCH, H, N_CTX, D_HEAD_V)
         mod_post = _gqa_bwd_postprocess(BATCH, H, N_CTX, D_HEAD_QK)
         delta = mod_prep(o, do)
-        kernel = _gqa_bwd(BATCH, H, N_CTX, D_HEAD_QK, D_HEAD_V, ctx.causal, block_M, block_N,
-                          groups)
+        kernel = _gqa_bwd(
+            BATCH, H, N_CTX, D_HEAD_QK, D_HEAD_V, ctx.causal, groups=groups)(**ctx.bwd_config)
         shape_q = [BATCH, N_CTX, H, D_HEAD_QK]
         shape_k = [BATCH, N_CTX, HEAD_KV, D_HEAD_QK]
         shape_v = [BATCH, N_CTX, HEAD_KV, D_HEAD_V]
@@ -286,23 +342,60 @@ class GQAKernel(nn.Module):
                  seq_len,
                  dim_qk,
                  dim_v,
-                 block_M,
-                 block_N,
+                 fwd_block_M,
+                 fwd_block_N,
+                 bwd_block_M,
+                 bwd_block_N,
                  causal,
+                 fwd_tune=False,
+                 bwd_tune=False,
+                 num_stages=1,
+                 threads=128,
                  groups=1,
                  dtype=torch.float16,
                  device="cuda"):
         super().__init__()
         self.attention = GQA_attention
-        self.block_M = block_M
-        self.block_N = block_N
+        self.batch = batch
+        self.groups = groups
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim_qk = dim_qk
+        self.dim_v = dim_v
+        self.block_M = fwd_block_M
+        self.block_N = fwd_block_N
+        self.bwd_block_M = bwd_block_M
+        self.bwd_block_N = bwd_block_N
         self.causal = causal
         self.groups = groups
+        self.num_stages = num_stages
+        self.threads = threads
+        self.fwd_config = {
+            "block_M": self.block_M,
+            "block_N": self.block_N,
+            "num_stages": self.num_stages,
+            "threads": self.threads
+        }
+        self.bwd_config = {
+            "block_M": self.bwd_block_M,
+            "block_N": self.bwd_block_N,
+            "num_stages": self.num_stages,
+            "threads": self.threads
+        }
+        self.fwd_tune = fwd_tune
+        self.bwd_tune = bwd_tune
+        self.fwd_tune_config = None
+        self.bwd_tune_config = None
         flops_per_qk = 2.0 * batch * heads * seq_len * seq_len * dim_qk
         flops_per_v = 2.0 * batch * heads * seq_len * seq_len * dim_v
         self.total_flops = 3 * flops_per_qk + 2 * flops_per_v
-        self.bwd_program = _gqa_bwd(batch, heads, seq_len, dim_qk, dim_v, causal, block_M, block_N,
-                                    groups)
+        self.fwd_program = _gqa_fwd(
+            batch, heads, seq_len, dim_qk, dim_v, causal, groups=groups)(**self.fwd_config)
+        # self.fwd_kernel = tilelang.compile(self.fwd_program, out_idx=[3, 4])
+        self.fwd_profiler = self.fwd_program.get_profiler(
+            tensor_supply_type=tilelang.TensorSupplyType.Auto)
+        self.bwd_program = _gqa_bwd(
+            batch, heads, seq_len, dim_qk, dim_v, causal, groups=groups)(**self.bwd_config)
         # self.bwd_kernel = tilelang.compile(self.bwd_program, out_idx=[6, 7, 8])
         self.bwd_profiler = self.bwd_program.get_profiler(
             tensor_supply_type=tilelang.TensorSupplyType.Randn)
@@ -310,23 +403,98 @@ class GQAKernel(nn.Module):
             self.total_flops *= 0.5
 
     def forward(self, q, k, v):
-        o = self.attention(q, k, v, self.block_M, self.block_N, self.causal, self.groups)
+        if self.fwd_tune_config is None and self.fwd_tune:
+            self.fwd_autotune()
+        config = self.fwd_tune_config if self.fwd_tune_config else self.fwd_config
+        bwd_config = self.bwd_tune_config if self.bwd_tune_config else self.bwd_config
+        o = self.attention(q, k, v, self.causal, config, bwd_config, self.groups)
         return o
 
     def backward(self, q, k, v, do):
-        o = self.attention(q, k, v, self.block_M, self.block_N, self.causal, self.groups)
+        if self.bwd_tune_config is None and self.bwd_tune:
+            self.bwd_autotune()
+        o = self.forward(q, k, v)
         o.backward(do, retain_graph=True)
         return o
 
-    def profile(self, warmup=500):
-        latency = self.bwd_profiler.do_bench(warmup=warmup)
-        return latency
+    def profile(self, q, k, v, do, warmup=500):
+        with torch.no_grad():
+            if self.fwd_tune_config is None and self.fwd_tune:
+                self.fwd_autotune()
+            if self.fwd_tune_config:
+                self.fwd_program = _gqa_fwd(
+                    self.batch,
+                    self.heads,
+                    self.seq_len,
+                    self.dim_qk,
+                    self.dim_v,
+                    self.causal,
+                    groups=self.groups)(**self.fwd_tune_config)
+                self.fwd_profiler = self.fwd_program.get_profiler(
+                    tensor_supply_type=tilelang.TensorSupplyType.Auto)
+            fwd_latency = self.fwd_profiler.do_bench(warmup=warmup)
+            print(f"Fwd latency: {fwd_latency:.2f} ms")
+        if self.fwd_tune_config is None and self.bwd_tune:
+            self.bwd_autotune()
+        if self.bwd_tune_config:
+            self.bwd_program = _gqa_bwd(
+                self.batch,
+                self.heads,
+                self.seq_len,
+                self.dim_qk,
+                self.dim_v,
+                self.causal,
+                groups=self.groups)(**self.bwd_tune_config)
+            self.bwd_profiler = self.bwd_program.get_profiler(
+                tensor_supply_type=tilelang.TensorSupplyType.Auto)
+        bwd_latency = self.bwd_profiler.do_bench(warmup=warmup)
+        print(f"Bwd latency: {bwd_latency:.2f} ms")
+        return fwd_latency, bwd_latency
 
-    def ref_program(self, q, k, v, causal, groups):
+    def fwd_autotune(self):
+        best_result = _gqa_fwd(
+            self.batch,
+            self.heads,
+            self.seq_len,
+            self.dim_qk,
+            self.dim_v,
+            self.causal,
+            tune=True,
+            groups=self.groups)
+        best_latency = best_result.latency
+        best_config = best_result.config
+        print(f"Best fwd latency: {best_latency}")
+        print(f"Best TFlops: {self.total_flops / best_latency * 1e-9}")
+        print(f"Best fwd config: {best_config}")
+        if best_result.config:
+            self.fwd_tune_config = dict(
+                zip(["block_M", "block_N", "num_stages", "threads"], best_config))
+
+    def bwd_autotune(self):
+        best_result = _gqa_bwd(
+            self.batch,
+            self.heads,
+            self.seq_len,
+            self.dim_qk,
+            self.dim_v,
+            self.causal,
+            tune=True,
+            groups=self.groups)
+        best_latency = best_result.latency
+        best_config = best_result.config
+        print(f"Best bwd latency: {best_latency}")
+        print(f"Best TFlops: {self.total_flops / best_latency * 1e-9}")
+        print(f"Best bwd config: {best_config}")
+        if best_result.config:
+            self.bwd_tune_config = dict(
+                zip(["block_M", "block_N", "num_stages", "threads"], best_config))
+
+    def ref_program(self, q, k, v):
         # Q: [B, T, HQ, D_QK]
         # K: [B, T, HK, D_QK]
         # V: [B, T, HV, D_V]
         # HQ = HKV * groups
+        groups = self.groups
         assert q.size(2) == k.size(
             2) * groups, f"Q.size(2): {q.size(2)}, K.size(2): {k.size(2)}, groups: {groups}"
         assert q.size(2) == v.size(
@@ -337,7 +505,7 @@ class GQAKernel(nn.Module):
         v = v.repeat_interleave(groups, dim=2)
         scores = torch.einsum('bqhd,bkhd->bhqk', q, k)
         scores = scores / torch.sqrt(torch.tensor(dim_qk, dtype=scores.dtype))
-        if causal:
+        if self.causal:
             seq_len = q.size(1)
             mask = torch.tril(torch.ones(seq_len, seq_len, device=scores.device))
             mask = mask.unsqueeze(0).unsqueeze(0)
@@ -347,16 +515,12 @@ class GQAKernel(nn.Module):
         return output
 
     def check(self, q, k, v, do):
-        o = self.attention(q, k, v, self.block_M, self.block_N, self.causal, self.groups)
-        dq, q.grad = q.grad.clone(), None
-        dk, k.grad = k.grad.clone(), None
-        dv, v.grad = v.grad.clone(), None
+        o = self.forward(q, k, v)
+        o.backward(do, retain_graph=True)
+        dq, dk, dv = torch.autograd.grad(o, (q, k, v), do, retain_graph=True)
 
-        o_ref = self.ref_program(q, k, v, self.causal, self.groups)
-        o_ref.backward(do, retain_graph=True)
-        dq_ref, q.grad = q.grad.clone(), None
-        dk_ref, k.grad = k.grad.clone(), None
-        dv_ref, v.grad = v.grad.clone(), None
+        o_ref = self.ref_program(q, k, v)
+        dq_ref, dk_ref, dv_ref = torch.autograd.grad(o_ref, (q, k, v), do, retain_graph=True)
 
         assert torch.allclose(o, o_ref, rtol=1e-2, atol=1e-2)
         torch.testing.assert_close(dv, dv_ref, rtol=1e-2, atol=1e-2)
@@ -364,24 +528,6 @@ class GQAKernel(nn.Module):
         assert torch.allclose(dk, dk_ref, rtol=1e-2, atol=1e-2)
         assert torch.allclose(dq, dq_ref, rtol=1e-2, atol=1e-2)
         print("GQA kernel check passed!")
-
-
-def get_configs():
-    block_N = [64, 128]
-    block_H = [64]
-    num_split = [2, 4, 8]
-    num_stages = [1, 2, 3]
-    threads = [128]
-    _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
-
-    configs = [{
-        'block_N': c[0],
-        'block_H': c[1],
-        'num_split': c[2],
-        'num_stages': c[3],
-        'threads': c[4]
-    } for c in _configs]
-    return configs
 
 
 def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
