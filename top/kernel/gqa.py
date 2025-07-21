@@ -360,13 +360,12 @@ class GQAKernel(nn.Module):
         super().__init__()
         self.attention = GQA_attention
         self.batch = batch
-        self.groups = groups
         self.heads = heads
         self.seq_len = seq_len
         self.dim_qk = dim_qk
         self.dim_v = dim_v
-        self.block_M = fwd_block_M
-        self.block_N = fwd_block_N
+        self.fwd_block_M = fwd_block_M
+        self.fwd_block_N = fwd_block_N
         self.bwd_block_M = bwd_block_M
         self.bwd_block_N = bwd_block_N
         self.causal = causal
@@ -374,8 +373,8 @@ class GQAKernel(nn.Module):
         self.num_stages = num_stages
         self.threads = threads
         self.fwd_config = {
-            "block_M": self.block_M,
-            "block_N": self.block_N,
+            "block_M": self.fwd_block_M,
+            "block_N": self.fwd_block_N,
             "num_stages": self.num_stages,
             "threads": self.threads
         }
@@ -391,6 +390,7 @@ class GQAKernel(nn.Module):
         self.bwd_tune_config = None
         flops_per_qk = 2.0 * batch * heads * seq_len * seq_len * dim_qk
         flops_per_v = 2.0 * batch * heads * seq_len * seq_len * dim_v
+        self.fwd_flops = flops_per_qk + flops_per_v
         self.total_flops = 3 * flops_per_qk + 2 * flops_per_v
         self.fwd_program = _gqa_fwd(
             batch, heads, seq_len, dim_qk, dim_v, causal, groups=groups)(**self.fwd_config)
@@ -403,6 +403,7 @@ class GQAKernel(nn.Module):
         self.bwd_profiler = self.bwd_program.get_profiler(
             tensor_supply_type=tilelang.TensorSupplyType.Randn)
         if causal:
+            self.fwd_flops *= 0.5
             self.total_flops *= 0.5
 
     def forward(self, q, k, v):
@@ -437,7 +438,7 @@ class GQAKernel(nn.Module):
                     tensor_supply_type=tilelang.TensorSupplyType.Auto)
             fwd_latency = self.fwd_profiler.do_bench(warmup=warmup)
             print(f"Fwd latency: {fwd_latency:.2f} ms")
-        if self.fwd_tune_config is None and self.bwd_tune:
+        if self.bwd_tune_config is None and self.bwd_tune:
             self.bwd_autotune()
         if self.bwd_tune_config:
             self.bwd_program = _gqa_bwd(
@@ -467,7 +468,7 @@ class GQAKernel(nn.Module):
         best_latency = best_result.latency
         best_config = best_result.config
         print(f"Best fwd latency: {best_latency}")
-        print(f"Best TFlops: {self.total_flops / best_latency * 1e-9}")
+        print(f"Best TFlops: {self.fwd_flops / best_latency * 1e-9}")
         print(f"Best fwd config: {best_config}")
         if best_result.config:
             self.fwd_tune_config = dict(
@@ -531,6 +532,24 @@ class GQAKernel(nn.Module):
         assert torch.allclose(dk, dk_ref, rtol=1e-2, atol=1e-2)
         assert torch.allclose(dq, dq_ref, rtol=1e-2, atol=1e-2)
         print("GQA kernel check passed!")
+
+
+def get_configs_decode():
+    block_N = [64, 128]
+    block_H = [64]
+    num_split = [2, 4, 8]
+    num_stages = [1, 2, 3]
+    threads = [128]
+    _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
+
+    configs = [{
+        'block_N': c[0],
+        'block_H': c[1],
+        'num_split': c[2],
+        'num_stages': c[3],
+        'threads': c[4]
+    } for c in _configs]
+    return configs
 
 
 def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
@@ -780,7 +799,7 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
 
     if tune:
 
-        @autotune(configs=get_configs(), warmup=10, rep=10)
+        @autotune(configs=get_configs_decode(), warmup=10, rep=10)
         @jit(
             out_idx=[6],
             supply_type=tilelang.TensorSupplyType.Auto,
