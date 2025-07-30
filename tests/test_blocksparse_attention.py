@@ -42,13 +42,23 @@ def main():
         low=0, high=2, size=(BATCH, H, M_BLOCKS, N_BLOCKS), dtype=torch.bool, device="cuda")
 
     attention = BlockSparseAttentionKernel(
-        BATCH, H, N_CTX, D_HEAD_QK, D_HEAD_V, BLOCK_M, BLOCK_N, causal=causal, groups=groups)
+        BATCH,
+        H,
+        N_CTX,
+        D_HEAD_QK,
+        D_HEAD_V,
+        BLOCK_M,
+        BLOCK_N,
+        causal=causal,
+        block_mask=block_mask,
+        groups=groups,
+        fwd_tune=True,
+        bwd_tune=True)
 
-    o = attention.backward(Q, K, V, dO, block_mask)
+    o = attention.backward(Q, K, V, dO)
     print(o)
 
-    attention.check(Q, K, V, dO, block_mask)
-    attention.profile(Q, K, V, dO, block_mask)
+    attention.profile()
 
 
 if __name__ == "__main__":
