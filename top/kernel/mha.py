@@ -6,7 +6,7 @@ from torch import nn
 from torch.nn import functional as F
 import tilelang as tl
 import tilelang.language as T
-from tilelang.profiler import do_bench
+# from tilelang.profiler import do_bench
 from tilelang.autotuner import *
 import itertools
 
@@ -381,6 +381,17 @@ class MHAKernel:
         if causal:
             self.fwd_flops *= 0.5
             self.bwd_flops *= 0.5
+        # (BATCH, H, N_CTX, D_HEAD, causal)(**config)
+        self.fwd_program = _mha_fwd(batch_size, num_heads, seq_len, head_dim,
+                                    causal)(**self.fwd_config)
+        # self.fwd_kernel = tilelang.compile(self.fwd_program, out_idx=[4, 5])
+        self.fwd_profiler = self.fwd_program.get_profiler(
+            tensor_supply_type=tilelang.TensorSupplyType.Auto)
+        self.bwd_program = _mha_bwd(batch_size, num_heads, seq_len, head_dim,
+                                    causal)(**self.bwd_config)
+        # self.bwd_kernel = tilelang.compile(self.bwd_program)
+        self.bwd_profiler = self.bwd_program.get_profiler(
+            tensor_supply_type=tilelang.TensorSupplyType.Randn)
 
     def forward(self, q, k, v):  # Layout: BSHD
         if self.fwd_tune_config is None and self.fwd_tune:
@@ -423,12 +434,11 @@ class MHAKernel:
             self.bwd_tune_config = dict(
                 zip(["block_M", "block_N", "num_stages", "threads"], best_config))
 
-    @classmethod
-    def ref_program(cls, q, k, v, causal):
+    def ref_program(self, q, k, v):
         dim = q.size(-1)
         scores = torch.einsum('bqhd,bkhd->bhqk', q, k)
         scores = scores / torch.sqrt(torch.tensor(dim, dtype=scores.dtype))
-        if causal:
+        if self.causal:
             seq_len = q.size(1)
             mask = torch.tril(torch.ones(seq_len, seq_len, device=scores.device))
             mask = mask.unsqueeze(0).unsqueeze(0)
@@ -450,7 +460,7 @@ class MHAKernel:
         dq, q.grad = q.grad.clone(), None
         dk, k.grad = k.grad.clone(), None
         dv, v.grad = v.grad.clone(), None
-        o_ref = self.ref_program(q, k, v, self.causal)
+        o_ref = self.ref_program(q, k, v)
         o_ref.backward(do)
         dq_ref, dk_ref, dv_ref = q.grad.clone(), k.grad.clone(), v.grad.clone()
         assert torch.allclose(o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference"
@@ -463,14 +473,43 @@ class MHAKernel:
         q, k, v, do = self.gen_inputs()
         # fwd
         with torch.no_grad():
-            fwd_latency = do_bench(lambda: self.forward(q, k, v), warmup=warmup)
+            if self.fwd_tune_config is None and self.fwd_tune:
+                self.fwd_autotune()
+            if self.fwd_tune_config:
+                self.fwd_program = _mha_fwd(self.batch_size, self.num_heads, self.seq_len,
+                                            self.head_dim, self.causal)(**self.fwd_config)
+                # self.fwd_kernel = tilelang.compile(self.fwd_program, out_idx=[4, 5])
+                self.fwd_profiler = self.fwd_program.get_profiler(
+                    tensor_supply_type=tilelang.TensorSupplyType.Auto)
+            fwd_latency = self.fwd_profiler.do_bench(warmup=warmup)
             print(f"Fwd latency: {fwd_latency:.2f} ms")
             print(f"Fwd FLOPs: {self.fwd_flops / fwd_latency * 1e-9:.2f} TFLOPs")
+            fwd_ref_latency = self.fwd_profiler.do_bench(
+                lambda q, k, v: self.ref_program(q, k, v), warmup=warmup)
+            print(f"Fwd ref latency: {fwd_ref_latency:.2f} ms")
+            print(f"Fwd ref FLOPs: {self.fwd_flops / fwd_ref_latency * 1e-9:.2f} TFLOPs")
         # bwd
-        o = self.forward(q, k, v)
-        bwd_latency = do_bench(lambda: o.backward(do, retain_graph=True), warmup=warmup)
+        if self.bwd_tune_config is None and self.bwd_tune:
+            self.bwd_autotune()
+        if self.bwd_tune_config:
+            self.bwd_program = _mha_bwd(self.batch_size, self.num_heads, self.seq_len,
+                                        self.head_dim, self.causal)(**self.bwd_config)
+            self.bwd_profiler = self.bwd_program.get_profiler(
+                tensor_supply_type=tilelang.TensorSupplyType.Auto)
+        bwd_latency = self.bwd_profiler.do_bench(warmup=warmup)
         print(f"Bwd latency: {bwd_latency:.2f} ms")
         print(f"Bwd FLOPs: {self.bwd_flops / bwd_latency * 1e-9:.2f} TFLOPs")
+
+        def ref_bwd(q, k, v, do, *others):
+            q = q.detach().requires_grad_()
+            k = k.detach().requires_grad_()
+            v = v.detach().requires_grad_()
+            out = self.ref_program(q, k, v)
+            out.backward(do, retain_graph=True)
+
+        bwd_ref_latency = self.bwd_profiler.do_bench(ref_bwd, warmup=warmup)
+        print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
+        print(f"Bwd ref FLOPs: {self.bwd_flops / bwd_ref_latency * 1e-9:.2f} TFLOPs")
 
 
 def get_configs_decode():
@@ -846,7 +885,6 @@ class MHADecodeKernel(nn.Module):
             # self.kernel = tilelang.compile(self.program, out_idx=[5])
             self.profiler = self.program.get_profiler(
                 tensor_supply_type=tilelang.TensorSupplyType.Auto)
-        Q, K, V = self.gen_inputs()
         with torch.no_grad():
             ref_latency = self.profiler.do_bench(self.ref_program, warmup=warmup)
             print(f'Reference Latency: {ref_latency:.2f} ms')

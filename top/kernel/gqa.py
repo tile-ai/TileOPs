@@ -438,6 +438,9 @@ class GQAKernel(nn.Module):
                     tensor_supply_type=tilelang.TensorSupplyType.Auto)
             fwd_latency = self.fwd_profiler.do_bench(warmup=warmup)
             print(f"Fwd latency: {fwd_latency:.2f} ms")
+            fwd_ref_latency = self.fwd_profiler.do_bench(
+                lambda q, k, v: self.ref_program(q, k, v), warmup=warmup)
+            print(f"Fwd ref latency: {fwd_ref_latency:.2f} ms")
         if self.bwd_tune_config is None and self.bwd_tune:
             self.bwd_autotune()
         if self.bwd_tune_config:
@@ -453,6 +456,16 @@ class GQAKernel(nn.Module):
                 tensor_supply_type=tilelang.TensorSupplyType.Auto)
         bwd_latency = self.bwd_profiler.do_bench(warmup=warmup)
         print(f"Bwd latency: {bwd_latency:.2f} ms")
+
+        def ref_bwd(q, k, v, do, *others):
+            q = q.detach().requires_grad_()
+            k = k.detach().requires_grad_()
+            v = v.detach().requires_grad_()
+            out = self.ref_program(q, k, v)
+            out.backward(do, retain_graph=True)
+
+        bwd_ref_latency = self.bwd_profiler.do_bench(ref_bwd, warmup=warmup)
+        print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
         return fwd_latency, bwd_latency
 
     def fwd_autotune(self):
