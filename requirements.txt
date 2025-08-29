@@ -7,3 +7,5 @@ cloudpickle
 ml_dtypes
 psutil
 torch
+einops
+flash-linear-attention
