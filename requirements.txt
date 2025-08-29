@@ -1,3 +1,5 @@
+-r requirements-lint.txt
+
 # runtime requirements
 Cython
 numpy>=1.23.5
@@ -7,3 +9,5 @@ cloudpickle
 ml_dtypes
 psutil
 torch
+einops
+flash-linear-attention

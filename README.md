@@ -11,6 +11,7 @@
 
 - Python 3.8+
 - PyTorch >= 2.1
+- GLIBCXX_3.4.32
 - [TileLang](https://github.com/tilelang/tilelang)
 - Triton (optional, for selected fast kernels)
 
