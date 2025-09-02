@@ -1,5 +1,3 @@
-# Copyright (c) 2024-2025 Microsoft
-# Licensed under The MIT License [see LICENSE for details]
 import argparse
 import torch
 
@@ -90,10 +88,10 @@ def main():
 
 
     kernel = VerticalSlashSparseAttentionKernel(
-        batch_size=1,
-        num_heads=1,
-        seq_len=16384,
-        head_dim=64,
+        batch_size=BATCH,
+        num_heads=N_HEADS,
+        seq_len=SEQ_LEN,
+        head_dim=D_HEAD,
     )
 
     partity(kernel, q, k, v, block_count=block_count, block_offset=block_offset, column_count=column_count, column_index=column_index)

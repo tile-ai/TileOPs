@@ -1,15 +1,12 @@
+from typing import Callable
 import torch
-import torch.nn as nn
 import tilelang
 import tilelang.language as T
-from tilelang.autotuner import *
 import math
 import triton
 import triton.language as tl
-from functools import partial
 
-
-__all__ = ['VerticalSlashSparseAttentionKernel']
+from .base import KernelBase
 
 
 @tilelang.jit(out_idx=[3])
@@ -191,7 +188,7 @@ def _tl_vs_sparse_flashattn(batch, heads, seq_len, dim, vertical_size, slash_siz
                             for i in T.Parallel(block_M):
                                 logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                     if T.ceildiv(column_count[0], block_N) % 2 == 0:
-                        T.ptx_wait_group(1)
+                        T.ptx_wait_group(0)
                         for i, j in T.Parallel(block_M, block_N):
                             acc_s[i, j] = T.if_then_else(T.ceildiv(column_count[0], block_N) * block_N - block_N + j < column_count[0], 0,
                                                          -T.infinity(acc_s.dtype))
@@ -210,7 +207,7 @@ def _tl_vs_sparse_flashattn(batch, heads, seq_len, dim, vertical_size, slash_siz
                         for i in T.Parallel(block_M):
                             logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                     else:
-                        T.ptx_wait_group(1)
+                        T.ptx_wait_group(0)
                         for i, j in T.Parallel(block_M, block_N):
                             acc_s[i, j] = T.if_then_else(T.ceildiv(column_count[0], block_N) * block_N - block_N + j < column_count[0], 0,
                                                          -T.infinity(acc_s.dtype))
@@ -242,7 +239,7 @@ def _tl_vs_sparse_flashattn(batch, heads, seq_len, dim, vertical_size, slash_siz
 @torch.compile
 class _vertical_slash_sparse_attention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, q, k, v, block_count, block_offset, column_count, column_index, dtype, block_M: int = 64, block_N: int = 64):
+    def forward(ctx, q, k, v, block_count, block_offset, column_count, column_index, dtype, block_M, block_N):
         BATCH, HEADS, SEQ_LEN, DIM = q.shape
         vertical_size = column_index.shape[-1]
         slash_size = block_offset.shape[-1]
@@ -257,7 +254,7 @@ class _vertical_slash_sparse_attention(torch.autograd.Function):
 vertical_slash_sparse_attention = _vertical_slash_sparse_attention.apply
 
 
-class VerticalSlashSparseAttentionKernel(nn.Module):
+class VerticalSlashSparseAttentionKernel(KernelBase):
     map_dtype = {torch.float16: "float16", torch.bfloat16: "bfloat16"}
 
     def __init__(self,
@@ -271,7 +268,8 @@ class VerticalSlashSparseAttentionKernel(nn.Module):
                  block_N: int = 64,
                  dtype = torch.float16,
                  device="cuda"):
-        super().__init__()
+
+        
         self.attention = vertical_slash_sparse_attention
 
         self.batch_size = batch_size
@@ -302,13 +300,17 @@ class VerticalSlashSparseAttentionKernel(nn.Module):
         assert device == "cuda", "device must be cuda"
         self.device = device
 
-    def forward(self, q, k, v, *, block_count, block_offset, column_count, column_index):
-        o = self.attention(q, k, v, block_count, block_offset, column_count, column_index, self.dtype, self.block_M, self.block_N)
+    def forward(self, *args, **kwargs):
+        block_count = kwargs.get("block_count")
+        block_offset = kwargs.get("block_offset")
+        column_count = kwargs.get("column_count")
+        column_index = kwargs.get("column_index")
+        o = self.attention(*args, block_count, block_offset, column_count, column_index, self.dtype, self.block_M, self.block_N)
         return o
 
-    # TODO: Need to pytorch-based reference implementation
+    # TODO: Need pytorch-based reference implementation
     @property
-    def ref_program(self):
+    def ref_program(self) -> Callable:
         seqlens = torch.tensor([self.seq_len], dtype=torch.int32).to(self.device)
 
         sm_scale = self.head_dim**-0.5
