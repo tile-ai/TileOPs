@@ -4,8 +4,6 @@ from tilelang.profiler import do_bench
 from functools import partial
 from dataclasses import dataclass
 
-from tabulate import tabulate
-
 # A mapping from string dtype names to torch dtypes
 str2dtype = {'float16': torch.float16, 'bfloat16': torch.bfloat16, 'float32': torch.float32}
 
@@ -20,14 +18,8 @@ class Performance:
     io_bandwidth: float
     baseline_time: List[float]
     baseline_tflops: List[float] # TFLOPS
-    baseline_io_bandwidth: List[float] # GB/s
+    baseline_io_bandwidth: List[float] # TB/s
 
-    def print_performance(self):
-        table = []
-        for i in range(len(self.baseline_time)):
-            table.append([f"Baseline_{i}", self.baseline_time[i], self.baseline_tflops[i], self.baseline_io_bandwidth[i]])
-        table.append(["Tilelang", self.time, self.tflops, self.io_bandwidth])
-        print(tabulate(table, headers=["Id", "Time (ms)", "TFlops", "IO Bandwidth (GB/s)"], tablefmt="github", stralign="left", numalign="decimal"))
 
 
 @torch.compile
@@ -102,14 +94,14 @@ def performance(module, baseline_list: List[Callable], *args, **kwargs):
 
     tilelang_tflops = flops / tilelang_time * 1e-9
 
-    tilelang_io_bandwidth = memory_footprint / tilelang_time * 1e-9 # GB/s
+    tilelang_io_bandwidth = memory_footprint / tilelang_time * 1e-9 # TB/s
 
 
     baseline_tflops_list = []
     baseline_io_bandwidth_list = []
     for baseline_time in baseline_time_list:
         baseline_tflops = flops / baseline_time * 1e-9
-        baseline_io_bandwidth = memory_footprint / baseline_time * 1e-9 # GB/s
+        baseline_io_bandwidth = memory_footprint / baseline_time * 1e-9
         baseline_tflops_list.append(baseline_tflops)
         baseline_io_bandwidth_list.append(baseline_io_bandwidth)
 
