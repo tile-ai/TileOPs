@@ -40,8 +40,8 @@ def main():
         (1, 1, 65536, 64, 1000, 600),
         (1, 1, 65536, 64, 800, 600),
     ]
-    results += f"| q/k/v shape | vs_list | Triton Time(ms) | TileLang Time(ms) | Triton TFlops | TileLang TFlops | Triton IO bandwidth(TB/s) | TileLang IO bandwidth(TB/s) | Speedup |\n"
-    results += f"|------------|---------|----------------|----------------|--------------|----------------|------------------------|------------------------|----------|\n"
+    results += "| q/k/v shape | vs_list | Triton Time(ms) | TileLang Time(ms) | Triton TFlops | TileLang TFlops | Triton IO bandwidth(TB/s) | TileLang IO bandwidth(TB/s) | Speedup |\n"
+    results += "|------------|---------|----------------|----------------|--------------|----------------|------------------------|------------------------|----------|\n"
 
     for exp in exp_list:
         BATCH, N_HEADS, SEQ_LEN, D_HEAD, vertical_size, slash_size = exp
