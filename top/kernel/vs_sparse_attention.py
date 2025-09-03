@@ -483,17 +483,6 @@ class VerticalSlashSparseAttentionKernel(KernelBase):
             return o
         return _triton_mixed_sparse_attention
 
-
-    def pytorch_ref_program(self, *args, **kwargs):
-
-        def attention_func(queries, keys, values, attention_mask):
-            attention_weights = torch.matmul(queries, keys.transpose(2, 3)) / math.sqrt(queries.size(-1))
-            attention_weights += attention_mask.to(queries.dtype) * torch.finfo(queries.dtype).min
-            attention_weights = nn.functional.softmax(attention_weights, dim=-1, dtype=torch.float32).to(queries.dtype)
-            attention_output = torch.matmul(attention_weights, values)
-            return attention_output
-
-
     def get_flops(self, *args, **kwargs) -> float:        
         block_count = kwargs.get("block_count")
         column_count = kwargs.get("column_count")
