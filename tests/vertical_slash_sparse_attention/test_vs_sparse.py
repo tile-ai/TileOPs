@@ -25,6 +25,7 @@ def _sum_all_diagonal_matrix(mat: torch.tensor):
     return sum_diags[:, :, 1:]
 
 def main():
+    results = ""
     exp_list = [
         (1, 1, 8192, 64, 1000, 200),
         (1, 1, 8192, 64, 1000, 600),
@@ -39,11 +40,8 @@ def main():
         (1, 1, 65536, 64, 1000, 600),
         (1, 1, 65536, 64, 800, 600),
     ]
-
-    print(f"table: ")
-
-    print(f"| q/k/v shape | vs_list | Triton Time(ms) | TileLang Time(ms) | Triton TFlops | TileLang TFlops | Triton IO bandwidth(TB/s) | TileLang IO bandwidth(TB/s) | Speedup |")
-    print(f"|------------|---------|----------------|----------------|--------------|----------------|------------------------|------------------------|----------|")
+    results += f"| q/k/v shape | vs_list | Triton Time(ms) | TileLang Time(ms) | Triton TFlops | TileLang TFlops | Triton IO bandwidth(TB/s) | TileLang IO bandwidth(TB/s) | Speedup |\n"
+    results += f"|------------|---------|----------------|----------------|--------------|----------------|------------------------|------------------------|----------|\n"
 
     for exp in exp_list:
         BATCH, N_HEADS, SEQ_LEN, D_HEAD, vertical_size, slash_size = exp
@@ -100,9 +98,9 @@ def main():
 
         perf = performance(kernel, [kernel.ref_program], q, k, v, block_count=block_count, block_offset=block_offset, column_count=column_count, column_index=column_index)
 
-        print(f"| {list(q.shape)} | [{vertical_size}, {slash_size}] | {perf.baseline_time[0]:.3f} | {perf.time:.3f} | {perf.baseline_tflops[0]:.3f} | {perf.tflops:.3f} | {perf.baseline_io_bandwidth[0]:.3f} | {perf.io_bandwidth:.3f} | {perf.baseline_time[0] / perf.time:.3f}x |")
+        results += f"| {list(q.shape)} | [{vertical_size}, {slash_size}] | {perf.baseline_time[0]:.3f} | {perf.time:.3f} | {perf.baseline_tflops[0]:.3f} | {perf.tflops:.3f} | {perf.baseline_io_bandwidth[0]:.3f} | {perf.io_bandwidth:.3f} | {perf.baseline_time[0] / perf.time:.3f}x |\n"
 
-
+    print(results)
 
 if __name__ == "__main__":
     main()

@@ -278,7 +278,6 @@ class VerticalSlashSparseAttentionKernel(KernelBase):
         o = self.attention(*args, block_count, block_offset, column_count, column_index, self.dtype, self.block_M, self.block_N)
         return o
 
-    # TODO: Need pytorch-based reference implementation
     @property
     def ref_program(self) -> Callable:
         seqlens = torch.tensor([self.seq_len], dtype=torch.int32).to(self.device)
@@ -480,8 +479,6 @@ class VerticalSlashSparseAttentionKernel(KernelBase):
             return o
         return _triton_mixed_sparse_attention
 
-
-    # Note: The flop compuatation need to know the run time values of block_count and column_count
     def get_flops(self, *args, **kwargs) -> float:        
         block_count = kwargs.get("block_count")
         column_count = kwargs.get("column_count")
@@ -495,7 +492,6 @@ class VerticalSlashSparseAttentionKernel(KernelBase):
         flops = block_flops + column_flops
         return flops
 
-    # we also need to know the run-time values of block_count and column_count
     def get_memory_footprint(self, *args, **kwargs):
         block_count = kwargs.get("block_count")
         column_count = kwargs.get("column_count")
