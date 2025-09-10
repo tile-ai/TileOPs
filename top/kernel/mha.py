@@ -107,7 +107,7 @@ def _mha_fwd(batch, heads, seq_len, dim, is_causal, tune=False):
     if tune:
 
         @autotune(configs=get_configs(), warmup=10, rep=10)
-        @jit(out_idx=[3, 4])
+        @tl.jit(out_idx=[3, 4])
         def _mha_fwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
             return _mha_fwd_func(block_M, block_N, num_stages, threads)
 
@@ -115,7 +115,7 @@ def _mha_fwd(batch, heads, seq_len, dim, is_causal, tune=False):
     else:
 
         @tilelang.jit(out_idx=[3, 4])
-        def _mha_fwd_kernel(block_M, block_N, num_stages, threads):
+        def _mha_fwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
             return _mha_fwd_func(block_M, block_N, num_stages, threads)
 
         return _mha_fwd_kernel
@@ -251,7 +251,7 @@ def _mha_bwd(batch, heads, seq_len, dim, is_causal, tune=False):
     if tune:
 
         @autotune(configs=get_configs(), warmup=10, rep=10)
-        @jit(out_idx=[6, 7, 8])
+        @tl.jit(out_idx=[6, 7, 8])
         def _mha_bwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
             return _mha_bwd_func(block_M, block_N, num_stages, threads)
 
@@ -259,7 +259,7 @@ def _mha_bwd(batch, heads, seq_len, dim, is_causal, tune=False):
     else:
 
         @tilelang.jit(out_idx=[6, 7, 8])
-        def _mha_bwd_kernel(block_M, block_N, num_stages, threads):
+        def _mha_bwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
             return _mha_bwd_func(block_M, block_N, num_stages, threads)
 
         return _mha_bwd_kernel
@@ -409,7 +409,7 @@ class MHAKernel:
         print(f"Best fwd config: {best_config}")
         if best_result.config:
             self.fwd_tune_config = dict(
-                zip(["block_M", "block_N", "num_stages", "threads"], best_config))
+                zip(["block_M", "block_N", "num_stages", "threads"], list(best_config.values())))
 
     def bwd_autotune(self):
         best_result = _mha_bwd(
@@ -421,7 +421,7 @@ class MHAKernel:
         print(f"Best bwd config: {best_config}")
         if best_result.config:
             self.bwd_tune_config = dict(
-                zip(["block_M", "block_N", "num_stages", "threads"], best_config))
+                zip(["block_M", "block_N", "num_stages", "threads"], list(best_config.values())))
 
     @classmethod
     def ref_program(cls, q, k, v, causal):
@@ -699,7 +699,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
     if tune:
 
         @autotune(configs=get_configs_decode(), warmup=10, rep=10)
-        @jit(out_idx=[5], cache_input_tensors=False)
+        @tl.jit(out_idx=[5], cache_input_tensors=False)
         def _mha_decode_kernel(block_M=None,
                                block_N=None,
                                num_split=None,
