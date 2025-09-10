@@ -699,7 +699,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
     if tune:
 
         @autotune(configs=get_configs_decode(), warmup=10, rep=10)
-        @tl.jit(out_idx=[5], cache_input_tensors=False)
+        @tl.jit(out_idx=[5])
         def _mha_decode_kernel(block_M=None,
                                block_N=None,
                                num_split=None,
@@ -802,8 +802,8 @@ class MHADecodeKernel(nn.Module):
         print(f"Ref latency: {ref_latency}")
         if best_result.config:
             self.tune_config = dict(
-                zip(["block_M", "block_N", "num_split", "num_stages", "threads"], best_config))
-            self.num_split = best_config[2]
+                zip(["block_M", "block_N", "num_split", "num_stages", "threads"], list(best_config.values())))
+            self.num_split = best_config["num_split"]
 
     @classmethod
     def ref_program(cls,
