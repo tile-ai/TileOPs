@@ -314,7 +314,9 @@ class _MHA_attention(torch.autograd.Function):
         mod_post = _mha_bwd_postprocess(BATCH, H, N_CTX, D_HEAD)
         mod = _mha_bwd(BATCH, H, N_CTX, D_HEAD, ctx.causal)(**ctx.bwd_config)
         delta = mod_prep(o, do)
-        dq = torch.randn((BATCH, N_CTX, H, D_HEAD), dtype=torch.float, device="cuda", requires_grad=False)
+        dq = torch.zeros_like(q, dtype=torch.float, device="cuda", requires_grad=False)
+        dk = torch.zeros_like(k, dtype=torch.float16, device="cuda", requires_grad=False)
+        dv = torch.zeros_like(v, dtype=torch.float16, device="cuda", requires_grad=False)
         dq, dk, dv = mod(q, k, v, do, lse, delta)
         dq = mod_post(dq)
         return dq, dk, dv, None, None, None
