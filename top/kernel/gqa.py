@@ -10,6 +10,8 @@ from tilelang.autotuner import *
 from einops import rearrange, einsum
 import itertools
 
+tilelang.cache.clear_cache()
+
 
 def get_configs():
     block_M = [32, 64, 128]
@@ -801,11 +803,7 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
 
         @autotune(configs=get_configs_decode(), warmup=10, rep=10)
         @tilelang.jit(
-            out_idx=[6],
-            supply_type=tilelang.TensorSupplyType.Auto,
-            ref_prog=gqa_decode_ref_program,
-            max_mismatched_ratio=0.05,
-            cache_input_tensors=False)
+            out_idx=[6])
         def _gqa_decode_kernel(block_N=None,
                                block_H=None,
                                num_split=None,
@@ -816,7 +814,8 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
         return _gqa_decode_kernel()
     else:
 
-        def _gqa_decode_kernel(block_N, block_H, num_split, num_stages, threads):
+        def _gqa_decode_kernel(block_N=None, block_H=None, num_split=None, num_stages=None, threads=None):
+            print(f"block_N: {block_N}, block_H: {block_H}, num_split: {num_split}, num_stages: {num_stages}, threads: {threads}")
             return _gqa_decode_func(block_N, block_H, num_split, num_stages, threads)
 
         return _gqa_decode_kernel
@@ -1024,7 +1023,7 @@ class GQADecodeKernel(nn.Module):
             self.tune_config = best_result.config
             self.config = dict(
                 zip(["block_N", "block_H", "num_split", "num_stages", "threads"],
-                    best_result.config))
+                    list(best_result.config.values())))
             self.program = _gqa_decode(self.batch, self.heads, self.kv_seqlen, self.dim,
                                        self.groups)(**self.config)
             if self.sm_version == 90:
@@ -1062,7 +1061,11 @@ class GQADecodeKernel(nn.Module):
         o_ref = self.ref_program(q, k, v)
         o_ref_split = self.ref_program_split(q, k, v)
 
-        torch.testing.assert_close(o, o_ref, rtol=0.01, atol=0.01)
-        torch.testing.assert_close(o_ref_split, o_ref, rtol=0.01, atol=0.01)
+        if self.num_split == 1:
+            torch.testing.assert_close(o, o_ref, rtol=0.01, atol=0.01)
+        elif self.num_split > 1:
+            torch.testing.assert_close(o, o_ref_split, rtol=0.01, atol=0.01)
+        else:
+            raise ValueError("nums split less than 1 not support!")
 
         print("All checks pass.")

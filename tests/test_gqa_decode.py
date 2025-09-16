@@ -27,12 +27,9 @@ def main():
                                  groups)
     if tune:
         gqa_decode.autotune()
-    o = gqa_decode.decode(Q, K, V)
-    print(o)
-
-    gqa_decode.profile()
-
+    
     gqa_decode.check(Q, K, V)
+    gqa_decode.profile()
 
     gqa_decode.autotune()
     gqa_decode.profile()
