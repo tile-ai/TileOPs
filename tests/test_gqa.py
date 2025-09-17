@@ -3,7 +3,7 @@
 
 import argparse
 import torch
-from top import GQAKernel
+from tileops import GQAKernel
 
 
 def main():

@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 import argparse
-from top import LinearAttentionFusedChunkKernel
+from tileops import LinearAttentionFusedChunkKernel
 
 
 def test_fused_chunk(B, S, H, D):

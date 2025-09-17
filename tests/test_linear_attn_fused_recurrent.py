@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 import argparse
-from top import LinearAttentionFusedRecurrentKernel
+from tileops import LinearAttentionFusedRecurrentKernel
 
 
 def test_fused_recurrent(B, S, H, D):

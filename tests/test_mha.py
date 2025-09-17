@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 import argparse
-from top import MHAKernel
+from tileops import MHAKernel
 
 
 def test_mha_kernel(B, S, H, D, causal, tune):

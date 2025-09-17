@@ -1,9 +1,29 @@
 [project]
-name = "top"
+name = "tileops"
 version = "0.1.0"
 description = "TileOPs kernels for efficient inference"
 authors = [{ name="Your Name", email="you@example.com" }]
-dependencies = ["torch", "triton"]
+dependencies = [    
+    "torch>=2.1.0",
+    "numpy>=1.23.5",
+    "einops>=0.6.0",
+    "Cython",
+    "tqdm>=4.62.3",
+    "typing_extensions>=4.10.0",
+    "cloudpickle",
+    "ml_dtypes",
+    "psutil",
+    "flash-linear-attention",
+    "tilelang",
+    "yapf==0.40.2",
+    "toml==0.10.2",
+    "tomli==2.0.1",
+    "ruff==0.6.5",
+    "codespell==2.3.0",
+    "clang-format==15.0.7"
+]
+requires-python = ">=3.8"
+license = { text = "MIT" }
 
 [build-system]
 requires = ["setuptools", "wheel"]

@@ -6,7 +6,7 @@ import tilelang as tl
 from tilelang.profiler import do_bench
 import tilelang.language as T
 import fla.ops.linear_attn  # We compare with Triton implementation in FLA
-from top.utils import str2dtype, reduce_on_dim0, zero_pad
+from tileops.utils import str2dtype, reduce_on_dim0, zero_pad
 
 __all__ = ['LinearAttentionFusedChunkKernel', 'LinearAttentionFusedRecurrentKernel']
 
