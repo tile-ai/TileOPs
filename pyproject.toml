@@ -1,6 +1,6 @@
 [project]
 name = "tileops"
-version = "0.0.1"
+version = "0.0.1.dev1"
 description = "TileOPs kernels for efficient inference"
 authors = [{ name="Tile-AI"}]
 dependencies = [    
