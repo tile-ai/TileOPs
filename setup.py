@@ -3,9 +3,7 @@
 
 import os
 import sys
-import subprocess
-from setuptools import setup, find_packages
-from setuptools.command.install import install
+from setuptools import setup
 
 
 # Control whether to use custom installation logic
