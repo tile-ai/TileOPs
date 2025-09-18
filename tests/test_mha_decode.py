@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 import argparse
-from tileops import MHADecodeKernel
+from top import MHADecodeKernel
 
 
 def test_mha_decode_kernel(B, S, H, D, tune):

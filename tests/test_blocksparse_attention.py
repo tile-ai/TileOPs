@@ -3,7 +3,7 @@
 
 import argparse
 import torch
-from tileops import BlockSparseAttentionKernel
+from top import BlockSparseAttentionKernel
 
 
 def main():

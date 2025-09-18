@@ -3,7 +3,7 @@
 
 import argparse
 import torch
-from tileops import MLAKernel
+from top import MLAKernel
 
 
 def main():

@@ -1,6 +1,6 @@
 import argparse
 import torch
-from tileops import GQADecodeKernel
+from top import GQADecodeKernel
 
 
 def main():

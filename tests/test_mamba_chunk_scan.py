@@ -3,7 +3,7 @@
 
 import argparse
 import torch
-from tileops import MambaChunkScanKernel
+from top import MambaChunkScanKernel
 import math
 
 

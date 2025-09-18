@@ -1,6 +1,6 @@
 import argparse
 import torch
-from tileops import Bitnet_158_int8xint2_kernel
+from top import Bitnet_158_int8xint2_kernel
 
 
 def main():
