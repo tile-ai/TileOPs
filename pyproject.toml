@@ -2,7 +2,7 @@
 name = "tileops"
 version = "0.1.0"
 description = "TileOPs kernels for efficient inference"
-authors = [{ name="Your Name", email="you@example.com" }]
+authors = [{ name="Tile-AI Corporation"}]
 dependencies = [    
     "torch>=2.1.0",
     "numpy>=1.23.5",
@@ -14,20 +14,28 @@ dependencies = [
     "ml_dtypes",
     "psutil",
     "flash-linear-attention",
-    "tilelang",
-    "yapf==0.40.2",
-    "toml==0.10.2",
-    "tomli==2.0.1",
-    "ruff==0.6.5",
-    "codespell==2.3.0",
-    "clang-format==15.0.7"
+    "tilelang"
 ]
 requires-python = ">=3.8"
-license = { text = "MIT" }
+license = "MIT"
+
+[project.optional-dependencies]
+dev = [
+"yapf==0.40.2",
+"toml==0.10.2",
+"tomli==2.0.1",
+"ruff==0.6.5",
+"codespell==2.3.0",
+"clang-format==15.0.7",
+]
 
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=68", "wheel", "build"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find] 
+where = ["."] 
+exclude = ["3rdparty", "3rdparty.*", "tests", "tests.*"]
 
 [tool.yapf]
 based_on_style = "yapf"
