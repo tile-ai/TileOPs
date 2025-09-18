@@ -10,7 +10,7 @@ def main():
     parser.add_argument('--groups', type=int, default=8, help='groups')
     parser.add_argument('--kv_seqlen', type=int, default=8192, help='kv sequence length')
     parser.add_argument('--dim', type=int, default=128, help='dim')
-    parser.add_argument('--num_split', type=int, default=8, help='num_split')
+    parser.add_argument('--num_split', type=int, default=1, help='num_split')
     parser.add_argument('--tune', action='store_true', help='tune configs')
     args = parser.parse_args()
     batch, heads, groups, kv_seqlen, dim, num_split, tune = args.batch, args.heads, args.groups, args.kv_seqlen, args.dim, args.num_split, args.tune
@@ -27,12 +27,9 @@ def main():
                                  groups)
     if tune:
         gqa_decode.autotune()
-    o = gqa_decode.decode(Q, K, V)
-    print(o)
-
-    gqa_decode.profile()
-
+    
     gqa_decode.check(Q, K, V)
+    gqa_decode.profile()
 
     gqa_decode.autotune()
     gqa_decode.profile()

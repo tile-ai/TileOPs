@@ -296,12 +296,12 @@ def _fused_recurrent_fwd(B, H, S, D, scale=None, dtype='float16', BK=32, BV=32):
             i_b = i_bh // H
             i_h = i_bh % H
 
-            q = T.alloc_shared([BK], accum_dtype)
-            k = T.alloc_shared([BK], accum_dtype)
-            v = T.alloc_shared([BV], accum_dtype)
-            o = T.alloc_fragment([BV, BK], accum_dtype)
-            o_sum = T.alloc_fragment([BV], accum_dtype)
-            h = T.alloc_fragment([BV, BK], accum_dtype)
+            q = T.alloc_shared([BK], dtype)
+            k = T.alloc_shared([BK], dtype)
+            v = T.alloc_shared([BV], dtype)
+            o = T.alloc_fragment([BV, BK], dtype)
+            o_sum = T.alloc_fragment([BV], dtype)
+            h = T.alloc_fragment([BV, BK], dtype)
             T.clear(h)
 
             for t in T.Pipelined(0, S):
