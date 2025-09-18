@@ -21,7 +21,7 @@
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
 git submodule update --init --recursive
-pip install -e .
+TILEOPS_DEV_INSTALL=1 pip install -e '.[dev]'
 ```
 
 ## 🚀 Quick Usage
