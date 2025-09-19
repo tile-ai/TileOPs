@@ -106,7 +106,7 @@ def _gqa_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, tune=False, groups
     if tune:
 
         @autotune(configs=get_configs(), warmup=10, rep=10)
-        @jit(out_idx=[3, 4])
+        @tilelang.jit(out_idx=[3, 4])
         def _gqa_fwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
             return _gqa_fwd_func(block_M, block_N, num_stages, threads)
 
@@ -274,7 +274,7 @@ def _gqa_bwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, tune=False, groups
     if tune:
 
         @autotune(configs=get_configs(), warmup=10, rep=10)
-        @jit()
+        @tilelang.jit(out_idx=[3, 4])
         def _gqa_bwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
             return _gqa_bwd_func(block_M, block_N, num_stages, threads)
 
@@ -482,7 +482,7 @@ class GQAKernel(nn.Module):
         print(f"Best fwd config: {best_config}")
         if best_result.config:
             self.fwd_tune_config = dict(
-                zip(["block_M", "block_N", "num_stages", "threads"], best_config))
+                zip(["block_M", "block_N", "num_stages", "threads"], list(best_config.values())))
 
     def bwd_autotune(self):
         best_result = _gqa_bwd(
@@ -501,7 +501,7 @@ class GQAKernel(nn.Module):
         print(f"Best bwd config: {best_config}")
         if best_result.config:
             self.bwd_tune_config = dict(
-                zip(["block_M", "block_N", "num_stages", "threads"], best_config))
+                zip(["block_M", "block_N", "num_stages", "threads"], list(best_config.values())))
 
     def ref_program(self, q, k, v):
         # Q: [B, T, HQ, D_QK]
@@ -560,6 +560,13 @@ def get_configs_decode():
         'threads': c[4]
     } for c in _configs]
     return configs
+
+
+def get_pass_configs():
+    return {
+        tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+        tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True
+    }
 
 
 def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
@@ -810,12 +817,13 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
     if tune:
 
         @autotune(configs=get_configs_decode(), warmup=10, rep=10)
-        @jit(
+        @tilelang.jit(out_idx=[3, 4])(
             out_idx=[6],
             supply_type=tilelang.TensorSupplyType.Auto,
             ref_prog=gqa_decode_ref_program,
             max_mismatched_ratio=0.05,
-            cache_input_tensors=False)
+            cache_input_tensors=False,
+            pass_configs=get_pass_configs())
         def _gqa_decode_kernel(block_N=None,
                                block_H=None,
                                num_split=None,
@@ -1034,7 +1042,7 @@ class GQADecodeKernel(nn.Module):
             self.tune_config = best_result.config
             self.config = dict(
                 zip(["block_N", "block_H", "num_split", "num_stages", "threads"],
-                    best_result.config))
+                    list(best_config.values())))
             self.program = _gqa_decode(self.batch, self.heads, self.kv_seqlen, self.dim,
                                        self.groups)(**self.config)
             if self.sm_version == 90:
