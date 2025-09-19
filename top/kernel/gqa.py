@@ -746,7 +746,7 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
                 Output_partial: T.Tensor(part_shape, dtype),
                 Output: T.Tensor(shape_o, dtype),
         ):
-            with T.Kernel(heads, batch, threads=128) as (by, bz):
+            with T.Kernel(heads, batch, threads=threads) as (by, bz):
                 po_local = T.alloc_fragment([dim], dtype)
                 o_accum_local = T.alloc_fragment([dim], accum_dtype)
                 lse_local = T.alloc_fragment([num_split, threads], dtype)
@@ -834,6 +834,7 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
         return _gqa_decode_kernel()
     else:
 
+        # @tilelang.jit(out_idx=[3,4,6], pass_configs=get_pass_configs())
         def _gqa_decode_kernel(block_N, block_H, num_split, num_stages, threads):
             return _gqa_decode_func(block_N, block_H, num_split, num_stages, threads)
 
@@ -1008,7 +1009,7 @@ class GQADecodeKernel(nn.Module):
                                    self.groups)(**self.config)
         if self.sm_version == 90:
             self.kernel = tilelang.compile(
-                self.program, out_idx=[6], pass_configs={"tl.disable_tma_lower": True})
+                self.program, out_idx=[6], pass_configs=get_pass_configs())
         else:
             self.kernel = tilelang.compile(self.program, out_idx=[6])
         self.profiler = self.kernel.get_profiler(tensor_supply_type=tilelang.TensorSupplyType.Auto)
