@@ -5,6 +5,7 @@ import tilelang.language as T
 import torch.nn as nn
 from tilelang.autotuner import *
 import itertools
+from tilelang.cache import clear_cache
 
 
 def get_configs():
@@ -118,7 +119,7 @@ def _blocksparse_flashattn_fwd(batch,
     if tune:
 
         @autotune(configs=get_configs(), warmup=10, rep=10)
-        @jit(out_idx=[4, 5])
+        @tilelang.jit(out_idx=[4, 5])
         def _blocksparse_fwd_kernel(num_stages=None, threads=None):
             return _blocksparse_fwd_func(num_stages, threads)
 
@@ -306,7 +307,7 @@ def _blocksparse_flashattn_bwd(batch,
     if tune:
 
         @autotune(configs=get_configs(), warmup=10, rep=10)
-        @jit()
+        @tilelang.jit()
         def _blocksparse_bwd_kernel(num_stages=None, threads=None):
             return _blocksparse_bwd_func(num_stages, threads)
 
@@ -467,7 +468,7 @@ class BlockSparseAttentionKernel(nn.Module):
         print(f"Best TFlops: {self.fwd_flops / best_latency * 1e-9}")
         print(f"Best fwd config: {best_config}")
         if best_result.config:
-            self.fwd_tune_config = dict(zip(["num_stages", "threads"], best_config))
+            self.fwd_tune_config = dict(zip(["num_stages", "threads"], list(best_config.values())))
 
     def bwd_autotune(self):
         best_result = _blocksparse_flashattn_bwd(
@@ -487,7 +488,7 @@ class BlockSparseAttentionKernel(nn.Module):
         print(f"Best TFlops: {self.total_flops / best_latency * 1e-9}")
         print(f"Best bwd config: {best_config}")
         if best_result.config:
-            self.bwd_tune_config = dict(zip(["num_stages", "threads"], best_config))
+            self.bwd_tune_config = dict(zip(["num_stages", "threads"], list(best_config.values())))
 
     def ref_program(self, q, k, v):
         B, T, HQ, D_QK = q.shape
