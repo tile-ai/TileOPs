@@ -7,7 +7,6 @@ from tilelang.autotuner import *
 import itertools
 from tilelang.cache import clear_cache
 
-clear_cache()
 
 def get_configs():
     num_stages = [1, 2, 3]
