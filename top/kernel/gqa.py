@@ -689,7 +689,7 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv((seqlen_kv // num_split), block_N)
-                T.fill(K_shared, 0)
+                # T.fill(K_shared, 0)
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(
                         K[bid, (seqlen_kv // num_split) * sid +
@@ -733,9 +733,11 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
                 for i in T.Parallel(block_H):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
 
-                for i in T.Parallel(block_H):
-                    if i < valid_block_H:
-                        glse[bid, hid * valid_block_H + i, sid] = logsum[i]
+                # for i in T.Parallel(block_H):
+                #     if i < valid_block_H:
+                #         glse[bid, hid * valid_block_H + i, sid] = logsum[i]
+                T.copy(logsum[:valid_block_H],
+                       glse[bid, hid * valid_block_H:(hid + 1) * valid_block_H, sid])
                 T.copy(acc_o[:valid_block_H, :], O_shared)
                 T.copy(O_shared, Output_partial[bid, hid * valid_block_H:(hid + 1) * valid_block_H,
                                                 sid, :])
@@ -817,8 +819,7 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
     if tune:
 
         @autotune(configs=get_configs_decode(), warmup=10, rep=10)
-        @tilelang.jit(out_idx=[3, 4])(
-            out_idx=[6],
+        @tilelang.jit(out_idx=[3, 4, 6])(
             supply_type=tilelang.TensorSupplyType.Auto,
             ref_prog=gqa_decode_ref_program,
             max_mismatched_ratio=0.05,
@@ -834,7 +835,6 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
         return _gqa_decode_kernel()
     else:
 
-        # @tilelang.jit(out_idx=[3,4,6], pass_configs=get_pass_configs())
         def _gqa_decode_kernel(block_N, block_H, num_split, num_stages, threads):
             return _gqa_decode_func(block_N, block_H, num_split, num_stages, threads)
 
