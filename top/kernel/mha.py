@@ -6,6 +6,10 @@ import tilelang.language as T
 # from tilelang.profiler import do_bench
 from tilelang.autotuner import *
 import itertools
+from tilelang.cache import clear_cache
+
+
+clear_cache()
 
 __all__ = ['MHAKernel', 'MHADecodeKernel']
 
@@ -104,7 +108,7 @@ def _mha_fwd(batch, heads, seq_len, dim, is_causal, tune=False):
     if tune:
 
         @autotune(configs=get_configs(), warmup=10, rep=10)
-        @jit(out_idx=[3, 4])
+        @tl.jit(out_idx=[3, 4])
         def _mha_fwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
             return _mha_fwd_func(block_M, block_N, num_stages, threads)
 
@@ -248,7 +252,7 @@ def _mha_bwd(batch, heads, seq_len, dim, is_causal, tune=False):
     if tune:
 
         @autotune(configs=get_configs(), warmup=10, rep=10)
-        @jit(out_idx=[6, 7, 8])
+        @tl.jit(out_idx=[6, 7, 8])
         def _mha_bwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
             return _mha_bwd_func(block_M, block_N, num_stages, threads)
 
@@ -311,6 +315,9 @@ class _MHA_attention(torch.autograd.Function):
         mod_post = _mha_bwd_postprocess(BATCH, H, N_CTX, D_HEAD)
         mod = _mha_bwd(BATCH, H, N_CTX, D_HEAD, ctx.causal)(**ctx.bwd_config)
         delta = mod_prep(o, do)
+        dq = torch.zeros_like(q, dtype=torch.float, device="cuda", requires_grad=False)
+        dk = torch.zeros_like(k, dtype=torch.float16, device="cuda", requires_grad=False)
+        dv = torch.zeros_like(v, dtype=torch.float16, device="cuda", requires_grad=False)
         dq, dk, dv = mod(q, k, v, do, lse, delta)
         dq = mod_post(dq)
         return dq, dk, dv, None, None, None
@@ -417,7 +424,7 @@ class MHAKernel:
         print(f"Best fwd config: {best_config}")
         if best_result.config:
             self.fwd_tune_config = dict(
-                zip(["block_M", "block_N", "num_stages", "threads"], best_config))
+                zip(["block_M", "block_N", "num_stages", "threads"], list(best_config.values())))
 
     def bwd_autotune(self):
         best_result = _mha_bwd(
@@ -429,7 +436,7 @@ class MHAKernel:
         print(f"Best bwd config: {best_config}")
         if best_result.config:
             self.bwd_tune_config = dict(
-                zip(["block_M", "block_N", "num_stages", "threads"], best_config))
+                zip(["block_M", "block_N", "num_stages", "threads"], list(best_config.values())))
 
     def ref_program(self, q, k, v):
         dim = q.size(-1)
@@ -735,7 +742,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
     if tune:
 
         @autotune(configs=get_configs_decode(), warmup=10, rep=10)
-        @jit(out_idx=[5], cache_input_tensors=False)
+        @tl.jit(out_idx=[5], cache_input_tensors=False)
         def _mha_decode_kernel(block_M=None,
                                block_N=None,
                                num_split=None,
@@ -838,8 +845,8 @@ class MHADecodeKernel(nn.Module):
         print(f"Ref latency: {ref_latency}")
         if best_result.config:
             self.tune_config = dict(
-                zip(["block_M", "block_N", "num_split", "num_stages", "threads"], best_config))
-            self.num_split = best_config[2]
+                zip(["block_M", "block_N", "num_split", "num_stages", "threads"], list(best_config.values())))
+            self.num_split = best_config["num_split"]
 
     @classmethod
     def ref_program(cls,
