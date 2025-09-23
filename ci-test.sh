@@ -1,5 +1,5 @@
     # Run all Python test files in tests directory
-    echo -e "\033[0;34mRunning all Python test files...\033[0m" | tee -a tileops_test.log
+    echo -e "\033[0;34mRunning all Python test files...\033[0m" 
     
     # 创建测试结果统计文件
     echo "Test Results Summary" > test_summary.txt
@@ -14,7 +14,7 @@
     test_files=$(find tests -name "*.py" -type f | sort)
 
     if [ -z "$test_files" ]; then
-      echo "No test files found in tests directory" | tee -a tileops_test.log
+      echo "No test files found in tests directory" 
       exit 1
     fi
 
@@ -25,15 +25,15 @@
     # 运行每个测试文件
     for test_file in $test_files; do
       file_name=$(basename "$test_file")
-      echo -e "\033[0;36mRunning test: $test_file\033[0m" | tee -a tileops_test.log
+      echo -e "\033[0;36mRunning test: $test_file\033[0m" 
       echo "----------------------------------------" >> tileops_test.log
 
       if python "$test_file" >> tileops_test.log 2>&1; then
-        echo -e "\033[0;32m[PASS] $test_file\033[0m" | tee -a tileops_test.log
+        echo -e "\033[0;32m[PASS] $test_file\033[0m" 
         printf "| %-50s | ✅ Pass  |\n" "$file_name" >> test_summary.txt
         passed_count=$((passed_count + 1))
       else
-        echo -e "\033[0;31m[FAIL] $test_file\033[0m" | tee -a tileops_test.log
+        echo -e "\033[0;31m[FAIL] $test_file\033[0m" 
         printf "| %-50s | ❌ Fail  |\n" "$file_name" >> test_summary.txt
         failed_count=$((failed_count + 1))
       fi
@@ -49,15 +49,15 @@
     echo "- Total:  $((passed_count + failed_count))" >> test_summary.txt
 
     # 打印测试结果摘要表
-    echo "" | tee -a tileops_test.log
-    echo -e "\033[0;34mTest Results Summary:\033[0m" | tee -a tileops_test.log
-    echo -e "\033[0;34m====================\033[0m" | tee -a tileops_test.log
-    cat test_summary.txt | tee -a tileops_test.log
+    echo "" 
+    echo -e "\033[0;34mTest Results Summary:\033[0m" 
+    echo -e "\033[0;34m====================\033[0m" 
+    cat test_summary.txt 
 
     # 如果有失败的测试，CI失败
     if [ $failed_count -gt 0 ]; then
-      echo -e "\033[0;31mError: $failed_count test(s) failed, stopping pipeline.\033[0m" | tee -a tileops_test.log
+      echo -e "\033[0;31mError: $failed_count test(s) failed, stopping pipeline.\033[0m" 
       exit 1
     else
-      echo -e "\033[0;32mAll tests passed!\033[0m" | tee -a tileops_test.log
+      echo -e "\033[0;32mAll tests passed!\033[0m" 
     fi
