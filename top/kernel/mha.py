@@ -112,7 +112,7 @@ def _mha_fwd(batch, heads, seq_len, dim, is_causal, tune=False):
         return _mha_fwd_kernel()
     else:
 
-        @tilelang.jit(out_idx=[3, 4])
+        @tl.jit(out_idx=[3, 4])
         def _mha_fwd_kernel(block_M, block_N, num_stages, threads):
             return _mha_fwd_func(block_M, block_N, num_stages, threads)
 
@@ -256,7 +256,7 @@ def _mha_bwd(batch, heads, seq_len, dim, is_causal, tune=False):
         return _mha_bwd_kernel()
     else:
 
-        @tilelang.jit(out_idx=[6, 7, 8])
+        @tl.jit(out_idx=[6, 7, 8])
         def _mha_bwd_kernel(block_M, block_N, num_stages, threads):
             return _mha_bwd_func(block_M, block_N, num_stages, threads)
 
@@ -750,7 +750,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
         return _mha_decode_kernel()
     else:
 
-        @tilelang.jit(out_idx=[5])
+        @tl.jit(out_idx=[5])
         def _mha_decode_kernel(block_M, block_N, num_split, num_stages, threads):
             return _mha_decode_func(block_M, block_N, num_split, num_stages, threads)
 
