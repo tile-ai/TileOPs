@@ -7,12 +7,16 @@ from tilelang import tvm as tvm
 from tvm import DataType
 from tilelang.intrinsics.mma_layout import (
     make_mma_swizzle_layout as make_swizzle_layout,)
-from tilelang.intrinsics.utils import index_to_coordinates
 import numpy as np
 
 from tilelang.intrinsics.mma_macro_generator import (
     INT4TensorCoreIntrinEmitter,)
 from tilelang.transform import simplify_prim_func
+
+try:
+    from tilelang.intrinsics.utils import index_to_coordinates
+except ImportError:
+    from tilelang.language.utils import index_to_coordinates
 
 decode_i2s_to_i8s = """template <typename T1, typename T2>
 __device__ void decode_i2s_to_i8s(T1 *_i2b, T2 *_i8s, const int N = 16)

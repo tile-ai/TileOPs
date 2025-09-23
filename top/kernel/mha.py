@@ -112,7 +112,7 @@ def _mha_fwd(batch, heads, seq_len, dim, is_causal, tune=False):
         return _mha_fwd_kernel()
     else:
 
-        @tilelang.jit(out_idx=[3, 4])
+        @tl.jit(out_idx=[3, 4])
         def _mha_fwd_kernel(block_M, block_N, num_stages, threads):
             return _mha_fwd_func(block_M, block_N, num_stages, threads)
 
@@ -200,9 +200,9 @@ def _mha_bwd(batch, heads, seq_len, dim, is_causal, tune=False):
 
                 T.annotate_layout({
                     dQ: make_dq_layout(dQ),
-                    K_shared: tilelang.layout.make_swizzled_layout(K_shared),
-                    dv_shared: tilelang.layout.make_swizzled_layout(dv_shared),
-                    dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
+                    K_shared: tl.layout.make_swizzled_layout(K_shared),
+                    dv_shared: tl.layout.make_swizzled_layout(dv_shared),
+                    dk_shared: tl.layout.make_swizzled_layout(dk_shared),
                 })
                 T.copy(K[bz, by * block_M:(by + 1) * block_M, bx, :], K_shared)
                 T.copy(V[bz, by * block_M:(by + 1) * block_M, bx, :], V_shared)
@@ -256,7 +256,7 @@ def _mha_bwd(batch, heads, seq_len, dim, is_causal, tune=False):
         return _mha_bwd_kernel()
     else:
 
-        @tilelang.jit(out_idx=[6, 7, 8])
+        @tl.jit(out_idx=[6, 7, 8])
         def _mha_bwd_kernel(block_M, block_N, num_stages, threads):
             return _mha_bwd_func(block_M, block_N, num_stages, threads)
 
@@ -387,12 +387,12 @@ class MHAKernel:
                                     causal)(**self.fwd_config)
         # self.fwd_kernel = tilelang.compile(self.fwd_program, out_idx=[4, 5])
         self.fwd_profiler = self.fwd_program.get_profiler(
-            tensor_supply_type=tilelang.TensorSupplyType.Auto)
+            tensor_supply_type=tl.TensorSupplyType.Auto)
         self.bwd_program = _mha_bwd(batch_size, num_heads, seq_len, head_dim,
                                     causal)(**self.bwd_config)
         # self.bwd_kernel = tilelang.compile(self.bwd_program)
         self.bwd_profiler = self.bwd_program.get_profiler(
-            tensor_supply_type=tilelang.TensorSupplyType.Randn)
+            tensor_supply_type=tl.TensorSupplyType.Randn)
 
     def forward(self, q, k, v):  # Layout: BSHD
         if self.fwd_tune_config is None and self.fwd_tune:
@@ -481,7 +481,7 @@ class MHAKernel:
                                             self.head_dim, self.causal)(**self.fwd_config)
                 # self.fwd_kernel = tilelang.compile(self.fwd_program, out_idx=[4, 5])
                 self.fwd_profiler = self.fwd_program.get_profiler(
-                    tensor_supply_type=tilelang.TensorSupplyType.Auto)
+                    tensor_supply_type=tl.TensorSupplyType.Auto)
             fwd_latency = self.fwd_profiler.do_bench(warmup=warmup)
             print(f"Fwd latency: {fwd_latency:.2f} ms")
             print(f"Fwd FLOPs: {self.fwd_flops / fwd_latency * 1e-9:.2f} TFLOPs")
@@ -496,7 +496,7 @@ class MHAKernel:
             self.bwd_program = _mha_bwd(self.batch_size, self.num_heads, self.seq_len,
                                         self.head_dim, self.causal)(**self.bwd_config)
             self.bwd_profiler = self.bwd_program.get_profiler(
-                tensor_supply_type=tilelang.TensorSupplyType.Auto)
+                tensor_supply_type=tl.TensorSupplyType.Auto)
         bwd_latency = self.bwd_profiler.do_bench(warmup=warmup)
         print(f"Bwd latency: {bwd_latency:.2f} ms")
         print(f"Bwd FLOPs: {self.bwd_flops / bwd_latency * 1e-9:.2f} TFLOPs")
@@ -750,7 +750,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
         return _mha_decode_kernel()
     else:
 
-        @tilelang.jit(out_idx=[5])
+        @tl.jit(out_idx=[5])
         def _mha_decode_kernel(block_M, block_N, num_split, num_stages, threads):
             return _mha_decode_func(block_M, block_N, num_split, num_stages, threads)
 
@@ -818,7 +818,7 @@ class MHADecodeKernel(nn.Module):
         self.program = _mha_decode(self.batch_size, self.num_heads, 1, self.seqlen_kv,
                                    self.head_dim)(**self.config)
         # self.kernel = tilelang.compile(self.program, out_idx=[5])
-        self.profiler = self.program.get_profiler(tensor_supply_type=tilelang.TensorSupplyType.Auto)
+        self.profiler = self.program.get_profiler(tensor_supply_type=tl.TensorSupplyType.Auto)
         flops_per_matmul = 2.0 * batch_size * num_heads * seqlen_kv * head_dim
         self.total_flops = 2 * flops_per_matmul
 
@@ -885,7 +885,7 @@ class MHADecodeKernel(nn.Module):
                                        self.head_dim)(**self.tune_config)
             # self.kernel = tilelang.compile(self.program, out_idx=[5])
             self.profiler = self.program.get_profiler(
-                tensor_supply_type=tilelang.TensorSupplyType.Auto)
+                tensor_supply_type=tl.TensorSupplyType.Auto)
         with torch.no_grad():
             ref_latency = self.profiler.do_bench(self.ref_program, warmup=warmup)
             print(f'Reference Latency: {ref_latency:.2f} ms')
