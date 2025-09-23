@@ -7,7 +7,7 @@ from tilelang import tvm as tvm
 from tvm import DataType
 from tilelang.intrinsics.mma_layout import (
     make_mma_swizzle_layout as make_swizzle_layout,)
-from tilelang.intrinsics.utils import index_to_coordinates
+from tilelang.language.utils import index_to_coordinates
 import numpy as np
 
 from tilelang.intrinsics.mma_macro_generator import (
