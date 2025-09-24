@@ -682,7 +682,6 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv((seqlen_kv // num_split), block_N)
-                T.fill(K_shared, 0)
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(
                         K[bid, (seqlen_kv // num_split) * sid +
@@ -809,13 +808,15 @@ def _gqa_decode(batch, heads, seqlen_kv, dim, groups=1, tune=False):
 
     if tune:
 
-        @autotune(configs=get_configs_decode(), warmup=10, rep=10)
-        @tilelang.jit(
-            out_idx=[6],
-            supply_type=tilelang.TensorSupplyType.Auto,
+        @autotune(
+            configs=get_configs_decode(), 
+            warmup=10, 
+            rep=10, 
+            supply_type=tilelang.TensorSupplyType.Auto, 
             ref_prog=gqa_decode_ref_program,
             max_mismatched_ratio=0.05,
             cache_input_tensors=False)
+        @tilelang.jit(out_idx=[6])
         def _gqa_decode_kernel(block_N=None,
                                block_H=None,
                                num_split=None,
