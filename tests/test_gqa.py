@@ -49,13 +49,8 @@ def main():
         bwd_tune=True,
         causal=causal,
         groups=groups)
-    o = gqa.backward(Q, K, V, dO)
-    print(o)
     gqa.profile(Q, K, V, dO)
     gqa.check(Q, K, V, dO)
-    # gqa.fwd_autotune(Q, K, V)
-    # gqa.bwd_autotune(Q, K, V)
-    # gqa.profile(Q, K, V, dO)
 
 
 if __name__ == "__main__":
