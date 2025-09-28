@@ -564,7 +564,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
         def MMA1(
             V: T.Tensor(shape_kv, dtype),  # type: ignore
             V_shared: T.SharedBuffer([block_M, dim], dtype),  # type: ignore
-            acc_s_cast: T.FragmentBuffer([block_M, block_N], dtype),  # type: ignore
+            acc_s_cast: T.SharedBuffer([block_M, block_N], dtype),  # type: ignore
             acc_o: T.FragmentBuffer([block_M, dim], accum_dtype),  # type: ignore
             k: T.int32,
             hid: T.int32,
@@ -579,7 +579,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
         @T.macro
         def Softmax(
                 acc_s: T.FragmentBuffer([block_M, block_N], accum_dtype),  # type: ignore
-                acc_s_cast: T.FragmentBuffer([block_M, block_N], dtype),  # type: ignore
+                acc_s_cast: T.SharedBuffer([block_M, block_N], dtype),  # type: ignore
                 scores_max: T.FragmentBuffer([block_M], accum_dtype),  # type: ignore
                 scores_max_prev: T.FragmentBuffer([block_M], accum_dtype),  # type: ignore
                 scores_scale: T.FragmentBuffer([block_M], accum_dtype),  # type: ignore
@@ -630,7 +630,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                 V_shared = T.alloc_shared([block_N, dim], dtype)
                 O_shared = T.alloc_shared([block_M, dim], dtype)
                 acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
+                acc_s_cast = T.alloc_shared([block_M, block_N], dtype)
                 acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_M], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
@@ -738,8 +738,8 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
 
     if tune:
 
-        @autotune(configs=get_configs_decode(), warmup=10, rep=10)
-        @tl.jit(out_idx=[5], cache_input_tensors=False)
+        @autotune(configs=get_configs_decode(), warmup=10, rep=10, cache_input_tensors=False)
+        @tl.jit(out_idx=[5], pass_configs={tl.PassConfigKey.TL_DISABLE_TMA_LOWER: True})
         def _mha_decode_kernel(block_M=None,
                                block_N=None,
                                num_split=None,
@@ -750,7 +750,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
         return _mha_decode_kernel()
     else:
 
-        @tl.jit(out_idx=[5])
+        @tl.jit(out_idx=[5], pass_configs={tl.PassConfigKey.TL_DISABLE_TMA_LOWER: True})
         def _mha_decode_kernel(block_M, block_N, num_split, num_stages, threads):
             return _mha_decode_func(block_M, block_N, num_split, num_stages, threads)
 
@@ -814,7 +814,13 @@ class MHADecodeKernel(nn.Module):
             "threads": self.threads
         }
         self.tune = tune
-        self.tune_config = None
+        self.tune_config = {
+            "block_M": 32,
+            "block_N": 32,
+            "num_split": 4,
+            "num_stages": 2,
+            "threads": 128
+        }
         self.program = _mha_decode(self.batch_size, self.num_heads, 1, self.seqlen_kv,
                                    self.head_dim)(**self.config)
         # self.kernel = tilelang.compile(self.program, out_idx=[5])
@@ -870,8 +876,8 @@ class MHADecodeKernel(nn.Module):
 
     def check(self):
         Q, K, V = self.gen_inputs()
-        o = self.forward(Q, K, V)
         o_ref = self.ref_program(Q, K, V)
+        o = self.forward(Q, K, V)
         assert torch.allclose(
             o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference, max diff: {:.4f}".format(
                 torch.max(torch.abs(o - o_ref)))
