@@ -814,13 +814,7 @@ class MHADecodeKernel(nn.Module):
             "threads": self.threads
         }
         self.tune = tune
-        self.tune_config = {
-            "block_M": 32,
-            "block_N": 32,
-            "num_split": 4,
-            "num_stages": 2,
-            "threads": 128
-        }
+        self.tune_config = None
         self.program = _mha_decode(self.batch_size, self.num_heads, 1, self.seqlen_kv,
                                    self.head_dim)(**self.config)
         # self.kernel = tilelang.compile(self.program, out_idx=[5])
