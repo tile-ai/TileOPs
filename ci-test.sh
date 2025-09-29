@@ -45,11 +45,12 @@
         printf "| %-50s | ❌ Fail  |\n" "$file_name" >> ../test_summary.txt
         failed_count=$((failed_count + 1))
       fi
-      # Return to parent directory
-      cd ..
       
       echo "----------------------------------------" >> "$LOG_FILE"
     done
+
+    # Return to parent directory
+    cd ..
 
     # Add statistics summary
     echo "" >> test_summary.txt

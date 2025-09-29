@@ -644,7 +644,15 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                 sid = bz
 
                 T.annotate_layout({Q_shared: tl.layout.make_swizzled_layout(Q_shared)})
-                T.copy(Q[bid, mid * block_M:(mid + 1) * block_M, hid, :], Q_shared)
+
+                # To Do: support tma
+                for i, j in T.Parallel(block_M, dim):
+                    g_row = mid * block_M + i
+                    if g_row < seqlen_q:
+                        Q_shared[i, j] = Q[bid, g_row, hid, j]
+                    else:
+                        Q_shared[i, j] = T.cast(0, dtype)
+
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
@@ -664,8 +672,12 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(logsum, glse[bid, hid, sid, mid * block_M:(mid + 1) * block_M])
                 T.copy(acc_o, O_shared)
-                T.copy(O_shared, Output_partial[bid, mid * block_M:(mid + 1) * block_M, hid,
-                                                sid, :])
+
+                # To Do: support tma
+                for i, j in T.Parallel(block_M, dim):
+                    g_row = mid * block_M + i
+                    if g_row < seqlen_q:
+                        Output_partial[bid, g_row, hid, sid, j] = O_shared[i, j]
 
         @T.macro
         def combine(
@@ -711,8 +723,15 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                         lse_logsum_local[i] += T.exp2(lse_local_split[i] - lse_max_local[i])
                 for i in T.Parallel(block_M):
                     lse_logsum_local[i] = T.log2(lse_logsum_local[i]) + lse_max_local[i]
+
+                # To Do: support tma
                 for k in T.Pipelined(num_split, num_stages=2):
-                    T.copy(Output_partial[bz, bx * block_M:(bx + 1) * block_M, by, k, :], po_shared)
+                    for i, j in T.Parallel(block_M, dim):
+                        g_row = bx * block_M + i
+                        if g_row < seqlen_q:
+                            po_shared[i, j] = Output_partial[bz, g_row, by, k, j]
+                        else:
+                            po_shared[i, j] = T.cast(0, dtype)
                     T.copy(po_shared, po_local)
                     T.copy(lse_local[k, :], lse_local_split)
                     for i in T.Parallel(block_M):
@@ -720,7 +739,12 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                     for i, j in T.Parallel(block_M, dim):
                         o_accum_local[i, j] += po_local[i, j] * scale_local[i]
                 T.copy(o_accum_local, o_shared)
-                T.copy(o_shared, Output[bz, bx * block_M:(bx + 1) * block_M, by, :])
+
+                # To Do: support tma
+                for i, j in T.Parallel(block_M, dim):
+                    g_row = bx * block_M + i
+                    if g_row < seqlen_q:
+                        Output[bz, g_row, by, j] = o_shared[i, j]
 
         @T.prim_func
         def _mha_decode_main(
@@ -738,8 +762,8 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
 
     if tune:
 
-        @autotune(configs=get_configs_decode(), warmup=10, rep=10)
-        @tl.jit(out_idx=[5], cache_input_tensors=False)
+        @autotune(configs=get_configs_decode(), warmup=10, rep=10, cache_input_tensors=False)
+        @tl.jit(out_idx=[5])
         def _mha_decode_kernel(block_M=None,
                                block_N=None,
                                num_split=None,
