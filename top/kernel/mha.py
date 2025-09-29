@@ -668,21 +668,18 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                     MMA1(V, V_shared, acc_s_cast, acc_o, k, hid, bid, sid)
                 for i, j in T.Parallel(block_M, dim):
                     acc_o[i, j] /= logsum[i]
+                
+                # To Do: support tma
                 for i in T.Parallel(block_M):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-
-                # for i in T.Parallel(block_M):
-                #     g_row = mid * block_M + i
-                #     if g_row < seqlen_q:
-                #         glse[bid, hid, sid, g_row] = logsum[i]
                 T.copy(logsum, glse[bid, hid, sid, mid * block_M:(mid + 1) * block_M])
                 T.copy(acc_o, O_shared)
+
+                # To Do: support tma
                 for i, j in T.Parallel(block_M, dim):
                     g_row = mid * block_M + i
                     if g_row < seqlen_q:
                         Output_partial[bid, g_row, hid, sid, j] = O_shared[i, j]
-                # T.copy(O_shared, Output_partial[bid, mid * block_M:(mid + 1) * block_M, hid,
-                #                                 sid, :])
 
         @T.macro
         def combine(
@@ -728,8 +725,9 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                         lse_logsum_local[i] += T.exp2(lse_local_split[i] - lse_max_local[i])
                 for i in T.Parallel(block_M):
                     lse_logsum_local[i] = T.log2(lse_logsum_local[i]) + lse_max_local[i]
+
+                # To Do: support tma
                 for k in T.Pipelined(num_split, num_stages=2):
-                    # T.copy(Output_partial[bz, bx * block_M:(bx + 1) * block_M, by, k, :], po_shared)
                     for i, j in T.Parallel(block_M, dim):
                         g_row = bx * block_M + i
                         if g_row < seqlen_q:
@@ -741,11 +739,12 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                     for i, j in T.Parallel(block_M, dim):
                         o_accum_local[i, j] += po_local[i, j] * scale_local[i]
                 T.copy(o_accum_local, o_shared)
+
+                # To Do: support tma
                 for i, j in T.Parallel(block_M, dim):
                     g_row = bx * block_M + i
                     if g_row < seqlen_q:
                         Output[bz, g_row, by, j] = o_shared[i, j]
-                # T.copy(o_shared, Output[bz, bx * block_M:(bx + 1) * block_M, by, :])
 
         @T.prim_func
         def _mha_decode_main(
