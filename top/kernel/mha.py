@@ -645,7 +645,7 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
 
                 T.annotate_layout({Q_shared: tl.layout.make_swizzled_layout(Q_shared)})
 
-                # To Do: 
+                # To Do: support tma
                 for i, j in T.Parallel(block_M, dim):
                     g_row = mid * block_M + i
                     if g_row < seqlen_q:
@@ -668,8 +668,6 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                     MMA1(V, V_shared, acc_s_cast, acc_o, k, hid, bid, sid)
                 for i, j in T.Parallel(block_M, dim):
                     acc_o[i, j] /= logsum[i]
-                
-                # To Do: support tma
                 for i in T.Parallel(block_M):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(logsum, glse[bid, hid, sid, mid * block_M:(mid + 1) * block_M])
