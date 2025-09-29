@@ -730,6 +730,8 @@ def _mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, tune=False):
                         g_row = bx * block_M + i
                         if g_row < seqlen_q:
                             po_shared[i, j] = Output_partial[bz, g_row, by, k, j]
+                        else:
+                            po_shared[i, j] = T.cast(0, dtype)
                     T.copy(po_shared, po_local)
                     T.copy(lse_local[k, :], lse_local_split)
                     for i in T.Parallel(block_M):
