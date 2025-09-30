@@ -13,8 +13,7 @@ dependencies = [
     "cloudpickle",
     "ml_dtypes",
     "psutil",
-    "flash-linear-attention",
-    "tilelang"
+    "tilelang>=0.1.6.post1"
 ]
 requires-python = ">=3.8"
 license = "MIT"

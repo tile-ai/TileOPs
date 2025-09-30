@@ -8,4 +8,4 @@ ml_dtypes
 psutil
 torch
 einops
-flash-linear-attention
+tilelang>=0.1.6.post1
