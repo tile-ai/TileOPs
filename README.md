@@ -1,9 +1,12 @@
 # TileOPs (TOP)
 
-**TileOPs (TOP)** is a high-performance machine learning operator collections built to run on the [TileLang](https://github.com/tile-ai/tilelang) backend. It offers efficient, modular, and composable implementations optimized for AI workloads.
+**TileOPs (TOP)** is a high-performance machine learning operator collections built on top of [TileLang](https://github.com/tile-ai/tilelang). It offers efficient, modular, and composable implementations optimized for AI workloads.
+
+Note: TileOPs is still under rapid development.
 
 ---
 
+![Sparse MLA performance on H800 SXM](docs/figures/sparse_mla_perf.png)
 
 ## 📦 Installation
 
@@ -14,16 +17,66 @@
 - GLIBCXX_3.4.32
 - [TileLang](https://github.com/tilelang/tilelang)
 
-### Install (editable mode for development)
+### Method 1: Install with Pip
+
+```bash
+pip install tileops # comming soon...
+```
+
+### Method 2: Install from source(editable mode for development)
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
-git submodule update --init --recursive
-TILEOPS_DEV_INSTALL=1 pip install -e '.[dev]'
+pip install -e . -v # remove -e option if you don't want to install in editable mode, -v for verbose output
 ```
 
 ## 🚀 Quick Usage
+
+### Sparse MLA
+
+```python
+import torch
+from top import SparseMLAKernel
+
+batch_size = 1
+seq_len = 1024
+seq_len_kv = 2048
+q_start_index_s = 1024
+n_heads = 128
+head_dim = 512
+tail_dim = 64
+topk = 2048
+kv_stride = 1
+kv_group = 1
+sm_scale = None
+
+sparse_mla = SparseMLAKernel(
+    batch=batch_size,
+    seq_len=seq_len,
+    seq_len_kv=seq_len_kv,
+    q_start_index_s=q_start_index_s,
+    heads=n_heads,
+    dim=head_dim,
+    tail_dim=tail_dim,
+    topk=topk,
+    kv_stride=kv_stride,
+    kv_group=kv_group,
+    sm_scale=sm_scale,
+    is_casual=True,
+    dtype=torch.bfloat16,
+    device='cuda',
+)
+
+# Evaluate the Sparse MLA kernel performance
+sparse_mla.check()
+latency = sparse_mla.profile()
+print(f"Latency: {latency:.4f} ms")
+print(f'fwd tflops = ',
+        (batch_size * seq_len * (head_dim + tail_dim + head_dim) * topk * 2 * n_heads) / (latency * 1e-3) / 1e12)
+```
+
+### MLA
 
 ```python
 import torch
