@@ -28,7 +28,7 @@ pip install tileops # comming soon...
 ```bash
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
-pip install -e . -v # remove -e option if you don't want to install in editable mode, -v for verbose output
+pip install -e '.[dev]' -v # remove -e option if you don't want to install in editable mode, -v for verbose output
 ```
 
 ## 🚀 Quick Usage
