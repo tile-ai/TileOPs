@@ -40,5 +40,5 @@ if USE_CUSTOM_INSTALL:
     cmdclass = {"install": CustomInstall}
 
 setup(name = "tileops",
-      version = "0.1.0",
+      version = "0.0.1.dev1",
       cmdclass=cmdclass)
