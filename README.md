@@ -20,7 +20,7 @@ Note: TileOPs is still under rapid development.
 ### Method 1: Install with Pip
 
 ```bash
-pip install tileops # comming soon...
+pip install tileops # coming soon...
 ```
 
 ### Method 2: Install from source(editable mode for development)
