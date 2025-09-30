@@ -23,7 +23,7 @@ Note: TileOPs is still under rapid development.
 pip install tileops # coming soon...
 ```
 
-### Method 2: Install from source(editable mode for development)
+### Method 2: Install from source (editable mode for development)
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
