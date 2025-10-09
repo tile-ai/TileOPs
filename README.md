@@ -6,7 +6,8 @@ Note: TileOPs is still under rapid development.
 
 ---
 
-![Sparse MLA performance on H800 SXM](docs/figures/sparse_mla_perf.png)
+![DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM](https://raw.githubusercontent.com/tile-ai/TileOPs/main/docs/figures/sparse_mla_perf.png)
+*DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM*
 
 ## 📦 Installation
 
@@ -15,12 +16,12 @@ Note: TileOPs is still under rapid development.
 - Python 3.8+
 - PyTorch >= 2.1
 - GLIBCXX_3.4.32
-- [TileLang](https://github.com/tilelang/tilelang)
+- [TileLang](https://github.com/tile-ai/tilelang)
 
 ### Method 1: Install with Pip
 
 ```bash
-pip install tileops # coming soon...
+pip install tileops
 ```
 
 ### Method 2: Install from source (editable mode for development)
