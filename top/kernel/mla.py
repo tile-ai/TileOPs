@@ -7,6 +7,9 @@ from einops import rearrange, einsum
 from tilelang.utils.tensor import torch_assert_close
 
 
+__all__ = ['MLAKernel']
+
+
 @tilelang.jit(out_idx=[6])
 def _mla(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, block_N, block_H, num_split):
     scale = (1.0 / (dim + pe_dim))**0.5 * 1.44269504  # log2(e)

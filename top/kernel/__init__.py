@@ -1,4 +1,5 @@
-from .mha import MHAKernel, MHADecodeKernel
+from .mha import MHAKernel
+from .mha_decode import MHADecodeKernel
 from .mla import MLAKernel
 from .gqa import GQAKernel, GQADecodeKernel
 from .mamba_chunk_scan import MambaChunkScanKernel

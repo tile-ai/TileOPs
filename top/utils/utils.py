@@ -53,3 +53,8 @@ def ensure_contiguous(func: callable) -> callable:
         return func(*args, **kwargs)
 
     return wrapper
+
+
+def is_hopper() -> bool:
+    """Determine whether the architecture of the current device is Hopper."""
+    return torch.cuda.get_device_capability() == (9, 0)
