@@ -1,3 +1,6 @@
-Provider	OP	bs	head_num	kv_heads	seq_len	kv_seq_len	dim
-LLAMA-70B	FlashMHA	64	64	64	64	1024	128
-LLAMA-70B	FlashMHA	64	64	64	64	2048	128
+Provider	OP	bs	head_num	kv_heads	seqlen_q	kv_seq_len	dim
+LLAMA-70B	FlashMHA	1	32	64	1	8192	128
+LLAMA-70B	FlashMHA	1	32	64	32	1024	128
+LLAMA-70B	FlashMHA	1	32	64	64	1024	128
+LLAMA-70B	FlashMHA	1	64	64	64	2048	128
+LLAMA-70B	FlashMHA	8	64	64	64	4096	128
