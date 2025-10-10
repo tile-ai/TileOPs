@@ -2,8 +2,8 @@ import argparse
 from top import MHADecodeKernel
 
 
-def test_mha_decode_kernel(B, S, H, D, tune):
-    kernel = MHADecodeKernel(B, H, S, D, tune=tune)
+def test_mha_decode_kernel(B, S, H, D, S_q, tune):
+    kernel = MHADecodeKernel(B, H, S, D, seqlen_q=S_q, tune=tune)
     kernel.check()
     kernel.profile()
 
@@ -19,4 +19,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     B, S, S_q, H, D, tune = args.batch, args.seqlen_kv, args.seqlen_q, args.heads, args.dim, args.tune
 
-    test_mha_decode_kernel(B, S, H, D, tune)
+    test_mha_decode_kernel(B, S, H, D, S_q, tune)

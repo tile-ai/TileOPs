@@ -850,7 +850,6 @@ class MHADecodeKernel(nn.Module):
         self.total_flops = 2 * flops_per_matmul
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        assert Q.dim() == 4 and Q.size(1) == self.seqlen_q, "Q must have shape (bsz, S_q, H, D)"
         if self.tune_config is None and self.tune:
             self.autotune()
         config = self.tune_config if self.tune_config else self.config
@@ -879,7 +878,6 @@ class MHADecodeKernel(nn.Module):
                     V: torch.Tensor,
                     glse: torch.Tensor = None,
                     Output_partial: torch.Tensor = None) -> torch.Tensor:
-        assert Q.dim() == 4 and Q.size(1) == self.seqlen_q, "Q must have shape (bsz, 1, H, D)"
         dim = Q.size(-1)
         scores = torch.einsum('bqhd,bkhd->bqhk', Q, K)
         scores = scores / torch.sqrt(torch.tensor(dim, dtype=scores.dtype))
