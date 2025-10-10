@@ -35,7 +35,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find] 
 where = ["."] 
-exclude = ["3rdparty", "3rdparty.*", "tests", "tests.*"]
+exclude = ["3rdparty", "3rdparty.*", "tests", "tests.*", "profile", "profile.*"]
 
 [tool.yapf]
 based_on_style = "yapf"
