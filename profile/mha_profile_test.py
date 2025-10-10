@@ -60,7 +60,7 @@ def main() -> None:
     parser.add_argument("--python", default=sys.executable, help="Python interpreter.")
     parser.add_argument("--log", default="mha_sweep.log", help="Path to log file.")
 
-    # 改为“默认打印表格”，提供关闭开关
+    # Default to printing the table, with a switch to disable it.
     parser.add_argument("--no-print-table", action="store_true",
                         help="Disable pretty ASCII table printing (enabled by default).")
     parser.add_argument("--table-max-col-width", type=int, default=32,
