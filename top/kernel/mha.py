@@ -786,10 +786,11 @@ class _MHA_decode_attention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, num_split, config):
         BATCH, KV_CTX, H, D_HEAD = k.shape
+        Q_CTX = q.shape[1]
 
-        mod = _mha_decode(BATCH, H, 1, KV_CTX, D_HEAD)(**config)
-        glse = torch.empty((BATCH, H, num_split, 1), dtype=q.dtype, device=q.device)
-        Output_partial = torch.empty((BATCH, 1, H, num_split, D_HEAD),
+        mod = _mha_decode(BATCH, H, Q_CTX, KV_CTX, D_HEAD)(**config)
+        glse = torch.empty((BATCH, H, num_split, Q_CTX), dtype=q.dtype, device=q.device)
+        Output_partial = torch.empty((BATCH, Q_CTX, H, num_split, D_HEAD),
                                      dtype=q.dtype,
                                      device=q.device)
         return mod(q, k, v, glse, Output_partial)
@@ -809,6 +810,7 @@ class MHADecodeKernel(nn.Module):
                  num_heads,
                  seqlen_kv,
                  head_dim,
+                 seqlen_q=1,
                  threads=None,
                  block_M=None,
                  block_N=None,
@@ -821,6 +823,7 @@ class MHADecodeKernel(nn.Module):
         self.batch_size = batch_size
         self.num_heads = num_heads
         self.seqlen_kv = seqlen_kv
+        self.seqlen_q = seqlen_q
         self.head_dim = head_dim
         block_M_ = 64
         block_N_ = 64 if head_dim <= 128 else 32
@@ -839,15 +842,15 @@ class MHADecodeKernel(nn.Module):
         }
         self.tune = tune
         self.tune_config = None
-        self.program = _mha_decode(self.batch_size, self.num_heads, 1, self.seqlen_kv,
+        self.program = _mha_decode(self.batch_size, self.num_heads, self.seqlen_q, self.seqlen_kv,
                                    self.head_dim)(**self.config)
         # self.kernel = tilelang.compile(self.program, out_idx=[5])
         self.profiler = self.program.get_profiler(tensor_supply_type=tl.TensorSupplyType.Auto)
-        flops_per_matmul = 2.0 * batch_size * num_heads * seqlen_kv * head_dim
+        flops_per_matmul = 2.0 * batch_size * num_heads * seqlen_kv * head_dim * self.seqlen_q
         self.total_flops = 2 * flops_per_matmul
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        assert Q.dim() == 4 and Q.size(1) == 1, "Q must have shape (bsz, 1, H, D)"
+        assert Q.dim() == 4 and Q.size(1) == self.seqlen_q, "Q must have shape (bsz, S_q, H, D)"
         if self.tune_config is None and self.tune:
             self.autotune()
         config = self.tune_config if self.tune_config else self.config
@@ -856,7 +859,7 @@ class MHADecodeKernel(nn.Module):
 
     def autotune(self):
         best_result = _mha_decode(
-            self.batch_size, self.num_heads, 1, self.seqlen_kv, self.head_dim, tune=True)
+            self.batch_size, self.num_heads, self.seqlen_q, self.seqlen_kv, self.head_dim, tune=True)
         best_latency = best_result.latency
         best_config = best_result.config
         ref_latency = best_result.ref_latency
@@ -876,7 +879,7 @@ class MHADecodeKernel(nn.Module):
                     V: torch.Tensor,
                     glse: torch.Tensor = None,
                     Output_partial: torch.Tensor = None) -> torch.Tensor:
-        assert Q.dim() == 4 and Q.size(1) == 1, "Q must have shape (bsz, 1, H, D)"
+        assert Q.dim() == 4 and Q.size(1) == self.seqlen_q, "Q must have shape (bsz, 1, H, D)"
         dim = Q.size(-1)
         scores = torch.einsum('bqhd,bkhd->bqhk', Q, K)
         scores = scores / torch.sqrt(torch.tensor(dim, dtype=scores.dtype))
@@ -885,7 +888,7 @@ class MHADecodeKernel(nn.Module):
         return output
 
     def gen_inputs(self):
-        shape_q = self.batch_size, 1, self.num_heads, self.head_dim
+        shape_q = self.batch_size, self.seqlen_q, self.num_heads, self.head_dim
         shape_kv = self.batch_size, self.seqlen_kv, self.num_heads, self.head_dim
         Q = torch.randn(shape_q, dtype=self.dtype, device=self.device)
         K = torch.randn(shape_kv, dtype=self.dtype, device=self.device)
@@ -905,7 +908,7 @@ class MHADecodeKernel(nn.Module):
         if self.tune_config is None and self.tune:
             self.autotune()
         if self.tune_config:
-            self.program = _mha_decode(self.batch_size, self.num_heads, 1, self.seqlen_kv,
+            self.program = _mha_decode(self.batch_size, self.num_heads, self.seqlen_q, self.seqlen_kv,
                                        self.head_dim)(**self.tune_config)
             # self.kernel = tilelang.compile(self.program, out_idx=[5])
             self.profiler = self.program.get_profiler(
