@@ -913,9 +913,9 @@ class MHADecodeKernel(nn.Module):
                 tensor_supply_type=tl.TensorSupplyType.Auto)
         with torch.no_grad():
             ref_latency = self.profiler.do_bench(self.ref_program, warmup=warmup)
-            print(f'Reference Latency: {ref_latency:.2f} ms')
-            print(f"Reference FLOPs: {self.total_flops / ref_latency * 1e-9:.2f} TFLOPs")
+            print(f'Fwd Reference Latency: {ref_latency:.2f} ms')
+            print(f"Fwd Reference FLOPs: {self.total_flops / ref_latency * 1e-9:.2f} TFLOPs")
 
             latency = self.profiler.do_bench(warmup=warmup)
-            print(f'Latency: {latency:.2f} ms')
-            print(f"FLOPs: {self.total_flops / latency * 1e-9:.2f} TFLOPs")
+            print(f'Fwd Latency: {latency:.2f} ms')
+            print(f"Fwd FLOPs: {self.total_flops / latency * 1e-9:.2f} TFLOPs")

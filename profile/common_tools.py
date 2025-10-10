@@ -28,40 +28,72 @@ from typing import Callable, Dict, List, Optional, Tuple
 # --------------------------
 # Regex for metrics
 # --------------------------
+# --- Robust float pattern (supports scientific notation) ---
 _FLOAT = r"([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"
 
-# --- Strict, line-anchored patterns to avoid matching lines like "Best fwd latency" / "Best TFlops" ---
-REF_LAT_RE    = re.compile(rf"(?m)^\s*Reference\s+Latency:\s*{_FLOAT}\s*ms\b")
-REF_TFLOPS_RE = re.compile(rf"(?m)^\s*Reference\s+FLOPs?:\s*{_FLOAT}\s*T[Ff][Ll][Oo][Pp][s]?\b")
-LAT_RE        = re.compile(rf"(?m)^\s*Latency:\s*{_FLOAT}\s*ms\b")
-TFLOPS_RE     = re.compile(rf"(?m)^\s*FLOPs?:\s*{_FLOAT}\s*T[Ff][Ll][Oo][Pp][s]?\b")
+# --- Line-anchored, case-insensitive patterns (Fwd/Bwd must be at column 0) ---
+# Fwd
+FWD_LAT_RE        = re.compile(rf"(?im)^fwd\s+latency:\s*{_FLOAT}\s*ms\b")
+FWD_TFLOPS_RE     = re.compile(rf"(?im)^fwd\s+flops?:\s*{_FLOAT}\s*t[fF][lL][oO][pP][s]?\b")
+FWD_REF_LAT_RE    = re.compile(rf"(?im)^fwd\s+(?:ref|reference)\s+latency:\s*{_FLOAT}\s*ms\b")
+FWD_REF_TFLOPS_RE = re.compile(rf"(?im)^fwd\s+(?:ref|reference)\s+flops?:\s*{_FLOAT}\s*t[fF][lL][oO][pP][s]?\b")
+
+# Bwd
+BWD_LAT_RE        = re.compile(rf"(?im)^bwd\s+latency:\s*{_FLOAT}\s*ms\b")
+BWD_TFLOPS_RE     = re.compile(rf"(?im)^bwd\s+flops?:\s*{_FLOAT}\s*t[fF][lL][oO][pP][s]?\b")
+BWD_REF_LAT_RE    = re.compile(rf"(?im)^bwd\s+(?:ref|reference)\s+latency:\s*{_FLOAT}\s*ms\b")
+BWD_REF_TFLOPS_RE = re.compile(rf"(?im)^bwd\s+(?:ref|reference)\s+flops?:\s*{_FLOAT}\s*t[fF][lL][oO][pP][s]?\b")
 
 def parse_stdout_metrics(stdout: str) -> Dict[str, str]:
-    """Parse final Reference Latency/FLOPs and Latency/FLOPs from stdout.
+    """Parse Fwd/Bwd (ref and final) latency/FLOPs from stdout.
 
-    Notes:
-      * Patterns are anchored at the start of the line to avoid accidental
-        matches such as "Best fwd latency" or "Best TFlops".
-      * If multiple matching lines appear, the last occurrence is taken as
-        the final result.
+    Rules:
+      * Case-insensitive, but lines must start with 'Fwd' or 'Bwd' at column 0.
+      * If multiple matches per metric appear, the last one is taken.
+      * Missing metrics return empty strings.
+    Returns:
+      Dict with keys:
+        fwd_latency_ms, fwd_tflops, fwd_ref_latency_ms, fwd_ref_tflops,
+        bwd_latency_ms, bwd_tflops, bwd_ref_latency_ms, bwd_ref_tflops
+        (plus backward-compat keys if you still need them).
     """
-    def _last_float(pattern: re.Pattern[str]) -> Optional[float]:
-        matches = list(pattern.finditer(stdout))
+    def _last_float(pat: re.Pattern[str]) -> Optional[float]:
+        matches = list(pat.finditer(stdout))
         if not matches:
             return None
         return float(matches[-1].group(1))
 
-    ref_lat = _last_float(REF_LAT_RE)
-    ref_tf  = _last_float(REF_TFLOPS_RE)
-    lat     = _last_float(LAT_RE)
-    tf      = _last_float(TFLOPS_RE)
+    fwd_lat  = _last_float(FWD_LAT_RE)
+    fwd_tf   = _last_float(FWD_TFLOPS_RE)
+    fwd_rlat = _last_float(FWD_REF_LAT_RE)
+    fwd_rtf  = _last_float(FWD_REF_TFLOPS_RE)
 
-    return {
-        "ref_latency_ms": f"{ref_lat:.2f}" if ref_lat is not None else "",
-        "ref_tflops":     f"{ref_tf:.2f}"  if ref_tf  is not None else "",
-        "latency_ms":     f"{lat:.2f}"     if lat     is not None else "",
-        "tflops":         f"{tf:.2f}"      if tf      is not None else "",
+    bwd_lat  = _last_float(BWD_LAT_RE)
+    bwd_tf   = _last_float(BWD_TFLOPS_RE)
+    bwd_rlat = _last_float(BWD_REF_LAT_RE)
+    bwd_rtf  = _last_float(BWD_REF_TFLOPS_RE)
+
+    out = {
+        "fwd_latency_ms":      f"{fwd_lat:.2f}"  if fwd_lat  is not None else "",
+        "fwd_tflops":          f"{fwd_tf:.2f}"   if fwd_tf   is not None else "",
+        "fwd_ref_latency_ms":  f"{fwd_rlat:.2f}" if fwd_rlat is not None else "",
+        "fwd_ref_tflops":      f"{fwd_rtf:.2f}"  if fwd_rtf  is not None else "",
+        "bwd_latency_ms":      f"{bwd_lat:.2f}"  if bwd_lat  is not None else "",
+        "bwd_tflops":          f"{bwd_tf:.2f}"   if bwd_tf   is not None else "",
+        "bwd_ref_latency_ms":  f"{bwd_rlat:.2f}" if bwd_rlat is not None else "",
+        "bwd_ref_tflops":      f"{bwd_rtf:.2f}"  if bwd_rtf  is not None else "",
     }
+
+    # Optional: keep backward-compat fields empty or map to fwd values if desired.
+    # Here we keep them empty to avoid confusion; uncomment if you need fallback.
+    # out.update({
+    #     "ref_latency_ms": out["fwd_ref_latency_ms"],
+    #     "ref_tflops": out["fwd_ref_tflops"],
+    #     "latency_ms": out["fwd_latency_ms"],
+    #     "tflops": out["fwd_tflops"],
+    # })
+
+    return out
 
 
 # --------------------------
@@ -231,21 +263,6 @@ def run_and_log(cmd: List[str], logger: logging.Logger) -> Tuple[int, str, str]:
     return proc.returncode, stdout, stderr
 
 
-def parse_stdout_metrics(stdout: str) -> Dict[str, str]:
-    """Parse Reference Latency/FLOPs and Latency/FLOPs from stdout."""
-    ref_lat = REF_LAT_RE.search(stdout)
-    ref_tf = REF_TFLOPS_RE.search(stdout)
-    lat = LAT_RE.search(stdout)
-    tf = TFLOPS_RE.search(stdout)
-
-    return {
-        "ref_latency_ms": f"{float(ref_lat.group(1)):.2f}" if ref_lat else "",
-        "ref_tflops": f"{float(ref_tf.group(1)):.2f}" if ref_tf else "",
-        "latency_ms": f"{float(lat.group(1)):.2f}" if lat else "",
-        "tflops": f"{float(tf.group(1)):.2f}" if tf else "",
-    }
-
-
 def tail_line(text: str) -> str:
     """Return the last non-empty line of a multi-line string for concise notes."""
     lines = [ln for ln in text.strip().splitlines() if ln.strip()]
@@ -411,7 +428,7 @@ def run_sweep(
         out_path,
         fieldnames,
         results_rows,
-        extra_cols=["ref_latency_ms", "ref_tflops", "latency_ms", "tflops", "returncode", "note"],
+        extra_cols=["fwd_latency_ms", "fwd_tflops", "fwd_ref_latency_ms", "fwd_ref_tflops", "bwd_latency_ms", "bwd_tflops", "bwd_ref_latency_ms", "bwd_ref_tflops", "returncode", "note"],
     )
     logger.info("[%s] All done. Results saved to: %s", operator_name, out_path)
 
