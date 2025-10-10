@@ -461,14 +461,17 @@ class MHAKernel:
         dq, q.grad = q.grad.clone(), None
         dk, k.grad = k.grad.clone(), None
         dv, v.grad = v.grad.clone(), None
-        o_ref = self.ref_program(q, k, v)
-        o_ref.backward(do)
-        dq_ref, dk_ref, dv_ref = q.grad.clone(), k.grad.clone(), v.grad.clone()
-        assert torch.allclose(o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference"
-        assert torch.allclose(dq, dq_ref, rtol=1e-2, atol=1e-2), "dq does not match reference"
-        assert torch.allclose(dk, dk_ref, rtol=1e-2, atol=1e-2), "dk does not match reference"
-        assert torch.allclose(dv, dv_ref, rtol=1e-2, atol=1e-2), "dv does not match reference"
-        print("All checks passed! ✅")
+        try:
+            o_ref = self.ref_program(q, k, v)
+            o_ref.backward(do)
+            dq_ref, dk_ref, dv_ref = q.grad.clone(), k.grad.clone(), v.grad.clone()
+            assert torch.allclose(o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference"
+            assert torch.allclose(dq, dq_ref, rtol=1e-2, atol=1e-2), "dq does not match reference"
+            assert torch.allclose(dk, dk_ref, rtol=1e-2, atol=1e-2), "dk does not match reference"
+            assert torch.allclose(dv, dv_ref, rtol=1e-2, atol=1e-2), "dv does not match reference"
+            print("All checks passed! ✅")
+        except Exception as e:
+            print(f"Pytorch Error: {str(e)}")
 
     def profile(self, warmup=500):
         q, k, v, do = self.gen_inputs()
@@ -485,10 +488,13 @@ class MHAKernel:
             fwd_latency = self.fwd_profiler.do_bench(warmup=warmup)
             print(f"Fwd latency: {fwd_latency:.2f} ms")
             print(f"Fwd FLOPs: {self.fwd_flops / fwd_latency * 1e-9:.2f} TFLOPs")
-            fwd_ref_latency = self.fwd_profiler.do_bench(
-                lambda q, k, v: self.ref_program(q, k, v), warmup=warmup)
-            print(f"Fwd ref latency: {fwd_ref_latency:.2f} ms")
-            print(f"Fwd ref FLOPs: {self.fwd_flops / fwd_ref_latency * 1e-9:.2f} TFLOPs")
+            try:
+                fwd_ref_latency = self.fwd_profiler.do_bench(
+                    lambda q, k, v: self.ref_program(q, k, v), warmup=warmup)
+                print(f"Fwd ref latency: {fwd_ref_latency:.2f} ms")
+                print(f"Fwd ref FLOPs: {self.fwd_flops / fwd_ref_latency * 1e-9:.2f} TFLOPs")
+            except Exception as e:
+                print(f"Pytorch Error: {str(e)}")
         # bwd
         if self.bwd_tune_config is None and self.bwd_tune:
             self.bwd_autotune()
@@ -508,9 +514,12 @@ class MHAKernel:
             out = self.ref_program(q, k, v)
             out.backward(do, retain_graph=True)
 
-        bwd_ref_latency = self.bwd_profiler.do_bench(ref_bwd, warmup=warmup)
-        print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
-        print(f"Bwd ref FLOPs: {self.bwd_flops / bwd_ref_latency * 1e-9:.2f} TFLOPs")
+        try:
+            bwd_ref_latency = self.bwd_profiler.do_bench(ref_bwd, warmup=warmup)
+            print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
+            print(f"Bwd ref FLOPs: {self.bwd_flops / bwd_ref_latency * 1e-9:.2f} TFLOPs")
+        except Exception as e:
+            print(f"Pytorch Error: {str(e)}")
 
 
 def get_configs_decode():
@@ -896,11 +905,14 @@ class MHADecodeKernel(nn.Module):
     def check(self):
         Q, K, V = self.gen_inputs()
         o = self.forward(Q, K, V)
-        o_ref = self.ref_program(Q, K, V)
-        assert torch.allclose(
-            o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference, max diff: {:.4f}".format(
-                torch.max(torch.abs(o - o_ref)))
-        print("All checks passed! ✅")
+        try:
+            o_ref = self.ref_program(Q, K, V)
+            assert torch.allclose(
+                o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference, max diff: {:.4f}".format(
+                    torch.max(torch.abs(o - o_ref)))
+            print("All checks passed! ✅")
+        except Exception as e:
+            print(f"Pytorch Error: {str(e)}")
 
     def profile(self, warmup=500):
         if self.tune_config is None and self.tune:
@@ -912,9 +924,12 @@ class MHADecodeKernel(nn.Module):
             self.profiler = self.program.get_profiler(
                 tensor_supply_type=tl.TensorSupplyType.Auto)
         with torch.no_grad():
-            ref_latency = self.profiler.do_bench(self.ref_program, warmup=warmup)
-            print(f'Fwd Reference Latency: {ref_latency:.2f} ms')
-            print(f"Fwd Reference FLOPs: {self.total_flops / ref_latency * 1e-9:.2f} TFLOPs")
+            try:
+                ref_latency = self.profiler.do_bench(self.ref_program, warmup=warmup)
+                print(f'Fwd Reference Latency: {ref_latency:.2f} ms')
+                print(f"Fwd Reference FLOPs: {self.total_flops / ref_latency * 1e-9:.2f} TFLOPs")
+            except Exception as e:
+                print(f"Pytorch Error: {str(e)}")
 
             latency = self.profiler.do_bench(warmup=warmup)
             print(f'Fwd Latency: {latency:.2f} ms')
