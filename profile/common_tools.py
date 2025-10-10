@@ -44,6 +44,9 @@ BWD_TFLOPS_RE     = re.compile(rf"(?im)^bwd\s+flops?:\s*{_FLOAT}\s*t[fF][lL][oO]
 BWD_REF_LAT_RE    = re.compile(rf"(?im)^bwd\s+(?:ref|reference)\s+latency:\s*{_FLOAT}\s*ms\b")
 BWD_REF_TFLOPS_RE = re.compile(rf"(?im)^bwd\s+(?:ref|reference)\s+flops?:\s*{_FLOAT}\s*t[fF][lL][oO][pP][s]?\b")
 
+# Detect "Error" lines in stdout (case-insensitive, line-anchored).
+ERROR_LINE_RE = re.compile(r"(?im)^.*\berror\b.*$")
+
 def parse_stdout_metrics(stdout: str) -> Dict[str, str]:
     """Parse Fwd/Bwd (ref and final) latency/FLOPs from stdout.
 
@@ -94,6 +97,31 @@ def parse_stdout_metrics(stdout: str) -> Dict[str, str]:
     # })
 
     return out
+
+
+def collect_error_lines(text: str, max_lines: int = 3, max_len: int = 240) -> List[str]:
+    """Return the last N lines from stdout that contain 'Error' (case-insensitive).
+
+    Args:
+        text: Full stdout text.
+        max_lines: Keep at most this many lines (from the end).
+        max_len: Truncate each captured line to this length (with '...').
+
+    Returns:
+        List of sanitized lines (order preserved from oldest to newest among the kept tail).
+    """
+    matches = ERROR_LINE_RE.findall(text or "")
+    if not matches:
+        return []
+    tail = matches[-max_lines:]
+
+    def _trunc(s: str) -> str:
+        s = s.strip()
+        if len(s) <= max_len:
+            return s
+        return s[: max_len - 3] + "..."
+
+    return [_trunc(s) for s in tail]
 
 
 # --------------------------
@@ -406,12 +434,22 @@ def run_sweep(
         rc, stdout, stderr = run_and_log(cmd, logger)
         metrics = parse_stdout_metrics(stdout)
         note = ""
+        # Build concise note. Include return code (if non-zero),
+        # stderr tail, and any "Error" lines detected in stdout.
+        note_parts: List[str] = []
+
+        # Always capture "Error" lines from stdout (even if rc == 0).
+        err_lines = collect_error_lines(stdout, max_lines=3, max_len=240)
+        if err_lines:
+            note_parts.append("stdout_error=" + " || ".join(err_lines))
+
         if rc != 0:
-            note_parts = [f"rc={rc}"]
+            note_parts.insert(0, f"rc={rc}")  # make rc first if present
             last = tail_line(stderr)
             if last:
                 note_parts.append(f"stderr_tail={last}")
-            note = ";".join(note_parts)
+
+        note = ";".join(note_parts) if note_parts else ""
 
         out_row = dict(row)
         out_row.update(metrics)
