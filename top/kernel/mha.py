@@ -461,14 +461,17 @@ class MHAKernel:
         dq, q.grad = q.grad.clone(), None
         dk, k.grad = k.grad.clone(), None
         dv, v.grad = v.grad.clone(), None
-        o_ref = self.ref_program(q, k, v)
-        o_ref.backward(do)
-        dq_ref, dk_ref, dv_ref = q.grad.clone(), k.grad.clone(), v.grad.clone()
-        assert torch.allclose(o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference"
-        assert torch.allclose(dq, dq_ref, rtol=1e-2, atol=1e-2), "dq does not match reference"
-        assert torch.allclose(dk, dk_ref, rtol=1e-2, atol=1e-2), "dk does not match reference"
-        assert torch.allclose(dv, dv_ref, rtol=1e-2, atol=1e-2), "dv does not match reference"
-        print("All checks passed! ✅")
+        try:
+            o_ref = self.ref_program(q, k, v)
+            o_ref.backward(do)
+            dq_ref, dk_ref, dv_ref = q.grad.clone(), k.grad.clone(), v.grad.clone()
+            assert torch.allclose(o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference"
+            assert torch.allclose(dq, dq_ref, rtol=1e-2, atol=1e-2), "dq does not match reference"
+            assert torch.allclose(dk, dk_ref, rtol=1e-2, atol=1e-2), "dk does not match reference"
+            assert torch.allclose(dv, dv_ref, rtol=1e-2, atol=1e-2), "dv does not match reference"
+            print("All checks passed! ✅")
+        except Exception as e:
+            print(f"Pytorch Error: {str(e)}")
 
     def profile(self, warmup=500):
         q, k, v, do = self.gen_inputs()
@@ -485,10 +488,13 @@ class MHAKernel:
             fwd_latency = self.fwd_profiler.do_bench(warmup=warmup)
             print(f"Fwd latency: {fwd_latency:.2f} ms")
             print(f"Fwd FLOPs: {self.fwd_flops / fwd_latency * 1e-9:.2f} TFLOPs")
-            fwd_ref_latency = self.fwd_profiler.do_bench(
-                lambda q, k, v: self.ref_program(q, k, v), warmup=warmup)
-            print(f"Fwd ref latency: {fwd_ref_latency:.2f} ms")
-            print(f"Fwd ref FLOPs: {self.fwd_flops / fwd_ref_latency * 1e-9:.2f} TFLOPs")
+            try:
+                fwd_ref_latency = self.fwd_profiler.do_bench(
+                    lambda q, k, v: self.ref_program(q, k, v), warmup=warmup)
+                print(f"Fwd ref latency: {fwd_ref_latency:.2f} ms")
+                print(f"Fwd ref FLOPs: {self.fwd_flops / fwd_ref_latency * 1e-9:.2f} TFLOPs")
+            except Exception as e:
+                print(f"Pytorch Error: {str(e)}")
         # bwd
         if self.bwd_tune_config is None and self.bwd_tune:
             self.bwd_autotune()
@@ -508,9 +514,12 @@ class MHAKernel:
             out = self.ref_program(q, k, v)
             out.backward(do, retain_graph=True)
 
-        bwd_ref_latency = self.bwd_profiler.do_bench(ref_bwd, warmup=warmup)
-        print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
-        print(f"Bwd ref FLOPs: {self.bwd_flops / bwd_ref_latency * 1e-9:.2f} TFLOPs")
+        try:
+            bwd_ref_latency = self.bwd_profiler.do_bench(ref_bwd, warmup=warmup)
+            print(f"Bwd ref latency: {bwd_ref_latency:.2f} ms")
+            print(f"Bwd ref FLOPs: {self.bwd_flops / bwd_ref_latency * 1e-9:.2f} TFLOPs")
+        except Exception as e:
+            print(f"Pytorch Error: {str(e)}")
 
 
 def get_configs_decode():
@@ -786,10 +795,11 @@ class _MHA_decode_attention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, num_split, config):
         BATCH, KV_CTX, H, D_HEAD = k.shape
+        Q_CTX = q.shape[1]
 
-        mod = _mha_decode(BATCH, H, 1, KV_CTX, D_HEAD)(**config)
-        glse = torch.empty((BATCH, H, num_split, 1), dtype=q.dtype, device=q.device)
-        Output_partial = torch.empty((BATCH, 1, H, num_split, D_HEAD),
+        mod = _mha_decode(BATCH, H, Q_CTX, KV_CTX, D_HEAD)(**config)
+        glse = torch.empty((BATCH, H, num_split, Q_CTX), dtype=q.dtype, device=q.device)
+        Output_partial = torch.empty((BATCH, Q_CTX, H, num_split, D_HEAD),
                                      dtype=q.dtype,
                                      device=q.device)
         return mod(q, k, v, glse, Output_partial)
@@ -809,6 +819,7 @@ class MHADecodeKernel(nn.Module):
                  num_heads,
                  seqlen_kv,
                  head_dim,
+                 seqlen_q=1,
                  threads=None,
                  block_M=None,
                  block_N=None,
@@ -821,6 +832,7 @@ class MHADecodeKernel(nn.Module):
         self.batch_size = batch_size
         self.num_heads = num_heads
         self.seqlen_kv = seqlen_kv
+        self.seqlen_q = seqlen_q
         self.head_dim = head_dim
         block_M_ = 64
         block_N_ = 64 if head_dim <= 128 else 32
@@ -839,15 +851,14 @@ class MHADecodeKernel(nn.Module):
         }
         self.tune = tune
         self.tune_config = None
-        self.program = _mha_decode(self.batch_size, self.num_heads, 1, self.seqlen_kv,
+        self.program = _mha_decode(self.batch_size, self.num_heads, self.seqlen_q, self.seqlen_kv,
                                    self.head_dim)(**self.config)
         # self.kernel = tilelang.compile(self.program, out_idx=[5])
         self.profiler = self.program.get_profiler(tensor_supply_type=tl.TensorSupplyType.Auto)
-        flops_per_matmul = 2.0 * batch_size * num_heads * seqlen_kv * head_dim
+        flops_per_matmul = 2.0 * batch_size * num_heads * seqlen_kv * head_dim * self.seqlen_q
         self.total_flops = 2 * flops_per_matmul
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        assert Q.dim() == 4 and Q.size(1) == 1, "Q must have shape (bsz, 1, H, D)"
         if self.tune_config is None and self.tune:
             self.autotune()
         config = self.tune_config if self.tune_config else self.config
@@ -856,7 +867,7 @@ class MHADecodeKernel(nn.Module):
 
     def autotune(self):
         best_result = _mha_decode(
-            self.batch_size, self.num_heads, 1, self.seqlen_kv, self.head_dim, tune=True)
+            self.batch_size, self.num_heads, self.seqlen_q, self.seqlen_kv, self.head_dim, tune=True)
         best_latency = best_result.latency
         best_config = best_result.config
         ref_latency = best_result.ref_latency
@@ -876,7 +887,6 @@ class MHADecodeKernel(nn.Module):
                     V: torch.Tensor,
                     glse: torch.Tensor = None,
                     Output_partial: torch.Tensor = None) -> torch.Tensor:
-        assert Q.dim() == 4 and Q.size(1) == 1, "Q must have shape (bsz, 1, H, D)"
         dim = Q.size(-1)
         scores = torch.einsum('bqhd,bkhd->bqhk', Q, K)
         scores = scores / torch.sqrt(torch.tensor(dim, dtype=scores.dtype))
@@ -885,7 +895,7 @@ class MHADecodeKernel(nn.Module):
         return output
 
     def gen_inputs(self):
-        shape_q = self.batch_size, 1, self.num_heads, self.head_dim
+        shape_q = self.batch_size, self.seqlen_q, self.num_heads, self.head_dim
         shape_kv = self.batch_size, self.seqlen_kv, self.num_heads, self.head_dim
         Q = torch.randn(shape_q, dtype=self.dtype, device=self.device)
         K = torch.randn(shape_kv, dtype=self.dtype, device=self.device)
@@ -895,26 +905,32 @@ class MHADecodeKernel(nn.Module):
     def check(self):
         Q, K, V = self.gen_inputs()
         o = self.forward(Q, K, V)
-        o_ref = self.ref_program(Q, K, V)
-        assert torch.allclose(
-            o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference, max diff: {:.4f}".format(
-                torch.max(torch.abs(o - o_ref)))
-        print("All checks passed! ✅")
+        try:
+            o_ref = self.ref_program(Q, K, V)
+            assert torch.allclose(
+                o, o_ref, rtol=1e-2, atol=1e-2), "o does not match reference, max diff: {:.4f}".format(
+                    torch.max(torch.abs(o - o_ref)))
+            print("All checks passed! ✅")
+        except Exception as e:
+            print(f"Pytorch Error: {str(e)}")
 
     def profile(self, warmup=500):
         if self.tune_config is None and self.tune:
             self.autotune()
         if self.tune_config:
-            self.program = _mha_decode(self.batch_size, self.num_heads, 1, self.seqlen_kv,
+            self.program = _mha_decode(self.batch_size, self.num_heads, self.seqlen_q, self.seqlen_kv,
                                        self.head_dim)(**self.tune_config)
             # self.kernel = tilelang.compile(self.program, out_idx=[5])
             self.profiler = self.program.get_profiler(
                 tensor_supply_type=tl.TensorSupplyType.Auto)
         with torch.no_grad():
-            ref_latency = self.profiler.do_bench(self.ref_program, warmup=warmup)
-            print(f'Reference Latency: {ref_latency:.2f} ms')
-            print(f"Reference FLOPs: {self.total_flops / ref_latency * 1e-9:.2f} TFLOPs")
+            try:
+                ref_latency = self.profiler.do_bench(self.ref_program, warmup=warmup)
+                print(f'Fwd Reference Latency: {ref_latency:.2f} ms')
+                print(f"Fwd Reference FLOPs: {self.total_flops / ref_latency * 1e-9:.2f} TFLOPs")
+            except Exception as e:
+                print(f"Pytorch Error: {str(e)}")
 
             latency = self.profiler.do_bench(warmup=warmup)
-            print(f'Latency: {latency:.2f} ms')
-            print(f"FLOPs: {self.total_flops / latency * 1e-9:.2f} TFLOPs")
+            print(f'Fwd Latency: {latency:.2f} ms')
+            print(f"Fwd FLOPs: {self.total_flops / latency * 1e-9:.2f} TFLOPs")

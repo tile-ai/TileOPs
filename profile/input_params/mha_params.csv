@@ -1,0 +1,3 @@
+Provider	OP	bs	head_num	kv_heads	seq_len	kv_seq_len	dim	causal
+LLAMA-70B	FlashMHA	64	64	64	1024	1024	128	TRUE
+LLAMA-70B	FlashMHA	64	64	64	2048	2048	128	TRUE
