@@ -115,5 +115,14 @@ mla = MLAKernel(batch, heads, kv_heads, kv_ctx, dim, pe_dim, block_N, block_H, n
 
 out = mla(q, q_pe, kv, k_pe)
 ```
+## Design
+
+### Hierarchical Concepts
+There are 4 hierarchical key concepts in TileOPs, each layer stands for a different level of abstraction and is built from or delegates to the next lower level.
+
+- **Layer**: **Op**s that are equipped with runtime elements (e.g. Weights, Buffers, etc.) 
+- **Op**: defines computation and is implemented **Function**s for forward and backward.
+- **Function**: determines the implementation for a given shape and hardware, dispatching to the correct **Kernel** and providing unit test and benchmark.
+- **Kernel**: Tilelang-based kernels for hardware-specific logic.
 
 ## Acknowledgments
