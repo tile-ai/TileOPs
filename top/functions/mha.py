@@ -20,7 +20,7 @@ class mha_fwd(Function):
         if is_causal:
             self.total_flops *= 0.5
 
-        # TODO: dispatch to different kernels based on archs and inputs
+        # TODO: dispatch to different kernels based on archs and input shapes
         self.kernel = mha_fwd_kernel_sm80(batch, heads, seq_len, dim, is_causal)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
@@ -51,7 +51,7 @@ class mha_fwd(Function):
         print("All checks passed.✅")
 
     def profile(self, warmup=100, rep=100):
-        # TODO: support cupti backend for better accuracy
+        # TODO: support cupti backend for better accuracy (avaiable in tilelang v0.1.7)
         Q, K, V = self.gen_inputs()
         with torch.no_grad():
             tl_latency = do_bench(lambda: self.forward(Q, K, V), warmup=warmup, rep=rep)
