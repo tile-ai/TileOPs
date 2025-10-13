@@ -21,6 +21,8 @@ class Kernel:
             else:
                 self.config = self.default_config
 
+        print(f"{self.__class__.__name__} initialized with config: {self.config}")
+
     @property
     def default_config(self) -> dict:
         """Return the default config for the kernel"""

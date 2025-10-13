@@ -1,7 +1,12 @@
 import torch
 from torch.nn import functional as F
 from .function import Function
-from top.kernels import mha_fwd_kernel
+from top.kernels import mha_fwd_kernel, mha_fwd_wgmma_pipelined_kernel
+from top.utils import is_hopper
+
+
+__all__ = ['mha_fwd']
+
 
 class mha_fwd(Function):
     """Layout: BSHD"""
@@ -23,7 +28,8 @@ class mha_fwd(Function):
             self.total_flops *= 0.5
 
         # TODO: dispatch to different kernels based on archs and input shapes
-        self.kernel = mha_fwd_kernel(batch, heads, seq_len, dim, is_causal)
+        mha_fwd_kernel_type = mha_fwd_wgmma_pipelined_kernel if is_hopper() else mha_fwd_kernel
+        self.kernel = mha_fwd_kernel_type(batch, heads, seq_len, dim, is_causal)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         return self.kernel(Q, K, V)

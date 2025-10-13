@@ -5,7 +5,6 @@ from top import mha_fwd
 def test_mha_kernel(B, S, H, D, causal):
     fn = mha_fwd(B, H, S, D, causal)
     fn.check()
-    fn.autotune()
     fn.profile()
 
 
