@@ -1,12 +1,25 @@
-from typing import Callable
+from typing import Callable, Optional
+from tilelang.autotuner import autotune
+
 
 class Kernel:
-    # dict类型成员变量config，需要子类初始化
     config: dict
-    mod: Callable
+    autotune_configs: Optional[list[dict]] = None
+    kernel: Callable
 
     def __init__(self, *args, **kwargs):
         self.config = {}
+
+    def init_config(self, config=None, tune=False):
+        if tune:
+            assert config is None, "config should be None when tune is True"
+            self.autotune()
+        else:
+            if config is not None:
+                for k, v in self.default_config.items():
+                    self.config[k] = config[k] if config.get(k) is not None else v
+            else:
+                self.config = self.default_config
 
     @property
     def default_config(self) -> dict:
@@ -15,11 +28,22 @@ class Kernel:
 
     def forward(self, *args, **kwargs):
         """Run the kernel"""
-        return self.mod(*args, **kwargs)
+        # NOTE: pass all inputs and outputs
+        # should override this method in subclasses if not
+        return self.kernel(**self.config)(*args, **kwargs)
 
     __call__ = forward
 
-    def autotune(self):
-        if hasattr(self, 'get_best_config'):
-            self.config = self.get_best_config()
+    def autotune(self, warmup=10, rep=10):
+        assert self.autotune_configs is not None
+        print(f'Start autotuning {self.__class__.__name__}...')
         
+        # Apply autotune decorator to the kernel function
+        autotuned_kernel_fn = autotune(configs=self.autotune_configs, warmup=warmup, rep=rep)(self.kernel)
+        
+        # Call without config parameters to trigger autotuning, returns the tuned kernel
+        tuned_kernel = autotuned_kernel_fn()
+        
+        # Extract and store the best config
+        self.config = tuned_kernel.config
+        print(f'Best config: {self.config}')

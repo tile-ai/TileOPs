@@ -3,9 +3,10 @@ from top import mha_fwd
 
 
 def test_mha_kernel(B, S, H, D, causal):
-    kernel = mha_fwd(B, H, S, D, causal)
-    kernel.check()
-    kernel.profile()
+    fn = mha_fwd(B, H, S, D, causal)
+    fn.check()
+    fn.autotune()
+    fn.profile()
 
 
 if __name__ == "__main__":

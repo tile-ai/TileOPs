@@ -1,21 +1,20 @@
-import torch
 import tilelang as tl
 import tilelang.language as T
-from tilelang.autotuner import autotune
 from typing import Optional
 from .kernel import Kernel
 import itertools
 
 
-__all__ = ['mha_fwd_kernel_sm80']
+__all__ = ['mha_fwd_kernel']
 
 
-def _mha_fwd_kernel_sm80(batch, heads, seq_len, dim, is_causal, tune=False):
+def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     shape = [batch, seq_len, heads, dim]
     dtype = "float16"
     accum_dtype = "float"
 
+    @tl.jit(out_idx=[3, 4])
     def _mha_fwd_func(block_M, block_N, num_stages, threads):
 
         @T.prim_func
@@ -84,26 +83,10 @@ def _mha_fwd_kernel_sm80(batch, heads, seq_len, dim, is_causal, tune=False):
                 T.copy(logsum, lse[bz, by, bx * block_M:(bx + 1) * block_M])
 
         return _mha_fwd_main
-
-    #TODO: refactor this
-    if tune:
-
-        @autotune(configs=get_configs(), warmup=10, rep=10)
-        @tl.jit(out_idx=[3, 4])
-        def _mha_fwd_kernel(block_M=None, block_N=None, num_stages=None, threads=None):
-            return _mha_fwd_func(block_M, block_N, num_stages, threads)
-
-        return _mha_fwd_kernel()
-    else:
-
-        @tl.jit(out_idx=[3, 4])
-        def _mha_fwd_kernel(block_M, block_N, num_stages, threads):
-            return _mha_fwd_func(block_M, block_N, num_stages, threads)
-
-        return _mha_fwd_kernel
+    return _mha_fwd_func
 
     
-class mha_fwd_kernel_sm80(Kernel):
+class mha_fwd_kernel(Kernel):
     def __init__(self, batch, heads, seq_len, dim, is_causal, config: Optional[dict] = None, tune=False):
         super().__init__()
         self.batch = batch
@@ -111,20 +94,15 @@ class mha_fwd_kernel_sm80(Kernel):
         self.seq_len = seq_len
         self.dim = dim
         self.is_causal = is_causal
+
+        self.kernel = _mha_fwd_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal)
         
-        if tune:
-            assert config is None, "config should be None when tune is True"
-            # TODO: use autotune to get the best config
-        else:
-            if config is not None:
-                for k, v in self.default_config.items():
-                    self.config[k] = config[k] if config.get(k) is not None else v
-            else:
-                self.config = self.default_config
+        self.init_config(config, tune)
+        print(f"mha_fwd_kernel initialized with config: {self.config}")
 
-            self.mod = _mha_fwd_kernel_sm80(self.batch, self.heads, self.seq_len, self.dim, self.is_causal)(**self.config)
-
-        print(f"mha_fwd_kernel_sm80 initialized with config: {self.config}")
+    @property
+    def supported_archs(self) -> list[int]:
+        return [80, 89, 90]
 
     @property
     def default_config(self) -> dict:
@@ -150,8 +128,3 @@ class mha_fwd_kernel_sm80(Kernel):
             'threads': c[3]
         } for c in _configs]
         return configs
-
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-        # TODO: Enhance handling of return_lse
-        o, lse = self.mod(Q, K, V)
-        return o, lse
