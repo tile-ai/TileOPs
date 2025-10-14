@@ -1,6 +1,6 @@
 import torch
 from tilelang.profiler import do_bench
-from top import Kernel
+from top.kernels.kernel import Kernel
 from top.utils import get_arch
 from typing import Optional, Union, Dict
 from abc import abstractmethod, ABC
@@ -111,7 +111,8 @@ class Op(ABC):
         elif not isinstance(outputs_ref, tuple):
             raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
 
-        outputs = self.forward(*inputs)
+        with torch.no_grad():
+            outputs = self.forward(*inputs)
 
         if isinstance(outputs, list):
             outputs = tuple(outputs)
@@ -121,9 +122,11 @@ class Op(ABC):
             raise ValueError(f"Unsupported output type: {type(outputs)}")
 
         assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        for output, output_ref in zip(outputs, outputs_ref):
+        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
+            # print(f"outputs[{i}] max err: {(output - output_ref).abs().max()}")
             if output_ref is not None:  # skip checking for None placeholders in ref
-                torch.testing.assert_close(output, output_ref, atol=atol, rtol=rtol)
+                assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
+                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {(output - output_ref).abs().max()}"
 
         print(f"All checks passed for {self.__class__.__name__}.✅")
 
@@ -134,6 +137,7 @@ class Op(ABC):
         inputs = self.gen_inputs()
         with torch.no_grad():
             latency = do_bench(lambda: self.forward(*inputs), warmup=warmup, rep=rep)
+
         print(f"{self.__class__.__name__} latency: {latency:.2f} ms")
         if self.total_flops is not None:
             print(

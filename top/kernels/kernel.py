@@ -45,12 +45,16 @@ class Kernel(ABC):
         """Run the kernel"""
         # NOTE: pass all inputs and outputs
         # should override this method in subclasses if not
-        return self.kernel(**self.config)(*inputs)
+        if len(self.config) == 0:
+            return self.kernel(*inputs)
+        else:
+            return self.kernel(**self.config)(*inputs)
 
     __call__ = forward
 
     def autotune(self, warmup=10, rep=10):
-        assert self.autotune_configs is not None
+        if self.autotune_configs is None:
+            return  # kernel doesn't support autotuning
         print(f'Start autotuning {self.__class__.__name__}...')
 
         # Apply autotune decorator to the kernel function

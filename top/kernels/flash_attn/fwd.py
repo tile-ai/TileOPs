@@ -1,7 +1,7 @@
 import tilelang
 import tilelang.language as T
 from typing import Optional
-from .kernel import Kernel
+from top.kernels.kernel import Kernel
 import itertools
 
 __all__ = ['mha_fwd_kernel', 'mha_fwd_wgmma_pipelined_kernel']
@@ -116,7 +116,12 @@ class mha_fwd_kernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"block_M": 64, "block_N": 64, "num_stages": 1, "threads": 128}
+        return {
+            "block_M": 64,
+            "block_N": 64 if self.dim <= 128 else 32,
+            "num_stages": 1,
+            "threads": 128
+        }
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -265,6 +270,9 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                     acc_o[i, j] /= logsum[i]
                 T.copy(acc_o, O_shared)
                 T.copy(O_shared, Output[bz, bx * block_M:(bx + 1) * block_M, by, :])
+                for i in T.Parallel(block_M):
+                    logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
+                T.copy(logsum, lse[bz, by, bx * block_M:(bx + 1) * block_M])
 
         return _mha_fwd_wgmma_pipelined_main
 
