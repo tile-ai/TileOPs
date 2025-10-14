@@ -11,10 +11,11 @@ class Op(ABC):
     A Op represents a computational operation with:
     - Hardware-aware kernel dispatch
     - Correctness testing via reference implementation
-    - Performance profiling and autotuning
+    - Performance profiling
+    - Autotuning interface
     
     Examples:
-        >>> from top import mha_fwd  # a subclass of Op
+        >>> from top import mha_fwd  # mha_fwd is a subclass of Op
         >>> op = mha_fwd(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
         >>> Q, K, V = op.gen_inputs()
         >>> output = op(Q, K, V)
@@ -75,8 +76,22 @@ class Op(ABC):
     def check(self, atol=1e-2, rtol=1e-2):
         """Check the correctness of the op"""
         inputs = self.gen_inputs()
+        
+        try:
+            outputs_ref = self.ref_program(*inputs)
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
+                return
+            else:
+                raise e
+
+        if isinstance(outputs_ref, torch.Tensor):
+            outputs_ref = (outputs_ref,)
+        elif not isinstance(outputs_ref, tuple):
+            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
+        
         outputs = self.forward(*inputs)
-        outputs_ref = self.ref_program(*inputs)
 
         if isinstance(outputs, list):
             outputs = tuple(outputs)
@@ -85,15 +100,11 @@ class Op(ABC):
         elif not isinstance(outputs, tuple):
             raise ValueError(f"Unsupported output type: {type(outputs)}")
 
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
         assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
         for output, output_ref in zip(outputs, outputs_ref):
             if output_ref is not None:  # skip checking for None placeholders in ref
                 torch.testing.assert_close(output, output_ref, atol=atol, rtol=rtol)
+        
         print(f"All checks passed for {self.__class__.__name__}.✅")
             
     def profile(self, warmup=25, rep=100):

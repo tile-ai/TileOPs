@@ -11,7 +11,7 @@ __all__ = ['mha_fwd']
 class mha_fwd(Op):
     """Layout: BSHD"""
 
-    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype=torch.float16):
+    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype=torch.float16, tune=False):
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  #TODO: support s_q != s_kv
@@ -22,9 +22,8 @@ class mha_fwd(Op):
 
         self.input_shapes = [(batch, seq_len, heads, dim) for _ in range(3)]
 
-        # TODO: dispatch to different kernels based on archs and input shapes
         mha_fwd_kernel_type = mha_fwd_wgmma_pipelined_kernel if is_hopper() else mha_fwd_kernel
-        self.kernel = mha_fwd_kernel_type(batch, heads, seq_len, dim, is_causal, self.dtype)
+        self.kernel = mha_fwd_kernel_type(batch, heads, seq_len, dim, is_causal, self.dtype, tune=tune)
 
     @property
     def total_flops(self):  # use property to support dynamic shape in the future
