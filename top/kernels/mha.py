@@ -1,4 +1,4 @@
-import tilelang as tl
+import tilelang
 import tilelang.language as T
 from typing import Optional
 from .kernel import Kernel
@@ -8,13 +8,15 @@ import itertools
 __all__ = ['mha_fwd_kernel', 'mha_fwd_wgmma_pipelined_kernel']
 
 
-def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal):
+def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     shape = [batch, seq_len, heads, dim]
-    dtype = "float16"
     accum_dtype = "float"
 
-    @tl.jit(out_idx=[3, 4])
+    @tilelang.jit(
+        out_idx=[3, 4],
+        # NOTE: Add TL_ENABLE_FAST_MATH after TL v0.1.7
+        compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_func(block_M, block_N, num_stages, threads):
 
         @T.prim_func
@@ -88,15 +90,16 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal):
 
     
 class mha_fwd_kernel(Kernel):
-    def __init__(self, batch, heads, seq_len, dim, is_causal, config: Optional[dict] = None, tune=False):
+    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, config: Optional[dict] = None, tune=False):
         super().__init__()
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.dim = dim
         self.is_causal = is_causal
+        self.dtype = dtype
 
-        self.kernel = _mha_fwd_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal)
+        self.kernel = _mha_fwd_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal, self.dtype_str)
         
         self.init_config(config, tune)
 
@@ -130,13 +133,15 @@ class mha_fwd_kernel(Kernel):
         return configs
 
 
-def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal):
+def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     shape = [batch, seq_len, heads, dim]
-    dtype = "float16"
     accum_dtype = "float"
 
-    @tl.jit(out_idx=[3, 4])
+    @tilelang.jit(
+        out_idx=[3, 4],
+        # NOTE: Add TL_ENABLE_FAST_MATH after TL v0.1.7
+        compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
         
         @T.macro
@@ -233,7 +238,7 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal):
                 scores_sum = T.alloc_fragment([block_M], accum_dtype)
                 logsum = T.alloc_fragment([block_M], accum_dtype)
 
-                T.annotate_layout({O_shared: tl.layout.make_swizzled_layout(O_shared)})
+                T.annotate_layout({O_shared: tilelang.layout.make_swizzled_layout(O_shared)})
                 T.copy(Q[bz, bx * block_M:(bx + 1) * block_M, by, :], Q_shared)
                 T.clear(acc_o)
                 T.clear(logsum)
@@ -264,15 +269,16 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal):
 
 
 class mha_fwd_wgmma_pipelined_kernel(Kernel):
-    def __init__(self, batch, heads, seq_len, dim, is_causal, config: Optional[dict] = None, tune=False):
+    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, config: Optional[dict] = None, tune=False):
         super().__init__()
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.dim = dim
         self.is_causal = is_causal
+        self.dtype = dtype
 
-        self.kernel = _mha_fwd_wgmma_pipelined_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal)
+        self.kernel = _mha_fwd_wgmma_pipelined_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal, self.dtype_str)
         
         self.init_config(config, tune)
 

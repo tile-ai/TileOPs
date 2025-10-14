@@ -120,9 +120,9 @@ out = mla(q, q_pe, kv, k_pe)
 ### Hierarchical Concepts
 There are 4 hierarchical key concepts in TileOPs, each layer stands for a different level of abstraction and is built from or delegates to the next lower level.
 
-- **Layer**: **Op**s that are equipped with runtime elements (e.g. Weights, Buffers, etc.) 
-- **Op**: defines computation and is implemented **Function**s for forward and backward.
-- **Function**: determines the implementation for a given shape and hardware, dispatching to the correct **Kernel** and providing unit test and benchmark.
+- **Layer**: **Function**s that are equipped with runtime elements (e.g. Weights, Buffers, etc.) 
+- **Function**: defines computation and is implemented **Op**s for forward and backward.
+- **Op**: determines the implementation for a given shape and hardware, dispatching to the correct **Kernel** and providing unit test and benchmark.
 - **Kernel**: Tilelang-based kernels for hardware-specific logic.
 
 ## Acknowledgments

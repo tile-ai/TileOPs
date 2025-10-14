@@ -1,18 +1,22 @@
 from typing import Callable, Optional
 from tilelang.autotuner import autotune
+from abc import ABC, abstractmethod
+import torch
 
-
-class Kernel:
+class Kernel(ABC):
+    dtype: Optional[torch.dtype] = None
     config: dict
     autotune_configs: Optional[list[dict]] = None
-    kernel: Callable
+    kernel: Callable[[dict], Callable]
 
     def __init__(self, *args, **kwargs):
         self.config = {}
 
     def init_config(self, config=None, tune=False):
         if tune:
-            assert config is None, "config should be None when tune is True"
+            if config is not None:
+                import warnings
+                warnings.warn("Both 'config' and 'tune' are set. 'config' will be ignored in favor of autotuning.", UserWarning)
             self.autotune()
         else:
             if config is not None:
@@ -22,6 +26,11 @@ class Kernel:
                 self.config = self.default_config
 
         print(f"{self.__class__.__name__} initialized with config: {self.config}")
+
+    @property
+    def dtype_str(self) -> str:
+        """Convert dtype to str for tl kernels"""
+        return str(self.dtype).split('.')[-1]
 
     @property
     def default_config(self) -> dict:

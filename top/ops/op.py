@@ -1,37 +1,79 @@
 import torch
-from tilelang import JITKernel
 from tilelang.profiler import do_bench
 from top import Kernel
 from typing import Optional, Union
+from abc import abstractmethod, ABC
 
-class Function:
-    kernel: JITKernel = None
+
+class Op(ABC):
+    """Base class for TileOPs operations.
+    
+    A Op represents a computational operation with:
+    - Hardware-aware kernel dispatch
+    - Correctness testing via reference implementation
+    - Performance profiling and autotuning
+    
+    Examples:
+        >>> from top import mha_fwd  # a subclass of Op
+        >>> op = mha_fwd(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
+        >>> Q, K, V = op.gen_inputs()
+        >>> output = op(Q, K, V)
+        >>> op.check()  # Verify correctness
+        >>> latency = op.profile()  # Benchmark performance
+    
+    Attributes:
+        kernel: top.Kernel instance (e.g. mha_fwd_kernel)
+        dtype: Data type for computation (e.g., torch.float16)
+        device: Device for computation (e.g., 'cuda')
+        input_shapes: Expected input tensor shapes
+
+    Properties:
+        total_flops (optional): Total flops for the op.
+            If specified, will be used to calculate TFlops in profile().
+        total_memory (optional): Total memory for the op.
+            If specified, will be used to calculate Bandwidth in profile().
+    """
+
+    kernel: Kernel
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
-    total_flops: Optional[float] = None
-    total_memory: Optional[float] = None
+
+    @property
+    def total_flops(self):
+        return None
+    
+    @property
+    def total_memory(self):
+        return None
 
     def autotune(self):
+        """Autotune all kernels of the op"""
         for attr_name in dir(self):
             attr = getattr(self, attr_name)
             if isinstance(attr, Kernel):
                 attr.autotune()
 
+    @abstractmethod
     def forward(self, *args, **kwargs):
         raise NotImplementedError("forward method is not implemented")
 
-    __call__ = forward
+    def __call__(self, *args, **kwargs):
+        """Make the op callable - delegates to forward()"""
+        return self.forward(*args, **kwargs)
 
+    @abstractmethod
     def ref_program(self, *inputs):
         raise NotImplementedError("ref_program method is not implemented")
 
     def gen_inputs(self):
+        """Generate random inputs for the op"""
         assert self.input_shapes is not None, "input_shapes is not set for default gen_inputs()"
         return tuple(torch.randn(shape, device=self.device, dtype=self.dtype) for shape in self.input_shapes)
         # NOTE: by default all dtypes are self.dtype, should override this method in subclasses if not
 
     def check(self, atol=1e-2, rtol=1e-2):
+        """Check the correctness of the op"""
         inputs = self.gen_inputs()
         outputs = self.forward(*inputs)
         outputs_ref = self.ref_program(*inputs)
@@ -55,6 +97,7 @@ class Function:
         print(f"All checks passed for {self.__class__.__name__}.✅")
             
     def profile(self, warmup=25, rep=100):
+        """Profile the op, and print relevant metrics"""
         #TODO: add cupti backend for better accuracy
         print(f"===== Profiling {self.__class__.__name__} =====")
         inputs = self.gen_inputs()
