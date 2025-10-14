@@ -54,6 +54,7 @@ def ensure_contiguous(func: callable) -> callable:
 
     return wrapper
 
+
 def is_hopper():
     return torch.cuda.get_device_capability() == (9, 0)
 

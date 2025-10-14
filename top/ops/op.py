@@ -62,7 +62,7 @@ class Op(ABC):
     @property
     def total_flops(self):
         return None
-    
+
     @property
     def total_memory(self):
         return None
@@ -89,13 +89,14 @@ class Op(ABC):
     def gen_inputs(self):
         """Generate random inputs for the op"""
         assert self.input_shapes is not None, "input_shapes is not set for default gen_inputs()"
-        return tuple(torch.randn(shape, device=self.device, dtype=self.dtype) for shape in self.input_shapes)
+        return tuple(
+            torch.randn(shape, device=self.device, dtype=self.dtype) for shape in self.input_shapes)
         # NOTE: by default all dtypes are self.dtype, should override this method in subclasses if not
 
     def check(self, atol=1e-2, rtol=1e-2):
         """Check the correctness of the op"""
         inputs = self.gen_inputs()
-        
+
         try:
             outputs_ref = self.ref_program(*inputs)
         except RuntimeError as e:
@@ -109,7 +110,7 @@ class Op(ABC):
             outputs_ref = (outputs_ref,)
         elif not isinstance(outputs_ref, tuple):
             raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-        
+
         outputs = self.forward(*inputs)
 
         if isinstance(outputs, list):
@@ -123,9 +124,9 @@ class Op(ABC):
         for output, output_ref in zip(outputs, outputs_ref):
             if output_ref is not None:  # skip checking for None placeholders in ref
                 torch.testing.assert_close(output, output_ref, atol=atol, rtol=rtol)
-        
+
         print(f"All checks passed for {self.__class__.__name__}.✅")
-            
+
     def profile(self, warmup=25, rep=100):
         """Profile the op, and print relevant metrics"""
         #TODO: add cupti backend for better accuracy
@@ -135,6 +136,9 @@ class Op(ABC):
             latency = do_bench(lambda: self.forward(*inputs), warmup=warmup, rep=rep)
         print(f"{self.__class__.__name__} latency: {latency:.2f} ms")
         if self.total_flops is not None:
-            print(f"{self.__class__.__name__} TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
+            print(
+                f"{self.__class__.__name__} TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
         if self.total_memory is not None:
-            print(f"{self.__class__.__name__} Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s")
+            print(
+                f"{self.__class__.__name__} Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s"
+            )

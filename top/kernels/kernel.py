@@ -18,7 +18,9 @@ class Kernel(ABC):
         if tune:
             if config is not None:
                 import warnings
-                warnings.warn("Both 'config' and 'tune' are set. 'config' will be ignored in favor of autotuning.")
+                warnings.warn(  # noqa: B028
+                    "Both 'config' and 'tune' are set. 'config' will be ignored in favor of autotuning."
+                )
             self.autotune()
         else:
             if config is not None:
@@ -50,13 +52,15 @@ class Kernel(ABC):
     def autotune(self, warmup=10, rep=10):
         assert self.autotune_configs is not None
         print(f'Start autotuning {self.__class__.__name__}...')
-        
+
         # Apply autotune decorator to the kernel function
-        autotuned_kernel_fn = autotune(configs=self.autotune_configs, warmup=warmup, rep=rep)(self.kernel)
-        
+        autotuned_kernel_fn = autotune(
+            configs=self.autotune_configs, warmup=warmup, rep=rep)(
+                self.kernel)
+
         # Call without config parameters to trigger autotuning, returns the tuned kernel
         tuned_kernel = autotuned_kernel_fn()
-        
+
         # Extract and store the best config
         self.config = tuned_kernel.config
         print(f'Best config: {self.config}')

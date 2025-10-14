@@ -1,2 +1,2 @@
-from .kernel import Kernel
+from .kernel import Kernel  # noqa: F401
 from .mha import *

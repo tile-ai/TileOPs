@@ -4,7 +4,6 @@ from typing import Optional
 from .kernel import Kernel
 import itertools
 
-
 __all__ = ['mha_fwd_kernel', 'mha_fwd_wgmma_pipelined_kernel']
 
 
@@ -86,13 +85,22 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
                 T.copy(logsum, lse[bz, by, bx * block_M:(bx + 1) * block_M])
 
         return _mha_fwd_main
+
     return _mha_fwd_func
 
-    
+
 class mha_fwd_kernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
-    
-    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, config: Optional[dict] = None, tune=False):
+
+    def __init__(self,
+                 batch,
+                 heads,
+                 seq_len,
+                 dim,
+                 is_causal,
+                 dtype,
+                 config: Optional[dict] = None,
+                 tune=False):
         super().__init__()
         self.batch = batch
         self.heads = heads
@@ -101,18 +109,14 @@ class mha_fwd_kernel(Kernel):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.kernel = _mha_fwd_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal, self.dtype_str)
-        
+        self.kernel = _mha_fwd_kernel(self.batch, self.heads, self.seq_len, self.dim,
+                                      self.is_causal, self.dtype_str)
+
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
-        return {
-            "block_M": 64,
-            "block_N":64,
-            "num_stages": 1,
-            "threads": 128
-        }
+        return {"block_M": 64, "block_N": 64, "num_stages": 1, "threads": 128}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -141,7 +145,7 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
         # NOTE: Add TL_ENABLE_FAST_MATH after TL v0.1.7
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
-        
+
         @T.macro
         def MMA0(
             K: T.Tensor(shape, dtype),
@@ -157,7 +161,7 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
             if is_causal:
                 for i, j in T.Parallel(block_M, block_N):
                     acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
-                                                -T.infinity(acc_s.dtype))
+                                                 -T.infinity(acc_s.dtype))
             else:
                 T.clear(acc_s)
             T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
@@ -247,14 +251,14 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                         (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
 
                 for k in T.Pipelined(
-                    loop_range,
-                    num_stages=num_stages,
-                    order=[-1, 0, 3, 1, -1, 2],
-                    stage=[-1, 0, 0, 1, -1, 1],
-                    group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12], [13]]):
+                        loop_range,
+                        num_stages=num_stages,
+                        order=[-1, 0, 3, 1, -1, 2],
+                        stage=[-1, 0, 0, 1, -1, 1],
+                        group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12], [13]]):
                     MMA0(K, Q_shared, K_shared, acc_s, k, bx, by, bz)
-                    Softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale, scores_sum,
-                            logsum)
+                    Softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale,
+                            scores_sum, logsum)
                     Rescale(acc_o, scores_scale)
                     MMA1(V, V_shared, acc_s_cast, acc_o, k, by, bz)
                 for i, j in T.Parallel(block_M, dim):
@@ -263,13 +267,22 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                 T.copy(O_shared, Output[bz, bx * block_M:(bx + 1) * block_M, by, :])
 
         return _mha_fwd_wgmma_pipelined_main
+
     return _mha_fwd_wgmma_pipelined_func
 
 
 class mha_fwd_wgmma_pipelined_kernel(Kernel):
     supported_archs: list[int] = [90]
-    
-    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, config: Optional[dict] = None, tune=False):
+
+    def __init__(self,
+                 batch,
+                 heads,
+                 seq_len,
+                 dim,
+                 is_causal,
+                 dtype,
+                 config: Optional[dict] = None,
+                 tune=False):
         super().__init__()
         self.batch = batch
         self.heads = heads
@@ -278,18 +291,14 @@ class mha_fwd_wgmma_pipelined_kernel(Kernel):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.kernel = _mha_fwd_wgmma_pipelined_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal, self.dtype_str)
-        
+        self.kernel = _mha_fwd_wgmma_pipelined_kernel(self.batch, self.heads, self.seq_len,
+                                                      self.dim, self.is_causal, self.dtype_str)
+
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
-        return {
-            "block_M": 128,
-            "block_N":128,
-            "num_stages": 2,
-            "threads": 256
-        }
+        return {"block_M": 128, "block_N": 128, "num_stages": 2, "threads": 256}
 
     @property
     def autotune_configs(self) -> list[dict]:

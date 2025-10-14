@@ -1,2 +1,2 @@
-from .op import Op
+from .op import Op  # noqa: F401
 from .mha import *
