@@ -1,8 +1,9 @@
 import torch
 from torch.nn import functional as F
 from .op import Op
-from top.kernels import mha_fwd_kernel, mha_fwd_wgmma_pipelined_kernel
+from top.kernels import mha_fwd_kernel, mha_fwd_wgmma_pipelined_kernel, Kernel
 from top.utils import is_hopper
+from typing import Optional, Dict
 
 
 __all__ = ['mha_fwd']
@@ -11,7 +12,16 @@ __all__ = ['mha_fwd']
 class mha_fwd(Op):
     """Layout: BSHD"""
 
-    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype=torch.float16, tune=False):
+    def __init__(self, 
+        batch, 
+        heads, 
+        seq_len, 
+        dim, 
+        is_causal, 
+        dtype=torch.float16, 
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune=False
+    ):
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  #TODO: support s_q != s_kv
@@ -22,9 +32,15 @@ class mha_fwd(Op):
 
         self.input_shapes = [(batch, seq_len, heads, dim) for _ in range(3)]
 
-        mha_fwd_kernel_type = mha_fwd_wgmma_pipelined_kernel if is_hopper() else mha_fwd_kernel
-        self.kernel = mha_fwd_kernel_type(batch, heads, seq_len, dim, is_causal, self.dtype, tune=tune)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["mha_fwd_kernel"](batch, heads, seq_len, dim, is_causal, self.dtype, tune=tune)
 
+    @property
+    def default_kernel_map(self):
+        return {
+            "mha_fwd_kernel": mha_fwd_wgmma_pipelined_kernel if is_hopper() else mha_fwd_kernel
+        }
+    
     @property
     def total_flops(self):  # use property to support dynamic shape in the future
         flops_per_matmul = 2.0 * self.batch * self.heads * self.seq_len * self.seq_len * self.dim

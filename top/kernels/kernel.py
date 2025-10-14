@@ -8,6 +8,7 @@ class Kernel(ABC):
     dtype: Optional[torch.dtype] = None
     config: dict
     autotune_configs: Optional[list[dict]] = None
+    supported_archs: Optional[list[int]] = None
     kernel: Callable[[dict], Callable]
 
     def __init__(self, *args, **kwargs):

@@ -90,6 +90,8 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
 
     
 class mha_fwd_kernel(Kernel):
+    supported_archs: list[int] = [80, 89, 90]
+    
     def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, config: Optional[dict] = None, tune=False):
         super().__init__()
         self.batch = batch
@@ -102,10 +104,6 @@ class mha_fwd_kernel(Kernel):
         self.kernel = _mha_fwd_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal, self.dtype_str)
         
         self.init_config(config, tune)
-
-    @property
-    def supported_archs(self) -> list[int]:
-        return [80, 89, 90]
 
     @property
     def default_config(self) -> dict:
@@ -269,6 +267,8 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
 
 
 class mha_fwd_wgmma_pipelined_kernel(Kernel):
+    supported_archs: list[int] = [90]
+    
     def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, config: Optional[dict] = None, tune=False):
         super().__init__()
         self.batch = batch
@@ -281,10 +281,6 @@ class mha_fwd_wgmma_pipelined_kernel(Kernel):
         self.kernel = _mha_fwd_wgmma_pipelined_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal, self.dtype_str)
         
         self.init_config(config, tune)
-
-    @property
-    def supported_archs(self) -> list[int]:
-        return [90]
 
     @property
     def default_config(self) -> dict:

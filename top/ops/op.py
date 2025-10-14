@@ -1,7 +1,8 @@
 import torch
 from tilelang.profiler import do_bench
 from top import Kernel
-from typing import Optional, Union
+from top.utils import get_arch
+from typing import Optional, Union, Dict
 from abc import abstractmethod, ABC
 
 
@@ -36,9 +37,27 @@ class Op(ABC):
     """
 
     kernel: Kernel
+    kernel_map: Optional[Dict[str, Kernel]] = {}
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
+
+    @property
+    @abstractmethod
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        raise NotImplementedError("Op must implement default_kernel_map")
+
+    def dispatch_kernel(self, kernel_map: Optional[Dict[str, Kernel]] = None):
+        assert self.default_kernel_map is not None and len(self.default_kernel_map) > 0
+        for name, default_kernel in self.default_kernel_map.items():
+            if kernel_map is not None and name in kernel_map:
+                kernel_type = kernel_map[name]
+            else:
+                kernel_type = default_kernel
+            current_arch = get_arch()
+            assert current_arch in kernel_type.supported_archs, \
+                f'{kernel_type.__name__} is not supported on architecture {current_arch}'
+            self.kernel_map[name] = kernel_type
 
     @property
     def total_flops(self):
