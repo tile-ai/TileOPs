@@ -1,8 +1,9 @@
 import tilelang
 import tilelang.language as T
-from typing import Optional
+from typing import Optional, Tuple
 from top.kernels.kernel import Kernel
 import itertools
+import torch
 
 __all__ = ['mha_fwd_kernel', 'mha_fwd_wgmma_pipelined_kernel']
 
@@ -91,6 +92,33 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
     return _mha_fwd_func
 
 
+@torch.library.custom_op("top::mha_fwd_wrapped_kernel", mutates_args=())
+def _mha_fwd_wrapped_kernel(
+    batch: int,
+    heads: int,
+    seq_len: int,
+    dim: int,
+    is_causal: bool,
+    dtype: str,
+    block_M: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal,
+                           dtype)(block_M, block_N, num_stages, threads)(Q, K, V)
+
+
+@_mha_fwd_wrapped_kernel.register_fake
+def _(batch, heads, seq_len, dim, is_causal, dtype, block_M, block_N, num_stages, threads, *inputs):
+    fake_o = torch.empty_like(inputs[0])
+    fake_lse = fake_o.new_empty([batch, heads, seq_len])
+    return fake_o, fake_lse
+
+
 class mha_fwd_kernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
@@ -140,6 +168,12 @@ class mha_fwd_kernel(Kernel):
             'threads': c[3]
         } for c in _configs]
         return configs
+
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+        return _mha_fwd_wrapped_kernel(self.batch, self.heads, self.seq_len, self.dim,
+                                       self.is_causal, self.dtype_str, self.config["block_M"],
+                                       self.config["block_N"], self.config["num_stages"],
+                                       self.config["threads"], Q, K, V)
 
 
 def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
@@ -327,3 +361,6 @@ class mha_fwd_wgmma_pipelined_kernel(Kernel):
             'threads': c[3]
         } for c in _configs]
         return configs
+
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+        return self.kernel(**self.config)(Q, K, V)

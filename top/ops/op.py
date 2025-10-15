@@ -54,8 +54,9 @@ class Op(ABC):
             else:
                 kernel_type = default_kernel
             current_arch = get_arch()
-            assert current_arch in kernel_type.supported_archs, \
-                f'{kernel_type.__name__} is not supported on architecture {current_arch}'
+            if kernel_type is not None:
+                assert current_arch in kernel_type.supported_archs, \
+                    f'{kernel_type.__name__} is not supported on architecture {current_arch}'
             self.kernel_map[name] = kernel_type
 
     def autotune(self):

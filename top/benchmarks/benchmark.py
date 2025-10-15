@@ -26,7 +26,6 @@ class Benchmark(ABC):
 
     def check(self, op, *inputs, atol=1e-2, rtol=1e-2):
         """Check the correctness of the op"""
-        assert isinstance(op, self.op_type), f"op is not instance of {self.op_type.__name__}"
 
         try:
             outputs_ref = self.ref_program(*inputs)
@@ -62,7 +61,7 @@ class Benchmark(ABC):
         print(f"All checks passed for {op.__class__.__name__}.✅")
 
     def profile(self, op, *inputs, warmup=25, rep=100):
-        assert isinstance(op, self.op_type), f"op is not instance of {self.op_type.__name__}"
+        """Benchmark the perf of the op"""
 
         print(f"===== Profiling {op.__class__.__name__} =====")
         with torch.no_grad():

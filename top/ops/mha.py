@@ -1,7 +1,8 @@
 import torch
 from .op import Op
 from top.kernels import (mha_fwd_kernel, mha_fwd_wgmma_pipelined_kernel, mha_bwd_preprocess_kernel,
-                         mha_bwd_kernel, mha_bwd_wgmma_pipelined_kernel, Kernel)
+                         mha_bwd_kernel, mha_bwd_wgmma_pipelined_kernel, Kernel,
+                         mha_bwd_postprocess_kernel)
 from top.utils import is_hopper
 from typing import Optional, Dict
 
@@ -69,12 +70,16 @@ class mha_bwd(Op):
                                                                         self.dtype)
         self.kernel = self.kernel_map["mha_bwd_kernel"](
             batch, heads, seq_len, dim, is_causal, self.dtype, tune=tune)
+        if not is_hopper():
+            self.post_kernel = self.kernel_map["mha_bwd_postprocess_kernel"](batch, heads, seq_len,
+                                                                             dim, self.dtype)
 
     @property
     def default_kernel_map(self):
         return {
             "mha_bwd_preprocess_kernel": mha_bwd_preprocess_kernel,
             "mha_bwd_kernel": mha_bwd_wgmma_pipelined_kernel if is_hopper() else mha_bwd_kernel,
+            "mha_bwd_postprocess_kernel": mha_bwd_postprocess_kernel if not is_hopper() else None,
         }
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
@@ -82,5 +87,5 @@ class mha_bwd(Op):
         delta = self.prep_kernel(O, dO)
         dQ = torch.zeros_like(Q, dtype=torch.float32)
         dK, dV = self.kernel(Q, K, V, dO, lse, delta, dQ)
-        dQ = dQ.to(self.dtype)
+        dQ = dQ.to(self.dtype) if is_hopper() else self.post_kernel(dQ)
         return dQ, dK, dV

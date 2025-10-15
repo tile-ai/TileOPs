@@ -1,24 +1,22 @@
+# This test validates the compatibility of TileOps operators with torch.compile().
+# Check: https://docs.pytorch.org/tutorials/advanced/python_custom_ops.html
+
 import argparse
 from top import mha_fwd, mha_fwd_benchmark, mha_fwd_kernel
 from top.utils import str2dtype
+import torch
 
 
-def test_mha_fwd(B, S, H, D, causal, dtype):
-    op = mha_fwd(B, H, S, D, causal, dtype)
-    benchmark = mha_fwd_benchmark(B, H, S, D, causal, dtype)
-
-    inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
-    benchmark.profile(op, *inputs)
-
-
-def test_mha_fwd_sm80(B, S, H, D, causal, dtype):
+def test_mha_kernel_compile(B, S, H, D, causal, dtype):
     op = mha_fwd(B, H, S, D, causal, dtype, kernel_map={"mha_fwd_kernel": mha_fwd_kernel})
     benchmark = mha_fwd_benchmark(B, H, S, D, causal, dtype)
 
+    compiled_op = torch.compile(op, fullgraph=True)
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
-    benchmark.profile(op, *inputs)
+    benchmark.check(compiled_op, *inputs)  # will throw an error if not compatible
+    benchmark.profile(compiled_op, *inputs)
+
+    print('Successfully validate the compatibility with torch.compile().✅')
 
 
 if __name__ == "__main__":
@@ -32,4 +30,5 @@ if __name__ == "__main__":
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
     args = parser.parse_args()
 
-    test_mha_fwd(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype])
+    test_mha_kernel_compile(args.batch, args.seq_len, args.heads, args.dim, args.causal,
+                            str2dtype[args.dtype])

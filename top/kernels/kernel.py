@@ -1,6 +1,6 @@
 from typing import Callable, Optional
 from tilelang.autotuner import autotune
-from abc import ABC
+from abc import ABC, abstractmethod
 import torch
 
 
@@ -41,16 +41,13 @@ class Kernel(ABC):
         """Return the default config for the kernel"""
         return {}
 
-    def forward(self, *inputs):
+    @abstractmethod
+    def forward(self, *args, **kwargs):
         """Run the kernel"""
-        # NOTE: pass all inputs and outputs
-        # should override this method in subclasses if not
-        if len(self.config) == 0:
-            return self.kernel(*inputs)
-        else:
-            return self.kernel(**self.config)(*inputs)
+        raise NotImplementedError
 
-    __call__ = forward
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
 
     def autotune(self, warmup=10, rep=10):
         if self.autotune_configs is None:
