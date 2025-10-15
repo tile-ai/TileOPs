@@ -1,14 +1,15 @@
 import argparse
-from top import mha_fwd
+from top import mha_bwd, mha_bwd_benchmark
 from top.utils import str2dtype
 
 
-def test_mha_kernel_autotune(B, S, H, D, causal, dtype):
-    # 1. test autotune at initialization
-    op = mha_fwd(B, H, S, D, causal, dtype, tune=True)
+def test_mha_fwd(B, S, H, D, causal, dtype):
+    op = mha_bwd(B, H, S, D, causal, dtype)
+    benchmark = mha_bwd_benchmark(B, H, S, D, causal, dtype)
 
-    # 2. test op.autotune()
-    op.autotune()
+    inputs = benchmark.gen_inputs()
+    benchmark.check(op, *inputs)
+    benchmark.profile(op, *inputs)
 
 
 if __name__ == "__main__":
@@ -22,5 +23,4 @@ if __name__ == "__main__":
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
     args = parser.parse_args()
 
-    test_mha_kernel_autotune(args.batch, args.seq_len, args.heads, args.dim, args.causal,
-                             str2dtype[args.dtype])
+    test_mha_fwd(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype])

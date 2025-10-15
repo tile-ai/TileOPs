@@ -1,5 +1,4 @@
 import torch
-from tilelang.profiler import do_bench
 from top.kernels.kernel import Kernel
 from top.utils import get_arch
 from typing import Optional, Union, Dict
@@ -59,14 +58,6 @@ class Op(ABC):
                 f'{kernel_type.__name__} is not supported on architecture {current_arch}'
             self.kernel_map[name] = kernel_type
 
-    @property
-    def total_flops(self):
-        return None
-
-    @property
-    def total_memory(self):
-        return None
-
     def autotune(self):
         """Autotune all kernels of the op"""
         for attr_name in dir(self):
@@ -81,69 +72,3 @@ class Op(ABC):
     def __call__(self, *args, **kwargs):
         """Make the op callable - delegates to forward()"""
         return self.forward(*args, **kwargs)
-
-    @abstractmethod
-    def ref_program(self, *inputs):
-        raise NotImplementedError("ref_program method is not implemented")
-
-    def gen_inputs(self):
-        """Generate random inputs for the op"""
-        assert self.input_shapes is not None, "input_shapes is not set for default gen_inputs()"
-        return tuple(
-            torch.randn(shape, device=self.device, dtype=self.dtype) for shape in self.input_shapes)
-        # NOTE: by default all dtypes are self.dtype, should override this method in subclasses if not
-
-    def check(self, atol=1e-2, rtol=1e-2):
-        """Check the correctness of the op"""
-        inputs = self.gen_inputs()
-
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            else:
-                raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        with torch.no_grad():
-            outputs = self.forward(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
-            # print(f"outputs[{i}] max err: {(output - output_ref).abs().max()}")
-            if output_ref is not None:  # skip checking for None placeholders in ref
-                assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
-                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {(output - output_ref).abs().max()}"
-
-        print(f"All checks passed for {self.__class__.__name__}.✅")
-
-    def profile(self, warmup=25, rep=100):
-        """Profile the op, and print relevant metrics"""
-        print(f"===== Profiling {self.__class__.__name__} =====")
-        inputs = self.gen_inputs()
-        with torch.no_grad():
-            latency = do_bench(
-                lambda: self.forward(*inputs), warmup=warmup, rep=rep,
-                backend='cupti')  # Always use cupti backend for better accuracy
-
-        print(f"{self.__class__.__name__} latency: {latency:.2f} ms")
-        if self.total_flops is not None:
-            print(
-                f"{self.__class__.__name__} TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
-        if self.total_memory is not None:
-            print(
-                f"{self.__class__.__name__} Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s"
-            )

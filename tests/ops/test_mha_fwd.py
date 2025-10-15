@@ -1,30 +1,15 @@
 import argparse
-from top import mha_fwd, mha_fwd_kernel, mha_bwd, mha_bwd_kernel
+from top import mha_fwd, mha_fwd_benchmark
 from top.utils import str2dtype
 
 
 def test_mha_fwd(B, S, H, D, causal, dtype):
     op = mha_fwd(B, H, S, D, causal, dtype)
-    op.check()
-    op.profile()
+    benchmark = mha_fwd_benchmark(B, H, S, D, causal, dtype)
 
-
-def test_mha_sm80(B, S, H, D, causal, dtype):
-    op = mha_fwd(B, H, S, D, causal, dtype, kernel_map={"mha_fwd_kernel": mha_fwd_kernel})
-    op.check()
-    op.profile()
-
-
-def test_mha_bwd(B, S, H, D, causal, dtype):
-    op = mha_bwd(B, H, S, D, causal, dtype)
-    op.check()
-    op.profile()
-
-
-def test_mha_bwd_sm80(B, S, H, D, causal, dtype):
-    op = mha_bwd(B, H, S, D, causal, dtype, kernel_map={"mha_bwd_kernel": mha_bwd_kernel})
-    op.check()
-    op.profile()
+    inputs = benchmark.gen_inputs()
+    benchmark.check(op, *inputs)
+    benchmark.profile(op, *inputs)
 
 
 if __name__ == "__main__":
@@ -38,4 +23,4 @@ if __name__ == "__main__":
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
     args = parser.parse_args()
 
-    test_mha_bwd(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype])
+    test_mha_fwd(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype])
