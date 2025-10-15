@@ -14,7 +14,9 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
 
     @tilelang.jit(
         out_idx=[3, 4],
-        # NOTE: Add TL_ENABLE_FAST_MATH after TL v0.1.7
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_func(block_M, block_N, num_stages, threads):
 
@@ -147,7 +149,9 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
 
     @tilelang.jit(
         out_idx=[3, 4],
-        # NOTE: Add TL_ENABLE_FAST_MATH after TL v0.1.7
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 

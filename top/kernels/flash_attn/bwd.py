@@ -4,10 +4,7 @@ from typing import Optional
 from top.kernels.kernel import Kernel
 import itertools
 
-__all__ = [
-    'mha_bwd_preprocess_kernel', 'mha_bwd_kernel', 'mha_bwd_wgmma_pipelined_kernel',
-    'mha_bwd_postprocess_kernel'
-]
+__all__ = ['mha_bwd_preprocess_kernel', 'mha_bwd_kernel', 'mha_bwd_wgmma_pipelined_kernel']
 
 
 @tilelang.jit(out_idx=[2])
@@ -54,12 +51,6 @@ class mha_bwd_preprocess_kernel(Kernel):
                                                  self.dtype_str)
 
 
-def make_dq_layout(dQ):
-    # atomicAdd can not be vectorized, so we need to reorder dq to match the 8x8 gemm fragment
-    return T.Layout(dQ.shape,
-                    lambda b, l, h, d: [b, l // 8, h, d // 8, (d % 2), 4 * (l % 8) + (d % 8) // 2])
-
-
 def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
     sm_scale = (1.0 / dim)**0.5
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
@@ -68,7 +59,9 @@ def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
 
     @tilelang.jit(
         out_idx=[7, 8],
-        # NOTE: Add TL_ENABLE_FAST_MATH after TL v0.1.7
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_bwd_func(block_M, block_N, num_stages, threads):
 
@@ -104,12 +97,13 @@ def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
                 dv = T.alloc_fragment([block_M, dim], accum_dtype)
                 dk = T.alloc_fragment([block_M, dim], accum_dtype)
                 dq = T.alloc_fragment([block_N, dim], accum_dtype)
+                dq_shared = T.alloc_shared([block_N, dim], accum_dtype)
                 dv_shared = T.alloc_shared([block_M, dim], dtype)
                 dk_shared = T.alloc_shared([block_M, dim], dtype)
 
                 T.annotate_layout({
-                    dQ: make_dq_layout(dQ),
                     K_shared: tilelang.layout.make_swizzled_layout(K_shared),
+                    dq_shared: tilelang.layout.make_swizzled_layout(dq_shared),
                     dv_shared: tilelang.layout.make_swizzled_layout(dv_shared),
                     dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
                 })
@@ -148,8 +142,8 @@ def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
                     T.copy(dsT_cast, dsT_shared)
                     T.clear(dq)
                     T.gemm(dsT_shared, K_shared, dq, transpose_A=True)
-                    for i, j in T.Parallel(block_N, dim):
-                        T.atomic_add(dQ[bz, k * block_N + i, bx, j], dq[i, j])
+                    T.copy(dq, dq_shared)
+                    T.atomic_add(dQ[bz, k * block_N:(k + 1) * block_N, bx, :], dq_shared)
 
                 T.copy(dv, dv_shared)
                 T.copy(dk, dk_shared)
@@ -169,7 +163,9 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
 
     @tilelang.jit(
         out_idx=[7, 8],
-        # NOTE: Add TL_ENABLE_FAST_MATH after TL v0.1.7
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_bwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 
@@ -205,12 +201,11 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                 dv = T.alloc_fragment([block_M, dim], accum_dtype)
                 dk = T.alloc_fragment([block_M, dim], accum_dtype)
                 dq = T.alloc_fragment([block_N, dim], accum_dtype)
+                dq_shared = T.alloc_shared([block_N, dim], accum_dtype)
                 dv_shared = T.alloc_shared([block_M, dim], dtype)
                 dk_shared = T.alloc_shared([block_M, dim], dtype)
-                dq_shared = T.alloc_shared([block_N, dim], accum_dtype)
 
                 T.annotate_layout({
-                    dQ: make_dq_layout(dQ),
                     dq_shared: tilelang.layout.make_swizzled_layout(dq_shared),
                     dv_shared: tilelang.layout.make_swizzled_layout(dv_shared),
                     dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
@@ -267,8 +262,7 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                     T.gemm(dsT_shared, K_shared, dq, transpose_A=True, wg_wait=1)
                     T.wait_wgmma(0)
                     T.copy(dq, dq_shared)
-                    for i, j in T.Parallel(block_N, dim):
-                        T.atomic_add(dQ[bz, k * block_N + i, bx, j], dq_shared[i, j])
+                    T.atomic_add(dQ[bz, k * block_N:(k + 1) * block_N, bx, :], dq_shared)
 
                 T.copy(dv, dv_shared)
                 T.copy(dk, dk_shared)
@@ -380,39 +374,3 @@ class mha_bwd_wgmma_pipelined_kernel(Kernel):
             'threads': c[3]
         } for c in _configs]
         return configs
-
-
-@tilelang.jit(out_idx=[1])
-def _mha_bwd_postprocess_kernel(batch, heads, seq_len, dim, dtype="float16"):
-    accum_dtype = "float"
-    shape = [batch, seq_len, heads, dim]
-    blk = 64
-
-    @T.prim_func
-    def flash_bwd_post(
-            dQ: T.Tensor(shape, accum_dtype),  # type: ignore
-            dQ_out: T.Tensor(shape, dtype),  # type: ignore
-    ):
-        with T.Kernel(T.ceildiv(seq_len, blk), heads, batch, threads=128) as (bx, by, bz):
-            T.annotate_layout({dQ: make_dq_layout(dQ)})
-            T.copy(
-                dQ[bz, bx * blk:(bx + 1) * blk, by, :],
-                dQ_out[bz, bx * blk:(bx + 1) * blk, by, :],
-            )
-
-    return flash_bwd_post
-
-
-class mha_bwd_postprocess_kernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
-
-    def __init__(self, batch, heads, seq_len, dim, dtype):
-        super().__init__()
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim = dim
-        self.dtype = dtype
-
-        self.kernel = _mha_bwd_postprocess_kernel(self.batch, self.heads, self.seq_len, self.dim,
-                                                  self.dtype_str)

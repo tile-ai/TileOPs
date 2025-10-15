@@ -132,11 +132,12 @@ class Op(ABC):
 
     def profile(self, warmup=25, rep=100):
         """Profile the op, and print relevant metrics"""
-        #TODO: add cupti backend for better accuracy
         print(f"===== Profiling {self.__class__.__name__} =====")
         inputs = self.gen_inputs()
         with torch.no_grad():
-            latency = do_bench(lambda: self.forward(*inputs), warmup=warmup, rep=rep)
+            latency = do_bench(
+                lambda: self.forward(*inputs), warmup=warmup, rep=rep,
+                backend='cupti')  # Always use cupti backend for better accuracy
 
         print(f"{self.__class__.__name__} latency: {latency:.2f} ms")
         if self.total_flops is not None:
