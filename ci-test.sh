@@ -36,7 +36,7 @@
       echo -e "\033[0;36mRunning test: $test_file\033[0m" | tee -a "$LOG_FILE"
       echo "----------------------------------------" >> "$LOG_FILE"
 
-      if python "$file_name" >> "../$LOG_FILE" 2>&1; then
+      if python "$test_file" >> "../$LOG_FILE" 2>&1; then
         echo -e "\033[0;32m[PASS] $test_file\033[0m" | tee -a "../$LOG_FILE"
         printf "| %-50s | ✅ Pass  |\n" "$file_name" >> ../test_summary.txt
         passed_count=$((passed_count + 1))
