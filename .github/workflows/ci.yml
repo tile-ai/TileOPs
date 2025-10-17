@@ -7,7 +7,7 @@ on:
 
 jobs:
   hello:
-    runs-on: [tileops]
+    runs-on: [tile-ops]
     steps:
       - name: Say hello
         run: echo "Hello, self-hosted runner!"
