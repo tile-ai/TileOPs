@@ -1,0 +1,13 @@
+name: hello-self-hosted
+
+on:
+  push:
+    branches: ['**']  # 所有分支
+    tags:     ['**']  # 所有标签推送也触发，可按需删掉
+
+jobs:
+  hello:
+    runs-on: [self-hosted, linux, x64, tileops]
+    steps:
+      - name: Say hello
+        run: echo "Hello, self-hosted runner!"
