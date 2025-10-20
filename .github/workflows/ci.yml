@@ -25,7 +25,6 @@ jobs:
       
       - name: Run tests 
         run: | 
-          python -c "import tilelang; print(tilelang.__version__)"
           bash ci-test.sh tileops_test_0_1_6.log
         continue-on-error: true  # 相当于 allow_failure: true
 
