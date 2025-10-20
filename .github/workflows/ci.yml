@@ -6,8 +6,31 @@ on:
     tags:     ['**']  # 所有标签推送也触发，可按需删掉
 
 jobs:
-  hello:
-    runs-on: [tile-ops]
+  tileops_test_0.1.6.post1:
+    runs-on: [self-hosted, tile-ops] 
     steps:
-      - name: Say hello
-        run: echo "Hello, self-hosted runner!"
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 相当于 GIT_STRATEGY: fetch
+
+      - name: Setup environment
+        run: |
+          conda activate tileops
+          export PYTHONPATH="$(pwd):$PYTHONPATH"
+          echo "PYTHONPATH=$PYTHONPATH"
+        shell: bash 
+      
+      - name: Run tests 
+        run: | 
+          python -c "import tilelang; print(tilelang.__version__)"
+          bash ci-test.sh tileops_test_0_1_6.log
+        continue-on-error: true  # 相当于 allow_failure: true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        if: always()  # 相当于 when: always
+        with:
+          name: tileops_test_0_1_6.log
+          path: tileops_test_0_1_6.log
+          retention-days: 7  # 相当于 expire_in: 1 week
