@@ -16,6 +16,8 @@ jobs:
 
       - name: Setup environment
         run: |
+          source ~/.bashrc
+          source /home/lyc/miniconda3/etc/profile.d/conda.sh
           conda activate tileops
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
