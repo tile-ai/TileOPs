@@ -32,3 +32,30 @@ jobs:
           name: tileops_test_0_1_6.log
           path: tileops_test_0_1_6.log
           retention-days: 7  # 相当于 expire_in: 1 week
+
+  tileops_test_nightly:
+    runs-on: [self-hosted, tile-ops] 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 相当于 GIT_STRATEGY: fetch
+
+      - name: Setup & Run tests
+        run: |
+          source ~/.bashrc
+          source /home/lyc/miniconda3/etc/profile.d/conda.sh
+          conda activate tileops-v2
+          export PYTHONPATH="$(pwd):$PYTHONPATH"
+          echo "PYTHONPATH=$PYTHONPATH"
+          bash ci-test.sh tileops_test_nightly.log
+        shell: bash 
+        continue-on-error: true  # 相当于 allow_failure: true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()  # 相当于 when: always
+        with:
+          name: tileops_test_nightly.log
+          path: tileops_test_nightly.log
+          retention-days: 7  # 相当于 expire_in: 1 week
