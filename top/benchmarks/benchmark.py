@@ -60,7 +60,7 @@ class Benchmark(ABC):
 
         print(f"All checks passed for {op.__class__.__name__}.✅")
 
-    def profile(self, op, *inputs, warmup=25, rep=100):
+    def profile(self, op, *inputs, warmup=100, rep=100):
         """Benchmark the perf of the op"""
 
         print(f"===== Profiling {op.__class__.__name__} =====")

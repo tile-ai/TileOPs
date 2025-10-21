@@ -1,6 +1,6 @@
 import torch
 from top.kernels.kernel import Kernel
-from top.utils import get_arch
+from top.utils import get_sm_version
 from typing import Optional, Union, Dict
 from abc import abstractmethod, ABC
 
@@ -53,7 +53,7 @@ class Op(ABC):
                 kernel_type = kernel_map[name]
             else:
                 kernel_type = default_kernel
-            current_arch = get_arch()
+            current_arch = get_sm_version()
             if kernel_type is not None:
                 assert current_arch in kernel_type.supported_archs, \
                     f'{kernel_type.__name__} is not supported on architecture {current_arch}'

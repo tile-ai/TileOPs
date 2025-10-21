@@ -59,6 +59,6 @@ def is_hopper():
     return torch.cuda.get_device_capability() == (9, 0)
 
 
-def get_arch():
+def get_sm_version():
     major, minor = torch.cuda.get_device_capability()
     return major * 10 + minor
