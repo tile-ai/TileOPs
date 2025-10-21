@@ -1,0 +1,65 @@
+name: hello-self-hosted
+
+on:
+  push:
+    branches: ['**']  # 所有分支
+    tags:     ['**']  # 所有标签推送也触发，可按需删掉
+
+jobs:
+  tileops_test_0-1-6-post1:
+    runs-on: [self-hosted, tile-ops] 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 相当于 GIT_STRATEGY: fetch
+
+      - name: Setup & Run tests
+        run: |
+          source ~/.bashrc
+          export PATH=/usr/local/cuda-12.9/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
+          source /home/lyc/miniconda3/etc/profile.d/conda.sh
+          conda activate tileops
+          export PYTHONPATH="$(pwd):$PYTHONPATH"
+          echo "PYTHONPATH=$PYTHONPATH"
+          bash ci-test.sh tileops_test_0_1_6.log
+        shell: bash 
+        continue-on-error: true  # 相当于 allow_failure: true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()  # 相当于 when: always
+        with:
+          name: tileops_test_0_1_6.log
+          path: tileops_test_0_1_6.log
+          retention-days: 7  # 相当于 expire_in: 1 week
+
+  tileops_test_nightly:
+    runs-on: [self-hosted, tile-ops] 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 相当于 GIT_STRATEGY: fetch
+
+      - name: Setup & Run tests
+        run: |
+          source ~/.bashrc
+          export PATH=/usr/local/cuda-12.9/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
+          source /home/lyc/miniconda3/etc/profile.d/conda.sh
+          conda activate tileops-v2
+          export PYTHONPATH="$(pwd):$PYTHONPATH"
+          echo "PYTHONPATH=$PYTHONPATH"
+          bash ci-test.sh tileops_test_nightly.log
+        shell: bash 
+        continue-on-error: true  # 相当于 allow_failure: true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()  # 相当于 when: always
+        with:
+          name: tileops_test_nightly.log
+          path: tileops_test_nightly.log
+          retention-days: 7  # 相当于 expire_in: 1 week
