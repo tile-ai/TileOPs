@@ -17,6 +17,9 @@ jobs:
       - name: Setup & Run tests
         run: |
           source ~/.bashrc
+          echo $(realpath ~/.bashrc)
+          export PATH=/usr/local/cuda-12.9/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
           source /home/lyc/miniconda3/etc/profile.d/conda.sh
           conda activate tileops
           export PYTHONPATH="$(pwd):$PYTHONPATH"
@@ -45,6 +48,8 @@ jobs:
         run: |
           source ~/.bashrc
           echo $(realpath ~/.bashrc)
+          export PATH=/usr/local/cuda-12.9/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
           source /home/lyc/miniconda3/etc/profile.d/conda.sh
           conda activate tileops-v2
           export PYTHONPATH="$(pwd):$PYTHONPATH"
