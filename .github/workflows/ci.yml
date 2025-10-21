@@ -44,6 +44,7 @@ jobs:
       - name: Setup & Run tests
         run: |
           source ~/.bashrc
+          realpath ~/.bashrc
           source /home/lyc/miniconda3/etc/profile.d/conda.sh
           conda activate tileops-v2
           export PYTHONPATH="$(pwd):$PYTHONPATH"
