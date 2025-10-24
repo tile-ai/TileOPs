@@ -1,4 +1,4 @@
-from top.benchmarks.benchmark import Benchmark
+from benchmarks.benchmark import Benchmark
 from top.ops import gqa_fwd, gqa_bwd
 import torch
 from torch.nn import functional as F

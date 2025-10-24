@@ -1,4 +1,4 @@
-from top.benchmarks.benchmark import Benchmark
+from benchmarks.benchmark import Benchmark
 from top.ops import Gemm
 import torch
 
