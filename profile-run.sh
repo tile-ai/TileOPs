@@ -22,6 +22,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Check and handle existing PROFILE_OUT directory
+if [ -d "$PROFILE_OUT" ]; then
+    echo "Warning: PROFILE_OUT directory '$PROFILE_OUT' already exists."
+fi
+
+# Check and handle existing LOG_FILE
+if [ -f "$LOG_FILE" ]; then
+    echo "Warning: LOG_FILE '$LOG_FILE' already exists. Overwriting..."
+fi
+
 # Create output directory
 mkdir -p "$PROFILE_OUT"
 
@@ -54,6 +64,7 @@ run_test() {
 
 # Main execution flow
 {
+
 
 echo "Starting profile run at $(date)"
 print_separator

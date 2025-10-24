@@ -61,3 +61,33 @@ jobs:
           name: tileops_test_nightly.log
           path: tileops_test_nightly.log
           retention-days: 7  # 相当于 expire_in: 1 week
+
+  tileops_profile_nightly:
+    needs: tileops_test_nightly
+    runs-on: [self-hosted, tile-ops] 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 相当于 GIT_STRATEGY: fetch
+
+      - name: Setup & Run tests
+        run: |
+          source ~/.bashrc
+          export PATH=/usr/local/cuda-12.9/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
+          source /home/lyc/miniconda3/etc/profile.d/conda.sh
+          conda activate tileops-v2
+          export PYTHONPATH="$(pwd):$PYTHONPATH"
+          echo "PYTHONPATH=$PYTHONPATH"
+          bash profile-run.sh --log profile_out/tileops_profile_nightly.log
+        shell: bash 
+
+      - name: Upload profile_out artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile_out
+          path: profile_out/
+          retention-days: 7
+
