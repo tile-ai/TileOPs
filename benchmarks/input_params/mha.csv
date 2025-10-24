@@ -1,0 +1,3 @@
+batch,seq_len,heads,dim,dtype,causal
+8,1024,32,128,float16,False
+8,1024,32,128,float16,True

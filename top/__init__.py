@@ -5,5 +5,3 @@ from .functions import *
 from .layers import *
 
 from .utils import *
-
-from .benchmarks import *

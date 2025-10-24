@@ -19,7 +19,7 @@
     cd tests || { echo "Failed to enter tests directory"; exit 1; }
 
     # Find all .py files in current directory (tests)
-    test_files=$(find . -name "*.py" -type f | sort)
+    test_files=$(find . -name "test*.py" -type f | sort)
 
     if [ -z "$test_files" ]; then
       echo "No test files found in tests directory" | tee -a "../$LOG_FILE"

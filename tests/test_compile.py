@@ -2,8 +2,9 @@
 # Check: https://docs.pytorch.org/tutorials/advanced/python_custom_ops.html
 
 import argparse
-from top import mha_fwd, mha_fwd_benchmark, mha_fwd_kernel
+from top import mha_fwd, mha_fwd_kernel
 from top.utils import str2dtype
+from benchmarks import mha_fwd_benchmark
 import torch
 
 
