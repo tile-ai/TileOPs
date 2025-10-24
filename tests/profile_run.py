@@ -17,7 +17,7 @@ def parse_output(output_lines):
         # 提取latency
         latency_match = re.search(r'latency:\s*([0-9.]+)\s*ms', line)
         if latency_match:
-            results['latency'] = float(latency_match.group(1))
+            results['latency(ms)'] = float(latency_match.group(1))
             
         # 提取TFlops
         tflops_match = re.search(r'TFlops:\s*([0-9.]+)', line)
@@ -27,7 +27,7 @@ def parse_output(output_lines):
         # 提取Bandwidth
         bandwidth_match = re.search(r'Bandwidth:\s*([0-9.]+)\s*GB/s', line)
         if bandwidth_match:
-            results['Bandwidth'] = float(bandwidth_match.group(1))
+            results['Bandwidth(GB/s)'] = float(bandwidth_match.group(1))
             
     return results
 
