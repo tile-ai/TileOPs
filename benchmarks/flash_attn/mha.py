@@ -37,18 +37,12 @@ class mha_fwd_benchmark(Benchmark):
         return Q, K, V
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+        q_bhsd = Q.transpose(1, 2)   # [B, H, S, D]
+        k_bhsd = K.transpose(1, 2)
+        v_bhsd = V.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            output = F.scaled_dot_product_attention(Q, K, V, is_causal=self.is_causal)
-        # dim = Q.size(-1)
-        # scores = torch.einsum('bqhd,bkhd->bhqk', Q, K)
-        # scores = scores / torch.sqrt(torch.tensor(dim, dtype=scores.dtype))
-        # if self.is_causal:
-        #     seq_len = Q.size(1)
-        #     mask = torch.tril(torch.ones(seq_len, seq_len, device=scores.device))
-        #     mask = mask.unsqueeze(0).unsqueeze(0)
-        #     scores = scores.masked_fill(mask == 0, float('-inf'))
-        # attention_weights = F.softmax(scores, dim=-1)
-        # output = torch.einsum('bhqk,bkhd->bqhd', attention_weights, V)
+            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
+        output = output_bhsd.transpose(1, 2).contiguous()
         return output, None  # do not check lse
 
 
