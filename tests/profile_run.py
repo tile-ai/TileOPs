@@ -120,7 +120,7 @@ def main():
         return 1
     
     # 获取表头作为输出CSV的字段
-    fieldnames = list(input_params[0].keys()) + ['latency', 'TFlops', 'Bandwidth']
+    fieldnames = list(input_params[0].keys()) + ['latency(ms)', 'TFlops', 'Bandwidth(GB/s)']
     
     # 准备输出文件
     output_csv_path = Path(args.output_csv)
