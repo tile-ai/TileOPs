@@ -10,21 +10,21 @@ from pathlib import Path
 
 def parse_output(output_lines):
     """
-    解析脚本输出，提取latency, TFlops, Bandwidth信息
+    Parse script output to extract latency, TFlops, and Bandwidth information
     """
     results = {}
     for line in output_lines:
-        # 提取latency
+        # Extract latency
         latency_match = re.search(r'latency:\s*([0-9.]+)\s*ms', line)
         if latency_match:
             results['latency(ms)'] = float(latency_match.group(1))
             
-        # 提取TFlops
+        # Extract TFlops
         tflops_match = re.search(r'TFlops:\s*([0-9.]+)', line)
         if tflops_match:
             results['TFlops'] = float(tflops_match.group(1))
             
-        # 提取Bandwidth
+        # Extract Bandwidth
         bandwidth_match = re.search(r'Bandwidth:\s*([0-9.]+)\s*GB/s', line)
         if bandwidth_match:
             results['Bandwidth(GB/s)'] = float(bandwidth_match.group(1))
@@ -33,12 +33,12 @@ def parse_output(output_lines):
 
 def run_test_script(script_path, args_dict):
     """
-    运行指定的测试脚本并返回输出
+    Run the specified test script and return output
     """
-    # 构建命令行参数
+    # Build command line arguments
     cmd = [sys.executable, str(script_path)]
     
-    # 根据脚本类型添加参数
+    # Add arguments based on script type
     if 'gemm' in script_path.name.lower():
         cmd.extend([
             '--M', str(args_dict['M']),
@@ -73,7 +73,7 @@ def run_test_script(script_path, args_dict):
     print(f"Running command: {' '.join(cmd)}")
     
     try:
-        # 运行脚本并捕获输出
+        # Run script and capture output
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             print(f"Error running script: {result.stderr}")
@@ -94,19 +94,19 @@ def main():
     
     args = parser.parse_args()
     
-    # 验证脚本路径
+    # Validate script path
     script_path = Path(args.script)
     if not script_path.exists():
         print(f"Error: Script {script_path} does not exist")
         return 1
     
-    # 验证输入CSV文件
+    # Validate input CSV file
     input_csv_path = Path(args.input_csv)
     if not input_csv_path.exists():
         print(f"Error: Input CSV {input_csv_path} does not exist")
         return 1
     
-    # 读取CSV文件
+    # Read CSV file
     try:
         with open(input_csv_path, 'r') as f:
             reader = csv.DictReader(f)
@@ -119,35 +119,35 @@ def main():
         print("No parameters found in CSV file")
         return 1
     
-    # 获取表头作为输出CSV的字段
+    # Get headers as output CSV fields
     fieldnames = list(input_params[0].keys()) + ['latency(ms)', 'TFlops', 'Bandwidth(GB/s)']
     
-    # 准备输出文件
+    # Prepare output file
     output_csv_path = Path(args.output_csv)
     output_csv_path.parent.mkdir(parents=True, exist_ok=True)
     
     results = []
     
-    # 运行每个参数组合
+    # Run each parameter combination
     for i, params in enumerate(input_params):
         print(f"\nRunning test {i+1}/{len(input_params)} with parameters: {params}")
         
-        # 运行测试脚本
+        # Run test script
         output_lines = run_test_script(script_path, params)
         if output_lines is None:
             print("Skipping this test due to execution error")
             continue
             
-        # 解析输出结果
+        # Parse output results
         parsed_results = parse_output(output_lines)
         
-        # 合并输入参数和结果
+        # Merge input parameters and results
         combined_result = {**params, **parsed_results}
         results.append(combined_result)
         
         print(f"Results: {parsed_results}")
     
-    # 写入结果到CSV文件
+    # Write results to CSV file
     try:
         with open(output_csv_path, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -157,9 +157,9 @@ def main():
         print(f"Error writing output CSV file: {e}")
         return 1
     
-    # 打印结果表格到屏幕
+    # Print results table to screen
     if results:
-        # 计算每列的最大宽度
+        # Calculate maximum width for each column
         col_widths = {}
         for field in fieldnames:
             col_widths[field] = len(field)
@@ -167,7 +167,7 @@ def main():
                 value = result.get(field, '')
                 col_widths[field] = max(col_widths[field], len(str(value)))
         
-        # 打印表头
+        # Print header
         header = " | ".join(field.ljust(col_widths[field]) for field in fieldnames)
         print("\n" + "="*len(header))
         print("FINAL RESULTS")
@@ -175,7 +175,7 @@ def main():
         print(header)
         print("-"*len(header))
         
-        # 打印数据行
+        # Print data rows
         for result in results:
             row = " | ".join(str(result.get(field, '')).ljust(col_widths[field]) for field in fieldnames)
             print(row)
