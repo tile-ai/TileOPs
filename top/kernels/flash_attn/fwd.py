@@ -563,7 +563,10 @@ class gqa_fwd_kernel(Kernel):
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-        return self.kernel(**self.config)(Q, K, V)
+        return _gqa_fwd_wrapped_kernel(self.batch, self.heads, self.heads_kv, self.seq_len, self.dim,
+                                   self.is_causal, self.dtype_str, self.config["block_M"],
+                                   self.config["block_N"], self.config["num_stages"],
+                                   self.config["threads"], Q, K, V)
 
 
 def _gqa_fwd_wgmma_pipelined_kernel(batch,
@@ -794,4 +797,7 @@ class gqa_fwd_wgmma_pipelined_kernel(Kernel):
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-        return self.kernel(**self.config)(Q, K, V)
+        return _gqa_fwd_wgmma_pipelined_wrapped_kernel(self.batch, self.heads, self.heads_kv, self.seq_len, self.dim,
+                                                   self.is_causal, self.dtype_str, self.config["block_M"],
+                                                   self.config["block_N"], self.config["num_stages"],
+                                                   self.config["threads"], Q, K, V)
