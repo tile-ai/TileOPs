@@ -3,3 +3,4 @@ from .mha import *
 from .gqa import *
 from .gemm import *
 from .mha_decode import *
+from .gqa_decode import *
