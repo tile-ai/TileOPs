@@ -184,39 +184,30 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 Output: T.Tensor(shape_o, dtype),
         ):
             with T.Kernel(heads, batch, threads=128) as (by, bz):
-                po_local = T.alloc_fragment([dim], dtype)
-                o_accum_local = T.alloc_fragment([dim], accum_dtype)
-                lse_local = T.alloc_fragment([num_split, 128], dtype)
-                lse_local_split = T.alloc_local([1], accum_dtype)
-                lse_logsum_local = T.alloc_local([1], accum_dtype)
-                lse_max_local = T.alloc_fragment([128], accum_dtype)
-                scale_local = T.alloc_local([1], accum_dtype)
+                # 1) 读 glse 到一个 1D fragment，再做 reduce_max
+                glse_vec = T.alloc_fragment([num_split], dtype)
+                for k in T.Parallel(num_split):
+                    glse_vec[k] = glse[bz, by, k]
+                lse_max = T.alloc_fragment([1], accum_dtype)
+                T.fill(lse_max, -T.infinity(accum_dtype))
+                T.reduce_max(glse_vec, lse_max, dim=0, clear=False)
 
-                T.annotate_layout({
-                    lse_logsum_local: T.Fragment(lse_logsum_local.shape, forward_thread_fn=lambda i: i),
-                    lse_max_local: T.Fragment(lse_max_local.shape, forward_thread_fn=lambda i: i),
-                    # lse_local: (local_id, thread_id)
-                    lse_local: T.Fragment(lse_local.shape, forward_fn=lambda i, j: (j, i)),
-                })
-
-                T.clear(lse_logsum_local)
-                T.clear(o_accum_local)
-                for k, j in T.Parallel(num_split, 128):
-                    lse_local[k, j] = glse[bz, by, k]
-                T.reduce_max(lse_local, lse_max_local, dim=0, clear=True)
-                for k in T.Pipelined(num_split, num_stages=1):
-                    lse_local_split[0] = glse[bz, by, k]
-                    lse_logsum_local[0] += T.exp2(lse_local_split[0] - lse_max_local[0])
-                lse_logsum_local[0] = T.log2(lse_logsum_local[0]) + lse_max_local[0]
+                # 2) 计算 logsum（串行或小批并行累加）
+                lse_logsum = T.alloc_local([1], accum_dtype)
+                lse_logsum[0] = 0
                 for k in T.serial(num_split):
+                    lse_logsum[0] += T.exp2(glse[bz, by, k] - lse_max[0])
+                lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
+
+                # 3) 按权重合并 partial 输出
+                o_accum = T.alloc_fragment([dim], accum_dtype)
+                T.clear(o_accum)
+                for k in T.serial(num_split):
+                    w = T.exp2(glse[bz, by, k] - lse_logsum[0])
                     for i in T.Parallel(dim):
-                        po_local[i] = Output_partial[bz, by, k, i]
-                    lse_local_split[0] = glse[bz, by, k]
-                    scale_local[0] = T.exp2(lse_local_split[0] - lse_logsum_local[0])
-                    for i in T.Parallel(dim):
-                        o_accum_local[i] += po_local[i] * scale_local[0]
+                        o_accum[i] += Output_partial[bz, by, k, i] * w
                 for i in T.Parallel(dim):
-                    Output[bz, by, i] = o_accum_local[i]
+                    Output[bz, by, i] = o_accum[i]
 
         @T.prim_func
         def gqa_decode_split(
@@ -247,6 +238,8 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
             return gqa_decode_split
         else:
             return gqa_decode_no_split
+
+    return _gqa_decode_func
 
 
 @torch.library.custom_op("top::gqa_decode_wrapped_kernel", mutates_args=())
@@ -351,6 +344,7 @@ class gqa_decode_kernel(Kernel):
         glse = torch.empty((self.batch, self.heads, self.config["num_split"]), dtype=self.dtype, device=Q.device)
         Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
                                      dtype=self.dtype, device=Q.device)
+        print(f"Config: {self.config}")
         return _gqa_decode_wrapped_kernel(
             self.batch, self.heads, self.groups, self.seqlen_kv,
             self.dim, self.config["block_H"],

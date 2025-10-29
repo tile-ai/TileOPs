@@ -26,10 +26,9 @@ class gqa_decode_benchmark(Benchmark):
     @property
     def total_memory(self):
         # Q: batch * 1 * heads * dim
-        # K, V: batch * seq_len_kv * heads * dim
+        # K, V: batch * seq_len_kv * heads_kv * dim
         # Output: batch * 1 * heads * dim
-        return (self.batch * self.heads * (2 + 2 * self.seq_len_kv) * self.dim *
-                self.dtype.itemsize)
+        return 2 * self.batch * self.dim * self.dtype.itemsize * (self.heads + self.heads_kv * self.seq_len_kv)
 
     def gen_inputs(self):
         Q = torch.randn(
@@ -42,11 +41,13 @@ class gqa_decode_benchmark(Benchmark):
         return Q, K, V, mask
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor):
-        q_bhsd = Q.unsqueeze(1).transpose(1, 2)   # [B, 1, H, D]
+        q_bhsd = Q.unsqueeze(1).transpose(1, 2)   # [B, H, 1, D]
         k_bhsd = K.transpose(1, 2)   # [B, H, S_kv, D]
         v_bhsd = V.transpose(1, 2)   # [B, H, S_kv, D]
-        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, atten_mask=mask, enable_gqa=True)
+        mask = mask.to(torch.bool).transpose(1, 2).unsqueeze(2)  # [B, G, 1, S_kv]
+        mask = mask.expand(self.batch, self.groups, self.heads // self.groups, self.seq_len_kv).reshape(self.batch, self.heads, self.seq_len_kv).unsqueeze(2)
+        with sdpa_kernel(backends=[SDPBackend.MATH]):
+            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, attn_mask=mask, enable_gqa=True)
         output = output_bhsd.transpose(1, 2).squeeze(1).contiguous()
         return output 
     

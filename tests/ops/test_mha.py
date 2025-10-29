@@ -4,8 +4,8 @@ from top.utils import str2dtype
 from benchmarks import mha_fwd_benchmark, mha_bwd_benchmark
 
 
-def test_mha_fwd(B, S, H, D, causal, dtype):
-    op = mha_fwd(B, H, S, D, causal, dtype)
+def test_mha_fwd(B, S, H, D, causal, dtype, tune=False):
+    op = mha_fwd(B, H, S, D, causal, dtype, tune=tune)
     benchmark = mha_fwd_benchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
@@ -13,8 +13,8 @@ def test_mha_fwd(B, S, H, D, causal, dtype):
     benchmark.profile(op, *inputs)
 
 
-def test_mha_bwd(B, S, H, D, causal, dtype):
-    op = mha_bwd(B, H, S, D, causal, dtype)
+def test_mha_bwd(B, S, H, D, causal, dtype, tune=False):
+    op = mha_bwd(B, H, S, D, causal, dtype, tune=tune)
     benchmark = mha_bwd_benchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
@@ -31,7 +31,8 @@ if __name__ == "__main__":
     parser.add_argument('--causal', action='store_true', default=False, help='causal attention')
     parser.add_argument(
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
+    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_mha_fwd(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype])
-    test_mha_bwd(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype])
+    test_mha_fwd(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype], args.tune)
+    test_mha_bwd(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype], args.tune)

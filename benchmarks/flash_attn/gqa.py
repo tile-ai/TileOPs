@@ -26,7 +26,7 @@ class gqa_fwd_benchmark(Benchmark):
 
     @property
     def total_memory(self):
-        return 4 * self.batch * self.heads * self.seq_len * self.dim * self.dtype.itemsize
+        return 2 * self.batch * self.seq_len * self.dim * (self.heads + self.heads_kv) * self.dtype.itemsize
 
     def gen_inputs(self):
         Q = torch.randn(
@@ -68,7 +68,7 @@ class gqa_bwd_benchmark(Benchmark):
 
     @property
     def total_memory(self):
-        return 7 * self.batch * self.heads * self.seq_len * self.dim * self.dtype.itemsize
+        return self.batch * (3 * self.heads + 4 * self.heads_kv) * self.seq_len * self.dim * self.dtype.itemsize
 
     def gen_inputs(self):
         Q = torch.randn(
