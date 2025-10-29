@@ -4,8 +4,8 @@ from top.utils import str2dtype
 from benchmarks import gqa_decode_benchmark
 
 
-def test_gqa_decode(B, H, G, S_kv, D, dtype):
-    op = gqa_decode(B, H, G, S_kv, D, dtype)
+def test_gqa_decode(B, H, G, S_kv, D, dtype, tune=False):
+    op = gqa_decode(B, H, G, S_kv, D, dtype, tune=tune)
     benchmark = gqa_decode_benchmark(B, H, G, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()
@@ -22,7 +22,8 @@ if __name__ == "__main__":
     parser.add_argument('--dim', type=int, default=128, help='head dim')
     parser.add_argument(
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
+    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_gqa_decode(args.batch, args.heads, args.groups, args.seq_len_kv, args.dim, str2dtype[args.dtype])
+    test_gqa_decode(args.batch, args.heads, args.groups, args.seq_len_kv, args.dim, str2dtype[args.dtype], args.tune)
     

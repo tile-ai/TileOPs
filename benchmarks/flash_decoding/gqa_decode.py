@@ -28,7 +28,7 @@ class gqa_decode_benchmark(Benchmark):
         # Q: batch * 1 * heads * dim
         # K, V: batch * seq_len_kv * heads_kv * dim
         # Output: batch * 1 * heads * dim
-        return 2 * self.batch * self.dim * self.dtype.itemsize * (self.heads + self.heads_kv * self.seq_len_kv)
+        return 2 * self.batch * self.dim * self.dtype.itemsize * (self.heads + self.groups * self.seq_len_kv)
 
     def gen_inputs(self):
         Q = torch.randn(

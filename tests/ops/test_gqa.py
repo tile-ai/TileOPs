@@ -4,8 +4,8 @@ from top.utils import str2dtype
 from benchmarks import gqa_fwd_benchmark, gqa_bwd_benchmark
 
 
-def test_gqa_fwd(B, S, H, H_KV, D, causal, dtype):
-    op = gqa_fwd(B, H, H_KV, S, D, causal, dtype)
+def test_gqa_fwd(B, S, H, H_KV, D, causal, dtype, tune=False):
+    op = gqa_fwd(B, H, H_KV, S, D, causal, dtype, tune=tune)
     benchmark = gqa_fwd_benchmark(B, H, H_KV, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
@@ -13,8 +13,8 @@ def test_gqa_fwd(B, S, H, H_KV, D, causal, dtype):
     benchmark.profile(op, *inputs)
 
 
-def test_gqa_bwd(B, S, H, H_KV, D, causal, dtype):
-    op = gqa_bwd(B, H, H_KV, S, D, causal, dtype)
+def test_gqa_bwd(B, S, H, H_KV, D, causal, dtype, tune=False):
+    op = gqa_bwd(B, H, H_KV, S, D, causal, dtype, tune=tune)
     benchmark = gqa_bwd_benchmark(B, H, H_KV, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
@@ -32,9 +32,10 @@ if __name__ == "__main__":
     parser.add_argument('--causal', action='store_true', default=False, help='causal attention')
     parser.add_argument(
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
+    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
     test_gqa_fwd(args.batch, args.seq_len, args.heads, args.heads_kv, args.dim, args.causal,
-                 str2dtype[args.dtype])
+                 str2dtype[args.dtype], args.tune)
     test_gqa_bwd(args.batch, args.seq_len, args.heads, args.heads_kv, args.dim, args.causal,
-                 str2dtype[args.dtype])
+                 str2dtype[args.dtype], args.tune)
