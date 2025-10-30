@@ -8,9 +8,8 @@ import itertools
 __all__ = ["mla_decode_kernel"]
 
 
-def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim):
+def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype='float16'):
     scale = (1.0 / (dim + pe_dim))**0.5 * 1.44269504  # log2(e)
-    dtype = "float16"
     accum_dtype = "float"
     kv_group_num = heads // kv_head_num
     assert kv_head_num == 1, "kv_head_num must be 1"
@@ -33,7 +32,7 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim):
                 K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
                 Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            with T.Kernel(batch, heads // min(block_H, kv_group_num), threads) as (bx, by):
+            with T.Kernel(batch, heads // VALID_BLOCK_H, threads) as (bx, by):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 S_shared = T.alloc_shared([block_H, block_N], dtype)
                 Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -132,7 +131,7 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim):
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv((seqlen_kv // num_split), block_N)
-                for k in T.Pipelined(loop_range, num_stages=2):
+                for k in T.Pipelined(loop_range, num_stages):
                     kv_start = (seqlen_kv // num_split) * bz + k * block_N
                     kv_end = (seqlen_kv // num_split) * bz + (k + 1) * block_N
                     T.copy(KV[bx, kv_start:kv_end, cur_kv_head, :], KV_shared)
@@ -247,6 +246,7 @@ def _mla_decode_wrapped_kernel(
     seqlen_kv: int,
     dim: int,
     pe_dim: int,
+    dtype: str,
     block_H: int,
     block_N: int,
     num_stages: int,
@@ -259,7 +259,7 @@ def _mla_decode_wrapped_kernel(
     glse: torch.Tensor,
     Output_partial: torch.Tensor
 ) -> torch.Tensor:  
-    return _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim)(
+    return _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype)(
         block_H, block_N, num_split, num_stages, threads)(
             Q, Q_pe, Kv, K_pe, glse, Output_partial)
 
@@ -272,6 +272,7 @@ def _(
     seqlen_kv: int,
     dim: int,
     pe_dim: int,
+    dtype: str,
     block_H: int,
     block_N: int,
     num_stages: int,
@@ -297,7 +298,7 @@ class mla_decode_kernel(Kernel):
                  seqlen_kv,
                  dim,
                  pe_dim,
-                 dtype="float16",
+                 dtype,
                  config: Optional[dict] = None,
                  tune=False):
         super().__init__()
@@ -310,7 +311,7 @@ class mla_decode_kernel(Kernel):
         self.dtype = dtype
 
         self.kernel = _mla_decode_kernel(self.batch, self.heads, self.kv_head_num, self.seqlen_kv,
-                                        self.dim, self.pe_dim)
+                                        self.dim, self.pe_dim, self.dtype_str)
 
         self.init_config(config, tune)
 
@@ -352,7 +353,7 @@ class mla_decode_kernel(Kernel):
                                      dtype=self.dtype, device=Q.device)
         return _mla_decode_wrapped_kernel(
             self.batch, self.heads, self.kv_head_num, self.seqlen_kv,
-            self.dim, self.pe_dim, self.config["block_H"],
+            self.dim, self.pe_dim, self.dtype_str, self.config["block_H"],
             self.config["block_N"], self.config["num_stages"],
             self.config["threads"], self.config["num_split"],
             Q, Q_pe, K, K_pe, glse, Output_partial)
