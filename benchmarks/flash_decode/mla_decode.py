@@ -1,5 +1,5 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import mha_decode
+from top.ops import mla_decode
 import torch
 from torch.nn import functional as F
 from einops import rearrange, einsum
@@ -7,7 +7,7 @@ from einops import rearrange, einsum
 
 class mla_decode_benchmark(Benchmark):
 
-    op_type = mha_decode
+    op_type = mla_decode
 
     def __init__(self, batch, heads, kv_head_num, seq_len_kv, dim, pe_dim, dtype):
         self.batch = batch
@@ -47,44 +47,42 @@ class mla_decode_benchmark(Benchmark):
             self.batch, self.seq_len_kv, self.kv_head_num, self.pe_dim, device='cuda', dtype=self.dtype)
         return Q, Q_pe, K, K_pe
 
-def ref_program(q, q_pe, kv, k_pe, glse, Output_partial):
-    #     """
-    #     Inputs:
-    #     - q (Tensor): [batch, heads, dim]
-    #     - q_pe (Tensor): [batch, heads, pe_dim]
-    #     - kv (Tensor): [batch, seqlen_kv, kv_head_num, dim]
-    #     - k_pe (Tensor): [batch, seqlen_kv, kv_head_num, pe_dim]
-    #     - glse (Tensor): [batch, heads, num_split]
-    #     - Output_partial (Tensor): [batch, heads, num_split, dim]
-    #     Outputs:
-    #     - output (Tensor): [batch, heads, dim]
-    #     """
-    dim = q.shape[-1]
-    pe_dim = q_pe.shape[-1]
-    num_head_groups = q.shape[1] // kv.shape[2]
-    scale = (dim + pe_dim)**0.5
-    q = torch.rearrange(
-        q, 'b (h g) d -> b g h d', g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+    def ref_program(self, Q: torch.Tensor, Q_pe: torch.Tensor, KV: torch.Tensor, K_pe: torch.Tensor):
+        #     """
+        #     Inputs:
+        #     - Q (Tensor): [batch, heads, dim]
+        #     - Q_pe (Tensor): [batch, heads, pe_dim]
+        #     - KV (Tensor): [batch, seqlen_kv, kv_head_num, dim]
+        #     - K_pe (Tensor): [batch, seqlen_kv, kv_head_num, pe_dim]
+        #     Outputs:
+        #     - output (Tensor): [batch, heads, dim]
+        #     """
+        dim = Q.shape[-1]
+        pe_dim = Q_pe.shape[-1]
+        num_head_groups = Q.shape[1] // KV.shape[2]
+        scale = (dim + pe_dim)**0.5
+        Q = rearrange(
+            Q, 'b (h g) d -> b g h d', g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
 
-    q_pe = rearrange(
-        q_pe, 'b (h g) d -> b g h d',
-        g=num_head_groups)  # [batch_size, num_head_groups, groups, pe_dim]
+        Q_pe = rearrange(
+            Q_pe, 'b (h g) d -> b g h d',
+            g=num_head_groups)  # [batch_size, num_head_groups, groups, pe_dim]
 
-    kv = rearrange(kv, 'b n h d -> b h n d')  # [batch_size, groups, seqlen_kv, dim]
+        KV = rearrange(KV, 'b n h d -> b h n d')  # [batch_size, groups, seqlen_kv, dim]
 
-    k_pe = rearrange(k_pe, 'b n h d -> b h n d')  # [batch_size, num_head_groups, groups, pe_dim]
+        K_pe = rearrange(K_pe, 'b n h d -> b h n d')  # [batch_size, num_head_groups, groups, pe_dim]
 
-    query = torch.concat([q, q_pe], dim=-1)
-    key = torch.concat([kv, k_pe], dim=-1)
+        query = torch.concat([Q, Q_pe], dim=-1)
+        key = torch.concat([KV, K_pe], dim=-1)
 
-    scores = einsum(
-        query, key,
-        'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, groups, seqlen_kv]
+        scores = einsum(
+            query, key,
+            'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, groups, seqlen_kv]
 
-    attention = F.softmax(
-        scores / scale, dim=-1)  # [batch_size, num_head_groups, groups, seqlen_kv]
+        attention = F.softmax(
+            scores / scale, dim=-1)  # [batch_size, num_head_groups, groups, seqlen_kv]
 
-    out = einsum(attention, kv,
-                 'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, groups, dim]
-    out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
-    return out
+        out = einsum(attention, KV,
+                    'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, groups, dim]
+        out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
+        return out

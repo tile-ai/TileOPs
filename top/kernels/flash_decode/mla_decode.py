@@ -32,7 +32,7 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
                 Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            with T.Kernel(batch, heads // VALID_BLOCK_H, threads) as (bx, by):
+            with T.Kernel(batch, heads // VALID_BLOCK_H, threads=threads) as (bx, by):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 S_shared = T.alloc_shared([block_H, block_N], dtype)
                 Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -348,8 +348,8 @@ class mla_decode_kernel(Kernel):
                 Q_pe: torch.Tensor,
                 K: torch.Tensor,
                 K_pe: torch.Tensor):
-        glse = torch.empty((self.batch, self.heads, self.num_split), dtype=self.dtype, device=Q.device)
-        Output_partial = torch.empty((self.batch, self.heads, self.num_split, self.dim),
+        glse = torch.empty((self.batch, self.heads, self.config["num_split"]), dtype=self.dtype, device=Q.device)
+        Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
                                      dtype=self.dtype, device=Q.device)
         return _mla_decode_wrapped_kernel(
             self.batch, self.heads, self.kv_head_num, self.seqlen_kv,
