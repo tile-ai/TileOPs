@@ -1,6 +1,7 @@
 import torch
 import tilelang
 import tilelang.language as T
+from tilelang.autotuner import autotune
 from top.kernels.kernel import Kernel
 from typing import Optional
 import itertools
@@ -422,3 +423,42 @@ class sparse_mla_kernel(Kernel):
                                              self.is_causal, self.CP0, self.dtype_str, self.config["block_I"], self.config["threads"],
                                              Q, KV, Indices, q_start_index_s)
     
+
+    @property
+    def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        Q = torch.randn(
+            self.batch, self.seq_len, self.heads, self.dim + self.tail_dim, device='cuda', dtype=self.dtype)
+        KV = torch.randn(
+            self.batch, self.seq_len_kv, self.kv_group, self.dim + self.tail_dim, device='cuda', dtype=self.dtype)
+        q_start_index_s = 1024
+        Indices = torch.full((self.batch, self.seq_len, self.kv_group, self.topk),
+                             self.seq_len_kv,
+                             dtype=torch.int32,
+                             device='cuda')
+        for b in range(self.batch):
+            for t in range(self.seq_len):
+                for h in range(self.kv_group):
+                    i_i = torch.randperm(
+                        min(
+                            max(1, ((t + int(q_start_index_s)) // self.kv_stride)),
+                            self.seq_len_kv))[:self.topk]
+                    Indices[b, t, h, :len(i_i)] = i_i
+        
+        return Q, KV, Indices, torch.tensor([q_start_index_s], device='cuda', dtype=torch.int32)
+
+    def autotune(self, warmup=10, rep=10):  # Removed supply_prog parameter
+        if self.autotune_configs is None:
+            return  # kernel doesn't support autotuning
+        print(f'Start autotuning {self.__class__.__name__}...')
+
+        # Apply autotune decorator to the kernel function
+        autotuned_kernel_fn = autotune(
+            configs=self.autotune_configs, warmup=warmup, rep=rep, supply_prog=self.supply_prog)(
+                self.kernel)
+
+        # Call without config parameters to trigger autotuning, returns the tuned kernel
+        tuned_kernel = autotuned_kernel_fn()
+
+        # Extract and store the best config
+        self.config = tuned_kernel.config
+        print(f'Best config: {self.config}')
