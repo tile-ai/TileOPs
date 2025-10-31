@@ -334,13 +334,13 @@ def _sparse_mla_wrapped_kernel(
     heads: int,
     dim: int,
     tail_dim: int,
-    dtype: str,
     topk: int,
     kv_stride: int,
     kv_group: int,
     sm_scale: Optional[float],
     is_causal: bool,
     CP0: bool,
+    dtype: str,
     block_I: int,
     threads: int,
     Q: torch.Tensor,
@@ -348,8 +348,8 @@ def _sparse_mla_wrapped_kernel(
     Indices: torch.Tensor,
     q_start_index_s: torch.Tensor,
 ) -> torch.Tensor:
-    return _sparse_mla_kernel(batch, seq_len, seq_len_kv, heads, dim, tail_dim, dtype, topk, kv_stride,
-                                  kv_group, sm_scale, is_causal, CP0)(block_I, threads)(Q, KV, Indices,
+    return _sparse_mla_kernel(batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride,
+                                  kv_group, sm_scale, is_causal, CP0, dtype)(block_I, threads)(Q, KV, Indices,
                                                                                   q_start_index_s)
 
 
@@ -395,8 +395,8 @@ class sparse_mla_kernel(Kernel):
         self.CP0 = CP0
 
         self.kernel = _sparse_mla_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads,
-                                             self.dim, self.tail_dim, self.dtype, self.topk, self.kv_stride,
-                                             self.kv_group, self.sm_scale, self.is_causal, self.CP0)
+                                             self.dim, self.tail_dim, self.topk, self.kv_stride,
+                                             self.kv_group, self.sm_scale, self.is_causal, self.CP0, self.dtype)
 
         self.init_config(config, tune)
 
@@ -418,7 +418,7 @@ class sparse_mla_kernel(Kernel):
 
     def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor, q_start_index_s: torch.Tensor):
         return _sparse_mla_wrapped_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads, self.dim,
-                                             self.tail_dim, self.dtype_str, self.topk, self.kv_stride, self.kv_group, self.sm_scale,
-                                             self.is_causal, self.CP0, self.config["block_I"], self.config["threads"],
+                                             self.tail_dim, self.topk, self.kv_stride, self.kv_group, self.sm_scale,
+                                             self.is_causal, self.CP0, self.dtype_str, self.config["block_I"], self.config["threads"],
                                              Q, KV, Indices, q_start_index_s)
     

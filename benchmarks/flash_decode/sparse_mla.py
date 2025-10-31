@@ -53,7 +53,7 @@ class sparse_mla_decode_benchmark(Benchmark):
                 for h in range(self.kv_group):
                     i_i = torch.randperm(
                         min(
-                            max(1, ((t + int(self.q_start_index_s[0])) // self.kv_stride)),
+                            max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
                             self.seq_len_kv))[:self.topk]
                     Indices[b, t, h, :len(i_i)] = i_i
         return Q, KV, Indices
@@ -64,8 +64,8 @@ class sparse_mla_decode_benchmark(Benchmark):
         indices = Indices.transpose(1, 2)
         b, sq, h, dim_q = q.shape
         b, sk, g, _ = kv.shape
-        if q_start_index_s is None:
-            q_start_index_s = sk * self.kv_stride - sq
+        if self.q_start_index_s is None:
+            self.q_start_index_s = sk * self.kv_stride - sq
 
         assert kv.shape[-1] == 576, 'you should assign dim otherwise'
         dim = 512
@@ -77,7 +77,7 @@ class sparse_mla_decode_benchmark(Benchmark):
         g_index = g
         h_index = h // g
         compressed_causal_mask = torch.arange(
-            q_start_index_s, sq + q_start_index_s, dtype=torch.int32,
+            self.q_start_index_s, sq + self.q_start_index_s, dtype=torch.int32,
             device="cuda").view(-1, 1) >= torch.arange(
                 self.kv_stride - 1, sk * self.kv_stride, self.kv_stride, dtype=torch.int32,
                 device="cuda").view(1, -1)
@@ -90,7 +90,7 @@ class sparse_mla_decode_benchmark(Benchmark):
 
         q = q.view(b, sq, g, -1, dim_q)
         score = torch.einsum("bmghd,bngd->bghmn", q, k)
-        sm_scale = dim_q**-0.5 if sm_scale is None else sm_scale
+        sm_scale = dim_q**-0.5 if self.sm_scale is None else self.sm_scale
         score = score.masked_fill(~mask, float("-inf")).mul(sm_scale)
         p = score.softmax(dim=-1)
         p = p.view(b, g_index, h_index, -1, sq, sk)
