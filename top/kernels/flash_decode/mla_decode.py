@@ -101,7 +101,7 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
         ):
             with T.Kernel(
-                    batch, heads // min(block_H, kv_group_num), num_split, threads=256) as (bx, by, bz):
+                    batch, heads // min(block_H, kv_group_num), num_split, threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 S_shared = T.alloc_shared([block_H, block_N], dtype)
                 Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -131,7 +131,7 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv((seqlen_kv // num_split), block_N)
-                for k in T.Pipelined(loop_range, num_stages):
+                for k in T.Pipelined(loop_range, num_stages=num_stages):
                     kv_start = (seqlen_kv // num_split) * bz + k * block_N
                     kv_end = (seqlen_kv // num_split) * bz + (k + 1) * block_N
                     T.copy(KV[bx, kv_start:kv_end, cur_kv_head, :], KV_shared)
@@ -174,7 +174,7 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
                 Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            with T.Kernel(heads, batch, threads=128) as (by, bz):
+            with T.Kernel(heads, batch, threads=threads) as (by, bz):
                 po_local = T.alloc_fragment([dim], dtype)
                 o_accum_local = T.alloc_fragment([dim], accum_dtype)
                 lse_local_split = T.alloc_local([1], accum_dtype)
@@ -327,15 +327,15 @@ class mla_decode_kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_M = [32, 64, 128]
+        block_H = [32, 64, 128]
         block_N = [32, 64, 128]
         num_split = [2, 4, 8]
         num_stages = [1, 2, 3]
         threads = [128, 256]
-        _configs = list(itertools.product(block_M, block_N, num_split, num_stages, threads))
+        _configs = list(itertools.product(block_H, block_N, num_split, num_stages, threads))
 
         configs = [{
-            'block_M': c[0],
+            'block_H': c[0],
             'block_N': c[1],
             'num_split': c[2],
             'num_stages': c[3],
