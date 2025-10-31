@@ -60,7 +60,7 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv(seqlen_kv, block_N)
-                for k in T.Pipelined(loop_range, num_stages):
+                for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(KV[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :], KV_shared)
                     T.copy(K_pe[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :], K_pe_shared)
                     T.clear(acc_s)
