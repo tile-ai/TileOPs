@@ -44,11 +44,11 @@ class sparse_mla(Op):
             "(or you may just ignore how this is handled if nan in these q's Out would not effect others, which is reported to be likely to happen by wangding)"
         
         CP0 = q_start_index_s == 0
-        self.q_start_index_s = torch.tensor([q_start_index_s], dtype=torch.int32, device='cuda')
+        self.q_start_index_s = q_start_index_s
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["sparse_mla_kernel"](self.batch, self.seq_len, self.seq_len_kv, self.heads,
-                                       self.dim, self.tail_dim, self.dtype, self.topk, self.kv_stride,
+                                       self.dim, self.tail_dim, self.dtype, self.topk, self.kv_stride, self.q_start_index_s,
                                        self.kv_group, self.sm_scale, self.is_causal, CP0, tune=tune)
 
     @property
@@ -56,4 +56,4 @@ class sparse_mla(Op):
         return {"sparse_mla_kernel": sparse_mla_kernel}
 
     def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor):
-        return self.kernel(Q, KV, Indices, self.q_start_index_s)
+        return self.kernel(Q, KV, Indices)

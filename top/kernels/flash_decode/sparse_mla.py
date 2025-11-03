@@ -18,11 +18,12 @@ def _sparse_mla_kernel(
     tail_dim,
     topk,
     kv_stride,
+    q_start_index_s,
     kv_group=1,
     sm_scale=None,
     is_causal=True,
     CP0=True,
-    dtype="bfloat16"
+    dtype="float16"
 ):
     '''
     This code implements sparse attn
@@ -92,7 +93,6 @@ def _sparse_mla_kernel(
                 Q: T.Tensor(q_shape, dtype),  # type: ignore
                 KV: T.Tensor(kv_shape, dtype),  # type: ignore
                 Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-                q_start_index_s: T.Tensor(1, indices_dtype),
                 Output: T.Tensor(o_shape, dtype),  # type: ignore
         ):
             with T.Kernel(
@@ -138,7 +138,7 @@ def _sparse_mla_kernel(
                 b_i, g_i = by, bz
                 s_i = (bx + (KV_stride - 1 if CP0 else 0)) if REPLICATE_H == 1 else (
                     bx // REPLICATE_H + (KV_stride - 1 if CP0 else 0))
-                q_i = q_start_index_s[0] + s_i
+                q_i = q_start_index_s + s_i
                 max_kv_i = (q_i + 1 - KV_stride) // KV_stride
 
                 H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
@@ -337,6 +337,7 @@ def _sparse_mla_wrapped_kernel(
     tail_dim: int,
     topk: int,
     kv_stride: int,
+    q_start_index_s: int,
     kv_group: int,
     sm_scale: Optional[float],
     is_causal: bool,
@@ -347,15 +348,13 @@ def _sparse_mla_wrapped_kernel(
     Q: torch.Tensor,
     KV: torch.Tensor,
     Indices: torch.Tensor,
-    q_start_index_s: torch.Tensor,
 ) -> torch.Tensor:
-    return _sparse_mla_kernel(batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride,
-                                  kv_group, sm_scale, is_causal, CP0, dtype)(block_I, threads)(Q, KV, Indices,
-                                                                                  q_start_index_s)
+    return _sparse_mla_kernel(batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride, q_start_index_s,
+                                  kv_group, sm_scale, is_causal, CP0, dtype)(block_I, threads)(Q, KV, Indices)
 
 
 @_sparse_mla_wrapped_kernel.register_fake
-def _(batch, seq_len, seq_len_kv, heads, dim, tail_dim, dtype, topk, kv_stride, kv_group, sm_scale, is_causal, CP0, block_I, threads, *inputs):
+def _(batch, seq_len, seq_len_kv, heads, dim, tail_dim, dtype, topk, kv_stride, q_start_index_s, kv_group, sm_scale, is_causal, CP0, block_I, threads, *inputs):
     fake_o = torch.empty([batch, seq_len, heads, dim], device=inputs[0].device,
                          dtype=inputs[0].dtype)
     return fake_o
@@ -374,6 +373,7 @@ class sparse_mla_kernel(Kernel):
                  dtype,
                  topk,
                  kv_stride,
+                 q_start_index_s,
                  kv_group=1,
                  sm_scale=None,
                  is_causal=True,
@@ -393,11 +393,12 @@ class sparse_mla_kernel(Kernel):
         self.kv_group = kv_group
         self.sm_scale = sm_scale
         self.is_causal = is_causal
+        self.q_start_index_s = q_start_index_s
         self.CP0 = CP0
 
         self.kernel = _sparse_mla_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads,
-                                             self.dim, self.tail_dim, self.topk, self.kv_stride,
-                                             self.kv_group, self.sm_scale, self.is_causal, self.CP0, self.dtype)
+                                             self.dim, self.tail_dim, self.topk, self.kv_stride, self.q_start_index_s,
+                                             self.kv_group, self.sm_scale, self.is_causal, self.CP0, self.dtype_str)
 
         self.init_config(config, tune)
 
@@ -417,20 +418,19 @@ class sparse_mla_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor, q_start_index_s: torch.Tensor):
+    def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor):
         return _sparse_mla_wrapped_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads, self.dim,
-                                             self.tail_dim, self.topk, self.kv_stride, self.kv_group, self.sm_scale,
+                                             self.tail_dim, self.topk, self.kv_stride, self.q_start_index_s, self.kv_group, self.sm_scale,
                                              self.is_causal, self.CP0, self.dtype_str, self.config["block_I"], self.config["threads"],
-                                             Q, KV, Indices, q_start_index_s)
+                                             Q, KV, Indices)
     
 
-    @property
-    def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    # @property
+    def supply_prog(self, params=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim + self.tail_dim, device='cuda', dtype=self.dtype)
         KV = torch.randn(
             self.batch, self.seq_len_kv, self.kv_group, self.dim + self.tail_dim, device='cuda', dtype=self.dtype)
-        q_start_index_s = 1024
         Indices = torch.full((self.batch, self.seq_len, self.kv_group, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
@@ -440,11 +440,11 @@ class sparse_mla_kernel(Kernel):
                 for h in range(self.kv_group):
                     i_i = torch.randperm(
                         min(
-                            max(1, ((t + int(q_start_index_s)) // self.kv_stride)),
+                            max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
                             self.seq_len_kv))[:self.topk]
                     Indices[b, t, h, :len(i_i)] = i_i
         
-        return Q, KV, Indices, torch.tensor([q_start_index_s], device='cuda', dtype=torch.int32)
+        return Q, KV, Indices
 
     def autotune(self, warmup=10, rep=10):  # Removed supply_prog parameter
         if self.autotune_configs is None:
