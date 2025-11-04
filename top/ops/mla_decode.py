@@ -1,6 +1,7 @@
 import torch
 from .op import Op
-from top.kernels import mla_decode_kernel, Kernel
+from top.kernels import mla_decode_kernel, mla_decode_ws_kernel, Kernel
+from top.utils import is_hopper
 from typing import Optional, Dict
 
 __all__ = ["mla_decode"]
@@ -34,7 +35,7 @@ class mla_decode(Op):
 
     @property
     def default_kernel_map(self):
-        return {"mla_decode_kernel": mla_decode_kernel}
+        return {"mla_decode_kernel": mla_decode_ws_kernel if is_hopper() else mla_decode_kernel}
 
     def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor, K_pe: torch.Tensor) -> torch.Tensor:
         return self.kernel(Q, Q_pe, K, K_pe)

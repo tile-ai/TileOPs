@@ -408,8 +408,8 @@ class sparse_mla_kernel(Kernel):
     
     @property
     def autotune_configs(self) -> list[dict]:
-        block_I = [32, 64, 128]
-        threads = [256, 384, 512]
+        block_I = [64, 128]
+        threads = [384, 512]
         _configs = list(itertools.product(block_I, threads))
 
         configs = [{
