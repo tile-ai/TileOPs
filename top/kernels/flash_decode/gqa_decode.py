@@ -344,7 +344,6 @@ class gqa_decode_kernel(Kernel):
         glse = torch.empty((self.batch, self.heads, self.config["num_split"]), dtype=self.dtype, device=Q.device)
         Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
                                      dtype=self.dtype, device=Q.device)
-        print(f"Config: {self.config}")
         return _gqa_decode_wrapped_kernel(
             self.batch, self.heads, self.groups, self.seqlen_kv,
             self.dim, self.config["block_H"],

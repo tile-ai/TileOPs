@@ -65,10 +65,10 @@ class sparse_mla_decode_benchmark(Benchmark):
         b, sq, h, dim_q = q.shape
         b, sk, g, _ = kv.shape
         if self.q_start_index_s is None:
-            self.q_start_index_s = sk * self.kv_stride - sq
+            q_start_index_s = sk * self.kv_stride - sq
 
-        assert kv.shape[-1] == 576, 'you should assign dim otherwise'
-        dim = 512
+        assert kv.shape[-1] == self.dim + self.tail_dim, 'you should assign dim otherwise'
+        dim = self.dim
         k = kv
         v = kv[..., :dim]
 
@@ -77,7 +77,7 @@ class sparse_mla_decode_benchmark(Benchmark):
         g_index = g
         h_index = h // g
         compressed_causal_mask = torch.arange(
-            self.q_start_index_s, sq + self.q_start_index_s, dtype=torch.int32,
+            q_start_index_s, sq + q_start_index_s, dtype=torch.int32,
             device="cuda").view(-1, 1) >= torch.arange(
                 self.kv_stride - 1, sk * self.kv_stride, self.kv_stride, dtype=torch.int32,
                 device="cuda").view(1, -1)
