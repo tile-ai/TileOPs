@@ -64,6 +64,7 @@ class sparse_mla_decode_benchmark(Benchmark):
         indices = Indices.transpose(1, 2)
         b, sq, h, dim_q = q.shape
         b, sk, g, _ = kv.shape
+        q_start_index_s = self.q_start_index_s
         if self.q_start_index_s is None:
             q_start_index_s = sk * self.kv_stride - sq
 
