@@ -1,0 +1,6 @@
+global-exclude tests/*
+global-exclude benchmarks/*
+global-exclude 3rdparty/*
+recursive-exclude tests *
+recursive-exclude benchmarks *
+recursive-exclude 3rdparty *

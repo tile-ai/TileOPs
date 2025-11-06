@@ -322,6 +322,23 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
     return _mha_fwd_wgmma_pipelined_func
 
 
+@torch.library.custom_op("top::mha_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
+def _mha_fwd_wgmma_pipelined_wrapped_kernel(
+    batch: int, heads: int, seq_len: int, dim: int, is_causal: bool,
+    dtype: str, block_M: int, block_N: int, num_stages: int, threads: int,
+    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype)(
+        block_M, block_N, num_stages, threads)(Q, K, V)
+
+
+@_mha_fwd_wgmma_pipelined_wrapped_kernel.register_fake
+def _(batch, heads, seq_len, dim, is_causal, dtype, block_M, block_N, num_stages, threads, *inputs):
+    fake_o = torch.empty_like(inputs[0])
+    fake_lse = fake_o.new_empty([batch, heads, seq_len])
+    return fake_o, fake_lse
+
+
 class mha_fwd_wgmma_pipelined_kernel(Kernel):
     supported_archs: list[int] = [90]
 
@@ -368,7 +385,10 @@ class mha_fwd_wgmma_pipelined_kernel(Kernel):
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-        return self.kernel(**self.config)(Q, K, V)
+        return _mha_fwd_wgmma_pipelined_wrapped_kernel(self.batch, self.heads, self.seq_len, self.dim,
+                                       self.is_causal, self.dtype_str, self.config["block_M"],
+                                       self.config["block_N"], self.config["num_stages"],
+                                       self.config["threads"], Q, K, V)
 
 
 # GQA
@@ -461,6 +481,34 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
     return _gqa_fwd_func
 
 
+@torch.library.custom_op("top::gqa_fwd_wrapped_kernel", mutates_args=())
+def _gqa_fwd_wrapped_kernel(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len: int,
+    dim: int,
+    is_causal: bool,
+    dtype: str,
+    block_M: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal,
+                          dtype)(block_M, block_N, num_stages, threads)(Q, K, V)
+
+
+@_gqa_fwd_wrapped_kernel.register_fake
+def _(batch, heads, heads_kv, seq_len, dim, is_causal, dtype, block_M, block_N, num_stages, threads, *inputs):
+    fake_o = torch.empty_like(inputs[0])
+    fake_lse = fake_o.new_empty([batch, heads, seq_len])
+    return fake_o, fake_lse
+
+
 class gqa_fwd_kernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
@@ -515,7 +563,10 @@ class gqa_fwd_kernel(Kernel):
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-        return self.kernel(**self.config)(Q, K, V)
+        return _gqa_fwd_wrapped_kernel(self.batch, self.heads, self.heads_kv, self.seq_len, self.dim,
+                                   self.is_causal, self.dtype_str, self.config["block_M"],
+                                   self.config["block_N"], self.config["num_stages"],
+                                   self.config["threads"], Q, K, V)
 
 
 def _gqa_fwd_wgmma_pipelined_kernel(batch,
@@ -668,6 +719,34 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
     return _gqa_fwd_wgmma_pipelined_func
 
 
+@torch.library.custom_op("top::gqa_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
+def _gqa_fwd_wgmma_pipelined_wrapped_kernel(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len: int,
+    dim: int,
+    is_causal: bool,
+    dtype: str,
+    block_M: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return _gqa_fwd_wgmma_pipelined_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype)(
+        block_M, block_N, num_stages, threads)(Q, K, V)
+
+
+@_gqa_fwd_wgmma_pipelined_wrapped_kernel.register_fake
+def _(batch, heads, heads_kv, seq_len, dim, is_causal, dtype, block_M, block_N, num_stages, threads, *inputs):
+    fake_o = torch.empty_like(inputs[0])
+    fake_lse = fake_o.new_empty([batch, heads, seq_len])
+    return fake_o, fake_lse
+
+
 class gqa_fwd_wgmma_pipelined_kernel(Kernel):
     supported_archs: list[int] = [90]
 
@@ -718,4 +797,9 @@ class gqa_fwd_wgmma_pipelined_kernel(Kernel):
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-        return self.kernel(**self.config)(Q, K, V)
+        return _gqa_fwd_wgmma_pipelined_wrapped_kernel(self.batch, self.heads, self.heads_kv, self.seq_len, self.dim,
+                                                   self.is_causal, self.dtype_str, self.config["block_M"],
+                                                   self.config["block_N"], self.config["num_stages"],
+                                                   self.config["threads"], Q, K, V)
+
+
