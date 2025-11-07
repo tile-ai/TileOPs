@@ -122,9 +122,16 @@ class mha_bwd_benchmark(Benchmark):
 class mha_benchmark(Benchmark):
 
     def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, grad=True):
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+        self.grad = grad
+
         self.mha_fwd_bench = mha_fwd_benchmark(batch, heads, seq_len, dim, is_causal, dtype)
         self.mha_bwd_bench = mha_bwd_benchmark(batch, heads, seq_len, dim, is_causal, dtype)
-        self.grad = grad
 
     @property
     def total_flops(self):
@@ -159,13 +166,8 @@ class mha_benchmark(Benchmark):
             dtype=self.dtype,
             device='cuda',
             requires_grad=self.grad)
-        
-        if self.grad:
-            dO = torch.randn(
-                self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
-            return Q, K, V, dO
-        else:
-            return Q, K, V
+
+        return Q, K, V
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, dO: torch.Tensor = None):
         q_bhsd = Q.transpose(1, 2)   # [B, H, S, D]
@@ -176,8 +178,9 @@ class mha_benchmark(Benchmark):
         output = output_bhsd.transpose(1, 2).contiguous()
 
         if not self.grad:
-            return output, None, None, None
+            return output
         else:
-            output.backward(dO)
+            loss = output.sum()
+            loss.backward()
             return output, Q.grad, K.grad, V.grad
     

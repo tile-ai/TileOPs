@@ -2,21 +2,15 @@ import argparse
 from top import mha_fn
 from top.utils import str2dtype
 import torch
+from benchmarks import mha_benchmark
 
 
 def test_mha_fn(B, S, H, D, causal, dtype):
     fn = mha_fn(B, H, S, D, causal, dtype)
-    Q = torch.randn(B, S, H, D, dtype=dtype, device='cuda', requires_grad=True)
-    K = torch.randn(B, S, H, D, dtype=dtype, device='cuda', requires_grad=True)
-    V = torch.randn(B, S, H, D, dtype=dtype, device='cuda', requires_grad=True)
-    O = fn(Q, K, V)
-    print(O.shape)
+    benchmark = mha_benchmark(B, H, S, D, causal, dtype)
 
-    dO = torch.randn_like(O, device='cuda')
-    O.backward(dO)
-    print(Q.grad.shape)
-    print(K.grad.shape)
-    print(V.grad.shape)
+    inputs = benchmark.gen_inputs()
+    benchmark.check_fn(fn, *inputs)
 
 
 if __name__ == "__main__":
