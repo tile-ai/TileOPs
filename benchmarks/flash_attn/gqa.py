@@ -149,7 +149,7 @@ class gqa_benchmark(Benchmark):
     def total_memory(self):
         return self.gqa_fwd_bench.total_memory + self.gqa_bwd_bench.total_memory
     
-    def get_inputs(self):
+    def gen_inputs(self):
         if self.grad:
             Q, K, V, _, _, _ = self.gqa_bwd_bench.gen_inputs()
             return Q, K, V
