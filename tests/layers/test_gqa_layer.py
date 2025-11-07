@@ -1,5 +1,4 @@
 import argparse
-import torch
 from top.utils import str2dtype
 from top.layers.flash_attn import GQA
 from benchmarks import gqa_benchmark
