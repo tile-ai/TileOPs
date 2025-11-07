@@ -60,6 +60,45 @@ class Benchmark(ABC):
 
         print(f"All checks passed for {op.__class__.__name__}.✅")
 
+    def check_fn(self, fn, *inputs, atol=1e-2, rtol=1e-2, grad=True):
+        """Check the correctness of the function and layer"""
+
+        try:
+            outputs_ref = self.ref_program(*inputs)
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
+                return
+            else:
+                raise e
+
+        if isinstance(outputs_ref, torch.Tensor):
+            outputs_ref = (outputs_ref,)
+        elif not isinstance(outputs_ref, tuple):
+            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
+
+        if not grad:
+            with torch.no_grad():
+                outputs = fn(*inputs)
+        else:
+            outputs = fn(*inputs)
+
+        if isinstance(outputs, list):
+            outputs = tuple(outputs)
+        elif isinstance(outputs, torch.Tensor):
+            outputs = (outputs,)
+        elif not isinstance(outputs, tuple):
+            raise ValueError(f"Unsupported output type: {type(outputs)}")
+
+        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
+        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
+            # print(f"outputs[{i}] max err: {(output - output_ref).abs().max()}")
+            if output_ref is not None:  # skip checking for None placeholders in ref
+                assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
+                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {(output - output_ref).abs().max()}"
+
+        print(f"All checks passed for {fn.__class__.__name__}.✅")
+
     def profile(self, op, *inputs, warmup=100, rep=100):
         """Benchmark the perf of the op"""
 
