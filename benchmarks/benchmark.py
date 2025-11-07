@@ -27,6 +27,9 @@ class Benchmark(ABC):
     def check(self, op, *inputs, atol=1e-2, rtol=1e-2):
         """Check the correctness of the op"""
 
+        if not isinstance(op, Op):
+            raise ValueError("Only support check the correctness of the op")
+
         try:
             outputs_ref = self.ref_program(*inputs)
         except RuntimeError as e:
@@ -81,7 +84,13 @@ class Benchmark(ABC):
             with torch.no_grad():
                 outputs = fn(*inputs)
         else:
-            outputs = fn(*inputs)
+            output = fn(*inputs)
+            loss = output.sum()
+            loss.backward()
+            outputs = []
+            outputs.append(output)
+            for input in inputs:
+                outputs.append(input.grad)
 
         if isinstance(outputs, list):
             outputs = tuple(outputs)
@@ -90,7 +99,7 @@ class Benchmark(ABC):
         elif not isinstance(outputs, tuple):
             raise ValueError(f"Unsupported output type: {type(outputs)}")
 
-        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
+        assert len(outputs) == len(outputs_ref), f"outputs: {len(outputs)}  and outputs_ref: {len(outputs_ref)} have different size"
         for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
             # print(f"outputs[{i}] max err: {(output - output_ref).abs().max()}")
             if output_ref is not None:  # skip checking for None placeholders in ref
