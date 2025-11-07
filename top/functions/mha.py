@@ -20,8 +20,6 @@ class mhc_ctx(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, lse = ctx.saved_tensors
-
-        dO = dO.contiguous()
         
         dQ, dK, dV = ctx.bwd_op(Q, K, V, O, dO, lse)
         
