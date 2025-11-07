@@ -9,9 +9,9 @@ def test_mha_layer(B, S, H, D, causal, dtype):
     mha = MHA(B, H, S, D, causal, dtype)
 
     # create inputs
-    Q = torch.randn(B, H, S, D, dtype=dtype, requires_grad=True)
-    K = torch.randn(B, H, S, D, dtype=dtype, requires_grad=True)
-    V = torch.randn(B, H, S, D, dtype=dtype, requires_grad=True)
+    Q = torch.randn(B, S, H, D, dtype=dtype, device='cuda', requires_grad=True)
+    K = torch.randn(B, S, H, D, dtype=dtype, device='cuda', requires_grad=True)
+    V = torch.randn(B, S, H, D, dtype=dtype, device='cuda', requires_grad=True)
 
     # forward pass (fwd)
     output = mha(Q, K, V)
