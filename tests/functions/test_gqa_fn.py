@@ -1,7 +1,6 @@
 import argparse
 from top import gqa_fn
 from top.utils import str2dtype
-import torch
 from benchmarks import gqa_benchmark
 
 
