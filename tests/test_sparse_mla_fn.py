@@ -7,9 +7,9 @@ from benchmarks import sparse_mla_decode_benchmark
 
 def test_sparse_mla_decode(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
                            kv_group, q_start_index_s, sm_scale, dtype, tune=False):
-    sparse_mla_fn = sparse_mla_fn(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
+    fn = sparse_mla_fn(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
                     kv_group, q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
-    sparse_mla_layer = SparseMLADecode(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
+    layer = SparseMLADecode(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
                     kv_group, q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
     benchmark = sparse_mla_decode_benchmark(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
                                             kv_group, q_start_index_s, sm_scale=sm_scale, dtype=dtype)
@@ -18,7 +18,7 @@ def test_sparse_mla_decode(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride,
 
     try:
         print("Testing mla_fn...")
-        benchmark.check_fn(sparse_mla_fn, *inputs, grad=False)
+        benchmark.check_fn(fn, *inputs, grad=False)
         print("✅ mla_fn test passed")
     except Exception as e:
         print(f"❌ mla_fn test failed: {e}")
@@ -26,7 +26,7 @@ def test_sparse_mla_decode(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride,
     
     try:
         print("Testing mla_layer...")
-        benchmark.check_fn(sparse_mla_layer, *inputs, grad=False)
+        benchmark.check_fn(layer, *inputs, grad=False)
         print("✅ mla_layer test passed")
     except Exception as e:
         print(f"❌ mla_layer test failed: {e}")
