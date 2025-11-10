@@ -15,7 +15,7 @@ class mla_decode_ctx(torch.autograd.Function):
     
     @staticmethod
     def backward(ctx, dO):
-        raise NotImplementedError("Backward pass is not implemented for mha_decode.")
+        raise NotImplementedError("Backward pass is not implemented for mla_decode.")
 
 
 class mla_decode_fn(Function):
