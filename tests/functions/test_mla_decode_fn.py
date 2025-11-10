@@ -1,0 +1,47 @@
+import argparse
+from top.functions import mla_decode_fn
+from top.layers import MLADecode
+from top.utils import str2dtype
+from benchmarks import mla_decode_benchmark
+
+
+def test_mla_decode_fn(B, kv_head_num, S_kv, H, D, Pe_D, causal, dtype):
+
+    mla_fn = mla_decode_fn(B, H, kv_head_num, S_kv, D, Pe_D, causal, dtype)
+    mla_layer = MLADecode(B, H, kv_head_num, S_kv, D, Pe_D, causal, dtype)
+    benchmark = mla_decode_benchmark(B, H, kv_head_num, S_kv, D, Pe_D, causal, dtype)
+
+    inputs = benchmark.gen_inputs()
+
+    # 分别测试 mla_fn 和 mla_layer
+    try:
+        print("Testing mla_fn...")
+        benchmark.check_fn(mla_fn, *inputs, grad=False)
+        print("✅ mla_fn test passed")
+    except Exception as e:
+        print(f"❌ mla_fn test failed: {e}")
+        raise
+    
+    try:
+        print("Testing mla_layer...")
+        benchmark.check_fn(mla_layer, *inputs, grad=False)
+        print("✅ mla_layer test passed")
+    except Exception as e:
+        print(f"❌ mla_layer test failed: {e}")
+        raise
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch', type=int, default=32, help='batch size')
+    parser.add_argument('--kv_head_num', type=int, default=1, help='number of key/value heads')
+    parser.add_argument('--seq_len_kv', type=int, default=8192, help='key/value sequence length')
+    parser.add_argument('--heads', type=int, default=128, help='num heads')
+    parser.add_argument('--dim', type=int, default=512, help='head dim')
+    parser.add_argument('--pe_dim', type=int, default=64, help='positional encoding dim')
+    parser.add_argument(
+        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
+    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
+    args = parser.parse_args()
+
+    test_mla_decode_fn(args.batch, args.kv_head_num, args.seq_len_kv, args.heads, args.dim, args.pe_dim, False, str2dtype[args.dtype])
