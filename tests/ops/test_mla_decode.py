@@ -1,5 +1,5 @@
 import argparse
-from top import mla_decode
+from top.ops import mla_decode
 from top.utils import str2dtype
 from benchmarks import mla_decode_benchmark
 

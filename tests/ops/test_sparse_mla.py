@@ -1,5 +1,5 @@
 import argparse
-from top import sparse_mla
+from top.ops import sparse_mla
 from top.utils import str2dtype
 from benchmarks import sparse_mla_decode_benchmark
 

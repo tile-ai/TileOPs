@@ -1,5 +1,5 @@
 import argparse
-from top import Gemm
+from top.ops import Gemm
 from top.utils import str2dtype
 from benchmarks import gemm_benchmark
 

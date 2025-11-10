@@ -27,9 +27,6 @@ class Benchmark(ABC):
     def check(self, op, *inputs, atol=1e-2, rtol=1e-2):
         """Check the correctness of the op"""
 
-        if not isinstance(op, Op):
-            raise ValueError("Only support check the correctness of the op")
-
         try:
             outputs_ref = self.ref_program(*inputs)
         except RuntimeError as e:

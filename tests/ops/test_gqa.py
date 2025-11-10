@@ -1,5 +1,5 @@
 import argparse
-from top import gqa_fwd, gqa_bwd
+from top.ops import gqa_fwd, gqa_bwd
 from top.utils import str2dtype
 from benchmarks import gqa_fwd_benchmark, gqa_bwd_benchmark
 
