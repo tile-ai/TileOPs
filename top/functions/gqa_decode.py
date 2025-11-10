@@ -9,8 +9,8 @@ __all__ = ['gqa_decode_fn']
 class gqa_decode_ctx(torch.autograd.Function):
     
     @staticmethod
-    def forward(ctx, Q, K, V, fwd_op):
-        O = fwd_op(Q, K, V)
+    def forward(ctx, Q, K, V, mask, fwd_op):
+        O = fwd_op(Q, K, V, mask)
         return O
     
     @staticmethod
@@ -39,6 +39,6 @@ class gqa_decode_fn(Function):
         self.fwd_op = gqa_decode(batch, heads, groups, seqlen_kv, dim, dtype, tune=tune)
 
     
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return gqa_decode_ctx.apply(Q, K, V, self.fwd_op)
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        return gqa_decode_ctx.apply(Q, K, V, mask, self.fwd_op)
     
