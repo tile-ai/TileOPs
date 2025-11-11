@@ -8,6 +8,50 @@ import sys
 import re
 from pathlib import Path
 
+
+def build_gemm_cmd(args_dict):
+    """
+    Build command arguments for GEMM test script
+    """
+    cmd_args = [
+        '--M', str(args_dict['M']),
+        '--N', str(args_dict['N']),
+        '--K', str(args_dict['K']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    return cmd_args
+
+def build_mha_cmd(args_dict):
+    """
+    Build command arguments for MHA test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len', str(args_dict['seq_len']),
+        '--heads', str(args_dict['heads']),
+        '--dim', str(args_dict['dim']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    if args_dict.get('causal', 'False').lower() == 'true':
+        cmd_args.append('--causal')
+    return cmd_args
+
+def build_gqa_cmd(args_dict):
+    """
+    Build command arguments for GQA test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len', str(args_dict['seq_len']),
+        '--heads', str(args_dict['heads']),
+        '--heads_kv', str(args_dict['heads_kv']),
+        '--dim', str(args_dict['dim']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    if args_dict.get('causal', 'False').lower() == 'true':
+        cmd_args.append('--causal')
+    return cmd_args
+
 def parse_output(output_lines):
     """
     Parse script output to extract latency, TFlops, and Bandwidth information
@@ -35,40 +79,20 @@ def run_test_script(script_path, args_dict):
     """
     Run the specified test script and return output
     """
-    # Build command line arguments
-    cmd = [sys.executable, str(script_path)]
+    # Build command line arguments based on script type
+    script_name = script_path.name.lower()
     
-    # Add arguments based on script type
-    if 'gemm' in script_path.name.lower():
-        cmd.extend([
-            '--M', str(args_dict['M']),
-            '--N', str(args_dict['N']),
-            '--K', str(args_dict['K']),
-            '--dtype', str(args_dict['dtype'])
-        ])
-    elif 'mha' in script_path.name.lower():
-        cmd.extend([
-            '--batch', str(args_dict['batch']),
-            '--seq_len', str(args_dict['seq_len']),
-            '--heads', str(args_dict['heads']),
-            '--dim', str(args_dict['dim']),
-            '--dtype', str(args_dict['dtype'])
-        ])
-        if args_dict.get('causal', 'False').lower() == 'true':
-            cmd.append('--causal')
-    elif 'gqa' in script_path.name.lower():
-        cmd.extend([
-            '--batch', str(args_dict['batch']),
-            '--seq_len', str(args_dict['seq_len']),
-            '--heads', str(args_dict['heads']),
-            '--heads_kv', str(args_dict['heads_kv']),
-            '--dim', str(args_dict['dim']),
-            '--dtype', str(args_dict['dtype'])
-        ])
-        if args_dict.get('causal', 'False').lower() == 'true':
-            cmd.append('--causal')
+    if 'gemm' in script_name:
+        cmd_args = build_gemm_cmd(args_dict)
+    elif 'mha' in script_name:
+        cmd_args = build_mha_cmd(args_dict)
+    elif 'gqa' in script_name:
+        cmd_args = build_gqa_cmd(args_dict)
     else:
         raise ValueError(f"Unsupported script type: {script_path}")
+    
+    # Build full command with executable
+    cmd = [sys.executable, str(script_path)] + cmd_args
     
     print(f"Running command: {' '.join(cmd)}")
     
