@@ -114,14 +114,14 @@ def run_test_script(script_path, args_dict):
     
     if 'gemm' in script_name:
         cmd_args = build_gemm_cmd(args_dict)
-    elif 'mha' in script_name:
-        cmd_args = build_mha_cmd(args_dict)
-    elif 'gqa' in script_name:
-        cmd_args = build_gqa_cmd(args_dict)
     elif 'mha_decode' in script_name:
         cmd_args = build_mha_decode_cmd(args_dict)
     elif 'gqa_decode' in script_name:
         cmd_args = build_gqa_decode_cmd(args_dict)
+    elif 'mha' in script_name:
+        cmd_args = build_mha_cmd(args_dict)
+    elif 'gqa' in script_name:
+        cmd_args = build_gqa_cmd(args_dict)
     else:
         raise ValueError(f"Unsupported script type: {script_path}")
     
