@@ -1,0 +1,7 @@
+batch,seq_len_kv,heads,groups,dim,dtype
+64,1024,64,2,128,float16
+64,1024,64,4,128,float16
+64,1024,64,8,128,float16
+64,2048,64,4,128,float16
+64,4096,64,4,128,float16
+64,8192,64,4,128,float16

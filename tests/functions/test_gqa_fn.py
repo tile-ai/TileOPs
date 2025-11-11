@@ -1,22 +1,15 @@
 import argparse
 from top import gqa_fn
 from top.utils import str2dtype
-import torch
+from benchmarks import gqa_benchmark
 
 
 def test_gqa_fn(B, S, H, H_kv, D, causal, dtype):
     fn = gqa_fn(B, H, H_kv, S, D, causal, dtype)
-    Q = torch.randn(B, S, H, D, dtype=dtype, device='cuda', requires_grad=True)
-    K = torch.randn(B, S, H_kv, D, dtype=dtype, device='cuda', requires_grad=True)
-    V = torch.randn(B, S, H_kv, D, dtype=dtype, device='cuda', requires_grad=True)
-    O = fn(Q, K, V)
-    print(O.shape)
+    benchmark = gqa_benchmark(B, H, H_kv, S, D, causal, dtype)
 
-    dO = torch.randn_like(O, device='cuda')
-    O.backward(dO)
-    print(Q.grad.shape)
-    print(K.grad.shape)
-    print(V.grad.shape)
+    inputs = benchmark.gen_inputs()
+    benchmark.check_fn(fn, *inputs)
 
 
 if __name__ == "__main__":

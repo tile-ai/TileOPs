@@ -87,6 +87,7 @@ class gqa_bwd(Op):
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
                 dO: torch.Tensor, lse: torch.Tensor):
+        dO = dO.contiguous()
         delta = self.prep_kernel(O, dO)
         dQ = torch.zeros_like(Q, dtype=torch.float32)
         dK = torch.zeros_like(K, dtype=torch.float32)

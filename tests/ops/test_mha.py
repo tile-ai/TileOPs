@@ -1,5 +1,5 @@
 import argparse
-from top import mha_fwd, mha_bwd
+from top.ops import mha_fwd, mha_bwd
 from top.utils import str2dtype
 from benchmarks import mha_fwd_benchmark, mha_bwd_benchmark
 

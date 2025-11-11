@@ -8,6 +8,119 @@ import sys
 import re
 from pathlib import Path
 
+
+def build_gemm_cmd(args_dict):
+    """
+    Build command arguments for GEMM test script
+    """
+    cmd_args = [
+        '--M', str(args_dict['M']),
+        '--N', str(args_dict['N']),
+        '--K', str(args_dict['K']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    return cmd_args
+
+def build_mha_cmd(args_dict):
+    """
+    Build command arguments for MHA test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len', str(args_dict['seq_len']),
+        '--heads', str(args_dict['heads']),
+        '--dim', str(args_dict['dim']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    if args_dict.get('causal', 'False').lower() == 'true':
+        cmd_args.append('--causal')
+    return cmd_args
+
+def build_gqa_cmd(args_dict):
+    """
+    Build command arguments for GQA test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len', str(args_dict['seq_len']),
+        '--heads', str(args_dict['heads']),
+        '--heads_kv', str(args_dict['heads_kv']),
+        '--dim', str(args_dict['dim']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    if args_dict.get('causal', 'False').lower() == 'true':
+        cmd_args.append('--causal')
+    return cmd_args
+
+def build_mha_decode_cmd(args_dict):
+    """
+    Build command arguments for MHA decode test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len_q', str(args_dict['seq_len_q']),
+        '--seq_len_kv', str(args_dict['seq_len_kv']),
+        '--heads', str(args_dict['heads']),
+        '--dim', str(args_dict['dim']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    if args_dict.get('causal', 'False').lower() == 'true':
+        cmd_args.append('--causal')
+    return cmd_args
+
+def build_gqa_decode_cmd(args_dict):
+    """
+    Build command arguments for GQA decode test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len_kv', str(args_dict['seq_len_kv']),
+        '--heads', str(args_dict['heads']),
+        '--groups', str(args_dict['groups']),
+        '--dim', str(args_dict['dim']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    return cmd_args
+
+def build_mla_decode_cmd(args_dict):
+    """
+    Build command arguments for MLA decode test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len_kv', str(args_dict['seq_len_kv']),
+        '--heads', str(args_dict['heads']),
+        '--kv_head_num', str(args_dict['kv_head_num']),
+        '--dim', str(args_dict['dim']),
+        '--pe_dim', str(args_dict['pe_dim']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    return cmd_args
+
+def build_sparse_mla_cmd(args_dict):
+    """
+    Build command arguments for Sparse MLA test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len', str(args_dict['seq_len']),
+        '--seq_len_kv', str(args_dict['seq_len_kv']),
+        '--heads', str(args_dict['heads']),
+        '--dim', str(args_dict['dim']),
+        '--tail_dim', str(args_dict['tail_dim']),
+        '--topk', str(args_dict['topk']),
+        '--kv_stride', str(args_dict['kv_stride']),
+        '--kv_group', str(args_dict['kv_group']),
+        '--q_start_index_s', str(args_dict.get('q_start_index_s', 1024)),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    
+    # Handle optional sm_scale parameter
+    if 'sm_scale' in args_dict and args_dict['sm_scale'] != 'None':
+        cmd_args.extend(['--sm_scale', str(args_dict['sm_scale'])])
+        
+    return cmd_args
+
 def parse_output(output_lines):
     """
     Parse script output to extract latency, TFlops, and Bandwidth information
@@ -35,40 +148,28 @@ def run_test_script(script_path, args_dict):
     """
     Run the specified test script and return output
     """
-    # Build command line arguments
-    cmd = [sys.executable, str(script_path)]
+    # Build command line arguments based on script type
+    script_name = script_path.name.lower()
     
-    # Add arguments based on script type
-    if 'gemm' in script_path.name.lower():
-        cmd.extend([
-            '--M', str(args_dict['M']),
-            '--N', str(args_dict['N']),
-            '--K', str(args_dict['K']),
-            '--dtype', str(args_dict['dtype'])
-        ])
-    elif 'mha' in script_path.name.lower():
-        cmd.extend([
-            '--batch', str(args_dict['batch']),
-            '--seq_len', str(args_dict['seq_len']),
-            '--heads', str(args_dict['heads']),
-            '--dim', str(args_dict['dim']),
-            '--dtype', str(args_dict['dtype'])
-        ])
-        if args_dict.get('causal', 'False').lower() == 'true':
-            cmd.append('--causal')
-    elif 'gqa' in script_path.name.lower():
-        cmd.extend([
-            '--batch', str(args_dict['batch']),
-            '--seq_len', str(args_dict['seq_len']),
-            '--heads', str(args_dict['heads']),
-            '--heads_kv', str(args_dict['heads_kv']),
-            '--dim', str(args_dict['dim']),
-            '--dtype', str(args_dict['dtype'])
-        ])
-        if args_dict.get('causal', 'False').lower() == 'true':
-            cmd.append('--causal')
+    if 'gemm' in script_name:
+        cmd_args = build_gemm_cmd(args_dict)
+    elif 'mha_decode' in script_name:
+        cmd_args = build_mha_decode_cmd(args_dict)
+    elif 'gqa_decode' in script_name:
+        cmd_args = build_gqa_decode_cmd(args_dict)
+    elif 'mla_decode' in script_name:
+        cmd_args = build_mla_decode_cmd(args_dict)
+    elif 'sparse_mla' in script_name:
+        cmd_args = build_sparse_mla_cmd(args_dict)
+    elif 'mha' in script_name:
+        cmd_args = build_mha_cmd(args_dict)
+    elif 'gqa' in script_name:
+        cmd_args = build_gqa_cmd(args_dict)
     else:
         raise ValueError(f"Unsupported script type: {script_path}")
+    
+    # Build full command with executable
+    cmd = [sys.executable, str(script_path)] + cmd_args
     
     print(f"Running command: {' '.join(cmd)}")
     
@@ -136,8 +237,10 @@ def main():
         output_lines = run_test_script(script_path, params)
         if output_lines is None:
             print("Skipping this test due to execution error")
+            error_result = {**params, 'latency(ms)': None, 'TFlops': None, 'Bandwidth(GB/s)': None}
+            results.append(error_result)
             continue
-            
+
         # Parse output results
         parsed_results = parse_output(output_lines)
         

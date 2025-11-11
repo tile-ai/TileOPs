@@ -327,10 +327,10 @@ class mla_decode_kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_H = [32, 64, 128]
-        block_N = [32, 64, 128]
-        num_split = [2, 4, 8]
-        num_stages = [1, 2, 3]
+        block_H = [64, 128]
+        block_N = [64, 128]
+        num_split = [1, 2, 4, 8]
+        num_stages = [2, 3]
         threads = [128, 256]
         _configs = list(itertools.product(block_H, block_N, num_split, num_stages, threads))
 
@@ -979,11 +979,11 @@ class mla_decode_ws_kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_H = [32, 64, 128]
-        block_N = [32, 64, 128]
-        num_split = [2, 4, 8]
-        num_stages = [1]
-        threads = [128, 256, 384]
+        block_H = [64, 128]
+        block_N = [64, 128]
+        num_split = [1, 2, 4]
+        num_stages = [1, 2, 3]
+        threads = [384]
         _configs = list(itertools.product(block_H, block_N, num_split, num_stages, threads))
 
         configs = [{

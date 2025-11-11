@@ -1,16 +1,15 @@
 import argparse
-from top.ops import mha_decode
+from top import MHADecode
 from top.utils import str2dtype
 from benchmarks import mha_decode_benchmark
 
 
-def test_mha_decode(B, H, S_q, S_kv, D, causal, dtype, tune=False):
-    op = mha_decode(B, H, S_q, S_kv, D, causal, dtype, tune=tune)
+def test_mha_decode_layer(B, S_q, S_kv, H, D, causal, dtype):
+    fn = MHADecode(B, H, S_q, S_kv, D, causal, dtype)
     benchmark = mha_decode_benchmark(B, H, S_q, S_kv, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
-    benchmark.profile(op, *inputs)
+    benchmark.check_fn(fn, *inputs, grad=False)
 
 
 if __name__ == "__main__":
@@ -26,5 +25,4 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_mha_decode(args.batch, args.heads, args.seq_len_q, args.seq_len_kv, args.dim, args.causal, str2dtype[args.dtype], args.tune)
-    
+    test_mha_decode_layer(args.batch, args.seq_len_q, args.seq_len_kv, args.heads, args.dim, args.causal, str2dtype[args.dtype])

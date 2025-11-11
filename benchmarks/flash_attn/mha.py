@@ -117,3 +117,70 @@ class mha_bwd_benchmark(Benchmark):
 
         output.backward(dO)
         return Q.grad, K.grad, V.grad
+
+
+class mha_benchmark(Benchmark):
+
+    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, grad=True):
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+        self.grad = grad
+
+        self.mha_fwd_bench = mha_fwd_benchmark(batch, heads, seq_len, dim, is_causal, dtype)
+        self.mha_bwd_bench = mha_bwd_benchmark(batch, heads, seq_len, dim, is_causal, dtype)
+
+    @property
+    def total_flops(self):
+        return self.mha_fwd_bench.total_flops + self.mha_bwd_bench.total_flops
+
+    @property
+    def total_memory(self):
+        return self.mha_fwd_bench.total_memory + self.mha_bwd_bench.total_memory
+
+    def gen_inputs(self):
+        Q = torch.randn(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim,
+            dtype=self.dtype,
+            device='cuda',
+            requires_grad=self.grad)
+        K = torch.randn(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim,
+            dtype=self.dtype,
+            device='cuda',
+            requires_grad=self.grad)
+        V = torch.randn(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim,
+            dtype=self.dtype,
+            device='cuda',
+            requires_grad=self.grad)
+
+        return Q, K, V
+
+    def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, dO: torch.Tensor = None):
+        q_bhsd = Q.transpose(1, 2)   # [B, H, S, D]
+        k_bhsd = K.transpose(1, 2)
+        v_bhsd = V.transpose(1, 2)
+        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
+            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
+        output = output_bhsd.transpose(1, 2).contiguous()
+
+        if not self.grad:
+            return output
+        else:
+            loss = output.sum()
+            loss.backward()
+            return output, Q.grad, K.grad, V.grad
+    

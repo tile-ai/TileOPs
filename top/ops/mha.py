@@ -83,6 +83,7 @@ class mha_bwd(Op):
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
                 dO: torch.Tensor, lse: torch.Tensor):
+        dO = dO.contiguous()
         delta = self.prep_kernel(O, dO)
         dQ = torch.zeros_like(Q, dtype=torch.float32)
         dK, dV = self.kernel(Q, K, V, dO, lse, delta, dQ)

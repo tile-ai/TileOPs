@@ -1,16 +1,33 @@
 import argparse
-from top.ops import mla_decode
+from top.functions import mla_decode_fn
+from top.layers import MLADecode
 from top.utils import str2dtype
 from benchmarks import mla_decode_benchmark
 
 
-def test_mla_decode(B, H, kv_head_num, S_kv, D, Pe_D, dtype, tune=False):
-    op = mla_decode(B, H, kv_head_num, S_kv, D, Pe_D, dtype, tune=tune)
+def test_mla_decode_fn(B, kv_head_num, S_kv, H, D, Pe_D, dtype):
+
+    mla_fn = mla_decode_fn(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
+    mla_layer = MLADecode(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
     benchmark = mla_decode_benchmark(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
-    benchmark.profile(op, *inputs)
+
+    try:
+        print("Testing mla_fn...")
+        benchmark.check_fn(mla_fn, *inputs, grad=False)
+        print("✅ mla_fn test passed")
+    except Exception as e:
+        print(f"❌ mla_fn test failed: {e}")
+        raise
+    
+    try:
+        print("Testing mla_layer...")
+        benchmark.check_fn(mla_layer, *inputs, grad=False)
+        print("✅ mla_layer test passed")
+    except Exception as e:
+        print(f"❌ mla_layer test failed: {e}")
+        raise
 
 
 if __name__ == "__main__":
@@ -26,4 +43,4 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_mla_decode(args.batch, args.heads, args.kv_head_num, args.seq_len_kv, args.dim, args.pe_dim, str2dtype[args.dtype], args.tune)
+    test_mla_decode_fn(args.batch, args.kv_head_num, args.seq_len_kv, args.heads, args.dim, args.pe_dim, str2dtype[args.dtype])
