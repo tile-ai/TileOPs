@@ -84,6 +84,12 @@ run_test "mha_decode" "./tests/ops/test_mha_decode.py" "./benchmarks/input_param
 # Run GQA Decode test
 run_test "gqa_decode" "./tests/ops/test_gqa_decode.py" "./benchmarks/input_params/gqa_decode.csv"
 
+# Run MLA Decode test
+run_test "mla_decode" "./tests/ops/test_mla_decode.py" "./benchmarks/input_params/mla_decode.csv"
+
+# Run Sparse MLA test
+run_test "sparse_mla" "./tests/ops/test_sparse_mla.py" "./benchmarks/input_params/sparse_mla.csv"
+
 print_separator
 echo "All tests completed at $(date)"
 
