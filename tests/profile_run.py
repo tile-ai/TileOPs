@@ -52,6 +52,36 @@ def build_gqa_cmd(args_dict):
         cmd_args.append('--causal')
     return cmd_args
 
+def build_mha_decode_cmd(args_dict):
+    """
+    Build command arguments for MHA decode test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len_q', str(args_dict['seq_len_q']),
+        '--seq_len_kv', str(args_dict['seq_len_kv']),
+        '--heads', str(args_dict['heads']),
+        '--dim', str(args_dict['dim']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    if args_dict.get('causal', 'False').lower() == 'true':
+        cmd_args.append('--causal')
+    return cmd_args
+
+def build_gqa_decode_cmd(args_dict):
+    """
+    Build command arguments for GQA decode test script
+    """
+    cmd_args = [
+        '--batch', str(args_dict['batch']),
+        '--seq_len_kv', str(args_dict['seq_len_kv']),
+        '--heads', str(args_dict['heads']),
+        '--groups', str(args_dict['groups']),
+        '--dim', str(args_dict['dim']),
+        '--dtype', str(args_dict['dtype'])
+    ]
+    return cmd_args
+
 def parse_output(output_lines):
     """
     Parse script output to extract latency, TFlops, and Bandwidth information
@@ -88,6 +118,10 @@ def run_test_script(script_path, args_dict):
         cmd_args = build_mha_cmd(args_dict)
     elif 'gqa' in script_name:
         cmd_args = build_gqa_cmd(args_dict)
+    elif 'mha_decode' in script_name:
+        cmd_args = build_mha_decode_cmd(args_dict)
+    elif 'gqa_decode' in script_name:
+        cmd_args = build_gqa_decode_cmd(args_dict)
     else:
         raise ValueError(f"Unsupported script type: {script_path}")
     
