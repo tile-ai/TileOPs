@@ -1,6 +1,0 @@
-batch,seq_len,seq_len_kv,heads,dim,tail_dim,topk,kv_stride,kv_group,dtype,sm_scale
-1,1,1024,32,512,64,512,1,1,float16,None
-1,1,1024,64,512,64,512,1,1,float16,None
-1,1,1024,128,512,64,512,1,1,float16,None
-1,1,4096,32,512,64,1024,1,1,float16,None
-1,1,4096,64,512,64,1024,1,1,float16,None
