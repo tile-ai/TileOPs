@@ -30,7 +30,8 @@ def build_mha_cmd(args_dict):
         '--seq_len', str(args_dict['seq_len']),
         '--heads', str(args_dict['heads']),
         '--dim', str(args_dict['dim']),
-        '--dtype', str(args_dict['dtype'])
+        '--dtype', str(args_dict['dtype']),
+        '--disable_bwd'
     ]
     if args_dict.get('causal', 'False').lower() == 'true':
         cmd_args.append('--causal')
