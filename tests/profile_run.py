@@ -65,8 +65,6 @@ def build_mha_decode_cmd(args_dict):
         '--dim', str(args_dict['dim']),
         '--dtype', str(args_dict['dtype'])
     ]
-    if args_dict.get('causal', 'False').lower() == 'true':
-        cmd_args.append('--causal')
     return cmd_args
 
 def build_gqa_decode_cmd(args_dict):
