@@ -9,20 +9,19 @@ class mha_decode_benchmark(Benchmark):
 
     op_type = mha_decode
 
-    def __init__(self, batch, heads, seq_len_q, seq_len_kv, dim, is_causal, dtype):
+    def __init__(self, batch, heads, seq_len_q, seq_len_kv, dim, dtype):
         self.batch = batch
         self.heads = heads
         self.seq_len_q = seq_len_q
         self.seq_len_kv = seq_len_kv
         self.dim = dim
-        self.is_causal = is_causal
         self.dtype = dtype
 
     @property
     def total_flops(self):
         flops_per_matmul = 2.0 * self.batch * self.heads * self.seq_len_q * self.seq_len_kv * self.dim
         flops = flops_per_matmul * 2
-        return flops / 2 if self.is_causal else flops
+        return flops
 
     @property
     def total_memory(self):
@@ -46,6 +45,6 @@ class mha_decode_benchmark(Benchmark):
         k_bhsd = K.transpose(1, 2)   # [B, H, S_kv, D]
         v_bhsd = V.transpose(1, 2)   # [B, H, S_kv, D]
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
+            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
         output = output_bhsd.transpose(1, 2).contiguous()
         return output 

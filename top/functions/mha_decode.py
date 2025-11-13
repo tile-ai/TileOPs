@@ -26,7 +26,6 @@ class mha_decode_fn(Function):
                  seqlen_q,
                  seqlen_kv,
                  dim,
-                 is_causal,
                  dtype=torch.float16,
                  tune=False):
         self.batch = batch
@@ -34,11 +33,10 @@ class mha_decode_fn(Function):
         self.seqlen_q = seqlen_q
         self.seqlen_kv = seqlen_kv  
         self.dim = dim
-        self.is_causal = is_causal
 
         self.dtype = dtype
 
-        self.fwd_op = mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype, tune=tune)
+        self.fwd_op = mha_decode(batch, heads, seqlen_q, seqlen_kv, dim, dtype, tune=tune)
 
     
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
