@@ -47,7 +47,8 @@ def build_gqa_cmd(args_dict):
         '--heads', str(args_dict['heads']),
         '--heads_kv', str(args_dict['heads_kv']),
         '--dim', str(args_dict['dim']),
-        '--dtype', str(args_dict['dtype'])
+        '--dtype', str(args_dict['dtype']),
+        '--disable_bwd'
     ]
     if args_dict.get('causal', 'False').lower() == 'true':
         cmd_args.append('--causal')
