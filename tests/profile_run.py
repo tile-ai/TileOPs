@@ -30,7 +30,8 @@ def build_mha_cmd(args_dict):
         '--seq_len', str(args_dict['seq_len']),
         '--heads', str(args_dict['heads']),
         '--dim', str(args_dict['dim']),
-        '--dtype', str(args_dict['dtype'])
+        '--dtype', str(args_dict['dtype']),
+        '--disable_bwd'
     ]
     if args_dict.get('causal', 'False').lower() == 'true':
         cmd_args.append('--causal')
@@ -46,7 +47,8 @@ def build_gqa_cmd(args_dict):
         '--heads', str(args_dict['heads']),
         '--heads_kv', str(args_dict['heads_kv']),
         '--dim', str(args_dict['dim']),
-        '--dtype', str(args_dict['dtype'])
+        '--dtype', str(args_dict['dtype']),
+        '--disable_bwd'
     ]
     if args_dict.get('causal', 'False').lower() == 'true':
         cmd_args.append('--causal')
@@ -64,8 +66,6 @@ def build_mha_decode_cmd(args_dict):
         '--dim', str(args_dict['dim']),
         '--dtype', str(args_dict['dtype'])
     ]
-    if args_dict.get('causal', 'False').lower() == 'true':
-        cmd_args.append('--causal')
     return cmd_args
 
 def build_gqa_decode_cmd(args_dict):

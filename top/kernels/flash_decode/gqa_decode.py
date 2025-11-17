@@ -107,12 +107,12 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
         ):
             with T.Kernel(batch, heads // valid_block_H, num_split, threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
-                K_shared = T.alloc_shared([block_N, dim], dtype)
-                V_shared = T.alloc_shared([block_N, dim], dtype)
+                K_shared = T.alloc_shared([valid_block_N, dim], dtype)
+                V_shared = T.alloc_shared([valid_block_N, dim], dtype)
                 O_shared = T.alloc_shared([valid_block_H, dim], dtype)
-                acc_s = T.alloc_fragment([block_H, block_N], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_H, block_N], dtype)
-                mask_local = T.alloc_fragment([block_N], "uint8")
+                acc_s = T.alloc_fragment([block_H, valid_block_N], accum_dtype)
+                acc_s_cast = T.alloc_fragment([block_H, valid_block_N], dtype)
+                mask_local = T.alloc_fragment([valid_block_N], "uint8")
                 acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_H], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
@@ -130,7 +130,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                loop_range = T.ceildiv((seqlen_kv // num_split), block_N)
+                loop_range = T.ceildiv((seqlen_kv // num_split), valid_block_N)
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(
@@ -143,7 +143,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                             cur_kv_head], mask_local)
                     T.clear(acc_s)
                     T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                    for i, j in T.Parallel(block_H, block_N):
+                    for i, j in T.Parallel(block_H, valid_block_N):
                         acc_s[i,
                             j] = T.if_then_else((mask_local[j] != 0) & (j < seqlen_kv // num_split),
                                                 acc_s[i, j], -T.infinity(accum_dtype))
@@ -152,7 +152,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
                     for i in T.Parallel(block_H):
                         scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-                    for i, j in T.Parallel(block_H, block_N):
+                    for i, j in T.Parallel(block_H, valid_block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
                     T.reduce_sum(acc_s, scores_sum, dim=1)
                     for i in T.Parallel(block_H):

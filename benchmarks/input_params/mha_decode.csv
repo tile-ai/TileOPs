@@ -1,5 +1,7 @@
 batch,seq_len_q,seq_len_kv,heads,dim,dtype,causal
-64,64,1024,64,128,float16,True
-64,64,2048,64,128,float16,True
-64,64,4096,64,128,float16,True
-64,64,8192,64,128,float16,True
+64,64,1024,64,128,float16,False
+64,64,2048,64,128,float16,False
+64,64,4096,64,128,float16,False
+64,64,8192,64,128,float16,False
+64,64,16384,64,128,float16,False
+64,64,32768,64,128,float16,False
