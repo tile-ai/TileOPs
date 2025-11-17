@@ -14,18 +14,13 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
     kv_group_num = heads // kv_head_num
     assert kv_head_num == 1, "kv_head_num must be 1"
 
-    @tilelang.jit(
-            out_idx=[6],
-            pass_configs={
-                tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            },
-            compile_flags=["-O3", "-DENABLE_BF16"])
-    def _mla_decode_func(block_H, block_N, num_split, num_stages, threads=128):
+    @tilelang.jit(out_idx=[6], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def mla_decode_func(block_H, block_N, num_split, num_stages, threads=128):
         
         VALID_BLOCK_H = min(block_H, kv_group_num)
 
         @T.macro
-        def _mla_no_split(
+        def mla_no_split(
                 Q: T.Tensor([batch, heads, dim], dtype),
                 Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
                 KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
@@ -76,6 +71,8 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
                     for i in T.Parallel(block_H):
+                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+                    for i in T.Parallel(block_H):
                         scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
                     for i, j in T.Parallel(block_H, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
@@ -92,7 +89,7 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 T.copy(O_shared, Output[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, :])
 
         @T.macro
-        def _mla_split(
+        def mla_split(
                 Q: T.Tensor([batch, heads, dim], dtype),
                 Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
                 KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
@@ -136,7 +133,9 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                     kv_end = (seqlen_kv // num_split) * bz + (k + 1) * block_N
                     T.copy(KV[bx, kv_start:kv_end, cur_kv_head, :], KV_shared)
                     T.copy(K_pe[bx, kv_start:kv_end, cur_kv_head, :], K_pe_shared)
-                    T.clear(acc_s)
+                    for i, j in T.Parallel(block_H, block_N):
+                        acc_s[i, j] = T.if_then_else(kv_start + j >= seqlen_kv, 
+                                                -T.infinity(acc_s.dtype), 0)
                     T.gemm(
                         Q_shared, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
                     T.gemm(
@@ -148,6 +147,8 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+                    for i in T.Parallel(block_H):
+                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
                     for i in T.Parallel(block_H):
                         scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
                     for i, j in T.Parallel(block_H, block_N):
@@ -215,7 +216,7 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
                 Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            _mla_split(Q, Q_pe, KV, K_pe, glse, Output_partial)
+            mla_split(Q, Q_pe, KV, K_pe, glse, Output_partial)
             combine(glse, Output_partial, Output)
 
         @T.prim_func
@@ -228,14 +229,14 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
                 Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            _mla_no_split(Q, Q_pe, KV, K_pe, Output)
+            mla_no_split(Q, Q_pe, KV, K_pe, Output)
 
         if num_split > 1:
             return main_split
         else:
             return main_no_split
         
-    return _mla_decode_func
+    return mla_decode_func
 
 
 @torch.library.custom_op("top::mla_decode_wrapped_kernel", mutates_args=())
@@ -378,7 +379,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
             "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG"
         ],
     )
-    def _mla_decode_ws_func(block_H, block_N, num_split, num_stages, threads=128):
+    def mla_decode_ws_func(block_H, block_N, num_split, num_stages, threads=128):
 
         VALID_BLOCK_H = min(block_H, kv_group_num)
         @T.macro
@@ -459,6 +460,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         T.copy(m_i, m_i_prev)
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
                         for h_i in T.Parallel(block_H):
+                            m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
+                        for h_i in T.Parallel(block_H):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(block_H, block_N):
                             acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
@@ -490,6 +493,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
 
                         T.copy(m_i, m_i_prev)
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                        for h_i in T.Parallel(block_H):
+                            m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
                         for h_i in T.Parallel(block_H):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(block_H, block_N):
@@ -678,6 +683,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         T.copy(m_i, m_i_prev)
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
                         for h_i in T.Parallel(block_H):
+                            m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
+                        for h_i in T.Parallel(block_H):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(block_H, block_N):
                             acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
@@ -709,6 +716,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
 
                         T.copy(m_i, m_i_prev)
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                        for h_i in T.Parallel(block_H):
+                            m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
                         for h_i in T.Parallel(block_H):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(block_H, block_N):
@@ -888,7 +897,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
         else:
             return main_no_split
         
-    return _mla_decode_ws_func
+    return mla_decode_ws_func
 
 
 @torch.library.custom_op("top::mla_decode_ws_wrapped_kernel", mutates_args=())

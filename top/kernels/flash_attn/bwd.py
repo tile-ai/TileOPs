@@ -114,16 +114,11 @@ def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
     shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[7, 8],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
-    def _mha_bwd_func(block_M, block_N, num_stages, threads):
+    @tilelang.jit(out_idx=[7, 8], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def mha_bwd_func(block_M, block_N, num_stages, threads):
 
         @T.prim_func
-        def _mha_bwd_main(
+        def mha_bwd_main(
                 Q: T.Tensor(shape, dtype),  # type: ignore
                 K: T.Tensor(shape, dtype),  # type: ignore
                 V: T.Tensor(shape, dtype),  # type: ignore
@@ -205,9 +200,9 @@ def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
                 T.copy(dv_shared, dV[bz, by * block_M:(by + 1) * block_M, bx, :])
                 T.copy(dk_shared, dK[bz, by * block_M:(by + 1) * block_M, bx, :])
 
-        return _mha_bwd_main
+        return mha_bwd_main
 
-    return _mha_bwd_func
+    return mha_bwd_func
 
 
 class mha_bwd_kernel(Kernel):
@@ -270,16 +265,11 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
     shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[7, 8],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
-    def _mha_bwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+    @tilelang.jit(out_idx=[7, 8], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def mha_bwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 
         @T.prim_func
-        def _mha_bwd_wgmma_pipelined_main(
+        def mha_bwd_wgmma_pipelined_main(
                 Q: T.Tensor(shape, dtype),  # type: ignore
                 K: T.Tensor(shape, dtype),  # type: ignore
                 V: T.Tensor(shape, dtype),  # type: ignore
@@ -378,9 +368,9 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                 T.copy(dv_shared, dV[bz, by * block_M:(by + 1) * block_M, bx, :])
                 T.copy(dk_shared, dK[bz, by * block_M:(by + 1) * block_M, bx, :])
 
-        return _mha_bwd_wgmma_pipelined_main
+        return mha_bwd_wgmma_pipelined_main
 
-    return _mha_bwd_wgmma_pipelined_func
+    return mha_bwd_wgmma_pipelined_func
 
 
 class mha_bwd_wgmma_pipelined_kernel(Kernel):
@@ -449,15 +439,11 @@ def _gqa_bwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype="floa
     groups = heads // heads_kv
     accum_dtype = "float"
 
-    @tilelang.jit(
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
-    def _gqa_bwd_func(block_M, block_N, num_stages, threads):
+    @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def gqa_bwd_func(block_M, block_N, num_stages, threads):
 
         @T.prim_func
-        def _gqa_bwd_main(
+        def gqa_bwd_main(
                 Q: T.Tensor(q_shape, dtype),  # type: ignore
                 K: T.Tensor(kv_shape, dtype),  # type: ignore
                 V: T.Tensor(kv_shape, dtype),  # type: ignore
@@ -534,9 +520,9 @@ def _gqa_bwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype="floa
                 T.copy(dk, dk_shared)
                 T.atomic_add(dK[bz, by * block_M:(by + 1) * block_M, bx // groups, :], dk_shared)
 
-        return _gqa_bwd_main
+        return gqa_bwd_main
 
-    return _gqa_bwd_func
+    return gqa_bwd_func
 
 
 class gqa_bwd_kernel(Kernel):
@@ -610,15 +596,11 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch,
     groups = heads // heads_kv
     accum_dtype = "float"
 
-    @tilelang.jit(
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
-    def _gqa_bwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+    @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def gqa_bwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 
         @T.prim_func
-        def _gqa_bwd_wgmma_pipelined_main(
+        def gqa_bwd_wgmma_pipelined_main(
                 Q: T.Tensor(q_shape, dtype),  # type: ignore
                 K: T.Tensor(kv_shape, dtype),  # type: ignore
                 V: T.Tensor(kv_shape, dtype),  # type: ignore
@@ -711,9 +693,9 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch,
                 T.copy(dk, dk_shared)
                 T.atomic_add(dK[bz, by * block_M:(by + 1) * block_M, bx // groups, :], dk_shared)
 
-        return _gqa_bwd_wgmma_pipelined_main
+        return gqa_bwd_wgmma_pipelined_main
 
-    return _gqa_bwd_wgmma_pipelined_func
+    return gqa_bwd_wgmma_pipelined_func
 
 
 class gqa_bwd_wgmma_pipelined_kernel(Kernel):

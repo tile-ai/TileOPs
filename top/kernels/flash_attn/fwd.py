@@ -18,16 +18,11 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
     shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[3, 4],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
-    def _mha_fwd_func(block_M, block_N, num_stages, threads):
+    @tilelang.jit(out_idx=[3, 4], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def mha_fwd_func(block_M, block_N, num_stages, threads):
 
         @T.prim_func
-        def _mha_fwd_main(
+        def mha_fwd_main(
                 Q: T.Tensor(shape, dtype),  # type: ignore
                 K: T.Tensor(shape, dtype),  # type: ignore
                 V: T.Tensor(shape, dtype),  # type: ignore
@@ -64,7 +59,10 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
                             acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
                                                          -T.infinity(acc_s.dtype))
                     else:
-                        T.clear(acc_s)
+                        # We shall fill -inf for padded positions
+                        for i, j in T.Parallel(block_M, block_N):
+                            acc_s[i, j] = T.if_then_else(k * block_N + j >= seq_len, 
+                                            -T.infinity(acc_s.dtype), 0)
                     T.gemm(
                         Q_shared,
                         K_shared,
@@ -74,6 +72,8 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
                     T.copy(V[bz, k * block_N:(k + 1) * block_N, by, :], V_shared)
                     T.copy(scores_max, scores_max_prev)
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+                    for i in T.Parallel(block_M):
+                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
                     for i in T.Parallel(block_M):
                         scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
                     for i, j in T.Parallel(block_M, dim):
@@ -92,9 +92,9 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(logsum, lse[bz, by, bx * block_M:(bx + 1) * block_M])
 
-        return _mha_fwd_main
+        return mha_fwd_main
 
-    return _mha_fwd_func
+    return mha_fwd_func
 
 
 @torch.library.custom_op("top::mha_fwd_wrapped_kernel", mutates_args=())
@@ -186,13 +186,8 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
     shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[3, 4],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
-    def _mha_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+    @tilelang.jit(out_idx=[3, 4], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def mha_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 
         @T.macro
         def MMA0(
@@ -211,7 +206,10 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                     acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
                                                  -T.infinity(acc_s.dtype))
             else:
-                T.clear(acc_s)
+                # We shall fill -inf for padded positions
+                for i, j in T.Parallel(block_M, block_N):
+                    acc_s[i, j] = T.if_then_else(k * block_N + j >= seq_len, 
+                                -T.infinity(acc_s.dtype), 0)
             T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
         @T.macro
@@ -240,6 +238,8 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
             T.copy(scores_max, scores_max_prev)
             T.fill(scores_max, -T.infinity(accum_dtype))
             T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(block_M):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
             # To do causal softmax, we need to set the scores_max to 0 if it is -inf
             # This process is called Check_inf in FlashAttention3 code, and it only need to be done
             # in the first ceil_div(kBlockM, kBlockN) steps.
@@ -266,7 +266,7 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                 acc_o[i, j] *= scores_scale[i]
 
         @T.prim_func
-        def _mha_fwd_wgmma_pipelined_main(
+        def mha_fwd_wgmma_pipelined_main(
                 Q: T.Tensor(shape, dtype),  # type: ignore
                 K: T.Tensor(shape, dtype),  # type: ignore
                 V: T.Tensor(shape, dtype),  # type: ignore
@@ -303,7 +303,7 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                         num_stages=num_stages,
                         order=[-1, 0, 3, 1, -1, 2],
                         stage=[-1, 0, 0, 1, -1, 1],
-                        group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12], [13]]):
+                        group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10, 11], [12], [13], [14]]):
                     MMA0(K, Q_shared, K_shared, acc_s, k, bx, by, bz)
                     Softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale,
                             scores_sum, logsum)
@@ -317,9 +317,9 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(logsum, lse[bz, by, bx * block_M:(bx + 1) * block_M])
 
-        return _mha_fwd_wgmma_pipelined_main
+        return mha_fwd_wgmma_pipelined_main
 
-    return _mha_fwd_wgmma_pipelined_func
+    return mha_fwd_wgmma_pipelined_func
 
 
 @torch.library.custom_op("top::mha_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
@@ -402,16 +402,11 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
     kv_shape = [batch, seq_len, heads_kv, dim]
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[3, 4],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
-    def _gqa_fwd_func(block_M, block_N, num_stages, threads):
+    @tilelang.jit(out_idx=[3, 4], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def gqa_fwd_func(block_M, block_N, num_stages, threads):
 
         @T.prim_func
-        def _gqa_fwd_main(
+        def gqa_fwd_main(
                 Q: T.Tensor(q_shape, dtype),  # type: ignore
                 K: T.Tensor(kv_shape, dtype),  # type: ignore
                 V: T.Tensor(kv_shape, dtype),  # type: ignore
@@ -448,7 +443,10 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
                             acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
                                                          -T.infinity(acc_s.dtype))
                     else:
-                        T.clear(acc_s)
+                        # We shall fill -inf for padded positions
+                        for i, j in T.Parallel(block_M, block_N):
+                            acc_s[i, j] = T.if_then_else(k * block_N + j >= seq_len, 
+                                            -T.infinity(acc_s.dtype), 0)
                     T.gemm(
                         Q_shared,
                         K_shared,
@@ -458,6 +456,8 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
                     T.copy(V[bz, k * block_N:(k + 1) * block_N, by // groups, :], V_shared)
                     T.copy(scores_max, scores_max_prev)
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+                    for i in T.Parallel(block_M):
+                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
                     for i in T.Parallel(block_M):
                         scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
                     for i, j in T.Parallel(block_M, dim):
@@ -476,9 +476,9 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(logsum, lse[bz, by, bx * block_M:(bx + 1) * block_M])
 
-        return _gqa_fwd_main
+        return gqa_fwd_main
 
-    return _gqa_fwd_func
+    return gqa_fwd_func
 
 
 @torch.library.custom_op("top::gqa_fwd_wrapped_kernel", mutates_args=())
@@ -583,13 +583,8 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
     kv_shape = [batch, seq_len, heads_kv, dim]
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[3, 4],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
-    def _gqa_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+    @tilelang.jit(out_idx=[3, 4], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def gqa_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 
         @T.macro
         def MMA0(
@@ -608,7 +603,10 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
                     acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
                                                  -T.infinity(acc_s.dtype))
             else:
-                T.clear(acc_s)
+                # We shall fill -inf for padded positions
+                for i, j in T.Parallel(block_M, block_N):
+                    acc_s[i, j] = T.if_then_else(k * block_N + j >= seq_len, 
+                                    -T.infinity(acc_s.dtype), 0)
             T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
         @T.macro
@@ -637,6 +635,8 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
             T.copy(scores_max, scores_max_prev)
             T.fill(scores_max, -T.infinity(accum_dtype))
             T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(block_M):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
             # To do causal softmax, we need to set the scores_max to 0 if it is -inf
             # This process is called Check_inf in FlashAttention3 code, and it only need to be done
             # in the first ceil_div(kBlockM, kBlockN) steps.
@@ -663,7 +663,7 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
                 acc_o[i, j] *= scores_scale[i]
 
         @T.prim_func
-        def _gqa_fwd_wgmma_pipelined_main(
+        def gqa_fwd_wgmma_pipelined_main(
                 Q: T.Tensor(q_shape, dtype),  # type: ignore
                 K: T.Tensor(kv_shape, dtype),  # type: ignore
                 V: T.Tensor(kv_shape, dtype),  # type: ignore
@@ -700,7 +700,7 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
                         num_stages=num_stages,
                         order=[-1, 0, 3, 1, -1, 2],
                         stage=[-1, 0, 0, 1, -1, 1],
-                        group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12], [13]]):
+                        group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10, 11], [12], [13], [14]]):
                     MMA0(K, Q_shared, K_shared, acc_s, k, bx, by, bz)
                     Softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale,
                             scores_sum, logsum)
@@ -714,9 +714,9 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(logsum, lse[bz, by, bx * block_M:(bx + 1) * block_M])
 
-        return _gqa_fwd_wgmma_pipelined_main
+        return gqa_fwd_wgmma_pipelined_main
 
-    return _gqa_fwd_wgmma_pipelined_func
+    return gqa_fwd_wgmma_pipelined_func
 
 
 @torch.library.custom_op("top::gqa_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())

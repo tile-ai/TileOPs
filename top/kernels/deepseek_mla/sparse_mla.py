@@ -61,7 +61,7 @@ def _sparse_mla_kernel(
         "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG"
         ],
     )
-    def _sparse_mla_fwd_func(block_I, threads):
+    def sparse_mla_fwd_func(block_I, threads):
 
         G = kv_group
         heads = head_kv
@@ -89,7 +89,7 @@ def _sparse_mla_kernel(
 
         H_per_block = padded_H if REPLICATE_H == 1 else 64
         @T.prim_func
-        def _sparse_mla_fwd_main(
+        def sparse_mla_fwd_main(
                 Q: T.Tensor(q_shape, dtype),  # type: ignore
                 KV: T.Tensor(kv_shape, dtype),  # type: ignore
                 Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
@@ -176,8 +176,10 @@ def _sparse_mla_kernel(
                             T.barrier_arrive(bar_sScale_and_sS_free)
                             T.barrier_wait(bar_sScale_and_sS_free, ((i_i * 2) & 1) ^ 1)
 
-                        T.copy(m_i, m_i_prev)
+                        T.copy(src=m_i, m_i_prev)
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                        for h_i in T.Parallel(H_per_block):
+                            m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
                         for h_i in T.Parallel(H_per_block):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(H_per_block, BI):
@@ -212,6 +214,8 @@ def _sparse_mla_kernel(
 
                         T.copy(m_i, m_i_prev)
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                        for h_i in T.Parallel(H_per_block):
+                            m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
                         for h_i in T.Parallel(H_per_block):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(H_per_block, BI):
@@ -322,9 +326,9 @@ def _sparse_mla_kernel(
                                                                 D + (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
-        return _sparse_mla_fwd_main
+        return sparse_mla_fwd_main
       
-    return _sparse_mla_fwd_func
+    return sparse_mla_fwd_func
 
 
 @torch.library.custom_op("top::sparse_mla_fwd_wrapped_kernel", mutates_args=())
