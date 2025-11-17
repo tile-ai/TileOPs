@@ -15,13 +15,8 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
     dtype = "float16"
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[6],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
-    def _gqa_decode_func(block_H, block_N, num_split, num_stages, threads):
+    @tilelang.jit(out_idx=[6], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def gqa_decode_func(block_H, block_N, num_split, num_stages, threads):
 
         shape_q = [batch, heads, dim]
         shape_k = [batch, seqlen_kv, groups, dim]
@@ -34,7 +29,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
         valid_block_N = min(block_N, seqlen_kv // num_split)
 
         @T.macro
-        def _gqa_decode_no_split(
+        def gqa_decode_no_split(
                 Q: T.Tensor(shape_q, dtype),
                 K: T.Tensor(shape_k, dtype),
                 V: T.Tensor(shape_v, dtype),
@@ -78,6 +73,8 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
                     for i in T.Parallel(block_H):
+                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+                    for i in T.Parallel(block_H):
                         scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
                     for i, j in T.Parallel(block_H, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
@@ -97,7 +94,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 T.copy(O_shared, Output[bid, hid * valid_block_H:(hid + 1) * valid_block_H, :])
 
         @T.macro
-        def _gqa_decode_split(
+        def gqa_decode_split(
                 Q: T.Tensor(shape_q, dtype),
                 K: T.Tensor(shape_k, dtype),
                 V: T.Tensor(shape_v, dtype),
@@ -151,6 +148,8 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
                     for i in T.Parallel(block_H):
+                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+                    for i in T.Parallel(block_H):
                         scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
                     for i, j in T.Parallel(block_H, valid_block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
@@ -184,7 +183,6 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 Output: T.Tensor(shape_o, dtype),
         ):
             with T.Kernel(heads, batch, threads=128) as (by, bz):
-                # 1) 读 glse 到一个 1D fragment，再做 reduce_max
                 glse_vec = T.alloc_fragment([num_split], dtype)
                 for k in T.Parallel(num_split):
                     glse_vec[k] = glse[bz, by, k]
@@ -192,14 +190,12 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 T.fill(lse_max, -T.infinity(accum_dtype))
                 T.reduce_max(glse_vec, lse_max, dim=0, clear=False)
 
-                # 2) 计算 logsum（串行或小批并行累加）
                 lse_logsum = T.alloc_local([1], accum_dtype)
                 lse_logsum[0] = 0
                 for k in T.serial(num_split):
                     lse_logsum[0] += T.exp2(glse[bz, by, k] - lse_max[0])
                 lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
 
-                # 3) 按权重合并 partial 输出
                 o_accum = T.alloc_fragment([dim], accum_dtype)
                 T.clear(o_accum)
                 for k in T.serial(num_split):
@@ -219,7 +215,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 Output_partial: T.Tensor(part_shape, dtype),
                 Output: T.Tensor(shape_o, dtype),
         ):
-            _gqa_decode_split(Q, K, V, mask, glse, Output_partial)
+            gqa_decode_split(Q, K, V, mask, glse, Output_partial)
             combine(glse, Output_partial, Output)
 
         @T.prim_func
@@ -232,14 +228,14 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 Output_partial: T.Tensor(part_shape, dtype),
                 Output: T.Tensor(shape_o, dtype),
         ):
-            _gqa_decode_no_split(Q, K, V, mask, Output)
+            gqa_decode_no_split(Q, K, V, mask, Output)
 
         if num_split > 1:
             return gqa_decode_split
         else:
             return gqa_decode_no_split
 
-    return _gqa_decode_func
+    return gqa_decode_func
 
 
 @torch.library.custom_op("top::gqa_decode_wrapped_kernel", mutates_args=())

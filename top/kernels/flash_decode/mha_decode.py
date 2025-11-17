@@ -15,20 +15,15 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
     dtype = "float16"
     accum_dtype = "float"
 
-    @tilelang.jit(
-            out_idx=[5],
-            pass_configs={
-                tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            },
-            compile_flags=["-O3", "-DENABLE_BF16"])
-    def _mha_decode_func(block_M, block_N, num_split, num_stages, threads):
+    @tilelang.jit(out_idx=[5], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+    def mha_decode_func(block_M, block_N, num_split, num_stages, threads):
 
         shape_q = [batch, seqlen_q, heads, dim]
         shape_kv = [batch, seqlen_kv, heads, dim]
         part_shape = [batch, seqlen_q, heads, num_split, dim]
 
         @T.macro
-        def _mha_decode_no_split(
+        def mha_decode_no_split(
             Q: T.Tensor(shape_q, dtype),
             K: T.Tensor(shape_kv, dtype),
             V: T.Tensor(shape_kv, dtype),
@@ -64,7 +59,9 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                             acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
                                                          -T.infinity(acc_s.dtype))
                     else:
-                        T.clear(acc_s)
+                        for i, j in T.Parallel(block_M, block_N):
+                            acc_s[i, j] = T.if_then_else(k * block_N + j >= seqlen_kv, 
+                                            -T.infinity(acc_s.dtype), 0)
                     T.gemm(
                         Q_shared,
                         K_shared,
@@ -74,6 +71,8 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                     T.copy(V[bz, k * block_N:(k + 1) * block_N, by, :], V_shared)
                     T.copy(scores_max, scores_max_prev)
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+                    for i in T.Parallel(block_M):
+                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
                     for i in T.Parallel(block_M):
                         scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
                     for i, j in T.Parallel(block_M, dim):
@@ -112,7 +111,9 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                     acc_s[i, j] = T.if_then_else(mid * block_M + i >= k * block_N + j, 0,
                                                 -T.infinity(acc_s.dtype))
             else:
-                T.clear(acc_s)
+                for i, j in T.Parallel(block_M, block_N):
+                    acc_s[i, j] = T.if_then_else(k * block_N + j >= seqlen_kv, 
+                                                -T.infinity(acc_s.dtype), 0)
             T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
         @T.macro
@@ -144,6 +145,8 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
             T.copy(scores_max, scores_max_prev)
             T.fill(scores_max, -T.infinity(accum_dtype))
             T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(block_M):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
             # To do causal softmax, we need to set the scores_max to 0 if it is -inf
             # This process is called Check_inf in FlashAttention3 code, and it only need to be done
             # in the first ceil_div(kBlockM, kBlockN) steps.
@@ -170,7 +173,7 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                 acc_o[i, j] *= scores_scale[i]
 
         @T.macro
-        def _mha_decode_split(
+        def mha_decode_split(
                 Q: T.Tensor(shape_q, dtype),
                 K: T.Tensor(shape_kv, dtype),
                 V: T.Tensor(shape_kv, dtype),
@@ -290,7 +293,7 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                 Output_partial: T.Tensor(part_shape, dtype),  # [batch, seqlen_q, heads, num_split, dim]
                 Output: T.Tensor(shape_q, dtype),
         ):
-            _mha_decode_split(Q, K, V, glse, Output_partial)
+            mha_decode_split(Q, K, V, glse, Output_partial)
             combine(glse, Output_partial, Output)
 
         @T.prim_func
@@ -302,14 +305,14 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
             Output_partial: T.Tensor(part_shape, dtype),  # [batch, seqlen_q, heads, num_split, dim]
             Output: T.Tensor(shape_q, dtype),  
         ):
-            _mha_decode_no_split(Q, K, V, Output)
+            mha_decode_no_split(Q, K, V, Output)
 
         if num_split > 1:
             return mha_decode_split
         else:
             return mha_decode_no_split
 
-    return _mha_decode_func
+    return mha_decode_func
 
 
 @torch.library.custom_op("top::mha_decode_wrapped_kernel", mutates_args=())

@@ -10,11 +10,11 @@ from top.kernels import Kernel
 def _gemm_kernel(M, N, K, dtype='float16'):
     accum_dtype = "float"
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _gemm_func(block_M, block_N, block_K, threads, num_stages, enable_rasteration):
+    @tilelang.jit(out_idx=[-1])
+    def gemm_func(block_M, block_N, block_K, threads, num_stages, enable_rasteration):
 
         @T.prim_func
-        def _gemm_main(
+        def gemm_main(
                 A: T.Tensor((M, K), dtype),  # type: ignore
                 B: T.Tensor((K, N), dtype),  # type: ignore
                 C: T.Tensor((M, N), dtype),  # type: ignore
@@ -41,9 +41,9 @@ def _gemm_kernel(M, N, K, dtype='float16'):
                 T.copy(C_local, C_shared)
                 T.copy(C_shared, C[by * block_M, bx * block_N])
 
-        return _gemm_main
+        return gemm_main
 
-    return _gemm_func
+    return gemm_func
 
 
 class gemm_kernel(Kernel):
