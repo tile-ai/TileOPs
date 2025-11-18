@@ -28,3 +28,33 @@ class gemm_benchmark(Benchmark):
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor):
         return torch.matmul(A, B)
+    
+
+class matmul_benchmark(Benchmark): 
+
+    def __init__(self, M, N, K, dtype, grad=True):
+        self.M = M
+        self.N = N
+        self.K = K
+        self.dtype = dtype
+        self.grad = grad
+    @property
+    def total_flops(self):
+        return 6.0 * self.M * self.N * self.K
+
+    @property
+    def total_memory(self):
+        return 3 * (self.M * self.K + self.K * self.N + self.M * self.N) * self.dtype.itemsize
+
+    def gen_inputs(self):
+        A = torch.randn(self.M, self.K, device='cuda', dtype=self.dtype, requires_grad=self.grad)
+        B = torch.randn(self.K, self.N, device='cuda', dtype=self.dtype, requires_grad=self.grad)
+        return A, B
+
+    def ref_program(self, A: torch.Tensor, B: torch.Tensor):
+        output = torch.matmul(A, B)
+        if not self.grad:
+            return output
+        else:
+            output.backward(torch.ones_like(output))
+        return output
