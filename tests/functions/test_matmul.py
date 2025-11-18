@@ -5,12 +5,11 @@ from benchmarks import matmul_benchmark
 
 
 def test_matmul(M, N, K, dtype, tune=False):
-    op = matmul(M, N, K, dtype, tune=tune)
+    fn = matmul(M, N, K, dtype, tune=tune)
     benchmark = matmul_benchmark(M, N, K, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
-    benchmark.profile(op, *inputs)
+    benchmark.check_fn(fn, *inputs)
 
 
 if __name__ == "__main__":

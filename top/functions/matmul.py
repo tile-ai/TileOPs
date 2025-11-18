@@ -21,8 +21,11 @@ class gemm_ctx(torch.autograd.Function):
     def backward(ctx, dO):
         A, B = ctx.saved_tensors
         
-        dA = ctx.da_bwd_op(dO, B.transpose(-2, -1))
-        dB = ctx.db_bwd_op(A.transpose(-2, -1), dO)
+        dO = dO.contiguous()
+        B_T = B.transpose(-2, -1).contiguous()
+        A_T = A.transpose(-2, -1).contiguous()
+        dA = ctx.da_bwd_op(dO, B_T)
+        dB = ctx.db_bwd_op(A_T, dO)
         
         return dA, dB, None, None, None
 

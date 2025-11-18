@@ -56,5 +56,6 @@ class matmul_benchmark(Benchmark):
         if not self.grad:
             return output
         else:
-            output.backward(torch.ones_like(output))
-        return output
+            loss = output.sum()
+            loss.backward()
+        return output, A.grad, B.grad
