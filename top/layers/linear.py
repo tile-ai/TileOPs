@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 from top.functions import matmul
@@ -10,11 +11,15 @@ class Linear(nn.Module):
             M: int, 
             N: int,
             K: int,
+            device='cuda',
             dtype=torch.float16,
             tune=False,
     ):
         super().__init__()
-        self.weight = nn.Parameter(torch.Tensor(K, N), dtype=dtype)
+        factory_kwargs = {"device": device, "dtype": dtype}
+        self.weight = nn.Parameter(
+            torch.empty((K, N), **factory_kwargs)
+        )
         self.fn = matmul(
             M,
             N,
