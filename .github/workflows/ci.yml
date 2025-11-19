@@ -2,19 +2,44 @@ name: hello-self-hosted
 
 on:
   push:
-    branches: ['**']  # 所有分支
-    tags:     ['**']  # 所有标签推送也触发，可按需删掉
+    branches: ['**']  # All branches
+    tags:     ['**']  # All tags push will also trigger, can be removed as needed
   pull_request:
-    branches: ['**']  # 所有分支的 PR 都触发 CI
+    branches: ['**']  # All branch PRs trigger CI
 
 jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Equivalent to GIT_STRATEGY: fetch
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"  # At least 3.9 to avoid pre-commit-hooks reporting Python version too low
+
+      - name: Run pre-commit
+        # Official pre-commit Action, automatically:
+        # 1) Install pre-commit
+        # 2) Generate virtual environment according to .pre-commit-config.yaml configuration
+        # 3) Execute pre-commit run
+        uses: pre-commit/action@v3.0.1
+        with:
+          # Run on all files once, and print diff on failure
+          extra_args: --all-files --show-diff-on-failure
+
   tileops_test_0-1-6-post1:
+    needs: pre-commit
     runs-on: [self-hosted, tile-ops] 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # 相当于 GIT_STRATEGY: fetch
+          fetch-depth: 0  # Equivalent to GIT_STRATEGY: fetch
 
       - name: Setup & Run tests
         run: |
@@ -30,19 +55,20 @@ jobs:
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
-        if: always()  # 相当于 when: always
+        if: always()  # Equivalent to when: always
         with:
           name: tileops_test_0_1_6.log
           path: tileops_test_0_1_6.log
-          retention-days: 7  # 相当于 expire_in: 1 week
+          retention-days: 7  # Equivalent to expire_in: 1 week
 
   tileops_test_nightly:
+    needs: pre-commit
     runs-on: [self-hosted, tile-ops] 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # 相当于 GIT_STRATEGY: fetch
+          fetch-depth: 0  # Equivalent to GIT_STRATEGY: fetch
 
       - name: Setup & Run tests
         run: |
@@ -58,20 +84,20 @@ jobs:
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
-        if: always()  # 相当于 when: always
+        if: always()  # Equivalent to when: always
         with:
           name: tileops_test_nightly.log
           path: tileops_test_nightly.log
-          retention-days: 7  # 相当于 expire_in: 1 week
+          retention-days: 7  # Equivalent to expire_in: 1 week
 
   tileops_profile_nightly:
-    needs: tileops_test_nightly
+    needs: [pre-commit, tileops_test_nightly]
     runs-on: [self-hosted, tile-ops] 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # 相当于 GIT_STRATEGY: fetch
+          fetch-depth: 0  # Equivalent to GIT_STRATEGY: fetch
 
       - name: Setup & Run tests
         run: |
@@ -92,4 +118,3 @@ jobs:
           name: profile_out
           path: profile_out/
           retention-days: 7
-
