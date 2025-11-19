@@ -2,74 +2,74 @@
 # See https://pre-commit.com/hooks.html for more hooks
 
 ci:
-  autofix_prs: false  # 在 pre-commit.ci 上不要自动往 PR 推“修复” commit
-  autofix_commit_msg: "[Lint]: [pre-commit.ci] auto fixes [...]"  # 若启用 autofix 时自动生成的 commit message 模板
-  autoupdate_commit_msg: "[CI] [pre-commit.ci] autoupdate"       # pre-commit.ci 自动更新 hook 版本时使用的 commit message
-  autoupdate_schedule: monthly  # 每月自动更新一次 hook 版本
+  autofix_prs: false  # Don't automatically push "fix" commits to PRs on pre-commit.ci
+  autofix_commit_msg: "[Lint]: [pre-commit.ci] auto fixes [...]"  # Auto-generated commit message template when autofix is enabled
+  autoupdate_commit_msg: "[CI] [pre-commit.ci] autoupdate"       # Commit message used when pre-commit.ci auto-updates hook versions
+  autoupdate_schedule: monthly  # Auto-update hook versions once per month
 
-# 默认哪些阶段会触发这些 hook
+# Default stages that trigger these hooks
 default_stages: [pre-commit, pre-push, manual]
 
-# 全局忽略的目录：build/ 和 3rdparty/ 下的文件不跑任何 hook
+# Globally ignored directories: files under build/ and 3rdparty/ won't run any hooks
 exclude: '^(build|3rdparty)/.*$'  # exclude build and 3rdparty directories
 
 repos:
-  # 基础通用检查：符号链接、文件大小、合并冲突等
+  # Basic general checks: symlinks, file size, merge conflicts, etc.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
-      - id: check-symlinks            # 检查仓库中的符号链接是否指向有效路径
-      - id: destroyed-symlinks        # 检查是否有被误破坏的符号链接（例如原来是 symlink 现在变成普通文件）
+      - id: check-symlinks            # Check if symlinks in the repository point to valid paths
+      - id: destroyed-symlinks        # Check for accidentally broken symlinks (e.g., symlink changed to regular file)
       # FIXME: enable these hooks
-      # - id: trailing-whitespace     # 检查并清理行尾多余空格（目前暂未启用）
-      # - id: end-of-file-fixer      # 确保文件末尾有且仅有一个换行符（目前暂未启用）
-      - id: check-added-large-files   # 阻止一次性添加过大的文件，避免仓库变得臃肿
-      - id: check-merge-conflict      # 检查是否存在 Git 合并冲突标记 <<<<<<< / ======= / >>>>>>>
-        fail_fast: true               # 一旦发现冲突标记立即失败
+      # - id: trailing-whitespace     # Check and clean up trailing whitespace (currently disabled)
+      # - id: end-of-file-fixer      # Ensure files end with exactly one newline (currently disabled)
+      - id: check-added-large-files   # Prevent adding overly large files to avoid bloating the repository
+      - id: check-merge-conflict      # Check for Git merge conflict markers <<<<<<< / ======= / >>>>>>>
+        fail_fast: true               # Fail immediately upon finding conflict markers
       # FIXME: enable these hooks
-      # - id: check-executables-have-shebangs        # 检查可执行文件是否带 shebang（未启用）
-      # - id: check-shebang-scripts-are-executable   # 检查带 shebang 的脚本是否为可执行文件（未启用）
-      - id: detect-private-key        # 检测是否误把私钥文件提交到仓库（例如 SSH/TLS 私钥）
-      - id: check-yaml                # 校验所有 YAML 文件的语法是否正确
-      - id: check-toml                # 校验 TOML 文件（如 pyproject.toml）语法是否正确
-      - id: check-ast                 # 对 Python 文件做 AST 解析，检查语法错误
-        fail_fast: true               # 一旦发现语法错误立即失败
-      - id: debug-statements          # 检测 Python 中的调试语句，如 pdb.set_trace()/breakpoint()
-      - id: file-contents-sorter      # 对指定文件中的内容按行排序，这里用于 spelling_wordlist
-        args: [--ignore-case]         # 排序时忽略大小写
-        files: ^docs/spelling_wordlist\.txt$  # 仅作用于 docs/spelling_wordlist.txt
+      # - id: check-executables-have-shebangs        # Check if executable files have shebangs (not enabled)
+      # - id: check-shebang-scripts-are-executable   # Check if scripts with shebangs are executable (not enabled)
+      - id: detect-private-key        # Detect if private keys are accidentally committed (e.g., SSH/TLS private keys)
+      - id: check-yaml                # Validate syntax of all YAML files
+      - id: check-toml                # Validate TOML files (like pyproject.toml) syntax
+      - id: check-ast                 # Parse Python files with AST to check for syntax errors
+        fail_fast: true               # Fail immediately upon finding syntax errors
+      - id: debug-statements          # Detect debugging statements in Python, such as pdb.set_trace()/breakpoint()
+      - id: file-contents-sorter      # Sort contents line by line in specified files, used here for spelling_wordlist
+        args: [--ignore-case]         # Ignore case when sorting
+        files: ^docs/spelling_wordlist\.txt$  # Only apply to docs/spelling_wordlist.txt
 
-  # 使用 Ruff 做 Python 代码静态检查 / Lint
+  # Use Ruff for Python static analysis / linting
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.3  # sync with requirements-lint.txt
     hooks:
       - id: ruff-check
-        # 自动修复可修复的问题，并在有修复时返回非 0 退出码，提醒重新 git add
+        # Automatically fix issues that can be fixed, and return non-zero exit code when fixes are made to remind git add
         args: [--fix, --exit-non-zero-on-fix]
 
-  # 使用 yapf 做 Python 代码格式化
+  # Use yapf for Python code formatting
   - repo: https://github.com/google/yapf
     rev: v0.43.0  # sync with requirements-lint.txt
     hooks:
       - id: yapf
         name: yapf-multiproc-bugfix
-        # yapf 不是多进程安全，这里先对 top/__init__.py 跑一个“dummy” yapf
-        # 起到预热/规避并发 bug 的效果
+        # yapf is not multiprocessing-safe, so we first run a "dummy" yapf on top/__init__.py
+        # to serve as a warm-up/workaround for concurrency bugs
         args: [--in-place, top/__init__.py]
-        always_run: true    # 每次都运行，与文件改动无关
-        pass_filenames: false  # 不根据文件列表传参，而是只作用于 top/__init__.py
+        always_run: true    # Run every time, regardless of file changes
+        pass_filenames: false  # Don't pass file list as arguments, only work on top/__init__.py
       - id: yapf
-        # 真正的全局 Python 格式化：递归地对仓库里的 Python 文件做就地格式化
+        # Real global Python formatting: recursively format Python files in-place
         args: [--recursive, --in-place]
 
-  # 使用 codespell 做英文拼写检查
+  # Use codespell for English spell checking
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1  # sync with requirements-lint.txt
     hooks:
       - id: codespell
-        # 让 codespell 能够从 pyproject.toml / setup.cfg 等读取配置
+        # Allow codespell to read configuration from pyproject.toml / setup.cfg, etc.
         additional_dependencies: [".[toml]"]
-        # 排除不适合做拼写检查的文件类型，例如 C/C++/CUDA 源码、SVG、requirements 列表等
+        # Exclude file types unsuitable for spell checking, such as C/C++/CUDA source, SVG, requirements lists, etc.
         exclude: |
           (?x)(
             ^.+\.(cpp|hpp|cxx|cc|c|h|cu|cuh)$|

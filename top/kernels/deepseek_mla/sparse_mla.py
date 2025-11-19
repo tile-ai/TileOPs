@@ -44,9 +44,6 @@ def _sparse_mla_kernel(batch,
     kv_shape = [batch, seq_len_kv, kv_group, dim + tail_dim]
     o_shape = [batch, seq_len, heads, dim]
     indices_shape = [batch, seq_len, kv_group, topk]
-
-    a = 1
-
     indices_dtype = "int32"
     accum_dtype = "float"
 
