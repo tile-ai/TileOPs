@@ -117,4 +117,5 @@ class gemm_kernel(Kernel):
     def forward(self, A: torch.Tensor, B: torch.Tensor):
         return self.kernel(**self.config)(A, B)
 
+
 # TODO: add persistent, split-k, steam-k...

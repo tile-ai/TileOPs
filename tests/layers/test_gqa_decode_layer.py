@@ -24,4 +24,5 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_gqa_decode_layer(args.batch, args.heads, args.seq_len_kv, args.dim, args.groups, str2dtype[args.dtype])
+    test_gqa_decode_layer(args.batch, args.heads, args.seq_len_kv, args.dim, args.groups,
+                          str2dtype[args.dtype])

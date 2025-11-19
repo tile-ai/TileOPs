@@ -15,13 +15,13 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
     assert kv_head_num == 1, "kv_head_num must be 1"
 
     @tilelang.jit(
-            out_idx=[6],
-            pass_configs={
-                tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            },
-            compile_flags=["-O3", "-DENABLE_BF16"])
+        out_idx=[6],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"])
     def _mla_decode_func(block_H, block_N, num_split, num_stages, threads=128):
-        
+
         VALID_BLOCK_H = min(block_H, kv_group_num)
 
         @T.macro
@@ -65,7 +65,11 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                     T.copy(K_pe[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :], K_pe_shared)
                     T.clear(acc_s)
                     T.gemm(
-                        Q_shared, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
+                        Q_shared,
+                        KV_shared,
+                        acc_s,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullCol)
                     T.gemm(
                         Q_pe_shared,
                         K_pe_shared,
@@ -101,7 +105,8 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
         ):
             with T.Kernel(
-                    batch, heads // min(block_H, kv_group_num), num_split, threads=threads) as (bx, by, bz):
+                    batch, heads // min(block_H, kv_group_num), num_split,
+                    threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 S_shared = T.alloc_shared([block_H, block_N], dtype)
                 Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -138,7 +143,11 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                     T.copy(K_pe[bx, kv_start:kv_end, cur_kv_head, :], K_pe_shared)
                     T.clear(acc_s)
                     T.gemm(
-                        Q_shared, KV_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
+                        Q_shared,
+                        KV_shared,
+                        acc_s,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullCol)
                     T.gemm(
                         Q_pe_shared,
                         K_pe_shared,
@@ -166,7 +175,8 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(logsum, glse[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz])
                 T.copy(acc_o, O_shared)
-                T.copy(O_shared, Output_partial[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H, bz, :])
+                T.copy(O_shared, Output_partial[bx, by * VALID_BLOCK_H:(by + 1) * VALID_BLOCK_H,
+                                                bz, :])
 
         @T.macro
         def combine(
@@ -183,7 +193,8 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 scale_local = T.alloc_local([1], accum_dtype)
 
                 T.annotate_layout({
-                    lse_logsum_local: T.Fragment(lse_logsum_local.shape, forward_thread_fn=lambda i: i),
+                    lse_logsum_local:
+                        T.Fragment(lse_logsum_local.shape, forward_thread_fn=lambda i: i),
                 })
 
                 T.clear(lse_logsum_local)
@@ -234,56 +245,41 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
             return main_split
         else:
             return main_no_split
-        
+
     return _mla_decode_func
 
 
 @torch.library.custom_op("top::mla_decode_wrapped_kernel", mutates_args=())
-def _mla_decode_wrapped_kernel(
-    batch: int,
-    heads: int,
-    kv_head_num: int,
-    seqlen_kv: int,
-    dim: int,
-    pe_dim: int,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    Q_pe: torch.Tensor,
-    Kv: torch.Tensor,
-    K_pe: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor
-) -> torch.Tensor:  
-    return _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype)(
-        block_H, block_N, num_split, num_stages, threads)(
-            Q, Q_pe, Kv, K_pe, glse, Output_partial)
+def _mla_decode_wrapped_kernel(batch: int, heads: int, kv_head_num: int, seqlen_kv: int, dim: int,
+                               pe_dim: int, dtype: str, block_H: int, block_N: int, num_stages: int,
+                               threads: int, num_split: int, Q: torch.Tensor, Q_pe: torch.Tensor,
+                               Kv: torch.Tensor, K_pe: torch.Tensor, glse: torch.Tensor,
+                               Output_partial: torch.Tensor) -> torch.Tensor:
+    return _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim,
+                              dtype)(block_H, block_N, num_split, num_stages,
+                                     threads)(Q, Q_pe, Kv, K_pe, glse, Output_partial)
 
 
 @_mla_decode_wrapped_kernel.register_fake
 def _(
-    batch: int,
-    heads: int,
-    kv_head_num: int,
-    seqlen_kv: int,
-    dim: int,
-    pe_dim: int,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    Q_pe: torch.Tensor,
-    Kv: torch.Tensor,
-    K_pe: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor
+        batch: int,
+        heads: int,
+        kv_head_num: int,
+        seqlen_kv: int,
+        dim: int,
+        pe_dim: int,
+        dtype: str,
+        block_H: int,
+        block_N: int,
+        num_stages: int,
+        threads: int,
+        num_split: int,
+        Q: torch.Tensor,
+        Q_pe: torch.Tensor,
+        Kv: torch.Tensor,
+        K_pe: torch.Tensor,
+        glse: torch.Tensor,
+        Output_partial: torch.Tensor
 ) -> torch.Tensor:
     return torch.empty((batch, heads, dim), dtype=Q.dtype, device=Q.device)
 
@@ -311,7 +307,7 @@ class mla_decode_kernel(Kernel):
         self.dtype = dtype
 
         self.kernel = _mla_decode_kernel(self.batch, self.heads, self.kv_head_num, self.seqlen_kv,
-                                        self.dim, self.pe_dim, self.dtype_str)
+                                         self.dim, self.pe_dim, self.dtype_str)
 
         self.init_config(config, tune)
 
@@ -343,21 +339,19 @@ class mla_decode_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self,
-                Q: torch.Tensor,
-                Q_pe: torch.Tensor,
-                K: torch.Tensor,
-                K_pe: torch.Tensor):
-        glse = torch.empty((self.batch, self.heads, self.config["num_split"]), dtype=self.dtype, device=Q.device)
+    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor, K_pe: torch.Tensor):
+        glse = torch.empty((self.batch, self.heads, self.config["num_split"]),
+                           dtype=self.dtype,
+                           device=Q.device)
         Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
-                                     dtype=self.dtype, device=Q.device)
-        return _mla_decode_wrapped_kernel(
-            self.batch, self.heads, self.kv_head_num, self.seqlen_kv,
-            self.dim, self.pe_dim, self.dtype_str, self.config["block_H"],
-            self.config["block_N"], self.config["num_stages"],
-            self.config["threads"], self.config["num_split"],
-            Q, Q_pe, K, K_pe, glse, Output_partial)
-    
+                                     dtype=self.dtype,
+                                     device=Q.device)
+        return _mla_decode_wrapped_kernel(self.batch, self.heads, self.kv_head_num, self.seqlen_kv,
+                                          self.dim, self.pe_dim, self.dtype_str,
+                                          self.config["block_H"], self.config["block_N"],
+                                          self.config["num_stages"], self.config["threads"],
+                                          self.config["num_split"], Q, Q_pe, K, K_pe, glse,
+                                          Output_partial)
 
 
 def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype='float16'):
@@ -374,13 +368,14 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
         compile_flags=[
             "-O3", "-Wno-deprecated-declarations", "-U__CUDA_NO_HALF_OPERATORS__",
             "-U__CUDA_NO_HALF_CONVERSIONS__", "-U__CUDA_NO_HALF2_OPERATORS__",
-            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__", "--expt-relaxed-constexpr", "--expt-extended-lambda",
-            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG"
+            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__", "--expt-relaxed-constexpr",
+            "--expt-extended-lambda", "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG"
         ],
     )
     def _mla_decode_ws_func(block_H, block_N, num_split, num_stages, threads=128):
 
         VALID_BLOCK_H = min(block_H, kv_group_num)
+
         @T.macro
         def flash_attn(
                 Q: T.Tensor([batch, heads, dim], dtype),
@@ -389,7 +384,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
                 Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            with T.Kernel(heads // min(block_H, kv_group_num), batch, threads=threads) as (hid, bid):
+            with T.Kernel(
+                    heads // min(block_H, kv_group_num), batch, threads=threads) as (hid, bid):
                 Q_shared_l = T.alloc_shared([block_H, dim // 2], dtype)
                 Q_shared_r = T.alloc_shared([block_H, dim // 2], dtype)
                 Q_tail_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -428,8 +424,10 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
 
                 tx = T.get_thread_binding()
 
-                T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, 0:dim // 2], Q_shared_l)
-                T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, dim // 2:dim], Q_shared_r)
+                T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, 0:dim // 2],
+                       Q_shared_l)
+                T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, dim // 2:dim],
+                       Q_shared_r)
                 T.copy(Q_pe[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, :], Q_tail_shared)
 
                 T.barrier_arrive(bar_q)
@@ -461,7 +459,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         for h_i in T.Parallel(block_H):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(block_H, block_N):
-                            acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
+                            acc_s[h_i,
+                                  bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
                         T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
                         for h_i in T.Parallel(block_H):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
@@ -493,7 +492,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         for h_i in T.Parallel(block_H):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(block_H, block_N):
-                            acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
+                            acc_s[h_i,
+                                  bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
                         T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
                         for h_i in T.Parallel(block_H):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
@@ -516,7 +516,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         sumexp[h_i] = T.log2(sumexp[h_i]) + m_i[h_i] * sm_scale
                     T.copy(acc_o_l, O_shared_l)
                     T.copy(O_shared_l, Output[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H,
-                                            0:dim // 2])
+                                              0:dim // 2])
 
                 elif tx >= 128 and tx < 256:
                     T.set_max_nreg(168, 1)
@@ -547,7 +547,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
 
                     T.copy(acc_o_r, O_shared_r)
                     T.copy(O_shared_r, Output[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H,
-                                            dim // 2:dim])
+                                              dim // 2:dim])
 
                 elif tx >= 256:
                     # producer
@@ -561,18 +561,19 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                                 for u in T.serial(4):
                                     for v in T.vectorized(8):
                                         KV_shared_0_l[r * 16 + (tx - 256) // 8,
-                                                    64 * u + (tx - 256) % 8 * 8 +
-                                                    v] = KV[bid, kv_indices, cur_kv_head,
-                                                            64 * u + (tx - 256) % 8 * 8 + v]
+                                                      64 * u + (tx - 256) % 8 * 8 +
+                                                      v] = KV[bid, kv_indices, cur_kv_head,
+                                                              64 * u + (tx - 256) % 8 * 8 + v]
                                         KV_shared_0_r[r * 16 + (tx - 256) // 8,
-                                                    64 * u + (tx - 256) % 8 * 8 +
-                                                    v] = KV[bid, kv_indices, cur_kv_head, dim // 2 +
-                                                            64 * u + (tx - 256) % 8 * 8 + v]
+                                                      64 * u + (tx - 256) % 8 * 8 +
+                                                      v] = KV[bid, kv_indices, cur_kv_head,
+                                                              dim // 2 + 64 * u +
+                                                              (tx - 256) % 8 * 8 + v]
                             with T.attr("default", "async_scope", 1):
                                 for v in T.vectorized(8):
                                     K_tail_shared_0[r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 +
                                                     v] = K_pe[bid, kv_indices, cur_kv_head,
-                                                            (tx - 256) % 8 * 8 + v]
+                                                              (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
                         # Buffer 1
@@ -583,18 +584,19 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                                 for u in T.serial(4):
                                     for v in T.vectorized(8):
                                         KV_shared_1_l[r * 16 + (tx - 256) // 8,
-                                                    64 * u + (tx - 256) % 8 * 8 +
-                                                    v] = KV[bid, kv_indices, cur_kv_head,
-                                                            64 * u + (tx - 256) % 8 * 8 + v]
+                                                      64 * u + (tx - 256) % 8 * 8 +
+                                                      v] = KV[bid, kv_indices, cur_kv_head,
+                                                              64 * u + (tx - 256) % 8 * 8 + v]
                                         KV_shared_1_r[r * 16 + (tx - 256) // 8,
-                                                    64 * u + (tx - 256) % 8 * 8 +
-                                                    v] = KV[bid, kv_indices, cur_kv_head, dim // 2 +
-                                                            64 * u + (tx - 256) % 8 * 8 + v]
+                                                      64 * u + (tx - 256) % 8 * 8 +
+                                                      v] = KV[bid, kv_indices, cur_kv_head,
+                                                              dim // 2 + 64 * u +
+                                                              (tx - 256) % 8 * 8 + v]
                             with T.attr("default", "async_scope", 1):
                                 for v in T.vectorized(8):
                                     K_tail_shared_1[r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 +
                                                     v] = K_pe[bid, kv_indices, cur_kv_head,
-                                                            (tx - 256) % 8 * 8 + v]
+                                                              (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
         @T.macro
@@ -647,8 +649,10 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
 
                 tx = T.get_thread_binding()
 
-                T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, 0:dim // 2], Q_shared_l)
-                T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, dim // 2:dim], Q_shared_r)
+                T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, 0:dim // 2],
+                       Q_shared_l)
+                T.copy(Q[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, dim // 2:dim],
+                       Q_shared_r)
                 T.copy(Q_pe[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, :], Q_tail_shared)
 
                 T.barrier_arrive(bar_q)
@@ -680,7 +684,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         for h_i in T.Parallel(block_H):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(block_H, block_N):
-                            acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
+                            acc_s[h_i,
+                                  bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
                         T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
                         for h_i in T.Parallel(block_H):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
@@ -712,7 +717,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         for h_i in T.Parallel(block_H):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
                         for h_i, bi_i in T.Parallel(block_H, block_N):
-                            acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
+                            acc_s[h_i,
+                                  bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
                         T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
                         for h_i in T.Parallel(block_H):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
@@ -735,8 +741,9 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         sumexp[h_i] = T.log2(sumexp[h_i]) + m_i[h_i] * sm_scale
                     T.copy(acc_o_l, O_shared_l)
                     T.copy(
-                        O_shared_l, Output_partial[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H,
-                                                bz, 0:dim // 2])
+                        O_shared_l,
+                        Output_partial[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, bz,
+                                       0:dim // 2])
                     T.copy(sumexp, glse[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, bz])
 
                 elif tx >= 128 and tx < 256:
@@ -768,8 +775,9 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
 
                     T.copy(acc_o_r, O_shared_r)
                     T.copy(
-                        O_shared_r, Output_partial[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H,
-                                                bz, dim // 2:dim])
+                        O_shared_r,
+                        Output_partial[bid, hid * VALID_BLOCK_H:(hid + 1) * VALID_BLOCK_H, bz,
+                                       dim // 2:dim])
 
                 elif tx >= 256:
                     # producer
@@ -784,18 +792,19 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                                 for u in T.serial(4):
                                     for v in T.vectorized(8):
                                         KV_shared_0_l[r * 16 + (tx - 256) // 8,
-                                                    64 * u + (tx - 256) % 8 * 8 +
-                                                    v] = KV[bid, kv_indices, cur_kv_head,
-                                                            64 * u + (tx - 256) % 8 * 8 + v]
+                                                      64 * u + (tx - 256) % 8 * 8 +
+                                                      v] = KV[bid, kv_indices, cur_kv_head,
+                                                              64 * u + (tx - 256) % 8 * 8 + v]
                                         KV_shared_0_r[r * 16 + (tx - 256) // 8,
-                                                    64 * u + (tx - 256) % 8 * 8 +
-                                                    v] = KV[bid, kv_indices, cur_kv_head, dim // 2 +
-                                                            64 * u + (tx - 256) % 8 * 8 + v]
+                                                      64 * u + (tx - 256) % 8 * 8 +
+                                                      v] = KV[bid, kv_indices, cur_kv_head,
+                                                              dim // 2 + 64 * u +
+                                                              (tx - 256) % 8 * 8 + v]
                             with T.attr("default", "async_scope", 1):
                                 for v in T.vectorized(8):
                                     K_tail_shared_0[r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 +
                                                     v] = K_pe[bid, kv_indices, cur_kv_head,
-                                                            (tx - 256) % 8 * 8 + v]
+                                                              (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
                         # Buffer 1
@@ -807,18 +816,19 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                                 for u in T.serial(4):
                                     for v in T.vectorized(8):
                                         KV_shared_1_l[r * 16 + (tx - 256) // 8,
-                                                    64 * u + (tx - 256) % 8 * 8 +
-                                                    v] = KV[bid, kv_indices, cur_kv_head,
-                                                            64 * u + (tx - 256) % 8 * 8 + v]
+                                                      64 * u + (tx - 256) % 8 * 8 +
+                                                      v] = KV[bid, kv_indices, cur_kv_head,
+                                                              64 * u + (tx - 256) % 8 * 8 + v]
                                         KV_shared_1_r[r * 16 + (tx - 256) // 8,
-                                                    64 * u + (tx - 256) % 8 * 8 +
-                                                    v] = KV[bid, kv_indices, cur_kv_head, dim // 2 +
-                                                            64 * u + (tx - 256) % 8 * 8 + v]
+                                                      64 * u + (tx - 256) % 8 * 8 +
+                                                      v] = KV[bid, kv_indices, cur_kv_head,
+                                                              dim // 2 + 64 * u +
+                                                              (tx - 256) % 8 * 8 + v]
                             with T.attr("default", "async_scope", 1):
                                 for v in T.vectorized(8):
                                     K_tail_shared_1[r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 +
                                                     v] = K_pe[bid, kv_indices, cur_kv_head,
-                                                            (tx - 256) % 8 * 8 + v]
+                                                              (tx - 256) % 8 * 8 + v]
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
         @T.macro
@@ -836,7 +846,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 scale_local = T.alloc_local([1], accum_dtype)
 
                 T.annotate_layout({
-                    lse_logsum_local: T.Fragment(lse_logsum_local.shape, forward_thread_fn=lambda i: i),
+                    lse_logsum_local:
+                        T.Fragment(lse_logsum_local.shape, forward_thread_fn=lambda i: i),
                 })
 
                 T.clear(lse_logsum_local)
@@ -887,58 +898,44 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
             return main_split
         else:
             return main_no_split
-        
+
     return _mla_decode_ws_func
 
 
 @torch.library.custom_op("top::mla_decode_ws_wrapped_kernel", mutates_args=())
-def _mla_decode_ws_wrapped_kernel(
-    batch: int,
-    heads: int,
-    kv_head_num: int,
-    seqlen_kv: int,
-    dim: int,
-    pe_dim: int,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    Q_pe: torch.Tensor,
-    Kv: torch.Tensor,
-    K_pe: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor 
-) -> torch.Tensor: 
-    return _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype)(
-        block_H, block_N, num_split, num_stages, threads)(
-            Q, Q_pe, Kv, K_pe, glse, Output_partial)
+def _mla_decode_ws_wrapped_kernel(batch: int, heads: int, kv_head_num: int, seqlen_kv: int,
+                                  dim: int, pe_dim: int, dtype: str, block_H: int, block_N: int,
+                                  num_stages: int, threads: int, num_split: int, Q: torch.Tensor,
+                                  Q_pe: torch.Tensor, Kv: torch.Tensor, K_pe: torch.Tensor,
+                                  glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
+    return _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim,
+                                 dtype)(block_H, block_N, num_split, num_stages,
+                                        threads)(Q, Q_pe, Kv, K_pe, glse, Output_partial)
 
 
 @_mla_decode_ws_wrapped_kernel.register_fake
 def _(
-    batch: int,
-    heads: int,
-    kv_head_num: int,
-    seqlen_kv: int,
-    dim: int,
-    pe_dim: int,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    Q_pe: torch.Tensor,
-    Kv: torch.Tensor,
-    K_pe: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor
+        batch: int,
+        heads: int,
+        kv_head_num: int,
+        seqlen_kv: int,
+        dim: int,
+        pe_dim: int,
+        dtype: str,
+        block_H: int,
+        block_N: int,
+        num_stages: int,
+        threads: int,
+        num_split: int,
+        Q: torch.Tensor,
+        Q_pe: torch.Tensor,
+        Kv: torch.Tensor,
+        K_pe: torch.Tensor,
+        glse: torch.Tensor,
+        Output_partial: torch.Tensor
 ) -> torch.Tensor:
     return torch.empty((batch, heads, dim), dtype=Q.dtype, device=Q.device)
+
 
 class mla_decode_ws_kernel(Kernel):
     supported_archs: list[int] = [90]
@@ -962,8 +959,8 @@ class mla_decode_ws_kernel(Kernel):
         self.pe_dim = pe_dim
         self.dtype = dtype
 
-        self.kernel = _mla_decode_ws_kernel(self.batch, self.heads, self.kv_head_num, self.seqlen_kv,
-                                        self.dim, self.pe_dim, self.dtype_str)
+        self.kernel = _mla_decode_ws_kernel(self.batch, self.heads, self.kv_head_num,
+                                            self.seqlen_kv, self.dim, self.pe_dim, self.dtype_str)
 
         self.init_config(config, tune)
 
@@ -995,18 +992,16 @@ class mla_decode_ws_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self,
-                Q: torch.Tensor,
-                Q_pe: torch.Tensor,
-                K: torch.Tensor,
-                K_pe: torch.Tensor):
-        glse = torch.empty((self.batch, self.heads, self.config["num_split"]), dtype=self.dtype, device=Q.device)
+    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor, K_pe: torch.Tensor):
+        glse = torch.empty((self.batch, self.heads, self.config["num_split"]),
+                           dtype=self.dtype,
+                           device=Q.device)
         Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
-                                     dtype=self.dtype, device=Q.device)
-        return _mla_decode_ws_wrapped_kernel(
-            self.batch, self.heads, self.kv_head_num, self.seqlen_kv,
-            self.dim, self.pe_dim, self.dtype_str, self.config["block_H"],
-            self.config["block_N"], self.config["num_stages"],
-            self.config["threads"], self.config["num_split"],
-            Q, Q_pe, K, K_pe, glse, Output_partial)
-    
+                                     dtype=self.dtype,
+                                     device=Q.device)
+        return _mla_decode_ws_wrapped_kernel(self.batch, self.heads, self.kv_head_num,
+                                             self.seqlen_kv, self.dim, self.pe_dim, self.dtype_str,
+                                             self.config["block_H"], self.config["block_N"],
+                                             self.config["num_stages"], self.config["threads"],
+                                             self.config["num_split"], Q, Q_pe, K, K_pe, glse,
+                                             Output_partial)

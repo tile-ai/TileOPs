@@ -26,4 +26,5 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_mla_decode(args.batch, args.heads, args.kv_head_num, args.seq_len_kv, args.dim, args.pe_dim, str2dtype[args.dtype], args.tune)
+    test_mla_decode(args.batch, args.heads, args.kv_head_num, args.seq_len_kv, args.dim,
+                    args.pe_dim, str2dtype[args.dtype], args.tune)

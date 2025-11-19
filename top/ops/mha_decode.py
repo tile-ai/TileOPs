@@ -36,4 +36,3 @@ class mha_decode(Op):
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         return self.kernel(Q, K, V)
-    

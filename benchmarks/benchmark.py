@@ -96,7 +96,9 @@ class Benchmark(ABC):
         elif not isinstance(outputs, tuple):
             raise ValueError(f"Unsupported output type: {type(outputs)}")
 
-        assert len(outputs) == len(outputs_ref), f"outputs: {len(outputs)}  and outputs_ref: {len(outputs_ref)} have different size"
+        assert len(outputs) == len(
+            outputs_ref
+        ), f"outputs: {len(outputs)}  and outputs_ref: {len(outputs_ref)} have different size"
         for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
             # print(f"outputs[{i}] max err: {(output - output_ref).abs().max()}")
             if output_ref is not None:  # skip checking for None placeholders in ref

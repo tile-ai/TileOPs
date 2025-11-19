@@ -1,0 +1,78 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+
+ci:
+  autofix_prs: false  # Don't automatically push "fix" commits to PRs on pre-commit.ci
+  autofix_commit_msg: "[Lint]: [pre-commit.ci] auto fixes [...]"  # Auto-generated commit message template when autofix is enabled
+  autoupdate_commit_msg: "[CI] [pre-commit.ci] autoupdate"       # Commit message used when pre-commit.ci auto-updates hook versions
+  autoupdate_schedule: monthly  # Auto-update hook versions once per month
+
+# Default stages that trigger these hooks
+default_stages: [pre-commit, pre-push, manual]
+
+# Globally ignored directories: files under build/ and 3rdparty/ won't run any hooks
+exclude: '^(build|3rdparty)/.*$'  # exclude build and 3rdparty directories
+
+repos:
+  # Basic general checks: symlinks, file size, merge conflicts, etc.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-symlinks            # Check if symlinks in the repository point to valid paths
+      - id: destroyed-symlinks        # Check for accidentally broken symlinks (e.g., symlink changed to regular file)
+      # FIXME: enable these hooks
+      # - id: trailing-whitespace     # Check and clean up trailing whitespace (currently disabled)
+      # - id: end-of-file-fixer      # Ensure files end with exactly one newline (currently disabled)
+      - id: check-added-large-files   # Prevent adding overly large files to avoid bloating the repository
+      - id: check-merge-conflict      # Check for Git merge conflict markers <<<<<<< / ======= / >>>>>>>
+        fail_fast: true               # Fail immediately upon finding conflict markers
+      # FIXME: enable these hooks
+      # - id: check-executables-have-shebangs        # Check if executable files have shebangs (not enabled)
+      # - id: check-shebang-scripts-are-executable   # Check if scripts with shebangs are executable (not enabled)
+      - id: detect-private-key        # Detect if private keys are accidentally committed (e.g., SSH/TLS private keys)
+      - id: check-yaml                # Validate syntax of all YAML files
+      - id: check-toml                # Validate TOML files (like pyproject.toml) syntax
+      - id: check-ast                 # Parse Python files with AST to check for syntax errors
+        fail_fast: true               # Fail immediately upon finding syntax errors
+      - id: debug-statements          # Detect debugging statements in Python, such as pdb.set_trace()/breakpoint()
+      - id: file-contents-sorter      # Sort contents line by line in specified files, used here for spelling_wordlist
+        args: [--ignore-case]         # Ignore case when sorting
+        files: ^docs/spelling_wordlist\.txt$  # Only apply to docs/spelling_wordlist.txt
+
+  # Use Ruff for Python static analysis / linting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.3  # sync with requirements-lint.txt
+    hooks:
+      - id: ruff-check
+        # Automatically fix issues that can be fixed, and return non-zero exit code when fixes are made to remind git add
+        args: [--fix, --exit-non-zero-on-fix]
+
+  # Use yapf for Python code formatting
+  - repo: https://github.com/google/yapf
+    rev: v0.43.0  # sync with requirements-lint.txt
+    hooks:
+      - id: yapf
+        name: yapf-multiproc-bugfix
+        # yapf is not multiprocessing-safe, so we first run a "dummy" yapf on top/__init__.py
+        # to serve as a warm-up/workaround for concurrency bugs
+        args: [--in-place, top/__init__.py]
+        always_run: true    # Run every time, regardless of file changes
+        pass_filenames: false  # Don't pass file list as arguments, only work on top/__init__.py
+      - id: yapf
+        # Real global Python formatting: recursively format Python files in-place
+        args: [--recursive, --in-place]
+
+  # Use codespell for English spell checking
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1  # sync with requirements-lint.txt
+    hooks:
+      - id: codespell
+        # Allow codespell to read configuration from pyproject.toml / setup.cfg, etc.
+        additional_dependencies: [".[toml]"]
+        # Exclude file types unsuitable for spell checking, such as C/C++/CUDA source, SVG, requirements lists, etc.
+        exclude: |
+          (?x)(
+            ^.+\.(cpp|hpp|cxx|cc|c|h|cu|cuh)$|
+            ^.+\.svg$|
+            ^.*\brequirements\b.*\.txt$
+          )
