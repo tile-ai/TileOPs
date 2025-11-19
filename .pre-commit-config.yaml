@@ -53,11 +53,11 @@ repos:
     hooks:
       - id: yapf
         name: yapf-multiproc-bugfix
-        # yapf 不是多进程安全，这里先对 docs/conf.py 跑一个“dummy” yapf
+        # yapf 不是多进程安全，这里先对 top/__init__.py 跑一个“dummy” yapf
         # 起到预热/规避并发 bug 的效果
-        args: [--in-place, docs/conf.py]
+        args: [--in-place, top/__init__.py]
         always_run: true    # 每次都运行，与文件改动无关
-        pass_filenames: false  # 不根据文件列表传参，而是只作用于 docs/conf.py
+        pass_filenames: false  # 不根据文件列表传参，而是只作用于 top/__init__.py
       - id: yapf
         # 真正的全局 Python 格式化：递归地对仓库里的 Python 文件做就地格式化
         args: [--recursive, --in-place]

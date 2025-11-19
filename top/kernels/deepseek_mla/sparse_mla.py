@@ -25,7 +25,7 @@ def _sparse_mla_kernel(batch,
                        dtype="float16"):
     '''
     This code implements sparse attn
-    Note that the first kv_stride - 1 token's out would be nan. since this isn't used, we assume it doesn't matter. (**still, one might have to handle carefully in backward to avoid dout * nan propagated!**)
+    Note that the first kv_stride - 1 token's out would be nan. since this isn't used, we assume it doesn't matter. (**still, one might have to handle carefully in backward to avoid 'dout * nan' propagated!**)
     It might be OK to set these nan to zero, but we assume it might serve as a reminder of taking care of these out in 'delta = out * dout'.
     The above feature might be replaced with out being undefined if we fix CP0 logic (this logic is currently wrong due to some bug in compiler)
     '''
@@ -33,7 +33,7 @@ def _sparse_mla_kernel(batch,
         dim), f"haven't check padding correctness yet, dim={dim}"
     assert tail_dim == tilelang.math.next_power_of_2(
         tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
-    assert is_causal == True, 'non-causal is not supported'
+    assert is_causal, 'non-causal is not supported'
     if sm_scale is None:
         sm_scale = (1.0 / (dim + tail_dim))**0.5 * 1.44269504  # log2(e)
     else:
@@ -44,7 +44,6 @@ def _sparse_mla_kernel(batch,
     kv_shape = [batch, seq_len_kv, kv_group, dim + tail_dim]
     o_shape = [batch, seq_len, heads, dim]
     indices_shape = [batch, seq_len, kv_group, topk]
-    lse_shape = [batch, seq_len, heads]
     indices_dtype = "int32"
     accum_dtype = "float"
 
@@ -60,12 +59,11 @@ def _sparse_mla_kernel(batch,
     )
     def _sparse_mla_fwd_func(block_I, threads):
 
-        G = kv_group
         heads = head_kv
         # print(f'heads = {heads}')
         padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
         if padded_H != heads:
-            assert kv_group == 1, 'here we solve the heads padding automically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automically)'
+            assert kv_group == 1, 'here we solve the heads padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)'
         # print(f'padded_H = {padded_H}, heads = {heads}')
 
         assert topk % block_I == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
