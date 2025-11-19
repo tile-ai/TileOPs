@@ -3,7 +3,7 @@ from top.ops import Gemm
 import torch
 
 
-class gemm_benchmark(Benchmark): 
+class gemm_benchmark(Benchmark):
 
     op_type = Gemm
 

@@ -16,13 +16,14 @@ class MLADecode(nn.Module):
         self.pe_dim = pe_dim
         self.dtype = dtype
 
-        self.fn = mla_decode_fn(batch_size, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
+        self.fn = mla_decode_fn(
+            batch_size, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
 
-
-    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor, K_pe: torch.Tensor) -> torch.Tensor:
+    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor,
+                K_pe: torch.Tensor) -> torch.Tensor:
         return self.fn(Q, Q_pe, K, K_pe)
 
-    
+
 class SparseMLADecode(nn.Module):
 
     def __init__(self,
@@ -56,8 +57,21 @@ class SparseMLADecode(nn.Module):
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
 
-        self.fn = sparse_mla_fn(batch, heads, seq_len, seq_len_kv, dim, tail_dim, topk, kv_stride, kv_group, q_start_index_s, sm_scale, is_causal, dtype, tune=tune)
-
+        self.fn = sparse_mla_fn(
+            batch,
+            heads,
+            seq_len,
+            seq_len_kv,
+            dim,
+            tail_dim,
+            topk,
+            kv_stride,
+            kv_group,
+            q_start_index_s,
+            sm_scale,
+            is_causal,
+            dtype,
+            tune=tune)
 
     def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor) -> torch.Tensor:
         return self.fn(Q, KV, Indices)

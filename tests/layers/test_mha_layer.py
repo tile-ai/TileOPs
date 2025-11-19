@@ -24,4 +24,5 @@ if __name__ == "__main__":
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
     args = parser.parse_args()
 
-    test_mha_layer(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype])
+    test_mha_layer(args.batch, args.seq_len, args.heads, args.dim, args.causal,
+                   str2dtype[args.dtype])

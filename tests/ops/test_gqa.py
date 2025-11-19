@@ -33,7 +33,8 @@ if __name__ == "__main__":
     parser.add_argument(
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
-    parser.add_argument('--disable_bwd', action='store_false', default=True, help='when test fwd profile')
+    parser.add_argument(
+        '--disable_bwd', action='store_false', default=True, help='when test fwd profile')
     args = parser.parse_args()
 
     test_gqa_fwd(args.batch, args.seq_len, args.heads, args.heads_kv, args.dim, args.causal,
@@ -41,4 +42,4 @@ if __name__ == "__main__":
 
     if args.disable_bwd:
         test_gqa_bwd(args.batch, args.seq_len, args.heads, args.heads_kv, args.dim, args.causal,
-                    str2dtype[args.dtype], args.tune)
+                     str2dtype[args.dtype], args.tune)

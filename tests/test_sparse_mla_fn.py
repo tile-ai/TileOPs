@@ -5,14 +5,60 @@ from top.utils import str2dtype
 from benchmarks import sparse_mla_decode_benchmark
 
 
-def test_sparse_mla_decode(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
-                           kv_group, q_start_index_s, sm_scale, dtype, tune=False):
-    fn = sparse_mla_fn(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
-                    kv_group, q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
-    layer = SparseMLADecode(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
-                    kv_group, q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
-    benchmark = sparse_mla_decode_benchmark(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride, 
-                                            kv_group, q_start_index_s, sm_scale=sm_scale, dtype=dtype)
+def test_sparse_mla_decode(B,
+                           H,
+                           S_q,
+                           S_kv,
+                           D,
+                           tail_dim,
+                           topk,
+                           kv_stride,
+                           kv_group,
+                           q_start_index_s,
+                           sm_scale,
+                           dtype,
+                           tune=False):
+    fn = sparse_mla_fn(
+        B,
+        H,
+        S_q,
+        S_kv,
+        D,
+        tail_dim,
+        topk,
+        kv_stride,
+        kv_group,
+        q_start_index_s,
+        sm_scale=sm_scale,
+        dtype=dtype,
+        tune=tune)
+    layer = SparseMLADecode(
+        B,
+        H,
+        S_q,
+        S_kv,
+        D,
+        tail_dim,
+        topk,
+        kv_stride,
+        kv_group,
+        q_start_index_s,
+        sm_scale=sm_scale,
+        dtype=dtype,
+        tune=tune)
+    benchmark = sparse_mla_decode_benchmark(
+        B,
+        H,
+        S_q,
+        S_kv,
+        D,
+        tail_dim,
+        topk,
+        kv_stride,
+        kv_group,
+        q_start_index_s,
+        sm_scale=sm_scale,
+        dtype=dtype)
 
     inputs = benchmark.gen_inputs()
 
@@ -23,7 +69,7 @@ def test_sparse_mla_decode(B, H, S_q, S_kv, D, tail_dim, topk, kv_stride,
     except Exception as e:
         print(f"❌ mla_fn test failed: {e}")
         raise
-    
+
     try:
         print("Testing mla_layer...")
         benchmark.check_fn(layer, *inputs, grad=False)
@@ -51,4 +97,6 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_sparse_mla_decode(args.batch, args.heads, args.seq_len, args.seq_len_kv, args.dim, args.tail_dim, args.topk, args.kv_stride, args.kv_group, args.q_start_index_s, args.sm_scale, str2dtype[args.dtype], args.tune)
+    test_sparse_mla_decode(args.batch, args.heads, args.seq_len, args.seq_len_kv, args.dim,
+                           args.tail_dim, args.topk, args.kv_stride, args.kv_group,
+                           args.q_start_index_s, args.sm_scale, str2dtype[args.dtype], args.tune)

@@ -7,7 +7,20 @@ class sparse_mla_decode_benchmark(Benchmark):
 
     op_type = sparse_mla
 
-    def __init__(self, batch, heads, seq_len, seq_len_kv, dim, tail_dim, topk, kv_stride, kv_group, q_start_index_s, sm_scale=None, is_causal=True, dtype=torch.float16):
+    def __init__(self,
+                 batch,
+                 heads,
+                 seq_len,
+                 seq_len_kv,
+                 dim,
+                 tail_dim,
+                 topk,
+                 kv_stride,
+                 kv_group,
+                 q_start_index_s,
+                 sm_scale=None,
+                 is_causal=True,
+                 dtype=torch.float16):
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -24,7 +37,8 @@ class sparse_mla_decode_benchmark(Benchmark):
 
     @property
     def total_flops(self):
-        flops = self.batch * self.seq_len * (2 * self.dim + self.tail_dim) * self.topk * 2 * self.heads
+        flops = self.batch * self.seq_len * (2 * self.dim +
+                                             self.tail_dim) * self.topk * 2 * self.heads
         return flops
 
     @property
@@ -33,17 +47,29 @@ class sparse_mla_decode_benchmark(Benchmark):
         # KV: batch, seq_len_kv, kv_group, dim + tail_dim
         # Indices: batch, seq_len, kv_group, topk
         # Output: batch, seq_len, heads, dim
-        q_memory = self.batch * self.seq_len * self.heads * (self.dim + self.tail_dim) * self.dtype.itemsize
-        kv_memory = self.batch * self.seq_len_kv * self.kv_group * (self.dim + self.tail_dim) * self.dtype.itemsize
+        q_memory = self.batch * self.seq_len * self.heads * (self.dim +
+                                                             self.tail_dim) * self.dtype.itemsize
+        kv_memory = self.batch * self.seq_len_kv * self.kv_group * (
+            self.dim + self.tail_dim) * self.dtype.itemsize
         indices_memory = self.batch * self.seq_len * self.kv_group * self.topk * 4  # int32
         output_memory = self.batch * self.seq_len * self.heads * self.dim * self.dtype.itemsize
         return q_memory + kv_memory + indices_memory + output_memory
 
     def gen_inputs(self):
         Q = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim + self.tail_dim, device='cuda', dtype=self.dtype)
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim + self.tail_dim,
+            device='cuda',
+            dtype=self.dtype)
         KV = torch.randn(
-            self.batch, self.seq_len_kv, self.kv_group, self.dim + self.tail_dim, device='cuda', dtype=self.dtype)
+            self.batch,
+            self.seq_len_kv,
+            self.kv_group,
+            self.dim + self.tail_dim,
+            device='cuda',
+            dtype=self.dtype)
         Indices = torch.full((self.batch, self.seq_len, self.kv_group, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
@@ -57,7 +83,7 @@ class sparse_mla_decode_benchmark(Benchmark):
                             self.seq_len_kv))[:self.topk]
                     Indices[b, t, h, :len(i_i)] = i_i
         return Q, KV, Indices
-    
+
     def ref_program(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor):
         q = Q.float()
         kv = KV.float()
@@ -80,7 +106,10 @@ class sparse_mla_decode_benchmark(Benchmark):
         compressed_causal_mask = torch.arange(
             q_start_index_s, sq + q_start_index_s, dtype=torch.int32,
             device="cuda").view(-1, 1) >= torch.arange(
-                self.kv_stride - 1, sk * self.kv_stride, self.kv_stride, dtype=torch.int32,
+                self.kv_stride - 1,
+                sk * self.kv_stride,
+                self.kv_stride,
+                dtype=torch.int32,
                 device="cuda").view(1, -1)
 
         mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
@@ -99,4 +128,3 @@ class sparse_mla_decode_benchmark(Benchmark):
         o = torch.einsum("bghmn,bngd->bmghd", p.type(v.dtype), v)
         o = o.reshape(b, sq, h, dim_v)
         return o.to(torch.float16)
-    

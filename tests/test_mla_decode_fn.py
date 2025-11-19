@@ -20,7 +20,7 @@ def test_mla_decode_fn(B, kv_head_num, S_kv, H, D, Pe_D, dtype):
     except Exception as e:
         print(f"❌ mla_fn test failed: {e}")
         raise
-    
+
     try:
         print("Testing mla_layer...")
         benchmark.check_fn(mla_layer, *inputs, grad=False)
@@ -43,4 +43,5 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_mla_decode_fn(args.batch, args.kv_head_num, args.seq_len_kv, args.heads, args.dim, args.pe_dim, str2dtype[args.dtype])
+    test_mla_decode_fn(args.batch, args.kv_head_num, args.seq_len_kv, args.heads, args.dim,
+                       args.pe_dim, str2dtype[args.dtype])

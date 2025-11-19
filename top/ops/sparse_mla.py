@@ -42,14 +42,27 @@ class sparse_mla(Op):
             assert q_start_index_s > kv_stride, "If it is because each cp has too short length, "
             "you should fix the logic involving CP0 (cp_rank == 0), to make sure q with pos < KV_Stride - 1 is masked "
             "(or you may just ignore how this is handled if nan in these q's Out would not effect others, which is reported to be likely to happen by wangding)"
-        
+
         CP0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["sparse_mla_kernel"](self.batch, self.seq_len, self.seq_len_kv, self.heads,
-                                       self.dim, self.tail_dim, self.dtype, self.topk, self.kv_stride, self.q_start_index_s,
-                                       self.kv_group, self.sm_scale, self.is_causal, CP0, tune=tune)
+        self.kernel = self.kernel_map["sparse_mla_kernel"](
+            self.batch,
+            self.seq_len,
+            self.seq_len_kv,
+            self.heads,
+            self.dim,
+            self.tail_dim,
+            self.dtype,
+            self.topk,
+            self.kv_stride,
+            self.q_start_index_s,
+            self.kv_group,
+            self.sm_scale,
+            self.is_causal,
+            CP0,
+            tune=tune)
 
     @property
     def default_kernel_map(self):

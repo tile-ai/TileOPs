@@ -2,7 +2,6 @@ import torch
 from .function import Function
 from top.ops.gqa import gqa_fwd, gqa_bwd
 
-
 __all__ = ['gqa_fn']
 
 
@@ -11,18 +10,18 @@ class gqa_ctx(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V, fwd_op, bwd_op):
         O, lse = fwd_op(Q, K, V)
-        
+
         ctx.save_for_backward(Q, K, V, O, lse)
         ctx.bwd_op = bwd_op
-        
+
         return O
-    
+
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, lse = ctx.saved_tensors
-        
+
         dQ, dK, dV = ctx.bwd_op(Q, K, V, O, dO, lse)
-        
+
         return dQ, dK, dV, None, None
 
 

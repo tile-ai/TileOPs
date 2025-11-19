@@ -34,20 +34,30 @@ class mla_decode_benchmark(Benchmark):
         # K: batch * seq_len_kv * kv_heads_num * dim
         # K_pe: batch * seq_len_kv * kv_heads_num * pe_dim
         # Output: batch * heads * dim
-        return self.batch * (self.heads + self.seq_len_kv * self.kv_head_num) * (self.dim + self.pe_dim) * self.dtype.itemsize
+        return self.batch * (self.heads + self.seq_len_kv * self.kv_head_num) * (
+            self.dim + self.pe_dim) * self.dtype.itemsize
 
     def gen_inputs(self):
-        Q = torch.randn(
-            self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        Q_pe = torch.randn(
-            self.batch, self.heads, self.pe_dim, device='cuda', dtype=self.dtype)
+        Q = torch.randn(self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        Q_pe = torch.randn(self.batch, self.heads, self.pe_dim, device='cuda', dtype=self.dtype)
         K = torch.randn(
-            self.batch, self.seq_len_kv, self.kv_head_num, self.dim, device='cuda', dtype=self.dtype)
+            self.batch,
+            self.seq_len_kv,
+            self.kv_head_num,
+            self.dim,
+            device='cuda',
+            dtype=self.dtype)
         K_pe = torch.randn(
-            self.batch, self.seq_len_kv, self.kv_head_num, self.pe_dim, device='cuda', dtype=self.dtype)
+            self.batch,
+            self.seq_len_kv,
+            self.kv_head_num,
+            self.pe_dim,
+            device='cuda',
+            dtype=self.dtype)
         return Q, Q_pe, K, K_pe
 
-    def ref_program(self, Q: torch.Tensor, Q_pe: torch.Tensor, KV: torch.Tensor, K_pe: torch.Tensor):
+    def ref_program(self, Q: torch.Tensor, Q_pe: torch.Tensor, KV: torch.Tensor,
+                    K_pe: torch.Tensor):
         #     """
         #     Inputs:
         #     - Q (Tensor): [batch, heads, dim]
@@ -62,7 +72,8 @@ class mla_decode_benchmark(Benchmark):
         num_head_groups = Q.shape[1] // KV.shape[2]
         scale = (dim + pe_dim)**0.5
         Q = rearrange(
-            Q, 'b (h g) d -> b g h d', g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+            Q, 'b (h g) d -> b g h d',
+            g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
 
         Q_pe = rearrange(
             Q_pe, 'b (h g) d -> b g h d',
@@ -70,7 +81,8 @@ class mla_decode_benchmark(Benchmark):
 
         KV = rearrange(KV, 'b n h d -> b h n d')  # [batch_size, groups, seqlen_kv, dim]
 
-        K_pe = rearrange(K_pe, 'b n h d -> b h n d')  # [batch_size, num_head_groups, groups, pe_dim]
+        K_pe = rearrange(K_pe,
+                         'b n h d -> b h n d')  # [batch_size, num_head_groups, groups, pe_dim]
 
         query = torch.concat([Q, Q_pe], dim=-1)
         key = torch.concat([KV, K_pe], dim=-1)
@@ -83,6 +95,6 @@ class mla_decode_benchmark(Benchmark):
             scores / scale, dim=-1)  # [batch_size, num_head_groups, groups, seqlen_kv]
 
         out = einsum(attention, KV,
-                    'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, groups, dim]
+                     'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, groups, dim]
         out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
         return out
