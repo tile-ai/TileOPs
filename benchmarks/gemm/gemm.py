@@ -7,11 +7,13 @@ class gemm_benchmark(Benchmark):
 
     op_type = Gemm
 
-    def __init__(self, M, N, K, dtype):
+    def __init__(self, M, N, K, dtype, trans_A=False, trans_B=False):
         self.M = M
         self.N = N
         self.K = K
         self.dtype = dtype
+        self.trans_A = trans_A
+        self.trans_B = trans_B
 
     @property
     def total_flops(self):
@@ -23,10 +25,15 @@ class gemm_benchmark(Benchmark):
 
     def gen_inputs(self):
         A = torch.randn(self.M, self.K, device='cuda', dtype=self.dtype)
-        B = torch.randn(self.K, self.N, device='cuda', dtype=self.dtype)
+        B = torch.randn(self.N, self.K, device='cuda', dtype=self.dtype)
         return A, B
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor):
+        if self.trans_A:
+            A = A.transpose(-2, -1)
+        if self.trans_B:
+            print(2)
+            B = B.T
         return torch.matmul(A, B)
     
 
