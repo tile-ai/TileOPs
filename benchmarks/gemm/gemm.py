@@ -25,14 +25,13 @@ class gemm_benchmark(Benchmark):
 
     def gen_inputs(self):
         A = torch.randn(self.M, self.K, device='cuda', dtype=self.dtype)
-        B = torch.randn(self.N, self.K, device='cuda', dtype=self.dtype)
+        B = torch.randn(self.K, self.N, device='cuda', dtype=self.dtype)
         return A, B
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor):
         if self.trans_A:
-            A = A.transpose(-2, -1)
+            A = A.T
         if self.trans_B:
-            print(2)
             B = B.T
         return torch.matmul(A, B)
     
