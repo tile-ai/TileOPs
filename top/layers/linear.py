@@ -8,20 +8,20 @@ class Linear(nn.Module):
 
     def __init__(
         self,
-        M: int,
-        N: int,
-        K: int,
+        batch_size: int,
+        out_features: int,
+        in_features: int,
         device='cuda',
         dtype=torch.float16,
         tune=False,
     ):
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
-        self.weight = nn.Parameter(torch.empty((K, N), **factory_kwargs))
+        self.weight = nn.Parameter(torch.empty((in_features, out_features), **factory_kwargs))
         self.fn = matmul(
-            M,
-            N,
-            K,
+            batch_size,
+            out_features,
+            in_features,
             dtype=self.weight.dtype,
             tune=tune,
         )
@@ -30,5 +30,5 @@ class Linear(nn.Module):
     def reset_parameters(self):
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return self.fn(input, self.weight)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fn(x, self.weight)
