@@ -34,9 +34,9 @@ class gemm_benchmark(Benchmark):
         if self.trans_B:
             B = B.T
         return torch.matmul(A, B)
-    
 
-class matmul_benchmark(Benchmark): 
+
+class matmul_benchmark(Benchmark):
 
     def __init__(self, M, N, K, dtype, grad=True):
         self.M = M
@@ -44,6 +44,7 @@ class matmul_benchmark(Benchmark):
         self.K = K
         self.dtype = dtype
         self.grad = grad
+
     @property
     def total_flops(self):
         return 6.0 * self.M * self.N * self.K

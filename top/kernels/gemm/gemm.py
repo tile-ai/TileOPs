@@ -41,17 +41,17 @@ def _gemm_kernel(M, N, K, trans_A, trans_B, dtype='float16'):
                 for k in T.Pipelined(T.ceildiv(K, block_K), num_stages=num_stages):
                     if not trans_A:
                         # A: (M, K)
-                        T.copy(A[by * block_M, k * block_K], A_shared)          # [block_M, block_K]
+                        T.copy(A[by * block_M, k * block_K], A_shared)  # [block_M, block_K]
                     else:
                         # A: (K, M)
-                        T.copy(A[k * block_K, by * block_M], A_shared)          # [block_K, block_M]
+                        T.copy(A[k * block_K, by * block_M], A_shared)  # [block_K, block_M]
 
                     if not trans_B:
                         # B: (K, N)
-                        T.copy(B[k * block_K, bx * block_N], B_shared)          # [block_K, block_N]
+                        T.copy(B[k * block_K, bx * block_N], B_shared)  # [block_K, block_N]
                     else:
                         # B: (N, K)
-                        T.copy(B[bx * block_N, k * block_K], B_shared)          # [block_N, block_K]
+                        T.copy(B[bx * block_N, k * block_K], B_shared)  # [block_N, block_K]
                     T.gemm(A_shared, B_shared, C_local, trans_A, trans_B)
 
                 T.copy(C_local, C_shared)
@@ -65,7 +65,15 @@ def _gemm_kernel(M, N, K, trans_A, trans_B, dtype='float16'):
 class gemm_kernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
-    def __init__(self, M, N, K, dtype, config: Optional[dict] = None, tune=False, trans_A=False, trans_B=False):
+    def __init__(self,
+                 M,
+                 N,
+                 K,
+                 dtype,
+                 config: Optional[dict] = None,
+                 tune=False,
+                 trans_A=False,
+                 trans_B=False):
         super().__init__()
         self.M = M
         self.N = N

@@ -24,7 +24,8 @@ class Gemm(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gemm_kernel"](M, N, K, self.dtype, tune=tune, trans_A=trans_A, trans_B=trans_B)
+        self.kernel = self.kernel_map["gemm_kernel"](
+            M, N, K, self.dtype, tune=tune, trans_A=trans_A, trans_B=trans_B)
 
     @property
     def default_kernel_map(self):
