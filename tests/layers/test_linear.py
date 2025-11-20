@@ -1,20 +1,15 @@
 import argparse
-import torch
 from top.layers import Linear
 from top.utils import str2dtype
+from benchmarks import linear_benchmark
 
 
 def test_linear(M, N, K, dtype, tune=False):
     linear_layer = Linear(M, N, K, dtype=dtype, tune=tune)
-    input = torch.randn(M, K, dtype=dtype, device='cuda', requires_grad=True)
+    benchmark = linear_benchmark(M, N, K, dtype)
 
-    output = linear_layer(input)
-
-    loss = output.sum()
-    loss.backward()
-
-    print("Output shape:", output.shape)
-    print("Gradient shape:", input.grad.shape)
+    inputs = benchmark.gen_inputs()
+    benchmark.check_fn(linear_layer, *inputs)
 
 
 if __name__ == "__main__":
