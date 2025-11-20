@@ -12,6 +12,8 @@ class Gemm(Op):
                  M: int,
                  N: int,
                  K: int,
+                 trans_A=False,
+                 trans_B=False,
                  dtype=torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune=False):
@@ -22,7 +24,7 @@ class Gemm(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gemm_kernel"](M, N, K, self.dtype, tune=tune)
+        self.kernel = self.kernel_map["gemm_kernel"](M, N, K, self.dtype, tune=tune, trans_A=trans_A, trans_B=trans_B)
 
     @property
     def default_kernel_map(self):
