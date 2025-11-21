@@ -31,6 +31,7 @@ class mha_fwd_benchmark(Benchmark):
     def gen_inputs(self, input_path=None):
         if input_path is None:
             # gen random inputs
+            print("Gen random inputs!")
             Q = torch.randn(
                 self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
             K = torch.randn(
@@ -39,6 +40,7 @@ class mha_fwd_benchmark(Benchmark):
                 self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
         else:
             # Load input data from file paths
+            print("Gen inputs from file!")
             paths = input_path.split(';')
             if len(paths) != 3:
                 raise ValueError(f"Expected 3 input paths for Q, K, V, but got {len(paths)}")

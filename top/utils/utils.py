@@ -65,7 +65,7 @@ def get_sm_version():
     return major * 10 + minor
 
 
-def _load_input_from_path(path, expected_shape, dtype, device='cuda'):
+def load_input_from_path(path, expected_shape, dtype, device='cuda'):
     """
     从文件路径加载输入数据的公共函数
     
