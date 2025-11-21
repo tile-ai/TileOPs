@@ -7,22 +7,27 @@ from top.utils import get_sm_version
 from top.kernels import Kernel
 
 
-def _gemm_kernel(M, N, K, dtype='float16'):
+def _gemm_kernel(M, N, K, trans_A, trans_B, dtype='float16'):
     accum_dtype = "float"
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gemm_func(block_M, block_N, block_K, threads, num_stages, enable_rasteration):
 
+        A_shape = (K, M) if trans_A else (M, K)
+        B_shape = (N, K) if trans_B else (K, N)
+        A_shared_shape = (block_K, block_M) if trans_A else (block_M, block_K)
+        B_shared_shape = (block_N, block_K) if trans_B else (block_K, block_N)
+
         @T.prim_func
         def _gemm_main(
-                A: T.Tensor((M, K), dtype),  # type: ignore
-                B: T.Tensor((K, N), dtype),  # type: ignore
+                A: T.Tensor(A_shape, dtype),  # type: ignore
+                B: T.Tensor(B_shape, dtype),  # type: ignore
                 C: T.Tensor((M, N), dtype),  # type: ignore
         ):
             with T.Kernel(
                     T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=threads) as (bx, by):
-                A_shared = T.alloc_shared((block_M, block_K), dtype)
-                B_shared = T.alloc_shared((block_K, block_N), dtype)
+                A_shared = T.alloc_shared(A_shared_shape, dtype)
+                B_shared = T.alloc_shared(B_shared_shape, dtype)
                 C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
                 C_shared = T.alloc_shared((block_M, block_N), dtype)
 
@@ -34,9 +39,20 @@ def _gemm_kernel(M, N, K, dtype='float16'):
                 T.clear(C_local)
 
                 for k in T.Pipelined(T.ceildiv(K, block_K), num_stages=num_stages):
-                    T.copy(A[by * block_M, k * block_K], A_shared)
-                    T.copy(B[k * block_K, bx * block_N], B_shared)
-                    T.gemm(A_shared, B_shared, C_local)
+                    if not trans_A:
+                        # A: (M, K)
+                        T.copy(A[by * block_M, k * block_K], A_shared)  # [block_M, block_K]
+                    else:
+                        # A: (K, M)
+                        T.copy(A[k * block_K, by * block_M], A_shared)  # [block_K, block_M]
+
+                    if not trans_B:
+                        # B: (K, N)
+                        T.copy(B[k * block_K, bx * block_N], B_shared)  # [block_K, block_N]
+                    else:
+                        # B: (N, K)
+                        T.copy(B[bx * block_N, k * block_K], B_shared)  # [block_N, block_K]
+                    T.gemm(A_shared, B_shared, C_local, trans_A, trans_B)
 
                 T.copy(C_local, C_shared)
                 T.copy(C_shared, C[by * block_M, bx * block_N])
@@ -49,14 +65,22 @@ def _gemm_kernel(M, N, K, dtype='float16'):
 class gemm_kernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
-    def __init__(self, M, N, K, dtype, config: Optional[dict] = None, tune=False):
+    def __init__(self,
+                 M,
+                 N,
+                 K,
+                 dtype,
+                 config: Optional[dict] = None,
+                 tune=False,
+                 trans_A=False,
+                 trans_B=False):
         super().__init__()
         self.M = M
         self.N = N
         self.K = K
         self.dtype = dtype
 
-        self.kernel = _gemm_kernel(M, N, K, self.dtype_str)
+        self.kernel = _gemm_kernel(M, N, K, trans_A, trans_B, self.dtype_str)
 
         self.init_config(config, tune)
 
