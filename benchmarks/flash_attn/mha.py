@@ -3,6 +3,7 @@ from top.ops import mha_fwd, mha_bwd
 import torch
 from torch.nn import functional as F
 from torch.nn.attention import sdpa_kernel, SDPBackend
+from top.utils.utils import load_input_from_path
 
 
 class mha_fwd_benchmark(Benchmark):
@@ -27,13 +28,26 @@ class mha_fwd_benchmark(Benchmark):
     def total_memory(self):
         return 4 * self.batch * self.heads * self.seq_len * self.dim * self.dtype.itemsize
 
-    def gen_inputs(self):
-        Q = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        K = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        V = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+    def gen_inputs(self, input_path=None):
+        if input_path is None:
+            # gen random inputs
+            Q = torch.randn(
+                self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            K = torch.randn(
+                self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            V = torch.randn(
+                self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        else:
+            # Load input data from file paths
+            paths = input_path.split(';')
+            if len(paths) != 3:
+                raise ValueError(f"Expected 3 input paths for Q, K, V, but got {len(paths)}")
+
+            # Load Q, K, V
+            expected_shape = (self.batch, self.seq_len, self.heads, self.dim)
+            Q = load_input_from_path(paths[0], expected_shape, self.dtype)
+            K = load_input_from_path(paths[1], expected_shape, self.dtype)
+            V = load_input_from_path(paths[2], expected_shape, self.dtype)
         return Q, K, V
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):

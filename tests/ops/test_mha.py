@@ -4,11 +4,11 @@ from top.utils import str2dtype
 from benchmarks import mha_fwd_benchmark, mha_bwd_benchmark
 
 
-def test_mha_fwd(B, S, H, D, causal, dtype, tune=False):
+def test_mha_fwd(B, S, H, D, causal, dtype, tune=False, input_path=None):
     op = mha_fwd(B, H, S, D, causal, dtype, tune=tune)
     benchmark = mha_fwd_benchmark(B, H, S, D, causal, dtype)
 
-    inputs = benchmark.gen_inputs()
+    inputs = benchmark.gen_inputs(input_path)
     benchmark.check(op, *inputs)
     benchmark.profile(op, *inputs)
 
@@ -34,6 +34,12 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     parser.add_argument(
         '--disable_bwd', action='store_false', default=True, help='when test fwd profile')
+    parser.add_argument(
+        '--input_path',
+        type=str,
+        default=None,
+        help='Path to real input data. Use ";" to separate multiple paths. If None, random inputs will be generated.'
+    )
     args = parser.parse_args()
 
     test_mha_fwd(args.batch, args.seq_len, args.heads, args.dim, args.causal, str2dtype[args.dtype],
