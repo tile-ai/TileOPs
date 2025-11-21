@@ -1,3 +1,4 @@
+import os
 import torch
 
 # A mapping from string dtype names to torch dtypes
@@ -62,3 +63,29 @@ def is_hopper():
 def get_sm_version():
     major, minor = torch.cuda.get_device_capability()
     return major * 10 + minor
+
+
+def load_input_from_path(path, expected_shape, dtype, device='cuda'):
+    """
+    从文件路径加载输入数据的公共函数
+    
+    Args:
+        path: 文件路径
+        expected_shape: 期望的张量形状
+        dtype: 数据类型
+        device: 设备类型
+        
+    Returns:
+        加载的张量
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Input file not found: {path}")
+
+    tensor = torch.load(path)
+
+    if tensor.shape != expected_shape:
+        raise ValueError(
+            f"Shape mismatch: expected {expected_shape}, got {tensor.shape} from {path}")
+
+    tensor = tensor.to(dtype=dtype, device=device)
+    return tensor
