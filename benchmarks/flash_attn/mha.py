@@ -46,6 +46,34 @@ class mha_fwd_benchmark(Benchmark):
         output = output_bhsd.transpose(1, 2).contiguous()
         return output, None  # do not check lse
 
+    def baseline_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+        try:
+            import flash_attn_interface  # FA3 entry point
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError("Cannot import flash_attn_interface. "
+                              "Please install flash-attn with FA3 (Hopper build), e.g.\n"
+                              "  pip install flash-attn --no-build-isolation\n"
+                              "or build from source under `hopper/`.") from exc
+        out = flash_attn_interface.flash_attn_func(
+            Q,
+            K,
+            V,
+            softmax_scale=None,  # use default 1 / sqrt(head_dim)
+            causal=self.is_causal,
+        )
+
+        # Be robust to different return types.
+        if isinstance(out, tuple):
+            out = out[0]
+
+            return out
+
+    def _baseline_profile(self, *inputs, warmup=100, rep=10, device="cuda:0"):
+
+        print("===== Profiling MHA FA3 backend =====")
+        return super()._baseline_profile(
+            self.baseline_program, *inputs, warmup=warmup, rep=rep, device=device)
+
 
 class mha_bwd_benchmark(Benchmark):
 

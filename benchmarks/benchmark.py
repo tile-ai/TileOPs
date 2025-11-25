@@ -121,3 +121,30 @@ class Benchmark(ABC):
         if self.total_memory is not None:
             print(
                 f"{op.__class__.__name__} Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s")
+
+    def _baseline_profile(self, baseline_op, *inputs, backend, warmup=100, rep=10, device="cuda:0"):
+        """Benchmark the perf of the baselin op"""
+
+        # Warmup to get rid of CUDA lazy initialization effects.
+        for _ in range(warmup):
+            _ = baseline_op(*inputs)
+        torch.cuda.synchronize(device=device)
+
+        # CUDA event-based timing for higher precision.
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        start_event.record()
+        for _ in range(rep):
+            _ = baseline_op(*inputs)
+        end_event.record()
+
+        torch.cuda.synchronize(device=device)
+        total_ms = start_event.elapsed_time(end_event)
+        latency = total_ms / float(rep)
+
+        print(f"BaseLine op {backend} latency: {latency:.2f} ms")
+        if self.total_flops is not None:
+            print(f"BaseLine op {backend} TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
+        if self.total_memory is not None:
+            print(f"BaseLine op {backend} Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s")
