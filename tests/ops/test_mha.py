@@ -11,6 +11,7 @@ def test_mha_fwd(B, S, H, D, causal, dtype, tune=False):
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
     benchmark.profile(op, *inputs)
+    benchmark.baseline_profile(*inputs)
 
 
 def test_mha_bwd(B, S, H, D, causal, dtype, tune=False):

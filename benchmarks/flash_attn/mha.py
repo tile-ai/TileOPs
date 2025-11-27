@@ -68,11 +68,11 @@ class mha_fwd_benchmark(Benchmark):
 
             return out
 
-    def _baseline_profile(self, *inputs, warmup=100, rep=10, device="cuda:0"):
+    def baseline_profile(self, *inputs, warmup=100, rep=10, device="cuda:0"):
 
         print("===== Profiling MHA FA3 backend =====")
-        return super()._baseline_profile(
-            self.baseline_program, *inputs, warmup=warmup, rep=rep, device=device)
+        return super().baseline_profile(
+            self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
 
 
 class mha_bwd_benchmark(Benchmark):

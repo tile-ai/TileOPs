@@ -140,19 +140,32 @@ def parse_output(output_lines):
     results = {}
     for line in output_lines:
         # Extract latency
-        latency_match = re.search(r'latency:\s*([0-9.]+)\s*ms', line)
+        latency_match = re.search(r'tl-latency:\s*([0-9.]+)\s*ms', line)
         if latency_match:
-            results['latency(ms)'] = float(latency_match.group(1))
+            results['tl-latency(ms)'] = float(latency_match.group(1))
 
         # Extract TFlops
-        tflops_match = re.search(r'TFlops:\s*([0-9.]+)', line)
+        tflops_match = re.search(r'tl-TFlops:\s*([0-9.]+)', line)
         if tflops_match:
-            results['TFlops'] = float(tflops_match.group(1))
+            results['tl-TFlops'] = float(tflops_match.group(1))
 
         # Extract Bandwidth
-        bandwidth_match = re.search(r'Bandwidth:\s*([0-9.]+)\s*GB/s', line)
+        bandwidth_match = re.search(r'tl-Bandwidth:\s*([0-9.]+)\s*GB/s', line)
         if bandwidth_match:
-            results['Bandwidth(GB/s)'] = float(bandwidth_match.group(1))
+            results['tl-Bandwidth(GB/s)'] = float(bandwidth_match.group(1))
+
+        # Extract baseline metrics
+        baseline_latency_match = re.search(r'Baseline-latency:\s*([0-9.]+)\s*ms', line)
+        if baseline_latency_match:
+            results['Baseline-latency(ms)'] = float(baseline_latency_match.group(1))
+
+        baseline_tflops_match = re.search(r'Baseline-TFlops:\s*([0-9.]+)', line)
+        if baseline_tflops_match:
+            results['Baseline-TFlops'] = float(baseline_tflops_match.group(1))
+
+        baseline_bandwidth_match = re.search(r'Baseline-Bandwidth:\s*([0-9.]+)\s*GB/s', line)
+        if baseline_bandwidth_match:
+            results['Baseline-Bandwidth(GB/s)'] = float(baseline_bandwidth_match.group(1))
 
     return results
 
@@ -235,7 +248,10 @@ def main():
         return 1
 
     # Get headers as output CSV fields
-    fieldnames = list(input_params[0].keys()) + ['latency(ms)', 'TFlops', 'Bandwidth(GB/s)']
+    fieldnames = list(input_params[0].keys()) + [
+        'tl-latency(ms)', 'tl-TFlops', 'tl-Bandwidth(GB/s)', 'Baseline-latency(ms)',
+        'Baseline-TFlops', 'Baseline-Bandwidth(GB/s)'
+    ]
 
     # Prepare output file
     output_csv_path = Path(args.output_csv)
