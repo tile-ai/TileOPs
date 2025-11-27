@@ -33,7 +33,7 @@ def build_mha_cmd(args_dict):
         str(args_dict['seq_len']), '--heads',
         str(args_dict['heads']), '--dim',
         str(args_dict['dim']), '--dtype',
-        str(args_dict['dtype']), '--disable_bwd'
+        str(args_dict['dtype'])
     ]
     if args_dict.get('causal', 'False').lower() == 'true':
         cmd_args.append('--causal')
@@ -267,7 +267,14 @@ def main():
         output_lines = run_test_script(script_path, params)
         if output_lines is None:
             print("Skipping this test due to execution error")
-            error_result = {**params, 'latency(ms)': None, 'TFlops': None, 'Bandwidth(GB/s)': None}
+            error_result = {
+                **params, 'tl-latency(ms)': None,
+                'tl-TFlops': None,
+                'tl-Bandwidth(GB/s)': None,
+                'Baseline-latency(ms)': None,
+                'Baseline-TFlops': None,
+                'Baseline-Bandwidth(GB/s)': None
+            }
             results.append(error_result)
             continue
 
