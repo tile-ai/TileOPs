@@ -1,5 +1,6 @@
 from benchmarks.benchmark import Benchmark
 from top.ops import gqa_fwd, gqa_bwd
+import flash_attn_interface
 import torch
 from torch.nn import functional as F
 from torch.nn.attention import sdpa_kernel, SDPBackend
@@ -31,11 +32,14 @@ class gqa_fwd_benchmark(Benchmark):
 
     def gen_inputs(self):
         Q = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads, self.dim, device='cuda',
+            dtype=self.dtype).contiguous()
         K = torch.randn(
-            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda',
+            dtype=self.dtype).contiguous()
         V = torch.randn(
-            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda',
+            dtype=self.dtype).contiguous()
         return Q, K, V
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
@@ -47,6 +51,25 @@ class gqa_fwd_benchmark(Benchmark):
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True)
         output = output_bhsd.transpose(1, 2).contiguous()
         return output, None  # do not check lse
+
+    def baseline_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+        out = flash_attn_interface.flash_attn_func(
+            Q,
+            K,
+            V,
+            softmax_scale=None,  # use default 1 / sqrt(head_dim)
+            causal=self.is_causal,
+        )
+
+        # Be robust to different return types.
+        if isinstance(out, tuple):
+            out = out[0]
+
+            return out
+
+    def baseline_profile(self, *inputs, warmup=100, rep=10, device="cuda:0"):
+        return super().baseline_profile(
+            self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
 
 
 class gqa_bwd_benchmark(Benchmark):
