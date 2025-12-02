@@ -310,33 +310,33 @@ def main():
 
     # Print results table to screen
     if results:
-        # 计算每列的最大宽度，并过滤掉全为空的列
+        # Calculate column widths and filter out empty columns
         col_widths = {}
-        visible_fields = []  # 存储需要显示的列
+        visible_fields = []  # Store columns to be displayed
 
         for field in fieldnames:
             col_widths[field] = len(field)
-            has_non_empty_value = False  # 标记该列是否有非空值
+            has_non_empty_value = False  # Flag to track if column has non-empty values
 
-            # 遍历所有结果，检查该列是否包含非空值并计算最大宽度
+            # Iterate through all results to check if column contains non-empty values and calculate max width
             for result in results:
                 value = result.get(field, '')
                 display_value = str(value) if value is not None else ''
                 col_widths[field] = max(col_widths[field], len(display_value))
 
-                # 如果发现非空值，则标记该列需要显示
-                if display_value.strip():  # 使用strip()检查是否为纯空白字符
+                # If a non-empty value is found, mark this column as needing to be displayed
+                if display_value.strip():  # Use strip() to check for whitespace-only strings
                     has_non_empty_value = True
 
-            # 只有当列有非空值时才添加到可见字段列表中
+            # Only add column to visible fields list if it has non-empty values
             if has_non_empty_value or field in input_params[0].keys():
                 visible_fields.append(field)
 
-        # 如果visible_fields为空，则显示所有字段
+        # If visible_fields is empty, display all fields
         if not visible_fields:
             visible_fields = fieldnames
 
-        # 更新col_widths只为可见字段
+        # Update col_widths to only include visible fields
         filtered_col_widths = {field: col_widths[field] for field in visible_fields}
 
         # Print header
