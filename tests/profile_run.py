@@ -135,37 +135,46 @@ def build_sparse_mla_cmd(args_dict):
 
 def parse_output(output_lines):
     """
-    Parse script output to extract latency, TFlops, and Bandwidth information
+    Parse script output to extract separate forward and backward latency, TFlops, and Bandwidth information
     """
     results = {}
+    current_section = 'fwd'  # 'fwd' or 'bwd'
+
     for line in output_lines:
+        # Detect section markers (you'll need to add these to your test scripts)
+        if 'Backward Results:' in line:
+            current_section = 'bwd'
+            continue
+
         # Extract latency
         latency_match = re.search(r'tl-latency:\s*([0-9.]+)\s*ms', line)
         if latency_match:
-            results['tl-latency(ms)'] = float(latency_match.group(1))
+            results[f'{current_section}-tl-latency(ms)'] = float(latency_match.group(1))
 
         # Extract TFlops
         tflops_match = re.search(r'tl-TFlops:\s*([0-9.]+)', line)
         if tflops_match:
-            results['tl-TFlops'] = float(tflops_match.group(1))
+            results[f'{current_section}-tl-TFlops'] = float(tflops_match.group(1))
 
         # Extract Bandwidth
         bandwidth_match = re.search(r'tl-Bandwidth:\s*([0-9.]+)\s*GB/s', line)
         if bandwidth_match:
-            results['tl-Bandwidth(GB/s)'] = float(bandwidth_match.group(1))
+            results[f'{current_section}-tl-Bandwidth(GB/s)'] = float(bandwidth_match.group(1))
 
         # Extract baseline metrics
         baseline_latency_match = re.search(r'Baseline-latency:\s*([0-9.]+)\s*ms', line)
         if baseline_latency_match:
-            results['Baseline-latency(ms)'] = float(baseline_latency_match.group(1))
+            results[f'{current_section}-Baseline-latency(ms)'] = float(
+                baseline_latency_match.group(1))
 
         baseline_tflops_match = re.search(r'Baseline-TFlops:\s*([0-9.]+)', line)
         if baseline_tflops_match:
-            results['Baseline-TFlops'] = float(baseline_tflops_match.group(1))
+            results[f'{current_section}-Baseline-TFlops'] = float(baseline_tflops_match.group(1))
 
         baseline_bandwidth_match = re.search(r'Baseline-Bandwidth:\s*([0-9.]+)\s*GB/s', line)
         if baseline_bandwidth_match:
-            results['Baseline-Bandwidth(GB/s)'] = float(baseline_bandwidth_match.group(1))
+            results[f'{current_section}-Baseline-Bandwidth(GB/s)'] = float(
+                baseline_bandwidth_match.group(1))
 
     return results
 
@@ -248,9 +257,11 @@ def main():
         return 1
 
     # Get headers as output CSV fields
-    fieldnames = list(input_params[0].keys()) + [
-        'tl-latency(ms)', 'tl-TFlops', 'tl-Bandwidth(GB/s)', 'Baseline-latency(ms)',
-        'Baseline-TFlops', 'Baseline-Bandwidth(GB/s)'
+    fieldnames = list(input_params[0].keys()) + + [
+        'fwd-tl-latency(ms)', 'fwd-tl-TFlops', 'fwd-tl-Bandwidth(GB/s)', 'fwd-Baseline-latency(ms)',
+        'fwd-Baseline-TFlops', 'fwd-Baseline-Bandwidth(GB/s)', 'bwd-tl-latency(ms)',
+        'bwd-tl-TFlops', 'bwd-tl-Bandwidth(GB/s)', 'bwd-Baseline-latency(ms)',
+        'bwd-Baseline-TFlops', 'bwd-Baseline-Bandwidth(GB/s)'
     ]
 
     # Prepare output file
