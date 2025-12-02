@@ -278,14 +278,8 @@ def main():
         output_lines = run_test_script(script_path, params)
         if output_lines is None:
             print("Skipping this test due to execution error")
-            error_result = {
-                **params, 'tl-latency(ms)': None,
-                'tl-TFlops': None,
-                'tl-Bandwidth(GB/s)': None,
-                'Baseline-latency(ms)': None,
-                'Baseline-TFlops': None,
-                'Baseline-Bandwidth(GB/s)': None
-            }
+            output_fields = [f for f in fieldnames if f not in params]
+            error_result = {**params, **{f: None for f in output_fields}}
             results.append(error_result)
             continue
 
