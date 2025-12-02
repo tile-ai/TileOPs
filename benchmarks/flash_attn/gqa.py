@@ -151,6 +151,24 @@ class gqa_bwd_benchmark(Benchmark):
         output.backward(dO)
         return Q.grad, K.grad, V.grad
 
+    def baseline_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
+                         dO: torch.Tensor, lse: torch.Tensor):
+        softmax_scale = Q.shape[-1]**(-0.5)
+
+        dQ = torch.empty_like(Q)
+        dK = torch.empty_like(K)
+        dV = torch.empty_like(V)
+        dQ, dK, dV, _ = flash_attn_interface._flash_attn_backward(dO, Q, K, V, O, lse, None, None,
+                                                                  None, None, None, None, dQ, dK,
+                                                                  dV, softmax_scale, self.is_causal)
+        return dQ, dK, dV
+
+    def baseline_profile(self, *inputs, warmup=100, rep=10, device="cuda:0"):
+
+        print("===== Profiling GQA FA3 backend =====")
+        return super().baseline_profile(
+            self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
+
 
 class gqa_benchmark(Benchmark):
 
