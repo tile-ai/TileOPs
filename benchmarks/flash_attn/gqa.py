@@ -65,7 +65,7 @@ class gqa_fwd_benchmark(Benchmark):
         if isinstance(out, tuple):
             out = out[0]
 
-            return out
+        return out
 
     def baseline_profile(self, *inputs, warmup=100, rep=10, device="cuda:0"):
         return super().baseline_profile(
