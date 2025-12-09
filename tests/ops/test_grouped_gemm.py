@@ -36,7 +36,7 @@ def test_grouped_gemm_tt(batch_sum, batch_count, N, K, dtype, tune=False):
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
-    benchmark.profile(op, *inputs)
+    # benchmark.profile(op, *inputs)
 
 def test_grouped_gemm_complete(batch_sum, batch_count, N, K, dtype, tune=False):
     from top.functions.grouped_gemm import grouped_gemm_fn
@@ -78,7 +78,6 @@ if __name__ == "__main__":
     parser.add_argument('--K', type=int, default=4096, help='num heads')
     parser.add_argument('--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
     parser.add_argument('--tune', action='store', default=False, help='enable autotune')
-    # parser.add_argument('--test', type=str, default='all', choices=['all', 'nt', 'nn', 'tn', 'complete'], help='which test to run')
     args = parser.parse_args()
 
     print("Testing grouped_gemm_nt (forward)...")

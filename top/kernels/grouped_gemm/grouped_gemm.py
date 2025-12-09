@@ -21,7 +21,7 @@ def _grouped_gemm_nt_kernel(batch_sum, batch_count, N, K, dtype='float16'):
         B_shape = (batch_count, N, K)
         C_shape = (batch_sum, N)
         A_shared_shape = (block_M, block_K)
-        B_shared_shape = (block_K, block_N)
+        B_shared_shape = (block_N, block_K)
         @T.prim_func
         def _grouped_gemm_nt_main(
             A: T.Tensor(A_shape, dtype),  # type: ignore
@@ -57,11 +57,11 @@ def _grouped_gemm_nt_kernel(batch_sum, batch_count, N, K, dtype='float16'):
                             i < actual_rows and j < K - k * block_K,
                             A[m_start + i, k * block_K + j], 0)
                     # Load B block
-                    for i, j in T.Parallel(block_K, block_N):
+                    for i, j in T.Parallel(block_N, block_K):
                         B_shared[i, j] = T.if_then_else(
-                            i < K - k * block_K and j < N - by * block_N,
-                            B[cur_batch_idx[0], by * block_N + j, k * block_K + i], 0)
-                    T.gemm(A_shared, B_shared, C_local)
+                            j < K - k * block_K and i < N - by * block_N,
+                            B[cur_batch_idx[0], by * block_N + i, k * block_K + j], 0)
+                    T.gemm(A_shared, B_shared, C_local, transpose_B=True)
                 # Store result
                 for i, j in T.Parallel(block_M, block_N):
                     if i < actual_rows and j < N - by * block_N:
@@ -131,7 +131,6 @@ class grouped_gemm_nt_kernel(Kernel):
             self.config["num_stages"], 
             self.config["threads"]
         )
-        print(kernel.get_kernel_source())
         return kernel(A, B, batch_sizes, batch_offsets, batch_padded_offsets)
 
 
@@ -225,10 +224,10 @@ class grouped_gemm_nn_kernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 128,
-            "block_N": 128,
-            "block_K": 32,
-            "num_stages": 2,
+            "block_M": 64,
+            "block_N": 256,
+            "block_K": 64,
+            "num_stages": 1,
             "threads": 128
         }
 
@@ -277,7 +276,7 @@ def _grouped_gemm_tn_kernel(batch_sum, batch_count, N, K, dtype='float16'):
         A_shape = (batch_sum, N)
         B_shape = (batch_sum, K)
         C_shape = (batch_count, N, K)
-        A_shared_shape = (block_N, block_M)
+        A_shared_shape = (block_M, block_N)
         B_shared_shape = (block_M, block_K)
         @T.prim_func
         def _grouped_gemm_tn_main(
@@ -307,18 +306,15 @@ def _grouped_gemm_tn_kernel(batch_sum, batch_count, N, K, dtype='float16'):
                 for m in T.Pipelined(T.ceildiv(batch_size, block_M), num_stages=num_stages):
                     m_start = batch_start + m * block_M
                     actual_rows = T.min(block_M, batch_size - m * block_M)
-                    # Load A
-                    for i, j in T.Parallel(block_N, block_M):
+                    for i, j in T.Parallel(block_M, block_N):
                         A_shared[i, j] = T.if_then_else(
-                            i < actual_N and j < actual_rows,
-                            A[m_start + j, n_start + i], 0)
-                    # Load B
+                            i < actual_rows and j < actual_N,
+                            A[m_start + i, n_start + j], 0)
                     for i, j in T.Parallel(block_M, block_K):
                         B_shared[i, j] = T.if_then_else(
                             i < actual_rows and j < actual_K,
                             B[m_start + i, k_start + j], 0)
-                    T.gemm(A_shared, B_shared, C_local)
-                # Store result
+                    T.gemm(A_shared, B_shared, C_local, transpose_A=True)
                 for i, j in T.Parallel(block_N, block_K):
                     if i < actual_N and j < actual_K:
                         C[bx, n_start + i, k_start + j] = C_local[i, j]
@@ -351,7 +347,7 @@ class grouped_gemm_tn_kernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 32,
+            "block_M": 64,
             "block_N": 64,
             "block_K": 256,
             "num_stages": 1,
@@ -403,8 +399,8 @@ def _grouped_gemm_tt_kernel(batch_sum, batch_count, N, K, dtype='float16'):
         A_shape = (batch_sum, N)
         B_shape = (K, batch_sum)
         C_shape = (batch_count, N, K)
-        A_shared_shape = (block_N, block_M)
-        B_shared_shape = (block_M, block_K)
+        A_shared_shape = (block_M, block_N)
+        B_shared_shape = (block_K, block_M)
         
         @T.prim_func
         def _grouped_gemm_tt_main(
@@ -434,20 +430,15 @@ def _grouped_gemm_tt_kernel(batch_sum, batch_count, N, K, dtype='float16'):
                 for m in T.Pipelined(T.ceildiv(batch_size, block_M), num_stages=num_stages):
                     m_start = batch_start + m * block_M
                     actual_rows = T.min(block_M, batch_size - m * block_M)
-                    for i, j in T.Parallel(block_N, block_M):
+                    for i, j in T.Parallel(block_M, block_N):
                         A_shared[i, j] = T.if_then_else(
-                            i < actual_N and j < actual_rows,
-                            A[m_start + j, n_start + i],
-                            0
-                        )
-                    for i, j in T.Parallel(block_M, block_K):
+                            i < actual_rows and j < actual_N,
+                            A[m_start + i, n_start + j], 0)
+                    for i, j in T.Parallel(block_K, block_M):
                         B_shared[i, j] = T.if_then_else(
-                            i < actual_rows and j < actual_K,
-                            B[k_start + j, m_start + i],
-                            0
-                        )
-                    T.gemm(A_shared, B_shared, C_local)
-                # Store result
+                            i < actual_K and j < actual_rows,
+                            B[k_start + i, m_start + j], 0)
+                    T.gemm(A_shared, B_shared, C_local, transpose_A=True, transpose_B=True)
                 for i, j in T.Parallel(block_N, block_K):
                     if i < actual_N and j < actual_K:
                         C[bx, n_start + i, k_start + j] = C_local[i, j]
@@ -481,9 +472,9 @@ class grouped_gemm_tt_kernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 32,
-            "block_N": 64,
-            "block_K": 256,
+            "block_M": 64,
+            "block_N": 256,
+            "block_K": 64,
             "num_stages": 1,
             "threads": 128
         }
