@@ -1,6 +1,5 @@
 from benchmarks.benchmark import Benchmark
 from top.ops import gqa_fwd, gqa_bwd
-import flash_attn_interface
 import torch
 from torch.nn import functional as F
 from torch.nn.attention import sdpa_kernel, SDPBackend
@@ -53,6 +52,12 @@ class gqa_fwd_benchmark(Benchmark):
         return output, None  # do not check lse
 
     def baseline_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+
+        try:
+            import flash_attn_interface
+        except ImportError as e:
+            raise ImportError("Can't find flash attn module!") from e
+
         out = flash_attn_interface.flash_attn_func(
             Q,
             K,
@@ -153,6 +158,12 @@ class gqa_bwd_benchmark(Benchmark):
 
     def baseline_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
                          dO: torch.Tensor, lse: torch.Tensor):
+
+        try:
+            import flash_attn_interface
+        except ImportError as e:
+            raise ImportError("Can't find flash attn module!") from e
+
         softmax_scale = Q.shape[-1]**(-0.5)
 
         dQ = torch.empty_like(Q)
