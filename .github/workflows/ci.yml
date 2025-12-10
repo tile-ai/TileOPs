@@ -92,7 +92,7 @@ jobs:
 
   tileops_profile_nightly:
     needs: [pre-commit, tileops_test_nightly]
-    runs-on: [self-hosted, tile-ops] 
+    runs-on: [self-hosted, tile-ops, profile] 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
