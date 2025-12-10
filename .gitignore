@@ -87,3 +87,7 @@ build_sdist/
 
 # cache directory for clangd
 .cache/
+
+# output
+output/
+output*/

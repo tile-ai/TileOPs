@@ -4,3 +4,6 @@
 [submodule "3rdparty/flash-attention"]
 	path = 3rdparty/flash-attention
 	url = https://github.com/Dao-AILab/flash-attention
+[submodule "benchmarks/3rdparty/flash-attention"]
+	path = benchmarks/3rdparty/flash-attention
+	url = https://github.com/Dao-AILab/flash-attention.git
