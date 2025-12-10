@@ -36,7 +36,7 @@ def test_grouped_gemm_tt(batch_sum, batch_count, N, K, dtype, tune=False):
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
-    # benchmark.profile(op, *inputs)
+    benchmark.profile(op, *inputs)
 
 def test_grouped_gemm_complete(batch_sum, batch_count, N, K, dtype, tune=False):
     from top.functions.grouped_gemm import grouped_gemm_fn

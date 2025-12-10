@@ -95,10 +95,10 @@ class grouped_gemm_nt_kernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 256,
-            "block_N": 64,
+            "block_M": 64,
+            "block_N": 256,
             "block_K": 64,
-            "num_stages": 1,
+            "num_stages": 2,
             "threads": 128
         }
 
@@ -224,10 +224,10 @@ class grouped_gemm_nn_kernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 64,
-            "block_N": 256,
-            "block_K": 64,
-            "num_stages": 1,
+            "block_M": 128,
+            "block_N": 128,
+            "block_K": 32,
+            "num_stages": 2,
             "threads": 128
         }
 
@@ -347,10 +347,10 @@ class grouped_gemm_tn_kernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 64,
-            "block_N": 64,
-            "block_K": 256,
-            "num_stages": 1,
+            "block_M": 32,
+            "block_N": 128,
+            "block_K": 128,
+            "num_stages": 2,
             "threads": 128
         }
 
@@ -475,7 +475,7 @@ class grouped_gemm_tt_kernel(Kernel):
             "block_M": 64,
             "block_N": 256,
             "block_K": 64,
-            "num_stages": 1,
+            "num_stages": 2,
             "threads": 128
         }
 
