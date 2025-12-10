@@ -52,7 +52,7 @@ run_test() {
     
     local output_csv="$PROFILE_OUT/${test_name}_results.csv"
     
-    python3 ./benchmarks/profile_run.py \
+    python3 ./benchmarks/profile/profile_run.py \
         --script "$script_path" \
         --input_csv "$csv_path" \
         --output_csv "$output_csv" \
