@@ -1,3 +1,13 @@
 batch,seq_len,heads,dim,dtype,causal
-8,1024,32,128,float16,False
-8,1024,32,128,float16,True
+64,1024,64,128,float16,False
+64,2048,64,128,float16,False
+64,4096,64,128,float16,False
+8,8192,64,128,float16,False
+4,16384,64,128,float16,False
+2,32768,64,128,float16,False
+64,1024,64,128,float16,True
+64,2048,64,128,float16,True
+64,4096,64,128,float16,True
+8,8192,64,128,float16,True
+4,16384,64,128,float16,True
+2,32768,64,128,float16,True

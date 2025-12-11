@@ -26,7 +26,8 @@ class gqa_fwd_benchmark(Benchmark):
 
     @property
     def total_memory(self):
-        return 2 * self.batch * self.seq_len * self.dim * (self.heads + self.heads_kv) * self.dtype.itemsize
+        return 2 * self.batch * self.seq_len * self.dim * (self.heads +
+                                                           self.heads_kv) * self.dtype.itemsize
 
     def gen_inputs(self):
         Q = torch.randn(
@@ -38,11 +39,12 @@ class gqa_fwd_benchmark(Benchmark):
         return Q, K, V
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-        q_bhsd = Q.transpose(1, 2)   # [B, H, S, D]
+        q_bhsd = Q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = K.transpose(1, 2)
         v_bhsd = V.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True)
+            output_bhsd = F.scaled_dot_product_attention(
+                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True)
         output = output_bhsd.transpose(1, 2).contiguous()
         return output, None  # do not check lse
 
@@ -68,7 +70,8 @@ class gqa_bwd_benchmark(Benchmark):
 
     @property
     def total_memory(self):
-        return self.batch * (3 * self.heads + 4 * self.heads_kv) * self.seq_len * self.dim * self.dtype.itemsize
+        return self.batch * (3 * self.heads +
+                             4 * self.heads_kv) * self.seq_len * self.dim * self.dtype.itemsize
 
     def gen_inputs(self):
         Q = torch.randn(
@@ -127,7 +130,7 @@ class gqa_bwd_benchmark(Benchmark):
 
 
 class gqa_benchmark(Benchmark):
-    
+
     def __init__(self, batch, heads, heads_kv, seq_len, dim, is_causal, dtype, grad=True):
         self.batch = batch
         self.heads = heads
@@ -138,8 +141,10 @@ class gqa_benchmark(Benchmark):
         self.dtype = dtype
         self.grad = grad
 
-        self.gqa_fwd_bench = gqa_fwd_benchmark(batch, heads, heads_kv, seq_len, dim, is_causal, dtype)
-        self.gqa_bwd_bench = gqa_bwd_benchmark(batch, heads, heads_kv, seq_len, dim, is_causal, dtype)  
+        self.gqa_fwd_bench = gqa_fwd_benchmark(batch, heads, heads_kv, seq_len, dim, is_causal,
+                                               dtype)
+        self.gqa_bwd_bench = gqa_bwd_benchmark(batch, heads, heads_kv, seq_len, dim, is_causal,
+                                               dtype)
 
     @property
     def total_flops(self):
@@ -148,14 +153,14 @@ class gqa_benchmark(Benchmark):
     @property
     def total_memory(self):
         return self.gqa_fwd_bench.total_memory + self.gqa_bwd_bench.total_memory
-    
+
     def gen_inputs(self):
         if self.grad:
             Q, K, V, _, _, _ = self.gqa_bwd_bench.gen_inputs()
             return Q, K, V
         else:
             return self.gqa_fwd_bench.gen_inputs()
-        
+
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
 
         output = self.gqa_fwd_bench.ref_program(Q, K, V)[0]
@@ -165,4 +170,3 @@ class gqa_benchmark(Benchmark):
             loss = output.sum()
             loss.backward()
             return output, Q.grad, K.grad, V.grad
-        

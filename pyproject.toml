@@ -41,6 +41,7 @@ exclude = ["3rdparty", "3rdparty.*", "tests", "tests.*", "benchmarks", "benchmar
 based_on_style = "yapf"
 column_limit = 100
 indent_width = 4
+spaces_before_comment = 2
 
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"

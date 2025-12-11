@@ -15,7 +15,6 @@ class mha_decode(Op):
                  seqlen_q,
                  seqlen_kv,
                  dim,
-                 is_causal,
                  dtype=torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune=False):
@@ -24,13 +23,12 @@ class mha_decode(Op):
         self.seqlen_q = seqlen_q
         self.seqlen_kv = seqlen_kv
         self.dim = dim
-        self.is_causal = is_causal
 
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["mha_decode_kernel"](
-            batch, heads, seqlen_q, seqlen_kv, dim, is_causal, self.dtype, tune=tune)
+            batch, heads, seqlen_q, seqlen_kv, dim, False, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self):
@@ -38,4 +36,3 @@ class mha_decode(Op):
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         return self.kernel(Q, K, V)
-    
