@@ -664,7 +664,7 @@ def prepare_grouped_tensors_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: to
     for _, size in enumerate(batch_sizes_list):
         end = start + size
         K, M = A.shape[0], size
-        N = size, B.shape[1]
+        N = B.shape[1]
 
         A_group = A[:, start:end]
         B_group = B[start:end]
