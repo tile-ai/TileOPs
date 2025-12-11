@@ -14,8 +14,10 @@ def test_grouped_gemm_fn(batch_sizes_list, N, K, padding_M, dtype, tune=False):
     for i in range(batch_count - 1):
         batch_offsets_list.append(batch_offsets_list[-1] + batch_sizes_list[i])
     for i in range(batch_count - 1):
-        batch_padded_offsets_list.append(batch_padded_offsets_list[-1] + math.ceil((batch_sizes_list[i] + 1) / padding_M) * padding_M)
-    
+        batch_padded_offsets_list.append(batch_padded_offsets_list[-1] +
+                                         math.ceil((batch_sizes_list[i] + 1) / padding_M) *
+                                         padding_M)
+
     fn = grouped_gemm_fn(batch_sum, batch_count, N, K, dtype, tune=tune)
     benchmark = grouped_gemm_benchmark(batch_sum, batch_count, N, K, dtype)
     inputs = benchmark.gen_inputs()
@@ -38,23 +40,25 @@ def test_grouped_gemm_fn(batch_sizes_list, N, K, padding_M, dtype, tune=False):
     print("Profiling...")
     benchmark.profile(fn, *inputs)
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_sizes_list', type=str, default="4096,4096,4096,4096", help='batch size list')
+    parser.add_argument(
+        '--batch_sizes_list', type=str, default="4096,4096,4096,4096", help='batch size list')
     parser.add_argument('--N', type=int, default=4864, help='N')
     parser.add_argument('--K', type=int, default=8192, help='K')
     parser.add_argument('--padding_M', type=int, default=128, help='padding M')
-    parser.add_argument('--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
+    parser.add_argument(
+        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
-    
+
     batch_sizes_list = [int(x) for x in args.batch_sizes_list.split(',')]
 
     test_grouped_gemm_fn(
-        batch_sizes_list=batch_sizes_list, 
+        batch_sizes_list=batch_sizes_list,
         N=args.N,
         K=args.K,
-        padding_M=args.padding_M, 
+        padding_M=args.padding_M,
         dtype=str2dtype[args.dtype],
-        tune=args.tune
-    )
+        tune=args.tune)

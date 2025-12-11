@@ -4,6 +4,7 @@ from top.functions.grouped_gemm import grouped_gemm_fn
 
 
 class GROUPED_GEMM(nn.Module):
+
     def __init__(self, batch_sum, batch_count, N, K, dtype):
         super().__init__()
         self.batch_sum = batch_sum
