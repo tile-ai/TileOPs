@@ -155,18 +155,18 @@ def test_all_grouped_gemm(batch_sum=4096, batch_count=4, K=8192, N=4864, dtype=t
 
     for _ in range(10):
         with torch.no_grad():
-            forward = gemm.grouped_gemm_nt(A, B, batch_sizes)
-            dA = gemm.grouped_gemm_nn(grad_output, B_nn_combined, batch_sizes)
-            dB_tn = gemm.grouped_gemm_tn(grad_output, A, batch_sizes)
-            dB_tt = gemm.grouped_gemm_tt(grad_output, B_tt_combined, batch_sizes)
+            gemm.grouped_gemm_nt(A, B, batch_sizes)
+            gemm.grouped_gemm_nn(grad_output, B_nn_combined, batch_sizes)
+            gemm.grouped_gemm_tn(grad_output, A, batch_sizes)
+            gemm.grouped_gemm_tt(grad_output, B_tt_combined, batch_sizes)
     torch.cuda.synchronize()
     start_time = time.time()
     for _ in range(100):
         with torch.no_grad():
-            forward = gemm.grouped_gemm_nt(A, B, batch_sizes)
-            dA = gemm.grouped_gemm_nn(grad_output, B_nn_combined, batch_sizes)
-            dB_tn = gemm.grouped_gemm_tn(grad_output, A, batch_sizes)
-            dB_tt = gemm.grouped_gemm_tt(grad_output, B_tt_combined, batch_sizes)
+            gemm.grouped_gemm_nt(A, B, batch_sizes)
+            gemm.grouped_gemm_nn(grad_output, B_nn_combined, batch_sizes)
+            gemm.grouped_gemm_tn(grad_output, A, batch_sizes)
+            gemm.grouped_gemm_tt(grad_output, B_tt_combined, batch_sizes)
     torch.cuda.synchronize()
 
     combined_time = (time.time() - start_time) / 100

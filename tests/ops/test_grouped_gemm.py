@@ -51,7 +51,7 @@ def test_grouped_gemm_complete(batch_sum, batch_count, N, K, dtype, tune=False):
     inputs = benchmark.gen_inputs()
 
     for _ in range(1):
-        results = op(*inputs)
+        op(*inputs)
         torch.cuda.synchronize()
     num_iterations = 1
     total_latency = 0.0
@@ -59,7 +59,7 @@ def test_grouped_gemm_complete(batch_sum, batch_count, N, K, dtype, tune=False):
     for _ in range(num_iterations):
         torch.cuda.synchronize()
         start_time = time.time()
-        results = op(*inputs)
+        op(*inputs)
         torch.cuda.synchronize()
         end_time = time.time()
         latency_ms = (end_time - start_time) * 1000

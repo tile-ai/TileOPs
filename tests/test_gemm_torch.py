@@ -14,13 +14,13 @@ def benchmark_pytorch_gemm(M, N, K, dtype, num_iter=100):
     B = torch.randn(K, N, device=device, dtype=dtype)
     for _ in range(5):
         with torch.no_grad():
-            output = torch.matmul(A, B)
+            torch.matmul(A, B)
     torch.cuda.synchronize()
 
     start_time = time.time()
     for _ in range(num_iter):
         with torch.no_grad():
-            output = torch.matmul(A, B)
+            torch.matmul(A, B)
     torch.cuda.synchronize()
     elapsed_time = (time.time() - start_time) / num_iter
     flops = calculate_gemm_flops(M, N, K)
@@ -34,12 +34,12 @@ def benchmark_cublas_gemm(M, N, K, dtype, num_iter=100):
     input_tensor = torch.randn(M, K, device=device, dtype=dtype)
     for _ in range(5):
         with torch.no_grad():
-            output = linear(input_tensor)
+            linear(input_tensor)
     torch.cuda.synchronize()
     start_time = time.time()
     for _ in range(num_iter):
         with torch.no_grad():
-            output = linear(input_tensor)
+            linear(input_tensor)
     torch.cuda.synchronize()
     elapsed_time = (time.time() - start_time) / num_iter
     flops = calculate_gemm_flops(M, N, K)

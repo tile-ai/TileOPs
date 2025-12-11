@@ -97,7 +97,7 @@ def grouped_gemm_nt_kernel(
             rk = tl.arange(0, BLOCK_SIZE_K)
 
             acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-            for k in range(0, tl.cdiv(gk, BLOCK_SIZE_K)):
+            for _ in range(0, tl.cdiv(gk, BLOCK_SIZE_K)):
                 a = tl.load(
                     a_ptr + rm[:, None] * lda + rk[None, :],
                     mask=(rm[:, None] < gm) & (rk[None, :] < gk),
@@ -587,7 +587,6 @@ def prepare_tt_inputs(batch_sum: int, batch_count: int, N: int, K: int, dtype=to
 
 def prepare_grouped_tensors_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor):
     batch_sizes_list = batch_sizes.tolist()
-    group_size = len(batch_sizes_list)
 
     A_addrs, B_addrs, C_addrs = [], [], []
     g_sizes, g_lds = [], []
@@ -621,7 +620,6 @@ def prepare_grouped_tensors_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: to
 
 def prepare_grouped_tensors_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor):
     batch_sizes_list = batch_sizes.tolist()
-    group_size = len(batch_sizes_list)
 
     A_addrs, B_addrs, C_addrs = [], [], []
     g_sizes, g_lds = [], []
@@ -657,17 +655,16 @@ def prepare_grouped_tensors_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: to
 
 def prepare_grouped_tensors_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor):
     batch_sizes_list = batch_sizes.tolist()
-    group_size = len(batch_sizes_list)
 
     A_addrs, B_addrs, C_addrs = [], [], []
     g_sizes, g_lds = [], []
     group_C = []
 
     start = 0
-    for i, size in enumerate(batch_sizes_list):
+    for _, size in enumerate(batch_sizes_list):
         end = start + size
         K, M = A.shape[0], size
-        M_b, N = size, B.shape[1]
+        N = size, B.shape[1]
 
         A_group = A[:, start:end]
         B_group = B[start:end]
@@ -691,14 +688,13 @@ def prepare_grouped_tensors_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: to
 
 def prepare_grouped_tensors_tt(dO: torch.Tensor, A: torch.Tensor, batch_sizes: torch.Tensor):
     batch_sizes_list = batch_sizes.tolist()
-    group_size = len(batch_sizes_list)
 
     dO_addrs, A_addrs, C_addrs = [], [], []
     g_sizes, g_lds = [], []
     group_C = []
 
     start = 0
-    for i, size in enumerate(batch_sizes_list):
+    for _, size in enumerate(batch_sizes_list):
         end = start + size
         M = size
         N = dO.shape[1]
@@ -728,7 +724,9 @@ def grouped_gemm_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
     (d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds,
      group_C) = prepare_grouped_tensors_nt(A, B, batch_sizes)
 
-    grid = lambda META: (META['NUM_SM'],)
+    def grid(META):
+        return (META['NUM_SM'],)
+
     grouped_gemm_nt_kernel[grid](d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(batch_sizes))
 
     return torch.cat(group_C, dim=0)
@@ -740,7 +738,9 @@ def grouped_gemm_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
     (d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds,
      group_C) = prepare_grouped_tensors_nn(A, B, batch_sizes)
 
-    grid = lambda META: (META['NUM_SM'],)
+    def grid(META):
+        return (META['NUM_SM'],)
+
     grouped_gemm_nn_kernel[grid](d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(batch_sizes))
 
     return torch.cat(group_C, dim=0)
@@ -752,7 +752,9 @@ def grouped_gemm_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
     (d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds,
      group_C) = prepare_grouped_tensors_tn(A, B, batch_sizes)
 
-    grid = lambda META: (META['NUM_SM'],)
+    def grid(META):
+        return (META['NUM_SM'],)
+
     grouped_gemm_tn_kernel[grid](d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(batch_sizes))
 
     return torch.stack(group_C, dim=0)
@@ -764,7 +766,9 @@ def grouped_gemm_tt(dO: torch.Tensor, A: torch.Tensor, batch_sizes: torch.Tensor
     (dO_addrs, A_addrs, C_addrs, g_sizes, g_lds,
      group_C) = prepare_grouped_tensors_tt(dO, A, batch_sizes)
 
-    grid = lambda META: (META['NUM_SM'],)
+    def grid(META):
+        return (META['NUM_SM'],)
+
     grouped_gemm_tt_kernel[grid](dO_addrs, A_addrs, C_addrs, g_sizes, g_lds, len(batch_sizes))
 
     return torch.stack(group_C, dim=0)

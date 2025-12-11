@@ -25,7 +25,6 @@ def gemm_kernel_fp16(
     BLOCK_SIZE_K: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     pid_m = pid // num_pid_n
     pid_n = pid % num_pid_n
@@ -36,7 +35,7 @@ def gemm_kernel_fp16(
     b_mask = (rk[:, None] < K) & (rn[None, :] < N)
     c_mask = (rm[:, None] < M) & (rn[None, :] < N)
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+    for _ in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.load(
             a_ptr + rm[:, None] * stride_am + rk[None, :] * stride_ak, mask=a_mask, other=0.0)
         b = tl.load(
@@ -52,8 +51,10 @@ def triton_gemm_fp16(A, B, block_m=64, block_n=64, block_k=32):
     M, K = A.shape
     K, N = B.shape
     C = torch.empty((M, N), device=A.device, dtype=A.dtype)
-    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(
-        N, META['BLOCK_SIZE_N']),)
+
+    def grid(META):
+        return (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),)
+
     gemm_kernel_fp16[grid](
         A,
         B,
@@ -100,11 +101,11 @@ def benchmark_triton_gemm_fp16(M, N, K, dtype, num_iter=100):
     for config_idx, (block_m, block_n, block_k) in enumerate(block_configs, 1):
         try:
             for _ in range(5):
-                C = triton_gemm_fp16(A, B, block_m, block_n, block_k)
+                triton_gemm_fp16(A, B, block_m, block_n, block_k)
             torch.cuda.synchronize()
             start_time = time.time()
             for _ in range(num_iter):
-                C = triton_gemm_fp16(A, B, block_m, block_n, block_k)
+                triton_gemm_fp16(A, B, block_m, block_n, block_k)
             torch.cuda.synchronize()
             elapsed_time = (time.time() - start_time) / num_iter
             flops = calculate_gemm_flops(M, N, K)
