@@ -108,7 +108,7 @@ jobs:
           conda activate tileops-nightly
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          CUDA_VISIBLE_DEVICES=5 bash profile-run.sh --log profile_out/tileops_profile_nightly.log
+          bash profile-run.sh --log profile_out/tileops_profile_nightly.log
         shell: bash 
 
       - name: Upload profile_out artifacts
