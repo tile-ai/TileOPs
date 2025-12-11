@@ -3,3 +3,4 @@ from .flash_attn import *
 from .gemm import *
 from .flash_decode import *
 from .mla import *
+from .grouped_gemm import *
