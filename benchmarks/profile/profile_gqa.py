@@ -12,6 +12,7 @@ def test_gqa_fwd(B, S, H, H_KV, D, causal, dtype, tune=False):
     print("Forward Results:")
     benchmark.check(op, *inputs)
     benchmark.profile(op, *inputs)
+    benchmark.baseline_profile(*inputs)
 
 
 def test_gqa_bwd(B, S, H, H_KV, D, causal, dtype, tune=False):
@@ -22,6 +23,7 @@ def test_gqa_bwd(B, S, H, H_KV, D, causal, dtype, tune=False):
     print("Backward Results:")
     benchmark.check(op, *inputs)
     benchmark.profile(op, *inputs)
+    benchmark.baseline_profile(*inputs)
 
 
 if __name__ == "__main__":

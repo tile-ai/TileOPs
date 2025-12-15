@@ -17,7 +17,7 @@ __all__ = [
 def _flashattn_bwd_preprocess_kernel(batch, heads, seq_len, dim, dtype):
     accum_dtype = "float"
     shape = [batch, seq_len, heads, dim]
-    blk = 32
+    blk = 256
 
     @T.prim_func
     def flash_bwd_prep(
@@ -320,6 +320,8 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                     dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
                 })
 
+                T.use_swizzle(10, enable=True)
+
                 T.copy(K[bz, by * block_M:(by + 1) * block_M, bx, :], K_shared)
                 T.copy(V[bz, by * block_M:(by + 1) * block_M, bx, :], V_shared)
                 T.clear(dv)
@@ -347,9 +349,9 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow,
                         wg_wait=-1)
-                    T.wait_wgmma(1)
 
                     T.copy(lse[bz, bx, k * block_N:(k + 1) * block_N], lse_shared)
+                    T.wait_wgmma(1)
                     for i, j in T.Parallel(block_M, block_N):
                         qkT[i, j] = T.exp2(qkT[i, j] * scale - lse_shared[j])
                     if is_causal:

@@ -31,11 +31,14 @@ class gqa_fwd_benchmark(Benchmark):
 
     def gen_inputs(self):
         Q = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads, self.dim, device='cuda',
+            dtype=self.dtype).contiguous()
         K = torch.randn(
-            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda',
+            dtype=self.dtype).contiguous()
         V = torch.randn(
-            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda',
+            dtype=self.dtype).contiguous()
         return Q, K, V
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
@@ -47,6 +50,31 @@ class gqa_fwd_benchmark(Benchmark):
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True)
         output = output_bhsd.transpose(1, 2).contiguous()
         return output, None  # do not check lse
+
+    def baseline_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+
+        try:
+            import flash_attn_interface
+        except ImportError as e:
+            raise ImportError("Can't find flash attn module!") from e
+
+        out = flash_attn_interface.flash_attn_func(
+            Q,
+            K,
+            V,
+            softmax_scale=None,  # use default 1 / sqrt(head_dim)
+            causal=self.is_causal,
+        )
+
+        # Be robust to different return types.
+        if isinstance(out, tuple):
+            out = out[0]
+
+        return out
+
+    def baseline_profile(self, *inputs, warmup=100, rep=10, device="cuda:0"):
+        return super().baseline_profile(
+            self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
 
 
 class gqa_bwd_benchmark(Benchmark):
@@ -127,6 +155,30 @@ class gqa_bwd_benchmark(Benchmark):
 
         output.backward(dO)
         return Q.grad, K.grad, V.grad
+
+    def baseline_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
+                         dO: torch.Tensor, lse: torch.Tensor):
+
+        try:
+            import flash_attn_interface
+        except ImportError as e:
+            raise ImportError("Can't find flash attn module!") from e
+
+        softmax_scale = Q.shape[-1]**(-0.5)
+
+        dQ = torch.empty_like(Q)
+        dK = torch.empty_like(K)
+        dV = torch.empty_like(V)
+        dQ, dK, dV, _ = flash_attn_interface._flash_attn_backward(dO, Q, K, V, O, lse, None, None,
+                                                                  None, None, None, None, dQ, dK,
+                                                                  dV, softmax_scale, self.is_causal)
+        return dQ, dK, dV
+
+    def baseline_profile(self, *inputs, warmup=100, rep=10, device="cuda:0"):
+
+        print("===== Profiling GQA FA3 backend =====")
+        return super().baseline_profile(
+            self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
 
 
 class gqa_benchmark(Benchmark):

@@ -9,6 +9,7 @@ def test_mha_fwd(B, S, H, D, causal, dtype, tune=False):
     benchmark = mha_fwd_benchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
+    print("Forward Results:")
     benchmark.check(op, *inputs)
     benchmark.profile(op, *inputs)
 
@@ -18,6 +19,7 @@ def test_mha_bwd(B, S, H, D, causal, dtype, tune=False):
     benchmark = mha_bwd_benchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
+    print("Backward Results:")
     benchmark.check(op, *inputs)
     benchmark.profile(op, *inputs)
 

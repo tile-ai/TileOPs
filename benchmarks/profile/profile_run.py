@@ -33,7 +33,7 @@ def build_mha_cmd(args_dict):
         str(args_dict['seq_len']), '--heads',
         str(args_dict['heads']), '--dim',
         str(args_dict['dim']), '--dtype',
-        str(args_dict['dtype']), '--disable_bwd'
+        str(args_dict['dtype'])
     ]
     if args_dict.get('causal', 'False').lower() == 'true':
         cmd_args.append('--causal')
@@ -51,7 +51,7 @@ def build_gqa_cmd(args_dict):
         str(args_dict['heads']), '--heads_kv',
         str(args_dict['heads_kv']), '--dim',
         str(args_dict['dim']), '--dtype',
-        str(args_dict['dtype']), '--disable_bwd'
+        str(args_dict['dtype'])
     ]
     if args_dict.get('causal', 'False').lower() == 'true':
         cmd_args.append('--causal')
@@ -135,24 +135,46 @@ def build_sparse_mla_cmd(args_dict):
 
 def parse_output(output_lines):
     """
-    Parse script output to extract latency, TFlops, and Bandwidth information
+    Parse script output to extract separate forward and backward latency, TFlops, and Bandwidth information
     """
     results = {}
+    current_section = 'fwd'  # 'fwd' or 'bwd'
+
     for line in output_lines:
+        # Detect section markers (you'll need to add these to your test scripts)
+        if 'Backward Results:' in line:
+            current_section = 'bwd'
+            continue
+
         # Extract latency
-        latency_match = re.search(r'latency:\s*([0-9.]+)\s*ms', line)
+        latency_match = re.search(r'tl-latency:\s*([0-9.]+)\s*ms', line)
         if latency_match:
-            results['latency(ms)'] = float(latency_match.group(1))
+            results[f'{current_section}-tl-latency(ms)'] = float(latency_match.group(1))
 
         # Extract TFlops
-        tflops_match = re.search(r'TFlops:\s*([0-9.]+)', line)
+        tflops_match = re.search(r'tl-TFlops:\s*([0-9.]+)', line)
         if tflops_match:
-            results['TFlops'] = float(tflops_match.group(1))
+            results[f'{current_section}-tl-TFlops'] = float(tflops_match.group(1))
 
         # Extract Bandwidth
-        bandwidth_match = re.search(r'Bandwidth:\s*([0-9.]+)\s*GB/s', line)
+        bandwidth_match = re.search(r'tl-Bandwidth:\s*([0-9.]+)\s*GB/s', line)
         if bandwidth_match:
-            results['Bandwidth(GB/s)'] = float(bandwidth_match.group(1))
+            results[f'{current_section}-tl-Bandwidth(GB/s)'] = float(bandwidth_match.group(1))
+
+        # Extract baseline metrics
+        baseline_latency_match = re.search(r'Baseline-latency:\s*([0-9.]+)\s*ms', line)
+        if baseline_latency_match:
+            results[f'{current_section}-Baseline-latency(ms)'] = float(
+                baseline_latency_match.group(1))
+
+        baseline_tflops_match = re.search(r'Baseline-TFlops:\s*([0-9.]+)', line)
+        if baseline_tflops_match:
+            results[f'{current_section}-Baseline-TFlops'] = float(baseline_tflops_match.group(1))
+
+        baseline_bandwidth_match = re.search(r'Baseline-Bandwidth:\s*([0-9.]+)\s*GB/s', line)
+        if baseline_bandwidth_match:
+            results[f'{current_section}-Baseline-Bandwidth(GB/s)'] = float(
+                baseline_bandwidth_match.group(1))
 
     return results
 
@@ -235,7 +257,12 @@ def main():
         return 1
 
     # Get headers as output CSV fields
-    fieldnames = list(input_params[0].keys()) + ['latency(ms)', 'TFlops', 'Bandwidth(GB/s)']
+    fieldnames = list(input_params[0].keys()) + [
+        'fwd-tl-latency(ms)', 'fwd-tl-TFlops', 'fwd-tl-Bandwidth(GB/s)', 'fwd-Baseline-latency(ms)',
+        'fwd-Baseline-TFlops', 'fwd-Baseline-Bandwidth(GB/s)', 'bwd-tl-latency(ms)',
+        'bwd-tl-TFlops', 'bwd-tl-Bandwidth(GB/s)', 'bwd-Baseline-latency(ms)',
+        'bwd-Baseline-TFlops', 'bwd-Baseline-Bandwidth(GB/s)'
+    ]
 
     # Prepare output file
     output_csv_path = Path(args.output_csv)
@@ -251,7 +278,8 @@ def main():
         output_lines = run_test_script(script_path, params)
         if output_lines is None:
             print("Skipping this test due to execution error")
-            error_result = {**params, 'latency(ms)': None, 'TFlops': None, 'Bandwidth(GB/s)': None}
+            output_fields = [f for f in fieldnames if f not in params]
+            error_result = {**params, **{f: None for f in output_fields}}
             results.append(error_result)
             continue
 
@@ -276,16 +304,37 @@ def main():
 
     # Print results table to screen
     if results:
-        # Calculate maximum width for each column
+        # Calculate column widths and filter out empty columns
         col_widths = {}
+        visible_fields = []  # Store columns to be displayed
+
         for field in fieldnames:
             col_widths[field] = len(field)
+            has_non_empty_value = False  # Flag to track if column has non-empty values
+
+            # Iterate through all results to check if column contains non-empty values and calculate max width
             for result in results:
                 value = result.get(field, '')
-                col_widths[field] = max(col_widths[field], len(str(value)))
+                display_value = str(value) if value is not None else ''
+                col_widths[field] = max(col_widths[field], len(display_value))
+
+                # If a non-empty value is found, mark this column as needing to be displayed
+                if display_value.strip():  # Use strip() to check for whitespace-only strings
+                    has_non_empty_value = True
+
+            # Only add column to visible fields list if it has non-empty values
+            if has_non_empty_value or field in input_params[0].keys():
+                visible_fields.append(field)
+
+        # If visible_fields is empty, display all fields
+        if not visible_fields:
+            visible_fields = fieldnames
+
+        # Update col_widths to only include visible fields
+        filtered_col_widths = {field: col_widths[field] for field in visible_fields}
 
         # Print header
-        header = " | ".join(field.ljust(col_widths[field]) for field in fieldnames)
+        header = " | ".join(field.ljust(filtered_col_widths[field]) for field in visible_fields)
         print("\n" + "=" * len(header))
         print("FINAL RESULTS")
         print("=" * len(header))
@@ -295,7 +344,8 @@ def main():
         # Print data rows
         for result in results:
             row = " | ".join(
-                str(result.get(field, '')).ljust(col_widths[field]) for field in fieldnames)
+                str(result.get(field, '')).ljust(filtered_col_widths[field])
+                for field in visible_fields)
             print(row)
         print("=" * len(header))
 

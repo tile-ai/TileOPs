@@ -52,7 +52,7 @@ run_test() {
     
     local output_csv="$PROFILE_OUT/${test_name}_results.csv"
     
-    python3 ./tests/profile_run.py \
+    python3 ./benchmarks/profile/profile_run.py \
         --script "$script_path" \
         --input_csv "$csv_path" \
         --output_csv "$output_csv" \
@@ -73,10 +73,10 @@ print_separator
 run_test "gemm" "./tests/ops/test_gemm.py" "./benchmarks/input_params/gemm.csv"
 
 # Run MHA test
-run_test "mha" "./tests/ops/test_mha.py" "./benchmarks/input_params/mha.csv"
+run_test "mha" "./benchmarks/profile/profile_mha.py" "./benchmarks/input_params/mha.csv"
 
 # Run GQA test
-run_test "gqa" "./tests/ops/test_gqa.py" "./benchmarks/input_params/gqa.csv"
+run_test "gqa" "./benchmarks/profile/profile_gqa.py" "./benchmarks/input_params/gqa.csv"
 
 # Run MHA Decode test
 run_test "mha_decode" "./tests/ops/test_mha_decode.py" "./benchmarks/input_params/mha_decode.csv"

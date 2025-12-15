@@ -111,13 +111,53 @@ class Benchmark(ABC):
         """Benchmark the perf of the op"""
 
         print(f"===== Profiling {op.__class__.__name__} =====")
+        print(f"{op.__class__.__name__} profile with warmup: {warmup}, rep: {rep}")
         with torch.no_grad():
             # Always use cupti backend for better accuracy
             latency = do_bench(lambda: op(*inputs), warmup=warmup, rep=rep, backend='cupti')
 
-        print(f"{op.__class__.__name__} latency: {latency:.2f} ms")
+        print(f"{op.__class__.__name__} tl-latency: {latency:.2f} ms")
         if self.total_flops is not None:
-            print(f"{op.__class__.__name__} TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
+            print(
+                f"{op.__class__.__name__} tl-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops"
+            )
         if self.total_memory is not None:
             print(
-                f"{op.__class__.__name__} Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s")
+                f"{op.__class__.__name__} tl-Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s"
+            )
+
+    def baseline_profile(self,
+                         baseline_op,
+                         *inputs,
+                         backend="Base",
+                         warmup=100,
+                         rep=100,
+                         device="cuda:0"):
+        """Benchmark the perf of the baselin op"""
+
+        print(f"===== Profiling {backend} =====")
+        print(f"{backend} profile with warmup: {warmup}, rep: {rep}")
+
+        # Warmup to get rid of CUDA lazy initialization effects.
+        for _ in range(warmup):
+            _ = baseline_op(*inputs)
+        torch.cuda.synchronize(device=device)
+
+        # CUDA event-based timing for higher precision.
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        start_event.record()
+        for _ in range(rep):
+            _ = baseline_op(*inputs)
+        end_event.record()
+
+        torch.cuda.synchronize(device=device)
+        total_ms = start_event.elapsed_time(end_event)
+        latency = total_ms / float(rep)
+
+        print(f"{backend} Baseline-latency: {latency:.2f} ms")
+        if self.total_flops is not None:
+            print(f"{backend} Baseline-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
+        if self.total_memory is not None:
+            print(f"{backend} Baseline-Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s")
