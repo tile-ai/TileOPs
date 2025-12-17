@@ -34,6 +34,11 @@ class gemm_benchmark(Benchmark):
         if self.trans_B:
             B = B.T
         return torch.matmul(A, B)
+    
+    def baseline_profile(self, *inputs, warmup=100, rep=100, device="cuda:0"):
+
+        print("===== Profiling MatMul torch backend =====")
+        return super().baseline_profile(self.ref_program, *inputs, backend="torch", warmup=warmup, rep=rep, device=device)
 
 
 class matmul_benchmark(Benchmark):

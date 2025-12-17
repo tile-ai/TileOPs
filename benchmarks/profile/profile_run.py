@@ -18,8 +18,15 @@ def build_gemm_cmd(args_dict):
         str(args_dict['M']), '--N',
         str(args_dict['N']), '--K',
         str(args_dict['K']), '--dtype',
-        str(args_dict['dtype'])
+        str(args_dict['dtype']), '--tune'
     ]
+
+    if args_dict.get('trans_A', False):
+        cmd_args.append('--trans_A')
+
+    if args_dict.get('trans_B', False):
+        cmd_args.append('--trans_B')
+
     return cmd_args
 
 
