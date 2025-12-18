@@ -138,23 +138,10 @@ class Benchmark(ABC):
         print(f"===== Profiling {backend} =====")
         print(f"{backend} profile with warmup: {warmup}, rep: {rep}")
 
-        # Warmup to get rid of CUDA lazy initialization effects.
-        for _ in range(warmup):
-            _ = baseline_op(*inputs)
-        torch.cuda.synchronize(device=device)
-
-        # CUDA event-based timing for higher precision.
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-
-        start_event.record()
-        for _ in range(rep):
-            _ = baseline_op(*inputs)
-        end_event.record()
-
-        torch.cuda.synchronize(device=device)
-        total_ms = start_event.elapsed_time(end_event)
-        latency = total_ms / float(rep)
+        with torch.no_grad():
+            # Always use cupti backend for better accuracy
+            latency = do_bench(
+                lambda: baseline_op(*inputs), warmup=warmup, rep=rep, backend='cupti')
 
         print(f"{backend} Baseline-latency: {latency:.2f} ms")
         if self.total_flops is not None:
