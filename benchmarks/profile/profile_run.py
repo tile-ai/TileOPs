@@ -217,7 +217,7 @@ def run_test_script(script_path, args_dict):
 
     try:
         # Run script and capture output
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3000)
         if result.returncode != 0:
             print(f"Error running script: {result.stderr}")
             return None
