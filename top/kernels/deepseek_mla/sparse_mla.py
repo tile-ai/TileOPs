@@ -56,10 +56,10 @@ def _sparse_mla_kernel(batch,
     )
     def _sparse_mla_fwd_func(block_I, threads):
 
-        q_shape = [batch, seq_len, ori_heads, dim + tail_dim]
-        kv_shape = [batch, seq_len_kv, kv_group, dim + tail_dim]
-        o_shape = [batch, seq_len, ori_heads, dim]
-        indices_shape = [batch, seq_len, kv_group, topk]
+        q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
+        kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
+        o_shape = (batch, seq_len, ori_heads, dim)
+        indices_shape = (batch, seq_len, kv_group, topk)
 
         heads = head_kv
         padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
