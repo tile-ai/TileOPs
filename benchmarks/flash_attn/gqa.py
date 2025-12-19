@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch.nn.attention import sdpa_kernel, SDPBackend
 
 
-class gqa_fwd_benchmark(Benchmark):
+class GroupQueryAttentionFwdBenchmark(Benchmark):
 
     op_type = gqa_fwd
 
@@ -77,7 +77,7 @@ class gqa_fwd_benchmark(Benchmark):
             self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
 
 
-class gqa_bwd_benchmark(Benchmark):
+class GroupQueryAttentionBwdBenchmark(Benchmark):
 
     op_type = gqa_bwd
 
@@ -138,20 +138,13 @@ class gqa_bwd_benchmark(Benchmark):
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
                     dO: torch.Tensor, lse: torch.Tensor):
-        dim = Q.size(-1)
-        groups = self.heads // self.heads_kv
-        # Expand K and V to match Q's head dimension for computation
-        K_expanded = K.repeat_interleave(groups, dim=2)
-        V_expanded = V.repeat_interleave(groups, dim=2)
-        scores = torch.einsum('bqhd,bkhd->bhqk', Q, K_expanded)
-        scores = scores / torch.sqrt(torch.tensor(dim, dtype=scores.dtype))
-        if self.is_causal:
-            seq_len = Q.size(1)
-            mask = torch.tril(torch.ones(seq_len, seq_len, device=scores.device))
-            mask = mask.unsqueeze(0).unsqueeze(0)
-            scores = scores.masked_fill(mask == 0, float('-inf'))
-        attention_weights = F.softmax(scores, dim=-1)
-        output = torch.einsum('bhqk,bkhd->bqhd', attention_weights, V_expanded)
+        q_bhsd = Q.transpose(1, 2)  # [B, H, S, D]
+        k_bhsd = K.transpose(1, 2)
+        v_bhsd = V.transpose(1, 2)
+        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
+            output_bhsd = F.scaled_dot_product_attention(
+                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True)
+        output = output_bhsd.transpose(1, 2).contiguous()
 
         output.backward(dO)
         return Q.grad, K.grad, V.grad
@@ -181,7 +174,7 @@ class gqa_bwd_benchmark(Benchmark):
             self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
 
 
-class gqa_benchmark(Benchmark):
+class GroupQueryAttentionBenchmark(Benchmark):
 
     def __init__(self, batch, heads, heads_kv, seq_len, dim, is_causal, dtype, grad=True):
         self.batch = batch
@@ -193,10 +186,10 @@ class gqa_benchmark(Benchmark):
         self.dtype = dtype
         self.grad = grad
 
-        self.gqa_fwd_bench = gqa_fwd_benchmark(batch, heads, heads_kv, seq_len, dim, is_causal,
-                                               dtype)
-        self.gqa_bwd_bench = gqa_bwd_benchmark(batch, heads, heads_kv, seq_len, dim, is_causal,
-                                               dtype)
+        self.gqa_fwd_bench = GroupQueryAttentionFwdBenchmark(batch, heads, heads_kv, seq_len, dim,
+                                                             is_causal, dtype)
+        self.gqa_bwd_bench = GroupQueryAttentionBwdBenchmark(batch, heads, heads_kv, seq_len, dim,
+                                                             is_causal, dtype)
 
     @property
     def total_flops(self):

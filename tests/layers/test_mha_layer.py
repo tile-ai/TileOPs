@@ -1,13 +1,13 @@
 import argparse
 from top.utils import str2dtype
 from top.layers.flash_attn import MHA
-from benchmarks import mha_benchmark
+from benchmarks import MultiHeadAttentionBenchmark
 
 
 def test_mha_layer(B, S, H, D, causal, dtype):
 
     mha = MHA(B, H, S, D, causal, dtype)
-    benchmark = mha_benchmark(B, H, S, D, causal, dtype)
+    benchmark = MultiHeadAttentionBenchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check_fn(mha, *inputs)

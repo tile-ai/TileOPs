@@ -6,7 +6,7 @@ from torch.nn.attention import sdpa_kernel, SDPBackend
 import flash_attn_interface
 
 
-class mha_fwd_benchmark(Benchmark):
+class MultiHeadAttentionFwdBenchmark(Benchmark):
 
     op_type = mha_fwd
 
@@ -66,7 +66,7 @@ class mha_fwd_benchmark(Benchmark):
             self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
 
 
-class mha_bwd_benchmark(Benchmark):
+class MultiHeadAttentionBwdBenchmark(Benchmark):
 
     op_type = mha_bwd
 
@@ -155,7 +155,7 @@ class mha_bwd_benchmark(Benchmark):
             self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
 
 
-class mha_benchmark(Benchmark):
+class MultiHeadAttentionBenchmark(Benchmark):
 
     def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, grad=True):
         self.batch = batch
@@ -166,8 +166,10 @@ class mha_benchmark(Benchmark):
         self.dtype = dtype
         self.grad = grad
 
-        self.mha_fwd_bench = mha_fwd_benchmark(batch, heads, seq_len, dim, is_causal, dtype)
-        self.mha_bwd_bench = mha_bwd_benchmark(batch, heads, seq_len, dim, is_causal, dtype)
+        self.mha_fwd_bench = MultiHeadAttentionFwdBenchmark(batch, heads, seq_len, dim, is_causal,
+                                                            dtype)
+        self.mha_bwd_bench = MultiHeadAttentionBwdBenchmark(batch, heads, seq_len, dim, is_causal,
+                                                            dtype)
 
     @property
     def total_flops(self):
