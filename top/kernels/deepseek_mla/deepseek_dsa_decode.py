@@ -46,7 +46,7 @@ def _sparse_mla_kernel(batch,
         sm_scale = sm_scale * 1.44269504  # log2(e)
 
     head_kv = heads // kv_group
-    ori_heads = heads
+    head_q = heads
     indices_dtype = "int32"
     accum_dtype = "float"
 
@@ -62,9 +62,9 @@ def _sparse_mla_kernel(batch,
     )
     def _sparse_mla_fwd_func(block_I, threads):
 
-        q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
+        q_shape = (batch, seq_len, head_q, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
-        o_shape = (batch, seq_len, ori_heads, dim)
+        o_shape = (batch, seq_len, head_q, dim)
         indices_shape = (batch, seq_len, kv_group, topk)
 
         heads = head_kv
