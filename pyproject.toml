@@ -38,7 +38,7 @@ exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.yapf]
 based_on_style = "yapf"
-column_limit = 100
+column_limit = 20
 indent_width = 4
 spaces_before_comment = 2
 
