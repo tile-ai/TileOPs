@@ -8,28 +8,24 @@ dtype2str = {v: k for k, v in str2dtype.items()}
 @torch.compile
 def reduce_on_dim0(x: torch.Tensor) -> torch.Tensor:
     """Reduce a tensor on dimension 0.
-
     Arguments:
         x (torch.Tensor): Input tensor.
 
     Returns:
-        torch.Tensor: Reduced tensor.
-    """
+        torch.Tensor: Reduced tensor."""
     return x[0] if x.size(0) == 1 else x.sum(dim=0)
 
 
 @torch.compile
 def zero_pad(x: torch.Tensor, pad_size: int, dim: int) -> torch.Tensor:
     """Pad a tensor with 0 to a be divisible by `pad_size` along a specified dimension.
-
     Arguments:
         x (torch.Tensor): Input tensor.
         pad_size (int): The size to pad to be divisible by.
         dim (int): The dimension to pad.
 
     Returns:
-        torch.Tensor: Padded tensor.
-    """
+        torch.Tensor: Padded tensor."""
     if x.size(dim) % pad_size == 0:
         return x
     pad_len = (pad_size - x.size(dim) % pad_size)
@@ -44,13 +40,11 @@ def zero_pad(x: torch.Tensor, pad_size: int, dim: int) -> torch.Tensor:
 
 def ensure_contiguous(func: callable) -> callable:
     """Decorator to ensure that all tensor arguments are contiguous before calling the function.
-
     Arguments:
         func (callable): The function to decorate.
 
     Returns:
-        callable: The decorated function.
-    """
+        callable: The decorated function."""
 
     def wrapper(*args, **kwargs):
         args = [arg.contiguous() if isinstance(arg, torch.Tensor) else arg for arg in args]

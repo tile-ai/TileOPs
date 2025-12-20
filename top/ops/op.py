@@ -9,7 +9,7 @@ from top.utils import get_sm_version
 
 class Op(ABC):
     """Base class for TileOPs operations.
-
+    
     A Op represents a computational operation with:
     - Hardware-aware kernel dispatch
     - Correctness testing via reference implementation
@@ -62,7 +62,7 @@ class Op(ABC):
             self.kernel_map[name] = kernel_type
 
     def autotune(self):
-        """Autotune all kernels of the op."""
+        """Autotune all kernels of the op"""
         for attr_name in dir(self):
             attr = getattr(self, attr_name)
             if isinstance(attr, Kernel):

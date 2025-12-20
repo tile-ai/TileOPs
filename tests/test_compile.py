@@ -1,5 +1,5 @@
-# This test validates the compatibility of TileOps operators with torch.compile(). Check:
-# https://docs.pytorch.org/tutorials/advanced/python_custom_ops.html
+# This test validates the compatibility of TileOps operators with torch.compile().
+# Check: https://docs.pytorch.org/tutorials/advanced/python_custom_ops.html
 
 import argparse
 

@@ -34,17 +34,17 @@ class Kernel(ABC):
 
     @property
     def dtype_str(self) -> str:
-        """Convert dtype to str for tl kernels."""
+        """Convert dtype to str for tl kernels"""
         return str(self.dtype).split('.')[-1]
 
     @property
     def default_config(self) -> dict:
-        """Return the default config for the kernel."""
+        """Return the default config for the kernel"""
         return {}
 
     @abstractmethod
     def forward(self, *args, **kwargs):
-        """Run the kernel."""
+        """Run the kernel"""
         raise NotImplementedError
 
     def __call__(self, *args, **kwargs):

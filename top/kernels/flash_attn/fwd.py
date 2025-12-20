@@ -243,16 +243,17 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
             T.copy(scores_max, scores_max_prev)
             T.fill(scores_max, -T.infinity(accum_dtype))
             T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-            # To do causal softmax, we need to set the scores_max to 0 if it is -inf This process is
-            # called Check_inf in FlashAttention3 code, and it only need to be done in the first
-            # ceil_div(kBlockM, kBlockN) steps. for i in T.Parallel(block_M): scores_max[i] =
-            # T.if_then_else(scores_max[i] == -T.infinity(accum_dtype), 0, scores_max[i])
+            # To do causal softmax, we need to set the scores_max to 0 if it is -inf
+            # This process is called Check_inf in FlashAttention3 code, and it only need to be done
+            # in the first ceil_div(kBlockM, kBlockN) steps.
+            # for i in T.Parallel(block_M):
+            #     scores_max[i] = T.if_then_else(scores_max[i] == -T.infinity(accum_dtype), 0, scores_max[i])
             for i in T.Parallel(block_M):
                 scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
             for i, j in T.Parallel(block_M, block_N):
-                # Instead of computing exp(x - max), we compute exp2(x * log_2(e) - max * log_2(e))
-                # This allows the compiler to use the ffma instruction instead of fadd and fmul
-                # separately.
+                # Instead of computing exp(x - max), we compute exp2(x * log_2(e) -
+                # max * log_2(e)) This allows the compiler to use the ffma
+                # instruction instead of fadd and fmul separately.
                 acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
             T.reduce_sum(acc_s, scores_sum, dim=1)
             for i in T.Parallel(block_M):
@@ -643,16 +644,17 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
             T.copy(scores_max, scores_max_prev)
             T.fill(scores_max, -T.infinity(accum_dtype))
             T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-            # To do causal softmax, we need to set the scores_max to 0 if it is -inf This process is
-            # called Check_inf in FlashAttention3 code, and it only need to be done in the first
-            # ceil_div(kBlockM, kBlockN) steps. for i in T.Parallel(block_M): scores_max[i] =
-            # T.if_then_else(scores_max[i] == -T.infinity(accum_dtype), 0, scores_max[i])
+            # To do causal softmax, we need to set the scores_max to 0 if it is -inf
+            # This process is called Check_inf in FlashAttention3 code, and it only need to be done
+            # in the first ceil_div(kBlockM, kBlockN) steps.
+            # for i in T.Parallel(block_M):
+            #     scores_max[i] = T.if_then_else(scores_max[i] == -T.infinity(accum_dtype), 0, scores_max[i])
             for i in T.Parallel(block_M):
                 scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
             for i, j in T.Parallel(block_M, block_N):
-                # Instead of computing exp(x - max), we compute exp2(x * log_2(e) - max * log_2(e))
-                # This allows the compiler to use the ffma instruction instead of fadd and fmul
-                # separately.
+                # Instead of computing exp(x - max), we compute exp2(x * log_2(e) -
+                # max * log_2(e)) This allows the compiler to use the ffma
+                # instruction instead of fadd and fmul separately.
                 acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
             T.reduce_sum(acc_s, scores_sum, dim=1)
             for i in T.Parallel(block_M):

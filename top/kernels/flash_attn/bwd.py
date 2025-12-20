@@ -141,9 +141,10 @@ def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
                     heads, T.ceildiv(seq_len, block_M), batch, threads=threads) as (bx, by, bz):
                 K_shared = T.alloc_shared([block_M, dim], dtype)
                 dsT_shared = T.alloc_shared([block_M, block_N], dtype)
-                # should not store K to local if dim is large K_local = T.alloc_fragment([block_M,
-                # dim], dtype) K_local_T = T.alloc_fragment([block_M, dim], dtype) V_local =
-                # T.alloc_fragment([block_M, dim], dtype)
+                # should not store K to local if dim is large
+                # K_local = T.alloc_fragment([block_M, dim], dtype)
+                # K_local_T = T.alloc_fragment([block_M, dim], dtype)
+                # V_local = T.alloc_fragment([block_M, dim], dtype)
                 q = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_M, dim], dtype)
                 qkT = T.alloc_fragment([block_M, block_N], accum_dtype)
@@ -297,9 +298,10 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                     heads, T.ceildiv(seq_len, block_M), batch, threads=threads) as (bx, by, bz):
                 K_shared = T.alloc_shared([block_M, dim], dtype)
                 dsT_shared = T.alloc_shared([block_M, block_N], dtype)
-                # should not store K to local if dim is large K_local = T.alloc_fragment([block_M,
-                # dim], dtype) K_local_T = T.alloc_fragment([block_M, dim], dtype) V_local =
-                # T.alloc_fragment([block_M, dim], dtype)
+                # should not store K to local if dim is large
+                # K_local = T.alloc_fragment([block_M, dim], dtype)
+                # K_local_T = T.alloc_fragment([block_M, dim], dtype)
+                # V_local = T.alloc_fragment([block_M, dim], dtype)
                 q = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_M, dim], dtype)
                 qkT = T.alloc_fragment([block_M, block_N], accum_dtype)
