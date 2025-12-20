@@ -25,12 +25,12 @@ def _sparse_mla_kernel(batch,
                        is_causal=True,
                        CP0=True,
                        dtype="float16"):
-    '''
-    This code implements sparse attn
+    """This code implements sparse attn.
+
     Note that the first kv_stride - 1 token's out would be nan. since this isn't used, we assume it doesn't matter. (**still, one might have to handle carefully in backward to avoid 'dout * nan' propagated!**)
     It might be OK to set these nan to zero, but we assume it might serve as a reminder of taking care of these out in 'delta = out * dout'.
     The above feature might be replaced with out being undefined if we fix CP0 logic (this logic is currently wrong due to some bug in compiler)
-    '''
+    """
     assert dim == tilelang.math.next_power_of_2(
         dim), f"haven't check padding correctness yet, dim={dim}"
     assert tail_dim == tilelang.math.next_power_of_2(

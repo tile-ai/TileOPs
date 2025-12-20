@@ -62,7 +62,7 @@ class Op(ABC):
             self.kernel_map[name] = kernel_type
 
     def autotune(self):
-        """Autotune all kernels of the op"""
+        """Autotune all kernels of the op."""
         for attr_name in dir(self):
             attr = getattr(self, attr_name)
             if isinstance(attr, Kernel):
