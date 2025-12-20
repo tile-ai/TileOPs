@@ -27,9 +27,13 @@ def _sparse_mla_kernel(batch,
                        dtype="float16"):
     """This code implements sparse attn.
 
-    Note that the first kv_stride - 1 token's out would be nan. since this isn't used, we assume it doesn't matter. (**still, one might have to handle carefully in backward to avoid 'dout * nan' propagated!**)
-    It might be OK to set these nan to zero, but we assume it might serve as a reminder of taking care of these out in 'delta = out * dout'.
-    The above feature might be replaced with out being undefined if we fix CP0 logic (this logic is currently wrong due to some bug in compiler)
+    Note that the first kv_stride - 1 token outputs may be NaN. Since these
+    outputs are typically unused we assume this is acceptable. Still, in the
+    backward pass you may need to handle these carefully to avoid propagation
+    of NaNs (e.g. 'dout * nan'). It may be acceptable to set such NaNs to
+    zero, but we leave a reminder to handle 'delta = out * dout' appropriately.
+    The behavior may change if CP0 logic is fixed (there is a compiler-related
+    bug affecting that logic).
     """
     assert dim == tilelang.math.next_power_of_2(
         dim), f"haven't check padding correctness yet, dim={dim}"
@@ -66,7 +70,8 @@ def _sparse_mla_kernel(batch,
         heads = head_kv
         padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
         if padded_H != heads:
-            assert kv_group == 1, 'here we solve the heads padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)'
+            assert kv_group == 1, ("Automatic heads padding is only supported when kv_group == 1. "
+                                   "Otherwise handle Q and Output copies with an appropriate mask.")
 
         assert topk % block_I == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
         BI = block_I
