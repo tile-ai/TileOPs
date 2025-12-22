@@ -1,11 +1,11 @@
 import argparse
-from top.ops import mha_fwd
+from top.ops import MultiHeadAttentionFwdOp
 from top.utils import str2dtype
 
 
 def test_mha_kernel_autotune(B, S, H, D, causal, dtype):
     # 1. test autotune at initialization
-    op = mha_fwd(B, H, S, D, causal, dtype, tune=True)
+    op = MultiHeadAttentionFwdOp(B, H, S, D, causal, dtype, tune=True)
 
     # 2. test op.autotune()
     op.autotune()

@@ -3,10 +3,10 @@ from .op import Op
 from top.kernels import mha_decode_kernel, Kernel
 from typing import Optional, Dict
 
-__all__ = ["mha_decode"]
+__all__ = ["MultiHeadAttentionDecodeOp"]
 
 
-class mha_decode(Op):
+class MultiHeadAttentionDecodeOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

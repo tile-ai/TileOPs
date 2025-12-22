@@ -6,10 +6,10 @@ from top.kernels import (mha_fwd_kernel, mha_fwd_wgmma_pipelined_kernel,
 from top.utils import is_hopper
 from typing import Optional, Dict
 
-__all__ = ['mha_fwd', 'mha_bwd']
+__all__ = ['MultiHeadAttentionFwdOp', 'MultiHeadAttentionBwdOp']
 
 
-class mha_fwd(Op):
+class MultiHeadAttentionFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -41,7 +41,7 @@ class mha_fwd(Op):
         return self.kernel(Q, K, V)
 
 
-class mha_bwd(Op):
+class MultiHeadAttentionBwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

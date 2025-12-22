@@ -1,9 +1,9 @@
 import torch
 from torch import nn
-from top.functions import mha_fn, gqa_fn
+from top.functions import MultiHeadAttentionFunc, gqa_fn
 
 
-class MHA(nn.Module):
+class MultiHeadAttentionLayer(nn.Module):
 
     def __init__(self, batch_size, heads, seq_len, dim, is_causal, dtype):
         super().__init__()
@@ -15,7 +15,7 @@ class MHA(nn.Module):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.fn = mha_fn(batch_size, heads, seq_len, dim, is_causal, dtype)
+        self.fn = MultiHeadAttentionFunc(batch_size, heads, seq_len, dim, is_causal, dtype)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         return self.fn(Q, K, V)

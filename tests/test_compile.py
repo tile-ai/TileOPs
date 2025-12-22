@@ -2,14 +2,14 @@
 # Check: https://docs.pytorch.org/tutorials/advanced/python_custom_ops.html
 
 import argparse
-from top.ops import mha_fwd
+from top.ops import MultiHeadAttentionFwdOp
 from top.utils import str2dtype
 from benchmarks import MultiHeadAttentionFwdBenchmark as mha_fwd_benchmark
 import torch
 
 
 def test_mha_kernel_compile(B, S, H, D, causal, dtype):
-    op = mha_fwd(B, H, S, D, causal, dtype)
+    op = MultiHeadAttentionFwdOp(B, H, S, D, causal, dtype)
     benchmark = mha_fwd_benchmark(B, H, S, D, causal, dtype)
 
     compiled_op = torch.compile(op, fullgraph=True)
