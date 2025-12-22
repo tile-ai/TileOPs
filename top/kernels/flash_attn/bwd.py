@@ -16,7 +16,7 @@ __all__ = [
 @tilelang.jit(out_idx=[2])
 def _flashattn_bwd_preprocess_kernel(batch, heads, seq_len, dim, dtype):
     accum_dtype = "float"
-    shape = [batch, seq_len, heads, dim]
+    shape = (batch, seq_len, heads, dim)
     blk = 256
 
     @T.prim_func
@@ -69,7 +69,7 @@ def make_dq_layout(dQ):
 @tilelang.jit(out_idx=[1])
 def _flashattn_bwd_postprocess_kernel(batch, heads, seq_len, dim, dtype="float16"):
     accum_dtype = "float"
-    shape = [batch, seq_len, heads, dim]
+    shape = (batch, seq_len, heads, dim)
     blk = 64
 
     @T.prim_func
@@ -111,7 +111,6 @@ class flashattn_bwd_postprocess_kernel(Kernel):
 def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
     sm_scale = (1.0 / dim)**0.5
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -121,6 +120,8 @@ def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_bwd_func(block_M, block_N, num_stages, threads):
+
+        shape = (batch, seq_len, heads, dim)
 
         @T.prim_func
         def _mha_bwd_main(
@@ -267,7 +268,6 @@ class mha_bwd_kernel(Kernel):
 def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
     sm_scale = (1.0 / dim)**0.5
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -277,6 +277,8 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_bwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+
+        shape = (batch, seq_len, heads, dim)
 
         @T.prim_func
         def _mha_bwd_wgmma_pipelined_main(
@@ -445,8 +447,6 @@ class mha_bwd_wgmma_pipelined_kernel(Kernel):
 def _gqa_bwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype="float16"):
     sm_scale = (1.0 / dim)**0.5
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    q_shape = [batch, seq_len, heads, dim]
-    kv_shape = [batch, seq_len, heads_kv, dim]
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
     accum_dtype = "float"
@@ -457,6 +457,9 @@ def _gqa_bwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype="floa
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_bwd_func(block_M, block_N, num_stages, threads):
+
+        q_shape = (batch, seq_len, heads, dim)
+        kv_shape = (batch, seq_len, heads_kv, dim)
 
         @T.prim_func
         def _gqa_bwd_main(
@@ -606,8 +609,6 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch,
                                     dtype="float16"):
     sm_scale = (1.0 / dim)**0.5
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    q_shape = [batch, seq_len, heads, dim]
-    kv_shape = [batch, seq_len, heads_kv, dim]
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
     accum_dtype = "float"
@@ -618,6 +619,9 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch,
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_bwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+
+        q_shape = (batch, seq_len, heads, dim)
+        kv_shape = (batch, seq_len, heads_kv, dim)
 
         @T.prim_func
         def _gqa_bwd_wgmma_pipelined_main(

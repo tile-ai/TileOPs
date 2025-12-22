@@ -4,7 +4,7 @@
 import argparse
 from top import mha_fwd, mha_fwd_kernel
 from top.utils import str2dtype
-from benchmarks import mha_fwd_benchmark
+from benchmarks import MultiHeadAttentionFwdBenchmark as mha_fwd_benchmark
 import torch
 
 

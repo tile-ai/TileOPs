@@ -40,10 +40,7 @@ def _sparse_mla_kernel(batch,
         sm_scale = sm_scale * 1.44269504  # log2(e)
 
     head_kv = heads // kv_group
-    q_shape = [batch, seq_len, heads, dim + tail_dim]
-    kv_shape = [batch, seq_len_kv, kv_group, dim + tail_dim]
-    o_shape = [batch, seq_len, heads, dim]
-    indices_shape = [batch, seq_len, kv_group, topk]
+    ori_heads = heads
     indices_dtype = "int32"
     accum_dtype = "float"
 
@@ -59,12 +56,15 @@ def _sparse_mla_kernel(batch,
     )
     def _sparse_mla_fwd_func(block_I, threads):
 
+        q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
+        kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
+        o_shape = (batch, seq_len, ori_heads, dim)
+        indices_shape = (batch, seq_len, kv_group, topk)
+
         heads = head_kv
-        # print(f'heads = {heads}')
         padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
         if padded_H != heads:
             assert kv_group == 1, 'here we solve the heads padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)'
-        # print(f'padded_H = {padded_H}, heads = {heads}')
 
         assert topk % block_I == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
         BI = block_I
@@ -73,9 +73,7 @@ def _sparse_mla_kernel(batch,
         D = dim
         D_tail = tail_dim
         KV_stride = kv_stride
-        # CP0 = q_start_index_s == 0
-        # if CP0:
-        #     seq_len -= kv_stride - 1
+
         if head_kv > 64:
             assert head_kv % 64 == 0, 'head_kv should be a multiple of 64'
             REPLICATE_H = head_kv // 64

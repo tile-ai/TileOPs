@@ -15,7 +15,6 @@ __all__ = [
 
 def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -25,6 +24,7 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_func(block_M, block_N, num_stages, threads):
+        shape = (batch, seq_len, heads, dim)
 
         @T.prim_func
         def _mha_fwd_main(
@@ -183,7 +183,6 @@ class mha_fwd_kernel(Kernel):
 
 def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -193,6 +192,8 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+
+        shape = (batch, seq_len, heads, dim)
 
         @T.macro
         def MMA0(
@@ -400,8 +401,6 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
-    q_shape = [batch, seq_len, heads, dim]
-    kv_shape = [batch, seq_len, heads_kv, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -411,6 +410,9 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_fwd_func(block_M, block_N, num_stages, threads):
+
+        q_shape = (batch, seq_len, heads, dim)
+        kv_shape = (batch, seq_len, heads_kv, dim)
 
         @T.prim_func
         def _gqa_fwd_main(
@@ -581,8 +583,6 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
-    q_shape = [batch, seq_len, heads, dim]
-    kv_shape = [batch, seq_len, heads_kv, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -592,6 +592,9 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+
+        q_shape = (batch, seq_len, heads, dim)
+        kv_shape = (batch, seq_len, heads_kv, dim)
 
         @T.macro
         def MMA0(
