@@ -1,5 +1,5 @@
 import argparse
-from top import mha_fwd
+from top.ops import mha_fwd
 from top.utils import str2dtype
 
 

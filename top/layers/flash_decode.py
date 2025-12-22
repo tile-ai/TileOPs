@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from top import mha_decode_fn, gqa_decode_fn
+from top.functions import mha_decode_fn, gqa_decode_fn
 
 
 class MHADecode(nn.Module):

@@ -1,5 +1,5 @@
 import argparse
-from top import GQADecode
+from top.layers import GQADecode
 from top.utils import str2dtype
 from benchmarks import gqa_decode_benchmark
 

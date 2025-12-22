@@ -15,7 +15,7 @@ class Op(ABC):
     - Autotuning interface
     
     Examples:
-        >>> from top import mha_fwd  # mha_fwd is a subclass of Op
+        >>> from top.ops import mha_fwd  # mha_fwd is a subclass of Op
         >>> op = mha_fwd(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
         >>> Q, K, V = op.gen_inputs()
         >>> output = op(Q, K, V)

@@ -1,5 +1,5 @@
 import argparse
-from top import mha_fn
+from top.functions import mha_fn
 from top.utils import str2dtype
 from benchmarks import MultiHeadAttentionBenchmark
 

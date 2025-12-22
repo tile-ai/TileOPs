@@ -1,5 +1,5 @@
 import argparse
-from top import gqa_fn
+from top.functions import gqa_fn
 from top.utils import str2dtype
 from benchmarks import GroupQueryAttentionBenchmark
 

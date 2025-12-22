@@ -1,6 +1,6 @@
 import argparse
 from top.utils import str2dtype
-from top.layers.flash_attn import MHA
+from top.layers import MHA
 from benchmarks import MultiHeadAttentionBenchmark
 
 

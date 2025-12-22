@@ -1,5 +1,5 @@
 import argparse
-from top import MHADecode
+from top.layers import MHADecode
 from top.utils import str2dtype
 from benchmarks import mha_decode_benchmark
 
