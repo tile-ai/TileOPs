@@ -1,7 +1,7 @@
 import argparse
 from top.ops import MultiHeadAttentionDecodeOp
 from top.utils import str2dtype
-from benchmarks import mha_decode_benchmark
+from benchmarks import MultiHeadAttentionDecodeBenchmark as mha_decode_benchmark
 
 
 def test_mha_decode(B, H, S_q, S_kv, D, dtype, tune=False):

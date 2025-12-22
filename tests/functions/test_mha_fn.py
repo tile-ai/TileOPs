@@ -1,11 +1,11 @@
 import argparse
-from top.functions import mha_fn
+from top.functions import MultiHeadAttentionFunc
 from top.utils import str2dtype
 from benchmarks import MultiHeadAttentionBenchmark
 
 
 def test_mha_fn(B, S, H, D, causal, dtype):
-    fn = mha_fn(B, H, S, D, causal, dtype)
+    fn = MultiHeadAttentionFunc(B, H, S, D, causal, dtype)
     benchmark = MultiHeadAttentionBenchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()

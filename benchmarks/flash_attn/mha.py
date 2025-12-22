@@ -1,5 +1,5 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import mha_fwd, mha_bwd
+from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
 import torch
 from torch.nn import functional as F
 from torch.nn.attention import sdpa_kernel, SDPBackend
@@ -9,7 +9,7 @@ from typing import Tuple, Any, Optional
 
 class MultiHeadAttentionFwdBenchmark(Benchmark):
 
-    op_type = mha_fwd
+    op_type = MultiHeadAttentionFwdOp
 
     def __init__(self, batch: int, heads: int, seq_len: int, dim: int, is_causal: bool,
                  dtype: torch.dtype) -> None:
@@ -75,7 +75,7 @@ class MultiHeadAttentionFwdBenchmark(Benchmark):
 
 class MultiHeadAttentionBwdBenchmark(Benchmark):
 
-    op_type = mha_bwd
+    op_type = MultiHeadAttentionBwdOp
 
     def __init__(self, batch: int, heads: int, seq_len: int, dim: int, is_causal: bool,
                  dtype: torch.dtype) -> None:
@@ -130,7 +130,8 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
         dO = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
 
-        fwd_op = mha_fwd(self.batch, self.heads, self.seq_len, self.dim, self.is_causal, self.dtype)
+        fwd_op = MultiHeadAttentionFwdOp(self.batch, self.heads, self.seq_len, self.dim,
+                                         self.is_causal, self.dtype)
         with torch.no_grad():
             O, lse = fwd_op(Q, K, V)
 

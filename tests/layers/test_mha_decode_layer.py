@@ -1,11 +1,11 @@
 import argparse
-from top.layers import MHADecode
+from top.layers import MultiHeadAttentionDecodeLayer
 from top.utils import str2dtype
-from benchmarks import mha_decode_benchmark
+from benchmarks import MultiHeadAttentionDecodeBenchmark as mha_decode_benchmark
 
 
 def test_mha_decode_layer(B, S_q, S_kv, H, D, dtype):
-    fn = MHADecode(B, H, S_q, S_kv, D, dtype)
+    fn = MultiHeadAttentionDecodeLayer(B, H, S_q, S_kv, D, dtype)
     benchmark = mha_decode_benchmark(B, H, S_q, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()

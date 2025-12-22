@@ -1,12 +1,12 @@
 import argparse
 from top.utils import str2dtype
-from top.layers import MHA
+from top.layers import MultiHeadAttentionLayer
 from benchmarks import MultiHeadAttentionBenchmark
 
 
 def test_mha_layer(B, S, H, D, causal, dtype):
 
-    mha = MHA(B, H, S, D, causal, dtype)
+    mha = MultiHeadAttentionLayer(B, H, S, D, causal, dtype)
     benchmark = MultiHeadAttentionBenchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
