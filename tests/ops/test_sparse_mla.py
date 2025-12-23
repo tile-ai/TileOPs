@@ -1,7 +1,7 @@
 import argparse
-from top.ops import SparseMultiHeadLatentAttentionOp
+from top.ops import DeepSeekSparseAttentionOp
 from top.utils import str2dtype
-from benchmarks import SparseMultiHeadLatentAttentionDecodeBenchmark as sparse_mla_decode_benchmark
+from benchmarks import DeepSeekSparseAttentionBenchmark as sparse_mla_decode_benchmark
 
 
 def test_sparse_mla_decode(B,
@@ -17,7 +17,7 @@ def test_sparse_mla_decode(B,
                            sm_scale,
                            dtype,
                            tune=False):
-    op = SparseMultiHeadLatentAttentionOp(
+    op = DeepSeekSparseAttentionOp(
         B,
         H,
         S_q,

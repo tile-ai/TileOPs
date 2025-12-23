@@ -1,8 +1,8 @@
 import argparse
-from top.functions import SparseMultiHeadLatentAttentionFunc
-from top.layers import SparseMultiHeadLatentAttentionDecodeLayer
+from top.functions import DeepSeekSparseAttentionFunc
+from top.layers import DeepSeekSparseAttentionLayer
 from top.utils import str2dtype
-from benchmarks import SparseMultiHeadLatentAttentionDecodeBenchmark as sparse_mla_decode_benchmark
+from benchmarks import DeepSeekSparseAttentionBenchmark as sparse_mla_decode_benchmark
 
 
 def test_sparse_mla_decode(B,
@@ -18,7 +18,7 @@ def test_sparse_mla_decode(B,
                            sm_scale,
                            dtype,
                            tune=False):
-    fn = SparseMultiHeadLatentAttentionFunc(
+    fn = DeepSeekSparseAttentionFunc(
         B,
         H,
         S_q,
@@ -32,7 +32,7 @@ def test_sparse_mla_decode(B,
         sm_scale=sm_scale,
         dtype=dtype,
         tune=tune)
-    layer = SparseMultiHeadLatentAttentionDecodeLayer(
+    layer = DeepSeekSparseAttentionLayer(
         B,
         H,
         S_q,
