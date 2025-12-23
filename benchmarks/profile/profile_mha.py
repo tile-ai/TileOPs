@@ -1,12 +1,12 @@
 import argparse
 from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
 from top.utils import str2dtype
-from benchmarks import mha_fwd_benchmark, mha_bwd_benchmark
+from benchmarks import MultiHeadAttentionFwdBenchmark, MultiHeadAttentionBwdBenchmark
 
 
 def test_mha_fwd(B, S, H, D, causal, dtype, tune=False):
     op = MultiHeadAttentionFwdOp(B, H, S, D, causal, dtype, tune=tune)
-    benchmark = mha_fwd_benchmark(B, H, S, D, causal, dtype)
+    benchmark = MultiHeadAttentionFwdBenchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
     print("Forward Results:")
@@ -17,7 +17,7 @@ def test_mha_fwd(B, S, H, D, causal, dtype, tune=False):
 
 def test_mha_bwd(B, S, H, D, causal, dtype, tune=False):
     op = MultiHeadAttentionBwdOp(B, H, S, D, causal, dtype, tune=tune)
-    benchmark = mha_bwd_benchmark(B, H, S, D, causal, dtype)
+    benchmark = MultiHeadAttentionBwdBenchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
     print("Backward Results:")
