@@ -1,19 +1,19 @@
 from .function import Function
 from .mha import MultiHeadAttentionFunc
-from .gqa import gqa_fn
+from .gqa import GroupQueryAttentionFunc
 from .mha_decode import MultiHeadAttentionDecodeFunc
-from .gqa_decode import gqa_decode_fn
-from .mla_decode import mla_decode_fn
-from .sparse_mla import sparse_mla_fn
-from .matmul import matmul
+from .gqa_decode import GroupQueryAttentionDecodeFunc
+from .mla_decode import MultiHeadLatentAttentionDecodeFunc
+from .sparse_mla import SparseMultiHeadLatentAttentionFunc
+from .matmul import MatMul
 
 __all__ = [
     "Function",
     "MultiHeadAttentionFunc",
-    "gqa_fn",
+    "GroupQueryAttentionFunc",
     "MultiHeadAttentionDecodeFunc",
-    "gqa_decode_fn",
-    "mla_decode_fn",
-    "sparse_mla_fn",
-    "matmul",
+    "GroupQueryAttentionDecodeFunc",
+    "MultiHeadLatentAttentionDecodeFunc",
+    "SparseMultiHeadLatentAttentionFunc",
+    "MatMul",
 ]

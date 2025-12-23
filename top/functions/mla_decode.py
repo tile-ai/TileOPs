@@ -1,8 +1,8 @@
 import torch
 from .function import Function
-from top.ops.mla_decode import mla_decode
+from top.ops import MultiHeadLatentAttentionDecodeOp
 
-__all__ = ['mla_decode_fn']
+__all__ = ['MultiHeadLatentAttentionDecodeFunc']
 
 
 class mla_decode_ctx(torch.autograd.Function):
@@ -17,7 +17,7 @@ class mla_decode_ctx(torch.autograd.Function):
         raise NotImplementedError("Backward pass is not implemented for mla_decode.")
 
 
-class mla_decode_fn(Function):
+class MultiHeadLatentAttentionDecodeFunc(Function):
 
     def __init__(self,
                  batch,
@@ -37,7 +37,7 @@ class mla_decode_fn(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = mla_decode(
+        self.fwd_op = MultiHeadLatentAttentionDecodeOp(
             batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
 
     def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor,

@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from top.functions import MultiHeadAttentionDecodeFunc, gqa_decode_fn
+from top.functions import MultiHeadAttentionDecodeFunc, GroupQueryAttentionDecodeFunc
 
 
 class MultiHeadAttentionDecodeLayer(nn.Module):
@@ -21,7 +21,7 @@ class MultiHeadAttentionDecodeLayer(nn.Module):
         return self.fn(Q, K, V)
 
 
-class GQADecode(nn.Module):
+class GroupQueryAttentionDecodeLayer(nn.Module):
 
     def __init__(self, batch_size, heads, groups, seqlen_kv, dim, dtype):
         super().__init__()
@@ -33,7 +33,7 @@ class GQADecode(nn.Module):
         self.dim = dim
         self.dtype = dtype
 
-        self.fn = gqa_decode_fn(batch_size, heads, groups, seqlen_kv, dim, dtype)
+        self.fn = GroupQueryAttentionDecodeFunc(batch_size, heads, groups, seqlen_kv, dim, dtype)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                 mask: torch.Tensor) -> torch.Tensor:

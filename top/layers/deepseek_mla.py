@@ -1,9 +1,9 @@
 import torch
 from torch import nn
-from top.functions import mla_decode_fn, sparse_mla_fn
+from top.functions import MultiHeadLatentAttentionDecodeFunc, SparseMultiHeadLatentAttentionFunc
 
 
-class MLADecode(nn.Module):
+class MultiHeadLatentAttentionDecodeLayer(nn.Module):
 
     def __init__(self, batch_size, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=False):
         super().__init__()
@@ -16,7 +16,7 @@ class MLADecode(nn.Module):
         self.pe_dim = pe_dim
         self.dtype = dtype
 
-        self.fn = mla_decode_fn(
+        self.fn = MultiHeadLatentAttentionDecodeFunc(
             batch_size, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
 
     def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor,
@@ -24,7 +24,7 @@ class MLADecode(nn.Module):
         return self.fn(Q, Q_pe, K, K_pe)
 
 
-class SparseMLADecode(nn.Module):
+class SparseMultiHeadLatentAttentionDecodeLayer(nn.Module):
 
     def __init__(self,
                  batch,
@@ -57,7 +57,7 @@ class SparseMLADecode(nn.Module):
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
 
-        self.fn = sparse_mla_fn(
+        self.fn = SparseMultiHeadLatentAttentionFunc(
             batch,
             heads,
             seq_len,

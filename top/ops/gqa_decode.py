@@ -3,10 +3,10 @@ from .op import Op
 from top.kernels import gqa_decode_kernel, Kernel
 from typing import Optional, Dict
 
-__all__ = ["gqa_decode"]
+__all__ = ["GroupQueryAttentionDecodeOp"]
 
 
-class gqa_decode(Op):
+class GroupQueryAttentionDecodeOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

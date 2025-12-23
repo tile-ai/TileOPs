@@ -1,11 +1,11 @@
 import argparse
-from top.functions import gqa_decode_fn
+from top.functions import GroupQueryAttentionDecodeFunc
 from top.utils import str2dtype
-from benchmarks import gqa_decode_benchmark
+from benchmarks import GroupQueryAttentionDecodeBenchmark as gqa_decode_benchmark
 
 
 def test_gqa_decode_fn(B, H, S_kv, D, groups, dtype):
-    fn = gqa_decode_fn(B, H, groups, S_kv, D, dtype)
+    fn = GroupQueryAttentionDecodeFunc(B, H, groups, S_kv, D, dtype)
     benchmark = gqa_decode_benchmark(B, H, groups, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()

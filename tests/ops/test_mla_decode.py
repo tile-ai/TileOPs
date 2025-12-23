@@ -1,11 +1,11 @@
 import argparse
-from top.ops import mla_decode
+from top.ops import MultiHeadLatentAttentionDecodeOp
 from top.utils import str2dtype
-from benchmarks import mla_decode_benchmark
+from benchmarks import MultiHeadLatentAttentionDecodeBenchmark as mla_decode_benchmark
 
 
 def test_mla_decode(B, H, kv_head_num, S_kv, D, Pe_D, dtype, tune=False):
-    op = mla_decode(B, H, kv_head_num, S_kv, D, Pe_D, dtype, tune=tune)
+    op = MultiHeadLatentAttentionDecodeOp(B, H, kv_head_num, S_kv, D, Pe_D, dtype, tune=tune)
     benchmark = mla_decode_benchmark(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
 
     inputs = benchmark.gen_inputs()

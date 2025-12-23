@@ -4,10 +4,10 @@ from top.kernels import mla_decode_kernel, mla_decode_ws_kernel, Kernel
 from top.utils import is_hopper
 from typing import Optional, Dict
 
-__all__ = ["mla_decode"]
+__all__ = ["MultiHeadLatentAttentionDecodeOp"]
 
 
-class mla_decode(Op):
+class MultiHeadLatentAttentionDecodeOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

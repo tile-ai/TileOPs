@@ -1,6 +1,6 @@
 import argparse
 from top.utils import str2dtype
-from top.layers import GQA
+from top.layers import GroupQueryAttentionLayer as GQA
 from benchmarks import GroupQueryAttentionBenchmark
 
 

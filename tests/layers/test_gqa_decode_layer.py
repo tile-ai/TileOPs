@@ -1,7 +1,7 @@
 import argparse
-from top.layers import GQADecode
+from top.layers import GroupQueryAttentionDecodeLayer as GQADecode
 from top.utils import str2dtype
-from benchmarks import gqa_decode_benchmark
+from benchmarks import GroupQueryAttentionDecodeBenchmark as gqa_decode_benchmark
 
 
 def test_gqa_decode_layer(B, H, S_kv, D, groups, dtype):

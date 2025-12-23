@@ -1,9 +1,10 @@
-from .flash_attn import MultiHeadAttentionLayer, GQA
-from .flash_decode import MultiHeadAttentionDecodeLayer, GQADecode
-from .deepseek_mla import MLADecode, SparseMLADecode
+from .flash_attn import MultiHeadAttentionLayer, GroupQueryAttentionLayer
+from .flash_decode import MultiHeadAttentionDecodeLayer, GroupQueryAttentionDecodeLayer
+from .deepseek_mla import MultiHeadLatentAttentionDecodeLayer, SparseMultiHeadLatentAttentionDecodeLayer
 from .linear import Linear
 
 __all__ = [
-    "MultiHeadAttentionLayer", "GQA", "MultiHeadAttentionDecodeLayer", "GQADecode", "MLADecode",
-    "SparseMLADecode", "Linear"
+    "MultiHeadAttentionLayer", "GroupQueryAttentionLayer", "MultiHeadAttentionDecodeLayer",
+    "GroupQueryAttentionDecodeLayer", "MultiHeadLatentAttentionDecodeLayer",
+    "SparseMultiHeadLatentAttentionDecodeLayer", "Linear"
 ]

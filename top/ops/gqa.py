@@ -6,10 +6,10 @@ from top.kernels import (gqa_fwd_kernel, gqa_fwd_wgmma_pipelined_kernel,
 from top.utils import is_hopper
 from typing import Optional, Dict
 
-__all__ = ['gqa_fwd', 'gqa_bwd']
+__all__ = ['GroupQueryAttentionFwdOp', 'GroupQueryAttentionBwdOp']
 
 
-class gqa_fwd(Op):
+class GroupQueryAttentionFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -43,7 +43,7 @@ class gqa_fwd(Op):
         return self.kernel(Q, K, V)
 
 
-class gqa_bwd(Op):
+class GroupQueryAttentionBwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

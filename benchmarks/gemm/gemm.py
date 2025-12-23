@@ -3,7 +3,7 @@ from top.ops import Gemm
 import torch
 
 
-class gemm_benchmark(Benchmark):
+class GemmBenchmark(Benchmark):
 
     op_type = Gemm
 
@@ -36,7 +36,7 @@ class gemm_benchmark(Benchmark):
         return torch.matmul(A, B)
 
 
-class matmul_benchmark(Benchmark):
+class MatMulBenchmark(Benchmark):
 
     def __init__(self, M, N, K, dtype, grad=True):
         self.M = M

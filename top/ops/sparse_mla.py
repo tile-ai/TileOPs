@@ -3,10 +3,10 @@ from .op import Op
 from top.kernels import sparse_mla_kernel, Kernel
 from typing import Optional, Dict
 
-__all__ = ["sparse_mla"]
+__all__ = ["SparseMultiHeadLatentAttentionOp"]
 
 
-class sparse_mla(Op):
+class SparseMultiHeadLatentAttentionOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

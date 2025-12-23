@@ -2,7 +2,7 @@ import torch
 from .function import Function
 from top.ops.gemm import Gemm
 
-__all__ = ['matmul']
+__all__ = ['MatMul']
 
 
 class gemm_ctx(torch.autograd.Function):
@@ -28,7 +28,7 @@ class gemm_ctx(torch.autograd.Function):
         return dA, dB, None, None, None
 
 
-class matmul(Function):
+class MatMul(Function):
 
     def __init__(
         self,

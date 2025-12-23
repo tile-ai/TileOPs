@@ -1,13 +1,13 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import mla_decode
+from top.ops import MultiHeadLatentAttentionDecodeOp
 import torch
 from torch.nn import functional as F
 from einops import rearrange, einsum
 
 
-class mla_decode_benchmark(Benchmark):
+class MultiHeadLatentAttentionDecodeBenchmark(Benchmark):
 
-    op_type = mla_decode
+    op_type = MultiHeadLatentAttentionDecodeOp
 
     def __init__(self, batch, heads, kv_head_num, seq_len_kv, dim, pe_dim, dtype):
         self.batch = batch

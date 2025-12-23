@@ -1,5 +1,5 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import gqa_fwd, gqa_bwd
+from top.ops import GroupQueryAttentionFwdOp, GroupQueryAttentionBwdOp
 import torch
 from torch.nn import functional as F
 from torch.nn.attention import sdpa_kernel, SDPBackend
@@ -9,7 +9,7 @@ import flash_attn_interface
 
 class GroupQueryAttentionFwdBenchmark(Benchmark):
 
-    op_type = gqa_fwd
+    op_type = GroupQueryAttentionFwdOp
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len: int, dim: int,
                  is_causal: bool, dtype: torch.dtype) -> None:
@@ -82,7 +82,7 @@ class GroupQueryAttentionFwdBenchmark(Benchmark):
 
 class GroupQueryAttentionBwdBenchmark(Benchmark):
 
-    op_type = gqa_bwd
+    op_type = GroupQueryAttentionBwdOp
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len: int, dim: int,
                  is_causal: bool, dtype: torch.dtype) -> None:
@@ -135,8 +135,8 @@ class GroupQueryAttentionBwdBenchmark(Benchmark):
         dO = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
 
-        fwd_op = gqa_fwd(self.batch, self.heads, self.heads_kv, self.seq_len, self.dim,
-                         self.is_causal, self.dtype)
+        fwd_op = GroupQueryAttentionFwdOp(self.batch, self.heads, self.heads_kv, self.seq_len,
+                                          self.dim, self.is_causal, self.dtype)
         with torch.no_grad():
             O, lse = fwd_op(Q, K, V)
 
