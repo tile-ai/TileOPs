@@ -4,10 +4,10 @@ from top.kernels.deepseek_mla import sparse_mla_kernel
 from top.kernels.kernel import Kernel
 from typing import Optional, Dict
 
-__all__ = ["SparseMultiHeadLatentAttentionOp"]
+__all__ = ["DeepSeekSparseAttentionOp"]
 
 
-class SparseMultiHeadLatentAttentionOp(Op):
+class DeepSeekSparseAttentionOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

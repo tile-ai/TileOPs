@@ -4,7 +4,7 @@ from .gqa import GroupQueryAttentionFunc
 from .mha_decode import MultiHeadAttentionDecodeFunc
 from .gqa_decode import GroupQueryAttentionDecodeFunc
 from .mla_decode import MultiHeadLatentAttentionDecodeFunc
-from .sparse_mla import SparseMultiHeadLatentAttentionFunc
+from .sparse_mla import DeepSeekSparseAttentionFunc
 from .matmul import MatMul
 
 __all__ = [
@@ -14,6 +14,6 @@ __all__ = [
     "MultiHeadAttentionDecodeFunc",
     "GroupQueryAttentionDecodeFunc",
     "MultiHeadLatentAttentionDecodeFunc",
-    "SparseMultiHeadLatentAttentionFunc",
+    "DeepSeekSparseAttentionFunc",
     "MatMul",
 ]
