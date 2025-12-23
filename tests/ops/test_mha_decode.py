@@ -1,12 +1,12 @@
 import argparse
 from top.ops import MultiHeadAttentionDecodeOp
 from top.utils import str2dtype
-from benchmarks import MultiHeadAttentionDecodeBenchmark as mha_decode_benchmark
+from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
 def test_mha_decode(B, H, S_q, S_kv, D, dtype, tune=False):
     op = MultiHeadAttentionDecodeOp(B, H, S_q, S_kv, D, dtype, tune=tune)
-    benchmark = mha_decode_benchmark(B, H, S_q, S_kv, D, dtype)
+    benchmark = MultiHeadAttentionDecodeBenchmark(B, H, S_q, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)

@@ -1,12 +1,12 @@
 import argparse
 from top.functions import MultiHeadAttentionDecodeFunc
 from top.utils import str2dtype
-from benchmarks import MultiHeadAttentionDecodeBenchmark as mha_decode_benchmark
+from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
 def test_mha_decode_fn(B, S_q, S_kv, H, D, dtype):
     fn = MultiHeadAttentionDecodeFunc(B, H, S_q, S_kv, D, dtype)
-    benchmark = mha_decode_benchmark(B, H, S_q, S_kv, D, dtype)
+    benchmark = MultiHeadAttentionDecodeBenchmark(B, H, S_q, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check_fn(fn, *inputs, grad=False)

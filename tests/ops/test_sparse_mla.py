@@ -1,7 +1,7 @@
 import argparse
 from top.ops import DeepSeekSparseAttentionOp
 from top.utils import str2dtype
-from benchmarks import DeepSeekSparseAttentionBenchmark as sparse_mla_decode_benchmark
+from benchmarks import DeepSeekSparseAttentionBenchmark
 
 
 def test_sparse_mla_decode(B,
@@ -31,7 +31,7 @@ def test_sparse_mla_decode(B,
         sm_scale=sm_scale,
         dtype=dtype,
         tune=tune)
-    benchmark = sparse_mla_decode_benchmark(
+    benchmark = DeepSeekSparseAttentionBenchmark(
         B,
         H,
         S_q,
