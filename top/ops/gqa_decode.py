@@ -1,6 +1,7 @@
 import torch
 from .op import Op
-from top.kernels import gqa_decode_kernel, Kernel
+from top.kernels.kernel import Kernel
+from top.kernels.flash_decode import gqa_decode_kernel
 from typing import Optional, Dict
 
 __all__ = ["GroupQueryAttentionDecodeOp"]

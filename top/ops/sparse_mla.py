@@ -1,6 +1,7 @@
 import torch
 from .op import Op
-from top.kernels import sparse_mla_kernel, Kernel
+from top.kernels.deepseek_mla import sparse_mla_kernel
+from top.kernels.kernel import Kernel
 from typing import Optional, Dict
 
 __all__ = ["SparseMultiHeadLatentAttentionOp"]

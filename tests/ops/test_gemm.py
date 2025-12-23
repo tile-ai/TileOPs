@@ -1,7 +1,7 @@
 import argparse
 from top.ops import Gemm
 from top.utils import str2dtype
-from benchmarks import gemm_benchmark
+from benchmarks import GemmBenchmark as gemm_benchmark
 
 
 def test_gemm(M, N, K, dtype, trans_A=False, trans_B=False, tune=False):

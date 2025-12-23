@@ -1,6 +1,6 @@
 import torch
 from .function import Function
-from top.ops.mha import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
+from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
 
 __all__ = ['MultiHeadAttentionFunc']
 
