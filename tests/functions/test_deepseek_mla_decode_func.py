@@ -1,5 +1,5 @@
 import argparse
-from top.functions import MultiHeadAttentionDecodeWithKVCacheFunc
+from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc
 from top.layers import MultiHeadLatentAttentionDecodeLayer
 from top.utils import str2dtype
 from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
@@ -7,7 +7,7 @@ from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
 
 def test_mla_decode_fn(B, kv_head_num, S_kv, H, D, Pe_D, dtype):
 
-    mla_fn = MultiHeadAttentionDecodeWithKVCacheFunc(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
+    mla_fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
     mla_layer = MultiHeadLatentAttentionDecodeLayer(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
     benchmark = MultiHeadLatentAttentionDecodeBenchmark(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
 
