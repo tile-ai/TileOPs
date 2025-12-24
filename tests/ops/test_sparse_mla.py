@@ -1,5 +1,5 @@
 import argparse
-from top.ops import DeepSeekSparseAttentionDecodeOp
+from top.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
 from benchmarks import DeepSeekSparseAttentionDecodeBenchmark
 
@@ -17,7 +17,7 @@ def test_sparse_mla_decode(B,
                            sm_scale,
                            dtype,
                            tune=False):
-    op = DeepSeekSparseAttentionDecodeOp(
+    op = DeepSeekSparseAttentionDecodeWithKVCacheOp(
         B,
         H,
         S_q,

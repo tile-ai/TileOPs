@@ -1,5 +1,5 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import MultiHeadLatentAttentionDecodeOp
+from top.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 import torch
 from torch.nn import functional as F
 from einops import rearrange, einsum
@@ -7,7 +7,7 @@ from einops import rearrange, einsum
 
 class MultiHeadLatentAttentionDecodeBenchmark(Benchmark):
 
-    op_type = MultiHeadLatentAttentionDecodeOp
+    op_type = MultiHeadLatentAttentionDecodeWithKVCacheOp
 
     def __init__(self, batch, heads, kv_head_num, seq_len_kv, dim, pe_dim, dtype):
         self.batch = batch

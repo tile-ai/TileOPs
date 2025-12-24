@@ -1,11 +1,11 @@
 import argparse
-from top.ops import Gemm
+from top.ops import GemmOp
 from top.utils import str2dtype
 from benchmarks import GemmBenchmark
 
 
 def test_gemm(M, N, K, dtype, trans_A=False, trans_B=False, tune=False):
-    op = Gemm(M, N, K, trans_A=trans_A, trans_B=trans_B, dtype=dtype, tune=tune)
+    op = GemmOp(M, N, K, trans_A=trans_A, trans_B=trans_B, dtype=dtype, tune=tune)
     benchmark = GemmBenchmark(M, N, K, dtype, trans_A=trans_A, trans_B=trans_B)
 
     inputs = benchmark.gen_inputs()

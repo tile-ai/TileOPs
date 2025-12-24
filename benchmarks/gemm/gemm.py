@@ -1,11 +1,11 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import Gemm
+from top.ops import GemmOp
 import torch
 
 
 class GemmBenchmark(Benchmark):
 
-    op_type = Gemm
+    op_type = GemmOp
 
     def __init__(self, M, N, K, dtype, trans_A=False, trans_B=False):
         self.M = M

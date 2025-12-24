@@ -1,5 +1,5 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import GroupQueryAttentionDecodeOp
+from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
 import torch
 from torch.nn import functional as F
 from torch.nn.attention import sdpa_kernel, SDPBackend
@@ -7,7 +7,7 @@ from torch.nn.attention import sdpa_kernel, SDPBackend
 
 class GroupQueryAttentionDecodeBenchmark(Benchmark):
 
-    op_type = GroupQueryAttentionDecodeOp
+    op_type = GroupQueryAttentionDecodeWithKVCacheOp
 
     def __init__(self, batch, heads, groups, seq_len_kv, dim, dtype):
         self.batch = batch
