@@ -5,7 +5,7 @@ from .gemm import Gemm
 from .mha_decode import MultiHeadAttentionDecodeOp
 from .gqa_decode import GroupQueryAttentionDecodeOp
 from .mla_decode import MultiHeadLatentAttentionDecodeOp
-from .sparse_mla import DeepSeekSparseAttentionOp
+from .sparse_mla import DeepSeekSparseAttentionDecodeOp
 
 __all__ = [
     "Op",
@@ -17,5 +17,5 @@ __all__ = [
     "MultiHeadAttentionDecodeOp",
     "GroupQueryAttentionDecodeOp",
     "MultiHeadLatentAttentionDecodeOp",
-    "DeepSeekSparseAttentionOp",
+    "DeepSeekSparseAttentionDecodeOp",
 ]

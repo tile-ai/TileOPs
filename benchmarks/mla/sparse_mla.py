@@ -1,11 +1,11 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import DeepSeekSparseAttentionOp
+from top.ops import DeepSeekSparseAttentionDecodeOp
 import torch
 
 
-class DeepSeekSparseAttentionBenchmark(Benchmark):
+class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
 
-    op_type = DeepSeekSparseAttentionOp
+    op_type = DeepSeekSparseAttentionDecodeOp
 
     def __init__(self,
                  batch,
