@@ -1,8 +1,8 @@
 import torch
 from .function import Function
-from top.ops import GroupQueryAttentionDecodeOp
+from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
-__all__ = ['GroupQueryAttentionDecodeFunc']
+__all__ = ['GroupQueryAttentionDecodeWithKVCacheFunc']
 
 
 class gqa_decode_ctx(torch.autograd.Function):
@@ -17,7 +17,7 @@ class gqa_decode_ctx(torch.autograd.Function):
         raise NotImplementedError("Backward pass is not implemented for gqa_decode.")
 
 
-class GroupQueryAttentionDecodeFunc(Function):
+class GroupQueryAttentionDecodeWithKVCacheFunc(Function):
 
     def __init__(self, batch, heads, groups, seqlen_kv, dim, dtype=torch.float16, tune=False):
         self.batch = batch
@@ -28,7 +28,7 @@ class GroupQueryAttentionDecodeFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = GroupQueryAttentionDecodeOp(
+        self.fwd_op = GroupQueryAttentionDecodeWithKVCacheOp(
             batch, heads, groups, seqlen_kv, dim, dtype, tune=tune)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,

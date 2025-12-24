@@ -1,8 +1,8 @@
 import torch
 from .function import Function
-from top.ops import MultiHeadAttentionDecodeOp
+from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
 
-__all__ = ['MultiHeadAttentionDecodeFunc']
+__all__ = ['MultiHeadAttentionDecodeWithKVCacheFunc']
 
 
 class mha_decode_ctx(torch.autograd.Function):
@@ -17,7 +17,7 @@ class mha_decode_ctx(torch.autograd.Function):
         raise NotImplementedError("Backward pass is not implemented for mha_decode.")
 
 
-class MultiHeadAttentionDecodeFunc(Function):
+class MultiHeadAttentionDecodeWithKVCacheFunc(Function):
 
     def __init__(self, batch, heads, seqlen_q, seqlen_kv, dim, dtype=torch.float16, tune=False):
         self.batch = batch
@@ -28,7 +28,7 @@ class MultiHeadAttentionDecodeFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = MultiHeadAttentionDecodeOp(
+        self.fwd_op = MultiHeadAttentionDecodeWithKVCacheOp(
             batch, heads, seqlen_q, seqlen_kv, dim, dtype, tune=tune)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:

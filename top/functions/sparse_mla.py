@@ -1,8 +1,8 @@
 import torch
 from .function import Function
-from top.ops import DeepSeekSparseAttentionDecodeOp
+from top.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 
-__all__ = ['DeepSeekSparseAttentionDecodeFunc']
+__all__ = ['DeepSeekSparseAttentionDecodeWithKVCacheFunc']
 
 
 class sparse_mla_ctx(torch.autograd.Function):
@@ -17,7 +17,7 @@ class sparse_mla_ctx(torch.autograd.Function):
         raise NotImplementedError("Backward pass is not implemented for sparse MLA.")
 
 
-class DeepSeekSparseAttentionDecodeFunc(Function):
+class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
 
     def __init__(self,
                  batch,
@@ -48,7 +48,7 @@ class DeepSeekSparseAttentionDecodeFunc(Function):
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
 
-        self.fwd_op = DeepSeekSparseAttentionDecodeOp(
+        self.fwd_op = DeepSeekSparseAttentionDecodeWithKVCacheOp(
             batch,
             heads,
             seq_len,
