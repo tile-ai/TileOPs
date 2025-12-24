@@ -50,7 +50,7 @@ jobs:
           conda activate tileops-release
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          bash ci-test.sh tileops_test_0_1_6.log
+          CUDA_VISIBLE_DEVICES=6 bash ci-test.sh tileops_test_0_1_6.log
         shell: bash 
 
       - name: Upload artifacts
@@ -79,7 +79,7 @@ jobs:
           conda activate tileops-nightly
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          bash ci-test.sh tileops_test_nightly.log
+          CUDA_VISIBLE_DEVICES=6 bash ci-test.sh tileops_test_nightly.log
         shell: bash 
 
       - name: Upload artifacts
