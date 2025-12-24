@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from top.functions import MultiHeadLatentAttentionDecodeFunc, DeepSeekSparseAttentionDecodeFunc
+from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc, DeepSeekSparseAttentionDecodeWithKVCacheFunc
 
 
 class MultiHeadLatentAttentionDecodeLayer(nn.Module):
@@ -16,7 +16,7 @@ class MultiHeadLatentAttentionDecodeLayer(nn.Module):
         self.pe_dim = pe_dim
         self.dtype = dtype
 
-        self.fn = MultiHeadLatentAttentionDecodeFunc(
+        self.fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(
             batch_size, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
 
     def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor,
@@ -57,7 +57,7 @@ class DeepSeekSparseAttentionDecodeLayer(nn.Module):
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
 
-        self.fn = DeepSeekSparseAttentionDecodeFunc(
+        self.fn = DeepSeekSparseAttentionDecodeWithKVCacheFunc(
             batch,
             heads,
             seq_len,
