@@ -5,10 +5,10 @@ from top.kernels.kernel import Kernel
 from top.utils import is_hopper
 from typing import Optional, Dict
 
-__all__ = ["MultiHeadLatentAttentionDecodeOp"]
+__all__ = ["MultiHeadLatentAttentionDecodeWithKVCacheOp"]
 
 
-class MultiHeadLatentAttentionDecodeOp(Op):
+class MultiHeadLatentAttentionDecodeWithKVCacheOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

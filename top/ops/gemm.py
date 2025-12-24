@@ -4,10 +4,10 @@ from top.kernels.kernel import Kernel
 from top.kernels.gemm import gemm_kernel
 from typing import Optional, Dict
 
-__all__ = ['Gemm']
+__all__ = ['GemmOp']
 
 
-class Gemm(Op):
+class GemmOp(Op):
 
     def __init__(self,
                  M: int,

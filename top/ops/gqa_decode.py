@@ -4,10 +4,10 @@ from top.kernels.kernel import Kernel
 from top.kernels.flash_decode import gqa_decode_kernel
 from typing import Optional, Dict
 
-__all__ = ["GroupQueryAttentionDecodeOp"]
+__all__ = ["GroupQueryAttentionDecodeWithKVCacheOp"]
 
 
-class GroupQueryAttentionDecodeOp(Op):
+class GroupQueryAttentionDecodeWithKVCacheOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
