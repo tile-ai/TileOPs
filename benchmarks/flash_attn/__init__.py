@@ -1,5 +1,5 @@
 from .mha import MultiHeadAttentionBenchmark, MultiHeadAttentionBwdBenchmark, MultiHeadAttentionFwdBenchmark
-from .gqa import GroupQueryAttentionBenchmark, GroupQueryAttentionFwdBenchmark, GroupQueryAttentionFwdOp
+from .gqa import GroupQueryAttentionBenchmark, GroupQueryAttentionFwdBenchmark, GroupQueryAttentionBwdBenchmark
 
 __all__ = [
     "MultiHeadAttentionBenchmark",
@@ -7,5 +7,5 @@ __all__ = [
     "MultiHeadAttentionFwdBenchmark",
     "GroupQueryAttentionBenchmark",
     "GroupQueryAttentionFwdBenchmark",
-    "GroupQueryAttentionFwdOp",
+    "GroupQueryAttentionBwdBenchmark",
 ]
