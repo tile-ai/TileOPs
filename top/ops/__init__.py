@@ -4,8 +4,8 @@ from .gqa import GroupQueryAttentionFwdOp, GroupQueryAttentionBwdOp
 from .gemm import GemmOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
-from .mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
-from .sparse_mla import DeepSeekSparseAttentionDecodeWithKVCacheOp
+from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
+from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 
 __all__ = [
     "Op",
