@@ -1,8 +1,8 @@
 import torch
 from .function import Function
-from top.ops.gemm import Gemm
+from top.ops import GemmOp
 
-__all__ = ['matmul']
+__all__ = ['MatMulFunc']
 
 
 class gemm_ctx(torch.autograd.Function):
@@ -28,7 +28,7 @@ class gemm_ctx(torch.autograd.Function):
         return dA, dB, None, None, None
 
 
-class matmul(Function):
+class MatMulFunc(Function):
 
     def __init__(
         self,
@@ -38,9 +38,9 @@ class matmul(Function):
         dtype=torch.float16,
         tune=False,
     ):
-        self.fwd_op = Gemm(M, N, K, dtype=dtype, tune=tune)
-        self.da_bwd_op = Gemm(M, K, N, dtype=dtype, trans_B=False, tune=tune)
-        self.db_bwd_op = Gemm(K, N, M, dtype=dtype, trans_A=False, tune=tune)
+        self.fwd_op = GemmOp(M, N, K, dtype=dtype, tune=tune)
+        self.da_bwd_op = GemmOp(M, K, N, dtype=dtype, trans_B=False, tune=tune)
+        self.db_bwd_op = GemmOp(K, N, M, dtype=dtype, trans_A=False, tune=tune)
 
     def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return gemm_ctx.apply(A, B, self.fwd_op, self.da_bwd_op, self.db_bwd_op)

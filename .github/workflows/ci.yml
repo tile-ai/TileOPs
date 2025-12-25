@@ -50,15 +50,15 @@ jobs:
           conda activate tileops-release
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          bash ci-test.sh tileops_test_0_1_6.log
+          CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_release.log
         shell: bash 
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: always()  # Equivalent to when: always
         with:
-          name: tileops_test_0_1_6.log
-          path: tileops_test_0_1_6.log
+          name: tileops_test_release.log
+          path: tileops_test_release.log
           retention-days: 7  # Equivalent to expire_in: 1 week
 
   tileops_test_nightly:
@@ -79,7 +79,7 @@ jobs:
           conda activate tileops-nightly
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          bash ci-test.sh tileops_test_nightly.log
+          CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_nightly.log
         shell: bash 
 
       - name: Upload artifacts
@@ -108,7 +108,7 @@ jobs:
           conda activate tileops-nightly
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          bash profile-run.sh --log profile_out/tileops_profile_nightly.log
+          bash benchmarks/profile_run.sh --log profile_out/tileops_profile_nightly.log
         shell: bash 
 
       - name: Upload profile_out artifacts

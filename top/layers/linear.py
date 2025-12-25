@@ -1,10 +1,10 @@
 import math
 import torch
 from torch import nn
-from top.functions import matmul
+from top.functions import MatMulFunc
 
 
-class Linear(nn.Module):
+class LinearLayer(nn.Module):
 
     def __init__(
         self,
@@ -18,7 +18,7 @@ class Linear(nn.Module):
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
         self.weight = nn.Parameter(torch.empty((in_features, out_features), **factory_kwargs))
-        self.fn = matmul(
+        self.fn = MatMulFunc(
             batch_size,
             out_features,
             in_features,

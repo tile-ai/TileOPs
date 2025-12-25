@@ -1,11 +1,11 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import Gemm
+from top.ops import GemmOp
 import torch
 
 
-class gemm_benchmark(Benchmark):
+class GemmBenchmark(Benchmark):
 
-    op_type = Gemm
+    op_type = GemmOp
 
     def __init__(self, M, N, K, dtype, trans_A=False, trans_B=False):
         self.M = M
@@ -36,7 +36,7 @@ class gemm_benchmark(Benchmark):
         return torch.matmul(A, B)
 
 
-class matmul_benchmark(Benchmark):
+class MatMulBenchmark(Benchmark):
 
     def __init__(self, M, N, K, dtype, grad=True):
         self.M = M

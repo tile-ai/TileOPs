@@ -1,11 +1,11 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import sparse_mla
+from top.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 import torch
 
 
-class sparse_mla_decode_benchmark(Benchmark):
+class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
 
-    op_type = sparse_mla
+    op_type = DeepSeekSparseAttentionDecodeWithKVCacheOp
 
     def __init__(self,
                  batch,

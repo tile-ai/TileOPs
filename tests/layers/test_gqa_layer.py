@@ -1,12 +1,12 @@
 import argparse
 from top.utils import str2dtype
-from top.layers.flash_attn import GQA
+from top.layers import GroupQueryAttentionLayer
 from benchmarks import GroupQueryAttentionBenchmark
 
 
 def test_gqa_layer(B, S, H, H_kv, D, causal, dtype):
 
-    gqa = GQA(B, H, H_kv, S, D, causal, dtype)
+    gqa = GroupQueryAttentionLayer(B, H, H_kv, S, D, causal, dtype)
     benchmark = GroupQueryAttentionBenchmark(B, H, H_kv, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()

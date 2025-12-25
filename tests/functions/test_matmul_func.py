@@ -1,12 +1,12 @@
 import argparse
-from top.functions import matmul
+from top.functions import MatMulFunc
 from top.utils import str2dtype
-from benchmarks import matmul_benchmark
+from benchmarks import MatMulBenchmark
 
 
 def test_matmul(M, N, K, dtype, tune=False):
-    fn = matmul(M, N, K, dtype, tune=tune)
-    benchmark = matmul_benchmark(M, N, K, dtype)
+    fn = MatMulFunc(M, N, K, dtype, tune=tune)
+    benchmark = MatMulBenchmark(M, N, K, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check_fn(fn, *inputs)

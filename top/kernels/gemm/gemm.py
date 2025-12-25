@@ -4,7 +4,11 @@ from typing import Optional
 import itertools
 import torch
 from top.utils import get_sm_version
-from top.kernels import Kernel
+from top.kernels.kernel import Kernel
+
+__all__ = [
+    'gemm_kernel',
+]
 
 
 def _gemm_kernel(M, N, K, trans_A, trans_B, dtype='float16'):

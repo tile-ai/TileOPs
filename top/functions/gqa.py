@@ -1,8 +1,8 @@
 import torch
 from .function import Function
-from top.ops.gqa import gqa_fwd, gqa_bwd
+from top.ops import GroupQueryAttentionFwdOp, GroupQueryAttentionBwdOp
 
-__all__ = ['gqa_fn']
+__all__ = ['GroupQueryAttentionFunc']
 
 
 class gqa_ctx(torch.autograd.Function):
@@ -25,7 +25,7 @@ class gqa_ctx(torch.autograd.Function):
         return dQ, dK, dV, None, None
 
 
-class gqa_fn(Function):
+class GroupQueryAttentionFunc(Function):
 
     def __init__(self,
                  batch,
@@ -44,8 +44,10 @@ class gqa_fn(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = gqa_fwd(batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
-        self.bwd_op = gqa_bwd(batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
+        self.fwd_op = GroupQueryAttentionFwdOp(
+            batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
+        self.bwd_op = GroupQueryAttentionBwdOp(
+            batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         return gqa_ctx.apply(Q, K, V, self.fwd_op, self.bwd_op)

@@ -1,11 +1,11 @@
 import argparse
 import torch
-from top.layers import Linear
+from top.layers import LinearLayer
 from top.utils import str2dtype
 
 
 def test_linear(M, N, K, dtype, tune=False):
-    linear_layer = Linear(M, N, K, dtype=dtype, tune=tune)
+    linear_layer = LinearLayer(M, N, K, dtype=dtype, tune=tune)
     input = torch.randn(M, K, dtype=dtype, device='cuda', requires_grad=True)
 
     output = linear_layer(input)

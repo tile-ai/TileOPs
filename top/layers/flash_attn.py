@@ -1,9 +1,9 @@
 import torch
 from torch import nn
-from top import mha_fn, gqa_fn
+from top.functions import MultiHeadAttentionFunc, GroupQueryAttentionFunc
 
 
-class MHA(nn.Module):
+class MultiHeadAttentionLayer(nn.Module):
 
     def __init__(self, batch_size, heads, seq_len, dim, is_causal, dtype):
         super().__init__()
@@ -15,13 +15,13 @@ class MHA(nn.Module):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.fn = mha_fn(batch_size, heads, seq_len, dim, is_causal, dtype)
+        self.fn = MultiHeadAttentionFunc(batch_size, heads, seq_len, dim, is_causal, dtype)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         return self.fn(Q, K, V)
 
 
-class GQA(nn.Module):
+class GroupQueryAttentionLayer(nn.Module):
 
     def __init__(self, batch_size, heads, heads_kv, seq_len, dim, is_causal, dtype):
         super().__init__()
@@ -34,7 +34,8 @@ class GQA(nn.Module):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.fn = gqa_fn(batch_size, heads, heads_kv, seq_len, dim, is_causal, dtype)
+        self.fn = GroupQueryAttentionFunc(batch_size, heads, heads_kv, seq_len, dim, is_causal,
+                                          dtype)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         return self.fn(Q, K, V)

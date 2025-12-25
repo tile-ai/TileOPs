@@ -1,12 +1,13 @@
 import torch
 from .op import Op
-from top.kernels import mha_decode_kernel, Kernel
+from top.kernels.flash_decode import mha_decode_kernel
+from top.kernels.kernel import Kernel
 from typing import Optional, Dict
 
-__all__ = ["mha_decode"]
+__all__ = ["MultiHeadAttentionDecodeWithKVCacheOp"]
 
 
-class mha_decode(Op):
+class MultiHeadAttentionDecodeWithKVCacheOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

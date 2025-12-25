@@ -1,8 +1,8 @@
 import torch
 from .function import Function
-from top.ops.mha import mha_fwd, mha_bwd
+from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
 
-__all__ = ['mha_fn']
+__all__ = ['MultiHeadAttentionFunc']
 
 
 class mhc_ctx(torch.autograd.Function):
@@ -25,7 +25,7 @@ class mhc_ctx(torch.autograd.Function):
         return dQ, dK, dV, None, None
 
 
-class mha_fn(Function):
+class MultiHeadAttentionFunc(Function):
 
     def __init__(self, batch, heads, seq_len, dim, is_causal, dtype=torch.float16, tune=False):
         self.batch = batch
@@ -36,8 +36,10 @@ class mha_fn(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = mha_fwd(batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
-        self.bwd_op = mha_bwd(batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
+        self.fwd_op = MultiHeadAttentionFwdOp(
+            batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
+        self.bwd_op = MultiHeadAttentionBwdOp(
+            batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         return mhc_ctx.apply(Q, K, V, self.fwd_op, self.bwd_op)

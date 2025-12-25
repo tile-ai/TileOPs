@@ -1,13 +1,13 @@
 from benchmarks.benchmark import Benchmark
-from top.ops import mha_decode
+from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
 import torch
 from torch.nn import functional as F
 from torch.nn.attention import sdpa_kernel, SDPBackend
 
 
-class mha_decode_benchmark(Benchmark):
+class MultiHeadAttentionDecodeBenchmark(Benchmark):
 
-    op_type = mha_decode
+    op_type = MultiHeadAttentionDecodeWithKVCacheOp
 
     def __init__(self, batch, heads, seq_len_q, seq_len_kv, dim, dtype):
         self.batch = batch

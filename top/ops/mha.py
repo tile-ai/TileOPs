@@ -1,15 +1,17 @@
 import torch
 from .op import Op
-from top.kernels import (mha_fwd_kernel, mha_fwd_wgmma_pipelined_kernel,
-                         flashattn_bwd_preprocess_kernel, mha_bwd_kernel,
-                         mha_bwd_wgmma_pipelined_kernel, Kernel, flashattn_bwd_postprocess_kernel)
+from top.kernels.kernel import Kernel
+from top.kernels.flash_attn import (mha_fwd_kernel, mha_fwd_wgmma_pipelined_kernel,
+                                    flashattn_bwd_preprocess_kernel, mha_bwd_kernel,
+                                    mha_bwd_wgmma_pipelined_kernel,
+                                    flashattn_bwd_postprocess_kernel)
 from top.utils import is_hopper
 from typing import Optional, Dict
 
-__all__ = ['mha_fwd', 'mha_bwd']
+__all__ = ['MultiHeadAttentionFwdOp', 'MultiHeadAttentionBwdOp']
 
 
-class mha_fwd(Op):
+class MultiHeadAttentionFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -41,7 +43,7 @@ class mha_fwd(Op):
         return self.kernel(Q, K, V)
 
 
-class mha_bwd(Op):
+class MultiHeadAttentionBwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
