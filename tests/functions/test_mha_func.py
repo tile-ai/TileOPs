@@ -5,11 +5,10 @@ from benchmarks import MultiHeadAttentionBenchmark
 
 
 def test_mha_fn(B, S, H, D, causal, dtype):
-    fn = MultiHeadAttentionFunc(B, H, S, D, causal, dtype)
     benchmark = MultiHeadAttentionBenchmark(B, H, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check_fn(fn, *inputs)
+    benchmark.check_fn(MultiHeadAttentionFunc, *inputs)
 
 
 if __name__ == "__main__":
