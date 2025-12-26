@@ -1,6 +1,6 @@
 from .function import Function
-from .mha import MultiHeadAttentionFunc
-from .gqa import GroupQueryAttentionFunc, group_query_attention_func
+from .mha import MultiHeadAttentionFunc, multi_head_attention
+from .gqa import GroupQueryAttentionFunc, group_query_attention
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheFunc
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheFunc
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheFunc
@@ -16,5 +16,6 @@ __all__ = [
     "MultiHeadLatentAttentionDecodeWithKVCacheFunc",
     "DeepSeekSparseAttentionDecodeWithKVCacheFunc",
     "MatMulFunc",
-    "group_query_attention_func",
+    "group_query_attention",
+    "multi_head_attention",
 ]
