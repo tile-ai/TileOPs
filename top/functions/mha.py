@@ -7,10 +7,6 @@ __all__ = ['MultiHeadAttentionFunc', 'multi_head_attention']
 
 
 class mha_ctx(torch.autograd.Function):
-    """
-    Autograd function for multi-head attention operation.
-    Handles forward and backward passes for multi-head attention.
-    """
 
     @staticmethod
     def forward(ctx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,

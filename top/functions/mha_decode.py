@@ -6,9 +6,6 @@ __all__ = ['MultiHeadAttentionDecodeWithKVCacheFunc', 'multi_head_attention_deco
 
 
 class mha_decode_ctx(torch.autograd.Function):
-    """Autograd function for multi-head attention decode with KV cache operation.
-    Handles forward pass for multi-head attention with KV cache.
-    """
 
     @staticmethod
     def forward(ctx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,

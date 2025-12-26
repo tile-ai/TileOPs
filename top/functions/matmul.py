@@ -7,9 +7,6 @@ __all__ = ['MatMulFunc', 'matmul']
 
 
 class gemm_ctx(torch.autograd.Function):
-    """Autograd function for GEMM operation.
-    Handles forward and backward passes for general matrix multiplication.
-    """
 
     @staticmethod
     def forward(ctx, A: torch.Tensor, B: torch.Tensor, fwd_op: GemmOp, da_bwd_op: GemmOp,
@@ -56,10 +53,6 @@ class gemm_ctx(torch.autograd.Function):
 
 
 class MatMulFunc(Function):
-    """Function class for GEMM (General Matrix Multiplication) operation.
-    
-    This function performs general matrix multiplication with optimized forward and backward passes.
-    """
 
     def __init__(
         self,
