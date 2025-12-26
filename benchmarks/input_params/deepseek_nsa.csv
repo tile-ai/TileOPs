@@ -1,0 +1,2 @@
+batch,heads,seq_len,dim,is_causal,scale,block_size,groups,selected_blocks,tune
+2,16,64,32,True,0.1,32,2,32,False
