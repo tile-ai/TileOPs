@@ -1,6 +1,7 @@
 import torch
 from .function import Function
 from top.ops import GroupQueryAttentionFwdOp, GroupQueryAttentionBwdOp
+from typing import Tuple
 
 __all__ = ['GroupQueryAttentionFunc', 'group_query_attention_func']
 
@@ -8,7 +9,20 @@ __all__ = ['GroupQueryAttentionFunc', 'group_query_attention_func']
 class gqa_ctx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, Q, K, V, fwd_op, bwd_op):
+    def forward(ctx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+                fwd_op: GroupQueryAttentionFwdOp, bwd_op: GroupQueryAttentionBwdOp) -> torch.Tensor:
+        """Forward pass for group query attention.
+        
+        Args:
+            Q: Query tensor of shape (B, S, H, D)
+            K: Key tensor of shape (B, S, H_kv, D)
+            V: Value tensor of shape (B, S, H_kv, D)
+            fwd_op: Forward operation object
+            bwd_op: Backward operation object
+            
+        Returns:
+            Output tensor of shape (B, S, H, D)
+        """
         O, lse = fwd_op(Q, K, V)
 
         ctx.save_for_backward(Q, K, V, O, lse)
@@ -17,7 +31,21 @@ class gqa_ctx(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx, dO):
+    def backward(ctx,
+                 dO: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
+        """Backward pass for group query attention.
+        
+        Args:
+            dO: Gradient of output tensor of shape (B, S, H, D)
+            
+        Returns:
+            A tuple containing:
+            - Gradient of Q tensor of shape (B, S, H, D)
+            - Gradient of K tensor of shape (B, S, H_kv, D)
+            - Gradient of V tensor of shape (B, S, H_kv, D)
+            - None for fwd_op gradient
+            - None for bwd_op gradient
+        """
         Q, K, V, O, lse = ctx.saved_tensors
 
         dQ, dK, dV = ctx.bwd_op(Q, K, V, O, dO, lse)
@@ -28,14 +56,26 @@ class gqa_ctx(torch.autograd.Function):
 class GroupQueryAttentionFunc(Function):
 
     def __init__(self,
-                 batch,
-                 heads,
-                 heads_kv,
-                 seq_len,
-                 dim,
-                 is_causal,
-                 dtype=torch.float16,
-                 tune=False):
+                 batch: int,
+                 heads: int,
+                 heads_kv: int,
+                 seq_len: int,
+                 dim: int,
+                 is_causal: bool,
+                 dtype: torch.dtype = torch.float16,
+                 tune: bool = False):
+        """Initialize the GroupQueryAttentionFunc with parameters.
+        
+        Args:
+            batch: Batch size
+            heads: Number of query heads
+            heads_kv: Number of key-value heads
+            seq_len: Sequence length
+            dim: Dimension of the model
+            is_causal: Whether to apply causal mask
+            dtype: Data type of the tensors, defaults to torch.float16
+            tune: Whether to tune the operation, defaults to False
+        """
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -50,6 +90,16 @@ class GroupQueryAttentionFunc(Function):
             batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+        """Forward pass for group query attention.
+        
+        Args:
+            Q: Query tensor of shape (B, S, H, D)
+            K: Key tensor of shape (B, S, H_kv, D)
+            V: Value tensor of shape (B, S, H_kv, D)
+            
+        Returns:
+            Output tensor of shape (B, S, H, D)
+        """
         return gqa_ctx.apply(Q, K, V, self.fwd_op, self.bwd_op)
 
 
@@ -58,6 +108,21 @@ def group_query_attention_func(Q: torch.Tensor,
                                V: torch.Tensor,
                                is_causal: bool = False,
                                tune: bool = False) -> torch.Tensor:
+    """Apply group query attention mechanism to input tensors.
+    
+    Args:
+        Q: Query tensor of shape (B, S, H, D)
+        K: Key tensor of shape (B, S, H_kv, D)
+        V: Value tensor of shape (B, S, H_kv, D)
+        is_causal: Whether to apply causal mask, defaults to False
+        tune: Whether to tune the operation, defaults to False
+        
+    Returns:
+        Output tensor of shape (B, S, H, D) after applying group query attention
+        
+    Raises:
+        ValueError: If input tensors are not 4-dimensional or have inconsistent shapes/dtypes
+    """
 
     # Validate that Q, K, V are 4-dimensional tensors
     if Q.dim() != 4:
@@ -66,11 +131,6 @@ def group_query_attention_func(Q: torch.Tensor,
         raise ValueError(f"K must be 4-dimensional, but got {K.dim()} dimensions")
     if V.dim() != 4:
         raise ValueError(f"V must be 4-dimensional, but got {V.dim()} dimensions")
-
-    # Validate that dimensions are consistent (B, H, S, D)
-    if Q.shape != K.shape or Q.shape != V.shape:
-        raise ValueError(f"Q, K, V must have the same shape, "
-                         f"but got Q: {Q.shape}, K: {K.shape}, V: {V.shape}")
 
     # Validate that dtypes are consistent
     if Q.dtype != K.dtype or Q.dtype != V.dtype:
@@ -81,5 +141,10 @@ def group_query_attention_func(Q: torch.Tensor,
     B, S, H, D = Q.shape
 
     B, S, H_kv, D = K.shape
+
+    if H % H_kv != 0:
+        raise ValueError(
+            f"The number of query heads H must be divisible by the number of key/value heads H_kv, "
+            f"but got H: {H}, H_kv: {H_kv}")
 
     return GroupQueryAttentionFunc(B, H, H_kv, S, D, is_causal, Q.dtype, tune=tune).forward(Q, K, V)

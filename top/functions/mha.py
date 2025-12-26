@@ -55,58 +55,68 @@ class mha_ctx(torch.autograd.Function):
 
 
 class MultiHeadAttentionFunc(Function):
+
+    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype=torch.float16, tune=False):
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim = dim
+        self.is_causal = is_causal
+
+        self.dtype = dtype
+
+        self.fwd_op = MultiHeadAttentionFwdOp(
+            batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
+        self.bwd_op = MultiHeadAttentionBwdOp(
+            batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
+
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+        return mha_ctx.apply(Q, K, V, self.fwd_op, self.bwd_op)
+
+
+def multi_head_attention_func(Q: torch.Tensor,
+                              K: torch.Tensor,
+                              V: torch.Tensor,
+                              is_causal: bool = False,
+                              tune: bool = False) -> torch.Tensor:
+    """Apply multi-head attention mechanism to input tensors.
+
+    Args:
+        Q: Query tensor of shape (B, S, H, D)
+        K: Key tensor of shape (B, S, H, D)
+        V: Value tensor of shape (B, S, H, D)
+        is_causal: Whether to apply causal mask, defaults to False
+        tune: Whether to tune the operation, defaults to False
+
+    Returns:
+        Output tensor of shape (B, S, H, D) after applying multi-head attention
+
+    Raises:
+        ValueError: If input tensors are not 4-dimensional or have inconsistent shapes/dtypes
     """
-    Multi-Head Attention Function implementation.
-    
-    This class provides a multi-head attention function with forward and backward passes.
-    It validates input tensors and returns the computed result directly.
-    """
 
-    def __new__(cls,
-                Q: torch.Tensor,
-                K: torch.Tensor,
-                V: torch.Tensor,
-                is_causal: bool = False,
-                tune: bool = False):
-        """
-        Create and compute the MultiHeadAttentionFunc, returning the result tensor directly.
-        
-        Args:
-            Q: Query tensor of shape (B, H, S, D)
-            K: Key tensor of shape (B, H, S, D)
-            V: Value tensor of shape (B, H, S, D)
-            is_causal: Whether to apply causal masking (default: False)
-            tune: Whether to tune the kernel for performance (default: False)
-            
-        Returns:
-            Output tensor of shape (B, H, S, D)
-            
-        Raises:
-            ValueError: If input tensors are invalid
-        """
-        # Validate that Q, K, V are 4-dimensional tensors
-        if Q.dim() != 4:
-            raise ValueError(f"Q must be 4-dimensional, but got {Q.dim()} dimensions")
-        if K.dim() != 4:
-            raise ValueError(f"K must be 4-dimensional, but got {K.dim()} dimensions")
-        if V.dim() != 4:
-            raise ValueError(f"V must be 4-dimensional, but got {V.dim()} dimensions")
+    # Validate that Q, K, V are 4-dimensional tensors
+    if Q.dim() != 4:
+        raise ValueError(f"Q must be 4-dimensional, but got {Q.dim()} dimensions")
+    if K.dim() != 4:
+        raise ValueError(f"K must be 4-dimensional, but got {K.dim()} dimensions")
+    if V.dim() != 4:
+        raise ValueError(f"V must be 4-dimensional, but got {V.dim()} dimensions")
 
-        # Validate that dimensions are consistent (B, H, S, D)
-        if Q.shape != K.shape or Q.shape != V.shape:
-            raise ValueError(f"Q, K, V must have the same shape, "
-                             f"but got Q: {Q.shape}, K: {K.shape}, V: {V.shape}")
+    # Validate that dimensions are consistent (B, H, S, D)
+    if Q.shape != K.shape or Q.shape != V.shape:
+        raise ValueError(f"Q, K, V must have the same shape, "
+                         f"but got Q: {Q.shape}, K: {K.shape}, V: {V.shape}")
 
-        # Validate that dtypes are consistent
-        if Q.dtype != K.dtype or Q.dtype != V.dtype:
-            raise ValueError(f"Q, K, V must have the same dtype, "
-                             f"but got Q: {Q.dtype}, K: {K.dtype}, V: {V.dtype}")
+    # Validate that dtypes are consistent
+    if Q.dtype != K.dtype or Q.dtype != V.dtype:
+        raise ValueError(f"Q, K, V must have the same dtype, "
+                         f"but got Q: {Q.dtype}, K: {K.dtype}, V: {V.dtype}")
 
-        # Extract dimension information
-        B, S, H, D = Q.shape
-        # Create forward and backward operations
-        fwd_op = MultiHeadAttentionFwdOp(B, H, S, D, is_causal, Q.dtype, tune=tune)
-        bwd_op = MultiHeadAttentionBwdOp(B, H, S, D, is_causal, Q.dtype, tune=tune)
+    # Extract dimension information
+    B = Q.shape[0]
+    S = Q.shape[1]
+    H = Q.shape[2]
+    D = Q.shape[3]
 
-        # Return the computed result directly
-        return mha_ctx.apply(Q, K, V, fwd_op, bwd_op)
+    return MultiHeadAttentionFunc(B, H, S, D, is_causal, Q.dtype, tune=tune).forward(Q=Q, K=K, V=V)
