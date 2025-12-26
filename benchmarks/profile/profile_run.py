@@ -90,6 +90,29 @@ def build_gqa_decode_cmd(args_dict):
     return cmd_args
 
 
+def build_nsa_cmd(args_dict):
+    """
+    Build command arguments for Native Sparse Attention test script
+    """
+    cmd_args = [
+        '--batch',
+        str(args_dict['batch']), '--heads',
+        str(args_dict['heads']), '--seq_len',
+        str(args_dict['seq_len']), '--dim',
+        str(args_dict['dim']), '--scale',
+        str(args_dict.get('scale', 0.1)), '--block_size',
+        str(args_dict['block_size']), '--groups',
+        str(args_dict['groups']), '--selected_blocks',
+        str(args_dict['selected_blocks']),
+    ]
+
+    if args_dict.get('is_causal', 'True').lower() == 'true':
+        cmd_args.append('--is_causal')
+    if args_dict.get('tune', 'False').lower() == 'true':
+        cmd_args.append('--tune')
+    return cmd_args
+
+
 def build_mla_decode_cmd(args_dict):
     """
     Build command arguments for MLA decode test script
@@ -196,6 +219,8 @@ def run_test_script(script_path, args_dict):
         cmd_args = build_mla_decode_cmd(args_dict)
     elif 'sparse_mla' in script_name:
         cmd_args = build_sparse_mla_cmd(args_dict)
+    elif 'deepseek_nsa' in script_name or 'nsa' in script_name:
+        cmd_args = build_nsa_cmd(args_dict)
     elif 'mha' in script_name:
         cmd_args = build_mha_cmd(args_dict)
     elif 'gqa' in script_name:

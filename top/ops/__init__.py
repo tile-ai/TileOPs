@@ -6,6 +6,7 @@ from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
+from .deepseek_nsa import NativeSparseAttentionForwardOp
 
 __all__ = [
     "Op",
@@ -18,4 +19,5 @@ __all__ = [
     "GroupQueryAttentionDecodeWithKVCacheOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
+    "NativeSparseAttentionForwardOp",
 ]
