@@ -1,11 +1,11 @@
 import argparse
-from top.functions import MultiHeadAttentionDecodeWithKVCacheFunc
+from top.functions import multi_head_attention_decode_with_kvcache
 from top.utils import str2dtype
 from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
 def test_mha_decode_fn(B, S_q, S_kv, H, D, dtype):
-    fn = MultiHeadAttentionDecodeWithKVCacheFunc(B, H, S_q, S_kv, D, dtype)
+    fn = multi_head_attention_decode_with_kvcache(B, H, S_q, S_kv, D, dtype)
     benchmark = MultiHeadAttentionDecodeBenchmark(B, H, S_q, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()
