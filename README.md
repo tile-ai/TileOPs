@@ -1,24 +1,64 @@
-# TileOPs (TOP)
+<div align="center">
+  <img src="assets/logo.png" width="350"/>
+  <h1>TileOPs (TOP): Operator Library for LLMs Built on TileLang</h1>
+  <p>
+    <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version" height="20"></a>
+  </p>
+  <p>
+    <a href="#-install-with-pip"><b>Installation</b></a> |
+    <a href="#-quick-start"><b>Getting Started</b></a> |
+    <a href="#documents"><b>Documents</b></a>
+  </p>
+</div>
 
-**TileOPs (TOP)** is a high-performance machine learning operator collections built on top of [TileLang](https://github.com/tile-ai/tilelang). It offers efficient, modular, and composable implementations optimized for AI workloads.
+**TileOPs (TOP)** is a high-performance operator library for large language models (LLMs) built on **[TileLang](https://github.com/tile-ai/tilelang)**. It offers efficient, modular, and composable implementations for AI workloads, especially for LLMs.
 
-Note: TileOPs is still under rapid development.
+The core features of TileOPs include:
 
----
+* **Out-of-the-box Operator Library**: A growing collection of production-ready operators commonly used in LLM workloads, designed with clear abstractions and modular building blocks. These operators can be used directly or easily extended for custom research and system integration.
+* **Efficient Attention Kernels for LLMs**: Highly optimized attention implementations, including MHA/GQA (implemented FA2 on Ampere-like GPUs and FA3 on Hopper), DeepSeek-MLA, and DeepSeek-DSA.
+* **Reference Implementation and Learning Ground of TileLang**: TileOPs serves as a canonical example of how to write performant, maintainable kernels using TileLang. It demonstrates best practices in tiling strategies, memory hierarchy utilization, and warp-/block-level coordination, making it a practical learning resource for compiler and kernel developers.
+* **Auto-Tuning**: Built-in auto-tuning support to explore tile sizes, pipelines, and scheduling parameters, enabling kernels to adapt efficiently to different GPU architectures and workload characteristics with minimal manual effort.
+* **CUDA-Graph and torch.compile Compatibility**: TileOPs APIs are fully compatible with CUDA-Graph capture and PyTorch ``torch.compile``, allowing seamless integration into modern training and inference pipelines with reduced launch overhead and improved end-to-end performance.
+<!-- * **torch.autograd Compatibility**: -->
+* **Lightweight Dependencies**: TileOPs depends only on TileLang and PyTorch, keeping the software stack minimal and easy to integrate.
+
+
+
+## Benchmark Summary
+
+TODO
+
+<!-- DeepSeek Sparase Attention Decode
 
 ![DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM](https://raw.githubusercontent.com/tile-ai/TileOPs/main/docs/figures/sparse_mla_perf.png)
-*DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM*
+*DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM* -->
 
-## 📦 Installation
+
+
+## Support Matrix
+
+| **Operator** | FWD/BWD | **Data Type** | **Tested Platform** |
+|:------------:|:-------:|:---------:|:-------------------:|
+| DeepSeek Sparse Attention (DSA) Decode | FWD | BF16/FP16 | Hopper(SM_90) |
+| DeepSeek Multi-Head Latent Attention (MLA) Decode | FWD | BF16/FP16 | Hopper(SM_90) |
+| Multi-Head Attention | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
+| Group Query Attention | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
+| Multi-Head Attention Decode | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
+| Group Query Attention Decode | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
+| MatMul | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
+
+
+
+## 📦 Install with pip
 
 ### Requirements
 
-- Python 3.8+
-- PyTorch >= 2.1
-- GLIBCXX_3.4.32
-- [TileLang](https://github.com/tile-ai/tilelang)
+- Python >= 3.8
+- Torch >= 2.1
+- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.7
 
-### Method 1: Install with Pip
+### Method 1: Install from PyPI
 
 ```bash
 pip install tileops
@@ -32,97 +72,22 @@ cd TileOPs
 pip install -e '.[dev]' -v # remove -e option if you don't want to install in editable mode, -v for verbose output
 ```
 
-## 🚀 Quick Usage
+## 🚀 Quick Start
 
-### Sparse MLA
+### Example: Multi-Head Attention Decode
 
-```python
-import torch
-from top import SparseMLAKernel
 
-batch_size = 1
-seq_len = 1024
-seq_len_kv = 2048
-q_start_index_s = 1024
-n_heads = 128
-head_dim = 512
-tail_dim = 64
-topk = 2048
-kv_stride = 1
-kv_group = 1
-sm_scale = None
 
-sparse_mla = SparseMLAKernel(
-    batch=batch_size,
-    seq_len=seq_len,
-    seq_len_kv=seq_len_kv,
-    q_start_index_s=q_start_index_s,
-    heads=n_heads,
-    dim=head_dim,
-    tail_dim=tail_dim,
-    topk=topk,
-    kv_stride=kv_stride,
-    kv_group=kv_group,
-    sm_scale=sm_scale,
-    is_casual=True,
-    dtype=torch.bfloat16,
-    device='cuda',
-)
 
-# Evaluate the Sparse MLA kernel performance
-sparse_mla.check()
-latency = sparse_mla.profile()
-print(f"Latency: {latency:.4f} ms")
-print(f'fwd tflops = ',
-        (batch_size * seq_len * (head_dim + tail_dim + head_dim) * topk * 2 * n_heads) / (latency * 1e-3) / 1e12)
-```
+## Documents
 
-### MLA
+### Hierarchical APIs
 
-```python
-import torch
-import top
-from top import MLAKernel
+TileOPs is structured around four hierarchical key concepts, each representing a distinct level of abstraction. Higher-level components are composed from, or delegate execution to, the next lower level.
 
-device = "cuda"
-dtype = torch.float16
+- **Layer**: A high-level, user-facing abstraction analogous to ``torch.nn.Module``. It manages stateful parameters.
+- **Function**: A stateless, functional abstraction analogous to ``torch.nn.functional``. Functions are fully compatible with CUDA-Graph capture, ``torch.compile``, and ``torch.autograd``.
+- **Op**: determines the implementation for a given shape and hardware, dispatching to the correct **Kernel** and providing unit test and benchmark. Ops are fully compatible with CUDA-Graph capture and ``torch.compile``.
+- **Kernel**: Tilelang-based kernels with hardware-specific optimizations.
 
-batch = 128
-heads = 64
-kv_heads = 1
-kv_ctx = 8192
-dim = 512
-pe_dim = 64
 
-# Query input: [batch, heads, dim]
-q = torch.randn(batch, heads, dim, device=device, dtype=dtype)
-
-# Query positional encoding: [batch, heads, pe_dim]
-q_pe = torch.randn(batch, heads, pe_dim, device=device, dtype=dtype)
-
-# KV cache input: [batch, kv_ctx, kv_heads, dim]
-kv = torch.randn(batch, kv_ctx, kv_heads, dim, device=device, dtype=dtype)
-
-# KV positional encoding: [batch, kv_ctx, kv_heads, pe_dim]
-k_pe = torch.randn(batch, kv_ctx, kv_heads, pe_dim, device=device, dtype=dtype)
-
-# Use MLA kernel
-block_N = 64
-block_H = 64
-num_split = 1
-
-mla = MLAKernel(batch, heads, kv_heads, kv_ctx, dim, pe_dim, block_N, block_H, num_split)
-
-out = mla(q, q_pe, kv, k_pe)
-```
-## Design
-
-### Hierarchical Concepts
-There are 4 hierarchical key concepts in TileOPs, each layer stands for a different level of abstraction and is built from or delegates to the next lower level.
-
-- **Layer**: **Function**s that are equipped with runtime elements (e.g. Weights, Buffers, etc.) 
-- **Function**: defines computation and is implemented **Op**s for forward and backward.
-- **Op**: determines the implementation for a given shape and hardware, dispatching to the correct **Kernel** and providing unit test and benchmark.
-- **Kernel**: Tilelang-based kernels for hardware-specific logic.
-
-## Acknowledgments
