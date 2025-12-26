@@ -19,9 +19,9 @@ class mha_ctx(torch.autograd.Function):
         Forward pass for multi-head attention.
         
         Args:
-            Q: Query tensor of shape (B, H, S, D)
-            K: Key tensor of shape (B, H, S, D)
-            V: Value tensor of shape (B, H, S, D)
+            Q: Query tensor of shape (B, S, H, D)
+            K: Key tensor of shape (B, S, H, D)
+            V: Value tensor of shape (B, S, H, D)
             fwd_op: Forward operation instance
             bwd_op: Backward operation instance
             
