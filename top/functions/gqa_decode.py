@@ -14,7 +14,7 @@ class gqa_decode_ctx(torch.autograd.Function):
         
         Args:
             ctx: Context object for saving tensors for backward pass
-            Q: Query tensor of shape (B, S_q, H, D)
+            Q: Query tensor of shape (B, H, D)
             K: Key tensor of shape (B, S_kv, G, D)
             V: Value tensor of shape (B, S_kv, G, D)
             mask: Attention mask tensor
@@ -88,8 +88,8 @@ def group_query_attention_decode_with_kvcache(Q: torch.Tensor,
     typically used in autoregressive decoding scenarios to avoid recomputing previous tokens.
 
     Args:
-        Q: Query tensor of shape (B, S_q, H, D), where B is batch size, 
-           S_q is query sequence length, H is number of heads, D is head dimension
+        Q: Query tensor of shape (B, H, D), where B is batch size, 
+           H is number of heads, D is head dimension
         K: Key tensor of shape (B, S_kv, G, D) - represents the cached keys,
            where S_kv is key-value sequence length, G is number of key-value groups
         V: Value tensor of shape (B, S_kv, G, D) - represents the cached values
@@ -97,7 +97,7 @@ def group_query_attention_decode_with_kvcache(Q: torch.Tensor,
         tune: Whether to tune the operation for performance, defaults to False
 
     Returns:
-        Output tensor of shape (B, S_q, H, D) after applying group query attention with KV cache
+        Output tensor of shape (B, H, D) after applying group query attention with KV cache
 
     Raises:
         ValueError: If input tensors are not 4-dimensional or have inconsistent shapes/dtypes
