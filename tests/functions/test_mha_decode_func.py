@@ -5,11 +5,10 @@ from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
 def test_mha_decode_fn(B, S_q, S_kv, H, D, dtype):
-    fn = multi_head_attention_decode_with_kvcache(B, H, S_q, S_kv, D, dtype)
     benchmark = MultiHeadAttentionDecodeBenchmark(B, H, S_q, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check_fn(fn, *inputs, grad=False)
+    benchmark.check_fn(multi_head_attention_decode_with_kvcache, *inputs, grad=False)
 
 
 if __name__ == "__main__":
