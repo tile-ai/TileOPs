@@ -2,7 +2,11 @@ import torch
 from .function import Function
 from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
 
-__all__ = ['MultiHeadAttentionDecodeWithKVCacheFunc', 'multi_head_attention_decode_with_kvcache']
+__all__ = [
+    'MultiHeadAttentionDecodeWithKVCacheFunc',
+    'multi_head_attention_decode_with_kvcache',
+    'mha_decode_with_kvcache',
+]
 
 
 class mha_decode_ctx(torch.autograd.Function):
@@ -134,3 +138,6 @@ def multi_head_attention_decode_with_kvcache(Q: torch.Tensor,
     return MultiHeadAttentionDecodeWithKVCacheFunc(
         B, H, S_q, S_kv, D, Q.dtype, tune=tune).forward(
             Q=Q, K=K, V=V)
+
+
+mha_decode_with_kvcache = multi_head_attention_decode_with_kvcache

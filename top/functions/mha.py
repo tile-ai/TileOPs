@@ -3,7 +3,7 @@ from .function import Function
 from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
 from typing import Tuple
 
-__all__ = ['MultiHeadAttentionFunc', 'multi_head_attention']
+__all__ = ['MultiHeadAttentionFunc', 'multi_head_attention', 'mha']
 
 
 class mha_ctx(torch.autograd.Function):
@@ -116,3 +116,6 @@ def multi_head_attention(Q: torch.Tensor,
     D = Q.shape[3]
 
     return MultiHeadAttentionFunc(B, H, S, D, is_causal, Q.dtype, tune=tune).forward(Q=Q, K=K, V=V)
+
+
+mha = multi_head_attention

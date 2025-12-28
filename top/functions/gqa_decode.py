@@ -2,7 +2,10 @@ import torch
 from .function import Function
 from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
-__all__ = ['GroupQueryAttentionDecodeWithKVCacheFunc', 'group_query_attention_decode_with_kvcache']
+__all__ = [
+    'GroupQueryAttentionDecodeWithKVCacheFunc', 'group_query_attention_decode_with_kvcache',
+    'gqa_decode_with_kvcache'
+]
 
 
 class gqa_decode_ctx(torch.autograd.Function):
@@ -143,3 +146,6 @@ def group_query_attention_decode_with_kvcache(Q: torch.Tensor,
     return GroupQueryAttentionDecodeWithKVCacheFunc(
         B, H, G, S_kv, D, Q.dtype, tune=tune).forward(
             Q=Q, K=K, V=V, mask=mask)
+
+
+gqa_decode_with_kvcache = group_query_attention_decode_with_kvcache

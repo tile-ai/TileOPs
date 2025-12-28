@@ -4,7 +4,7 @@ from top.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 
 __all__ = [
     'MultiHeadLatentAttentionDecodeWithKVCacheFunc',
-    'multi_head_latent_attention_decode_with_kvcache'
+    'multi_head_latent_attention_decode_with_kvcache', 'mla_decode_with_kvcache'
 ]
 
 
@@ -157,3 +157,6 @@ def multi_head_latent_attention_decode_with_kvcache(Q: torch.Tensor,
     return MultiHeadLatentAttentionDecodeWithKVCacheFunc(
         B, H, H_kv, S_kv, D, pe_dim, Q.dtype, tune=tune).forward(
             Q=Q, Q_pe=Q_pe, K=K, K_pe=K_pe)
+
+
+mla_decode_with_kvcache = multi_head_latent_attention_decode_with_kvcache

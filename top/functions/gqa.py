@@ -3,7 +3,7 @@ from .function import Function
 from top.ops import GroupQueryAttentionFwdOp, GroupQueryAttentionBwdOp
 from typing import Tuple
 
-__all__ = ['GroupQueryAttentionFunc', 'group_query_attention']
+__all__ = ['GroupQueryAttentionFunc', 'group_query_attention', 'gqa']
 
 
 class gqa_ctx(torch.autograd.Function):
@@ -148,3 +148,6 @@ def group_query_attention(Q: torch.Tensor,
             f"but got H: {H}, H_kv: {H_kv}")
 
     return GroupQueryAttentionFunc(B, H, H_kv, S, D, is_causal, Q.dtype, tune=tune).forward(Q, K, V)
+
+
+gqa = group_query_attention
