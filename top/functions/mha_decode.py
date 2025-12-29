@@ -80,15 +80,15 @@ class MultiHeadAttentionDecodeWithKVCacheFunc(Function):
 
 
 def multi_head_attention_decode_with_kvcache(q: torch.Tensor,
-                                             k: torch.Tensor,
-                                             v: torch.Tensor,
+                                             k_cache: torch.Tensor,
+                                             v_cache: torch.Tensor,
                                              tune: bool = False) -> torch.Tensor:
     """Apply multi-head attention decode with KV cache mechanism to input tensors.
 
     Args:
         q: Query tensor of shape (B, S_q, H, D)
-        k: Key tensor of shape (B, S_kv, H, D) - represents the cached keys
-        v: Value tensor of shape (B, S_kv, H, D) - represents the cached values
+        k_cache: Key tensor of shape (B, S_kv, H, D) - represents the cached keys
+        v_cache: Value tensor of shape (B, S_kv, H, D) - represents the cached values
         tune: Whether to tune the operation, defaults to False
 
     Returns:
@@ -101,43 +101,43 @@ def multi_head_attention_decode_with_kvcache(q: torch.Tensor,
     # Validate that q, k, v are 4-dimensional tensors
     if q.dim() != 4:
         raise ValueError(f"q must be 4-dimensional, but got {q.dim()} dimensions")
-    if k.dim() != 4:
-        raise ValueError(f"k must be 4-dimensional, but got {k.dim()} dimensions")
-    if v.dim() != 4:
-        raise ValueError(f"v must be 4-dimensional, but got {v.dim()} dimensions")
+    if k_cache.dim() != 4:
+        raise ValueError(f"k_cache must be 4-dimensional, but got {k_cache.dim()} dimensions")
+    if v_cache.dim() != 4:
+        raise ValueError(f"v_cache must be 4-dimensional, but got {v_cache.dim()} dimensions")
 
     # Validate that dimensions are consistent (B, H, S, D)
     # B and H must be the same across q, k, v
-    if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
-        raise ValueError(f"q, k, v must have the same batch size, "
-                         f"but got q: {q.shape[0]}, k: {k.shape[0]}, v: {v.shape[0]}")
-    if q.shape[2] != k.shape[2] or q.shape[2] != v.shape[2]:
-        raise ValueError(f"q, k, v must have the same number of heads, "
-                         f"but got q: {q.shape[2]}, k: {k.shape[2]}, v: {v.shape[2]}")
-    if k.shape[1] != v.shape[1]:
-        raise ValueError(f"k and v must have the same sequence length, "
-                         f"but got k: {k.shape[1]}, v: {v.shape[1]}")
+    if q.shape[0] != k_cache.shape[0] or q.shape[0] != v_cache.shape[0]:
+        raise ValueError(f"q, k_cache, v_cache must have the same batch size, "
+                         f"but got q: {q.shape[0]}, k: {k_cache.shape[0]}, v: {v_cache.shape[0]}")
+    if q.shape[2] != k_cache.shape[2] or q.shape[2] != v_cache.shape[2]:
+        raise ValueError(f"q, k_cache, v_cache must have the same number of heads, "
+                         f"but got q: {q.shape[2]}, k: {k_cache.shape[2]}, v: {v_cache.shape[2]}")
+    if k_cache.shape[1] != v_cache.shape[1]:
+        raise ValueError(f"k_cache and v_cache must have the same sequence length, "
+                         f"but got k: {k_cache.shape[1]}, v: {v_cache.shape[1]}")
 
     # Check that the embedding dimension is consistent
-    if q.shape[3] != k.shape[3] or q.shape[3] != v.shape[3]:
-        raise ValueError(f"q, k, v must have the same embedding dimension, "
-                         f"but got q: {q.shape[3]}, k: {k.shape[3]}, v: {v.shape[3]}")
+    if q.shape[3] != k_cache.shape[3] or q.shape[3] != v_cache.shape[3]:
+        raise ValueError(f"q, k_cache, v_cache must have the same embedding dimension, "
+                         f"but got q: {q.shape[3]}, k: {k_cache.shape[3]}, v: {v_cache.shape[3]}")
 
     # Validate that dtypes are consistent
-    if q.dtype != k.dtype or q.dtype != v.dtype:
-        raise ValueError(f"q, k, v must have the same dtype, "
-                         f"but got q: {q.dtype}, k: {k.dtype}, v: {v.dtype}")
+    if q.dtype != k_cache.dtype or q.dtype != v_cache.dtype:
+        raise ValueError(f"q, k_cache, v_cache must have the same dtype, "
+                         f"but got q: {q.dtype}, k: {k_cache.dtype}, v: {v_cache.dtype}")
 
     # Extract dimension information
     B = q.shape[0]
     S_q = q.shape[1]  # Sequence length of Query
     H = q.shape[2]  # Number of heads
     D = q.shape[3]  # Embedding dimension
-    S_kv = k.shape[1]  # Sequence length of KV cache
+    S_kv = k_cache.shape[1]  # Sequence length of KV cache
 
     return MultiHeadAttentionDecodeWithKVCacheFunc(
         B, H, S_q, S_kv, D, q.dtype, tune=tune).forward(
-            q=q, k=k, v=v)
+            q=q, k=k_cache, v=v_cache)
 
 
 mha_decode_with_kvcache = multi_head_attention_decode_with_kvcache

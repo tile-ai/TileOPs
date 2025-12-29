@@ -64,5 +64,5 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
             dtype,
             tune=tune)
 
-    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor):
-        return sparse_mla_ctx.apply(q, kv, indices, self.fwd_op)
+    def forward(self, q: torch.Tensor, kv_cache: torch.Tensor, indices: torch.Tensor):
+        return sparse_mla_ctx.apply(q, kv_cache, indices, self.fwd_op)
