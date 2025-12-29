@@ -11,7 +11,7 @@ __all__ = [
 class gqa_decode_ctx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor,
+    def forward(ctx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                 fwd_op: GroupQueryAttentionDecodeWithKVCacheOp) -> torch.Tensor:
         """Forward pass for group query attention with KV cache.
         
@@ -20,13 +20,12 @@ class gqa_decode_ctx(torch.autograd.Function):
             Q: Query tensor of shape (B, H, D)
             K: Key tensor of shape (B, S_kv, G, D)
             V: Value tensor of shape (B, S_kv, G, D)
-            mask: Attention mask tensor
             fwd_op: Forward operation instance
             
         Returns:
             Output tensor of the same shape as input Q
         """
-        O = fwd_op(Q, K, V, mask)
+        O = fwd_op(Q, K, V)
         return O
 
     @staticmethod
@@ -75,15 +74,13 @@ class GroupQueryAttentionDecodeWithKVCacheFunc(Function):
         self.fwd_op = GroupQueryAttentionDecodeWithKVCacheOp(
             batch, heads, groups, seqlen_kv, dim, dtype, tune=tune)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                mask: torch.Tensor) -> torch.Tensor:
-        return gqa_decode_ctx.apply(Q, K, V, mask, self.fwd_op)
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+        return gqa_decode_ctx.apply(Q, K, V, self.fwd_op)
 
 
 def group_query_attention_decode_with_kvcache(Q: torch.Tensor,
                                               K: torch.Tensor,
                                               V: torch.Tensor,
-                                              mask: torch.Tensor,
                                               tune: bool = False) -> torch.Tensor:
     """Apply group query attention decode with KV cache mechanism to input tensors.
 
@@ -96,7 +93,6 @@ def group_query_attention_decode_with_kvcache(Q: torch.Tensor,
         K: Key tensor of shape (B, S_kv, G, D) - represents the cached keys,
            where S_kv is key-value sequence length, G is number of key-value groups
         V: Value tensor of shape (B, S_kv, G, D) - represents the cached values
-        mask: Attention mask tensor
         tune: Whether to tune the operation for performance, defaults to False
 
     Returns:
@@ -145,7 +141,7 @@ def group_query_attention_decode_with_kvcache(Q: torch.Tensor,
 
     return GroupQueryAttentionDecodeWithKVCacheFunc(
         B, H, G, S_kv, D, Q.dtype, tune=tune).forward(
-            Q=Q, K=K, V=V, mask=mask)
+            Q=Q, K=K, V=V)
 
 
 gqa_decode_with_kvcache = group_query_attention_decode_with_kvcache

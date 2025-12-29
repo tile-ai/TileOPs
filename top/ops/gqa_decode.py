@@ -35,6 +35,5 @@ class GroupQueryAttentionDecodeWithKVCacheOp(Op):
     def default_kernel_map(self):
         return {"gqa_decode_kernel": gqa_decode_kernel}
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                mask: torch.Tensor) -> torch.Tensor:
-        return self.kernel(Q, K, V, mask)
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+        return self.kernel(Q, K, V)
