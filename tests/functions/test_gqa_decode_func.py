@@ -1,5 +1,5 @@
 import argparse
-from top.functions import gqa_decode_with_kvcache
+from top.functions import gqa_decode_with_kvcache, GroupQueryAttentionDecodeWithKVCacheFunc
 from top.utils import str2dtype
 from benchmarks import GroupQueryAttentionDecodeBenchmark
 
@@ -8,7 +8,13 @@ def test_gqa_decode_fn(B, H, S_kv, D, G, dtype):
     benchmark = GroupQueryAttentionDecodeBenchmark(B, H, G, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()
+
+    print("=========Testing gqa decode function inference=========")
     benchmark.check_fn(gqa_decode_with_kvcache, *inputs, grad=False)
+
+    print("=========Testing gqa decode function class=========")
+    fn = GroupQueryAttentionDecodeWithKVCacheFunc(B, H, G, S_kv, D, dtype)
+    benchmark.check_fn(fn, *inputs, grad=False)
 
 
 if __name__ == "__main__":

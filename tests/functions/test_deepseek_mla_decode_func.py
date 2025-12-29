@@ -1,5 +1,5 @@
 import argparse
-from top.functions import mla_decode_with_kvcache
+from top.functions import mla_decode_with_kvcache, MultiHeadLatentAttentionDecodeWithKVCacheFunc
 from top.layers import MultiHeadLatentAttentionDecodeLayer
 from top.utils import str2dtype
 from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
@@ -13,8 +13,17 @@ def test_mla_decode_fn(B, kv_head_num, S_kv, H, D, Pe_D, dtype):
     inputs = benchmark.gen_inputs()
 
     try:
-        print("Testing mla_fn...")
+        print("Testing mla_fn interface...")
         benchmark.check_fn(mla_decode_with_kvcache, *inputs, grad=False)
+        print("✅ mla_fn test passed")
+    except Exception as e:
+        print(f"❌ mla_fn test failed: {e}")
+        raise
+
+    try:
+        print("Testing mla_fn class...")
+        fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
+        benchmark.check_fn(fn, *inputs, grad=False)
         print("✅ mla_fn test passed")
     except Exception as e:
         print(f"❌ mla_fn test failed: {e}")

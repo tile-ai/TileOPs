@@ -1,5 +1,5 @@
 import argparse
-from top.functions import gqa
+from top.functions import gqa, GroupQueryAttentionFunc
 from top.utils import str2dtype
 from benchmarks import GroupQueryAttentionBenchmark
 
@@ -8,7 +8,13 @@ def test_gqa_fn(B, S, H, H_kv, D, causal, dtype):
     benchmark = GroupQueryAttentionBenchmark(B, H, H_kv, S, D, causal, dtype)
 
     inputs = benchmark.gen_inputs()
+
+    print("=========Testing gqa function inference=========")
     benchmark.check_fn(gqa, *inputs)
+
+    print("=========Testing gqa function class=========")
+    fn = GroupQueryAttentionFunc(B, H, H_kv, S, D, causal, dtype)
+    benchmark.check_fn(fn, *inputs)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 import argparse
-from top.functions import mha_decode_with_kvcache
+from top.functions import mha_decode_with_kvcache, MultiHeadAttentionDecodeWithKVCacheFunc
 from top.utils import str2dtype
 from benchmarks import MultiHeadAttentionDecodeBenchmark
 
@@ -8,7 +8,13 @@ def test_mha_decode_fn(B, S_q, S_kv, H, D, dtype):
     benchmark = MultiHeadAttentionDecodeBenchmark(B, H, S_q, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()
+
+    print("=========Testing mha decode function inference=========")
     benchmark.check_fn(mha_decode_with_kvcache, *inputs, grad=False)
+
+    print("=========Testing mha decode function class=========")
+    fn = MultiHeadAttentionDecodeWithKVCacheFunc(B, H, S_q, S_kv, D, dtype)
+    benchmark.check_fn(fn, *inputs, grad=False)
 
 
 if __name__ == "__main__":
