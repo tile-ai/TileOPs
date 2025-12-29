@@ -14,7 +14,7 @@ class sparse_mla_ctx(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dO):
-        raise NotImplementedError("Backward pass is not implemented for sparse MLA.")
+        raise RuntimeError("Inference-only op")
 
 
 class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):

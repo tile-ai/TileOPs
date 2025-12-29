@@ -38,9 +38,9 @@ class gqa_decode_ctx(torch.autograd.Function):
             dO: Gradient of the output tensor
             
         Raises:
-            NotImplementedError: Backward pass is not implemented for gqa_decode
+            RuntimeError: Inference-only op
         """
-        raise NotImplementedError("Backward pass is not implemented for gqa_decode.")
+        raise RuntimeError("Inference-only op")
 
 
 class GroupQueryAttentionDecodeWithKVCacheFunc(Function):
