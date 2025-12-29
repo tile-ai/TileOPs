@@ -39,8 +39,8 @@ class MultiHeadAttentionFwdOp(Op):
     def default_kernel_map(self):
         return {"mha_fwd_kernel": mha_fwd_wgmma_pipelined_kernel if is_hopper() else mha_fwd_kernel}
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.kernel(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.kernel(q, k, v)
 
 
 class MultiHeadAttentionBwdOp(Op):
@@ -83,11 +83,11 @@ class MultiHeadAttentionBwdOp(Op):
                 flashattn_bwd_postprocess_kernel if not is_hopper() else None,
         }
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
-                dO: torch.Tensor, lse: torch.Tensor):
-        dO = dO.contiguous()
-        delta = self.prep_kernel(O, dO)
-        dQ = torch.zeros_like(Q, dtype=torch.float32)
-        dK, dV = self.kernel(Q, K, V, dO, lse, delta, dQ)
-        dQ = dQ.to(self.dtype) if is_hopper() else self.post_kernel(dQ)
-        return dQ, dK, dV
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
+                do: torch.Tensor, lse: torch.Tensor):
+        do = do.contiguous()
+        delta = self.prep_kernel(o, do)
+        dq = torch.zeros_like(q, dtype=torch.float32)
+        dk, dv = self.kernel(q, k, v, do, lse, delta, dq)
+        dq = dq.to(self.dtype) if is_hopper() else self.post_kernel(dq)
+        return dq, dk, dv

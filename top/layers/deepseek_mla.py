@@ -19,9 +19,9 @@ class MultiHeadLatentAttentionDecodeLayer(nn.Module):
         self.fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(
             batch_size, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
 
-    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor,
-                K_pe: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, Q_pe, K, K_pe)
+    def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
+                k_pe: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, q_pe, k, k_pe)
 
 
 class DeepSeekSparseAttentionDecodeLayer(nn.Module):
@@ -73,5 +73,5 @@ class DeepSeekSparseAttentionDecodeLayer(nn.Module):
             dtype,
             tune=tune)
 
-    def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, KV, Indices)
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, kv, indices)

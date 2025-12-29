@@ -339,18 +339,18 @@ class mla_decode_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor, K_pe: torch.Tensor):
+    def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor):
         glse = torch.empty((self.batch, self.heads, self.config["num_split"]),
                            dtype=self.dtype,
-                           device=Q.device)
+                           device=q.device)
         Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
                                      dtype=self.dtype,
-                                     device=Q.device)
+                                     device=q.device)
         return _mla_decode_wrapped_kernel(self.batch, self.heads, self.kv_head_num, self.seqlen_kv,
                                           self.dim, self.pe_dim, self.dtype_str,
                                           self.config["block_H"], self.config["block_N"],
                                           self.config["num_stages"], self.config["threads"],
-                                          self.config["num_split"], Q, Q_pe, K, K_pe, glse,
+                                          self.config["num_split"], q, q_pe, k, k_pe, glse,
                                           Output_partial)
 
 
@@ -992,16 +992,16 @@ class mla_decode_ws_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor, K_pe: torch.Tensor):
+    def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor):
         glse = torch.empty((self.batch, self.heads, self.config["num_split"]),
                            dtype=self.dtype,
-                           device=Q.device)
+                           device=q.device)
         Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
                                      dtype=self.dtype,
-                                     device=Q.device)
+                                     device=q.device)
         return _mla_decode_ws_wrapped_kernel(self.batch, self.heads, self.kv_head_num,
                                              self.seqlen_kv, self.dim, self.pe_dim, self.dtype_str,
                                              self.config["block_H"], self.config["block_N"],
                                              self.config["num_stages"], self.config["threads"],
-                                             self.config["num_split"], Q, Q_pe, K, K_pe, glse,
+                                             self.config["num_split"], q, q_pe, k, k_pe, glse,
                                              Output_partial)

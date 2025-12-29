@@ -5,7 +5,7 @@ from benchmarks import GemmBenchmark
 
 
 def test_gemm(M, N, K, dtype, trans_A=False, trans_B=False, tune=False):
-    op = GemmOp(M, N, K, trans_A=trans_A, trans_B=trans_B, dtype=dtype, tune=tune)
+    op = GemmOp(M, N, K, trans_a=trans_A, trans_b=trans_B, dtype=dtype, tune=tune)
     benchmark = GemmBenchmark(M, N, K, dtype, trans_A=trans_A, trans_B=trans_B)
 
     inputs = benchmark.gen_inputs()

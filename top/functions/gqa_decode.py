@@ -11,30 +11,30 @@ __all__ = [
 class gqa_decode_ctx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+    def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 fwd_op: GroupQueryAttentionDecodeWithKVCacheOp) -> torch.Tensor:
         """Forward pass for group query attention with KV cache.
         
         Args:
             ctx: Context object for saving tensors for backward pass
-            Q: Query tensor of shape (B, H, D)
-            K: Key tensor of shape (B, S_kv, G, D)
-            V: Value tensor of shape (B, S_kv, G, D)
+            q: Query tensor of shape (B, H, D)
+            k: Key tensor of shape (B, S_kv, G, D)
+            v: Value tensor of shape (B, S_kv, G, D)
             fwd_op: Forward operation instance
             
         Returns:
-            Output tensor of the same shape as input Q
+            Output tensor of the same shape as input q
         """
-        O = fwd_op(Q, K, V)
+        O = fwd_op(q, k, v)
         return O
 
     @staticmethod
-    def backward(ctx, dO: torch.Tensor):
+    def backward(ctx, do: torch.Tensor):
         """Backward pass for group query attention with KV cache.
         
         Args:
             ctx: Context object containing saved tensors from forward pass
-            dO: Gradient of the output tensor
+            do: Gradient of the output tensor
             
         Raises:
             RuntimeError: Inference-only op
@@ -74,13 +74,13 @@ class GroupQueryAttentionDecodeWithKVCacheFunc(Function):
         self.fwd_op = GroupQueryAttentionDecodeWithKVCacheOp(
             batch, heads, groups, seqlen_kv, dim, dtype, tune=tune)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return gqa_decode_ctx.apply(Q, K, V, self.fwd_op)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return gqa_decode_ctx.apply(q, k, v, self.fwd_op)
 
 
-def group_query_attention_decode_with_kvcache(Q: torch.Tensor,
-                                              K: torch.Tensor,
-                                              V: torch.Tensor,
+def group_query_attention_decode_with_kvcache(q: torch.Tensor,
+                                              k: torch.Tensor,
+                                              v: torch.Tensor,
                                               tune: bool = False) -> torch.Tensor:
     """Apply group query attention decode with KV cache mechanism to input tensors.
 
@@ -88,11 +88,11 @@ def group_query_attention_decode_with_kvcache(Q: torch.Tensor,
     typically used in autoregressive decoding scenarios to avoid recomputing previous tokens.
 
     Args:
-        Q: Query tensor of shape (B, H, D), where B is batch size, 
+        q: Query tensor of shape (B, H, D), where B is batch size, 
            H is number of heads, D is head dimension
-        K: Key tensor of shape (B, S_kv, G, D) - represents the cached keys,
+        k: Key tensor of shape (B, S_kv, G, D) - represents the cached keys,
            where S_kv is key-value sequence length, G is number of key-value groups
-        V: Value tensor of shape (B, S_kv, G, D) - represents the cached values
+        v: Value tensor of shape (B, S_kv, G, D) - represents the cached values
         tune: Whether to tune the operation for performance, defaults to False
 
     Returns:
@@ -102,46 +102,46 @@ def group_query_attention_decode_with_kvcache(Q: torch.Tensor,
         ValueError: If input tensors are not 4-dimensional or have inconsistent shapes/dtypes
     """
 
-    # Validate that Q, K, V are 4-dimensional tensors
-    if Q.dim() != 3:
-        raise ValueError(f"Q must be 3-dimensional, but got {Q.dim()} dimensions")
-    if K.dim() != 4:
-        raise ValueError(f"K must be 4-dimensional, but got {K.dim()} dimensions")
-    if V.dim() != 4:
-        raise ValueError(f"V must be 4-dimensional, but got {V.dim()} dimensions")
+    # Validate that q, k, v are 4-dimensional tensors
+    if q.dim() != 3:
+        raise ValueError(f"q must be 3-dimensional, but got {q.dim()} dimensions")
+    if k.dim() != 4:
+        raise ValueError(f"k must be 4-dimensional, but got {k.dim()} dimensions")
+    if v.dim() != 4:
+        raise ValueError(f"v must be 4-dimensional, but got {v.dim()} dimensions")
 
     # Validate that dimensions are consistent (B, H/G, S, D)
-    # B and D must be the same across Q, K, V
-    if Q.shape[0] != K.shape[0] or Q.shape[0] != V.shape[0]:
-        raise ValueError(f"Q, K, V must have the same batch size, "
-                         f"but got Q: {Q.shape[0]}, K: {K.shape[0]}, V: {V.shape[0]}")
-    if Q.shape[-1] != K.shape[-1] or Q.shape[-1] != V.shape[-1]:
-        raise ValueError(f"Q, K, V must have the same embedding dimension, "
-                         f"but got Q: {Q.shape[-1]}, K: {K.shape[-1]}, V: {V.shape[-1]}")
-    if K.shape[1] != V.shape[1]:
-        raise ValueError(f"K and V must have the same sequence length, "
-                         f"but got K: {K.shape[1]}, V: {V.shape[1]}")
+    # B and D must be the same across q, k, v
+    if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
+        raise ValueError(f"q, k, v must have the same batch size, "
+                         f"but got q: {q.shape[0]}, k: {k.shape[0]}, v: {v.shape[0]}")
+    if q.shape[-1] != k.shape[-1] or q.shape[-1] != v.shape[-1]:
+        raise ValueError(f"q, k, v must have the same embedding dimension, "
+                         f"but got q: {q.shape[-1]}, k: {k.shape[-1]}, v: {v.shape[-1]}")
+    if k.shape[1] != v.shape[1]:
+        raise ValueError(f"k and v must have the same sequence length, "
+                         f"but got k: {k.shape[1]}, v: {v.shape[1]}")
 
-    # Validate that the number of heads (Q.shape[1]) is a multiple of number of groups (K.shape[2])
-    if Q.shape[1] % K.shape[2] != 0:
+    # Validate that the number of heads (q.shape[1]) is a multiple of number of groups (k.shape[2])
+    if q.shape[1] % k.shape[2] != 0:
         raise ValueError(f"Number of query heads must be a multiple of number of groups, "
-                         f"but got Q heads: {Q.shape[2]}, K groups: {K.shape[2]}")
+                         f"but got q heads: {q.shape[2]}, k groups: {k.shape[2]}")
 
     # Validate that dtypes are consistent
-    if Q.dtype != K.dtype or Q.dtype != V.dtype:
-        raise ValueError(f"Q, K, V must have the same dtype, "
-                         f"but got Q: {Q.dtype}, K: {K.dtype}, V: {V.dtype}")
+    if q.dtype != k.dtype or q.dtype != v.dtype:
+        raise ValueError(f"q, k, v must have the same dtype, "
+                         f"but got q: {q.dtype}, k: {k.dtype}, v: {v.dtype}")
 
     # Extract dimension information
-    B = Q.shape[0]  # Batch size
-    H = Q.shape[1]  # Number of heads
-    D = Q.shape[2]  # Head dimension
-    S_kv = K.shape[1]  # Sequence length of KV cache
-    G = K.shape[2]  # Number of groups
+    B = q.shape[0]  # Batch size
+    H = q.shape[1]  # Number of heads
+    D = q.shape[2]  # Head dimension
+    S_kv = k.shape[1]  # Sequence length of KV cache
+    G = k.shape[2]  # Number of groups
 
     return GroupQueryAttentionDecodeWithKVCacheFunc(
-        B, H, G, S_kv, D, Q.dtype, tune=tune).forward(
-            Q=Q, K=K, V=V)
+        B, H, G, S_kv, D, q.dtype, tune=tune).forward(
+            q=q, k=k, v=v)
 
 
 gqa_decode_with_kvcache = group_query_attention_decode_with_kvcache

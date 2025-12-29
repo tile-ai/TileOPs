@@ -9,43 +9,43 @@ __all__ = ['MultiHeadAttentionFunc', 'multi_head_attention', 'mha']
 class mha_ctx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+    def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 fwd_op: MultiHeadAttentionFwdOp, bwd_op: MultiHeadAttentionBwdOp) -> torch.Tensor:
         """
         Forward pass for multi-head attention.
         
         Args:
-            Q: Query tensor of shape (B, S, H, D)
-            K: Key tensor of shape (B, S, H, D)
-            V: Value tensor of shape (B, S, H, D)
+            q: Query tensor of shape (B, S, H, D)
+            k: Key tensor of shape (B, S, H, D)
+            v: Value tensor of shape (B, S, H, D)
             fwd_op: Forward operation instance
             bwd_op: Backward operation instance
             
         Returns:
-            Output tensor of the same shape as input Q
+            Output tensor of the same shape as input q
         """
-        O, lse = fwd_op(Q, K, V)
+        O, lse = fwd_op(q, k, v)
 
-        ctx.save_for_backward(Q, K, V, O, lse)
+        ctx.save_for_backward(q, k, v, O, lse)
         ctx.bwd_op = bwd_op
 
         return O
 
     @staticmethod
     def backward(ctx,
-                 dO: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
+                 do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         """
         Backward pass for multi-head attention.
         
         Args:
-            dO: Gradient of the output tensor
+            do: Gradient of the output tensor
             
         Returns:
-            Gradients w.r.t. Q, K, V
+            Gradients w.r.t. q, k, v
         """
-        Q, K, V, O, lse = ctx.saved_tensors
+        q, k, v, O, lse = ctx.saved_tensors
 
-        dQ, dK, dV = ctx.bwd_op(Q, K, V, O, dO, lse)
+        dQ, dK, dV = ctx.bwd_op(q, k, v, O, do, lse)
 
         return dQ, dK, dV, None, None
 
@@ -66,21 +66,21 @@ class MultiHeadAttentionFunc(Function):
         self.bwd_op = MultiHeadAttentionBwdOp(
             batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return mha_ctx.apply(Q, K, V, self.fwd_op, self.bwd_op)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return mha_ctx.apply(q, k, v, self.fwd_op, self.bwd_op)
 
 
-def multi_head_attention(Q: torch.Tensor,
-                         K: torch.Tensor,
-                         V: torch.Tensor,
+def multi_head_attention(q: torch.Tensor,
+                         k: torch.Tensor,
+                         v: torch.Tensor,
                          is_causal: bool = False,
                          tune: bool = False) -> torch.Tensor:
     """Apply multi-head attention mechanism to input tensors.
 
     Args:
-        Q: Query tensor of shape (B, S, H, D)
-        K: Key tensor of shape (B, S, H, D)
-        V: Value tensor of shape (B, S, H, D)
+        q: Query tensor of shape (B, S, H, D)
+        k: Key tensor of shape (B, S, H, D)
+        v: Value tensor of shape (B, S, H, D)
         is_causal: Whether to apply causal mask, defaults to False
         tune: Whether to tune the operation, defaults to False
 
@@ -91,31 +91,30 @@ def multi_head_attention(Q: torch.Tensor,
         ValueError: If input tensors are not 4-dimensional or have inconsistent shapes/dtypes
     """
 
-    # Validate that Q, K, V are 4-dimensional tensors
-    if Q.dim() != 4:
-        raise ValueError(f"Q must be 4-dimensional, but got {Q.dim()} dimensions")
-    if K.dim() != 4:
-        raise ValueError(f"K must be 4-dimensional, but got {K.dim()} dimensions")
-    if V.dim() != 4:
-        raise ValueError(f"V must be 4-dimensional, but got {V.dim()} dimensions")
-
+    # Validate that q, k, v are 4-dimensional tensors
+    if q.dim() != 4:
+        raise ValueError(f"q must be 4-dimensional, but got {q.dim()} dimensions")
+    if k.dim() != 4:
+        raise ValueError(f"k must be 4-dimensional, but got {k.dim()} dimensions")
+    if v.dim() != 4:
+        raise ValueError(f"v must be 4-dimensional, but got {v.dim()} dimensions")
     # Validate that dimensions are consistent (B, H, S, D)
-    if Q.shape != K.shape or Q.shape != V.shape:
-        raise ValueError(f"Q, K, V must have the same shape, "
-                         f"but got Q: {Q.shape}, K: {K.shape}, V: {V.shape}")
+    if q.shape != k.shape or q.shape != v.shape:
+        raise ValueError(f"q, k, v must have the same shape, "
+                         f"but got q: {q.shape}, k: {k.shape}, v: {v.shape}")
 
     # Validate that dtypes are consistent
-    if Q.dtype != K.dtype or Q.dtype != V.dtype:
-        raise ValueError(f"Q, K, V must have the same dtype, "
-                         f"but got Q: {Q.dtype}, K: {K.dtype}, V: {V.dtype}")
+    if q.dtype != k.dtype or q.dtype != v.dtype:
+        raise ValueError(f"q, k, v must have the same dtype, "
+                         f"but got q: {q.dtype}, k: {k.dtype}, v: {v.dtype}")
 
     # Extract dimension information
-    B = Q.shape[0]
-    S = Q.shape[1]
-    H = Q.shape[2]
-    D = Q.shape[3]
+    B = q.shape[0]
+    S = q.shape[1]
+    H = q.shape[2]
+    D = q.shape[3]
 
-    return MultiHeadAttentionFunc(B, H, S, D, is_causal, Q.dtype, tune=tune).forward(Q=Q, K=K, V=V)
+    return MultiHeadAttentionFunc(B, H, S, D, is_causal, q.dtype, tune=tune).forward(q=q, k=k, v=v)
 
 
 mha = multi_head_attention

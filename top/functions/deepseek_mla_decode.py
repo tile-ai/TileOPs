@@ -11,31 +11,31 @@ __all__ = [
 class mla_decode_ctx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor, K_pe: torch.Tensor,
+    def forward(ctx, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor,
                 fwd_op: MultiHeadLatentAttentionDecodeWithKVCacheOp) -> torch.Tensor:
         """Forward pass for multi-head latent attention with KV cache.
         
         Args:
             ctx: Context object for saving tensors for backward pass
-            Q: Query tensor of shape (B, H, D)
-            Q_pe: Query position encoding tensor of shape (B, H, pe_dim)
-            K: Key tensor of shape (B, S_kv, H_kv, D), where H_kv is number of kv heads
-            K_pe: Key position encoding tensor of shape (B, S_kv, H_kv, pe_dim)
+            q: Query tensor of shape (B, H, D)
+            q_pe: Query position encoding tensor of shape (B, H, pe_dim)
+            k: Key tensor of shape (B, S_kv, H_kv, D), where H_kv is number of kv heads
+            k_pe: Key position encoding tensor of shape (B, S_kv, H_kv, pe_dim)
             fwd_op: Forward operation instance
             
         Returns:
-            Output tensor of the same shape as input Q
+            Output tensor of the same shape as input q
         """
-        O = fwd_op(Q, Q_pe, K, K_pe)
-        return O
+        o = fwd_op(q, q_pe, k, k_pe)
+        return o
 
     @staticmethod
-    def backward(ctx, dO: torch.Tensor):
+    def backward(ctx, do: torch.Tensor):
         """Backward pass for multi-head latent attention with KV cache.
         
         Args:
             ctx: Context object containing saved tensors from forward pass
-            dO: Gradient of the output tensor
+            do Gradient of the output tensor
             
         Raises:
             RuntimeError: Inference-only op
@@ -78,15 +78,15 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFunc(Function):
         self.fwd_op = MultiHeadLatentAttentionDecodeWithKVCacheOp(
             batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
 
-    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor,
-                K_pe: torch.Tensor) -> torch.Tensor:
-        return mla_decode_ctx.apply(Q, Q_pe, K, K_pe, self.fwd_op)
+    def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
+                k_pe: torch.Tensor) -> torch.Tensor:
+        return mla_decode_ctx.apply(q, q_pe, k, k_pe, self.fwd_op)
 
 
-def multi_head_latent_attention_decode_with_kvcache(Q: torch.Tensor,
-                                                    Q_pe: torch.Tensor,
-                                                    K: torch.Tensor,
-                                                    K_pe: torch.Tensor,
+def multi_head_latent_attention_decode_with_kvcache(q: torch.Tensor,
+                                                    q_pe: torch.Tensor,
+                                                    k: torch.Tensor,
+                                                    k_pe: torch.Tensor,
                                                     tune: bool = False) -> torch.Tensor:
     """Apply multi-head latent attention decode with KV cache mechanism to input tensors.
 
@@ -94,12 +94,12 @@ def multi_head_latent_attention_decode_with_kvcache(Q: torch.Tensor,
     typically used in autoregressive decoding scenarios to avoid recomputing previous tokens.
 
     Args:
-        Q: Query tensor of shape (B, H, D), where B is batch size, 
+        q: Query tensor of shape (B, H, D), where B is batch size, 
            H is number of heads, D is head dimension
-        Q_pe: Query position encoding tensor of shape (B, H, pe_dim)
-        K: Key tensor of shape (B, S_kv, H_kv, D) - represents the cached keys,
+        q_pe: Query position encoding tensor of shape (B, H, pe_dim)
+        k: Key tensor of shape (B, S_kv, H_kv, D) - represents the cached keys,
            where S_kv is key-value sequence length, H_kv is number of kv heads
-        K_pe: Key position encoding tensor of shape (B, S_kv, H_kv, pe_dim)
+        k_pe: Key position encoding tensor of shape (B, S_kv, H_kv, pe_dim)
         tune: Whether to tune the operation for performance, defaults to False
 
     Returns:
@@ -109,54 +109,54 @@ def multi_head_latent_attention_decode_with_kvcache(Q: torch.Tensor,
         ValueError: If input tensors are not 4-dimensional or have inconsistent shapes/dtypes
     """
 
-    # Validate that Q, K, Q_pe, K_pe are 4-dimensional tensors
-    if Q.dim() != 3:
-        raise ValueError(f"Q must be 3-dimensional, but got {Q.dim()} dimensions")
-    if K.dim() != 4:
-        raise ValueError(f"K must be 4-dimensional, but got {K.dim()} dimensions")
-    if Q_pe.dim() != 3:
-        raise ValueError(f"Q_pe must be 3-dimensional, but got {Q_pe.dim()} dimensions")
-    if K_pe.dim() != 4:
-        raise ValueError(f"K_pe must be 4-dimensional, but got {K_pe.dim()} dimensions")
+    # Validate that q, k, q_pe, k_pe are 4-dimensional tensors
+    if q.dim() != 3:
+        raise ValueError(f"q must be 3-dimensional, but got {q.dim()} dimensions")
+    if k.dim() != 4:
+        raise ValueError(f"k must be 4-dimensional, but got {k.dim()} dimensions")
+    if q_pe.dim() != 3:
+        raise ValueError(f"q_pe must be 3-dimensional, but got {q_pe.dim()} dimensions")
+    if k_pe.dim() != 4:
+        raise ValueError(f"k_pe must be 4-dimensional, but got {k_pe.dim()} dimensions")
 
     # Validate that dimensions are consistent (B, H/G, S, D)
-    # B and D must be the same across Q, K
-    if Q.shape[0] != K.shape[0]:
-        raise ValueError(f"Q and K must have the same batch size, "
-                         f"but got Q: {Q.shape[0]}, K: {K.shape[0]}")
-    if Q.shape[-1] != K.shape[3]:
-        raise ValueError(f"Q and K must have the same embedding dimension, "
-                         f"but got Q: {Q.shape[-1]}, K: {K.shape[3]}")
+    # B and D must be the same across q, k
+    if q.shape[0] != k.shape[0]:
+        raise ValueError(f"q and k must have the same batch size, "
+                         f"but got q: {q.shape[0]}, k: {k.shape[0]}")
+    if q.shape[-1] != k.shape[3]:
+        raise ValueError(f"q and k must have the same embedding dimension, "
+                         f"but got q: {q.shape[-1]}, k: {k.shape[3]}")
 
     # Validate that position encoding dimensions match
-    if Q_pe.shape[0] != K_pe.shape[0]:
-        raise ValueError(f"Q_pe and K_pe must have the same batch size, "
-                         f"but got Q_pe: {Q_pe.shape[0]}, K_pe: {K_pe.shape[0]}")
-    if Q_pe.shape[-1] != K_pe.shape[-1]:
-        raise ValueError(f"Q_pe and K_pe must have the same embedding dimension, "
-                         f"but got Q_pe: {Q_pe.shape[-1]}, K_pe: {K_pe.shape[-1]}")
+    if q_pe.shape[0] != k_pe.shape[0]:
+        raise ValueError(f"q_pe and k_pe must have the same batch size, "
+                         f"but got q_pe: {q_pe.shape[0]}, k_pe: {k_pe.shape[0]}")
+    if q_pe.shape[-1] != k_pe.shape[-1]:
+        raise ValueError(f"q_pe and k_pe must have the same embedding dimension, "
+                         f"but got q_pe: {q_pe.shape[-1]}, k_pe: {k_pe.shape[-1]}")
 
     # Validate that dtypes are consistent
-    if Q.dtype != K.dtype:
-        raise ValueError(f"Q and K must have the same dtype, "
-                         f"but got Q: {Q.dtype}, K: {K.dtype}")
-    if Q_pe.dtype != K_pe.dtype:
-        raise ValueError(f"Q_pe and K_pe must have the same dtype, "
-                         f"but got Q_pe: {Q_pe.dtype}, K_pe: {K_pe.dtype}")
-    if Q.dtype != Q_pe.dtype:
-        raise ValueError(f"Q and Q_pe must have the same dtype, "
-                         f"but got Q: {Q.dtype}, Q_pe: {Q_pe.dtype}")
+    if q.dtype != k.dtype:
+        raise ValueError(f"q and k must have the same dtype, "
+                         f"but got q: {q.dtype}, k: {k.dtype}")
+    if q_pe.dtype != k_pe.dtype:
+        raise ValueError(f"q_pe and k_pe must have the same dtype, "
+                         f"but got q_pe: {q_pe.dtype}, k_pe: {k_pe.dtype}")
+    if q.dtype != q_pe.dtype:
+        raise ValueError(f"q and q_pe must have the same dtype, "
+                         f"but got q: {q.dtype}, q_pe: {q_pe.dtype}")
 
     # Extract dimension information
-    B = Q.shape[0]  # Batch size
-    H = Q.shape[1]  # Number of query heads
-    D = Q.shape[2]  # Head dimension
-    S_kv = K.shape[1]  # Sequence length of KV cache
-    H_kv = K.shape[2]  # Number of KV heads
-    pe_dim = Q_pe.shape[2]  # Position encoding dimension
+    B = q.shape[0]  # Batch size
+    H = q.shape[1]  # Number of query heads
+    D = q.shape[2]  # Head dimension
+    S_kv = k.shape[1]  # Sequence length of KV cache
+    H_kv = k.shape[2]  # Number of KV heads
+    pe_dim = q_pe.shape[2]  # Position encoding dimension
     return MultiHeadLatentAttentionDecodeWithKVCacheFunc(
-        B, H, H_kv, S_kv, D, pe_dim, Q.dtype, tune=tune).forward(
-            Q=Q, Q_pe=Q_pe, K=K, K_pe=K_pe)
+        B, H, H_kv, S_kv, D, pe_dim, q.dtype, tune=tune).forward(
+            q=q, q_pe=q_pe, k=k, k_pe=k_pe)
 
 
 mla_decode_with_kvcache = multi_head_latent_attention_decode_with_kvcache

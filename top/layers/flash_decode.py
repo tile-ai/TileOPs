@@ -18,8 +18,8 @@ class MultiHeadAttentionDecodeLayer(nn.Module):
         self.fn = MultiHeadAttentionDecodeWithKVCacheFunc(batch_size, heads, seqlen_q, seqlen_kv,
                                                           dim, dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)
 
 
 class GroupQueryAttentionDecodeLayer(nn.Module):
@@ -37,5 +37,5 @@ class GroupQueryAttentionDecodeLayer(nn.Module):
         self.fn = GroupQueryAttentionDecodeWithKVCacheFunc(batch_size, heads, groups, seqlen_kv,
                                                            dim, dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)

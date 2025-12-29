@@ -8,12 +8,12 @@ __all__ = ['DeepSeekSparseAttentionDecodeWithKVCacheFunc']
 class sparse_mla_ctx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, Q, KV, Indices, fwd_op):
-        O = fwd_op(Q, KV, Indices)
-        return O
+    def forward(ctx, q, kv, indices, fwd_op):
+        o = fwd_op(q, kv, indices)
+        return o
 
     @staticmethod
-    def backward(ctx, dO):
+    def backward(ctx, do):
         raise RuntimeError("Inference-only op")
 
 
@@ -64,5 +64,5 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
             dtype,
             tune=tune)
 
-    def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor):
-        return sparse_mla_ctx.apply(Q, KV, Indices, self.fwd_op)
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor):
+        return sparse_mla_ctx.apply(q, kv, indices, self.fwd_op)

@@ -69,5 +69,5 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
     def default_kernel_map(self):
         return {"sparse_mla_kernel": sparse_mla_kernel}
 
-    def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor):
-        return self.kernel(Q, KV, Indices)
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor):
+        return self.kernel(q, kv, indices)

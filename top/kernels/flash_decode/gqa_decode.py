@@ -308,14 +308,14 @@ class gqa_decode_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         glse = torch.empty((self.batch, self.heads, self.config["num_split"]),
                            dtype=self.dtype,
-                           device=Q.device)
+                           device=q.device)
         Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
                                      dtype=self.dtype,
-                                     device=Q.device)
+                                     device=q.device)
         return _gqa_decode_wrapped_kernel(self.batch, self.heads, self.groups, self.seqlen_kv,
                                           self.dim, self.config["block_H"], self.config["block_N"],
                                           self.config["num_stages"], self.config["threads"],
-                                          self.config["num_split"], Q, K, V, glse, Output_partial)
+                                          self.config["num_split"], q, k, v, glse, Output_partial)

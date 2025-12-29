@@ -38,6 +38,6 @@ class MultiHeadLatentAttentionDecodeWithKVCacheOp(Op):
     def default_kernel_map(self):
         return {"mla_decode_kernel": mla_decode_ws_kernel if is_hopper() else mla_decode_kernel}
 
-    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor,
-                K_pe: torch.Tensor) -> torch.Tensor:
-        return self.kernel(Q, Q_pe, K, K_pe)
+    def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
+                k_pe: torch.Tensor) -> torch.Tensor:
+        return self.kernel(q, q_pe, k, k_pe)

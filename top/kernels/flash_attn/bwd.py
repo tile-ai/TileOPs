@@ -56,13 +56,13 @@ class flashattn_bwd_preprocess_kernel(Kernel):
         self.kernel = _flashattn_bwd_preprocess_kernel(self.batch, self.heads, self.seq_len,
                                                        self.dim, self.dtype_str)
 
-    def forward(self, O: torch.Tensor, dO: torch.Tensor):
-        return self.kernel(O, dO)
+    def forward(self, o: torch.Tensor, do: torch.Tensor):
+        return self.kernel(o, do)
 
 
-def make_dq_layout(dQ):
+def make_dq_layout(dq):
     # atomicAdd cannot be vectorized on Ampere, so we need to reorder dq to match the 8x8 gemm fragment
-    return T.Layout(dQ.shape,
+    return T.Layout(dq.shape,
                     lambda b, l, h, d: [b, l // 8, h, d // 8, (d % 2), 4 * (l % 8) + (d % 8) // 2])
 
 
@@ -101,8 +101,8 @@ class flashattn_bwd_postprocess_kernel(Kernel):
         self.kernel = _flashattn_bwd_postprocess_kernel(self.batch, self.heads, self.seq_len,
                                                         self.dim, self.dtype_str)
 
-    def forward(self, dQ: torch.Tensor):
-        return self.kernel(dQ)
+    def forward(self, dq: torch.Tensor):
+        return self.kernel(dq)
 
 
 # MHA

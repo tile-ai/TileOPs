@@ -35,5 +35,5 @@ class MultiHeadAttentionDecodeWithKVCacheOp(Op):
     def default_kernel_map(self):
         return {"mha_decode_kernel": mha_decode_kernel}
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.kernel(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.kernel(q, k, v)

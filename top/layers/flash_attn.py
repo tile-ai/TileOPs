@@ -17,8 +17,8 @@ class MultiHeadAttentionLayer(nn.Module):
 
         self.fn = MultiHeadAttentionFunc(batch_size, heads, seq_len, dim, is_causal, dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)
 
 
 class GroupQueryAttentionLayer(nn.Module):
@@ -37,5 +37,5 @@ class GroupQueryAttentionLayer(nn.Module):
         self.fn = GroupQueryAttentionFunc(batch_size, heads, heads_kv, seq_len, dim, is_causal,
                                           dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)
