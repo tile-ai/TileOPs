@@ -1,7 +1,6 @@
-batch,seq_len_kv,heads,kv_head_num,dim,pe_dim,dtype
-64,1024,128,1,512,64,float16
-64,2048,128,1,512,64,float16
-64,4096,128,1,512,64,float16
-64,8192,128,1,512,64,float16
-64,16384,128,1,512,64,float16
-64,32768,128,1,512,64,float16
+batch,seq_len,seq_len_kv,heads,dim,tail_dim,topk,kv_stride,kv_group,dtype,sm_scale
+1,2048,2048,128,512,64,2048,1,1,float16,None
+1,2048,4096,128,512,64,2048,1,1,float16,None
+1,2048,8192,128,512,64,2048,1,1,float16,None
+1,2048,16384,128,512,64,2048,1,1,float16,None
+1,2048,32768,128,512,64,2048,1,1,float16,None
