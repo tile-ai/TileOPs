@@ -4,8 +4,8 @@ from top.utils import str2dtype
 from benchmarks import MultiHeadAttentionBenchmark
 
 
-def test_mha_fn(B, S, H, D, causal, dtype):
-    benchmark = MultiHeadAttentionBenchmark(B, H, S, D, causal, dtype)
+def test_mha_fn(batch, seq_len, heads, dim, causal, dtype):
+    benchmark = MultiHeadAttentionBenchmark(batch, heads, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
 
@@ -13,7 +13,7 @@ def test_mha_fn(B, S, H, D, causal, dtype):
     benchmark.check_fn(mha, *inputs)
 
     print("=========Testing mha function class=========")
-    fn = MultiHeadAttentionFunc(B, H, S, D, causal, dtype)
+    fn = MultiHeadAttentionFunc(batch, heads, seq_len, dim, causal, dtype)
     benchmark.check_fn(fn, *inputs)
 
 

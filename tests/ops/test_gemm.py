@@ -4,9 +4,9 @@ from top.utils import str2dtype
 from benchmarks import GemmBenchmark
 
 
-def test_gemm(M, N, K, dtype, trans_A=False, trans_B=False, tune=False):
-    op = GemmOp(M, N, K, trans_a=trans_A, trans_b=trans_B, dtype=dtype, tune=tune)
-    benchmark = GemmBenchmark(M, N, K, dtype, trans_A=trans_A, trans_B=trans_B)
+def test_gemm(m, n, k, dtype, trans_a=False, trans_b=False, tune=False):
+    op = GemmOp(m, n, k, trans_a=trans_a, trans_b=trans_b, dtype=dtype, tune=tune)
+    benchmark = GemmBenchmark(m, n, k, dtype, trans_a=trans_a, trans_b=trans_b)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)

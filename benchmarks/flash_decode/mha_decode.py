@@ -40,10 +40,10 @@ class MultiHeadAttentionDecodeBenchmark(Benchmark):
             self.batch, self.seq_len_kv, self.heads, self.dim, device='cuda', dtype=self.dtype)
         return Q, K, V
 
-    def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-        q_bhsd = Q.transpose(1, 2)  # [B, H, S_q, D]
-        k_bhsd = K.transpose(1, 2)  # [B, H, S_kv, D]
-        v_bhsd = V.transpose(1, 2)  # [B, H, S_kv, D]
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+        q_bhsd = q.transpose(1, 2)  # [B, H, S_q, D]
+        k_bhsd = k.transpose(1, 2)  # [B, H, S_kv, D]
+        v_bhsd = v.transpose(1, 2)  # [B, H, S_kv, D]
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
         output = output_bhsd.transpose(1, 2).contiguous()

@@ -4,9 +4,9 @@ from top.utils import str2dtype
 from benchmarks import GroupQueryAttentionDecodeBenchmark
 
 
-def test_gqa_decode_layer(B, H, S_kv, D, G, dtype):
-    fn = GroupQueryAttentionDecodeLayer(B, H, G, S_kv, D, dtype)
-    benchmark = GroupQueryAttentionDecodeBenchmark(B, H, G, S_kv, D, dtype)
+def test_gqa_decode_layer(batch, heads, seq_len_kv, dim, groups, dtype):
+    fn = GroupQueryAttentionDecodeLayer(batch, heads, groups, seq_len_kv, dim, dtype)
+    benchmark = GroupQueryAttentionDecodeBenchmark(batch, heads, groups, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check_fn(fn, *inputs, grad=False)

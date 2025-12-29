@@ -4,8 +4,8 @@ from top.utils import str2dtype
 from benchmarks import GroupQueryAttentionBenchmark
 
 
-def test_gqa_fn(B, S, H, H_kv, D, causal, dtype):
-    benchmark = GroupQueryAttentionBenchmark(B, H, H_kv, S, D, causal, dtype)
+def test_gqa_fn(batch, seq_len, heads, heads_kv, dim, causal, dtype):
+    benchmark = GroupQueryAttentionBenchmark(batch, heads, heads_kv, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
 
@@ -13,7 +13,7 @@ def test_gqa_fn(B, S, H, H_kv, D, causal, dtype):
     benchmark.check_fn(gqa, *inputs)
 
     print("=========Testing gqa function class=========")
-    fn = GroupQueryAttentionFunc(B, H, H_kv, S, D, causal, dtype)
+    fn = GroupQueryAttentionFunc(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     benchmark.check_fn(fn, *inputs)
 
 

@@ -4,8 +4,8 @@ from top.utils import str2dtype
 from benchmarks import GroupQueryAttentionDecodeBenchmark
 
 
-def test_gqa_decode_fn(B, H, S_kv, D, G, dtype):
-    benchmark = GroupQueryAttentionDecodeBenchmark(B, H, G, S_kv, D, dtype)
+def test_gqa_decode_fn(batch, heads, seq_len_kv, dim, groups, dtype):
+    benchmark = GroupQueryAttentionDecodeBenchmark(batch, heads, groups, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()
 
@@ -13,7 +13,7 @@ def test_gqa_decode_fn(B, H, S_kv, D, G, dtype):
     benchmark.check_fn(gqa_decode_with_kvcache, *inputs, grad=False)
 
     print("=========Testing gqa decode function class=========")
-    fn = GroupQueryAttentionDecodeWithKVCacheFunc(B, H, G, S_kv, D, dtype)
+    fn = GroupQueryAttentionDecodeWithKVCacheFunc(batch, heads, groups, seq_len_kv, dim, dtype)
     benchmark.check_fn(fn, *inputs, grad=False)
 
 

@@ -56,32 +56,32 @@ class MultiHeadLatentAttentionDecodeBenchmark(Benchmark):
             dtype=self.dtype)
         return Q, Q_pe, K, K_pe
 
-    def ref_program(self, Q: torch.Tensor, Q_pe: torch.Tensor, KV: torch.Tensor,
-                    K_pe: torch.Tensor):
+    def ref_program(self, q: torch.Tensor, q_pe: torch.Tensor, kv: torch.Tensor,
+                    k_pe: torch.Tensor):
         #     """
         #     Inputs:
-        #     - Q (Tensor): [batch, heads, dim]
-        #     - Q_pe (Tensor): [batch, heads, pe_dim]
-        #     - KV (Tensor): [batch, seqlen_kv, kv_head_num, dim]
-        #     - K_pe (Tensor): [batch, seqlen_kv, kv_head_num, pe_dim]
+        #     - q (Tensor): [batch, heads, dim]
+        #     - q_pe (Tensor): [batch, heads, pe_dim]
+        #     - kv (Tensor): [batch, seqlen_kv, kv_head_num, dim]
+        #     - k_pe (Tensor): [batch, seqlen_kv, kv_head_num, pe_dim]
         #     Outputs:
         #     - output (Tensor): [batch, heads, dim]
         #     """
-        dim = Q.shape[-1]
-        pe_dim = Q_pe.shape[-1]
-        num_head_groups = Q.shape[1] // KV.shape[2]
+        dim = q.shape[-1]
+        pe_dim = q_pe.shape[-1]
+        num_head_groups = q.shape[1] // kv.shape[2]
         scale = (dim + pe_dim)**0.5
         Q = rearrange(
-            Q, 'b (h g) d -> b g h d',
+            q, 'b (h g) d -> b g h d',
             g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
 
         Q_pe = rearrange(
-            Q_pe, 'b (h g) d -> b g h d',
+            q_pe, 'b (h g) d -> b g h d',
             g=num_head_groups)  # [batch_size, num_head_groups, groups, pe_dim]
 
-        KV = rearrange(KV, 'b n h d -> b h n d')  # [batch_size, groups, seqlen_kv, dim]
+        KV = rearrange(kv, 'b n h d -> b h n d')  # [batch_size, groups, seqlen_kv, dim]
 
-        K_pe = rearrange(K_pe,
+        K_pe = rearrange(k_pe,
                          'b n h d -> b h n d')  # [batch_size, num_head_groups, groups, pe_dim]
 
         query = torch.concat([Q, Q_pe], dim=-1)

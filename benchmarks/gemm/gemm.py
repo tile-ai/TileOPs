@@ -7,55 +7,55 @@ class GemmBenchmark(Benchmark):
 
     op_type = GemmOp
 
-    def __init__(self, M, N, K, dtype, trans_A=False, trans_B=False):
-        self.M = M
-        self.N = N
-        self.K = K
+    def __init__(self, m, n, k, dtype, trans_a=False, trans_b=False):
+        self.m = m
+        self.n = n
+        self.k = k
         self.dtype = dtype
-        self.trans_A = trans_A
-        self.trans_B = trans_B
+        self.trans_a = trans_a
+        self.trans_b = trans_b
 
     @property
     def total_flops(self):
-        return 2.0 * self.M * self.N * self.K
+        return 2.0 * self.m * self.n * self.k
 
     @property
     def total_memory(self):
-        return (self.M * self.K + self.K * self.N + self.M * self.N) * self.dtype.itemsize
+        return (self.m * self.k + self.k * self.n + self.m * self.n) * self.dtype.itemsize
 
     def gen_inputs(self):
-        A = torch.randn(self.M, self.K, device='cuda', dtype=self.dtype)
-        B = torch.randn(self.K, self.N, device='cuda', dtype=self.dtype)
+        A = torch.randn(self.m, self.k, device='cuda', dtype=self.dtype)
+        B = torch.randn(self.k, self.n, device='cuda', dtype=self.dtype)
         return A, B
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor):
-        if self.trans_A:
+        if self.trans_a:
             A = A.T
-        if self.trans_B:
+        if self.trans_b:
             B = B.T
         return torch.matmul(A, B)
 
 
 class MatMulBenchmark(Benchmark):
 
-    def __init__(self, M, N, K, dtype, grad=True):
-        self.M = M
-        self.N = N
-        self.K = K
+    def __init__(self, m, n, k, dtype, grad=True):
+        self.m = m
+        self.n = n
+        self.k = k
         self.dtype = dtype
         self.grad = grad
 
     @property
     def total_flops(self):
-        return 6.0 * self.M * self.N * self.K
+        return 6.0 * self.m * self.n * self.k
 
     @property
     def total_memory(self):
-        return 3 * (self.M * self.K + self.K * self.N + self.M * self.N) * self.dtype.itemsize
+        return 3 * (self.m * self.k + self.k * self.n + self.m * self.n) * self.dtype.itemsize
 
     def gen_inputs(self):
-        A = torch.randn(self.M, self.K, device='cuda', dtype=self.dtype, requires_grad=self.grad)
-        B = torch.randn(self.K, self.N, device='cuda', dtype=self.dtype, requires_grad=self.grad)
+        A = torch.randn(self.m, self.k, device='cuda', dtype=self.dtype, requires_grad=self.grad)
+        B = torch.randn(self.k, self.n, device='cuda', dtype=self.dtype, requires_grad=self.grad)
         return A, B
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor):

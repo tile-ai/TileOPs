@@ -4,9 +4,11 @@ from top.utils import str2dtype
 from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
 
 
-def test_mla_decode(B, H, N_kv, S_kv, D, D_pe, dtype, tune=False):
-    op = MultiHeadLatentAttentionDecodeWithKVCacheOp(B, H, N_kv, S_kv, D, D_pe, dtype, tune=tune)
-    benchmark = MultiHeadLatentAttentionDecodeBenchmark(B, H, N_kv, S_kv, D, D_pe, dtype)
+def test_mla_decode(batch, heads, kv_head_num, seq_len_kv, dim, pe_dim, dtype, tune=False):
+    op = MultiHeadLatentAttentionDecodeWithKVCacheOp(
+        batch, heads, kv_head_num, seq_len_kv, dim, pe_dim, dtype, tune=tune)
+    benchmark = MultiHeadLatentAttentionDecodeBenchmark(batch, heads, kv_head_num, seq_len_kv, dim,
+                                                        pe_dim, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)

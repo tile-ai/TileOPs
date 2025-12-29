@@ -84,10 +84,10 @@ class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
                     Indices[b, t, h, :len(i_i)] = i_i
         return Q, KV, Indices
 
-    def ref_program(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor):
-        q = Q.float()
-        kv = KV.float()
-        indices = Indices.transpose(1, 2)
+    def ref_program(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor):
+        q = q.float()
+        kv = kv.float()
+        indices = indices.transpose(1, 2)
         b, sq, h, dim_q = q.shape
         b, sk, g, _ = kv.shape
         q_start_index_s = self.q_start_index_s

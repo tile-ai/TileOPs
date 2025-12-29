@@ -4,8 +4,8 @@ from top.utils import str2dtype
 from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
-def test_mha_decode_fn(B, S_q, S_kv, H, D, dtype):
-    benchmark = MultiHeadAttentionDecodeBenchmark(B, H, S_q, S_kv, D, dtype)
+def test_mha_decode_fn(batch, seq_len_q, seq_len_kv, heads, dim, dtype):
+    benchmark = MultiHeadAttentionDecodeBenchmark(batch, heads, seq_len_q, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()
 
@@ -13,7 +13,7 @@ def test_mha_decode_fn(B, S_q, S_kv, H, D, dtype):
     benchmark.check_fn(mha_decode_with_kvcache, *inputs, grad=False)
 
     print("=========Testing mha decode function class=========")
-    fn = MultiHeadAttentionDecodeWithKVCacheFunc(B, H, S_q, S_kv, D, dtype)
+    fn = MultiHeadAttentionDecodeWithKVCacheFunc(batch, heads, seq_len_q, seq_len_kv, dim, dtype)
     benchmark.check_fn(fn, *inputs, grad=False)
 
 
