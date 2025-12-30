@@ -11,9 +11,9 @@ class LinearLayer(nn.Module):
         batch_size: int,
         out_features: int,
         in_features: int,
-        device='cuda',
-        dtype=torch.float16,
-        tune=False,
+        device: str = 'cuda0',
+        dtype: torch.dtype = torch.float16,
+        tune: bool = False,
     ):
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -27,7 +27,7 @@ class LinearLayer(nn.Module):
         )
         self.reset_parameters()
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

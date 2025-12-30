@@ -5,7 +5,8 @@ from top.functions import MultiHeadAttentionFunc, GroupQueryAttentionFunc
 
 class MultiHeadAttentionLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, seq_len, dim, is_causal, dtype):
+    def __init__(self, batch_size: int, heads: int, seq_len: int, dim: int, is_causal: bool,
+                 dtype: torch.dtype):
         super().__init__()
 
         self.batch_size = batch_size
@@ -23,7 +24,8 @@ class MultiHeadAttentionLayer(nn.Module):
 
 class GroupQueryAttentionLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, heads_kv, seq_len, dim, is_causal, dtype):
+    def __init__(self, batch_size: int, heads: int, heads_kv: int, seq_len: int, dim: int,
+                 is_causal: bool, dtype: torch.dtype):
         super().__init__()
 
         self.batch_size = batch_size
