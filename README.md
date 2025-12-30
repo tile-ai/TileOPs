@@ -13,11 +13,14 @@
 
 **TileOPs (TOP)** is a high-performance operator library for large language models (LLMs) built on **[TileLang](https://github.com/tile-ai/tilelang)**. It offers efficient, modular, and composable implementations for AI workloads, especially for LLMs.
 
-The core features of TileOPs include:
+What TileOPs is for:
 
 * **Out-of-the-box Operator Library**: A growing collection of production-ready operators commonly used in LLM workloads, designed with clear abstractions and modular building blocks. These operators can be used directly or easily extended for custom research and system integration.
 * **Efficient Attention Kernels for LLMs**: Highly optimized attention implementations, including MHA/GQA (implemented FA2 on Ampere-like GPUs and FA3 on Hopper), DeepSeek-MLA, and DeepSeek-DSA.
 * **Reference Implementation and Learning Ground of TileLang**: TileOPs serves as a canonical example of how to write performant, maintainable kernels using TileLang. It demonstrates best practices in tiling strategies, memory hierarchy utilization, and warp-/block-level coordination, making it a practical learning resource for compiler and kernel developers.
+
+The core features of TileOPs include:
+
 * **Auto-Tuning**: Built-in auto-tuning support to explore tile sizes, pipelines, and scheduling parameters, enabling kernels to adapt efficiently to different GPU architectures and workload characteristics with minimal manual effort.
 * **CUDA-Graph and torch.compile Compatibility**: TileOPs APIs are fully compatible with CUDA-Graph capture and PyTorch ``torch.compile``, allowing seamless integration into modern training and inference pipelines with reduced launch overhead and improved end-to-end performance.
 <!-- * **torch.autograd Compatibility**: -->
@@ -38,15 +41,17 @@ TODO
 
 ## Support Matrix
 
-| **Operator** | FWD/BWD | **Data Type** | **Tested Platform** |
-|:------------:|:-------:|:---------:|:-------------------:|
-| DeepSeek Sparse Attention (DSA) Decode | FWD | BF16/FP16 | Hopper(SM_90) |
-| DeepSeek Multi-Head Latent Attention (MLA) Decode | FWD | BF16/FP16 | Hopper(SM_90) |
-| Multi-Head Attention | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
-| Group Query Attention | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
-| Multi-Head Attention Decode | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
-| Group Query Attention Decode | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
-| MatMul | FWD | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80) |
+**Legend**: ✔ Optimized in tests / ● Functional support / ✗ Not supported yet / N/A Not Applicable
+
+| **Operator** | **FWD** | **BWD** | **Data Type** | **Tested Platform** |
+|:------------:|:-------:|:-------:|:-------------:|:-------------------:|
+| DeepSeek Sparse Attention (DSA) Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90) |
+| DeepSeek Multi-Head Latent Attention (MLA) Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90) |
+| Multi-Head Attention | ✔ | ● | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
+| Group Query Attention | ✔ | ● | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
+| Multi-Head Attention Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
+| Group Query Attention Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
+| MatMul | ✔ | ● | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
 
 
 
@@ -74,10 +79,22 @@ pip install -e '.[dev]' -v # remove -e option if you don't want to install in ed
 
 ## 🚀 Quick Start
 
-### Example: Multi-Head Attention Decode
+### Example: Group-Query Attention Decode
 
+```Python
+import torch
+from top.functions import gqa_decode_with_kvcache
 
+# Generate inputs
+B, H, G, S_kv, D = 1, 32, 4, 1024, 128  # batch, heads, groups, seq_len, dim
+dtype = torch.float16
+q = torch.randn(B, H, D, device='cuda', dtype=dtype)
+k_cache = torch.randn(B, S_kv, G, D, device='cuda', dtype=dtype)
+v_cache = torch.randn(B, S_kv, G, D, device='cuda', dtype=dtype)
 
+# Call function, k_cache and v_cache are updated in-place
+output = gqa_decode_with_kvcache(q, k_cache, v_cache)
+```
 
 ## Documents
 
