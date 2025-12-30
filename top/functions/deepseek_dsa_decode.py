@@ -1,6 +1,7 @@
 import torch
 from .function import Function
 from top.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
+from typing import Any
 
 __all__ = ['DeepSeekSparseAttentionDecodeWithKVCacheFunc']
 
@@ -8,32 +9,32 @@ __all__ = ['DeepSeekSparseAttentionDecodeWithKVCacheFunc']
 class sparse_mla_ctx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, kv, indices, fwd_op):
+    def forward(ctx, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, fwd_op: Any):
         o = fwd_op(q, kv, indices)
         return o
 
     @staticmethod
-    def backward(ctx, do):
+    def backward(ctx, do: torch.Tensor) -> Any:
         raise RuntimeError("Inference-only op")
 
 
 class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
 
     def __init__(self,
-                 batch,
-                 heads,
-                 seq_len,
-                 seq_len_kv,
-                 dim,
-                 tail_dim,
-                 topk,
-                 kv_stride,
-                 kv_group,
-                 q_start_index_s,
-                 sm_scale=None,
-                 is_causal=True,
-                 dtype=torch.float16,
-                 tune=False):
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 seq_len_kv: int,
+                 dim: int,
+                 tail_dim: int,
+                 topk: int,
+                 kv_stride: int,
+                 kv_group: int,
+                 q_start_index_s: int,
+                 sm_scale: Any = None,
+                 is_causal: bool = True,
+                 dtype: torch.dtype = torch.float16,
+                 tune: bool = False):
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -64,5 +65,6 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
             dtype,
             tune=tune)
 
-    def forward(self, q: torch.Tensor, kv_cache: torch.Tensor, indices: torch.Tensor):
+    def forward(self, q: torch.Tensor, kv_cache: torch.Tensor,
+                indices: torch.Tensor) -> torch.Tensor:
         return sparse_mla_ctx.apply(q, kv_cache, indices, self.fwd_op)

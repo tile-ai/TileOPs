@@ -1,6 +1,7 @@
 import torch
 from .function import Function
 from top.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
+from typing import Any
 
 __all__ = [
     'MultiHeadLatentAttentionDecodeWithKVCacheFunc',
@@ -30,7 +31,7 @@ class mla_decode_ctx(torch.autograd.Function):
         return o
 
     @staticmethod
-    def backward(ctx, do: torch.Tensor):
+    def backward(ctx, do: torch.Tensor) -> Any:
         """Backward pass for multi-head latent attention with KV cache.
         
         Args:
@@ -52,7 +53,7 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFunc(Function):
                  seqlen_kv: int,
                  dim: int,
                  pe_dim: int,
-                 dtype=torch.float16,
+                 dtype: torch.dtype = torch.float16,
                  tune: bool = False):
         """Initialize the function with configuration parameters.
         

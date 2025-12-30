@@ -58,8 +58,8 @@ class MatMulFunc(Function):
         m: int,
         n: int,
         k: int,
-        dtype=torch.float16,
-        tune=False,
+        dtype: torch.dtype = torch.float16,
+        tune: bool = False,
     ):
         """Initialize the function with configuration parameters.
         

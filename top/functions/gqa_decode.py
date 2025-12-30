@@ -1,6 +1,7 @@
 import torch
 from .function import Function
 from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
+from typing import Any
 
 __all__ = [
     'GroupQueryAttentionDecodeWithKVCacheFunc', 'group_query_attention_decode_with_kvcache',
@@ -29,7 +30,7 @@ class gqa_decode_ctx(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx, do: torch.Tensor):
+    def backward(ctx, do: torch.Tensor) -> Any:
         """Backward pass for group query attention with KV cache.
         
         Args:
@@ -50,7 +51,7 @@ class GroupQueryAttentionDecodeWithKVCacheFunc(Function):
                  groups: int,
                  seqlen_kv: int,
                  dim: int,
-                 dtype=torch.float16,
+                 dtype: torch.dtype = torch.float16,
                  tune: bool = False):
         """Initialize the function with configuration parameters.
         

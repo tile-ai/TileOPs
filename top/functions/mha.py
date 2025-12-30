@@ -52,7 +52,14 @@ class mha_ctx(torch.autograd.Function):
 
 class MultiHeadAttentionFunc(Function):
 
-    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype=torch.float16, tune=False):
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 dim: int,
+                 is_causal: bool,
+                 dtype: torch.dtype = torch.float16,
+                 tune: bool = False):
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
