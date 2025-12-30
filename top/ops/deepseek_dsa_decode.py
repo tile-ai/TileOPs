@@ -11,21 +11,21 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
-                 batch,
-                 heads,
-                 seq_len,
-                 seq_len_kv,
-                 dim,
-                 tail_dim,
-                 topk,
-                 kv_stride,
-                 kv_group,
-                 q_start_index_s,
-                 sm_scale=None,
-                 is_causal=True,
-                 dtype=torch.float16,
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 seq_len_kv: int,
+                 dim: int,
+                 tail_dim: int,
+                 topk: int,
+                 kv_stride: int,
+                 kv_group: int,
+                 q_start_index_s: int,
+                 sm_scale: Optional[float] = None,
+                 is_causal: bool = True,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -40,9 +40,9 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
         self.is_causal = is_causal
 
         if q_start_index_s != 0:
-            assert q_start_index_s > kv_stride, "If it is because each cp has too short length, "
-            "you should fix the logic involving CP0 (cp_rank == 0), to make sure q with pos < KV_Stride - 1 is masked "
-            "(or you may just ignore how this is handled if nan in these q's Out would not effect others, which is reported to be likely to happen by wangding)"
+            assert q_start_index_s > kv_stride, "If it is because each cp has too short length, " \
+                "you should fix the logic involving CP0 (cp_rank == 0), to make sure q with pos < KV_Stride - 1 is masked " \
+                "(or you may just ignore how this is handled if nan in these q's Out would not effect others, which is reported to be likely to happen by wangding)"
 
         CP0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s
@@ -66,8 +66,8 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
             tune=tune)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"sparse_mla_kernel": sparse_mla_kernel}
 
-    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor):
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         return self.kernel(q, kv, indices)

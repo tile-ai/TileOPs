@@ -13,11 +13,11 @@ class GemmOp(Op):
                  m: int,
                  n: int,
                  k: int,
-                 trans_a=False,
-                 trans_b=False,
-                 dtype=torch.float16,
+                 trans_a: bool = False,
+                 trans_b: bool = False,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.M = m
         self.N = n
         self.K = k
@@ -29,7 +29,7 @@ class GemmOp(Op):
             m, n, k, self.dtype, tune=tune, trans_a=trans_a, trans_b=trans_b)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"gemm_kernel": gemm_kernel}
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

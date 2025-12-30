@@ -15,14 +15,14 @@ class MultiHeadAttentionFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
-                 batch,
-                 heads,
-                 seq_len,
-                 dim,
-                 is_causal,
-                 dtype=torch.float16,
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 dim: int,
+                 is_causal: bool,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  #TODO: support s_q != s_kv
@@ -36,7 +36,7 @@ class MultiHeadAttentionFwdOp(Op):
             batch, heads, seq_len, dim, is_causal, self.dtype, tune=tune)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"mha_fwd_kernel": mha_fwd_wgmma_pipelined_kernel if is_hopper() else mha_fwd_kernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -47,14 +47,14 @@ class MultiHeadAttentionBwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
-                 batch,
-                 heads,
-                 seq_len,
-                 dim,
-                 is_causal,
-                 dtype=torch.float16,
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 dim: int,
+                 is_causal: bool,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  #TODO: support s_q != s_kv
@@ -73,7 +73,7 @@ class MultiHeadAttentionBwdOp(Op):
                                                                              dim, self.dtype)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "mha_bwd_preprocess_kernel":
                 flashattn_bwd_preprocess_kernel,
@@ -84,7 +84,8 @@ class MultiHeadAttentionBwdOp(Op):
         }
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
-                do: torch.Tensor, lse: torch.Tensor):
+                do: torch.Tensor,
+                lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         do = do.contiguous()
         delta = self.prep_kernel(o, do)
         dq = torch.zeros_like(q, dtype=torch.float32)
