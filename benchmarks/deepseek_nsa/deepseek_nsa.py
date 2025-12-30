@@ -18,7 +18,7 @@ class NativeSparseAttentionForwardBenchmark(Benchmark):
         block_size=64,
         groups=1,
         selected_blocks=16,
-        # tune=False
+        tune=False
     ):
         self.batch = batch
         self.heads = heads
@@ -32,19 +32,27 @@ class NativeSparseAttentionForwardBenchmark(Benchmark):
 
         self.head_kv = self.heads // self.groups
         self.dtype = torch.float16
+        self.tune = tune
 
     @property
     def total_flops(self):
-        flops_per_matmul = 2.0 * self.batch * self.heads * self.seq_len * self.dim
-        flops = flops_per_matmul * 2
-        return flops
+        B = self.batch
+        T = self.seq_len
+        HQ = self.heads
+        D = self.dim
+        S = self.selected_blocks
+        BS = self.block_size
 
+        window_size = 0
+        total_keys = S * BS + window_size
+        flops = 4 * B * T * HQ * D * total_keys
+        return flops
+    
     @property
     def total_memory(self):
         return (self.batch * self.heads * (2 * self.seq_len) * self.dim * self.dtype.itemsize)
-    # q_shape = [batch, seq_len, heads, dim]
-    # kv_shape = [batch, seq_len, head_kv, dim]
-    # block_indices_shape = [batch, seq_len, head_kv, selected_blocks]
+
+
     def gen_inputs(self):
         Q = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
@@ -64,7 +72,7 @@ class NativeSparseAttentionForwardBenchmark(Benchmark):
                     i_i = torch.randperm(max(1, (t // self.block_size)))[:self.selected_blocks]
                     block_indices[b, t, h, : len(i_i)] = i_i
                     self.block_counts[b, t, h] = (block_indices[b, t, h] != self.seq_len).sum().item()
-        block_indices = block_indices.sort(-1)[0]
+        block_indices = block_indices.sort(-1)[0].to(torch.int32)
         return Q, K, V, block_indices
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, BlockIndices: torch.Tensor):
@@ -74,8 +82,8 @@ class NativeSparseAttentionForwardBenchmark(Benchmark):
             v=V,
             g_slc=self.g_slc,
             g_swa=self.g_swa,
-            block_indices=BlockIndices,
-            block_counts=slblock_counts,
-            block_size=block_size,
-            scale=scale,
+            block_indices=BlockIndices.to(torch.long),
+            block_counts=self.block_counts,
+            block_size=self.block_size,  
+            scale=self.scale,
         ) 
