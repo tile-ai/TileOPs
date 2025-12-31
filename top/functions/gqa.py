@@ -6,7 +6,7 @@ from typing import Tuple
 __all__ = ['GroupQueryAttentionFunc', 'group_query_attention', 'gqa']
 
 
-class gqa_ctx(torch.autograd.Function):
+class GQACtx(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -100,7 +100,7 @@ class GroupQueryAttentionFunc(Function):
         Returns:
             Output tensor of shape (B, S, H, D)
         """
-        return gqa_ctx.apply(q, k, v, self.fwd_op, self.bwd_op)
+        return GQACtx.apply(q, k, v, self.fwd_op, self.bwd_op)
 
 
 def group_query_attention(q: torch.Tensor,

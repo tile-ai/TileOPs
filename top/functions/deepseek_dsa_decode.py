@@ -6,7 +6,7 @@ from typing import Any
 __all__ = ['DeepSeekSparseAttentionDecodeWithKVCacheFunc']
 
 
-class sparse_mla_ctx(torch.autograd.Function):
+class DSADecodeCtx(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, fwd_op: Any):
@@ -67,4 +67,4 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
 
     def forward(self, q: torch.Tensor, kv_cache: torch.Tensor,
                 indices: torch.Tensor) -> torch.Tensor:
-        return sparse_mla_ctx.apply(q, kv_cache, indices, self.fwd_op)
+        return DSADecodeCtx.apply(q, kv_cache, indices, self.fwd_op)

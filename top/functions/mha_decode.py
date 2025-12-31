@@ -10,7 +10,7 @@ __all__ = [
 ]
 
 
-class mha_decode_ctx(torch.autograd.Function):
+class MHADecodeCtx(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -77,7 +77,7 @@ class MultiHeadAttentionDecodeWithKVCacheFunc(Function):
             batch, heads, seqlen_q, seqlen_kv, dim, dtype, tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        return mha_decode_ctx.apply(q, k, v, self.fwd_op)
+        return MHADecodeCtx.apply(q, k, v, self.fwd_op)
 
 
 def multi_head_attention_decode_with_kvcache(q: torch.Tensor,

@@ -6,7 +6,7 @@ from typing import Tuple
 __all__ = ['MatMulFunc', 'matmul']
 
 
-class gemm_ctx(torch.autograd.Function):
+class GemmCtx(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, a: torch.Tensor, b: torch.Tensor, fwd_op: GemmOp, da_bwd_op: GemmOp,
@@ -75,7 +75,7 @@ class MatMulFunc(Function):
         self.db_bwd_op = GemmOp(k, n, m, dtype=dtype, trans_a=False, tune=tune)
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return gemm_ctx.apply(a, b, self.fwd_op, self.da_bwd_op, self.db_bwd_op)
+        return GemmCtx.apply(a, b, self.fwd_op, self.da_bwd_op, self.db_bwd_op)
 
 
 def matmul(a: torch.Tensor, b: torch.Tensor, tune: bool = False) -> torch.Tensor:

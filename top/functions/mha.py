@@ -6,7 +6,7 @@ from typing import Tuple
 __all__ = ['MultiHeadAttentionFunc', 'multi_head_attention', 'mha']
 
 
-class mha_ctx(torch.autograd.Function):
+class MHACtx(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -74,7 +74,7 @@ class MultiHeadAttentionFunc(Function):
             batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        return mha_ctx.apply(q, k, v, self.fwd_op, self.bwd_op)
+        return MHACtx.apply(q, k, v, self.fwd_op, self.bwd_op)
 
 
 def multi_head_attention(q: torch.Tensor,

@@ -9,7 +9,7 @@ __all__ = [
 ]
 
 
-class gqa_decode_ctx(torch.autograd.Function):
+class GQADecodeCtx(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -76,7 +76,7 @@ class GroupQueryAttentionDecodeWithKVCacheFunc(Function):
             batch, heads, groups, seqlen_kv, dim, dtype, tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        return gqa_decode_ctx.apply(q, k, v, self.fwd_op)
+        return GQADecodeCtx.apply(q, k, v, self.fwd_op)
 
 
 def group_query_attention_decode_with_kvcache(q: torch.Tensor,
