@@ -2,6 +2,7 @@ import torch
 from abc import ABC, abstractmethod
 from tilelang.profiler import do_bench
 from top.ops import Op
+from typing import Any, Optional, Tuple
 
 
 class Benchmark(ABC):
@@ -9,22 +10,26 @@ class Benchmark(ABC):
     op_type: type[Op]
 
     @property
-    def total_flops(self):
+    def total_flops(self) -> Optional[float]:
         raise NotImplementedError
 
     @property
-    def total_memory(self):
+    def total_memory(self) -> Optional[float]:
         raise NotImplementedError
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> Any:
         raise NotImplementedError
         #TODo: impl this?
 
     @abstractmethod
-    def ref_program(self, *inputs):
+    def ref_program(self, *inputs: Tuple[torch.Tensor]) -> Any:
         raise NotImplementedError
 
-    def check(self, op, *inputs, atol=1e-2, rtol=1e-2):
+    def check(self,
+              op: Op,
+              *inputs: Tuple[torch.Tensor],
+              atol: float = 1e-2,
+              rtol: float = 1e-2) -> None:
         """Check the correctness of the op"""
 
         try:
@@ -60,7 +65,12 @@ class Benchmark(ABC):
 
         print(f"All checks passed for {op.__class__.__name__}.✅")
 
-    def check_fn(self, fn, *inputs, atol=1e-2, rtol=1e-2, grad=True):
+    def check_fn(self,
+                 fn: callable,
+                 *inputs: Tuple[torch.Tensor],
+                 atol: float = 1e-2,
+                 rtol: float = 1e-2,
+                 grad: bool = True) -> None:
         """Check the correctness of the function and layer"""
 
         try:
@@ -107,7 +117,11 @@ class Benchmark(ABC):
 
         print(f"All checks passed for {fn.__class__.__name__}.✅")
 
-    def profile(self, op, *inputs, warmup=100, rep=100):
+    def profile(self,
+                op: Op,
+                *inputs: Tuple[torch.Tensor],
+                warmup: int = 100,
+                rep: int = 100) -> None:
         """Benchmark the perf of the op"""
 
         print(f"===== Profiling {op.__class__.__name__} =====")
@@ -127,12 +141,12 @@ class Benchmark(ABC):
             )
 
     def baseline_profile(self,
-                         baseline_op,
-                         *inputs,
-                         backend="Base",
-                         warmup=100,
-                         rep=100,
-                         device="cuda:0"):
+                         baseline_op: Op,
+                         *inputs: Tuple[torch.Tensor],
+                         backend: str = "Base",
+                         warmup: int = 100,
+                         rep: int = 100,
+                         device: str = "cuda:0") -> None:
         """Benchmark the perf of the baselin op"""
 
         print(f"===== Profiling {backend} =====")

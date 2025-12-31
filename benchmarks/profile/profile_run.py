@@ -7,9 +7,10 @@ import subprocess
 import sys
 import re
 from pathlib import Path
+from typing import Dict, List, Optional, Any, Union
 
 
-def build_gemm_cmd(args_dict):
+def build_gemm_cmd(args_dict: Dict[str, Any]) -> List[str]:
     """
     Build command arguments for GEMM test script
     """
@@ -23,7 +24,7 @@ def build_gemm_cmd(args_dict):
     return cmd_args
 
 
-def build_mha_cmd(args_dict):
+def build_mha_cmd(args_dict: Dict[str, Any]) -> List[str]:
     """
     Build command arguments for MHA test script
     """
@@ -40,7 +41,7 @@ def build_mha_cmd(args_dict):
     return cmd_args
 
 
-def build_gqa_cmd(args_dict):
+def build_gqa_cmd(args_dict: Dict[str, Any]) -> List[str]:
     """
     Build command arguments for GQA test script
     """
@@ -58,7 +59,7 @@ def build_gqa_cmd(args_dict):
     return cmd_args
 
 
-def build_mha_decode_cmd(args_dict):
+def build_mha_decode_cmd(args_dict: Dict[str, Any]) -> List[str]:
     """
     Build command arguments for MHA decode test script
     """
@@ -74,7 +75,7 @@ def build_mha_decode_cmd(args_dict):
     return cmd_args
 
 
-def build_gqa_decode_cmd(args_dict):
+def build_gqa_decode_cmd(args_dict: Dict[str, Any]) -> List[str]:
     """
     Build command arguments for GQA decode test script
     """
@@ -90,7 +91,7 @@ def build_gqa_decode_cmd(args_dict):
     return cmd_args
 
 
-def build_mla_decode_cmd(args_dict):
+def build_mla_decode_cmd(args_dict: Dict[str, Any]) -> List[str]:
     """
     Build command arguments for MLA decode test script
     """
@@ -107,7 +108,7 @@ def build_mla_decode_cmd(args_dict):
     return cmd_args
 
 
-def build_sparse_mla_cmd(args_dict):
+def build_sparse_mla_cmd(args_dict: Dict[str, Any]) -> List[str]:
     """
     Build command arguments for Sparse MLA test script
     """
@@ -133,7 +134,7 @@ def build_sparse_mla_cmd(args_dict):
     return cmd_args
 
 
-def parse_output(output_lines):
+def parse_output(output_lines: List[str]) -> Dict[str, Union[float, None]]:
     """
     Parse script output to extract separate forward and backward latency, TFlops, and Bandwidth information
     """
@@ -179,7 +180,7 @@ def parse_output(output_lines):
     return results
 
 
-def run_test_script(script_path, args_dict):
+def run_test_script(script_path: Path, args_dict: Dict[str, Any]) -> Optional[List[str]]:
     """
     Run the specified test script and return output
     """
@@ -223,7 +224,7 @@ def run_test_script(script_path, args_dict):
         return None
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description='Batch run test scripts with CSV parameters')
     parser.add_argument('--script', required=True, help='Path to the test script (.py file)')
     parser.add_argument('--input_csv', required=True, help='Path to input CSV file with parameters')
