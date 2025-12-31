@@ -1,4 +1,5 @@
 import torch
+from torch.autograd.function import FunctionCtx
 from .function import Function
 from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
 from typing import Any
@@ -13,7 +14,7 @@ __all__ = [
 class MHADecodeCtx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    def forward(ctx: FunctionCtx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 fwd_op: MultiHeadAttentionDecodeWithKVCacheOp) -> torch.Tensor:
         """Forward pass for multi-head attention with KV cache.
         
@@ -31,7 +32,7 @@ class MHADecodeCtx(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx, do: torch.Tensor) -> Any:
+    def backward(ctx: FunctionCtx, do: torch.Tensor) -> Any:
         """Backward pass for multi-head attention with KV cache.
         
         Args:

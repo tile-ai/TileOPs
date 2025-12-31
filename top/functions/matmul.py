@@ -1,4 +1,5 @@
 import torch
+from torch.autograd.function import FunctionCtx
 from .function import Function
 from top.ops import GemmOp
 from typing import Tuple
@@ -9,8 +10,8 @@ __all__ = ['MatMulFunc', 'matmul']
 class GemmCtx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, a: torch.Tensor, b: torch.Tensor, fwd_op: GemmOp, da_bwd_op: GemmOp,
-                db_bwd_op: GemmOp) -> torch.Tensor:
+    def forward(ctx: FunctionCtx, a: torch.Tensor, b: torch.Tensor, fwd_op: GemmOp,
+                da_bwd_op: GemmOp, db_bwd_op: GemmOp) -> torch.Tensor:
         """Forward pass for GEMM operation.
         
         Args:
@@ -33,7 +34,8 @@ class GemmCtx(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx, do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, None, None, None]:
+    def backward(ctx: FunctionCtx,
+                 do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, None, None, None]:
         """Backward pass for GEMM operation.
         
         Args:

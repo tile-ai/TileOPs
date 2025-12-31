@@ -1,4 +1,5 @@
 import torch
+from torch.autograd.function import FunctionCtx
 from .function import Function
 from top.ops import GroupQueryAttentionFwdOp, GroupQueryAttentionBwdOp
 from typing import Tuple
@@ -9,7 +10,7 @@ __all__ = ['GroupQueryAttentionFunc', 'group_query_attention', 'gqa']
 class GQACtx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    def forward(ctx: FunctionCtx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 fwd_op: GroupQueryAttentionFwdOp, bwd_op: GroupQueryAttentionBwdOp) -> torch.Tensor:
         """Forward pass for group query attention.
         
@@ -31,7 +32,7 @@ class GQACtx(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx,
+    def backward(ctx: FunctionCtx,
                  do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         """Backward pass for group query attention.
         

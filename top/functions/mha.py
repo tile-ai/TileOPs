@@ -1,4 +1,5 @@
 import torch
+from torch.autograd.function import FunctionCtx
 from .function import Function
 from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
 from typing import Tuple
@@ -9,7 +10,7 @@ __all__ = ['MultiHeadAttentionFunc', 'multi_head_attention', 'mha']
 class MHACtx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    def forward(ctx: FunctionCtx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 fwd_op: MultiHeadAttentionFwdOp, bwd_op: MultiHeadAttentionBwdOp) -> torch.Tensor:
         """
         Forward pass for multi-head attention.
@@ -32,7 +33,7 @@ class MHACtx(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx,
+    def backward(ctx: FunctionCtx,
                  do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         """
         Backward pass for multi-head attention.

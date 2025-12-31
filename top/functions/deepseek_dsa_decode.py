@@ -1,4 +1,5 @@
 import torch
+from torch.autograd.function import FunctionCtx
 from .function import Function
 from top.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from typing import Any
@@ -9,12 +10,13 @@ __all__ = ['DeepSeekSparseAttentionDecodeWithKVCacheFunc']
 class DSADecodeCtx(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, fwd_op: Any):
+    def forward(ctx: FunctionCtx, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor,
+                fwd_op: DeepSeekSparseAttentionDecodeWithKVCacheOp) -> torch.Tensor:
         o = fwd_op(q, kv, indices)
         return o
 
     @staticmethod
-    def backward(ctx, do: torch.Tensor) -> Any:
+    def backward(ctx: FunctionCtx, do: torch.Tensor) -> Any:
         raise RuntimeError("Inference-only op")
 
 
