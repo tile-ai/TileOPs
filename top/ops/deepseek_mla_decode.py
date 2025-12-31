@@ -12,15 +12,15 @@ class MultiHeadLatentAttentionDecodeWithKVCacheOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
-                 batch,
-                 heads,
-                 kv_head_num,
-                 seqlen_kv,
-                 dim,
-                 pe_dim,
-                 dtype=torch.float16,
+                 batch: int,
+                 heads: int,
+                 kv_head_num: int,
+                 seqlen_kv: int,
+                 dim: int,
+                 pe_dim: int,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.kv_head_num = kv_head_num
@@ -35,9 +35,9 @@ class MultiHeadLatentAttentionDecodeWithKVCacheOp(Op):
             batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, self.dtype, tune=tune)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"mla_decode_kernel": mla_decode_ws_kernel if is_hopper() else mla_decode_kernel}
 
-    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor,
-                K_pe: torch.Tensor) -> torch.Tensor:
-        return self.kernel(Q, Q_pe, K, K_pe)
+    def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
+                k_pe: torch.Tensor) -> torch.Tensor:
+        return self.kernel(q, q_pe, k, k_pe)

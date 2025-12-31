@@ -5,7 +5,8 @@ from top.functions import MultiHeadAttentionFunc, GroupQueryAttentionFunc
 
 class MultiHeadAttentionLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, seq_len, dim, is_causal, dtype):
+    def __init__(self, batch_size: int, heads: int, seq_len: int, dim: int, is_causal: bool,
+                 dtype: torch.dtype):
         super().__init__()
 
         self.batch_size = batch_size
@@ -17,13 +18,14 @@ class MultiHeadAttentionLayer(nn.Module):
 
         self.fn = MultiHeadAttentionFunc(batch_size, heads, seq_len, dim, is_causal, dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)
 
 
 class GroupQueryAttentionLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, heads_kv, seq_len, dim, is_causal, dtype):
+    def __init__(self, batch_size: int, heads: int, heads_kv: int, seq_len: int, dim: int,
+                 is_causal: bool, dtype: torch.dtype):
         super().__init__()
 
         self.batch_size = batch_size
@@ -37,5 +39,5 @@ class GroupQueryAttentionLayer(nn.Module):
         self.fn = GroupQueryAttentionFunc(batch_size, heads, heads_kv, seq_len, dim, is_causal,
                                           dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)

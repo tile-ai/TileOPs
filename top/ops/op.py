@@ -1,7 +1,7 @@
 import torch
 from top.kernels.kernel import Kernel
 from top.utils import get_sm_version
-from typing import Optional, Union, Dict
+from typing import Optional, Union, Dict, Any
 from abc import abstractmethod, ABC
 
 
@@ -67,9 +67,9 @@ class Op(ABC):
                 attr.autotune()
 
     @abstractmethod
-    def forward(self, *args, **kwargs):
+    def forward(self, *args: Any, **kwargs: Any):
         raise NotImplementedError("forward method is not implemented")
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: Any, **kwargs: Any):
         """Make the op callable - delegates to forward()"""
         return self.forward(*args, **kwargs)
