@@ -28,10 +28,10 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
                  seq_len: int,
                  seq_len_kv: int,
                  dim: int,
-                 tail_dim: int,
+                 dim_tail: int,
                  topk: int,
-                 kv_stride: int,
-                 kv_group: int,
+                 stride_kv: int,
+                 group_kv: int,
                  q_start_index_s: int,
                  sm_scale: Any = None,
                  is_causal: bool = True,
@@ -42,10 +42,10 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv
         self.dim = dim
-        self.tail_dim = tail_dim
+        self.dim_tail = dim_tail
         self.topk = topk
-        self.kv_stride = kv_stride
-        self.kv_group = kv_group
+        self.stride_kv = stride_kv
+        self.group_kv = group_kv
         self.sm_scale = sm_scale
         self.dtype = dtype
         self.is_causal = is_causal
@@ -57,10 +57,10 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
             seq_len,
             seq_len_kv,
             dim,
-            tail_dim,
+            dim_tail,
             topk,
-            kv_stride,
-            kv_group,
+            stride_kv,
+            group_kv,
             q_start_index_s,
             sm_scale,
             is_causal,

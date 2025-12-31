@@ -16,10 +16,10 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
                  seq_len: int,
                  seq_len_kv: int,
                  dim: int,
-                 tail_dim: int,
+                 dim_tail: int,
                  topk: int,
-                 kv_stride: int,
-                 kv_group: int,
+                 stride_kv: int,
+                 group_kv: int,
                  q_start_index_s: int,
                  sm_scale: Optional[float] = None,
                  is_causal: bool = True,
@@ -31,17 +31,17 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv
         self.dim = dim
-        self.tail_dim = tail_dim
+        self.dim_tail = dim_tail
         self.topk = topk
-        self.kv_stride = kv_stride
-        self.kv_group = kv_group
+        self.stride_kv = stride_kv
+        self.group_kv = group_kv
         self.sm_scale = sm_scale
         self.dtype = dtype
         self.is_causal = is_causal
 
         if q_start_index_s != 0:
-            assert q_start_index_s > kv_stride, "If it is because each cp has too short length, " \
-                "you should fix the logic involving CP0 (cp_rank == 0), to make sure q with pos < KV_Stride - 1 is masked " \
+            assert q_start_index_s > stride_kv, "If it is because each cp has too short length, " \
+                "you should fix the logic involving CP0 (cp_rank == 0), to make sure q with pos < stride_kv - 1 is masked " \
                 "(or you may just ignore how this is handled if nan in these q's Out would not effect others, which is reported to be likely to happen by wangding)"
 
         CP0 = q_start_index_s == 0
@@ -54,12 +54,12 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
             self.seq_len_kv,
             self.heads,
             self.dim,
-            self.tail_dim,
+            self.dim_tail,
             self.dtype,
             self.topk,
-            self.kv_stride,
+            self.stride_kv,
             self.q_start_index_s,
-            self.kv_group,
+            self.group_kv,
             self.sm_scale,
             self.is_causal,
             CP0,

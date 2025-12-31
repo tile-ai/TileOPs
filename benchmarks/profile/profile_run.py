@@ -98,10 +98,10 @@ def build_mla_decode_cmd(args_dict):
         '--batch',
         str(args_dict['batch']), '--seq_len_kv',
         str(args_dict['seq_len_kv']), '--heads',
-        str(args_dict['heads']), '--kv_head_num',
-        str(args_dict['kv_head_num']), '--dim',
-        str(args_dict['dim']), '--pe_dim',
-        str(args_dict['pe_dim']), '--dtype',
+        str(args_dict['heads']), '--head_num_kv',
+        str(args_dict['head_num_kv']), '--dim',
+        str(args_dict['dim']), '--dim_pe',
+        str(args_dict['dim_pe']), '--dtype',
         str(args_dict['dtype'])
     ]
     return cmd_args
@@ -117,11 +117,11 @@ def build_sparse_mla_cmd(args_dict):
         str(args_dict['seq_len']), '--seq_len_kv',
         str(args_dict['seq_len_kv']), '--heads',
         str(args_dict['heads']), '--dim',
-        str(args_dict['dim']), '--tail_dim',
-        str(args_dict['tail_dim']), '--topk',
-        str(args_dict['topk']), '--kv_stride',
-        str(args_dict['kv_stride']), '--kv_group',
-        str(args_dict['kv_group']), '--q_start_index_s',
+        str(args_dict['dim']), '--dim_tail',
+        str(args_dict['dim_tail']), '--topk',
+        str(args_dict['topk']), '--stride_kv',
+        str(args_dict['stride_kv']), '--group_kv',
+        str(args_dict['group_kv']), '--q_start_index_s',
         str(args_dict.get('q_start_index_s', 1024)), '--dtype',
         str(args_dict['dtype'])
     ]
@@ -192,9 +192,9 @@ def run_test_script(script_path, args_dict):
         cmd_args = build_mha_decode_cmd(args_dict)
     elif 'gqa_decode' in script_name:
         cmd_args = build_gqa_decode_cmd(args_dict)
-    elif 'mla_decode' in script_name:
+    elif 'deepseek_mla_decode' in script_name:
         cmd_args = build_mla_decode_cmd(args_dict)
-    elif 'sparse_mla' in script_name:
+    elif 'deepseek_dsa_decode' in script_name:
         cmd_args = build_sparse_mla_cmd(args_dict)
     elif 'mha' in script_name:
         cmd_args = build_mha_cmd(args_dict)

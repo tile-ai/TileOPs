@@ -11,7 +11,7 @@ class LinearLayer(nn.Module):
         batch_size: int,
         out_features: int,
         in_features: int,
-        device: str = 'cuda0',
+        device: str = 'cuda',
         dtype: torch.dtype = torch.float16,
         tune: bool = False,
     ):
