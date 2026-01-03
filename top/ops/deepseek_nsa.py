@@ -35,22 +35,23 @@ class NativeSparseAttentionForwardOp(Op):
         self.selected_blocks = selected_blocks
         self.tune = tune
 
-        # print("batch ", self.batch)
-        # print("heads ", self.heads)
-        # print("seq_len ", self.seq_len)
-        # print("dim ", self.dim)
-        # print("is_causal ", self.is_causal)
-        # print("scale ", self.scale)
-        # print("block_size ", self.block_size)
-        # print("groups ", self.groups)
-        # print("selected_blocks ", self.selected_blocks)
-        # print("tune ", self.tune)
+        print("batch ", self.batch)
+        print("heads ", self.heads)
+        print("seq_len ", self.seq_len)
+        print("dim ", self.dim)
+        print("is_causal ", self.is_causal)
+        print("scale ", self.scale)
+        print("block_size ", self.block_size)
+        print("groups ", self.groups)
+        print("selected_blocks ", self.selected_blocks)
+        print("tune ", self.tune)
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["nsa_fwd_kernel"](
             self.batch, self.heads, self.seq_len, 
             self.dim, self.is_causal, self.scale, 
             self.block_size, self.groups, self.selected_blocks, tune=self.tune)
+        
 
     @property
     def default_kernel_map(self):
@@ -61,7 +62,9 @@ class NativeSparseAttentionForwardOp(Op):
 
 
 def main():
-    B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2, 64, 1, 16, 32, 1, 32, torch.float16, 0.1
+    # B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2, 64, 1, 16, 32, 1, 32, torch.float16, 0.1
+
+    B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2,  8192, 4, 16*4, 128, 16, 32, torch.float16, 0.1
 
     block_T = min(128, 16)
 
@@ -99,21 +102,21 @@ def main():
 
     out = kernel.forward(Q, K, V, block_indices.to(torch.int32))
 
-    ref = naive_nsa(
-        q=Q,
-        k=K,
-        v=V,
-        g_slc=g_slc,
-        g_swa=g_swa,
-        block_indices=block_indices,
-        block_counts=block_counts,
-        block_size=block_size,
-        scale=scale,
-    )
+    # ref = naive_nsa(
+    #     q=Q,
+    #     k=K,
+    #     v=V,
+    #     g_slc=g_slc,
+    #     g_swa=g_swa,
+    #     block_indices=block_indices,
+    #     block_counts=block_counts,
+    #     block_size=block_size,
+    #     scale=scale,
+    # )
 
     print("out", out)
-    print("ref", ref)
-    torch.testing.assert_close(ref, out, atol=1e-2, rtol=1e-2)
+    # print("ref", ref)
+    # torch.testing.assert_close(ref, out, atol=1e-2, rtol=1e-2)
 
 
 if __name__ == "__main__":

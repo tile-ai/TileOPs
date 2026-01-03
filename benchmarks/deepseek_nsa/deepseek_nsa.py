@@ -76,6 +76,7 @@ class NativeSparseAttentionForwardBenchmark(Benchmark):
         return Q, K, V, block_indices
 
     def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, BlockIndices: torch.Tensor):
+        print("running naive nsa ref_program")
         return naive_nsa(
             q=Q,
             k=K,

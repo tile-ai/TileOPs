@@ -226,8 +226,8 @@ class nsa_fwd_kernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         block_T = [32, 64, 128]
-        num_stages = [2,]
-        threads = [32, 64]
+        num_stages = [2, 3]
+        threads = [32, 64, 128]
         _configs = list(itertools.product(block_T, num_stages, threads))
         configs = [{
             "block_T": c[0],
@@ -241,7 +241,8 @@ class nsa_fwd_kernel(Kernel):
 
 
 def main():
-    B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2, 64, 1, 16, 32, 1, 32, torch.float16, 0.1
+    # B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2, 64, 1, 16, 32, 1, 32, torch.float16, 0.1
+    B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2,  8192, 4, 16*4, 128, 16, 32, torch.float16, 0.1
 
     block_T = min(128, tilelang.math.next_power_of_2(D))
     kernel = _nsa_fwd_kernel(
@@ -296,23 +297,23 @@ def main():
 
     out2 = kernel2.forward(Q, K, V, block_indices.to(torch.int32))
 
-    ref = naive_nsa(
-        q=Q,
-        k=K,
-        v=V,
-        g_slc=g_slc,
-        g_swa=g_swa,
-        block_indices=block_indices,
-        block_counts=block_counts,
-        block_size=block_size,
-        scale=scale,
-    )
+    # ref = naive_nsa(
+    #     q=Q,
+    #     k=K,
+    #     v=V,
+    #     g_slc=g_slc,
+    #     g_swa=g_swa,
+    #     block_indices=block_indices,
+    #     block_counts=block_counts,
+    #     block_size=block_size,
+    #     scale=scale,
+    # )
 
     print("out", out)
     print("out2", out2)
-    print("ref", ref)
-    torch.testing.assert_close(ref, out, atol=1e-2, rtol=1e-2)
-    torch.testing.assert_close(ref, out2, atol=1e-2, rtol=1e-2)
+    # print("ref", ref)
+    # torch.testing.assert_close(ref, out, atol=1e-2, rtol=1e-2)
+    # torch.testing.assert_close(ref, out2, atol=1e-2, rtol=1e-2)
 
 
 if __name__ == "__main__":

@@ -1,2 +1,5 @@
 batch,heads,seq_len,dim,is_causal,scale,block_size,groups,selected_blocks,tune
-2,16,64,32,True,0.1,32,2,32,False
+1,64,8192,128,True,0.1,32,16,16,True
+1,64,16384,128,True,0.1,32,16,16,True
+1,64,32768,128,True,0.1,32,16,16,True
+1,64,65536,128,True,0.1,32,16,16,True
