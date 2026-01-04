@@ -4,9 +4,9 @@ from top.utils import str2dtype
 from benchmarks import GroupQueryAttentionFwdBenchmark, GroupQueryAttentionBwdBenchmark
 
 
-def test_gqa_fwd(B, S, H, H_kv, D, causal, dtype, tune=False):
-    op = GroupQueryAttentionFwdOp(B, H, H_kv, S, D, causal, dtype, tune=tune)
-    benchmark = GroupQueryAttentionFwdBenchmark(B, H, H_kv, S, D, causal, dtype)
+def test_gqa_fwd(batch, seq_len, heads, heads_kv, dim, causal, dtype, tune=False):
+    op = GroupQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    benchmark = GroupQueryAttentionFwdBenchmark(batch, heads, heads_kv, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
     print("Forward Results:")
@@ -14,9 +14,9 @@ def test_gqa_fwd(B, S, H, H_kv, D, causal, dtype, tune=False):
     benchmark.profile(op, *inputs)
 
 
-def test_gqa_bwd(B, S, H, H_kv, D, causal, dtype, tune=False):
-    op = GroupQueryAttentionBwdOp(B, H, H_kv, S, D, causal, dtype, tune=tune)
-    benchmark = GroupQueryAttentionBwdBenchmark(B, H, H_kv, S, D, causal, dtype)
+def test_gqa_bwd(batch, seq_len, heads, heads_kv, dim, causal, dtype, tune=False):
+    op = GroupQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    benchmark = GroupQueryAttentionBwdBenchmark(batch, heads, heads_kv, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
     print("Backward Results:")

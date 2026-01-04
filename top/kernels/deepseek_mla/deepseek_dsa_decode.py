@@ -379,7 +379,7 @@ class sparse_mla_kernel(Kernel):
                  kv_group=1,
                  sm_scale=None,
                  is_causal=True,
-                 CP0=True,
+                 cp0=True,
                  config: Optional[dict] = None,
                  tune=False):
         super().__init__()
@@ -396,7 +396,7 @@ class sparse_mla_kernel(Kernel):
         self.sm_scale = sm_scale
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
-        self.CP0 = CP0
+        self.CP0 = cp0
 
         self.kernel = _sparse_mla_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads,
                                          self.dim, self.tail_dim, self.topk, self.kv_stride,
@@ -421,13 +421,13 @@ class sparse_mla_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor):
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor):
         return _sparse_mla_wrapped_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads,
                                           self.dim, self.tail_dim, self.topk, self.kv_stride,
                                           self.q_start_index_s, self.kv_group, self.sm_scale,
                                           self.is_causal, self.CP0, self.dtype_str,
-                                          self.config["block_I"], self.config["threads"], Q, KV,
-                                          Indices)
+                                          self.config["block_I"], self.config["threads"], q, kv,
+                                          indices)
 
     # @property
     def supply_prog(self, params=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

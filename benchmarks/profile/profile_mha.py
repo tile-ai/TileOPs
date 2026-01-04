@@ -2,9 +2,16 @@ import argparse
 from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
 from top.utils import str2dtype
 from benchmarks import MultiHeadAttentionFwdBenchmark, MultiHeadAttentionBwdBenchmark
+import torch
 
 
-def test_mha_fwd(B, S, H, D, causal, dtype, tune=False):
+def test_mha_fwd(B: int,
+                 S: int,
+                 H: int,
+                 D: int,
+                 causal: bool,
+                 dtype: torch.dtype,
+                 tune: bool = False) -> None:
     op = MultiHeadAttentionFwdOp(B, H, S, D, causal, dtype, tune=tune)
     benchmark = MultiHeadAttentionFwdBenchmark(B, H, S, D, causal, dtype)
 
@@ -15,7 +22,13 @@ def test_mha_fwd(B, S, H, D, causal, dtype, tune=False):
     benchmark.baseline_profile(*inputs)
 
 
-def test_mha_bwd(B, S, H, D, causal, dtype, tune=False):
+def test_mha_bwd(B: int,
+                 S: int,
+                 H: int,
+                 D: int,
+                 causal: bool,
+                 dtype: torch.dtype,
+                 tune: bool = False) -> None:
     op = MultiHeadAttentionBwdOp(B, H, S, D, causal, dtype, tune=tune)
     benchmark = MultiHeadAttentionBwdBenchmark(B, H, S, D, causal, dtype)
 

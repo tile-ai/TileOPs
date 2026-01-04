@@ -11,14 +11,14 @@ class GroupQueryAttentionDecodeWithKVCacheOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
-                 batch,
-                 heads,
-                 groups,
-                 seqlen_kv,
-                 dim,
-                 dtype=torch.float16,
+                 batch: int,
+                 heads: int,
+                 groups: int,
+                 seqlen_kv: int,
+                 dim: int,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.groups = groups
@@ -32,9 +32,8 @@ class GroupQueryAttentionDecodeWithKVCacheOp(Op):
             batch, heads, groups, seqlen_kv, dim, self.dtype, tune=tune)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"gqa_decode_kernel": gqa_decode_kernel}
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                mask: torch.Tensor) -> torch.Tensor:
-        return self.kernel(Q, K, V, mask)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.kernel(q, k, v)

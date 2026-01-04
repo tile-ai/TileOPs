@@ -39,23 +39,23 @@ class MultiHeadAttentionFwdBenchmark(Benchmark):
             self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
         return Q, K, V
 
-    def ref_program(self, Q: torch.Tensor, K: torch.Tensor,
-                    V: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        q_bhsd = Q.transpose(1, 2)  # [B, H, S, D]
-        k_bhsd = K.transpose(1, 2)
-        v_bhsd = V.transpose(1, 2)
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor,
+                    v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
+        k_bhsd = k.transpose(1, 2)
+        v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
         output = output_bhsd.transpose(1, 2).contiguous()
         return output, None  # do not check lse
 
-    def baseline_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+    def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
 
         out = flash_attn_interface.flash_attn_func(
-            Q,
-            K,
-            V,
+            q,
+            k,
+            v,
             softmax_scale=None,  # use default 1 / sqrt(head_dim)
             causal=self.is_causal,
         )
@@ -137,30 +137,30 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
 
         return Q, K, V, O, dO, lse
 
-    def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
-                    dO: torch.Tensor,
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
+                    do: torch.Tensor,
                     lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q_bhsd = Q.transpose(1, 2)  # [B, H, S, D]
-        k_bhsd = K.transpose(1, 2)
-        v_bhsd = V.transpose(1, 2)
+        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
+        k_bhsd = k.transpose(1, 2)
+        v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
         output = output_bhsd.transpose(1, 2).contiguous()
 
-        output.backward(dO)
-        return Q.grad, K.grad, V.grad
+        output.backward(do)
+        return q.grad, k.grad, v.grad
 
-    def baseline_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
-                         dO: torch.Tensor,
+    def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
+                         do: torch.Tensor,
                          lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
-        softmax_scale = Q.shape[-1]**(-0.5)
+        softmax_scale = q.shape[-1]**(-0.5)
 
-        dQ = torch.empty_like(Q)
-        dK = torch.empty_like(K)
-        dV = torch.empty_like(V)
-        dQ, dK, dV, _ = flash_attn_interface._flash_attn_backward(dO, Q, K, V, O, lse, None, None,
+        dQ = torch.empty_like(q)
+        dK = torch.empty_like(k)
+        dV = torch.empty_like(v)
+        dQ, dK, dV, _ = flash_attn_interface._flash_attn_backward(do, q, k, v, o, lse, None, None,
                                                                   None, None, None, None, dQ, dK,
                                                                   dV, softmax_scale, self.is_causal)
         return dQ, dK, dV
@@ -236,13 +236,13 @@ class MultiHeadAttentionBenchmark(Benchmark):
         return Q, K, V
 
     def ref_program(self,
-                    Q: torch.Tensor,
-                    K: torch.Tensor,
-                    V: torch.Tensor,
-                    dO: torch.Tensor = None) -> Any:
-        q_bhsd = Q.transpose(1, 2)  # [B, H, S, D]
-        k_bhsd = K.transpose(1, 2)
-        v_bhsd = V.transpose(1, 2)
+                    q: torch.Tensor,
+                    k: torch.Tensor,
+                    v: torch.Tensor,
+                    do: torch.Tensor = None) -> Any:
+        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
+        k_bhsd = k.transpose(1, 2)
+        v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
@@ -253,4 +253,4 @@ class MultiHeadAttentionBenchmark(Benchmark):
         else:
             loss = output.sum()
             loss.backward()
-            return output, Q.grad, K.grad, V.grad
+            return output, q.grad, k.grad, v.grad
