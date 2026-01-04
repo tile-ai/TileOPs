@@ -297,24 +297,6 @@ def main():
 
     out2 = kernel2.forward(Q, K, V, block_indices.to(torch.int32))
 
-    # ref = naive_nsa(
-    #     q=Q,
-    #     k=K,
-    #     v=V,
-    #     g_slc=g_slc,
-    #     g_swa=g_swa,
-    #     block_indices=block_indices,
-    #     block_counts=block_counts,
-    #     block_size=block_size,
-    #     scale=scale,
-    # )
-
-    print("out", out)
-    print("out2", out2)
-    # print("ref", ref)
-    # torch.testing.assert_close(ref, out, atol=1e-2, rtol=1e-2)
-    # torch.testing.assert_close(ref, out2, atol=1e-2, rtol=1e-2)
-
 
 if __name__ == "__main__":
     main()
