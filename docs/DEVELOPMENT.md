@@ -113,3 +113,25 @@ TileOPs/
 ├── benchmarks/    # Performance scripts
 └── docs/          # Project documentation
 ```
+
+## 6. Pull Request Process
+
+### Before Submitting a PR
+1.  **Format Code**: Run pre-commit hooks to ensure code style compliance.
+    ```bash
+    pre-commit run --all-files
+    ```
+2.  **Run Tests**: Ensure all relevant unit tests pass locally.
+    ```bash
+    pytest tests/ops/test_<op_name>.py
+    ```
+
+### CI/CD Checks
+When you open a PR, the following automated checks will run:
+*   **Lint**: Checks code style (Google Style), imports sorting, and spelling.
+*   **Test**: Runs unit tests and benchmarks on GPU runners.
+*   **Build**: Verifies the package builds successfully.
+
+**Note**:
+*   Merging is blocked until all CI checks pass.
+*   **Approval**: At least **2 reviewers** must approve the PR before merging.
