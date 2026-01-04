@@ -73,28 +73,37 @@ We enforce high standards for code quality and consistency.
 
 ## 4. Testing & Benchmarking Strategy
 
+### Unified Benchmark Object Pattern
+To ensure consistency between tests and benchmarks, we use a **Unified Benchmark Object** pattern.
+1.  **Define**: Create a subclass of `benchmarks.Benchmark` in `benchmarks/`.
+    *   Implement `gen_inputs()`: Returns random inputs for testing.
+    *   Implement `ref_program()`: The pure PyTorch reference implementation.
+2.  **Verify**: In `tests/`, instantiate this object and call `.check(op, inputs)` or `.check_fn(fn, inputs)`.
+3.  **Profile**: In `benchmarks/`, instantiate this object and call `.profile(op, inputs)`.
+
 ### Unit Tests
 *   **Framework**: `pytest`
 *   **Location**: `tests/`
 *   **Requirement**:
+    *   **Reuse**: Tests **MUST** reuse the `gen_inputs` and `check` methods from the Benchmark object.
     *   Tests must cover `FP16` and `BF16` data types.
     *   Tests must parameterize over common Shapes (Batch size, Heads, Sequence length).
-    *   Use `torch.testing.assert_close` with appropriate tolerances.
 
 ### Benchmarks
-*   **Framework**: `triton.testing.do_bench` or internal benchmark utilities.
-*   **Location**: `benchmarks/` or inside `top/ops/`.
+*   **Framework**: `benchmarks.benchmark.Benchmark`.
+*   **Location**: `benchmarks/`.
 *   **Metrics**:
     *   Latency (ms)
     *   TFLOPS (Terra Floating-point Operations Per Second)
-    *   Speedup vs PyTorch Native or FlashAttention-2.
+    *   DRAM Bandwidth (GB/s)
+    *   Speedup vs PyTorch Native or other baselines.
 
 ---
 
 ## 5. Directory Structure Reference
 
 ```text
-d:\projects\tileops
+TileOPs/
 ├── top/
 │   ├── kernels/   # L1: TileLang kernels
 │   ├── ops/       # L2: Dispatcher + Tests + Benchmarks
