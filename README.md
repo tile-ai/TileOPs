@@ -1,9 +1,9 @@
 <div align="center">
-  <img src="assets/logo.png" width="350"/>
+  <!-- <img src="assets/logo.png" width="350"/> -->
   <h1>TileOPs (TOP): Operator Library for LLMs Built on TileLang</h1>
-  <p>
+  <!-- <p>
     <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version" height="20"></a>
-  </p>
+  </p> -->
   <p>
     <a href="#-install-with-pip"><b>Installation</b></a> |
     <a href="#-quick-start"><b>Getting Started</b></a> |
@@ -12,6 +12,8 @@
 </div>
 
 **TileOPs (TOP)** is a high-performance operator library for large language models (LLMs) built on **[TileLang](https://github.com/tile-ai/tilelang)**. It offers efficient, modular, and composable implementations for AI workloads, especially for LLMs.
+
+**Note: TileOPs is still under rapid development.**
 
 What TileOPs is for:
 
@@ -41,7 +43,9 @@ TODO
 
 ## Support Matrix
 
-**Legend**: ✔ Optimized in tests / ● Functional support / ✗ Not supported yet / N/A Not Applicable
+TODO
+
+<!-- **Legend**: ✔ Optimized in tests / ● Functional support / ✗ Not supported yet / N/A Not Applicable
 
 | **Operator** | **FWD** | **BWD** | **Data Type** | **Tested Platform** |
 |:------------:|:-------:|:-------:|:-------------:|:-------------------:|
@@ -51,7 +55,7 @@ TODO
 | Group Query Attention | ✔ | ● | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
 | Multi-Head Attention Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
 | Group Query Attention Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
-| MatMul | ✔ | ● | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
+| MatMul | ✔ | ● | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) | -->
 
 
 
@@ -79,7 +83,9 @@ pip install -e '.[dev]' -v # remove -e option if you don't want to install in ed
 
 ## 🚀 Quick Start
 
-### Example: Group-Query Attention Decode
+TODO
+
+<!-- ### Example: Group-Query Attention Decode
 
 ```Python
 import torch
@@ -94,7 +100,7 @@ v_cache = torch.randn(B, S_kv, G, D, device='cuda', dtype=dtype)
 
 # Call function, k_cache and v_cache are updated in-place
 output = gqa_decode_with_kvcache(q, k_cache, v_cache)
-```
+``` -->
 
 ## Documents
 
