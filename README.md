@@ -34,7 +34,7 @@ The core features of TileOPs include:
 
 TODO
 
-<!-- DeepSeek Sparase Attention Decode
+<!-- DeepSeek Sparse Attention Decode
 
 ![DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM](https://raw.githubusercontent.com/tile-ai/TileOPs/main/docs/figures/sparse_mla_perf.png)
 *DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM* -->
