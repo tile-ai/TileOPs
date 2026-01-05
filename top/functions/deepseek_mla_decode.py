@@ -17,7 +17,7 @@ class MLADecodeCtx(torch.autograd.Function):
                 k_pe: torch.Tensor,
                 fwd_op: MultiHeadLatentAttentionDecodeWithKVCacheOp) -> torch.Tensor:
         """Forward pass for multi-head latent attention with KV cache.
-        
+
         Args:
             ctx: Context object for saving tensors for backward pass
             q: Query tensor of shape (B, H, D)
@@ -25,7 +25,7 @@ class MLADecodeCtx(torch.autograd.Function):
             k: Key tensor of shape (B, S_kv, H_kv, D), where H_kv is number of kv heads
             k_pe: Key position encoding tensor of shape (B, S_kv, H_kv, pe_dim)
             fwd_op: Forward operation instance
-            
+
         Returns:
             Output tensor of the same shape as input q
         """
@@ -35,11 +35,11 @@ class MLADecodeCtx(torch.autograd.Function):
     @staticmethod
     def backward(ctx: FunctionCtx, do: torch.Tensor) -> Any:
         """Backward pass for multi-head latent attention with KV cache.
-        
+
         Args:
             ctx: Context object containing saved tensors from forward pass
             do Gradient of the output tensor
-            
+
         Raises:
             RuntimeError: Inference-only op
         """
@@ -58,7 +58,7 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFunc(Function):
                  dtype: torch.dtype = torch.float16,
                  tune: bool = False):
         """Initialize the function with configuration parameters.
-        
+
         Args:
             batch: Batch size
             heads: Number of attention heads
@@ -97,7 +97,7 @@ def multi_head_latent_attention_decode_with_kvcache(q: torch.Tensor,
     typically used in autoregressive decoding scenarios to avoid recomputing previous tokens.
 
     Args:
-        q: Query tensor of shape (B, H, D), where B is batch size, 
+        q: Query tensor of shape (B, H, D), where B is batch size,
            H is number of heads, D is head dimension
         q_pe: Query position encoding tensor of shape (B, H, pe_dim)
         k: Key tensor of shape (B, S_kv, H_kv, D) - represents the cached keys,

@@ -13,14 +13,14 @@ class GQACtx(torch.autograd.Function):
     def forward(ctx: FunctionCtx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 fwd_op: GroupQueryAttentionFwdOp, bwd_op: GroupQueryAttentionBwdOp) -> torch.Tensor:
         """Forward pass for group query attention.
-        
+
         Args:
             q: Query tensor of shape (B, S, H, D)
             k: Key tensor of shape (B, S, H_kv, D)
             v: Value tensor of shape (B, S, H_kv, D)
             fwd_op: Forward operation object
             bwd_op: Backward operation object
-            
+
         Returns:
             Output tensor of shape (B, S, H, D)
         """
@@ -35,10 +35,10 @@ class GQACtx(torch.autograd.Function):
     def backward(ctx: FunctionCtx,
                  do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         """Backward pass for group query attention.
-        
+
         Args:
             do: Gradient of output tensor of shape (B, S, H, D)
-            
+
         Returns:
             A tuple containing:
             - Gradient of q tensor of shape (B, S, H, D)
@@ -66,7 +66,7 @@ class GroupQueryAttentionFunc(Function):
                  dtype: torch.dtype = torch.float16,
                  tune: bool = False):
         """Initialize the GroupQueryAttentionFunc with parameters.
-        
+
         Args:
             batch: Batch size
             heads: Number of query heads
@@ -92,7 +92,7 @@ class GroupQueryAttentionFunc(Function):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """Forward pass for group query attention.
-        
+
         Args:
             q: Query tensor of shape (B, S, H, D)
             k: Key tensor of shape (B, S, H_kv, D)
@@ -110,17 +110,17 @@ def group_query_attention(q: torch.Tensor,
                           is_causal: bool = False,
                           tune: bool = False) -> torch.Tensor:
     """Apply group query attention mechanism to input tensors.
-    
+
     Args:
         q: Query tensor of shape (B, S, H, D)
         k: Key tensor of shape (B, S, H_kv, D)
         v: Value tensor of shape (B, S, H_kv, D)
         is_causal: Whether to apply causal mask, defaults to False
         tune: Whether to tune the operation, defaults to False
-        
+
     Returns:
         Output tensor of shape (B, S, H, D) after applying group query attention
-        
+
     Raises:
         ValueError: If input tensors are not 4-dimensional or have inconsistent shapes/dtypes
     """

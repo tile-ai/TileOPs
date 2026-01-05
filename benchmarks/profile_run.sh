@@ -46,18 +46,18 @@ run_test() {
     local test_name=$1
     local script_path=$2
     local csv_path=$3
-    
+
     echo "Running $test_name test..." | tee -a "$LOG_FILE"
     print_separator
-    
+
     local output_csv="$PROFILE_OUT/${test_name}_results.csv"
-    
+
     python3 ./benchmarks/profile/profile_run.py \
         --script "$script_path" \
         --input_csv "$csv_path" \
         --output_csv "$output_csv" \
         2>&1 | tee -a "$LOG_FILE"
-    
+
     echo "Results saved to: $output_csv" | tee -a "$LOG_FILE"
     echo "" | tee -a "$LOG_FILE"
 }

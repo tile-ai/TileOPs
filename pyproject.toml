@@ -4,7 +4,7 @@ version = "0.0.1.dev2"
 description = "TileOPs kernels for efficient inference"
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
-dependencies = [    
+dependencies = [
     "torch>=2.1.0",
     "numpy>=1.23.5",
     "einops>=0.6.0",
@@ -33,8 +33,8 @@ dev = [
 requires = ["setuptools>=68", "wheel", "build"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find] 
-where = ["."] 
+[tool.setuptools.packages.find]
+where = ["."]
 exclude = ["3rdparty", "3rdparty.*", "tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.yapf]

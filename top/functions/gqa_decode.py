@@ -16,14 +16,14 @@ class GQADecodeCtx(torch.autograd.Function):
     def forward(ctx: FunctionCtx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 fwd_op: GroupQueryAttentionDecodeWithKVCacheOp) -> torch.Tensor:
         """Forward pass for group query attention with KV cache.
-        
+
         Args:
             ctx: Context object for saving tensors for backward pass
             q: Query tensor of shape (B, H, D)
             k: Key tensor of shape (B, S_kv, G, D)
             v: Value tensor of shape (B, S_kv, G, D)
             fwd_op: Forward operation instance
-            
+
         Returns:
             Output tensor of the same shape as input q
         """
@@ -33,11 +33,11 @@ class GQADecodeCtx(torch.autograd.Function):
     @staticmethod
     def backward(ctx: FunctionCtx, do: torch.Tensor) -> Any:
         """Backward pass for group query attention with KV cache.
-        
+
         Args:
             ctx: Context object containing saved tensors from forward pass
             do: Gradient of the output tensor
-            
+
         Raises:
             RuntimeError: Inference-only op
         """
@@ -55,7 +55,7 @@ class GroupQueryAttentionDecodeWithKVCacheFunc(Function):
                  dtype: torch.dtype = torch.float16,
                  tune: bool = False):
         """Initialize the function with configuration parameters.
-        
+
         Args:
             batch: Batch size
             heads: Number of attention heads
@@ -90,7 +90,7 @@ def group_query_attention_decode_with_kvcache(q: torch.Tensor,
     typically used in autoregressive decoding scenarios to avoid recomputing previous tokens.
 
     Args:
-        q: Query tensor of shape (B, H, D), where B is batch size, 
+        q: Query tensor of shape (B, H, D), where B is batch size,
            H is number of heads, D is head dimension
         k_cache: Key tensor of shape (B, S_kv, G, D) - represents the cached keys,
            where S_kv is key-value sequence length, G is number of key-value groups
