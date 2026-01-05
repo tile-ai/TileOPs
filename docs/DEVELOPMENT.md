@@ -119,12 +119,13 @@ To ensure consistency between tests and benchmarks, we use a **Unified Benchmark
 ```text
 TileOPs/
 ├── top/
-│   ├── kernels/   # L1: TileLang kernels
-│   ├── ops/       # L2: Dispatcher + Tests + Benchmarks
+│   ├── kernels/   # L1: TileLang Kernels
+│   ├── ops/       # L2: OP + Dispatcher
 │   ├── functions/ # L3: Autograd Functions
-│   └── layers/    # L4: nn.Module
-├── tests/         # Integration tests
-├── benchmarks/    # Performance scripts
+│   ├── layers/    # L4: nn.Module
+│   └── utils/     # Utils
+├── tests/         # Unit tests
+├── benchmarks/    # Benchmarks and performance scripts
 └── docs/          # Project documentation
 ```
 
