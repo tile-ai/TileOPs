@@ -17,7 +17,7 @@ dependencies = [
     "tilelang>=0.1.6.post1"
 ]
 requires-python = ">=3.8"
-license = "MIT"
+license = {text = "MIT"}
 
 [project.optional-dependencies]
 dev = [

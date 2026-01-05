@@ -68,4 +68,7 @@ repos:
         additional_dependencies:
           - mdformat-gfm
           - mdformat-black
-          - mdformat_frontmatter
+          - mdformat-frontmatter
+          - mdformat-myst
+          - mdformat-tables
+          - mdformat-toc
