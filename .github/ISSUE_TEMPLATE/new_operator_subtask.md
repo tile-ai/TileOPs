@@ -1,7 +1,7 @@
 ---
 name: New Operator Sub-task
 about: A specific sub-task for implementing a part of a new operator
-title: "[New Op Sub-task]: <Operator Name> - <L1/L2/L3/L4/Benchmark>"
+title: "[New Op Sub-task] <Operator Name> - <L1/L2/L3/L4/Benchmark>"
 labels: sub-task, operator
 assignees: ''
 
