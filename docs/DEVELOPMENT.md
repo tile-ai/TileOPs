@@ -1,10 +1,10 @@
-# TileOps Development Guide
+# TileOPs Development Guide
 
-This document outlines the software engineering standards, architecture, and development workflow for the TileOps project. All contributors must adhere to these guidelines to ensure code quality, maintainability, and performance.
+This document outlines the software engineering standards, architecture, and development workflow for the TileOPs project. All contributors must adhere to these guidelines to ensure code quality, maintainability, and performance.
 
 ## 1. Architecture Overview
 
-TileOps follows a strict **4-Layer Hierarchical Architecture**. This separation of concerns ensures that hardware-specific optimizations (Kernels) are decoupled from user-facing APIs (Layers).
+TileOPs follows a strict **4-Layer Hierarchical Architecture**. This separation of concerns ensures that hardware-specific optimizations (Kernels) are decoupled from user-facing APIs (Layers).
 
 | Layer | Name | Analog | Description |
 |:---:|:---:|:---:|:---|
@@ -15,23 +15,27 @@ TileOps follows a strict **4-Layer Hierarchical Architecture**. This separation 
 
 ---
 
-## 2. Development Workflow (The "V-Model")
+## 2. Development Workflow
 
 Developing a new operator involves a bottom-up approach, moving from Kernel implementation to Layer abstraction.
 
 ### Step 0: Create Tracking Issue
 *   **Action**: Create a new issue using the **"New Operator Request"** template.
 *   **Goal**: Define scope and track progress across the 4 layers.
+*   **Task Decomposition**: For new operators, **break down the checklist items into detailed sub-issues** (i.e., **Kernel Implementation**, **Op Implementation**, **Function Implementation**, **Layer Implementation**, **Benchmark Results**). This allows new contributors to pick up smaller, well-defined tasks and submit smaller PRs.
+*   **Definition of Done**: The issue is closed when the operator is fully implemented and verified.
 
 ### Step 1: Kernel Implementation (L1)
 *   **Location**: `top/kernels/{operator_name}/`
 *   **Goal**: Implement the core logic using TileLang.
+*   **Docstrings**: Detailed description of arguments and return values.
 *   **Definition of Done**: The kernel compiles and runs correctly.
 
 ### Step 2: Op Definition & Verification (L2)
 *   **Location**: `top/ops/{operator_name}.py`
 *   **Responsibilities**:
     *   Wrap the kernel in a Python function.
+    *   **Docstrings**: Google Style (Args, Returns, Example).
     *   **Unit Test**: Compare output against a pure PyTorch reference implementation (required).
     *   **Benchmark**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
 *   **Standards**:
@@ -39,17 +43,27 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
         *   **FP16**: `rtol=1e-3`, `atol=1e-3`
         *   **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
     *   Benchmark results must be reproducible.
+*   **Definition of Done**: The op is verified in unit tests, and benchmarks run correctly.
 
 ### Step 3: Functional API (L3)
 *   **Location**: `top/functions/{operator_name}.py`
 *   **Responsibilities**:
     *   Implement `torch.autograd.Function`.
     *   Define `forward()` and `backward()` static methods.
-*   **Verification**: Pass `torch.autograd.gradcheck`.
+    *   **Docstrings**: Google Style (Args, Returns, Gradients).
+*   **Verification**: Pass `torch.autograd.gradcheck` for ops with backward().
+*   **Definition of Done**: The op is verified in unit tests.
 
 ### Step 4: Layer Wrapper (L4)
 *   **Location**: `top/layers/{operator_name}.py`
 *   **Description**: Expose the functionality as an `nn.Module` (e.g., `class FlashAttention(nn.Module)`).
+*   **Docstrings**: Google Style (Class description, Init args, Forward args).
+*   **Definition of Done**: The op is exposed as an `nn.Module` and verified in unit tests.
+
+### Step 5: Benchmark Results
+*   **Location**: `benchmarks/{operator_name}.py`
+*   **Goal**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
+*   **Definition of Done**: Benchmark the op and put the results in the issue.
 
 ---
 

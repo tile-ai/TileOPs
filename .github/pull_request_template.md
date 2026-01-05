@@ -3,7 +3,7 @@
 
 ## Type of Change
 - [ ] Bug fix
-- [ ] New operator Implementation
+- [ ] New operator implementation
 - [ ] Performance improvement
 - [ ] Documentation update
 - [ ] Infrastructure/CI
