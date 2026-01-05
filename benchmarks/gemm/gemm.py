@@ -1,7 +1,9 @@
+from typing import Any, Tuple
+
+import torch
+
 from benchmarks.benchmark import Benchmark
 from top.ops import GemmOp
-import torch
-from typing import Tuple, Any
 
 
 class GemmBenchmark(Benchmark):

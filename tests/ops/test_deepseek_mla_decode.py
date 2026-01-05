@@ -1,7 +1,8 @@
 import argparse
+
+from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
 from top.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
-from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
 
 
 def test_mla_decode(batch, heads, head_num_kv, seq_len_kv, dim, dim_pe, dtype, tune=False):

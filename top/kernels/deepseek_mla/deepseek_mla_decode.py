@@ -1,9 +1,11 @@
-import torch
+import itertools
+from typing import Optional
+
 import tilelang
 import tilelang.language as T
+import torch
+
 from top.kernels.kernel import Kernel
-from typing import Optional
-import itertools
 
 __all__ = ["mla_decode_kernel", "mla_decode_ws_kernel"]
 

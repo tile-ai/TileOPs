@@ -1,7 +1,8 @@
 import argparse
-from top.functions import gqa_decode_with_kvcache, GroupQueryAttentionDecodeWithKVCacheFunc
-from top.utils import str2dtype
+
 from benchmarks import GroupQueryAttentionDecodeBenchmark
+from top.functions import GroupQueryAttentionDecodeWithKVCacheFunc, gqa_decode_with_kvcache
+from top.utils import str2dtype
 
 
 def test_gqa_decode_fn(batch, heads, seq_len_kv, dim, groups, dtype):

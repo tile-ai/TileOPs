@@ -1,12 +1,19 @@
+from typing import Dict, Optional
+
 import torch
-from .op import Op
+
+from top.kernels.flash_attn import (
+    flashattn_bwd_postprocess_kernel,
+    flashattn_bwd_preprocess_kernel,
+    mha_bwd_kernel,
+    mha_bwd_wgmma_pipelined_kernel,
+    mha_fwd_kernel,
+    mha_fwd_wgmma_pipelined_kernel,
+)
 from top.kernels.kernel import Kernel
-from top.kernels.flash_attn import (mha_fwd_kernel, mha_fwd_wgmma_pipelined_kernel,
-                                    flashattn_bwd_preprocess_kernel, mha_bwd_kernel,
-                                    mha_bwd_wgmma_pipelined_kernel,
-                                    flashattn_bwd_postprocess_kernel)
 from top.utils import is_hopper
-from typing import Optional, Dict
+
+from .op import Op
 
 __all__ = ['MultiHeadAttentionFwdOp', 'MultiHeadAttentionBwdOp']
 
@@ -25,7 +32,7 @@ class MultiHeadAttentionFwdOp(Op):
                  tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
-        self.seq_len = seq_len  #TODO: support s_q != s_kv
+        self.seq_len = seq_len  # TODO: support s_q != s_kv
         self.dim = dim
         self.is_causal = is_causal
 
@@ -57,7 +64,7 @@ class MultiHeadAttentionBwdOp(Op):
                  tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
-        self.seq_len = seq_len  #TODO: support s_q != s_kv
+        self.seq_len = seq_len  # TODO: support s_q != s_kv
         self.dim = dim
         self.is_causal = is_causal
 
@@ -83,10 +90,15 @@ class MultiHeadAttentionBwdOp(Op):
                 flashattn_bwd_postprocess_kernel if not is_hopper() else None,
         }
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
-                do: torch.Tensor,
-                lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        do = do.contiguous()
+    def forward(
+            self,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            o: torch.Tensor,
+            do: torch.Tensor,  # noqa: VNE002
+            lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        do = do.contiguous()  # noqa: VNE002
         delta = self.prep_kernel(o, do)
         dq = torch.zeros_like(q, dtype=torch.float32)
         dk, dv = self.kernel(q, k, v, do, lse, delta, dq)

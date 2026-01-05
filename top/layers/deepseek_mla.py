@@ -1,7 +1,12 @@
+from typing import Optional
+
 import torch
 from torch import nn
-from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc, DeepSeekSparseAttentionDecodeWithKVCacheFunc
-from typing import Optional
+
+from top.functions import (
+    DeepSeekSparseAttentionDecodeWithKVCacheFunc,
+    MultiHeadLatentAttentionDecodeWithKVCacheFunc,
+)
 
 
 class MultiHeadLatentAttentionDecodeLayer(nn.Module):

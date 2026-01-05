@@ -1,8 +1,11 @@
+from typing import Tuple
+
 import torch
 from torch.autograd.function import FunctionCtx
-from .function import Function
+
 from top.ops import GemmOp
-from typing import Tuple
+
+from .function import Function
 
 __all__ = ['MatMulFunc', 'matmul']
 
@@ -13,7 +16,7 @@ class GemmCtx(torch.autograd.Function):
     def forward(ctx: FunctionCtx, a: torch.Tensor, b: torch.Tensor, fwd_op: GemmOp,
                 da_bwd_op: GemmOp, db_bwd_op: GemmOp) -> torch.Tensor:
         """Forward pass for GEMM operation.
-        
+
         Args:
             ctx: Context object for saving tensors for backward pass
             a: Input tensor A of shape (M, K)
@@ -21,7 +24,7 @@ class GemmCtx(torch.autograd.Function):
             fwd_op: Forward operation instance
             da_bwd_op: Backward operation instance for tensor A
             db_bwd_op: Backward operation instance for tensor B
-            
+
         Returns:
             Output tensor of shape (M, N) after matrix multiplication
         """
@@ -37,11 +40,11 @@ class GemmCtx(torch.autograd.Function):
     def backward(ctx: FunctionCtx,
                  do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, None, None, None]:
         """Backward pass for GEMM operation.
-        
+
         Args:
             ctx: Context object containing saved tensors from forward pass
             do: Gradient of the output tensor
-            
+
         Returns:
             Gradients w.r.t. a, b and None for non-tensor parameters
         """
@@ -64,10 +67,10 @@ class MatMulFunc(Function):
         tune: bool = False,
     ):
         """Initialize the function with configuration parameters.
-        
+
         Args:
             m: First dimension of the output matrix (rows of A and output)
-            n: Second dimension of the output matrix (columns of B and output)  
+            n: Second dimension of the output matrix (columns of B and output)
             k: Shared dimension of the input matrices (columns of A and rows of B)
             dtype: Data type, defaults to torch.float16
             tune: Whether to tune the operation, defaults to False

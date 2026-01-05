@@ -1,10 +1,12 @@
-import torch
+import itertools
+from typing import Optional
+
 import tilelang
 import tilelang.language as T
+import torch
 from tilelang.autotuner import autotune
+
 from top.kernels.kernel import Kernel
-from typing import Optional
-import itertools
 
 __all__ = ["sparse_mla_kernel"]
 

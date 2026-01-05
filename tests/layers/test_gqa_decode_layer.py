@@ -1,7 +1,8 @@
 import argparse
+
+from benchmarks import GroupQueryAttentionDecodeBenchmark
 from top.layers import GroupQueryAttentionDecodeLayer
 from top.utils import str2dtype
-from benchmarks import GroupQueryAttentionDecodeBenchmark
 
 
 def test_gqa_decode_layer(batch, heads, seq_len_kv, dim, groups, dtype):

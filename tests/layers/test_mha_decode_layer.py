@@ -1,7 +1,8 @@
 import argparse
+
+from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.layers import MultiHeadAttentionDecodeLayer
 from top.utils import str2dtype
-from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
 def test_mha_decode_layer(batch, seq_len_q, seq_len_kv, heads, dim, dtype):

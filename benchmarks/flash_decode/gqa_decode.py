@@ -1,9 +1,11 @@
-from benchmarks.benchmark import Benchmark
-from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
+from typing import Tuple
+
 import torch
 from torch.nn import functional as F
-from torch.nn.attention import sdpa_kernel, SDPBackend
-from typing import Tuple
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+from benchmarks.benchmark import Benchmark
+from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
 
 class GroupQueryAttentionDecodeBenchmark(Benchmark):

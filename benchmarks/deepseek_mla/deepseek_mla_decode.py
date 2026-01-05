@@ -1,9 +1,11 @@
+from typing import Tuple
+
+import torch
+from einops import einsum, rearrange
+from torch.nn import functional as F
+
 from benchmarks.benchmark import Benchmark
 from top.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
-import torch
-from torch.nn import functional as F
-from einops import rearrange, einsum
-from typing import Tuple
 
 
 class MultiHeadLatentAttentionDecodeBenchmark(Benchmark):

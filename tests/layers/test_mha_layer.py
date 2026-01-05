@@ -1,7 +1,8 @@
 import argparse
-from top.utils import str2dtype
-from top.layers import MultiHeadAttentionLayer
+
 from benchmarks import MultiHeadAttentionBenchmark
+from top.layers import MultiHeadAttentionLayer
+from top.utils import str2dtype
 
 
 def test_mha_layer(batch, seq_len, heads, dim, causal, dtype):
