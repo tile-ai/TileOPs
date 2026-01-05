@@ -42,14 +42,6 @@ column_limit = 100
 indent_width = 4
 spaces_before_comment = 2
 
-# Using ruff's isort instead of standalone isort (configured below in [tool.ruff.lint.isort])
-# [tool.isort]
-# line_length = 100
-# multi_line_output = 3
-# indent = "    "
-# known_first_party = ["tileops"]
-# skip_gitignore = true
-
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
 skip = [
@@ -58,9 +50,8 @@ skip = [
     ".venv"
 ]
 
-# Global ruff configuration
 [tool.ruff]
-line-length = 100  # Match yapf's column_limit
+line-length = 100
 
 [tool.ruff.lint]
 select = [
@@ -74,7 +65,7 @@ select = [
     "B",
     # flake8-simplify
     "SIM",
-    # isort (using ruff's isort instead of standalone isort)
+    # isort
     "I",
 ]
 ignore = [
@@ -94,7 +85,5 @@ ignore = [
     "E902",
 ]
 
-# Configure ruff's isort to be compatible with yapf
-# Note: line-length is controlled by [tool.ruff] section, not here
 [tool.ruff.lint.isort]
 known-first-party = ["tileops"]
