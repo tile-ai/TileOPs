@@ -66,11 +66,11 @@ repos:
     hooks:
       - id: mdformat
         additional_dependencies:
-          - mdformat-gfm
-          - mdformat-black
-          - mdformat-myst
-          - mdformat-tables
-          - mdformat-toc
+          - mdformat-gfm==0.4.1
+          - mdformat-black==0.1.1
+          - mdformat-myst==0.2.1
+          - mdformat-tables==1.0.0
+          - mdformat-toc==0.3.0
 
   # FIXME: uncomment to enable flake8 linting when we can fix all the issues found.
   # - repo: https://github.com/PyCQA/flake8

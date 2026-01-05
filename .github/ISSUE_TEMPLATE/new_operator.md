@@ -1,7 +1,7 @@
 ---
 name: New Operator Request
 about: Track the development of a new operator
-title: '[New Op]: <Operator Name>'
+title: '[New Op] <Operator Name>'
 labels: enhancement, operator
 assignees: ''
 ---
