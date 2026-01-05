@@ -1,5 +1,7 @@
 import argparse
+
 import torch
+
 from top.layers import LinearLayer
 from top.utils import str2dtype
 

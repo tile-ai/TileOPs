@@ -1,8 +1,10 @@
-import torch
 from abc import ABC, abstractmethod
-from tilelang.profiler import do_bench
-from top.ops import Op
 from typing import Any, Optional, Tuple
+
+import torch
+from tilelang.profiler import do_bench
+
+from top.ops import Op
 
 
 class Benchmark(ABC):
@@ -19,10 +21,10 @@ class Benchmark(ABC):
 
     def gen_inputs(self) -> Any:
         raise NotImplementedError
-        #TODo: impl this?
+        # TODO: impl this?
 
     @abstractmethod
-    def ref_program(self, *inputs: Tuple[torch.Tensor]) -> Any:
+    def ref_program(self, *inputs: Tuple[torch.Tensor]) -> Any:  # noqa: U100
         raise NotImplementedError
 
     def check(self,
@@ -31,15 +33,13 @@ class Benchmark(ABC):
               atol: float = 1e-2,
               rtol: float = 1e-2) -> None:
         """Check the correctness of the op"""
-
         try:
             outputs_ref = self.ref_program(*inputs)
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
                 return
-            else:
-                raise e
+            raise e
 
         if isinstance(outputs_ref, torch.Tensor):
             outputs_ref = (outputs_ref,)
@@ -58,10 +58,10 @@ class Benchmark(ABC):
 
         assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
         for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
-            # print(f"outputs[{i}] max err: {(output - output_ref).abs().max()}")
             if output_ref is not None:  # skip checking for None placeholders in ref
+                max_err = (output - output_ref).abs().max()
                 assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
-                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {(output - output_ref).abs().max()}"
+                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {max_err}"
 
         print(f"All checks passed for {op.__class__.__name__}.✅")
 
@@ -72,15 +72,13 @@ class Benchmark(ABC):
                  rtol: float = 1e-2,
                  grad: bool = True) -> None:
         """Check the correctness of the function and layer"""
-
         try:
             outputs_ref = self.ref_program(*inputs)
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
                 return
-            else:
-                raise e
+            raise e
 
         if isinstance(outputs_ref, torch.Tensor):
             outputs_ref = (outputs_ref,)
@@ -96,8 +94,8 @@ class Benchmark(ABC):
             loss.backward()
             outputs = []
             outputs.append(output)
-            for input in inputs:
-                outputs.append(input.grad)
+            for inp in inputs:
+                outputs.append(inp.grad)
 
         if isinstance(outputs, list):
             outputs = tuple(outputs)
@@ -106,14 +104,13 @@ class Benchmark(ABC):
         elif not isinstance(outputs, tuple):
             raise ValueError(f"Unsupported output type: {type(outputs)}")
 
-        assert len(outputs) == len(
-            outputs_ref
-        ), f"outputs: {len(outputs)}  and outputs_ref: {len(outputs_ref)} have different size"
+        assert len(outputs) == len(outputs_ref), \
+            f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
         for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
-            # print(f"outputs[{i}] max err: {(output - output_ref).abs().max()}")
             if output_ref is not None:  # skip checking for None placeholders in ref
+                max_err = (output - output_ref).abs().max()
                 assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
-                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {(output - output_ref).abs().max()}"
+                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {max_err}"
 
         print(f"All checks passed for {fn.__class__.__name__}.✅")
 
@@ -123,7 +120,6 @@ class Benchmark(ABC):
                 warmup: int = 100,
                 rep: int = 100) -> None:
         """Benchmark the perf of the op"""
-
         print(f"===== Profiling {op.__class__.__name__} =====")
         print(f"{op.__class__.__name__} profile with warmup: {warmup}, rep: {rep}")
         with torch.no_grad():
@@ -136,9 +132,8 @@ class Benchmark(ABC):
                 f"{op.__class__.__name__} tl-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops"
             )
         if self.total_memory is not None:
-            print(
-                f"{op.__class__.__name__} tl-Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s"
-            )
+            bandwidth = self.total_memory / latency * 1e-9
+            print(f"{op.__class__.__name__} tl-Bandwidth: {bandwidth:.2f} GB/s")
 
     def baseline_profile(self,
                          baseline_op: Op,
@@ -146,9 +141,8 @@ class Benchmark(ABC):
                          backend: str = "Base",
                          warmup: int = 100,
                          rep: int = 100,
-                         device: str = "cuda:0") -> None:
+                         device: str = "cuda:0") -> None:  # noqa: U100
         """Benchmark the perf of the baselin op"""
-
         print(f"===== Profiling {backend} =====")
         print(f"{backend} profile with warmup: {warmup}, rep: {rep}")
 

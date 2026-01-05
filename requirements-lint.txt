@@ -3,5 +3,10 @@ yapf==0.40.2
 toml==0.10.2
 tomli==2.0.1
 ruff==0.6.5
-codespell==2.3.0
-clang-format==15.0.7
+codespell==2.4.1
+mdformat==0.7.17
+mdformat-gfm==0.4.1
+mdformat-myst==0.2.1
+mdformat-tables==1.0.0
+mdformat-toc==0.3.0
+mdformat-black==0.1.1

@@ -1,8 +1,11 @@
+from typing import Tuple
+
 import torch
 from torch.autograd.function import FunctionCtx
+
+from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
+
 from .function import Function
-from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
-from typing import Tuple
 
 __all__ = ['MultiHeadAttentionFunc', 'multi_head_attention', 'mha']
 
@@ -14,14 +17,14 @@ class MHACtx(torch.autograd.Function):
                 fwd_op: MultiHeadAttentionFwdOp, bwd_op: MultiHeadAttentionBwdOp) -> torch.Tensor:
         """
         Forward pass for multi-head attention.
-        
+
         Args:
             q: Query tensor of shape (B, S, H, D)
             k: Key tensor of shape (B, S, H, D)
             v: Value tensor of shape (B, S, H, D)
             fwd_op: Forward operation instance
             bwd_op: Backward operation instance
-            
+
         Returns:
             Output tensor of the same shape as input q
         """
@@ -37,10 +40,10 @@ class MHACtx(torch.autograd.Function):
                  do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         """
         Backward pass for multi-head attention.
-        
+
         Args:
             do: Gradient of the output tensor
-            
+
         Returns:
             Gradients w.r.t. q, k, v
         """

@@ -57,9 +57,6 @@ doc/doxygen/html/*
 # Macos
 **/.DS_Store
 
-nnfusion_rt/
-models/frozenmodels/
-
 # log
 *.log
 
@@ -83,7 +80,6 @@ build_sdist/
 
 # tox
 .tox/
-
 
 # cache directory for clangd
 .cache/

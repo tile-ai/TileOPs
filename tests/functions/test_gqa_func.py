@@ -1,7 +1,8 @@
 import argparse
-from top.functions import gqa, GroupQueryAttentionFunc
-from top.utils import str2dtype
+
 from benchmarks import GroupQueryAttentionBenchmark
+from top.functions import GroupQueryAttentionFunc, gqa
+from top.utils import str2dtype
 
 
 def test_gqa_fn(batch, seq_len, heads, heads_kv, dim, causal, dtype):

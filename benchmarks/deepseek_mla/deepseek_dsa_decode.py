@@ -1,7 +1,9 @@
+from typing import Tuple
+
+import torch
+
 from benchmarks.benchmark import Benchmark
 from top.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
-import torch
-from typing import Tuple
 
 
 class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):

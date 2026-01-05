@@ -1,19 +1,21 @@
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional, Union
+
 import torch
+
 from top.kernels.kernel import Kernel
 from top.utils import get_sm_version
-from typing import Optional, Union, Dict, Any
-from abc import abstractmethod, ABC
 
 
 class Op(ABC):
     """Base class for TileOPs operations.
-    
+
     A Op represents a computational operation with:
     - Hardware-aware kernel dispatch
     - Correctness testing via reference implementation
     - Performance profiling
     - Autotuning interface
-    
+
     Examples:
         >>> from top.ops import MultiHeadAttentionFwdOp  # MultiHeadAttentionFwdOp is a subclass of Op
         >>> op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
@@ -21,7 +23,7 @@ class Op(ABC):
         >>> output = op(Q, K, V)
         >>> op.check()  # Verify correctness
         >>> latency = op.profile()  # Benchmark performance
-    
+
     Attributes:
         kernel: top.Kernel instance (e.g. mha_fwd_kernel)
         dtype: Data type for computation (e.g., torch.float16)

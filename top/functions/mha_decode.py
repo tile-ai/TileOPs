@@ -1,8 +1,11 @@
+from typing import Any
+
 import torch
 from torch.autograd.function import FunctionCtx
-from .function import Function
+
 from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
-from typing import Any
+
+from .function import Function
 
 __all__ = [
     'MultiHeadAttentionDecodeWithKVCacheFunc',
@@ -17,14 +20,14 @@ class MHADecodeCtx(torch.autograd.Function):
     def forward(ctx: FunctionCtx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 fwd_op: MultiHeadAttentionDecodeWithKVCacheOp) -> torch.Tensor:
         """Forward pass for multi-head attention with KV cache.
-        
+
         Args:
             ctx: Context object for saving tensors for backward pass
             q: Query tensor of shape (B, S_q, H, D)
             k: Key tensor of shape (B, S_kv, H, D)
             v: Value tensor of shape (B, S_kv, H, D)
             fwd_op: Forward operation instance
-            
+
         Returns:
             Output tensor of the same shape as input q
         """
@@ -34,11 +37,11 @@ class MHADecodeCtx(torch.autograd.Function):
     @staticmethod
     def backward(ctx: FunctionCtx, do: torch.Tensor) -> Any:
         """Backward pass for multi-head attention with KV cache.
-        
+
         Args:
             ctx: Context object containing saved tensors from forward pass
             do: Gradient of the output tensor
-            
+
         Raises:
             RuntimeError: Inference-only op
         """
@@ -56,7 +59,7 @@ class MultiHeadAttentionDecodeWithKVCacheFunc(Function):
                  dtype: torch.dtype = torch.float16,
                  tune: bool = False):
         """Initialize the function with configuration parameters.
-        
+
         Args:
             batch: Batch size
             heads: Number of attention heads

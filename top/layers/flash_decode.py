@@ -1,6 +1,10 @@
 import torch
 from torch import nn
-from top.functions import MultiHeadAttentionDecodeWithKVCacheFunc, GroupQueryAttentionDecodeWithKVCacheFunc
+
+from top.functions import (
+    GroupQueryAttentionDecodeWithKVCacheFunc,
+    MultiHeadAttentionDecodeWithKVCacheFunc,
+)
 
 
 class MultiHeadAttentionDecodeLayer(nn.Module):
@@ -25,8 +29,15 @@ class MultiHeadAttentionDecodeLayer(nn.Module):
 
 class GroupQueryAttentionDecodeLayer(nn.Module):
 
-    def __init__(self, batch_size: int, heads: int, groups: int, seqlen_kv: int, dim: int,
-                 dtype: torch.dtype):
+    def __init__(
+        self,
+        batch_size: int,
+        heads: int,
+        groups: int,
+        seqlen_kv: int,
+        dim: int,
+        dtype: torch.dtype,
+    ):
         super().__init__()
 
         self.batch_size = batch_size

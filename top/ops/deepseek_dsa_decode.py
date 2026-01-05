@@ -1,8 +1,11 @@
+from typing import Dict, Optional
+
 import torch
-from .op import Op
+
 from top.kernels.deepseek_mla import sparse_mla_kernel
 from top.kernels.kernel import Kernel
-from typing import Optional, Dict
+
+from .op import Op
 
 __all__ = ["DeepSeekSparseAttentionDecodeWithKVCacheOp"]
 

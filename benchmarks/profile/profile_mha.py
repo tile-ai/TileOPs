@@ -1,8 +1,10 @@
 import argparse
-from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
-from top.utils import str2dtype
-from benchmarks import MultiHeadAttentionFwdBenchmark, MultiHeadAttentionBwdBenchmark
+
 import torch
+
+from benchmarks import MultiHeadAttentionBwdBenchmark, MultiHeadAttentionFwdBenchmark
+from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
+from top.utils import str2dtype
 
 
 def test_mha_fwd(B: int,

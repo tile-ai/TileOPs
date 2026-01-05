@@ -1,3 +1,3 @@
-from . import ops, functions, layers
+from . import functions, layers, ops
 
 __all__ = ["ops", "functions", "layers"]

@@ -1,7 +1,8 @@
 import argparse
+
+from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
-from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
 def test_mha_decode(batch, heads, seq_len_q, seq_len_kv, dim, dtype, tune=False):

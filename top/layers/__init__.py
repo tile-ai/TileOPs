@@ -1,6 +1,6 @@
-from .flash_attn import MultiHeadAttentionLayer, GroupQueryAttentionLayer
-from .flash_decode import MultiHeadAttentionDecodeLayer, GroupQueryAttentionDecodeLayer
-from .deepseek_mla import MultiHeadLatentAttentionDecodeLayer, DeepSeekSparseAttentionDecodeLayer
+from .deepseek_mla import DeepSeekSparseAttentionDecodeLayer, MultiHeadLatentAttentionDecodeLayer
+from .flash_attn import GroupQueryAttentionLayer, MultiHeadAttentionLayer
+from .flash_decode import GroupQueryAttentionDecodeLayer, MultiHeadAttentionDecodeLayer
 from .linear import LinearLayer
 
 __all__ = [

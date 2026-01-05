@@ -1,7 +1,8 @@
 import argparse
-from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
+
+from benchmarks import MultiHeadAttentionBwdBenchmark, MultiHeadAttentionFwdBenchmark
+from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from top.utils import str2dtype
-from benchmarks import MultiHeadAttentionFwdBenchmark, MultiHeadAttentionBwdBenchmark
 
 
 def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune=False):

@@ -1,8 +1,11 @@
+from typing import Dict, Optional
+
 import torch
-from .op import Op
-from top.kernels.kernel import Kernel
+
 from top.kernels.gemm import gemm_kernel
-from typing import Optional, Dict
+from top.kernels.kernel import Kernel
+
+from .op import Op
 
 __all__ = ['GemmOp']
 

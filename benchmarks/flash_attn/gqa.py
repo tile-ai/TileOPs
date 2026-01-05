@@ -1,10 +1,12 @@
-from benchmarks.benchmark import Benchmark
-from top.ops import GroupQueryAttentionFwdOp, GroupQueryAttentionBwdOp
+from typing import Any, Optional, Tuple
+
+import flash_attn_interface
 import torch
 from torch.nn import functional as F
-from torch.nn.attention import sdpa_kernel, SDPBackend
-from typing import Tuple, Any, Optional
-import flash_attn_interface
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+from benchmarks.benchmark import Benchmark
+from top.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 
 
 class GroupQueryAttentionFwdBenchmark(Benchmark):
