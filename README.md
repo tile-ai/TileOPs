@@ -1,5 +1,5 @@
 <div align="center">
-  <!-- <img src="assets/logo.png" width="350"/> -->
+  <img src="https://raw.githubusercontent.com/tile-ai/TileOPs/main/assets/logo.png" width="350"/>
   <h1>TileOPs (TOP): Operator Library for LLMs Built on TileLang</h1>
   <!-- <p>
     <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version" height="20"></a>
@@ -13,13 +13,13 @@
 
 **TileOPs (TOP)** is a high-performance operator library for large language models (LLMs) built on **[TileLang](https://github.com/tile-ai/tilelang)**. It offers efficient, modular, and composable implementations for AI workloads, especially for LLMs.
 
-**Note: TileOPs is still under rapid development.**
+> ⚠️ **Status**: TileOPs is under active and rapid development. APIs and features may change.
 
 What TileOPs is for:
 
 * **Out-of-the-box Operator Library**: A growing collection of production-ready operators commonly used in LLM workloads, designed with clear abstractions and modular building blocks. These operators can be used directly or easily extended for custom research and system integration.
 * **Efficient Attention Kernels for LLMs**: Highly optimized attention implementations, including MHA/GQA (implemented FA2 on Ampere-like GPUs and FA3 on Hopper), DeepSeek-MLA, and DeepSeek-DSA.
-* **Reference Implementation and Learning Ground of TileLang**: TileOPs serves as a canonical example of how to write performant, maintainable kernels using TileLang. It demonstrates best practices in tiling strategies, memory hierarchy utilization, and warp-/block-level coordination, making it a practical learning resource for compiler and kernel developers.
+* **Reference Implementation for TileLang**: TileOPs acts as a **canonical reference implementation** for writing performant and maintainable kernels in **TileLang**. It demonstrates best practices in tiling strategies, memory hierarchy utilization, and warp-/block-level coordination, making it a practical learning resource for compiler and kernel developers.
 
 The core features of TileOPs include:
 
@@ -27,7 +27,6 @@ The core features of TileOPs include:
 * **CUDA-Graph and torch.compile Compatibility**: TileOPs APIs are fully compatible with CUDA-Graph capture and PyTorch ``torch.compile``, allowing seamless integration into modern training and inference pipelines with reduced launch overhead and improved end-to-end performance.
 <!-- * **torch.autograd Compatibility**: -->
 * **Lightweight Dependencies**: TileOPs depends only on TileLang and PyTorch, keeping the software stack minimal and easy to integrate.
-
 
 
 ## Benchmark Summary
@@ -38,7 +37,6 @@ TODO
 
 ![DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM](https://raw.githubusercontent.com/tile-ai/TileOPs/main/docs/figures/sparse_mla_perf.png)
 *DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM* -->
-
 
 
 ## Support Matrix
