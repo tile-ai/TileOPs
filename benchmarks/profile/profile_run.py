@@ -3,11 +3,11 @@
 
 import argparse
 import csv
+import re
 import subprocess
 import sys
-import re
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 def build_gemm_cmd(args_dict: Dict[str, Any]) -> List[str]:

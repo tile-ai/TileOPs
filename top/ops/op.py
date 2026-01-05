@@ -1,8 +1,10 @@
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional, Union
+
 import torch
+
 from top.kernels.kernel import Kernel
 from top.utils import get_sm_version
-from typing import Optional, Union, Dict, Any
-from abc import abstractmethod, ABC
 
 
 class Op(ABC):

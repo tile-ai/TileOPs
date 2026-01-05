@@ -1,8 +1,11 @@
+from typing import Dict, Optional
+
 import torch
-from .op import Op
+
 from top.kernels.flash_decode import mha_decode_kernel
 from top.kernels.kernel import Kernel
-from typing import Optional, Dict
+
+from .op import Op
 
 __all__ = ["MultiHeadAttentionDecodeWithKVCacheOp"]
 

@@ -1,8 +1,11 @@
+from typing import Tuple
+
 import torch
 from torch.autograd.function import FunctionCtx
+
+from top.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
+
 from .function import Function
-from top.ops import GroupQueryAttentionFwdOp, GroupQueryAttentionBwdOp
-from typing import Tuple
 
 __all__ = ['GroupQueryAttentionFunc', 'group_query_attention', 'gqa']
 

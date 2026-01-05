@@ -1,12 +1,19 @@
+from typing import Dict, Optional
+
 import torch
-from .op import Op
-from top.kernels.flash_attn import (gqa_fwd_kernel, gqa_fwd_wgmma_pipelined_kernel,
-                                    flashattn_bwd_preprocess_kernel, gqa_bwd_kernel,
-                                    gqa_bwd_wgmma_pipelined_kernel,
-                                    flashattn_bwd_postprocess_kernel)
+
+from top.kernels.flash_attn import (
+    flashattn_bwd_postprocess_kernel,
+    flashattn_bwd_preprocess_kernel,
+    gqa_bwd_kernel,
+    gqa_bwd_wgmma_pipelined_kernel,
+    gqa_fwd_kernel,
+    gqa_fwd_wgmma_pipelined_kernel,
+)
 from top.kernels.kernel import Kernel
 from top.utils import is_hopper
-from typing import Optional, Dict
+
+from .op import Op
 
 __all__ = ['GroupQueryAttentionFwdOp', 'GroupQueryAttentionBwdOp']
 

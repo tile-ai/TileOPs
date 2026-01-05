@@ -1,8 +1,11 @@
+from typing import Tuple
+
 import torch
 from torch.autograd.function import FunctionCtx
+
+from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
+
 from .function import Function
-from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
-from typing import Tuple
 
 __all__ = ['MultiHeadAttentionFunc', 'multi_head_attention', 'mha']
 

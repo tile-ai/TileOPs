@@ -1,7 +1,8 @@
 import argparse
+
+from benchmarks import DeepSeekSparseAttentionDecodeBenchmark
 from top.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
-from benchmarks import DeepSeekSparseAttentionDecodeBenchmark
 
 
 def test_sparse_mla_decode(batch,

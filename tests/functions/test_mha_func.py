@@ -1,7 +1,8 @@
 import argparse
-from top.functions import mha, MultiHeadAttentionFunc
-from top.utils import str2dtype
+
 from benchmarks import MultiHeadAttentionBenchmark
+from top.functions import MultiHeadAttentionFunc, mha
+from top.utils import str2dtype
 
 
 def test_mha_fn(batch, seq_len, heads, dim, causal, dtype):

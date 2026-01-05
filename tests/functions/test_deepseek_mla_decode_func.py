@@ -1,8 +1,9 @@
 import argparse
-from top.functions import mla_decode_with_kvcache, MultiHeadLatentAttentionDecodeWithKVCacheFunc
+
+from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
+from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc, mla_decode_with_kvcache
 from top.layers import MultiHeadLatentAttentionDecodeLayer
 from top.utils import str2dtype
-from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
 
 
 def test_mla_decode_fn(batch, kv_head_num, seq_len_kv, heads, dim, pe_dim, dtype):

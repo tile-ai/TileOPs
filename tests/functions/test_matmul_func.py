@@ -1,7 +1,8 @@
 import argparse
-from top.functions import matmul, MatMulFunc
-from top.utils import str2dtype
+
 from benchmarks import MatMulBenchmark
+from top.functions import MatMulFunc, matmul
+from top.utils import str2dtype
 
 
 def test_matmul(m, n, k, dtype, tune=False):

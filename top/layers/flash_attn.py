@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from top.functions import MultiHeadAttentionFunc, GroupQueryAttentionFunc
+
+from top.functions import GroupQueryAttentionFunc, MultiHeadAttentionFunc
 
 
 class MultiHeadAttentionLayer(nn.Module):

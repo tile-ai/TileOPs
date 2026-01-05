@@ -1,8 +1,11 @@
+from typing import Any
+
 import torch
 from torch.autograd.function import FunctionCtx
-from .function import Function
+
 from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
-from typing import Any
+
+from .function import Function
 
 __all__ = [
     'GroupQueryAttentionDecodeWithKVCacheFunc', 'group_query_attention_decode_with_kvcache',

@@ -1,9 +1,7 @@
 import torch
 
-# A mapping from string dtype names to torch dtypes
 str2dtype = {'float16': torch.float16, 'bfloat16': torch.bfloat16, 'float32': torch.float32}
 
-# A mapping from torch dtypes to string names
 dtype2str = {v: k for k, v in str2dtype.items()}
 
 

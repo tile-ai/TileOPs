@@ -1,7 +1,8 @@
 import argparse
-from top.ops import GroupQueryAttentionFwdOp, GroupQueryAttentionBwdOp
+
+from benchmarks import GroupQueryAttentionBwdBenchmark, GroupQueryAttentionFwdBenchmark
+from top.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from top.utils import str2dtype
-from benchmarks import GroupQueryAttentionFwdBenchmark, GroupQueryAttentionBwdBenchmark
 
 
 def test_gqa_fwd(batch, seq_len, heads, heads_kv, dim, causal, dtype, tune=False):

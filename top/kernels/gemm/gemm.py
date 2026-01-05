@@ -1,10 +1,12 @@
+import itertools
+from typing import Optional
+
 import tilelang
 import tilelang.language as T
-from typing import Optional
-import itertools
 import torch
-from top.utils import get_sm_version
+
 from top.kernels.kernel import Kernel
+from top.utils import get_sm_version
 
 __all__ = [
     'gemm_kernel',

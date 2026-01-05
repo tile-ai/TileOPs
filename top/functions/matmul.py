@@ -1,8 +1,11 @@
+from typing import Tuple
+
 import torch
 from torch.autograd.function import FunctionCtx
-from .function import Function
+
 from top.ops import GemmOp
-from typing import Tuple
+
+from .function import Function
 
 __all__ = ['MatMulFunc', 'matmul']
 

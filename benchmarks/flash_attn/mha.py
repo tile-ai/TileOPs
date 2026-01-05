@@ -1,10 +1,12 @@
-from benchmarks.benchmark import Benchmark
-from top.ops import MultiHeadAttentionFwdOp, MultiHeadAttentionBwdOp
+from typing import Any, Optional, Tuple
+
+import flash_attn_interface
 import torch
 from torch.nn import functional as F
-from torch.nn.attention import sdpa_kernel, SDPBackend
-import flash_attn_interface
-from typing import Tuple, Any, Optional
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+from benchmarks.benchmark import Benchmark
+from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 
 
 class MultiHeadAttentionFwdBenchmark(Benchmark):

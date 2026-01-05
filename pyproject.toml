@@ -1,7 +1,7 @@
 [project]
 name = "tileops"
 version = "0.0.1.dev2"
-description = "TileOPs kernels for efficient inference"
+description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
@@ -26,7 +26,6 @@ dev = [
 "tomli==2.0.1",
 "ruff==0.6.5",
 "codespell==2.3.0",
-"clang-format==15.0.7",
 ]
 
 [build-system]
@@ -35,7 +34,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["3rdparty", "3rdparty.*", "tests", "tests.*", "benchmarks", "benchmarks.*"]
+exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.yapf]
 based_on_style = "yapf"
@@ -43,14 +42,25 @@ column_limit = 100
 indent_width = 4
 spaces_before_comment = 2
 
+# Using ruff's isort instead of standalone isort (configured below in [tool.ruff.lint.isort])
+# [tool.isort]
+# line_length = 100
+# multi_line_output = 3
+# indent = "    "
+# known_first_party = ["tileops"]
+# skip_gitignore = true
+
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
 skip = [
     "build",
-    "3rdparty",
     "dist",
     ".venv"
 ]
+
+# Global ruff configuration
+[tool.ruff]
+line-length = 100  # Match yapf's column_limit
 
 [tool.ruff.lint]
 select = [
@@ -64,8 +74,8 @@ select = [
     "B",
     # flake8-simplify
     "SIM",
-    # isort
-    # "I",
+    # isort (using ruff's isort instead of standalone isort)
+    "I",
 ]
 ignore = [
     # Module level import not at top of file
@@ -83,3 +93,8 @@ ignore = [
     # No such file or directory
     "E902",
 ]
+
+# Configure ruff's isort to be compatible with yapf
+# Note: line-length is controlled by [tool.ruff] section, not here
+[tool.ruff.lint.isort]
+known-first-party = ["tileops"]

@@ -1,8 +1,10 @@
-import torch
 from abc import ABC, abstractmethod
-from tilelang.profiler import do_bench
-from top.ops import Op
 from typing import Any, Optional, Tuple
+
+import torch
+from tilelang.profiler import do_bench
+
+from top.ops import Op
 
 
 class Benchmark(ABC):
