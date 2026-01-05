@@ -43,7 +43,7 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
         *   **FP16**: `rtol=1e-3`, `atol=1e-3`
         *   **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
     *   Benchmark results must be reproducible.
-*   **Definition of Done**: The op is verified in unit tests and benchmarked.
+*   **Definition of Done**: The op is verified in unit tests, and benchmarks run correctly.
 
 ### Step 3: Functional API (L3)
 *   **Location**: `top/functions/{operator_name}.py`
@@ -51,7 +51,7 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
     *   Implement `torch.autograd.Function`.
     *   Define `forward()` and `backward()` static methods.
     *   **Docstrings**: Google Style (Args, Returns, Gradients).
-*   **Verification**: Pass `torch.autograd.gradcheck`.
+*   **Verification**: Pass `torch.autograd.gradcheck` for ops with backward().
 *   **Definition of Done**: The op is verified in unit tests.
 
 ### Step 4: Layer Wrapper (L4)
@@ -63,7 +63,7 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
 ### Step 5: Benchmark Results
 *   **Location**: `benchmarks/{operator_name}.py`
 *   **Goal**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
-*   **Definition of Done**: Put the benchmark results in the issue.
+*   **Definition of Done**: Benchmark the op and put the results in the issue.
 
 ---
 
