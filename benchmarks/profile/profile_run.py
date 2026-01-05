@@ -19,8 +19,15 @@ def build_gemm_cmd(args_dict: Dict[str, Any]) -> List[str]:
         str(args_dict['M']), '--N',
         str(args_dict['N']), '--K',
         str(args_dict['K']), '--dtype',
-        str(args_dict['dtype'])
+        str(args_dict['dtype']), '--tune'
     ]
+
+    if args_dict.get('trans_A', False):
+        cmd_args.append('--trans_A')
+
+    if args_dict.get('trans_B', False):
+        cmd_args.append('--trans_B')
+
     return cmd_args
 
 
@@ -211,7 +218,7 @@ def run_test_script(script_path: Path, args_dict: Dict[str, Any]) -> Optional[Li
 
     try:
         # Run script and capture output
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3000)
         if result.returncode != 0:
             print(f"Error running script: {result.stderr}")
             return None

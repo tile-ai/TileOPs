@@ -1,0 +1,11 @@
+batch,seq_len,heads,heads_kv,dim,causal,dtype
+16,2048,64,4,128,False,bfloat16
+8,4096,64,4,128,False,bfloat16
+4,8192,64,4,128,False,bfloat16
+2,16384,64,4,128,False,bfloat16
+1,32768,64,4,128,False,bfloat16
+16,2048,64,4,128,True,bfloat16
+8,4096,64,4,128,True,bfloat16
+4,8192,64,4,128,True,bfloat16
+2,16384,64,4,128,True,bfloat16
+1,32768,64,4,128,True,bfloat16
