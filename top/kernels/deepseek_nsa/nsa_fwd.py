@@ -5,7 +5,6 @@ from top.kernels.kernel import Kernel
 import itertools
 import torch
 
-from top.kernels.deepseek_nsa.nsa_torch import naive_nsa
 
 __all__ = ["nsa_fwd_kernel"]
 
@@ -34,9 +33,7 @@ def _nsa_fwd_kernel(
     accum_dtype = T.float32
 
     block_S = block_size
-    # block_T = min(128, tilelang.math.next_power_of_2(dim))
-    # num_stages = 2
-    # threads = 32
+    
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={
@@ -45,8 +42,6 @@ def _nsa_fwd_kernel(
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
     )
-
-    
     def _nsa_fwd_func(block_T, num_stages, threads):
 
         NK = tilelang.cdiv(dim, block_T)
@@ -238,65 +233,3 @@ class nsa_fwd_kernel(Kernel):
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, BlockIndices: torch.Tensor):
         return _nsa_fwd_wrapped_kernel(self.batch, self.heads, self.seq_len, self.dim, self.is_causal, self.scale, self.block_size, self.groups, self.selected_blocks, self.config["block_T"], self.config["num_stages"], self.config["threads"], Q, K, V, BlockIndices)
-
-
-def main():
-    # B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2, 64, 1, 16, 32, 1, 32, torch.float16, 0.1
-    B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2,  8192, 4, 16*4, 128, 16, 32, torch.float16, 0.1
-
-    block_T = min(128, tilelang.math.next_power_of_2(D))
-    kernel = _nsa_fwd_kernel(
-        batch=B,
-        heads=HQ,
-        seq_len=SEQ_LEN,
-        dim=D,
-        is_causal=True,
-        scale=scale,
-        block_size=block_size,
-        groups=HQ // H,
-        selected_blocks=S,
-    )(block_T=block_T, num_stages=2, threads=32)
-
-    kernel2 = nsa_fwd_kernel(
-        batch=B,
-        heads=HQ,
-        seq_len=SEQ_LEN,
-        dim=D,
-        is_causal=True,
-        block_size=block_size,
-        groups=HQ // H,
-        selected_blocks=S,
-        scale=scale,
-        tune=True,
-    )
-
-
-    src_kernel = kernel.get_kernel_source()
-    print(src_kernel)
-    # with open("nsa_fwd_kernel.cu", "w") as f:
-    #     f.write(src_kernel)
-    torch.random.manual_seed(0)
-    Q = torch.randn((B, SEQ_LEN, HQ, D), dtype=dtype, device="cuda").requires_grad_(True)
-    K = torch.randn((B, SEQ_LEN, H, D), dtype=dtype, device="cuda").requires_grad_(True)
-    V = torch.randn((B, SEQ_LEN, H, D), dtype=dtype, device="cuda").requires_grad_(True)
-    g_slc = torch.ones((B, SEQ_LEN, HQ), dtype=dtype, device="cuda").requires_grad_(True)
-    g_swa = torch.ones((B, SEQ_LEN, HQ), dtype=dtype, device="cuda").requires_grad_(True)
-    DO = torch.randn((B, SEQ_LEN, HQ, D), dtype=dtype, device="cuda")
-
-    block_indices = torch.full((B, SEQ_LEN, H, S), SEQ_LEN, dtype=torch.long, device="cuda")
-    block_counts = torch.zeros((B, SEQ_LEN, H), dtype=torch.long, device="cuda")
-    for b in range(B):
-        for t in range(SEQ_LEN):
-            for h in range(H):
-                i_i = torch.randperm(max(1, (t // block_size)))[:S]
-                block_indices[b, t, h, : len(i_i)] = i_i
-                block_counts[b, t, h] = (block_indices[b, t, h] != SEQ_LEN).sum().item()
-    block_indices = block_indices.sort(-1)[0]
-
-    out = kernel(Q, K, V, block_indices.to(torch.int32))
-
-    out2 = kernel2.forward(Q, K, V, block_indices.to(torch.int32))
-
-
-if __name__ == "__main__":
-    main()

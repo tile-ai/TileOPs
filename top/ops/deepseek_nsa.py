@@ -2,12 +2,63 @@ import torch
 from top.ops.op import Op
 from top.kernels.kernel import Kernel
 from top.kernels.deepseek_nsa.nsa_fwd import nsa_fwd_kernel
-from typing import Optional, Dict
+from top.kernels.deepseek_nsa.mean_pooling_fwd import mean_pooling_fwd_kernel
+from typing import Optional, Dict, Callable, Tuple, Any
+from fla.ops.utils import mean_pooling
+from fla.ops.common.utils import prepare_chunk_indices
 
-from top.kernels.deepseek_nsa.nsa_torch import naive_nsa
 
-__all__ = ["NativeSparseAttentionForwardOp"]
+import tilelang
+import tilelang.language as T
+import functools
 
+
+__all__ = ["NativeSparseAttentionForwardOp", "MeanPoolingForwardOp"]
+
+
+class MeanPoolingForwardOp(Op):
+    def __init__(
+        self,
+        batch_size: int,
+        total_seqlen: int,
+        total_chunks: int,
+        heads: int,
+        dim: int,
+        chunk_size: int,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune=False
+    )-> torch.Tensor:
+        self.batch_size = batch_size
+        self.total_seqlen = total_seqlen
+        self.total_chunks = total_chunks
+        self.heads = heads
+        self.dim = dim
+        self.chunk_size = chunk_size
+        self.tune = tune
+       
+        self.dispatch_kernel(kernel_map)
+
+        self.kernel = self.kernel_map["mean_pooling_fwd_kernel"](
+            batch_size=self.batch_size,
+            total_seqlen=self.total_seqlen,
+            total_chunks=self.total_chunks,
+            heads=self.heads,
+            dim=self.dim,
+            chunk_size=self.chunk_size,
+            tune= self.tune
+            )
+    @property
+    def default_kernel_map(self):
+        return {"mean_pooling_fwd_kernel": mean_pooling_fwd_kernel}
+
+    def forward(self, x_unpad: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor):
+        return self.kernel(x_unpad, cu_seqlens, chunk_indices)
+    # def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor):
+    #     out = self.kernel(x, cu_seqlens, chunk_indices)
+    #     print(self.batch_size)
+    #     return out.view(self.batch_size,-1, self.heads, self.dim)
+        
+        
 
 class NativeSparseAttentionForwardOp(Op):
     def __init__(
@@ -35,17 +86,6 @@ class NativeSparseAttentionForwardOp(Op):
         self.selected_blocks = selected_blocks
         self.tune = tune
 
-        print("batch ", self.batch)
-        print("heads ", self.heads)
-        print("seq_len ", self.seq_len)
-        print("dim ", self.dim)
-        print("is_causal ", self.is_causal)
-        print("scale ", self.scale)
-        print("block_size ", self.block_size)
-        print("groups ", self.groups)
-        print("selected_blocks ", self.selected_blocks)
-        print("tune ", self.tune)
-
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["nsa_fwd_kernel"](
             self.batch, self.heads, self.seq_len, 
@@ -61,63 +101,19 @@ class NativeSparseAttentionForwardOp(Op):
         return self.kernel(Q, K, V, BlockIndices)
 
 
-def main():
-    # B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2, 64, 1, 16, 32, 1, 32, torch.float16, 0.1
+def mean_pooling_tilelang(x_unpad, cu_seqlens, chunk_size, block_D=64):
+    total_T, H, D = x_unpad.shape
+    B = cu_seqlens.shape[0] - 1
+    chunk_indices = prepare_chunk_indices(cu_seqlens, chunk_size)
+    total_chunks = chunk_indices.shape[0]
 
-    B, SEQ_LEN, H, HQ, D, S, block_size, dtype, scale = 2,  8192, 4, 16*4, 128, 16, 32, torch.float16, 0.1
-
-    block_T = min(128, 16)
-
-    kernel = NativeSparseAttentionForwardOp(
-        batch=B,
-        heads=HQ,
-        seq_len=SEQ_LEN,
+    op = MeanPoolingForwardOp(
+        batch_size=B,
+        total_seqlen=total_T,
+        total_chunks=total_chunks,
+        heads=H,
         dim=D,
-        is_causal=True,
-        block_size=block_size,
-        groups=HQ // H,
-        selected_blocks=S,
-        scale=scale,
-        tune=True,
+        chunk_size=chunk_size,
+        tune= True
     )
-
-
-    torch.random.manual_seed(0)
-    Q = torch.randn((B, SEQ_LEN, HQ, D), dtype=dtype, device="cuda").requires_grad_(True)
-    K = torch.randn((B, SEQ_LEN, H, D), dtype=dtype, device="cuda").requires_grad_(True)
-    V = torch.randn((B, SEQ_LEN, H, D), dtype=dtype, device="cuda").requires_grad_(True)
-    g_slc = torch.ones((B, SEQ_LEN, HQ), dtype=dtype, device="cuda").requires_grad_(True)
-    g_swa = torch.ones((B, SEQ_LEN, HQ), dtype=dtype, device="cuda").requires_grad_(True)
-    DO = torch.randn((B, SEQ_LEN, HQ, D), dtype=dtype, device="cuda")
-
-    block_indices = torch.full((B, SEQ_LEN, H, S), SEQ_LEN, dtype=torch.long, device="cuda")
-    block_counts = torch.zeros((B, SEQ_LEN, H), dtype=torch.long, device="cuda")
-    for b in range(B):
-        for t in range(SEQ_LEN):
-            for h in range(H):
-                i_i = torch.randperm(max(1, (t // block_size)))[:S]
-                block_indices[b, t, h, : len(i_i)] = i_i
-                block_counts[b, t, h] = (block_indices[b, t, h] != SEQ_LEN).sum().item()
-    block_indices = block_indices.sort(-1)[0]
-
-    out = kernel.forward(Q, K, V, block_indices.to(torch.int32))
-
-    # ref = naive_nsa(
-    #     q=Q,
-    #     k=K,
-    #     v=V,
-    #     g_slc=g_slc,
-    #     g_swa=g_swa,
-    #     block_indices=block_indices,
-    #     block_counts=block_counts,
-    #     block_size=block_size,
-    #     scale=scale,
-    # )
-
-    print("out", out)
-    # print("ref", ref)
-    # torch.testing.assert_close(ref, out, atol=1e-2, rtol=1e-2)
-
-
-if __name__ == "__main__":
-    main()
+    return op.forward(x_unpad, cu_seqlens, chunk_indices)

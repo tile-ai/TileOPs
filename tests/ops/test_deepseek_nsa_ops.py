@@ -23,13 +23,15 @@ def test_nsa_op(
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
     benchmark.profile(op, *inputs)
+    benchmark.baseline_profile(*inputs)
+
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch', type=int, default=2, help='batch size')
+    parser.add_argument('--batch', type=int, default=16, help='batch size')
     parser.add_argument('--heads', type=int, default=16*4, help='number of heads')
-    parser.add_argument('--seq_len', type=int, default=8192*3, help='sequence length')
+    parser.add_argument('--seq_len', type=int, default=8192*1, help='sequence length')
     parser.add_argument('--dim', type=int, default=128, help='head dim')
     parser.add_argument('--is_causal', action='store_true', default=True, help='enable causal attention')
     parser.add_argument('--scale', type=float, default=0.1, help='scale')
