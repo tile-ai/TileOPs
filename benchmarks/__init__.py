@@ -4,6 +4,7 @@ from .flash_attn import MultiHeadAttentionBenchmark, MultiHeadAttentionBwdBenchm
 from .gemm import GemmBenchmark, MatMulBenchmark
 from .flash_decode import MultiHeadAttentionDecodeBenchmark, GroupQueryAttentionDecodeBenchmark
 from .deepseek_mla import MultiHeadLatentAttentionDecodeBenchmark, DeepSeekSparseAttentionDecodeBenchmark
+
 __all__ = [
     'Benchmark',
     'NativeSparseAttentionForwardBenchmark',

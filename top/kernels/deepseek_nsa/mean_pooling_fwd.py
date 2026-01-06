@@ -1,16 +1,14 @@
 import torch
-from fla.ops.utils import mean_pooling
-from fla.ops.common.utils import prepare_chunk_indices
 
-from typing import Optional, Tuple
+from typing import Optional
 from top.kernels.kernel import Kernel
 import itertools
 
 import tilelang
 import tilelang.language as T
 
-
 __all__ = ["mean_pooling_fwd_kernel"]
+
 
 def _mean_pooling_kernel(
     batch_size: int,
@@ -39,19 +37,15 @@ def _mean_pooling_kernel(
         cu_seqlens_shape = [batch_size + 1]
         chunk_indices_shape = [total_chunks, 2]
         output_shape = [total_chunks, heads, dim]
+
         @T.prim_func
         def _mean_pooling_main(
-            X_unpad: T.Tensor(x_shape, dtype),
-            cu_seqlens: T.Tensor(cu_seqlens_shape, T.int32),
-            chunk_indices: T.Tensor(chunk_indices_shape, T.int32),
-            Output: T.Tensor(output_shape, dtype),
+                X_unpad: T.Tensor(x_shape, dtype),
+                cu_seqlens: T.Tensor(cu_seqlens_shape, T.int32),
+                chunk_indices: T.Tensor(chunk_indices_shape, T.int32),
+                Output: T.Tensor(output_shape, dtype),
         ):
-            with T.Kernel(
-                ND,
-                total_chunks,
-                heads,
-                threads=threads
-            ) as (i_d, i_t, i_h):
+            with T.Kernel(ND, total_chunks, heads, threads=threads) as (i_d, i_t, i_h):
                 accum = T.alloc_fragment([block_D], accum_dtype)
                 d_start = i_d * block_D
 
@@ -74,9 +68,12 @@ def _mean_pooling_kernel(
                             accum[d] += T.cast(X_unpad[t_abs, i_h, d_start + d], accum_dtype)
                 for d in T.Parallel(block_D):
                     if d_start + d < dim:
-                        Output[i_t, i_h, d_start + d] = T.cast(accum[d] / T.cast(actual_bt, accum_dtype), dtype)
+                        Output[i_t, i_h,
+                               d_start + d] = T.cast(accum[d] / T.cast(actual_bt, accum_dtype),
+                                                     dtype)
 
         return _mean_pooling_main
+
     return _mean_pooling_func
 
 
@@ -93,7 +90,7 @@ def _mean_pooling_wrapped_kernel(
     x_unpad: torch.Tensor,
     cu_seqlens: torch.Tensor,
     chunk_indices: torch.Tensor,
-)->torch.Tensor:
+) -> torch.Tensor:
     return _mean_pooling_kernel(
         batch_size,
         total_seqlen,
@@ -101,21 +98,21 @@ def _mean_pooling_wrapped_kernel(
         heads,
         dim,
         chunk_size,
-        )(block_D, threads)(x_unpad, cu_seqlens, chunk_indices)
+    )(block_D, threads)(x_unpad, cu_seqlens, chunk_indices)
 
 
 @_mean_pooling_wrapped_kernel.register_fake
 def _(
-    batch_size: int,
-    total_seqlen: int,
-    total_chunks: int,
-    heads: int,
-    dim: int,
-    chunk_size: int,
-    block_D: int,
-    threads: int,
-    *inputs
-)->torch.Tensor:
+        batch_size: int,
+        total_seqlen: int,
+        total_chunks: int,
+        heads: int,
+        dim: int,
+        chunk_size: int,
+        block_D: int,
+        threads: int,
+        *inputs
+) -> torch.Tensor:
     fake_o = torch.empty_like(inputs[0])
     return fake_o
 
@@ -123,17 +120,15 @@ def _(
 class mean_pooling_fwd_kernel(Kernel):
     supported_archs: list[int] = [80, 89, 90, 100]
 
-    def __init__(
-        self,
-        batch_size: int,
-        total_seqlen: int,
-        total_chunks: int,
-        heads: int,
-        dim: int,
-        chunk_size: int,
-        config: Optional[dict] = None,
-        tune=False
-    ):
+    def __init__(self,
+                 batch_size: int,
+                 total_seqlen: int,
+                 total_chunks: int,
+                 heads: int,
+                 dim: int,
+                 chunk_size: int,
+                 config: Optional[dict] = None,
+                 tune=False):
         super().__init__()
         self.batch_size = batch_size
         self.total_seqlen = total_seqlen
@@ -152,7 +147,7 @@ class mean_pooling_fwd_kernel(Kernel):
         )
 
         self.init_config(config, tune)
-    
+
     @property
     def default_config(self) -> dict:
         return {
@@ -165,23 +160,11 @@ class mean_pooling_fwd_kernel(Kernel):
         block_D = [32, 64, 128]
         threads = [32, 64, 128]
         _configs = list(itertools.product(block_D, threads))
-        configs = [{
-            "block_D": c[0],
-            "threads": c[1]
-        } for c in _configs]
+        configs = [{"block_D": c[0], "threads": c[1]} for c in _configs]
         return configs
 
-    def forward(self, x_unpad: torch.Tensor,  cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor):
-        return _mean_pooling_wrapped_kernel(
-            self.batch_size, 
-            self.total_seqlen, 
-            self.total_chunks, 
-            self.heads, 
-            self.dim, 
-            self.chunk_size, 
-            self.config["block_D"],
-            self.config["threads"], 
-            x_unpad, 
-            cu_seqlens, 
-            chunk_indices
-        )
+    def forward(self, x_unpad: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor):
+        return _mean_pooling_wrapped_kernel(self.batch_size, self.total_seqlen, self.total_chunks,
+                                            self.heads, self.dim, self.chunk_size,
+                                            self.config["block_D"], self.config["threads"], x_unpad,
+                                            cu_seqlens, chunk_indices)

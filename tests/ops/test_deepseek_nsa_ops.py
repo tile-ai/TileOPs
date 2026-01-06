@@ -1,10 +1,9 @@
 import argparse
 from top.ops import NativeSparseAttentionForwardOp
-from top.utils import str2dtype
 from benchmarks.deepseek_nsa.deepseek_nsa import NativeSparseAttentionForwardBenchmark
 
 
-def test_nsa_op( 
+def test_nsa_op(
     batch,
     heads,
     seq_len,
@@ -17,8 +16,19 @@ def test_nsa_op(
     # dtype='float16',
     tune=False,
 ):
-    op = NativeSparseAttentionForwardOp(batch, heads, seq_len, dim, is_causal, scale, block_size, groups, selected_blocks, tune=tune)
-    benchmark = NativeSparseAttentionForwardBenchmark(batch, heads, seq_len, dim, is_causal, scale, block_size, groups, selected_blocks)
+    op = NativeSparseAttentionForwardOp(
+        batch,
+        heads,
+        seq_len,
+        dim,
+        is_causal,
+        scale,
+        block_size,
+        groups,
+        selected_blocks,
+        tune=tune)
+    benchmark = NativeSparseAttentionForwardBenchmark(batch, heads, seq_len, dim, is_causal, scale,
+                                                      block_size, groups, selected_blocks)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
@@ -26,14 +36,14 @@ def test_nsa_op(
     benchmark.baseline_profile(*inputs)
 
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch', type=int, default=16, help='batch size')
-    parser.add_argument('--heads', type=int, default=16*4, help='number of heads')
-    parser.add_argument('--seq_len', type=int, default=8192*1, help='sequence length')
+    parser.add_argument('--heads', type=int, default=16 * 4, help='number of heads')
+    parser.add_argument('--seq_len', type=int, default=8192 * 1, help='sequence length')
     parser.add_argument('--dim', type=int, default=128, help='head dim')
-    parser.add_argument('--is_causal', action='store_true', default=True, help='enable causal attention')
+    parser.add_argument(
+        '--is_causal', action='store_true', default=True, help='enable causal attention')
     parser.add_argument('--scale', type=float, default=0.1, help='scale')
     parser.add_argument('--block_size', type=int, default=32, help='block size')
     parser.add_argument('--groups', type=int, default=16, help='number of groups')

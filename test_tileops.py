@@ -1,5 +1,4 @@
 import torch
-import top
 from top import MLAKernel
 
 device = "cuda"

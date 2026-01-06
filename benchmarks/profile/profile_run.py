@@ -96,13 +96,20 @@ def build_nsa_cmd(args_dict):
     """
     cmd_args = [
         '--batch',
-        str(args_dict['batch']), '--heads',
-        str(args_dict['heads']), '--seq_len',
-        str(args_dict['seq_len']), '--dim',
-        str(args_dict['dim']), '--scale',
-        str(args_dict.get('scale', 0.1)), '--block_size',
-        str(args_dict['block_size']), '--groups',
-        str(args_dict['groups']), '--selected_blocks',
+        str(args_dict['batch']),
+        '--heads',
+        str(args_dict['heads']),
+        '--seq_len',
+        str(args_dict['seq_len']),
+        '--dim',
+        str(args_dict['dim']),
+        '--scale',
+        str(args_dict.get('scale', 0.1)),
+        '--block_size',
+        str(args_dict['block_size']),
+        '--groups',
+        str(args_dict['groups']),
+        '--selected_blocks',
         str(args_dict['selected_blocks']),
     ]
 
