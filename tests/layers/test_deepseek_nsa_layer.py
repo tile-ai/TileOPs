@@ -4,21 +4,22 @@ from benchmarks.deepseek_nsa.deepseek_nsa import NativeSparseAttentionForwardBen
 import pytest
 import torch
 
+
 @pytest.fixture(autouse=True)
 def setup() -> None:
     """Set up the test environment."""
     torch.manual_seed(1234)
+
 
 @pytest.mark.parametrize(
     "batch, heads, seq_len, dim, is_causal, scale, block_size, groups, selected_blocks, tune",
     [
         # default configuration
         (1, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192*2, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192*4, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192*8, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192 * 2, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192 * 4, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192 * 8, 128, True, 0.1, 32, 16, 16, True),
         (16, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
-        
     ],
 )
 def test_nsa_layer(

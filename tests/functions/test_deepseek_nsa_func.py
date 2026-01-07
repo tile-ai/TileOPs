@@ -5,6 +5,7 @@ import torch
 from top.functions import NativeSparseAttentionFunc
 from benchmarks.deepseek_nsa.deepseek_nsa import NativeSparseAttentionForwardBenchmark
 
+
 @pytest.fixture(autouse=True)
 def setup() -> None:
     """Set up the test environment."""
@@ -16,9 +17,9 @@ def setup() -> None:
     [
         # default configuration
         (1, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192*2, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192*4, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192*8, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192 * 2, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192 * 4, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192 * 8, 128, True, 0.1, 32, 16, 16, True),
         (16, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
     ],
 )

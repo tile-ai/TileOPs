@@ -18,9 +18,9 @@ def setup() -> None:
     [
         # default configuration
         (1, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192*2, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192*4, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192*8, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192 * 2, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192 * 4, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192 * 8, 128, True, 0.1, 32, 16, 16, True),
         (16, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
         # (16, 64, 8192*2, 128, True, 0.1, 32, 16, 16, True),
         # (16, 64, 8192*4, 128, True, 0.1, 32, 16, 16, True),
@@ -68,9 +68,8 @@ def test_nsa_op(
         groups,
         selected_blocks,
         tune=tune)
-    benchmark = NativeSparseAttentionForwardBenchmark(
-        batch, heads, seq_len, dim, is_causal, scale,
-        block_size, groups, selected_blocks)
+    benchmark = NativeSparseAttentionForwardBenchmark(batch, heads, seq_len, dim, is_causal, scale,
+                                                      block_size, groups, selected_blocks)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
