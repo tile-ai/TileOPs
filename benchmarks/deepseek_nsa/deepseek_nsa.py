@@ -224,7 +224,7 @@ class NsaTopkForwardBenchmark(Benchmark):
     @property
     def total_memory(self):
         input_memory = self.M * self.N * self.dtype.itemsize
-        output_memory = self.M * self.topk * self.dtype.itemsize + self.M * self.topk * 4  # int32
+        output_memory = self.M * self.topk * self.dtype.itemsize + self.M * self.topk * torch.int32.itemsize
         return input_memory + output_memory
 
     def gen_inputs(self):

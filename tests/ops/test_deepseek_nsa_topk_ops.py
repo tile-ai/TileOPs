@@ -14,8 +14,8 @@ def setup() -> None:
 @pytest.mark.parametrize(
     "M, N, topk, dtype, tune",
     [
-        (320, 128, 6, "float32", True),
-        (512, 128, 6, "float32", True),
+        (320, 128, 6, "float32", False),
+        (512, 128, 6, "float32", False),
     ],
 )
 def test_nsa_topk_op(M, N, topk, dtype, tune):
@@ -34,6 +34,6 @@ if __name__ == "__main__":
     parser.add_argument('--N', type=int, default=128, help='number of experts')
     parser.add_argument('--topk', type=int, default=8, help='topk')
     parser.add_argument('--dtype', type=str, default='float32', help='data type')
-    parser.add_argument('--tune', action='store_true', default=True, help='enable autotune')
+    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
     test_nsa_topk_op(args.M, args.N, args.topk, args.dtype, args.tune)

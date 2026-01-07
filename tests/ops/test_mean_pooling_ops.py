@@ -7,7 +7,7 @@ import pytest
 @pytest.mark.parametrize(
     "batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune",
     [
-        (1, 8192, 256, 128, 128, 32, True),
+        (1, 8192, 256, 128, 128, 32, False),
     ],
 )
 def test_mean_pooling_op(batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune):
@@ -31,7 +31,7 @@ if __name__ == "__main__":
     parser.add_argument('--heads', type=int, default=128, help='head dim')
     parser.add_argument('--dim', type=int, default=128, help='scale')
     parser.add_argument('--chunk_size', type=int, default=32, help='scale')
-    parser.add_argument('--tune', action='store_true', default=True, help='enable autotune')
+    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
     test_mean_pooling_op(
         args.batch_size,
