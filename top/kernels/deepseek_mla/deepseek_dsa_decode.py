@@ -28,7 +28,7 @@ def _sparse_mla_kernel(batch,
     '''
     This code implements sparse MLA attention.
 
-    Args:
+    Attributes:
         batch (int): The batch size for the operation.
         seq_len (int): The length of the sequence for the query tensor.
         seq_len_kv (int): The length of the sequence for the key-value tensors.
