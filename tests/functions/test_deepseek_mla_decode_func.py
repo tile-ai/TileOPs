@@ -1,21 +1,33 @@
 import argparse
-from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc
+
+from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
+from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc, mla_decode_with_kvcache
 from top.layers import MultiHeadLatentAttentionDecodeLayer
 from top.utils import str2dtype
-from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
 
 
-def test_mla_decode_fn(B, kv_head_num, S_kv, H, D, Pe_D, dtype):
+def test_mla_decode_fn(batch, kv_head_num, seq_len_kv, heads, dim, pe_dim, dtype):
 
-    mla_fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
-    mla_layer = MultiHeadLatentAttentionDecodeLayer(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
-    benchmark = MultiHeadLatentAttentionDecodeBenchmark(B, H, kv_head_num, S_kv, D, Pe_D, dtype)
+    mla_layer = MultiHeadLatentAttentionDecodeLayer(batch, heads, kv_head_num, seq_len_kv, dim,
+                                                    pe_dim, dtype)
+    benchmark = MultiHeadLatentAttentionDecodeBenchmark(batch, heads, kv_head_num, seq_len_kv, dim,
+                                                        pe_dim, dtype)
 
     inputs = benchmark.gen_inputs()
 
     try:
-        print("Testing mla_fn...")
-        benchmark.check_fn(mla_fn, *inputs, grad=False)
+        print("Testing mla_fn interface...")
+        benchmark.check_fn(mla_decode_with_kvcache, *inputs, grad=False)
+        print("✅ mla_fn test passed")
+    except Exception as e:
+        print(f"❌ mla_fn test failed: {e}")
+        raise
+
+    try:
+        print("Testing mla_fn class...")
+        fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(batch, heads, kv_head_num, seq_len_kv,
+                                                           dim, pe_dim, dtype)
+        benchmark.check_fn(fn, *inputs, grad=False)
         print("✅ mla_fn test passed")
     except Exception as e:
         print(f"❌ mla_fn test failed: {e}")

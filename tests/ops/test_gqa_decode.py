@@ -1,12 +1,14 @@
 import argparse
+
+from benchmarks import GroupQueryAttentionDecodeBenchmark
 from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
-from benchmarks import GroupQueryAttentionDecodeBenchmark
 
 
-def test_gqa_decode(B, H, G, S_kv, D, dtype, tune=False):
-    op = GroupQueryAttentionDecodeWithKVCacheOp(B, H, G, S_kv, D, dtype, tune=tune)
-    benchmark = GroupQueryAttentionDecodeBenchmark(B, H, G, S_kv, D, dtype)
+def test_gqa_decode(batch, heads, groups, seq_len_kv, dim, dtype, tune=False):
+    op = GroupQueryAttentionDecodeWithKVCacheOp(
+        batch, heads, groups, seq_len_kv, dim, dtype, tune=tune)
+    benchmark = GroupQueryAttentionDecodeBenchmark(batch, heads, groups, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)

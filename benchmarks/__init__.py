@@ -1,9 +1,22 @@
 from .benchmark import Benchmark  # noqa: F401
+
 from .deepseek_nsa.deepseek_nsa import NativeSparseAttentionForwardBenchmark
-from .flash_attn import MultiHeadAttentionBenchmark, MultiHeadAttentionBwdBenchmark, MultiHeadAttentionFwdBenchmark, GroupQueryAttentionBenchmark, GroupQueryAttentionFwdBenchmark, GroupQueryAttentionBwdBenchmark
+from .deepseek_mla import (
+    DeepSeekSparseAttentionDecodeBenchmark,
+    MultiHeadLatentAttentionDecodeBenchmark,
+)
+from .flash_attn import (
+    GroupQueryAttentionBenchmark,
+    GroupQueryAttentionBwdBenchmark,
+    GroupQueryAttentionFwdBenchmark,
+    MultiHeadAttentionBenchmark,
+    MultiHeadAttentionBwdBenchmark,
+    MultiHeadAttentionFwdBenchmark,
+)
+
+from .flash_decode import GroupQueryAttentionDecodeBenchmark, MultiHeadAttentionDecodeBenchmark
+
 from .gemm import GemmBenchmark, MatMulBenchmark
-from .flash_decode import MultiHeadAttentionDecodeBenchmark, GroupQueryAttentionDecodeBenchmark
-from .deepseek_mla import MultiHeadLatentAttentionDecodeBenchmark, DeepSeekSparseAttentionDecodeBenchmark
 
 __all__ = [
     'Benchmark',

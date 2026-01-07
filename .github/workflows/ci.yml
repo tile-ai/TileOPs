@@ -34,7 +34,7 @@ jobs:
 
   tileops_test_release:
     needs: pre-commit
-    runs-on: [self-hosted, tile-ops] 
+    runs-on: [self-hosted, tile-ops]
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -51,7 +51,7 @@ jobs:
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
           CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_release.log
-        shell: bash 
+        shell: bash
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -63,7 +63,7 @@ jobs:
 
   tileops_test_nightly:
     needs: pre-commit
-    runs-on: [self-hosted, tile-ops] 
+    runs-on: [self-hosted, tile-ops]
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -80,7 +80,7 @@ jobs:
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
           CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_nightly.log
-        shell: bash 
+        shell: bash
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -92,7 +92,7 @@ jobs:
 
   tileops_profile_release:
     needs: [pre-commit, tileops_test_release]
-    runs-on: [self-hosted, profile] 
+    runs-on: [self-hosted, profile]
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -109,7 +109,7 @@ jobs:
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
           bash benchmarks/profile_run.sh --log profile_out/tileops_profile_nightly.log
-        shell: bash 
+        shell: bash
 
       - name: Upload profile_out artifacts
         uses: actions/upload-artifact@v4

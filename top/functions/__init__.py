@@ -1,12 +1,25 @@
-from .function import Function
-from .mha import MultiHeadAttentionFunc
-from .gqa import GroupQueryAttentionFunc
-from .mha_decode import MultiHeadAttentionDecodeWithKVCacheFunc
-from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheFunc
-from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheFunc
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheFunc
-from .matmul import MatMulFunc
+
 from .deepseek_nsa import NativeSparseAttentionFunc
+from .deepseek_mla_decode import (
+    MultiHeadLatentAttentionDecodeWithKVCacheFunc,
+    mla_decode_with_kvcache,
+    multi_head_latent_attention_decode_with_kvcache,
+)
+from .function import Function
+from .gqa import GroupQueryAttentionFunc, gqa, group_query_attention
+from .gqa_decode import (
+    GroupQueryAttentionDecodeWithKVCacheFunc,
+    gqa_decode_with_kvcache,
+    group_query_attention_decode_with_kvcache,
+)
+from .matmul import MatMulFunc, matmul
+from .mha import MultiHeadAttentionFunc, mha, multi_head_attention
+from .mha_decode import (
+    MultiHeadAttentionDecodeWithKVCacheFunc,
+    mha_decode_with_kvcache,
+    multi_head_attention_decode_with_kvcache,
+)
 
 __all__ = [
     "Function",
@@ -18,4 +31,15 @@ __all__ = [
     "DeepSeekSparseAttentionDecodeWithKVCacheFunc",
     "MatMulFunc",
     "NativeSparseAttentionFunc",
+    "group_query_attention",
+    "multi_head_attention",
+    'multi_head_attention_decode_with_kvcache',
+    'matmul',
+    'group_query_attention_decode_with_kvcache',
+    'multi_head_latent_attention_decode_with_kvcache',
+    'mha',
+    'gqa',
+    'mha_decode_with_kvcache',
+    'gqa_decode_with_kvcache',
+    'mla_decode_with_kvcache',
 ]

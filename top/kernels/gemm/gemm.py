@@ -1,10 +1,12 @@
+import itertools
+from typing import Optional
+
 import tilelang
 import tilelang.language as T
-from typing import Optional
-import itertools
 import torch
-from top.utils import get_sm_version
+
 from top.kernels.kernel import Kernel
+from top.utils import get_sm_version
 
 __all__ = [
     'gemm_kernel',
@@ -70,21 +72,21 @@ class gemm_kernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
-                 M,
-                 N,
-                 K,
+                 m,
+                 n,
+                 k,
                  dtype,
                  config: Optional[dict] = None,
                  tune=False,
-                 trans_A=False,
-                 trans_B=False):
+                 trans_a=False,
+                 trans_b=False):
         super().__init__()
-        self.M = M
-        self.N = N
-        self.K = K
+        self.M = m
+        self.N = n
+        self.K = k
         self.dtype = dtype
 
-        self.kernel = _gemm_kernel(M, N, K, trans_A, trans_B, self.dtype_str)
+        self.kernel = _gemm_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
 
         self.init_config(config, tune)
 
@@ -142,8 +144,8 @@ class gemm_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, A: torch.Tensor, B: torch.Tensor):
-        return self.kernel(**self.config)(A, B)
+    def forward(self, a: torch.Tensor, b: torch.Tensor):
+        return self.kernel(**self.config)(a, b)
 
 
 # TODO: add persistent, split-k, steam-k...

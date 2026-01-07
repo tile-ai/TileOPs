@@ -1,11 +1,25 @@
+from typing import Optional
+
 import torch
 from torch import nn
-from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc, DeepSeekSparseAttentionDecodeWithKVCacheFunc
+
+from top.functions import (
+    DeepSeekSparseAttentionDecodeWithKVCacheFunc,
+    MultiHeadLatentAttentionDecodeWithKVCacheFunc,
+)
 
 
 class MultiHeadLatentAttentionDecodeLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=False):
+    def __init__(self,
+                 batch_size: int,
+                 heads: int,
+                 kv_head_num: int,
+                 seqlen_kv: int,
+                 dim: int,
+                 pe_dim: int,
+                 dtype: torch.dtype,
+                 tune: bool = False):
         super().__init__()
 
         self.batch_size = batch_size
@@ -19,28 +33,28 @@ class MultiHeadLatentAttentionDecodeLayer(nn.Module):
         self.fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(
             batch_size, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
 
-    def forward(self, Q: torch.Tensor, Q_pe: torch.Tensor, K: torch.Tensor,
-                K_pe: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, Q_pe, K, K_pe)
+    def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
+                k_pe: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, q_pe, k, k_pe)
 
 
 class DeepSeekSparseAttentionDecodeLayer(nn.Module):
 
     def __init__(self,
-                 batch,
-                 heads,
-                 seq_len,
-                 seq_len_kv,
-                 dim,
-                 tail_dim,
-                 topk,
-                 kv_stride,
-                 kv_group,
-                 q_start_index_s,
-                 sm_scale=None,
-                 is_causal=True,
-                 dtype=torch.float16,
-                 tune=False):
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 seq_len_kv: int,
+                 dim: int,
+                 dim_tail: int,
+                 topk: int,
+                 stride_kv: int,
+                 group_kv: int,
+                 q_start_index_s: int,
+                 sm_scale: Optional[float] = None,
+                 is_causal: bool = True,
+                 dtype: torch.dtype = torch.float16,
+                 tune: bool = False):
         super().__init__()
 
         self.batch = batch
@@ -48,10 +62,10 @@ class DeepSeekSparseAttentionDecodeLayer(nn.Module):
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv
         self.dim = dim
-        self.tail_dim = tail_dim
+        self.dim_tail = dim_tail
         self.topk = topk
-        self.kv_stride = kv_stride
-        self.kv_group = kv_group
+        self.stride_kv = stride_kv
+        self.group_kv = group_kv
         self.sm_scale = sm_scale
         self.dtype = dtype
         self.is_causal = is_causal
@@ -63,15 +77,15 @@ class DeepSeekSparseAttentionDecodeLayer(nn.Module):
             seq_len,
             seq_len_kv,
             dim,
-            tail_dim,
+            dim_tail,
             topk,
-            kv_stride,
-            kv_group,
+            stride_kv,
+            group_kv,
             q_start_index_s,
             sm_scale,
             is_causal,
             dtype,
             tune=tune)
 
-    def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, KV, Indices)
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, kv, indices)

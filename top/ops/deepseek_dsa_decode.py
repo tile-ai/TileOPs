@@ -1,8 +1,11 @@
+from typing import Dict, Optional
+
 import torch
-from .op import Op
+
 from top.kernels.deepseek_mla import sparse_mla_kernel
 from top.kernels.kernel import Kernel
-from typing import Optional, Dict
+
+from .op import Op
 
 __all__ = ["DeepSeekSparseAttentionDecodeWithKVCacheOp"]
 
@@ -11,38 +14,38 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
-                 batch,
-                 heads,
-                 seq_len,
-                 seq_len_kv,
-                 dim,
-                 tail_dim,
-                 topk,
-                 kv_stride,
-                 kv_group,
-                 q_start_index_s,
-                 sm_scale=None,
-                 is_causal=True,
-                 dtype=torch.float16,
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 seq_len_kv: int,
+                 dim: int,
+                 dim_tail: int,
+                 topk: int,
+                 stride_kv: int,
+                 group_kv: int,
+                 q_start_index_s: int,
+                 sm_scale: Optional[float] = None,
+                 is_causal: bool = True,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv
         self.dim = dim
-        self.tail_dim = tail_dim
+        self.dim_tail = dim_tail
         self.topk = topk
-        self.kv_stride = kv_stride
-        self.kv_group = kv_group
+        self.stride_kv = stride_kv
+        self.group_kv = group_kv
         self.sm_scale = sm_scale
         self.dtype = dtype
         self.is_causal = is_causal
 
         if q_start_index_s != 0:
-            assert q_start_index_s > kv_stride, "If it is because each cp has too short length, "
-            "you should fix the logic involving CP0 (cp_rank == 0), to make sure q with pos < KV_Stride - 1 is masked "
-            "(or you may just ignore how this is handled if nan in these q's Out would not effect others, which is reported to be likely to happen by wangding)"
+            assert q_start_index_s > stride_kv, "If it is because each cp has too short length, " \
+                "you should fix the logic involving CP0 (cp_rank == 0), to make sure q with pos < stride_kv - 1 is masked " \
+                "(or you may just ignore how this is handled if nan in these q's Out would not effect others, which is reported to be likely to happen by wangding)"
 
         CP0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s
@@ -54,20 +57,20 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
             self.seq_len_kv,
             self.heads,
             self.dim,
-            self.tail_dim,
+            self.dim_tail,
             self.dtype,
             self.topk,
-            self.kv_stride,
+            self.stride_kv,
             self.q_start_index_s,
-            self.kv_group,
+            self.group_kv,
             self.sm_scale,
             self.is_causal,
             CP0,
             tune=tune)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"sparse_mla_kernel": sparse_mla_kernel}
 
-    def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor):
-        return self.kernel(Q, KV, Indices)
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        return self.kernel(q, kv, indices)

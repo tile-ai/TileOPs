@@ -46,7 +46,7 @@ for test_file in $test_files; do
     test_results+=("❌ Fail")
     failed_count=$((failed_count + 1))
   fi
-  
+
   echo "----------------------------------------" >> "$LOG_FILE"
 done
 

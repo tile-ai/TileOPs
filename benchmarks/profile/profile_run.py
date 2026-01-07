@@ -3,30 +3,26 @@
 
 import argparse
 import csv
+import re
 import subprocess
 import sys
-import re
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
-def build_gemm_cmd(args_dict):
-    """
-    Build command arguments for GEMM test script
-    """
-    cmd_args = [
+def build_gemm_cmd(args_dict: Dict[str, Any]) -> List[str]:
+    """Build command arguments for GEMM test script."""
+    return [
         '--M',
         str(args_dict['M']), '--N',
         str(args_dict['N']), '--K',
         str(args_dict['K']), '--dtype',
         str(args_dict['dtype'])
     ]
-    return cmd_args
 
 
-def build_mha_cmd(args_dict):
-    """
-    Build command arguments for MHA test script
-    """
+def build_mha_cmd(args_dict: Dict[str, Any]) -> List[str]:
+    """Build command arguments for MHA test script."""
     cmd_args = [
         '--batch',
         str(args_dict['batch']), '--seq_len',
@@ -40,10 +36,8 @@ def build_mha_cmd(args_dict):
     return cmd_args
 
 
-def build_gqa_cmd(args_dict):
-    """
-    Build command arguments for GQA test script
-    """
+def build_gqa_cmd(args_dict: Dict[str, Any]) -> List[str]:
+    """Build command arguments for GQA test script."""
     cmd_args = [
         '--batch',
         str(args_dict['batch']), '--seq_len',
@@ -58,11 +52,9 @@ def build_gqa_cmd(args_dict):
     return cmd_args
 
 
-def build_mha_decode_cmd(args_dict):
-    """
-    Build command arguments for MHA decode test script
-    """
-    cmd_args = [
+def build_mha_decode_cmd(args_dict: Dict[str, Any]) -> List[str]:
+    """Build command arguments for MHA decode test script."""
+    return [
         '--batch',
         str(args_dict['batch']), '--seq_len_q',
         str(args_dict['seq_len_q']), '--seq_len_kv',
@@ -71,14 +63,11 @@ def build_mha_decode_cmd(args_dict):
         str(args_dict['dim']), '--dtype',
         str(args_dict['dtype'])
     ]
-    return cmd_args
 
 
-def build_gqa_decode_cmd(args_dict):
-    """
-    Build command arguments for GQA decode test script
-    """
-    cmd_args = [
+def build_gqa_decode_cmd(args_dict: Dict[str, Any]) -> List[str]:
+    """Build command arguments for GQA decode test script."""
+    return [
         '--batch',
         str(args_dict['batch']), '--seq_len_kv',
         str(args_dict['seq_len_kv']), '--heads',
@@ -87,71 +76,35 @@ def build_gqa_decode_cmd(args_dict):
         str(args_dict['dim']), '--dtype',
         str(args_dict['dtype'])
     ]
-    return cmd_args
 
 
-def build_nsa_cmd(args_dict):
-    """
-    Build command arguments for Native Sparse Attention test script
-    """
-    cmd_args = [
-        '--batch',
-        str(args_dict['batch']),
-        '--heads',
-        str(args_dict['heads']),
-        '--seq_len',
-        str(args_dict['seq_len']),
-        '--dim',
-        str(args_dict['dim']),
-        '--scale',
-        str(args_dict.get('scale', 0.1)),
-        '--block_size',
-        str(args_dict['block_size']),
-        '--groups',
-        str(args_dict['groups']),
-        '--selected_blocks',
-        str(args_dict['selected_blocks']),
-    ]
-
-    if args_dict.get('is_causal', 'True').lower() == 'true':
-        cmd_args.append('--is_causal')
-    if args_dict.get('tune', 'False').lower() == 'true':
-        cmd_args.append('--tune')
-    return cmd_args
-
-
-def build_mla_decode_cmd(args_dict):
-    """
-    Build command arguments for MLA decode test script
-    """
-    cmd_args = [
+def build_mla_decode_cmd(args_dict: Dict[str, Any]) -> List[str]:
+    """Build command arguments for MLA decode test script."""
+    return [
         '--batch',
         str(args_dict['batch']), '--seq_len_kv',
         str(args_dict['seq_len_kv']), '--heads',
-        str(args_dict['heads']), '--kv_head_num',
-        str(args_dict['kv_head_num']), '--dim',
-        str(args_dict['dim']), '--pe_dim',
-        str(args_dict['pe_dim']), '--dtype',
+        str(args_dict['heads']), '--head_num_kv',
+        str(args_dict['head_num_kv']), '--dim',
+        str(args_dict['dim']), '--dim_pe',
+        str(args_dict['dim_pe']), '--dtype',
         str(args_dict['dtype'])
     ]
-    return cmd_args
 
 
-def build_sparse_mla_cmd(args_dict):
-    """
-    Build command arguments for Sparse MLA test script
-    """
+def build_sparse_mla_cmd(args_dict: Dict[str, Any]) -> List[str]:
+    """Build command arguments for Sparse MLA test script."""
     cmd_args = [
         '--batch',
         str(args_dict['batch']), '--seq_len',
         str(args_dict['seq_len']), '--seq_len_kv',
         str(args_dict['seq_len_kv']), '--heads',
         str(args_dict['heads']), '--dim',
-        str(args_dict['dim']), '--tail_dim',
-        str(args_dict['tail_dim']), '--topk',
-        str(args_dict['topk']), '--kv_stride',
-        str(args_dict['kv_stride']), '--kv_group',
-        str(args_dict['kv_group']), '--q_start_index_s',
+        str(args_dict['dim']), '--dim_tail',
+        str(args_dict['dim_tail']), '--topk',
+        str(args_dict['topk']), '--stride_kv',
+        str(args_dict['stride_kv']), '--group_kv',
+        str(args_dict['group_kv']), '--q_start_index_s',
         str(args_dict.get('q_start_index_s', 1024)), '--dtype',
         str(args_dict['dtype'])
     ]
@@ -163,10 +116,8 @@ def build_sparse_mla_cmd(args_dict):
     return cmd_args
 
 
-def parse_output(output_lines):
-    """
-    Parse script output to extract separate forward and backward latency, TFlops, and Bandwidth information
-    """
+def parse_output(output_lines: List[str]) -> Dict[str, Optional[float]]:
+    """Parse script output to extract forward/backward latency, TFlops, and Bandwidth."""
     results = {}
     current_section = 'fwd'  # 'fwd' or 'bwd'
 
@@ -209,10 +160,8 @@ def parse_output(output_lines):
     return results
 
 
-def run_test_script(script_path, args_dict):
-    """
-    Run the specified test script and return output
-    """
+def run_test_script(script_path: Path, args_dict: Dict[str, Any]) -> Optional[List[str]]:
+    """Run the specified test script and return output."""
     # Build command line arguments based on script type
     script_name = script_path.name.lower()
 
@@ -222,9 +171,9 @@ def run_test_script(script_path, args_dict):
         cmd_args = build_mha_decode_cmd(args_dict)
     elif 'gqa_decode' in script_name:
         cmd_args = build_gqa_decode_cmd(args_dict)
-    elif 'mla_decode' in script_name:
+    elif 'deepseek_mla_decode' in script_name:
         cmd_args = build_mla_decode_cmd(args_dict)
-    elif 'sparse_mla' in script_name:
+    elif 'deepseek_dsa_decode' in script_name:
         cmd_args = build_sparse_mla_cmd(args_dict)
     elif 'deepseek_nsa' in script_name or 'nsa' in script_name:
         cmd_args = build_nsa_cmd(args_dict)
@@ -255,7 +204,7 @@ def run_test_script(script_path, args_dict):
         return None
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description='Batch run test scripts with CSV parameters')
     parser.add_argument('--script', required=True, help='Path to the test script (.py file)')
     parser.add_argument('--input_csv', required=True, help='Path to input CSV file with parameters')
@@ -304,14 +253,14 @@ def main():
 
     # Run each parameter combination
     for i, params in enumerate(input_params):
-        print(f"\nRunning test {i+1}/{len(input_params)} with parameters: {params}")
+        print(f"\nRunning test {i + 1}/{len(input_params)} with parameters: {params}")
 
         # Run test script
         output_lines = run_test_script(script_path, params)
         if output_lines is None:
             print("Skipping this test due to execution error")
             output_fields = [f for f in fieldnames if f not in params]
-            error_result = {**params, **{f: None for f in output_fields}}
+            error_result = {**params, **dict.fromkeys(output_fields, None)}
             results.append(error_result)
             continue
 
@@ -344,7 +293,8 @@ def main():
             col_widths[field] = len(field)
             has_non_empty_value = False  # Flag to track if column has non-empty values
 
-            # Iterate through all results to check if column contains non-empty values and calculate max width
+            # Iterate through all results to check if column contains non-empty values
+            # and calculate max width
             for result in results:
                 value = result.get(field, '')
                 display_value = str(value) if value is not None else ''
@@ -355,7 +305,7 @@ def main():
                     has_non_empty_value = True
 
             # Only add column to visible fields list if it has non-empty values
-            if has_non_empty_value or field in input_params[0].keys():
+            if has_non_empty_value or field in input_params[0]:
                 visible_fields.append(field)
 
         # If visible_fields is empty, display all fields

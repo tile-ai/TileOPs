@@ -1,10 +1,10 @@
 [project]
 name = "tileops"
 version = "0.0.1.dev2"
-description = "TileOPs kernels for efficient inference"
+description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
-dependencies = [    
+dependencies = [
     "torch>=2.1.0",
     "numpy>=1.23.5",
     "einops>=0.6.0",
@@ -17,7 +17,7 @@ dependencies = [
     "tilelang>=0.1.6.post1"
 ]
 requires-python = ">=3.8"
-license = "MIT"
+license = {text = "MIT"}
 
 [project.optional-dependencies]
 dev = [
@@ -26,19 +26,18 @@ dev = [
 "tomli==2.0.1",
 "ruff==0.6.5",
 "codespell==2.3.0",
-"clang-format==15.0.7",
 ]
 
 [build-system]
 requires = ["setuptools>=68", "wheel", "build"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find] 
-where = ["."] 
-exclude = ["3rdparty", "3rdparty.*", "tests", "tests.*", "benchmarks", "benchmarks.*"]
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.yapf]
-based_on_style = "yapf"
+based_on_style = "google"
 column_limit = 100
 indent_width = 4
 spaces_before_comment = 2
@@ -47,10 +46,12 @@ spaces_before_comment = 2
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
 skip = [
     "build",
-    "3rdparty",
     "dist",
     ".venv"
 ]
+
+[tool.ruff]
+line-length = 100
 
 [tool.ruff.lint]
 select = [
@@ -65,21 +66,35 @@ select = [
     # flake8-simplify
     "SIM",
     # isort
-    # "I",
+    "I",
+    # pydocstyle (Google Docstrings)
+    # "D",
+    # pep8-naming (naming conventions)
+    "N",
+    # flake8-annotations (type hints)
+    "ANN",
 ]
 ignore = [
-    # Module level import not at top of file
-    "E402",
-    # star imports
-    "F405", "F403",
     # ambiguous name
     "E741",
-    # line too long
-    "E501",
     # key in dict.keys()
     "SIM118",
     # memory leaks
     "B019",
     # No such file or directory
     "E902",
+    # flake8-annotations: ignore self/cls/args/kwargs
+    "ANN101", "ANN102", "ANN002", "ANN003",
+    # pep8-naming: allow 'import as T'
+    "N812",
+    # pydocstyle: missing docstring in public module
+    "D100", 
+    # pydocstyle: missing docstring in public package
+    "D104",
 ]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["tileops"]

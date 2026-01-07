@@ -1,12 +1,13 @@
 import argparse
+
+from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.layers import MultiHeadAttentionDecodeLayer
 from top.utils import str2dtype
-from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
-def test_mha_decode_layer(B, S_q, S_kv, H, D, dtype):
-    fn = MultiHeadAttentionDecodeLayer(B, H, S_q, S_kv, D, dtype)
-    benchmark = MultiHeadAttentionDecodeBenchmark(B, H, S_q, S_kv, D, dtype)
+def test_mha_decode_layer(batch, seq_len_q, seq_len_kv, heads, dim, dtype):
+    fn = MultiHeadAttentionDecodeLayer(batch, heads, seq_len_q, seq_len_kv, dim, dtype)
+    benchmark = MultiHeadAttentionDecodeBenchmark(batch, heads, seq_len_q, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check_fn(fn, *inputs, grad=False)

@@ -1,11 +1,16 @@
 import torch
 from torch import nn
-from top.functions import MultiHeadAttentionDecodeWithKVCacheFunc, GroupQueryAttentionDecodeWithKVCacheFunc
+
+from top.functions import (
+    GroupQueryAttentionDecodeWithKVCacheFunc,
+    MultiHeadAttentionDecodeWithKVCacheFunc,
+)
 
 
 class MultiHeadAttentionDecodeLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, seqlen_q, seqlen_kv, dim, dtype):
+    def __init__(self, batch_size: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int,
+                 dtype: torch.dtype):
         super().__init__()
 
         self.batch_size = batch_size
@@ -18,13 +23,21 @@ class MultiHeadAttentionDecodeLayer(nn.Module):
         self.fn = MultiHeadAttentionDecodeWithKVCacheFunc(batch_size, heads, seqlen_q, seqlen_kv,
                                                           dim, dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)
 
 
 class GroupQueryAttentionDecodeLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, groups, seqlen_kv, dim, dtype):
+    def __init__(
+        self,
+        batch_size: int,
+        heads: int,
+        groups: int,
+        seqlen_kv: int,
+        dim: int,
+        dtype: torch.dtype,
+    ):
         super().__init__()
 
         self.batch_size = batch_size
@@ -37,6 +50,5 @@ class GroupQueryAttentionDecodeLayer(nn.Module):
         self.fn = GroupQueryAttentionDecodeWithKVCacheFunc(batch_size, heads, groups, seqlen_kv,
                                                            dim, dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                mask: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V, mask)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)

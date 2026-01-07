@@ -1,14 +1,20 @@
 import argparse
-from top.functions import MultiHeadAttentionFunc
-from top.utils import str2dtype
+
 from benchmarks import MultiHeadAttentionBenchmark
+from top.functions import MultiHeadAttentionFunc, mha
+from top.utils import str2dtype
 
 
-def test_mha_fn(B, S, H, D, causal, dtype):
-    fn = MultiHeadAttentionFunc(B, H, S, D, causal, dtype)
-    benchmark = MultiHeadAttentionBenchmark(B, H, S, D, causal, dtype)
+def test_mha_fn(batch, seq_len, heads, dim, causal, dtype):
+    benchmark = MultiHeadAttentionBenchmark(batch, heads, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
+
+    print("=========Testing mha function inference=========")
+    benchmark.check_fn(mha, *inputs)
+
+    print("=========Testing mha function class=========")
+    fn = MultiHeadAttentionFunc(batch, heads, seq_len, dim, causal, dtype)
     benchmark.check_fn(fn, *inputs)
 
 

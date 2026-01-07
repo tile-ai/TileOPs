@@ -1,4 +1,4 @@
-batch,seq_len_kv,heads,kv_head_num,dim,pe_dim,dtype
+batch,seq_len_kv,heads,head_num_kv,dim,dim_pe,dtype
 64,1024,128,1,512,64,float16
 64,2048,128,1,512,64,float16
 64,4096,128,1,512,64,float16

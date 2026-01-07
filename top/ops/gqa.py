@@ -1,12 +1,19 @@
+from typing import Dict, Optional
+
 import torch
-from .op import Op
-from top.kernels.flash_attn import (gqa_fwd_kernel, gqa_fwd_wgmma_pipelined_kernel,
-                                    flashattn_bwd_preprocess_kernel, gqa_bwd_kernel,
-                                    gqa_bwd_wgmma_pipelined_kernel,
-                                    flashattn_bwd_postprocess_kernel)
+
+from top.kernels.flash_attn import (
+    flashattn_bwd_postprocess_kernel,
+    flashattn_bwd_preprocess_kernel,
+    gqa_bwd_kernel,
+    gqa_bwd_wgmma_pipelined_kernel,
+    gqa_fwd_kernel,
+    gqa_fwd_wgmma_pipelined_kernel,
+)
 from top.kernels.kernel import Kernel
 from top.utils import is_hopper
-from typing import Optional, Dict
+
+from .op import Op
 
 __all__ = ['GroupQueryAttentionFwdOp', 'GroupQueryAttentionBwdOp']
 
@@ -15,19 +22,19 @@ class GroupQueryAttentionFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
-                 batch,
-                 heads,
-                 heads_kv,
-                 seq_len,
-                 dim,
-                 is_causal,
-                 dtype=torch.float16,
+                 batch: int,
+                 heads: int,
+                 heads_kv: int,
+                 seq_len: int,
+                 dim: int,
+                 is_causal: bool,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
-        self.seq_len = seq_len  #TODO: support s_q != s_kv
+        self.seq_len = seq_len  # TODO: support s_q != s_kv
         self.dim = dim
         self.is_causal = is_causal
 
@@ -38,30 +45,30 @@ class GroupQueryAttentionFwdOp(Op):
             batch, heads, heads_kv, seq_len, dim, is_causal, self.dtype, tune=tune)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"gqa_fwd_kernel": gqa_fwd_wgmma_pipelined_kernel if is_hopper() else gqa_fwd_kernel}
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.kernel(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.kernel(q, k, v)
 
 
 class GroupQueryAttentionBwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
-                 batch,
-                 heads,
-                 heads_kv,
-                 seq_len,
-                 dim,
-                 is_causal,
-                 dtype=torch.float16,
+                 batch: int,
+                 heads: int,
+                 heads_kv: int,
+                 seq_len: int,
+                 dim: int,
+                 is_causal: bool,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
-        self.seq_len = seq_len  #TODO: support s_q != s_kv
+        self.seq_len = seq_len  # TODO: support s_q != s_kv
         self.dim = dim
         self.is_causal = is_causal
 
@@ -77,7 +84,7 @@ class GroupQueryAttentionBwdOp(Op):
                                                                              dim, self.dtype)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_bwd_preprocess_kernel":
                 flashattn_bwd_preprocess_kernel,
@@ -87,14 +94,20 @@ class GroupQueryAttentionBwdOp(Op):
                 flashattn_bwd_postprocess_kernel if not is_hopper() else None,
         }
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
-                dO: torch.Tensor, lse: torch.Tensor):
-        dO = dO.contiguous()
-        delta = self.prep_kernel(O, dO)
-        dQ = torch.zeros_like(Q, dtype=torch.float32)
-        dK = torch.zeros_like(K, dtype=torch.float32)
-        dV = torch.zeros_like(V, dtype=torch.float32)
-        self.kernel(Q, K, V, dO, lse, delta, dQ, dK, dV)
-        dQ = dQ.to(self.dtype) if is_hopper() else self.post_kernel(dQ)
-        dK, dV = dK.to(self.dtype), dV.to(self.dtype)
-        return dQ, dK, dV
+    def forward(
+            self,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            o: torch.Tensor,
+            do: torch.Tensor,  # noqa: VNE002
+            lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        do = do.contiguous()  # noqa: VNE002
+        delta = self.prep_kernel(o, do)
+        dq = torch.zeros_like(q, dtype=torch.float32)
+        dk = torch.zeros_like(k, dtype=torch.float32)
+        dv = torch.zeros_like(v, dtype=torch.float32)
+        self.kernel(q, k, v, do, lse, delta, dq, dk, dv)
+        dq = dq.to(self.dtype) if is_hopper() else self.post_kernel(dq)
+        dk, dv = dk.to(self.dtype), dv.to(self.dtype)
+        return dq, dk, dv
