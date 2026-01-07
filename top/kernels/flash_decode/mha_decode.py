@@ -202,7 +202,7 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim,  is_causal, dtype
                     T.ceildiv(seqlen_q, block_M), heads * batch, num_split,
                     threads=128) as (bx, by, bz):
 
-                seqlen_kv = real_seqlen_kv
+
                 Q_shared = T.alloc_shared([block_M, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)

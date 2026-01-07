@@ -43,7 +43,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
         ):
             with T.Kernel(
                     batch, heads // valid_block_H, num_split, threads=threads) as (bx, by, bz):
-                seqlen_kv = real_seqlen_kv
+
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
