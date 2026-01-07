@@ -1,10 +1,12 @@
 from benchmarks.benchmark import Benchmark
 from top.ops import NativeSparseAttentionForwardOp
 from top.ops import MeanPoolingForwardOp
+from top.ops import NsaTopkForwardOp
+from top.utils import str2dtype
 
 import torch
 
-from typing import Any
+from typing import Any, Tuple
 from native_sparse_attention.ops.naive import naive_nsa
 from native_sparse_attention.ops.parallel import parallel_nsa_fwd
 from fla.ops.utils import mean_pooling
@@ -198,6 +200,55 @@ class MeanPoolingForwardBenchmark(Benchmark):
             self.baseline_program,
             *inputs,
             backend="Mean Pooling",
+            warmup=warmup,
+            rep=rep,
+            device=device)
+
+
+class NsaTopkForwardBenchmark(Benchmark):
+    op_type = NsaTopkForwardOp
+
+    def __init__(self, M, N, topk, dtype="float32", tune=True):
+        self.M = M
+        self.N = N
+        self.topk = topk
+        # Convert string dtype to torch.dtype
+        self.dtype = str2dtype[dtype] if isinstance(dtype, str) else dtype
+        self.tune = tune
+
+    @property
+    def total_flops(self):
+        flops = 2 * self.M * self.N * self.topk
+        return flops
+
+    @property
+    def total_memory(self):
+        input_memory = self.M * self.N * self.dtype.itemsize
+        output_memory = self.M * self.topk * self.dtype.itemsize + self.M * self.topk * 4 # int32
+        return input_memory + output_memory
+
+    def gen_inputs(self):
+        logits = torch.rand((self.M, self.N), device="cuda", dtype=self.dtype)
+        return logits,
+        
+    def ref_program(self, logits: torch.Tensor)->Tuple[torch.Tensor, torch.Tensor]:
+        topk_gates, topk_indices = logits.topk(self.topk, dim=1)
+        return topk_gates, topk_indices.to(torch.int32)
+    
+    def baseline_program(self, logits: torch.Tensor)->Tuple[torch.Tensor, torch.Tensor]:
+        topk_gates, topk_indices = logits.topk(self.topk, dim=1)
+        return topk_gates, topk_indices.to(torch.int32)
+    
+    def baseline_profile(self,
+                         *inputs: Any,
+                         warmup: int = 100,
+                         rep: int = 100,
+                         device: str = "cuda:0") -> Any:
+        print("===== Profiling Nsa Topk_Fwd backend =====")
+        return super().baseline_profile(
+            self.baseline_program,
+            *inputs,
+            backend="Nsa Topk",
             warmup=warmup,
             rep=rep,
             device=device)

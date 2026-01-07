@@ -26,7 +26,6 @@ class gqa_ctx(torch.autograd.Function):
 
 
 class GroupQueryAttentionFunc(Function):
-
     def __init__(self,
                  batch,
                  heads,
