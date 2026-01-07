@@ -41,7 +41,8 @@ def _nsa_fwd_kernel(batch,
 
         NK = tilelang.cdiv(dim, block_T)
         NV = tilelang.cdiv(dim, block_T)
-        assert NK == 1, "The key dimension can not be larger than 256"
+        assert NK == 1, f"The head dimension (dim={dim}) cannot be larger than block_T ({block_T}). " \
+                        f"This kernel processes Q and K in a single block, so dim must be <= block_T."
 
         S = selected_blocks
         G = groups

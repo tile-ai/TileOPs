@@ -1,20 +1,38 @@
 import argparse
+import pytest
+import torch
+
 from top.functions import NativeSparseAttentionFunc
 from benchmarks.deepseek_nsa.deepseek_nsa import NativeSparseAttentionForwardBenchmark
 
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
 
-def test_nsa_op(
+
+@pytest.mark.parametrize(
+    "batch, heads, seq_len, dim, is_causal, scale, block_size, groups, selected_blocks, tune",
+    [
+        # default configuration
+        (1, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192*2, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192*4, 128, True, 0.1, 32, 16, 16, True),
+        (1, 64, 8192*8, 128, True, 0.1, 32, 16, 16, True),
+        (16, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
+    ],
+)
+def test_nsa_func(
     batch,
     heads,
     seq_len,
     dim,
     is_causal,
-    scale=None,
-    block_size=64,
-    groups=1,
-    selected_blocks=16,
-    # dtype='float16',
-    tune=False,
+    scale,
+    block_size,
+    groups,
+    selected_blocks,
+    tune,
 ):
     func = NativeSparseAttentionFunc(
         batch,
@@ -32,7 +50,6 @@ def test_nsa_op(
 
     inputs = benchmark.gen_inputs()
     benchmark.check(func, *inputs)
-    benchmark.profile(func, *inputs)
 
 
 if __name__ == "__main__":
@@ -50,7 +67,7 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=True, help='enable autotune')
     args = parser.parse_args()
 
-    test_nsa_op(
+    test_nsa_func(
         args.batch,
         args.heads,
         args.seq_len,
