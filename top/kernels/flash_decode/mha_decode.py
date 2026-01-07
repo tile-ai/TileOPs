@@ -2,7 +2,6 @@ import torch
 import torch.nn.functional as F
 import tilelang
 import tilelang.language as T
-from sympy import true
 from top.kernels.kernel import Kernel
 from typing import Optional
 import itertools
@@ -471,3 +470,4 @@ class mha_decode_kernel(Kernel):
                                           self.config["block_N"], self.config["num_stages"],
                                           self.config["threads"], self.config["num_split"], Q, K, V,
                                           glse, Output_partial)
+
