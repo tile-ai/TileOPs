@@ -4,7 +4,6 @@ from top.kernels.kernel import Kernel
 from top.kernels.deepseek_nsa.nsa_fwd import nsa_fwd_kernel
 from top.kernels.deepseek_nsa.mean_pooling_fwd import mean_pooling_fwd_kernel
 from typing import Optional, Dict
-from fla.ops.common.utils import prepare_chunk_indices
 
 __all__ = ["NativeSparseAttentionForwardOp", "MeanPoolingForwardOp"]
 
@@ -46,10 +45,6 @@ class MeanPoolingForwardOp(Op):
     def forward(self, x_unpad: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor):
         return self.kernel(x_unpad, cu_seqlens, chunk_indices)
 
-    # def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor):
-    #     out = self.kernel(x, cu_seqlens, chunk_indices)
-    #     print(self.batch_size)
-    #     return out.view(self.batch_size,-1, self.heads, self.dim)
 
 
 class NativeSparseAttentionForwardOp(Op):
@@ -98,19 +93,3 @@ class NativeSparseAttentionForwardOp(Op):
                 BlockIndices: torch.Tensor):
         return self.kernel(Q, K, V, BlockIndices)
 
-
-def mean_pooling_tilelang(x_unpad, cu_seqlens, chunk_size, block_D=64):
-    total_T, H, D = x_unpad.shape
-    B = cu_seqlens.shape[0] - 1
-    chunk_indices = prepare_chunk_indices(cu_seqlens, chunk_size)
-    total_chunks = chunk_indices.shape[0]
-
-    op = MeanPoolingForwardOp(
-        batch_size=B,
-        total_seqlen=total_T,
-        total_chunks=total_chunks,
-        heads=H,
-        dim=D,
-        chunk_size=chunk_size,
-        tune=True)
-    return op.forward(x_unpad, cu_seqlens, chunk_indices)
