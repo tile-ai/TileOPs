@@ -6,8 +6,6 @@ from top.kernels.deepseek_nsa.mean_pooling_fwd import mean_pooling_fwd_kernel
 from top.kernels.deepseek_nsa.nsa_topk import nsa_topk_fwd_kernel
 from typing import Optional, Dict
 
-import argparse
-
 __all__ = ["NativeSparseAttentionForwardOp", "MeanPoolingForwardOp", "NsaTopkForwardOp"]
 
 
