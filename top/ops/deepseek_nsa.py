@@ -46,7 +46,6 @@ class MeanPoolingForwardOp(Op):
         return self.kernel(x_unpad, cu_seqlens, chunk_indices)
 
 
-
 class NativeSparseAttentionForwardOp(Op):
 
     def __init__(self,
@@ -92,4 +91,3 @@ class NativeSparseAttentionForwardOp(Op):
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                 BlockIndices: torch.Tensor):
         return self.kernel(Q, K, V, BlockIndices)
-
