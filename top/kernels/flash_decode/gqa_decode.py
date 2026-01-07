@@ -79,10 +79,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow)
                     for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.if_then_else(mask_local[j] != 0, acc_s[i, j],
-                                                     -T.infinity(accum_dtype))
-                    for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.if_then_else(k*block_N+j<real_seqlen_kv, acc_s[i, j],
+                        acc_s[i, j] = T.if_then_else((mask_local[j] != 0)&(k*block_N+j<real_seqlen_kv), acc_s[i, j],
                                                      -T.infinity(accum_dtype))
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
@@ -135,10 +132,9 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 logsum = T.alloc_fragment([block_H], accum_dtype)
 
 
-                #=======================================
                 split_length_shared = T.alloc_shared([num_split], "int32")
                 T.copy(split_length,split_length_shared, disable_tma=True)
-                #========================================
+
                 seqlen_kv=real_seqlen_kv
 
                 bid = bx
@@ -172,7 +168,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                         policy=T.GemmWarpPolicy.FullRow)
                     for i, j in T.Parallel(block_H, valid_block_N):
                         acc_s[i, j] = T.if_then_else(
-                            (mask_local[j] != 0) & (j < seqlen_kv // num_split), acc_s[i, j],
+                            (mask_local[j] != 0) & (k * block_N + j < split_length[sid]), acc_s[i, j],
                             -T.infinity(accum_dtype))
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
@@ -291,7 +287,7 @@ def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: i
     for k in range(num_split):
         split_length[k] = real_seqlen_kv // (num_split * block_N) * block_N
     split_length[-1] = real_seqlen_kv - (num_split - 1) * (real_seqlen_kv // (num_split * block_N) * block_N)
-    print(split_length)
+
 
     if (split_length[0] == 0):
         num_split = 1

@@ -66,10 +66,6 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim,  is_causal, dtype
                             acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
                                                          -T.infinity(acc_s.dtype))
                     else:
-                        # modified on 20260104
-                        #=============original============
-                        #T.clear(acc_s)
-                        #=================================
                         for i, j in T.Parallel(block_M, block_N):
                             acc_s[i, j] = T.if_then_else(k * block_N + j < real_seqlen_kv, 0,
                                                          -T.infinity(acc_s.dtype))
@@ -123,10 +119,6 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim,  is_causal, dtype
                     acc_s[i, j] = T.if_then_else(mid * block_M + i >= k * block_N + j, 0,
                                                  -T.infinity(acc_s.dtype))
             else:
-                # modified on 20260104
-                # =============original============
-                # T.clear(acc_s)
-                # =================================
                 for i, j in T.Parallel(block_M, block_N):
                     acc_s[i, j] = T.if_then_else(sid * (seqlen_kv // (num_split * block_N) * block_N) + k * block_N + j < real_seqlen_kv, 0,
                                                  -T.infinity(acc_s.dtype))
@@ -233,23 +225,13 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim,  is_causal, dtype
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
-                # -block_N*(seqlen_kv-real_seqlen_kv)//block_N
+
                 # TODO: Handle causal split case
                 # loop_range = (
                 #     T.min(T.ceildiv(seqlen_kv, block_N), T.ceildiv(
                 #         (mid + 1) * block_M, block_N)) if is_causal else T.ceildiv(
                 #             (seqlen_kv // num_split), block_N))
 
-                #===============================================
-                # L = T.ceildiv(seqlen_kv, num_split)
-                # sid_max = T.ceildiv(real_seqlen_kv-1, L)
-                # kid_max = T.ceildiv(real_seqlen_kv-L *sid_max, block_N)
-                # flag = True
-                # if (sid_max == sid):
-                #     loop_range = (kid_max)
-                # if (sid_max  < sid):
-                #     loop_range = (0)
-                #==============================================
 
                 loop_range = T.ceildiv(split_length_shared[sid], block_N)
                 # move it to input var...
@@ -365,11 +347,6 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim,  is_causal, dtype
         else:
             return mha_decode_no_split
 
-    #==============================
-
-    #==============================
-
-
 
     return _mha_decode_func
 
@@ -393,7 +370,7 @@ def _mha_decode_wrapped_kernel(batch: int, heads: int, seqlen_q: int, seqlen_kv:
     for k in range(num_split):
         split_length[k] = real_seqlen_kv // (num_split * block_N) * block_N
     split_length[-1] = real_seqlen_kv - (num_split - 1) * (real_seqlen_kv // (num_split * block_N) * block_N)
-    print(split_length)
+
     if (split_length[0]== 0):
         num_split = 1
     if num_split == 1:
@@ -435,7 +412,7 @@ class mha_decode_kernel(Kernel):
                  seqlen_kv,
                  dim,
                  is_causal,
-                 dtype:str ="float16",
+                 dtype:str ="bfloat16",
                  config: Optional[dict] = None,
                  tune=False):
         super().__init__()
