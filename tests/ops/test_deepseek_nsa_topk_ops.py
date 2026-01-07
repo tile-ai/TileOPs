@@ -4,6 +4,7 @@ import torch
 from top.ops import NsaTopkForwardOp
 from benchmarks.deepseek_nsa.deepseek_nsa import NsaTopkForwardBenchmark
 
+
 @pytest.fixture(autouse=True)
 def setup() -> None:
     """Set up the test environment."""
@@ -35,10 +36,4 @@ if __name__ == "__main__":
     parser.add_argument('--dtype', type=str, default='float32', help='data type')
     parser.add_argument('--tune', action='store_true', default=True, help='enable autotune')
     args = parser.parse_args()
-    test_nsa_topk_op(
-        args.M,
-        args.N,
-        args.topk,
-        args.dtype,
-        args.tune
-    )
+    test_nsa_topk_op(args.M, args.N, args.topk, args.dtype, args.tune)

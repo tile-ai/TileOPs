@@ -224,21 +224,21 @@ class NsaTopkForwardBenchmark(Benchmark):
     @property
     def total_memory(self):
         input_memory = self.M * self.N * self.dtype.itemsize
-        output_memory = self.M * self.topk * self.dtype.itemsize + self.M * self.topk * 4 # int32
+        output_memory = self.M * self.topk * self.dtype.itemsize + self.M * self.topk * 4  # int32
         return input_memory + output_memory
 
     def gen_inputs(self):
         logits = torch.rand((self.M, self.N), device="cuda", dtype=self.dtype)
         return logits,
-        
-    def ref_program(self, logits: torch.Tensor)->Tuple[torch.Tensor, torch.Tensor]:
+
+    def ref_program(self, logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         topk_gates, topk_indices = logits.topk(self.topk, dim=1)
         return topk_gates, topk_indices.to(torch.int32)
-    
-    def baseline_program(self, logits: torch.Tensor)->Tuple[torch.Tensor, torch.Tensor]:
+
+    def baseline_program(self, logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         topk_gates, topk_indices = logits.topk(self.topk, dim=1)
         return topk_gates, topk_indices.to(torch.int32)
-    
+
     def baseline_profile(self,
                          *inputs: Any,
                          warmup: int = 100,

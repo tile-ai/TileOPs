@@ -12,6 +12,7 @@ __all__ = ["NativeSparseAttentionForwardOp", "MeanPoolingForwardOp", "NsaTopkFor
 
 
 class MeanPoolingForwardOp(Op):
+
     def __init__(self,
                  batch_size: int,
                  total_seqlen: int,
@@ -49,6 +50,7 @@ class MeanPoolingForwardOp(Op):
 
 
 class NsaTopkForwardOp(Op):
+
     def __init__(self,
                  M: int,
                  N: int,
@@ -64,11 +66,7 @@ class NsaTopkForwardOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["nsa_topk_fwd_kernel"](
-            M=self.M,
-            N=self.N,
-            topk=self.topk,
-            dtype=self.dtype,
-            tune=self.tune)
+            M=self.M, N=self.N, topk=self.topk, dtype=self.dtype, tune=self.tune)
 
     @property
     def default_kernel_map(self):
@@ -150,8 +148,10 @@ def main(argv=None):
     torch.testing.assert_close(tl_gates, torch_gates)
     torch.testing.assert_close(tl_indices, torch_indices)
 
-    assert torch.allclose(tl_gates, torch_gates, atol=1e-4, rtol=1e-4), "NsaTopkForwardOp is not accurate"
-    assert torch.allclose(tl_indices, torch_indices, atol=1e-4, rtol=1e-4), "NsaTopkForwardOp is not accurate"
+    assert torch.allclose(
+        tl_gates, torch_gates, atol=1e-4, rtol=1e-4), "NsaTopkForwardOp is not accurate"
+    assert torch.allclose(
+        tl_indices, torch_indices, atol=1e-4, rtol=1e-4), "NsaTopkForwardOp is not accurate"
 
 
 if __name__ == "__main__":
