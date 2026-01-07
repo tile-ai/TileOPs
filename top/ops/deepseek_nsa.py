@@ -121,38 +121,3 @@ class NativeSparseAttentionForwardOp(Op):
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                 BlockIndices: torch.Tensor):
         return self.kernel(Q, K, V, BlockIndices)
-
-
-def ref_program(logits, top_k):
-    top_k_gates, top_k_indices = logits.topk(top_k, dim=1)
-
-    return top_k_gates, top_k_indices.to(torch.int32)
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--M", type=int, default=320, help="num_tokens")
-    parser.add_argument("--N", type=int, default=128, help="num_experts")
-    parser.add_argument("--topk", type=int, default=6, help="topk")
-    args = parser.parse_args(argv)
-    M, N, topk = args.M, args.N, args.topk
-
-    logits = torch.rand((M, N), device="cuda", dtype=torch.float32)
-
-    op = NsaTopkForwardOp(M=M, N=N, topk=topk, dtype="float32", tune=True)
-    tl_gates, tl_indices = op.forward(logits)
-
-    torch_gates, torch_indices = ref_program(logits, topk)
-
-    # test accuracy
-    torch.testing.assert_close(tl_gates, torch_gates)
-    torch.testing.assert_close(tl_indices, torch_indices)
-
-    assert torch.allclose(
-        tl_gates, torch_gates, atol=1e-4, rtol=1e-4), "NsaTopkForwardOp is not accurate"
-    assert torch.allclose(
-        tl_indices, torch_indices, atol=1e-4, rtol=1e-4), "NsaTopkForwardOp is not accurate"
-
-
-if __name__ == "__main__":
-    main()
