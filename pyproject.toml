@@ -37,7 +37,7 @@ where = ["."]
 exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.yapf]
-based_on_style = "yapf"
+based_on_style = "google"
 column_limit = 100
 indent_width = 4
 spaces_before_comment = 2
@@ -67,23 +67,34 @@ select = [
     "SIM",
     # isort
     "I",
+    # pydocstyle (Google Docstrings)
+    # "D",
+    # pep8-naming (naming conventions)
+    "N",
+    # flake8-annotations (type hints)
+    "ANN",
 ]
 ignore = [
-    # Module level import not at top of file
-    "E402",
-    # star imports
-    "F405", "F403",
     # ambiguous name
     "E741",
-    # line too long
-    "E501",
     # key in dict.keys()
     "SIM118",
     # memory leaks
     "B019",
     # No such file or directory
     "E902",
+    # flake8-annotations: ignore self/cls/args/kwargs
+    "ANN101", "ANN102", "ANN002", "ANN003",
+    # pep8-naming: allow 'import as T'
+    "N812",
+    # pydocstyle: missing docstring in public module
+    "D100", 
+    # pydocstyle: missing docstring in public package
+    "D104",
 ]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.isort]
 known-first-party = ["tileops"]
