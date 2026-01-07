@@ -38,7 +38,7 @@ exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.yapf]
 based_on_style = "google"
-column_limit = 80
+column_limit = 100
 indent_width = 4
 spaces_before_comment = 2
 
@@ -51,7 +51,7 @@ skip = [
 ]
 
 [tool.ruff]
-line-length = 80
+line-length = 100
 
 [tool.ruff.lint]
 select = [
