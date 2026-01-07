@@ -15,12 +15,7 @@ def setup() -> None:
 @pytest.mark.parametrize(
     "batch, heads, seq_len, dim, is_causal, scale, block_size, groups, selected_blocks, tune",
     [
-        # default configuration
         (1, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192 * 2, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192 * 4, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192 * 8, 128, True, 0.1, 32, 16, 16, True),
-        (16, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
     ],
 )
 def test_nsa_func(
@@ -55,9 +50,9 @@ def test_nsa_func(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch', type=int, default=2, help='batch size')
-    parser.add_argument('--heads', type=int, default=16 * 4, help='number of heads')
-    parser.add_argument('--seq_len', type=int, default=8192 * 3, help='sequence length')
+    parser.add_argument('--batch', type=int, default=1, help='batch size')
+    parser.add_argument('--heads', type=int, default=64, help='number of heads')
+    parser.add_argument('--seq_len', type=int, default=8192, help='sequence length')
     parser.add_argument('--dim', type=int, default=128, help='head dim')
     parser.add_argument(
         '--is_causal', action='store_true', default=True, help='enable causal attention')

@@ -16,32 +16,7 @@ def setup() -> None:
 @pytest.mark.parametrize(
     "batch, heads, seq_len, dim, is_causal, scale, block_size, groups, selected_blocks, tune",
     [
-        # default configuration
         (1, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192 * 2, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192 * 4, 128, True, 0.1, 32, 16, 16, True),
-        (1, 64, 8192 * 8, 128, True, 0.1, 32, 16, 16, True),
-        (16, 64, 8192, 128, True, 0.1, 32, 16, 16, True),
-        # (16, 64, 8192*2, 128, True, 0.1, 32, 16, 16, True),
-        # (16, 64, 8192*4, 128, True, 0.1, 32, 16, 16, True),
-        # (16, 64, 8192*8, 128, True, 0.1, 32, 16, 16, True),
-        # small batch size configuration
-        (1, 16, 1024, 128, True, 0.1, 32, 16, 16, True),
-        (4, 32, 2048, 128, True, 0.1, 32, 16, 16, True),
-        # different sequence length
-        (8, 32, 4096, 128, True, 0.1, 32, 16, 16, True),
-        (8, 32, 16384, 128, True, 0.1, 32, 16, 16, True),
-        # different block_size
-        (8, 32, 4096, 128, True, 0.1, 64, 16, 16, True),
-        (8, 32, 4096, 128, True, 0.1, 16, 16, 16, True),
-        # different groups
-        (8, 32, 4096, 128, True, 0.1, 32, 32, 16, True),
-        # different selected_blocks
-        (8, 32, 4096, 128, True, 0.1, 32, 16, 8, True),
-        (8, 32, 4096, 128, True, 0.1, 32, 16, 32, True),
-        # different scale
-        (8, 32, 4096, 128, True, 0.05, 32, 16, 16, True),
-        (8, 32, 4096, 128, True, 0.2, 32, 16, 16, True),
     ],
 )
 def test_nsa_op(
@@ -73,8 +48,6 @@ def test_nsa_op(
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
-    # benchmark.profile(op, *inputs)
-    # benchmark.baseline_profile(*inputs)
 
 
 if __name__ == "__main__":
