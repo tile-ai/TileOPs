@@ -6,27 +6,35 @@ labels: bug
 assignees: ''
 ---
 
-## Describe the bug
+## Describe the Bug
+
 <!-- A clear and concise description of what the bug is. -->
 
 ## To Reproduce
+
 <!-- Steps to reproduce the behavior: -->
+
 1. Run script '...'
-2. See error
+1. See error
 
 <!-- Please provide a minimal reproducible script if possible -->
+
 ```python
 import torch
 import tilelang
 import top
+
 # ...
 ```
 
-## Expected behavior
+## Expected Behavior
+
 <!-- A clear and concise description of what you expected to happen. -->
 
 ## Environment
+
 <!-- Please complete the following information -->
+
 - **TileOPs version**:
 - **TileLang version**:
 - **PyTorch version**:
@@ -34,5 +42,6 @@ import top
 - **GPU model**:
 - **CUDA version**:
 
-## Additional context
+## Additional Context
+
 <!-- Add any other context about the problem here. -->
