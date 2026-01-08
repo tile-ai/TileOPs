@@ -11,7 +11,15 @@ from top.ops import MeanPoolingForwardOp
 class MeanPoolingForwardBenchmark(Benchmark):
     op_type = MeanPoolingForwardOp
 
-    def __init__(self, batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune=True):
+    def __init__(self,
+                 batch_size: int,
+                 total_seqlen: int,
+                 total_chunks: int,
+                 heads: int,
+                 dim: int,
+                 chunk_size: int,
+                 tune: bool = True) -> None:
+
         self.batch_size = batch_size
         self.total_seqlen = total_seqlen
         self.total_chunks = total_chunks
@@ -22,15 +30,15 @@ class MeanPoolingForwardBenchmark(Benchmark):
         self.dtype = torch.float16
 
     @property
-    def total_flops(self):
+    def total_flops(self) -> int:
         return self.heads * self.dim * (self.total_seqlen + self.total_chunks)
 
     @property
-    def total_memory(self):
+    def total_memory(self) -> int:  # noqa: U100
         return self.heads * self.dim * (
             self.total_seqlen + self.total_chunks) * self.dtype.itemsize + 16 * self.total_chunks
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x_unpad = torch.randn(
             self.total_seqlen, self.heads, self.dim, device='cuda', dtype=self.dtype)
         # fixed length
@@ -64,11 +72,11 @@ class MeanPoolingForwardBenchmark(Benchmark):
             head_first=False).view(-1, self.heads, self.dim)
 
     def baseline_profile(self,
-                         *inputs: Any,
+                         *inputs: tuple[Any],
                          warmup: int = 100,
                          rep: int = 100,
-                         device: str = "cuda:0") -> Any:
-        print("===== Profiling Mean Pooling_Fwd backend =====")
+                         device: str = "cuda:0") -> torch.Tensor:
+        print("===== Profiling Mean Pooling Forward backend =====")
         return super().baseline_profile(
             self.baseline_program,
             *inputs,

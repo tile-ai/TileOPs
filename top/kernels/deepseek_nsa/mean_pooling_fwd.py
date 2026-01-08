@@ -1,5 +1,5 @@
 import itertools
-from typing import Optional
+from typing import Any, Optional
 
 import tilelang
 import tilelang.language as T
@@ -7,7 +7,7 @@ import torch
 
 from top.kernels.kernel import Kernel
 
-__all__ = ["mean_pooling_fwd_kernel"]
+__all__ = ["MeanPoolingFwdKernel"]
 
 
 def _mean_pooling_kernel(
@@ -17,7 +17,7 @@ def _mean_pooling_kernel(
     heads: int,
     dim: int,
     chunk_size: int,
-):
+) -> None:
     dtype = "float16"
     accum_dtype = "float32"
     int_dtype = "int32"
@@ -38,9 +38,9 @@ def _mean_pooling_kernel(
             "-DCUDA_FP8_ENABLED=0"
         ],
     )
-    def _mean_pooling_func(block_D, threads):
+    def _mean_pooling_func(block_d: int, threads: int) -> None:
 
-        ND = T.ceildiv(dim, block_D)
+        nd = T.ceildiv(dim, block_d)
 
         x_shape = [total_seqlen, heads, dim]
         cu_seqlens_shape = [batch_size + 1]
@@ -49,14 +49,14 @@ def _mean_pooling_kernel(
 
         @T.prim_func
         def _mean_pooling_main(
-                X_unpad: T.Tensor(x_shape, dtype),
+                x_unpad: T.Tensor(x_shape, dtype),
                 cu_seqlens: T.Tensor(cu_seqlens_shape, int_dtype),
                 chunk_indices: T.Tensor(chunk_indices_shape, int_dtype),
-                Output: T.Tensor(output_shape, dtype),
-        ):
-            with T.Kernel(ND, total_chunks, heads, threads=threads) as (i_d, i_t, i_h):
-                accum = T.alloc_fragment([block_D], accum_dtype)
-                d_start = i_d * block_D
+                output: T.Tensor(output_shape, dtype),
+        ) -> None:  # noqa: U100
+            with T.Kernel(nd, total_chunks, heads, threads=threads) as (i_d, i_t, i_h):
+                accum = T.alloc_fragment([block_d], accum_dtype)
+                d_start = i_d * block_d
 
                 seq_id = chunk_indices[i_t, 0]
                 local_chunk_id = chunk_indices[i_t, 1]
@@ -68,21 +68,21 @@ def _mean_pooling_kernel(
                 chunk_end = T.min(chunk_start + chunk_size, seqlen)
                 actual_bt = chunk_end - chunk_start
 
-                for d in T.Parallel(block_D):
+                for d in T.Parallel(block_d):
                     accum[d] = T.cast(0, accum_dtype)
                 for t_rel in T.serial(actual_bt):
                     t_abs = start + chunk_start + t_rel
-                    for d in T.Parallel(block_D):
+                    for d in T.Parallel(block_d):
                         if d_start + d < dim:
-                            accum[d] += T.cast(X_unpad[t_abs, i_h, d_start + d], accum_dtype)
-                for d in T.Parallel(block_D):
+                            accum[d] += T.cast(x_unpad[t_abs, i_h, d_start + d], accum_dtype)
+                for d in T.Parallel(block_d):
                     if d_start + d < dim:
                         if actual_bt > 0:
-                            Output[i_t, i_h,
+                            output[i_t, i_h,
                                    d_start + d] = T.cast(accum[d] / T.cast(actual_bt, accum_dtype),
                                                          dtype)
                         else:
-                            Output[i_t, i_h, d_start + d] = T.cast(0, dtype)
+                            output[i_t, i_h, d_start + d] = T.cast(0, dtype)
 
         return _mean_pooling_main
 
@@ -97,7 +97,7 @@ def _mean_pooling_wrapped_kernel(
     heads: int,
     dim: int,
     chunk_size: int,
-    block_D: int,
+    block_d: int,
     threads: int,
     x_unpad: torch.Tensor,
     cu_seqlens: torch.Tensor,
@@ -110,7 +110,7 @@ def _mean_pooling_wrapped_kernel(
         heads,
         dim,
         chunk_size,
-    )(block_D, threads)(x_unpad, cu_seqlens, chunk_indices)
+    )(block_d, threads)(x_unpad, cu_seqlens, chunk_indices)
 
 
 @_mean_pooling_wrapped_kernel.register_fake
@@ -121,12 +121,12 @@ def _(
         heads: int,
         dim: int,
         chunk_size: int,
-        block_D: int,
+        block_d: int,
         threads: int,
-        *inputs
+        *inputs: tuple[Any],  # noqa: U100
 ) -> torch.Tensor:
     # Output shape is [total_chunks, heads, dim]
-    _ = (batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, block_D, threads)
+    _ = (batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, block_d, threads)
     x = inputs[0]
     return torch.empty(
         (total_chunks, heads, dim),
@@ -135,7 +135,7 @@ def _(
     )
 
 
-class mean_pooling_fwd_kernel(Kernel):
+class MeanPoolingFwdKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,
@@ -146,7 +146,7 @@ class mean_pooling_fwd_kernel(Kernel):
                  dim: int,
                  chunk_size: int,
                  config: Optional[dict] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         super().__init__()
         self.batch_size = batch_size
         self.total_seqlen = total_seqlen
@@ -169,18 +169,19 @@ class mean_pooling_fwd_kernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_D": min(64, self.dim),
+            "block_d": min(64, self.dim),
             "threads": 128,
         }
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_D = [32, 64, 128]
+        block_d = [32, 64, 128]
         threads = [32, 64, 128]
-        return [{"block_D": b, "threads": t} for b, t in itertools.product(block_D, threads)]
+        return [{"block_d": b, "threads": t} for b, t in itertools.product(block_d, threads)]
 
-    def forward(self, x_unpad: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor):
+    def forward(self, x_unpad: torch.Tensor, cu_seqlens: torch.Tensor,
+                chunk_indices: torch.Tensor) -> torch.Tensor:
         return _mean_pooling_wrapped_kernel(self.batch_size, self.total_seqlen, self.total_chunks,
                                             self.heads, self.dim, self.chunk_size,
-                                            self.config["block_D"], self.config["threads"], x_unpad,
+                                            self.config["block_d"], self.config["threads"], x_unpad,
                                             cu_seqlens, chunk_indices)

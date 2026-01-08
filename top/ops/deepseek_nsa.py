@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from top.kernels.deepseek_nsa.mean_pooling_fwd import mean_pooling_fwd_kernel
+from top.kernels.deepseek_nsa.mean_pooling_fwd import MeanPoolingFwdKernel
 from top.kernels.kernel import Kernel
 from top.ops.op import Op
 
@@ -43,7 +43,7 @@ class MeanPoolingForwardOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mean_pooling_fwd_kernel": mean_pooling_fwd_kernel}
+        return {"mean_pooling_fwd_kernel": MeanPoolingFwdKernel}
 
     def forward(
         self,
