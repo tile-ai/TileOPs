@@ -184,7 +184,7 @@ def _(
 
 
 class nsa_fwd_kernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90, 100]
+    supported_archs: list[int] = [90]
 
     def __init__(self,
                  batch,
