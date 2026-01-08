@@ -53,6 +53,7 @@ jobs:
           echo "===== NVCC Version ====="
           nvcc --version || echo "nvcc not found in PATH"
           echo "===== End NVCC Version ====="
+          echo $CUDA_HOME
           CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_release.log
         shell: bash
 
