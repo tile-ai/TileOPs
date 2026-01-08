@@ -1,4 +1,5 @@
 import torch
+
 from top.functions.function import Function
 from top.ops.deepseek_nsa import NativeSparseAttentionForwardOp
 
@@ -46,17 +47,16 @@ class NativeSparseAttentionFunc(Function):
         self.selected_blocks = selected_blocks
         self.tune = tune
 
-        self.fwd_op = NativeSparseAttentionForwardOp(
-            batch,
-            heads,
-            seq_len,
-            dim,
-            is_causal,
-            scale,
-            block_size,
-            groups,
-            selected_blocks,
-            tune=tune)
+        self.fwd_op = NativeSparseAttentionForwardOp(batch,
+                                                     heads,
+                                                     seq_len,
+                                                     dim,
+                                                     is_causal,
+                                                     scale,
+                                                     block_size,
+                                                     groups,
+                                                     selected_blocks,
+                                                     tune=tune)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                 BlockIndices: torch.Tensor) -> torch.Tensor:

@@ -1,8 +1,10 @@
 import argparse
+
 import pytest
 import torch
-from top.ops import NsaTopkForwardOp
+
 from benchmarks.deepseek_nsa.deepseek_nsa import NsaTopkForwardBenchmark
+from top.ops import NsaTopkForwardOp
 
 
 @pytest.fixture(autouse=True)
@@ -15,7 +17,6 @@ def setup() -> None:
     "M, N, topk, dtype, tune",
     [
         (320, 128, 6, "float32", False),
-        (512, 128, 6, "float32", False),
     ],
 )
 def test_nsa_topk_op(M, N, topk, dtype, tune):

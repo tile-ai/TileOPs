@@ -88,7 +88,7 @@ ignore = [
     # pep8-naming: allow 'import as T'
     "N812",
     # pydocstyle: missing docstring in public module
-    "D100", 
+    "D100",
     # pydocstyle: missing docstring in public package
     "D104",
 ]

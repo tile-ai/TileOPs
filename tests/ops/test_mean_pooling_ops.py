@@ -1,7 +1,9 @@
 import argparse
-from top.ops import MeanPoolingForwardOp
-from benchmarks.deepseek_nsa.deepseek_nsa import MeanPoolingForwardBenchmark
+
 import pytest
+
+from benchmarks.deepseek_nsa.deepseek_nsa import MeanPoolingForwardBenchmark
+from top.ops import MeanPoolingForwardOp
 
 
 @pytest.mark.parametrize(
@@ -11,11 +13,21 @@ import pytest
     ],
 )
 def test_mean_pooling_op(batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune):
-    op = MeanPoolingForwardOp(
-        batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune=tune)
+    op = MeanPoolingForwardOp(batch_size,
+                              total_seqlen,
+                              total_chunks,
+                              heads,
+                              dim,
+                              chunk_size,
+                              tune=tune)
 
-    benchmark = MeanPoolingForwardBenchmark(
-        batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune=tune)
+    benchmark = MeanPoolingForwardBenchmark(batch_size,
+                                            total_seqlen,
+                                            total_chunks,
+                                            heads,
+                                            dim,
+                                            chunk_size,
+                                            tune=tune)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)

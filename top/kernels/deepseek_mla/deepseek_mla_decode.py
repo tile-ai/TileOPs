@@ -16,12 +16,11 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
     kv_group_num = heads // kv_head_num
     assert kv_head_num == 1, "kv_head_num must be 1"
 
-    @tilelang.jit(
-        out_idx=[6],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[6],
+                  pass_configs={
+                      tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+                  },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _mla_decode_func(block_H, block_N, num_split, num_stages, threads=128):
 
         VALID_BLOCK_H = min(block_H, kv_group_num)
@@ -66,18 +65,16 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                     T.copy(KV[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :], KV_shared)
                     T.copy(K_pe[bx, k * block_N:(k + 1) * block_N, cur_kv_head, :], K_pe_shared)
                     T.clear(acc_s)
-                    T.gemm(
-                        Q_shared,
-                        KV_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullCol)
-                    T.gemm(
-                        Q_pe_shared,
-                        K_pe_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullCol)
+                    T.gemm(Q_shared,
+                           KV_shared,
+                           acc_s,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullCol)
+                    T.gemm(Q_pe_shared,
+                           K_pe_shared,
+                           acc_s,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullCol)
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -106,9 +103,8 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                 glse: T.Tensor([batch, heads, num_split], dtype),
                 Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
         ):
-            with T.Kernel(
-                    batch, heads // min(block_H, kv_group_num), num_split,
-                    threads=threads) as (bx, by, bz):
+            with T.Kernel(batch, heads // min(block_H, kv_group_num), num_split,
+                          threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 S_shared = T.alloc_shared([block_H, block_N], dtype)
                 Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -144,18 +140,16 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                     T.copy(KV[bx, kv_start:kv_end, cur_kv_head, :], KV_shared)
                     T.copy(K_pe[bx, kv_start:kv_end, cur_kv_head, :], K_pe_shared)
                     T.clear(acc_s)
-                    T.gemm(
-                        Q_shared,
-                        KV_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullCol)
-                    T.gemm(
-                        Q_pe_shared,
-                        K_pe_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullCol)
+                    T.gemm(Q_shared,
+                           KV_shared,
+                           acc_s,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullCol)
+                    T.gemm(Q_pe_shared,
+                           K_pe_shared,
+                           acc_s,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullCol)
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -386,8 +380,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
                 Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            with T.Kernel(
-                    heads // min(block_H, kv_group_num), batch, threads=threads) as (hid, bid):
+            with T.Kernel(heads // min(block_H, kv_group_num), batch,
+                          threads=threads) as (hid, bid):
                 Q_shared_l = T.alloc_shared([block_H, dim // 2], dtype)
                 Q_shared_r = T.alloc_shared([block_H, dim // 2], dtype)
                 Q_tail_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -610,9 +604,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 glse: T.Tensor([batch, heads, num_split], dtype),
                 Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
         ):
-            with T.Kernel(
-                    batch, heads // min(block_H, kv_group_num), num_split,
-                    threads=threads) as (bid, hid, bz):
+            with T.Kernel(batch, heads // min(block_H, kv_group_num), num_split,
+                          threads=threads) as (bid, hid, bz):
                 Q_shared_l = T.alloc_shared([block_H, dim // 2], dtype)
                 Q_shared_r = T.alloc_shared([block_H, dim // 2], dtype)
                 Q_tail_shared = T.alloc_shared([block_H, pe_dim], dtype)

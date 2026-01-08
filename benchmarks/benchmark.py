@@ -148,8 +148,10 @@ class Benchmark(ABC):
 
         with torch.no_grad():
             # Always use cupti backend for better accuracy
-            latency = do_bench(
-                lambda: baseline_op(*inputs), warmup=warmup, rep=rep, backend='cupti')
+            latency = do_bench(lambda: baseline_op(*inputs),
+                               warmup=warmup,
+                               rep=rep,
+                               backend='cupti')
 
         print(f"{backend} Baseline-latency: {latency:.2f} ms")
         if self.total_flops is not None:

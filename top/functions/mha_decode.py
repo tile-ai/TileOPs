@@ -77,8 +77,13 @@ class MultiHeadAttentionDecodeWithKVCacheFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = MultiHeadAttentionDecodeWithKVCacheOp(
-            batch, heads, seqlen_q, seqlen_kv, dim, dtype, tune=tune)
+        self.fwd_op = MultiHeadAttentionDecodeWithKVCacheOp(batch,
+                                                            heads,
+                                                            seqlen_q,
+                                                            seqlen_kv,
+                                                            dim,
+                                                            dtype,
+                                                            tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return MHADecodeCtx.apply(q, k, v, self.fwd_op)
@@ -140,9 +145,8 @@ def multi_head_attention_decode_with_kvcache(q: torch.Tensor,
     D = q.shape[3]  # Embedding dimension
     S_kv = k_cache.shape[1]  # Sequence length of KV cache
 
-    return MultiHeadAttentionDecodeWithKVCacheFunc(
-        B, H, S_q, S_kv, D, q.dtype, tune=tune).forward(
-            q=q, k=k_cache, v=v_cache)
+    return MultiHeadAttentionDecodeWithKVCacheFunc(B, H, S_q, S_kv, D, q.dtype,
+                                                   tune=tune).forward(q=q, k=k_cache, v=v_cache)
 
 
 mha_decode_with_kvcache = multi_head_attention_decode_with_kvcache

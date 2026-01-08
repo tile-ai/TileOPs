@@ -28,8 +28,13 @@ class GemmOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gemm_kernel"](
-            m, n, k, self.dtype, tune=tune, trans_a=trans_a, trans_b=trans_b)
+        self.kernel = self.kernel_map["gemm_kernel"](m,
+                                                     n,
+                                                     k,
+                                                     self.dtype,
+                                                     tune=tune,
+                                                     trans_a=trans_a,
+                                                     trans_b=trans_b)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

@@ -1,10 +1,12 @@
+from typing import Dict, Optional
+
 import torch
-from top.ops.op import Op
-from top.kernels.kernel import Kernel
-from top.kernels.deepseek_nsa.nsa_fwd import nsa_fwd_kernel
+
 from top.kernels.deepseek_nsa.mean_pooling_fwd import mean_pooling_fwd_kernel
+from top.kernels.deepseek_nsa.nsa_fwd import nsa_fwd_kernel
 from top.kernels.deepseek_nsa.nsa_topk import nsa_topk_fwd_kernel
-from typing import Optional, Dict
+from top.kernels.kernel import Kernel
+from top.ops.op import Op
 
 __all__ = ["NativeSparseAttentionForwardOp", "MeanPoolingForwardOp", "NsaTopkForwardOp"]
 
@@ -30,14 +32,13 @@ class MeanPoolingForwardOp(Op):
 
         self.dispatch_kernel(kernel_map)
 
-        self.kernel = self.kernel_map["mean_pooling_fwd_kernel"](
-            batch_size=self.batch_size,
-            total_seqlen=self.total_seqlen,
-            total_chunks=self.total_chunks,
-            heads=self.heads,
-            dim=self.dim,
-            chunk_size=self.chunk_size,
-            tune=self.tune)
+        self.kernel = self.kernel_map["mean_pooling_fwd_kernel"](batch_size=self.batch_size,
+                                                                 total_seqlen=self.total_seqlen,
+                                                                 total_chunks=self.total_chunks,
+                                                                 heads=self.heads,
+                                                                 dim=self.dim,
+                                                                 chunk_size=self.chunk_size,
+                                                                 tune=self.tune)
 
     @property
     def default_kernel_map(self):
@@ -63,8 +64,11 @@ class NsaTopkForwardOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["nsa_topk_fwd_kernel"](
-            M=self.M, N=self.N, topk=self.topk, dtype=self.dtype, tune=self.tune)
+        self.kernel = self.kernel_map["nsa_topk_fwd_kernel"](M=self.M,
+                                                             N=self.N,
+                                                             topk=self.topk,
+                                                             dtype=self.dtype,
+                                                             tune=self.tune)
 
     @property
     def default_kernel_map(self):
@@ -100,17 +104,16 @@ class NativeSparseAttentionForwardOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["nsa_fwd_kernel"](
-            self.batch,
-            self.heads,
-            self.seq_len,
-            self.dim,
-            self.is_causal,
-            self.scale,
-            self.block_size,
-            self.groups,
-            self.selected_blocks,
-            tune=self.tune)
+        self.kernel = self.kernel_map["nsa_fwd_kernel"](self.batch,
+                                                        self.heads,
+                                                        self.seq_len,
+                                                        self.dim,
+                                                        self.is_causal,
+                                                        self.scale,
+                                                        self.block_size,
+                                                        self.groups,
+                                                        self.selected_blocks,
+                                                        tune=self.tune)
 
     @property
     def default_kernel_map(self):

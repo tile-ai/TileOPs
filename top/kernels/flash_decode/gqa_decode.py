@@ -15,12 +15,11 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
     dtype = "float16"
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[5],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[5],
+                  pass_configs={
+                      tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+                  },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_decode_func(block_H, block_N, num_split, num_stages, threads):
 
         shape_q = [batch, heads, dim]
@@ -40,8 +39,8 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 V: T.Tensor(shape_v, dtype),
                 Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            with T.Kernel(
-                    batch, heads // valid_block_H, num_split, threads=threads) as (bx, by, bz):
+            with T.Kernel(batch, heads // valid_block_H, num_split,
+                          threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -68,12 +67,11 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(K[bid, k * block_N:(k + 1) * block_N, cur_kv_head, :], K_shared)
                     T.clear(acc_s)
-                    T.gemm(
-                        Q_shared,
-                        K_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow)
+                    T.gemm(Q_shared,
+                           K_shared,
+                           acc_s,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow)
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -104,8 +102,8 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                 glse: T.Tensor([batch, heads, num_split], dtype),
                 Output_partial: T.Tensor(part_shape, dtype),
         ):
-            with T.Kernel(
-                    batch, heads // valid_block_H, num_split, threads=threads) as (bx, by, bz):
+            with T.Kernel(batch, heads // valid_block_H, num_split,
+                          threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([valid_block_N, dim], dtype)
                 V_shared = T.alloc_shared([valid_block_N, dim], dtype)
@@ -137,12 +135,11 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim):
                           k * valid_block_N:(seqlen_kv // num_split) * sid +
                           (k + 1) * valid_block_N, cur_kv_head, :], K_shared)
                     T.clear(acc_s)
-                    T.gemm(
-                        Q_shared,
-                        K_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow)
+                    T.gemm(Q_shared,
+                           K_shared,
+                           acc_s,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow)
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)

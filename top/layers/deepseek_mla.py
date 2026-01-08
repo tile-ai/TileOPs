@@ -30,8 +30,14 @@ class MultiHeadLatentAttentionDecodeLayer(nn.Module):
         self.pe_dim = pe_dim
         self.dtype = dtype
 
-        self.fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(
-            batch_size, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
+        self.fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(batch_size,
+                                                                heads,
+                                                                kv_head_num,
+                                                                seqlen_kv,
+                                                                dim,
+                                                                pe_dim,
+                                                                dtype,
+                                                                tune=tune)
 
     def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
                 k_pe: torch.Tensor) -> torch.Tensor:
@@ -71,21 +77,20 @@ class DeepSeekSparseAttentionDecodeLayer(nn.Module):
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
 
-        self.fn = DeepSeekSparseAttentionDecodeWithKVCacheFunc(
-            batch,
-            heads,
-            seq_len,
-            seq_len_kv,
-            dim,
-            dim_tail,
-            topk,
-            stride_kv,
-            group_kv,
-            q_start_index_s,
-            sm_scale,
-            is_causal,
-            dtype,
-            tune=tune)
+        self.fn = DeepSeekSparseAttentionDecodeWithKVCacheFunc(batch,
+                                                               heads,
+                                                               seq_len,
+                                                               seq_len_kv,
+                                                               dim,
+                                                               dim_tail,
+                                                               topk,
+                                                               stride_kv,
+                                                               group_kv,
+                                                               q_start_index_s,
+                                                               sm_scale,
+                                                               is_causal,
+                                                               dtype,
+                                                               tune=tune)
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         return self.fn(q, kv, indices)

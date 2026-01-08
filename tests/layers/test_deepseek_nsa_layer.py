@@ -1,8 +1,10 @@
 import argparse
-from top.layers import NativeSparseAttentionLayer
-from benchmarks.deepseek_nsa.deepseek_nsa import NativeSparseAttentionForwardBenchmark
+
 import pytest
 import torch
+
+from benchmarks.deepseek_nsa.deepseek_nsa import NativeSparseAttentionForwardBenchmark
+from top.layers import NativeSparseAttentionLayer
 
 
 @pytest.fixture(autouse=True)
@@ -30,17 +32,16 @@ def test_nsa_layer(
     selected_blocks,
     tune,
 ):
-    layer = NativeSparseAttentionLayer(
-        batch,
-        heads,
-        seq_len,
-        dim,
-        is_causal,
-        scale,
-        block_size,
-        groups,
-        selected_blocks,
-        tune=tune)
+    layer = NativeSparseAttentionLayer(batch,
+                                       heads,
+                                       seq_len,
+                                       dim,
+                                       is_causal,
+                                       scale,
+                                       block_size,
+                                       groups,
+                                       selected_blocks,
+                                       tune=tune)
     benchmark = NativeSparseAttentionForwardBenchmark(batch, heads, seq_len, dim, is_causal, scale,
                                                       block_size, groups, selected_blocks)
 
@@ -54,8 +55,10 @@ if __name__ == "__main__":
     parser.add_argument('--heads', type=int, default=64, help='number of heads')
     parser.add_argument('--seq_len', type=int, default=8192, help='sequence length')
     parser.add_argument('--dim', type=int, default=128, help='head dim')
-    parser.add_argument(
-        '--is_causal', action='store_true', default=True, help='enable causal attention')
+    parser.add_argument('--is_causal',
+                        action='store_true',
+                        default=True,
+                        help='enable causal attention')
     parser.add_argument('--scale', type=float, default=0.1, help='scale')
     parser.add_argument('--block_size', type=int, default=32, help='block size')
     parser.add_argument('--groups', type=int, default=16, help='number of groups')

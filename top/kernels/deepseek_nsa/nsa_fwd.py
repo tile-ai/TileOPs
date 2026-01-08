@@ -1,9 +1,11 @@
+import itertools
+from typing import Optional
+
 import tilelang
 import tilelang.language as T
-from typing import Optional
-from top.kernels.kernel import Kernel
-import itertools
 import torch
+
+from top.kernels.kernel import Kernel
 
 __all__ = ["nsa_fwd_kernel"]
 
@@ -23,19 +25,20 @@ def _nsa_fwd_kernel(batch,
 
     head_kv = heads // groups
 
-    block_indices_dtype = T.int32
-    dtype = T.float16
-    accum_dtype = T.float32
+    block_indices_dtype = "int32"
+    dtype = "float16"
+    accum_dtype = "float32"
 
     block_S = block_size
 
     @tilelang.jit(
         out_idx=[-1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        # pass_configs={
+        #     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        #     tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+        #     tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        # },
+        compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _nsa_fwd_func(block_T, num_stages, threads):
 
@@ -99,12 +102,11 @@ def _nsa_fwd_kernel(batch,
                         else:
                             T.clear(acc_s)
 
-                        T.gemm(
-                            Q_shared,
-                            K_shared,
-                            acc_s,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(Q_shared,
+                               K_shared,
+                               acc_s,
+                               transpose_B=True,
+                               policy=T.GemmWarpPolicy.FullRow)
 
                         # Softmax
                         T.copy(scores_max, scores_max_prev)

@@ -19,12 +19,11 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[3, 4],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[3, 4],
+                  pass_configs={
+                      tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+                  },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_func(block_M, block_N, num_stages, threads):
         shape = (batch, seq_len, heads, dim)
 
@@ -36,8 +35,8 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
                 Output: T.Tensor(shape, dtype),  # type: ignore
                 lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
         ):
-            with T.Kernel(
-                    T.ceildiv(seq_len, block_M), heads, batch, threads=threads) as (bx, by, bz):
+            with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch,
+                          threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_M, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -55,9 +54,8 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                loop_range = (
-                    T.ceildiv(
-                        (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
+                loop_range = (T.ceildiv(
+                    (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(K[bz, k * block_N:(k + 1) * block_N, by, :], K_shared)
@@ -67,12 +65,11 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
                                                          -T.infinity(acc_s.dtype))
                     else:
                         T.clear(acc_s)
-                    T.gemm(
-                        Q_shared,
-                        K_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow)
+                    T.gemm(Q_shared,
+                           K_shared,
+                           acc_s,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow)
                     T.copy(V[bz, k * block_N:(k + 1) * block_N, by, :], V_shared)
                     T.copy(scores_max, scores_max_prev)
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -187,12 +184,11 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[3, 4],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[3, 4],
+                  pass_configs={
+                      tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+                  },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 
         shape = (batch, seq_len, heads, dim)
@@ -276,8 +272,8 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                 Output: T.Tensor(shape, dtype),  # type: ignore
                 lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
         ):
-            with T.Kernel(
-                    T.ceildiv(seq_len, block_M), heads, batch, threads=threads) as (bx, by, bz):
+            with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch,
+                          threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_M, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -297,16 +293,15 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                loop_range = (
-                    T.ceildiv(
-                        (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
+                loop_range = (T.ceildiv(
+                    (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
 
-                for k in T.Pipelined(
-                        loop_range,
-                        num_stages=num_stages,
-                        order=[-1, 0, 3, 1, -1, 2],
-                        stage=[-1, 0, 0, 1, -1, 1],
-                        group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12], [13]]):
+                for k in T.Pipelined(loop_range,
+                                     num_stages=num_stages,
+                                     order=[-1, 0, 3, 1, -1, 2],
+                                     stage=[-1, 0, 0, 1, -1, 1],
+                                     group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12],
+                                            [13]]):
                     MMA0(K, Q_shared, K_shared, acc_s, k, bx, by, bz)
                     Softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale,
                             scores_sum, logsum)
@@ -405,12 +400,11 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
     groups = heads // heads_kv
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[3, 4],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[3, 4],
+                  pass_configs={
+                      tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+                  },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_fwd_func(block_M, block_N, num_stages, threads):
 
         q_shape = (batch, seq_len, heads, dim)
@@ -424,8 +418,8 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
                 Output: T.Tensor(q_shape, dtype),  # type: ignore
                 lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
         ):
-            with T.Kernel(
-                    T.ceildiv(seq_len, block_M), heads, batch, threads=threads) as (bx, by, bz):
+            with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch,
+                          threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_M, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -443,9 +437,8 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                loop_range = (
-                    T.ceildiv(
-                        (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
+                loop_range = (T.ceildiv(
+                    (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(K[bz, k * block_N:(k + 1) * block_N, by // groups, :], K_shared)
@@ -455,12 +448,11 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
                                                          -T.infinity(acc_s.dtype))
                     else:
                         T.clear(acc_s)
-                    T.gemm(
-                        Q_shared,
-                        K_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow)
+                    T.gemm(Q_shared,
+                           K_shared,
+                           acc_s,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow)
                     T.copy(V[bz, k * block_N:(k + 1) * block_N, by // groups, :], V_shared)
                     T.copy(scores_max, scores_max_prev)
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -587,12 +579,11 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
     groups = heads // heads_kv
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[3, 4],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[3, 4],
+                  pass_configs={
+                      tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+                  },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 
         q_shape = (batch, seq_len, heads, dim)
@@ -677,8 +668,8 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
                 Output: T.Tensor(q_shape, dtype),  # type: ignore
                 lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
         ):
-            with T.Kernel(
-                    T.ceildiv(seq_len, block_M), heads, batch, threads=threads) as (bx, by, bz):
+            with T.Kernel(T.ceildiv(seq_len, block_M), heads, batch,
+                          threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_M, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -698,16 +689,15 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                loop_range = (
-                    T.ceildiv(
-                        (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
+                loop_range = (T.ceildiv(
+                    (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
 
-                for k in T.Pipelined(
-                        loop_range,
-                        num_stages=num_stages,
-                        order=[-1, 0, 3, 1, -1, 2],
-                        stage=[-1, 0, 0, 1, -1, 1],
-                        group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12], [13]]):
+                for k in T.Pipelined(loop_range,
+                                     num_stages=num_stages,
+                                     order=[-1, 0, 3, 1, -1, 2],
+                                     stage=[-1, 0, 0, 1, -1, 1],
+                                     group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12],
+                                            [13]]):
                     MMA0(K, Q_shared, K_shared, acc_s, k, bx, by, bz)
                     Softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale,
                             scores_sum, logsum)

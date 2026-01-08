@@ -1,11 +1,11 @@
-import torch
-
-from typing import Optional
-from top.kernels.kernel import Kernel
 import itertools
+from typing import Optional
 
 import tilelang
 import tilelang.language as T
+import torch
+
+from top.kernels.kernel import Kernel
 
 __all__ = ["mean_pooling_fwd_kernel"]
 
@@ -18,8 +18,8 @@ def _mean_pooling_kernel(
     dim: int,
     chunk_size: int,
 ):
-    dtype = T.float16
-    accum_dtype = T.float32
+    dtype = "float16"
+    accum_dtype = "float32"
 
     @tilelang.jit(
         out_idx=[-1],
@@ -41,8 +41,8 @@ def _mean_pooling_kernel(
         @T.prim_func
         def _mean_pooling_main(
                 X_unpad: T.Tensor(x_shape, dtype),
-                cu_seqlens: T.Tensor(cu_seqlens_shape, T.int32),
-                chunk_indices: T.Tensor(chunk_indices_shape, T.int32),
+                cu_seqlens: T.Tensor(cu_seqlens_shape, "int32"),
+                chunk_indices: T.Tensor(chunk_indices_shape, "int32"),
                 Output: T.Tensor(output_shape, dtype),
         ):
             with T.Kernel(ND, total_chunks, heads, threads=threads) as (i_d, i_t, i_h):

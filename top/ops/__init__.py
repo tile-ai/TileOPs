@@ -1,8 +1,6 @@
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
-
-from .deepseek_nsa import NativeSparseAttentionForwardOp, MeanPoolingForwardOp
-from .deepseek_nsa import NsaTopkForwardOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
+from .deepseek_nsa import MeanPoolingForwardOp, NativeSparseAttentionForwardOp, NsaTopkForwardOp
 from .gemm import GemmOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp

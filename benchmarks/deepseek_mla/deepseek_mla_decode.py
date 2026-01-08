@@ -44,20 +44,18 @@ class MultiHeadLatentAttentionDecodeBenchmark(Benchmark):
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
         Q_pe = torch.randn(self.batch, self.heads, self.dim_pe, device='cuda', dtype=self.dtype)
-        K = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.head_num_kv,
-            self.dim,
-            device='cuda',
-            dtype=self.dtype)
-        K_pe = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.head_num_kv,
-            self.dim_pe,
-            device='cuda',
-            dtype=self.dtype)
+        K = torch.randn(self.batch,
+                        self.seq_len_kv,
+                        self.head_num_kv,
+                        self.dim,
+                        device='cuda',
+                        dtype=self.dtype)
+        K_pe = torch.randn(self.batch,
+                           self.seq_len_kv,
+                           self.head_num_kv,
+                           self.dim_pe,
+                           device='cuda',
+                           dtype=self.dtype)
         return Q, Q_pe, K, K_pe
 
     def ref_program(self, q: torch.Tensor, q_pe: torch.Tensor, kv: torch.Tensor,
@@ -75,13 +73,11 @@ class MultiHeadLatentAttentionDecodeBenchmark(Benchmark):
         dim_pe = q_pe.shape[-1]
         num_head_groups = q.shape[1] // kv.shape[2]
         scale = (dim + dim_pe)**0.5
-        Q = rearrange(
-            q, 'b (h g) d -> b g h d',
-            g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
+        Q = rearrange(q, 'b (h g) d -> b g h d',
+                      g=num_head_groups)  # [batch_size, num_head_groups, groups, dim]
 
-        Q_pe = rearrange(
-            q_pe, 'b (h g) d -> b g h d',
-            g=num_head_groups)  # [batch_size, num_head_groups, groups, dim_pe]
+        Q_pe = rearrange(q_pe, 'b (h g) d -> b g h d',
+                         g=num_head_groups)  # [batch_size, num_head_groups, groups, dim_pe]
 
         KV = rearrange(kv, 'b n h d -> b h n d')  # [batch_size, groups, seqlen_kv, dim]
 
@@ -95,8 +91,8 @@ class MultiHeadLatentAttentionDecodeBenchmark(Benchmark):
             query, key,
             'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, groups, seqlen_kv]
 
-        attention = F.softmax(
-            scores / scale, dim=-1)  # [batch_size, num_head_groups, groups, seqlen_kv]
+        attention = F.softmax(scores / scale,
+                              dim=-1)  # [batch_size, num_head_groups, groups, seqlen_kv]
 
         out = einsum(attention, KV,
                      'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, groups, dim]

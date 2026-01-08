@@ -22,8 +22,11 @@ if __name__ == "__main__":
     parser.add_argument('--heads_kv', type=int, default=32, help='num heads for key/value')
     parser.add_argument('--dim', type=int, default=128, help='head dim')
     parser.add_argument('--causal', action='store_true', default=False, help='causal attention')
-    parser.add_argument(
-        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
+    parser.add_argument('--dtype',
+                        type=str,
+                        default='float16',
+                        choices=['float16', 'bfloat16'],
+                        help='data type')
     args = parser.parse_args()
 
     test_gqa_layer(args.batch, args.seq_len, args.heads, args.heads_kv, args.dim, args.causal,

@@ -56,9 +56,8 @@ class Kernel(ABC):
         print(f'Start autotuning {self.__class__.__name__}...')
 
         # Apply autotune decorator to the kernel function
-        autotuned_kernel_fn = autotune(
-            configs=self.autotune_configs, warmup=warmup, rep=rep)(
-                self.kernel)
+        autotuned_kernel_fn = autotune(configs=self.autotune_configs, warmup=warmup,
+                                       rep=rep)(self.kernel)
 
         # Call without config parameters to trigger autotuning, returns the tuned kernel
         tuned_kernel = autotuned_kernel_fn()

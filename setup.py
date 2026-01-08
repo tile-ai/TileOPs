@@ -8,9 +8,8 @@ from setuptools import setup
 # 1. TILEOPS_DEV_INSTALL environment variable is set to "1"
 # 2. The current command is not for building distribution packages (bdist_wheel, sdist)
 # This ensures that custom installation logic is skipped during package building
-USE_CUSTOM_INSTALL = (
-    os.environ.get("TILEOPS_DEV_INSTALL") == "1" and
-    not any(cmd in sys.argv for cmd in ["bdist_wheel", "sdist"]))
+USE_CUSTOM_INSTALL = (os.environ.get("TILEOPS_DEV_INSTALL") == "1" and
+                      not any(cmd in sys.argv for cmd in ["bdist_wheel", "sdist"]))
 
 cmdclass = {}
 

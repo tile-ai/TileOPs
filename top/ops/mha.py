@@ -39,8 +39,13 @@ class MultiHeadAttentionFwdOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["mha_fwd_kernel"](
-            batch, heads, seq_len, dim, is_causal, self.dtype, tune=tune)
+        self.kernel = self.kernel_map["mha_fwd_kernel"](batch,
+                                                        heads,
+                                                        seq_len,
+                                                        dim,
+                                                        is_causal,
+                                                        self.dtype,
+                                                        tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -73,8 +78,13 @@ class MultiHeadAttentionBwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.prep_kernel = self.kernel_map["mha_bwd_preprocess_kernel"](batch, heads, seq_len, dim,
                                                                         self.dtype)
-        self.kernel = self.kernel_map["mha_bwd_kernel"](
-            batch, heads, seq_len, dim, is_causal, self.dtype, tune=tune)
+        self.kernel = self.kernel_map["mha_bwd_kernel"](batch,
+                                                        heads,
+                                                        seq_len,
+                                                        dim,
+                                                        is_causal,
+                                                        self.dtype,
+                                                        tune=tune)
         if not is_hopper():
             self.post_kernel = self.kernel_map["mha_bwd_postprocess_kernel"](batch, heads, seq_len,
                                                                              dim, self.dtype)

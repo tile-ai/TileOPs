@@ -88,10 +88,22 @@ class GroupQueryAttentionFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = GroupQueryAttentionFwdOp(
-            batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
-        self.bwd_op = GroupQueryAttentionBwdOp(
-            batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
+        self.fwd_op = GroupQueryAttentionFwdOp(batch,
+                                               heads,
+                                               heads_kv,
+                                               seq_len,
+                                               dim,
+                                               is_causal,
+                                               dtype,
+                                               tune=tune)
+        self.bwd_op = GroupQueryAttentionBwdOp(batch,
+                                               heads,
+                                               heads_kv,
+                                               seq_len,
+                                               dim,
+                                               is_causal,
+                                               dtype,
+                                               tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """Forward pass for group query attention.

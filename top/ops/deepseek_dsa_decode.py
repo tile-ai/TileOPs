@@ -51,22 +51,21 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
         self.q_start_index_s = q_start_index_s
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["sparse_mla_kernel"](
-            self.batch,
-            self.seq_len,
-            self.seq_len_kv,
-            self.heads,
-            self.dim,
-            self.dim_tail,
-            self.dtype,
-            self.topk,
-            self.stride_kv,
-            self.q_start_index_s,
-            self.group_kv,
-            self.sm_scale,
-            self.is_causal,
-            CP0,
-            tune=tune)
+        self.kernel = self.kernel_map["sparse_mla_kernel"](self.batch,
+                                                           self.seq_len,
+                                                           self.seq_len_kv,
+                                                           self.heads,
+                                                           self.dim,
+                                                           self.dim_tail,
+                                                           self.dtype,
+                                                           self.topk,
+                                                           self.stride_kv,
+                                                           self.q_start_index_s,
+                                                           self.group_kv,
+                                                           self.sm_scale,
+                                                           self.is_causal,
+                                                           CP0,
+                                                           tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

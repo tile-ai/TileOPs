@@ -1,11 +1,10 @@
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheFunc
-
-from .deepseek_nsa import NativeSparseAttentionFunc
 from .deepseek_mla_decode import (
     MultiHeadLatentAttentionDecodeWithKVCacheFunc,
     mla_decode_with_kvcache,
     multi_head_latent_attention_decode_with_kvcache,
 )
+from .deepseek_nsa import NativeSparseAttentionFunc
 from .function import Function
 from .gqa import GroupQueryAttentionFunc, gqa, group_query_attention
 from .gqa_decode import (

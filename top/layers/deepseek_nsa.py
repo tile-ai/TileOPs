@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+
 from top.functions import NativeSparseAttentionFunc
 
 
@@ -29,17 +30,16 @@ class NativeSparseAttentionLayer(nn.Module):
         self.selected_blocks = selected_blocks
         self.tune = tune
 
-        self.fn = NativeSparseAttentionFunc(
-            batch,
-            heads,
-            seq_len,
-            dim,
-            is_causal,
-            scale,
-            block_size,
-            groups,
-            selected_blocks,
-            tune=tune)
+        self.fn = NativeSparseAttentionFunc(batch,
+                                            heads,
+                                            seq_len,
+                                            dim,
+                                            is_causal,
+                                            scale,
+                                            block_size,
+                                            groups,
+                                            selected_blocks,
+                                            tune=tune)
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                 BlockIndices: torch.Tensor) -> torch.Tensor:

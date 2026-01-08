@@ -1,17 +1,14 @@
-from benchmarks.benchmark import Benchmark
-from top.ops import NativeSparseAttentionForwardOp
-from top.ops import MeanPoolingForwardOp
-from top.ops import NsaTopkForwardOp
-from top.utils import str2dtype
+from typing import Any, Tuple
 
 import torch
-
-from typing import Any, Tuple
+from fla.ops.common.utils import prepare_chunk_indices
+from fla.ops.utils import mean_pooling
 from native_sparse_attention.ops.naive import naive_nsa
 from native_sparse_attention.ops.parallel import parallel_nsa_fwd
-from fla.ops.utils import mean_pooling
 
-from fla.ops.common.utils import prepare_chunk_indices
+from benchmarks.benchmark import Benchmark
+from top.ops import MeanPoolingForwardOp, NativeSparseAttentionForwardOp, NsaTopkForwardOp
+from top.utils import str2dtype
 
 
 class NativeSparseAttentionForwardBenchmark(Benchmark):
@@ -61,12 +58,24 @@ class NativeSparseAttentionForwardBenchmark(Benchmark):
         return (self.batch * self.heads * (2 * self.seq_len) * self.dim * self.dtype.itemsize)
 
     def gen_inputs(self):
-        Q = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        K = torch.randn(
-            self.batch, self.seq_len, self.head_kv, self.dim, device='cuda', dtype=self.dtype)
-        V = torch.randn(
-            self.batch, self.seq_len, self.head_kv, self.dim, device='cuda', dtype=self.dtype)
+        Q = torch.randn(self.batch,
+                        self.seq_len,
+                        self.heads,
+                        self.dim,
+                        device='cuda',
+                        dtype=self.dtype)
+        K = torch.randn(self.batch,
+                        self.seq_len,
+                        self.head_kv,
+                        self.dim,
+                        device='cuda',
+                        dtype=self.dtype)
+        V = torch.randn(self.batch,
+                        self.seq_len,
+                        self.head_kv,
+                        self.dim,
+                        device='cuda',
+                        dtype=self.dtype)
 
         self.o_slc = torch.empty((self.batch, self.seq_len, self.heads, self.dim),
                                  dtype=self.dtype,
@@ -132,8 +141,12 @@ class NativeSparseAttentionForwardBenchmark(Benchmark):
                          rep: int = 100,
                          device: str = "cuda:0") -> Any:
         print("===== Profiling FLA NSA_Fwd backend =====")
-        return super().baseline_profile(
-            self.baseline_program, *inputs, backend="FLA", warmup=warmup, rep=rep, device=device)
+        return super().baseline_profile(self.baseline_program,
+                                        *inputs,
+                                        backend="FLA",
+                                        warmup=warmup,
+                                        rep=rep,
+                                        device=device)
 
 
 class MeanPoolingForwardBenchmark(Benchmark):
@@ -160,8 +173,11 @@ class MeanPoolingForwardBenchmark(Benchmark):
             self.total_seqlen + self.total_chunks) * self.dtype.itemsize + 16 * self.total_chunks
 
     def gen_inputs(self):
-        x_unpad = torch.randn(
-            self.total_seqlen, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        x_unpad = torch.randn(self.total_seqlen,
+                              self.heads,
+                              self.dim,
+                              device='cuda',
+                              dtype=self.dtype)
         # fixed length
         b = self.batch_size
         t = self.total_seqlen // b
@@ -177,18 +193,16 @@ class MeanPoolingForwardBenchmark(Benchmark):
         t = self.total_seqlen // b
         x = x_unpad.view(b, t, self.heads, self.dim)
 
-        return mean_pooling(
-            x, chunk_size=self.chunk_size, cu_seqlens=None,
-            head_first=False).view(-1, self.heads, self.dim)
+        return mean_pooling(x, chunk_size=self.chunk_size, cu_seqlens=None,
+                            head_first=False).view(-1, self.heads, self.dim)
 
     def baseline_program(self, x_unpad: torch.Tensor, cu_seqlens: torch.Tensor,
                          chunk_indices: torch.Tensor) -> torch.Tensor:
         b = self.batch_size
         t = self.total_seqlen // b
         x = x_unpad.view(b, t, self.heads, self.dim)
-        return mean_pooling(
-            x, chunk_size=self.chunk_size, cu_seqlens=None,
-            head_first=False).view(-1, self.heads, self.dim)
+        return mean_pooling(x, chunk_size=self.chunk_size, cu_seqlens=None,
+                            head_first=False).view(-1, self.heads, self.dim)
 
     def baseline_profile(self,
                          *inputs: Any,
@@ -196,13 +210,12 @@ class MeanPoolingForwardBenchmark(Benchmark):
                          rep: int = 100,
                          device: str = "cuda:0") -> Any:
         print("===== Profiling Mean Pooling_Fwd backend =====")
-        return super().baseline_profile(
-            self.baseline_program,
-            *inputs,
-            backend="Mean Pooling",
-            warmup=warmup,
-            rep=rep,
-            device=device)
+        return super().baseline_profile(self.baseline_program,
+                                        *inputs,
+                                        backend="Mean Pooling",
+                                        warmup=warmup,
+                                        rep=rep,
+                                        device=device)
 
 
 class NsaTopkForwardBenchmark(Benchmark):
@@ -245,10 +258,9 @@ class NsaTopkForwardBenchmark(Benchmark):
                          rep: int = 100,
                          device: str = "cuda:0") -> Any:
         print("===== Profiling Nsa Topk_Fwd backend =====")
-        return super().baseline_profile(
-            self.baseline_program,
-            *inputs,
-            backend="Nsa Topk",
-            warmup=warmup,
-            rep=rep,
-            device=device)
+        return super().baseline_profile(self.baseline_program,
+                                        *inputs,
+                                        backend="Nsa Topk",
+                                        warmup=warmup,
+                                        rep=rep,
+                                        device=device)
