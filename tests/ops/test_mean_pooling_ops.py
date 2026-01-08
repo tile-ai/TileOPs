@@ -14,21 +14,11 @@ from top.ops import MeanPoolingForwardOp
     ],
 )
 def test_mean_pooling_op(batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune):
-    op = MeanPoolingForwardOp(batch_size,
-                              total_seqlen,
-                              total_chunks,
-                              heads,
-                              dim,
-                              chunk_size,
-                              tune=tune)
+    op = MeanPoolingForwardOp(
+        batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune=tune)
 
-    benchmark = MeanPoolingForwardBenchmark(batch_size,
-                                            total_seqlen,
-                                            total_chunks,
-                                            heads,
-                                            dim,
-                                            chunk_size,
-                                            tune=tune)
+    benchmark = MeanPoolingForwardBenchmark(
+        batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune=tune)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
