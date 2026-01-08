@@ -169,7 +169,7 @@ def _sparse_mla_kernel(batch: int,
                 kv_shared_1_l = T.alloc_shared([i_block, d // 2], dtype)
                 kv_shared_1_r = T.alloc_shared([i_block, d // 2], dtype)
                 k_tail_shared_0 = T.alloc_shared([i_block, d_tail], dtype)
-                k_tail_shared_1 = T.alloc_shared([b_i_blocki, d_tail], dtype)
+                k_tail_shared_1 = T.alloc_shared([i_block, d_tail], dtype)
                 o_shared_l = q_shared_l
                 o_shared_r = q_shared_r
                 is_kv_valid = T.alloc_shared([i_block], "bool", scope="shared")
@@ -416,7 +416,7 @@ def _sparse_mla_wrapped_kernel(
     q: torch.Tensor,
     kv: torch.Tensor,
     indices: torch.Tensor,
-) -> None:
+) -> torch.Tensor:
     """Wrapper for sparse multi-head attention kernel execution."""
     return _sparse_mla_kernel(batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride,
                               q_start_index_s, kv_group, sm_scale, is_causal, cp0,
@@ -524,7 +524,7 @@ class SparseMlaKernel(Kernel):
             'threads': c[1],
         } for c in _configs]
 
-    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> None:
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
         Performs the forward pass of the sparse multi-head attention kernel.
 
@@ -534,7 +534,7 @@ class SparseMlaKernel(Kernel):
             indices (torch.Tensor): Indices tensor.
 
         Returns:
-           None: The function does not return a value.
+           torch.Tensor: Result of the sparse multi-head attention.
         """
         return _sparse_mla_wrapped_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads,
                                           self.dim, self.tail_dim, self.topk, self.kv_stride,
