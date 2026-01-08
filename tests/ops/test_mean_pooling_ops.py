@@ -10,6 +10,7 @@ from top.ops import MeanPoolingForwardOp
     "batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune",
     [
         (1, 8192, 256, 128, 128, 32, False),
+        (1, 8192, 256, 128, 128, 32, True),
     ],
 )
 def test_mean_pooling_op(batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune):
@@ -38,8 +39,8 @@ def test_mean_pooling_op(batch_size, total_seqlen, total_chunks, heads, dim, chu
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=1, help='logical batch size')
-    parser.add_argument('--total_seqlen', type=int, default=1 * 8192 * 1, help='number of heads')
-    parser.add_argument('--total_chunks', type=int, default=1 * 256 * 1, help='sequence length')
+    parser.add_argument('--total_seqlen', type=int, default=8192, help='number of heads')
+    parser.add_argument('--total_chunks', type=int, default=256, help='sequence length')
     parser.add_argument('--heads', type=int, default=128, help='head dim')
     parser.add_argument('--dim', type=int, default=128, help='scale')
     parser.add_argument('--chunk_size', type=int, default=32, help='scale')
