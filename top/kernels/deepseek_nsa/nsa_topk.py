@@ -19,7 +19,8 @@ def _topk_kernel(M, N, topk, dtype="float32"):
             "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__",
             "-U__CUDA_NO_HALF2_OPERATORS__", "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
             "--expt-relaxed-constexpr", "--expt-extended-lambda",
-            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG"
+            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG",
+            "-DENABLE_BF16", "-DCUDA_FP8_ENABLED=0"
         ],)
     def _topk_func(blk_m, threads):
 

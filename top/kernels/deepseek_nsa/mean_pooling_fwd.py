@@ -33,7 +33,8 @@ def _mean_pooling_kernel(
             "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__",
             "-U__CUDA_NO_HALF2_OPERATORS__", "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
             "--expt-relaxed-constexpr", "--expt-extended-lambda",
-            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG"
+            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG",
+            "-DENABLE_BF16", "-DCUDA_FP8_ENABLED=0"
         ],
     )
     def _mean_pooling_func(block_D, threads):
