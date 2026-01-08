@@ -1,14 +1,12 @@
 import argparse
-
-from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
+from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
-def test_mha_decode(batch, heads, seq_len_q, seq_len_kv, dim, dtype, tune=False):
-    op = MultiHeadAttentionDecodeWithKVCacheOp(
-        batch, heads, seq_len_q, seq_len_kv, dim, dtype, tune=tune)
-    benchmark = MultiHeadAttentionDecodeBenchmark(batch, heads, seq_len_q, seq_len_kv, dim, dtype)
+def test_mha_decode(B, H, S_q, S_kv, D, dtype, tune=False):
+    op = MultiHeadAttentionDecodeWithKVCacheOp(B, H, S_q, S_kv, D, dtype, tune=tune)
+    benchmark = MultiHeadAttentionDecodeBenchmark(B, H, S_q, S_kv, D, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
@@ -23,9 +21,13 @@ if __name__ == "__main__":
     parser.add_argument('--heads', type=int, default=32, help='num heads')
     parser.add_argument('--dim', type=int, default=128, help='head dim')
     parser.add_argument(
-        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
+        '--dtype', type=str, default='bfloat16', choices=['float16', 'bfloat16'], help='data type')
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
     test_mha_decode(args.batch, args.heads, args.seq_len_q, args.seq_len_kv, args.dim,
-                    str2dtype[args.dtype], args.tune)
+                    str2dtype["bfloat16"], args.tune)
+    test_mha_decode(args.batch, args.heads, args.seq_len_q, args.seq_len_kv, args.dim,
+                    str2dtype["float16"], args.tune)
+    test_mha_decode(args.batch, args.heads, args.seq_len_q, 5, args.dim,
+                    str2dtype["float16"], args.tune)
