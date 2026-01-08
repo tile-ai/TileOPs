@@ -1,1 +1,1 @@
-from .mean_pooling_fwd import *
+from .mean_pooling_fwd import mean_pooling_fwd_kernel

@@ -29,13 +29,17 @@ class MeanPoolingForwardOp(Op):
 
         self.dispatch_kernel(kernel_map)
 
-        self.kernel = self.kernel_map["mean_pooling_fwd_kernel"](batch_size=self.batch_size,
-                                                                 total_seqlen=self.total_seqlen,
-                                                                 total_chunks=self.total_chunks,
-                                                                 heads=self.heads,
-                                                                 dim=self.dim,
-                                                                 chunk_size=self.chunk_size,
-                                                                 tune=self.tune)
+        kernel_args = {
+            "batch_size": self.batch_size,
+            "total_seqlen": self.total_seqlen,
+            "total_chunks": self.total_chunks,
+            "heads": self.heads,
+            "dim": self.dim,
+            "chunk_size": self.chunk_size,
+            "tune": self.tune,
+        }   
+        self.kernel = self.kernel_map["mean_pooling_fwd_kernel"](**kernel_args)
+    
 
     @property
     def default_kernel_map(self):

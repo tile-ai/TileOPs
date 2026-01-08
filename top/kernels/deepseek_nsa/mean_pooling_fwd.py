@@ -76,9 +76,12 @@ def _mean_pooling_kernel(
                             accum[d] += T.cast(X_unpad[t_abs, i_h, d_start + d], accum_dtype)
                 for d in T.Parallel(block_D):
                     if d_start + d < dim:
-                        Output[i_t, i_h,
-                               d_start + d] = T.cast(accum[d] / T.cast(actual_bt, accum_dtype),
-                                                     dtype)
+                        if actual_bt > 0:
+                            Output[i_t, i_h,
+                                   d_start + d] = T.cast(accum[d] / T.cast(actual_bt, accum_dtype),
+                                                         dtype)
+                        else:
+                            Output[i_t, i_h, d_start + d] = T.cast(0, dtype)
 
         return _mean_pooling_main
 
@@ -121,8 +124,13 @@ def _(
         threads: int,
         *inputs
 ) -> torch.Tensor:
-    fake_o = torch.empty_like(inputs[0])
-    return fake_o
+    # Output shape is [total_chunks, heads, dim]
+    x = inputs[0]
+    return torch.empty(
+        (total_chunks, heads, dim),
+        device=x.device,
+        dtype=x.dtype,
+    )
 
 
 class mean_pooling_fwd_kernel(Kernel):
@@ -167,9 +175,7 @@ class mean_pooling_fwd_kernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         block_D = [32, 64, 128]
         threads = [32, 64, 128]
-        _configs = list(itertools.product(block_D, threads))
-        configs = [{"block_D": c[0], "threads": c[1]} for c in _configs]
-        return configs
+        return [{"block_D": b, "threads": t} for b, t in itertools.product(block_D, threads)]
 
     def forward(self, x_unpad: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor):
         return _mean_pooling_wrapped_kernel(self.batch_size, self.total_seqlen, self.total_chunks,
