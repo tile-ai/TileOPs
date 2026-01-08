@@ -9,7 +9,7 @@ from top.utils import get_sm_version
 
 class Op(ABC):
     """Base class for TileOPs operations.
-
+    
     A Op represents a computational operation with:
     - Hardware-aware kernel dispatch
     - Correctness testing via reference implementation
