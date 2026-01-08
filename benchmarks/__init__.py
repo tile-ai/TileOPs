@@ -3,6 +3,7 @@ from .deepseek_mla import (
     DeepSeekSparseAttentionDecodeBenchmark,
     MultiHeadLatentAttentionDecodeBenchmark,
 )
+from .deepseek_nsa.deepseek_nsa import NativeSparseAttentionForwardBenchmark
 from .flash_attn import (
     GroupQueryAttentionBenchmark,
     GroupQueryAttentionBwdBenchmark,
@@ -16,6 +17,7 @@ from .gemm import GemmBenchmark, MatMulBenchmark
 
 __all__ = [
     'Benchmark',
+    'NativeSparseAttentionForwardBenchmark',
     'MultiHeadAttentionBenchmark',
     'MultiHeadAttentionBwdBenchmark',
     'MultiHeadAttentionFwdBenchmark',

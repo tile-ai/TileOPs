@@ -36,12 +36,24 @@ class MultiHeadAttentionDecodeBenchmark(Benchmark):
                 self.dtype.itemsize)
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(
-            self.batch, self.seq_len_q, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        K = torch.randn(
-            self.batch, self.seq_len_kv, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        V = torch.randn(
-            self.batch, self.seq_len_kv, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        Q = torch.randn(self.batch,
+                        self.seq_len_q,
+                        self.heads,
+                        self.dim,
+                        device='cuda',
+                        dtype=self.dtype)
+        K = torch.randn(self.batch,
+                        self.seq_len_kv,
+                        self.heads,
+                        self.dim,
+                        device='cuda',
+                        dtype=self.dtype)
+        V = torch.randn(self.batch,
+                        self.seq_len_kv,
+                        self.heads,
+                        self.dim,
+                        device='cuda',
+                        dtype=self.dtype)
         return Q, K, V
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:

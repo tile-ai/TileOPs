@@ -30,8 +30,8 @@ def _gemm_kernel(M, N, K, trans_A, trans_B, dtype='float16'):
                 B: T.Tensor(B_shape, dtype),  # type: ignore
                 C: T.Tensor((M, N), dtype),  # type: ignore
         ):
-            with T.Kernel(
-                    T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=threads) as (bx, by):
+            with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M),
+                          threads=threads) as (bx, by):
                 A_shared = T.alloc_shared(A_shared_shape, dtype)
                 B_shared = T.alloc_shared(B_shared_shape, dtype)
                 C_local = T.alloc_fragment((block_M, block_N), accum_dtype)

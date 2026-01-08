@@ -91,11 +91,10 @@ def _sparse_mla_kernel(batch,
                 Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
                 Output: T.Tensor(o_shape, dtype),  # type: ignore
         ):
-            with T.Kernel(
-                (seq_len - kv_stride + 1 if CP0 else seq_len) * REPLICATE_H,
-                    batch,
-                    kv_group,
-                    threads=threads) as (bx, by, bz):
+            with T.Kernel((seq_len - kv_stride + 1 if CP0 else seq_len) * REPLICATE_H,
+                          batch,
+                          kv_group,
+                          threads=threads) as (bx, by, bz):
                 Q_shared_l = T.alloc_shared([H_per_block, D // 2], dtype)
                 Q_shared_r = T.alloc_shared([H_per_block, D // 2], dtype)
                 Q_tail_shared = T.alloc_shared([H_per_block, D_tail], dtype)
@@ -433,20 +432,18 @@ class sparse_mla_kernel(Kernel):
 
     # @property
     def supply_prog(self, params=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.dim + self.tail_dim,
-            device='cuda',
-            dtype=self.dtype)
-        KV = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.kv_group,
-            self.dim + self.tail_dim,
-            device='cuda',
-            dtype=self.dtype)
+        Q = torch.randn(self.batch,
+                        self.seq_len,
+                        self.heads,
+                        self.dim + self.tail_dim,
+                        device='cuda',
+                        dtype=self.dtype)
+        KV = torch.randn(self.batch,
+                         self.seq_len_kv,
+                         self.kv_group,
+                         self.dim + self.tail_dim,
+                         device='cuda',
+                         dtype=self.dtype)
         Indices = torch.full((self.batch, self.seq_len, self.kv_group, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
@@ -455,8 +452,7 @@ class sparse_mla_kernel(Kernel):
             for t in range(self.seq_len):
                 for h in range(self.kv_group):
                     i_i = torch.randperm(
-                        min(
-                            max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
+                        min(max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
                             self.seq_len_kv))[:self.topk]
                     Indices[b, t, h, :len(i_i)] = i_i
 
@@ -468,9 +464,10 @@ class sparse_mla_kernel(Kernel):
         print(f'Start autotuning {self.__class__.__name__}...')
 
         # Apply autotune decorator to the kernel function
-        autotuned_kernel_fn = autotune(
-            configs=self.autotune_configs, warmup=warmup, rep=rep, supply_prog=self.supply_prog)(
-                self.kernel)
+        autotuned_kernel_fn = autotune(configs=self.autotune_configs,
+                                       warmup=warmup,
+                                       rep=rep,
+                                       supply_prog=self.supply_prog)(self.kernel)
 
         # Call without config parameters to trigger autotuning, returns the tuned kernel
         tuned_kernel = autotuned_kernel_fn()

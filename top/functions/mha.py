@@ -72,10 +72,20 @@ class MultiHeadAttentionFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = MultiHeadAttentionFwdOp(
-            batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
-        self.bwd_op = MultiHeadAttentionBwdOp(
-            batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
+        self.fwd_op = MultiHeadAttentionFwdOp(batch,
+                                              heads,
+                                              seq_len,
+                                              dim,
+                                              is_causal,
+                                              dtype,
+                                              tune=tune)
+        self.bwd_op = MultiHeadAttentionBwdOp(batch,
+                                              heads,
+                                              seq_len,
+                                              dim,
+                                              is_causal,
+                                              dtype,
+                                              tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return MHACtx.apply(q, k, v, self.fwd_op, self.bwd_op)

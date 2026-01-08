@@ -31,8 +31,14 @@ class MultiHeadAttentionDecodeWithKVCacheOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["mha_decode_kernel"](
-            batch, heads, seqlen_q, seqlen_kv, dim, False, self.dtype, tune=tune)
+        self.kernel = self.kernel_map["mha_decode_kernel"](batch,
+                                                           heads,
+                                                           seqlen_q,
+                                                           seqlen_kv,
+                                                           dim,
+                                                           False,
+                                                           self.dtype,
+                                                           tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

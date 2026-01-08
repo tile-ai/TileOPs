@@ -115,12 +115,11 @@ def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[7, 8],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[7, 8],
+                  pass_configs={
+                      tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+                  },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_bwd_func(block_M, block_N, num_stages, threads):
 
         shape = (batch, seq_len, heads, dim)
@@ -137,8 +136,8 @@ def _mha_bwd_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
                 dK: T.Tensor(shape, dtype),  # type: ignore
                 dV: T.Tensor(shape, dtype),  # type: ignore
         ):
-            with T.Kernel(
-                    heads, T.ceildiv(seq_len, block_M), batch, threads=threads) as (bx, by, bz):
+            with T.Kernel(heads, T.ceildiv(seq_len, block_M), batch,
+                          threads=threads) as (bx, by, bz):
                 K_shared = T.alloc_shared([block_M, dim], dtype)
                 dsT_shared = T.alloc_shared([block_M, block_N], dtype)
                 # should not store K to local if dim is large
@@ -272,12 +271,11 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[7, 8],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[7, 8],
+                  pass_configs={
+                      tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+                  },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_bwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 
         shape = (batch, seq_len, heads, dim)
@@ -294,8 +292,8 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                 dK: T.Tensor(shape, dtype),  # type: ignore
                 dV: T.Tensor(shape, dtype),  # type: ignore
         ):
-            with T.Kernel(
-                    heads, T.ceildiv(seq_len, block_M), batch, threads=threads) as (bx, by, bz):
+            with T.Kernel(heads, T.ceildiv(seq_len, block_M), batch,
+                          threads=threads) as (bx, by, bz):
                 K_shared = T.alloc_shared([block_M, dim], dtype)
                 dsT_shared = T.alloc_shared([block_M, block_N], dtype)
                 # should not store K to local if dim is large
@@ -337,22 +335,20 @@ def _mha_bwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
                 for k in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
                     T.copy(Q[bz, k * block_N:(k + 1) * block_N, bx, :], q)
                     T.clear(qkT)
-                    T.gemm(
-                        K_shared,
-                        q,
-                        qkT,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        wg_wait=-1)
+                    T.gemm(K_shared,
+                           q,
+                           qkT,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow,
+                           wg_wait=-1)
                     T.copy(dO[bz, k * block_N:(k + 1) * block_N, bx, :], do)
                     T.clear(dsT)
-                    T.gemm(
-                        V_shared,
-                        do,
-                        dsT,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        wg_wait=-1)
+                    T.gemm(V_shared,
+                           do,
+                           dsT,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow,
+                           wg_wait=-1)
 
                     T.copy(lse[bz, bx, k * block_N:(k + 1) * block_N], lse_shared)
                     T.wait_wgmma(1)
@@ -453,11 +449,10 @@ def _gqa_bwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype="floa
     groups = heads // heads_kv
     accum_dtype = "float"
 
-    @tilelang.jit(
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(pass_configs={
+        tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+    },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_bwd_func(block_M, block_N, num_stages, threads):
 
         q_shape = (batch, seq_len, heads, dim)
@@ -475,8 +470,8 @@ def _gqa_bwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype="floa
                 dK: T.Tensor(kv_shape, accum_dtype),  # type: ignore
                 dV: T.Tensor(kv_shape, accum_dtype),  # type: ignore
         ):
-            with T.Kernel(
-                    heads, T.ceildiv(seq_len, block_M), batch, threads=threads) as (bx, by, bz):
+            with T.Kernel(heads, T.ceildiv(seq_len, block_M), batch,
+                          threads=threads) as (bx, by, bz):
                 K_shared = T.alloc_shared([block_M, dim], dtype)
                 dsT_shared = T.alloc_shared([block_M, block_N], dtype)
                 q = T.alloc_shared([block_N, dim], dtype)
@@ -615,11 +610,10 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch,
     groups = heads // heads_kv
     accum_dtype = "float"
 
-    @tilelang.jit(
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(pass_configs={
+        tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+    },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_bwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
 
         q_shape = (batch, seq_len, heads, dim)
@@ -637,8 +631,8 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch,
                 dK: T.Tensor(kv_shape, accum_dtype),  # type: ignore
                 dV: T.Tensor(kv_shape, accum_dtype),  # type: ignore
         ):
-            with T.Kernel(
-                    heads, T.ceildiv(seq_len, block_M), batch, threads=threads) as (bx, by, bz):
+            with T.Kernel(heads, T.ceildiv(seq_len, block_M), batch,
+                          threads=threads) as (bx, by, bz):
                 K_shared = T.alloc_shared([block_M, dim], dtype)
                 dsT_shared = T.alloc_shared([block_M, block_N], dtype)
                 q = T.alloc_shared([block_N, dim], dtype)
@@ -674,13 +668,12 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch,
                 for k in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
                     T.copy(Q[bz, k * block_N:(k + 1) * block_N, bx, :], q)
                     T.clear(qkT)
-                    T.gemm(
-                        K_shared,
-                        q,
-                        qkT,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        wg_wait=-1)
+                    T.gemm(K_shared,
+                           q,
+                           qkT,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow,
+                           wg_wait=-1)
                     T.copy(lse[bz, bx, k * block_N:(k + 1) * block_N], lse_shared)
                     for i, j in T.Parallel(block_M, block_N):
                         qkT[i, j] = T.exp2(qkT[i, j] * scale - lse_shared[j])
@@ -690,13 +683,12 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch,
                                                        qkT[i, j], 0)
                     T.copy(dO[bz, k * block_N:(k + 1) * block_N, bx, :], do)
                     T.clear(dsT)
-                    T.gemm(
-                        V_shared,
-                        do,
-                        dsT,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        wg_wait=-1)
+                    T.gemm(V_shared,
+                           do,
+                           dsT,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow,
+                           wg_wait=-1)
                     T.wait_wgmma(1)
                     T.copy(qkT, qkT_cast)
                     T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow, wg_wait=-1)

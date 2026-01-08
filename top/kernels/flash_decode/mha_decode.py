@@ -15,12 +15,11 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
     dtype = "float16"
     accum_dtype = "float"
 
-    @tilelang.jit(
-        out_idx=[5],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[5],
+                  pass_configs={
+                      tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+                  },
+                  compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_decode_func(block_M, block_N, num_split, num_stages, threads):
 
         shape_q = [batch, seqlen_q, heads, dim]
@@ -34,8 +33,8 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                 V: T.Tensor(shape_kv, dtype),
                 Output: T.Tensor(shape_q, dtype),
         ):
-            with T.Kernel(
-                    T.ceildiv(seqlen_q, block_M), heads, batch, threads=threads) as (bx, by, bz):
+            with T.Kernel(T.ceildiv(seqlen_q, block_M), heads, batch,
+                          threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_M, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -53,9 +52,8 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                loop_range = (
-                    T.ceildiv((bx + 1) *
-                              block_M, block_N) if is_causal else T.ceildiv(seqlen_kv, block_N))
+                loop_range = (T.ceildiv(
+                    (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seqlen_kv, block_N))
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(K[bz, k * block_N:(k + 1) * block_N, by, :], K_shared)
@@ -65,12 +63,11 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                                                          -T.infinity(acc_s.dtype))
                     else:
                         T.clear(acc_s)
-                    T.gemm(
-                        Q_shared,
-                        K_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow)
+                    T.gemm(Q_shared,
+                           K_shared,
+                           acc_s,
+                           transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow)
                     T.copy(V[bz, k * block_N:(k + 1) * block_N, by, :], V_shared)
                     T.copy(scores_max, scores_max_prev)
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -177,9 +174,8 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                 glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype),
                 Output_partial: T.Tensor(part_shape, dtype),
         ):
-            with T.Kernel(
-                    T.ceildiv(seqlen_q, block_M), heads * batch, num_split,
-                    threads=128) as (bx, by, bz):
+            with T.Kernel(T.ceildiv(seqlen_q, block_M), heads * batch, num_split,
+                          threads=128) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_M, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
@@ -200,17 +196,18 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
 
                 # NOTE(wt): tma barrier has some problems with padded dimensions (seq_q here) currently
                 # disable relevant tma copy and use SIMT as fallback for now
-                T.copy(
-                    Q[bid, mid * block_M:(mid + 1) * block_M, hid, :], Q_shared, disable_tma=True)
+                T.copy(Q[bid, mid * block_M:(mid + 1) * block_M, hid, :],
+                       Q_shared,
+                       disable_tma=True)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 # TODO: Handle causal split case
-                loop_range = (
-                    T.min(T.ceildiv(seqlen_kv, block_N), T.ceildiv(
-                        (mid + 1) * block_M, block_N)) if is_causal else T.ceildiv(
-                            (seqlen_kv // num_split), block_N))
+                loop_range = (T.min(T.ceildiv(seqlen_kv, block_N),
+                                    T.ceildiv(
+                                        (mid + 1) * block_M, block_N)) if is_causal else T.ceildiv(
+                                            (seqlen_kv // num_split), block_N))
 
                 for k in T.Pipelined(loop_range, num_stages=2):
                     MMA0(K, Q_shared, K_shared, acc_s, k, mid, hid, bid, sid)
@@ -224,10 +221,9 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 T.copy(logsum, glse[bid, hid, sid, mid * block_M:(mid + 1) * block_M])
                 T.copy(acc_o, O_shared)
-                T.copy(
-                    O_shared,
-                    Output_partial[bid, mid * block_M:(mid + 1) * block_M, hid, sid, :],
-                    disable_tma=True)
+                T.copy(O_shared,
+                       Output_partial[bid, mid * block_M:(mid + 1) * block_M, hid, sid, :],
+                       disable_tma=True)
 
         @T.macro
         def combine(
@@ -271,10 +267,9 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                 for i in T.Parallel(block_M):
                     lse_logsum_local[i] = T.log2(lse_logsum_local[i]) + lse_max_local[i]
                 for k in T.Pipelined(num_split, num_stages=2):
-                    T.copy(
-                        Output_partial[bz, bx * block_M:(bx + 1) * block_M, by, k, :],
-                        po_shared,
-                        disable_tma=True)
+                    T.copy(Output_partial[bz, bx * block_M:(bx + 1) * block_M, by, k, :],
+                           po_shared,
+                           disable_tma=True)
                     T.copy(po_shared, po_local)
                     for i in T.Parallel(block_M):
                         lse_local_split[i] = lse_local[k, i]
@@ -283,8 +278,9 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal):
                     for i, j in T.Parallel(block_M, dim):
                         o_accum_local[i, j] += po_local[i, j] * scale_local[i]
                 T.copy(o_accum_local, o_shared)
-                T.copy(
-                    o_shared, Output[bz, bx * block_M:(bx + 1) * block_M, by, :], disable_tma=True)
+                T.copy(o_shared,
+                       Output[bz, bx * block_M:(bx + 1) * block_M, by, :],
+                       disable_tma=True)
 
         @T.prim_func
         def mha_decode_split(

@@ -31,8 +31,13 @@ class GroupQueryAttentionDecodeWithKVCacheOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_decode_kernel"](
-            batch, heads, groups, seqlen_kv, dim, self.dtype, tune=tune)
+        self.kernel = self.kernel_map["gqa_decode_kernel"](batch,
+                                                           heads,
+                                                           groups,
+                                                           seqlen_kv,
+                                                           dim,
+                                                           self.dtype,
+                                                           tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

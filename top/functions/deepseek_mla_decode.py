@@ -81,8 +81,14 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = MultiHeadLatentAttentionDecodeWithKVCacheOp(
-            batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype, tune=tune)
+        self.fwd_op = MultiHeadLatentAttentionDecodeWithKVCacheOp(batch,
+                                                                  heads,
+                                                                  kv_head_num,
+                                                                  seqlen_kv,
+                                                                  dim,
+                                                                  pe_dim,
+                                                                  dtype,
+                                                                  tune=tune)
 
     def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
                 k_pe: torch.Tensor) -> torch.Tensor:
@@ -160,9 +166,17 @@ def multi_head_latent_attention_decode_with_kvcache(q: torch.Tensor,
     S_kv = k.shape[1]  # Sequence length of KV cache
     H_kv = k.shape[2]  # Number of KV heads
     pe_dim = q_pe.shape[2]  # Position encoding dimension
-    return MultiHeadLatentAttentionDecodeWithKVCacheFunc(
-        B, H, H_kv, S_kv, D, pe_dim, q.dtype, tune=tune).forward(
-            q=q, q_pe=q_pe, k=k, k_pe=k_pe)
+    return MultiHeadLatentAttentionDecodeWithKVCacheFunc(B,
+                                                         H,
+                                                         H_kv,
+                                                         S_kv,
+                                                         D,
+                                                         pe_dim,
+                                                         q.dtype,
+                                                         tune=tune).forward(q=q,
+                                                                            q_pe=q_pe,
+                                                                            k=k,
+                                                                            k_pe=k_pe)
 
 
 mla_decode_with_kvcache = multi_head_latent_attention_decode_with_kvcache

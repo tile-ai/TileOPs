@@ -76,8 +76,13 @@ class GroupQueryAttentionDecodeWithKVCacheFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = GroupQueryAttentionDecodeWithKVCacheOp(
-            batch, heads, groups, seqlen_kv, dim, dtype, tune=tune)
+        self.fwd_op = GroupQueryAttentionDecodeWithKVCacheOp(batch,
+                                                             heads,
+                                                             groups,
+                                                             seqlen_kv,
+                                                             dim,
+                                                             dtype,
+                                                             tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return GQADecodeCtx.apply(q, k, v, self.fwd_op)
@@ -145,9 +150,8 @@ def group_query_attention_decode_with_kvcache(q: torch.Tensor,
     S_kv = k_cache.shape[1]  # Sequence length of KV cache
     G = k_cache.shape[2]  # Number of groups
 
-    return GroupQueryAttentionDecodeWithKVCacheFunc(
-        B, H, G, S_kv, D, q.dtype, tune=tune).forward(
-            q=q, k=k_cache, v=v_cache)
+    return GroupQueryAttentionDecodeWithKVCacheFunc(B, H, G, S_kv, D, q.dtype,
+                                                    tune=tune).forward(q=q, k=k_cache, v=v_cache)
 
 
 gqa_decode_with_kvcache = group_query_attention_decode_with_kvcache

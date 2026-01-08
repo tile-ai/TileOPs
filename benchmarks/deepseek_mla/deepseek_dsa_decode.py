@@ -59,20 +59,18 @@ class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
         return q_memory + kv_memory + indices_memory + output_memory
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.dim + self.dim_tail,
-            device='cuda',
-            dtype=self.dtype)
-        KV = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.group_kv,
-            self.dim + self.dim_tail,
-            device='cuda',
-            dtype=self.dtype)
+        Q = torch.randn(self.batch,
+                        self.seq_len,
+                        self.heads,
+                        self.dim + self.dim_tail,
+                        device='cuda',
+                        dtype=self.dtype)
+        KV = torch.randn(self.batch,
+                         self.seq_len_kv,
+                         self.group_kv,
+                         self.dim + self.dim_tail,
+                         device='cuda',
+                         dtype=self.dtype)
         Indices = torch.full((self.batch, self.seq_len, self.group_kv, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
@@ -81,8 +79,7 @@ class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
             for t in range(self.seq_len):
                 for h in range(self.group_kv):
                     i_i = torch.randperm(
-                        min(
-                            max(1, ((t + int(self.q_start_index_s)) // self.stride_kv)),
+                        min(max(1, ((t + int(self.q_start_index_s)) // self.stride_kv)),
                             self.seq_len_kv))[:self.topk]
                     Indices[b, t, h, :len(i_i)] = i_i
         return Q, KV, Indices
@@ -105,14 +102,15 @@ class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
         b, _, _, dim_v = v.shape
         g_index = g
         h_index = h // g
-        compressed_causal_mask = torch.arange(
-            q_start_index_s, sq + q_start_index_s, dtype=torch.int32,
-            device="cuda").view(-1, 1) >= torch.arange(
-                self.stride_kv - 1,
-                sk * self.stride_kv,
-                self.stride_kv,
-                dtype=torch.int32,
-                device="cuda").view(1, -1)
+        compressed_causal_mask = torch.arange(q_start_index_s,
+                                              sq + q_start_index_s,
+                                              dtype=torch.int32,
+                                              device="cuda").view(-1, 1) >= torch.arange(
+                                                  self.stride_kv - 1,
+                                                  sk * self.stride_kv,
+                                                  self.stride_kv,
+                                                  dtype=torch.int32,
+                                                  device="cuda").view(1, -1)
 
         mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
         mask = mask[..., :-1]

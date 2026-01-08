@@ -32,15 +32,23 @@ class GroupQueryAttentionDecodeBenchmark(Benchmark):
         # Q: batch * 1 * heads * dim
         # K, V: batch * seq_len_kv * heads_kv * dim
         # Output: batch * 1 * heads * dim
-        return 2 * self.batch * self.dim * self.dtype.itemsize * (
-            self.heads + self.groups * self.seq_len_kv)
+        return 2 * self.batch * self.dim * self.dtype.itemsize * (self.heads +
+                                                                  self.groups * self.seq_len_kv)
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        K = torch.randn(
-            self.batch, self.seq_len_kv, self.groups, self.dim, device='cuda', dtype=self.dtype)
-        V = torch.randn(
-            self.batch, self.seq_len_kv, self.groups, self.dim, device='cuda', dtype=self.dtype)
+        K = torch.randn(self.batch,
+                        self.seq_len_kv,
+                        self.groups,
+                        self.dim,
+                        device='cuda',
+                        dtype=self.dtype)
+        V = torch.randn(self.batch,
+                        self.seq_len_kv,
+                        self.groups,
+                        self.dim,
+                        device='cuda',
+                        dtype=self.dtype)
         return Q, K, V
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
