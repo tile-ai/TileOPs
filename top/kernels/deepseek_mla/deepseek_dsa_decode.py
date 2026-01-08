@@ -117,7 +117,7 @@ def _sparse_mla_kernel(batch: int,
 
         assert topk % block_i == 0, (
             'otherwise will load some index=0 thus causing wrong kv to be loaded')
-        b_i = block_i
+        i_block = block_i
         n_i = tilelang.cdiv(topk, block_i)
         assert n_i % 2 == 0, 'n_i should be a multiple of 2'
         d = dim
@@ -164,20 +164,20 @@ def _sparse_mla_kernel(batch: int,
                 q_shared_l = T.alloc_shared([h_per_block, d // 2], dtype)
                 q_shared_r = T.alloc_shared([h_per_block, d // 2], dtype)
                 q_tail_shared = T.alloc_shared([h_per_block, d_tail], dtype)
-                kv_shared_0_l = T.alloc_shared([b_i, d // 2], dtype)
-                kv_shared_0_r = T.alloc_shared([b_i, d // 2], dtype)
-                kv_shared_1_l = T.alloc_shared([b_i, d // 2], dtype)
-                kv_shared_1_r = T.alloc_shared([b_i, d // 2], dtype)
-                k_tail_shared_0 = T.alloc_shared([b_i, d_tail], dtype)
-                k_tail_shared_1 = T.alloc_shared([b_i, d_tail], dtype)
+                kv_shared_0_l = T.alloc_shared([i_block, d // 2], dtype)
+                kv_shared_0_r = T.alloc_shared([i_block, d // 2], dtype)
+                kv_shared_1_l = T.alloc_shared([i_block, d // 2], dtype)
+                kv_shared_1_r = T.alloc_shared([i_block, d // 2], dtype)
+                k_tail_shared_0 = T.alloc_shared([i_block, d_tail], dtype)
+                k_tail_shared_1 = T.alloc_shared([b_i_blocki, d_tail], dtype)
                 o_shared_l = q_shared_l
                 o_shared_r = q_shared_r
-                is_kv_valid = T.alloc_shared([b_i], "bool", scope="shared")
+                is_kv_valid = T.alloc_shared([i_block], "bool", scope="shared")
 
                 acc_o_l = T.alloc_fragment([h_per_block, d // 2], accum_dtype)
                 acc_o_r = T.alloc_fragment([h_per_block, d // 2], accum_dtype)
-                acc_s = T.alloc_fragment([h_per_block, b_i], accum_dtype)
-                s_shared = T.alloc_shared([h_per_block, b_i], dtype)
+                acc_s = T.alloc_fragment([h_per_block, i_block], accum_dtype)
+                s_shared = T.alloc_shared([h_per_block, i_block], dtype)
                 sumexp = T.alloc_fragment([h_per_block], accum_dtype)
                 sum_exp_shared = T.alloc_shared([h_per_block], accum_dtype)
                 sumexp_i = T.alloc_fragment([h_per_block], accum_dtype)
@@ -224,7 +224,7 @@ def _sparse_mla_kernel(batch: int,
                         # Buffer 0
                         T.barrier_wait(bar_k_0_ready[0], (i_i & 1))
 
-                        for h_i, bi_i in T.Parallel(h_per_block, b_i):
+                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
                             acc_s[h_i, bi_i] = T.if_then_else(is_kv_valid[bi_i], 0,
                                                               -T.infinity(acc_s.dtype))
                         T.gemm(q_shared_l, kv_shared_0_l, acc_s, transpose_B=True, wg_wait=-1)
@@ -241,7 +241,7 @@ def _sparse_mla_kernel(batch: int,
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
                         for h_i in T.Parallel(h_per_block):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
-                        for h_i, bi_i in T.Parallel(h_per_block, b_i):
+                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
                             acc_s[h_i,
                                   bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
                         T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
@@ -260,7 +260,7 @@ def _sparse_mla_kernel(batch: int,
                         # Buffer 1
                         T.barrier_wait(bar_k_1_ready[0], (i_i & 1))
 
-                        for h_i, bi_i in T.Parallel(h_per_block, b_i):
+                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
                             acc_s[h_i, bi_i] = T.if_then_else(is_kv_valid[bi_i], 0,
                                                               -T.infinity(acc_s.dtype))
                         T.gemm(q_shared_l, kv_shared_1_l, acc_s, transpose_B=True, wg_wait=-1)
@@ -276,7 +276,7 @@ def _sparse_mla_kernel(batch: int,
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
                         for h_i in T.Parallel(h_per_block):
                             alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
-                        for h_i, bi_i in T.Parallel(h_per_block, b_i):
+                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
                             acc_s[h_i,
                                   bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
                         T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
@@ -339,7 +339,7 @@ def _sparse_mla_kernel(batch: int,
                         T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
                             indices_local[0] = indices[b_i, s_i, g_i,
-                                                       (i_i * 2) * b_i + r * 16 + (tx - 256) // 8]
+                                                       (i_i * 2) * i_block + r * 16 + (tx - 256) // 8]
                             is_kv_valid[r * 16 + (tx - 256) // 8] = indices_local[0] <= max_kv_i
                             if is_kv_valid[r * 16 + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
@@ -366,7 +366,7 @@ def _sparse_mla_kernel(batch: int,
                         # Buffer 1
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
-                            indices_local[0] = indices[b_i, s_i, g_i, (i_i * 2 + 1) * b_i + r * 16 +
+                            indices_local[0] = indices[b_i, s_i, g_i, (i_i * 2 + 1) * i_block + r * 16 +
                                                        (tx - 256) // 8]
                             is_kv_valid[r * 16 + (tx - 256) // 8] = indices_local[0] <= max_kv_i
                             if is_kv_valid[r * 16 + (tx - 256) // 8]:
