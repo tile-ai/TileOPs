@@ -13,7 +13,8 @@ from top.ops import MeanPoolingForwardOp
         (1, 8192, 256, 128, 128, 32, True),
     ],
 )
-def test_mean_pooling_op(batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune):
+def test_mean_pooling_op(batch_size: int, total_seqlen: int, total_chunks: int, heads: int,
+                         dim: int, chunk_size: int, tune: bool) -> None:
     op = MeanPoolingForwardOp(
         batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, tune=tune)
 
