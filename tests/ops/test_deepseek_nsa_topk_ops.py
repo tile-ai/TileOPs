@@ -33,7 +33,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--M', type=int, default=320, help='number of tokens')
     parser.add_argument('--N', type=int, default=128, help='number of experts')
-    parser.add_argument('--topk', type=int, default=8, help='topk')
+    parser.add_argument('--topk', type=int, default=6, help='topk')
     parser.add_argument('--dtype', type=str, default='float32', help='data type')
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()

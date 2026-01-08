@@ -39,9 +39,10 @@ def _topk_kernel(M, N, topk, dtype="float32"):
 
                     T.reduce_max(expand_max_idx, max_idx, dim=1, clear=True)
 
+                    min_val = T.cast(-1e10, dtype)
                     for i, j in T.Parallel(blk_m, N):
-                        logits_frag[i, j] = T.if_then_else(max_val[i] == logits_frag[i, j],
-                                                           -10000.0, logits_frag[i, j])
+                        logits_frag[i, j] = T.if_then_else(j == max_idx[i],
+                                                           min_val, logits_frag[i, j])
 
                     for i in T.Parallel(blk_m):
                         topk_gates[bx * blk_m + i, k] = max_val[i]

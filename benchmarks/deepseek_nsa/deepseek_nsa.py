@@ -248,17 +248,13 @@ class NsaTopkForwardBenchmark(Benchmark):
         topk_gates, topk_indices = logits.topk(self.topk, dim=1)
         return topk_gates, topk_indices.to(torch.int32)
 
-    def baseline_program(self, logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        topk_gates, topk_indices = logits.topk(self.topk, dim=1)
-        return topk_gates, topk_indices.to(torch.int32)
-
     def baseline_profile(self,
                          *inputs: Any,
                          warmup: int = 100,
                          rep: int = 100,
                          device: str = "cuda:0") -> Any:
         print("===== Profiling Nsa Topk_Fwd backend =====")
-        return super().baseline_profile(self.baseline_program,
+        return super().baseline_profile(self.ref_program,
                                         *inputs,
                                         backend="Nsa Topk",
                                         warmup=warmup,
