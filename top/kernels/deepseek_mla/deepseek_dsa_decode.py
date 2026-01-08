@@ -25,7 +25,7 @@ def _sparse_mla_kernel(batch,
                        is_causal=True,
                        CP0=True,
                        dtype="float16"):
-    '''
+    """
     This code implements sparse MLA attention.
 
     Attributes:
@@ -39,23 +39,30 @@ def _sparse_mla_kernel(batch,
         kv_stride (int): The stride used to select key-value pairs for attention.
         q_start_index_s (int): The starting index for the query sequence.
         kv_group (int, optional): The number of key-value groups (default is 1).
-        sm_scale (float, optional): The scaling factor for the softmax operation (default is None).
-        is_causal (bool, optional): Whether the attention is causal (default is True).
-        CP0 (bool, optional): A configuration parameter that indicates whether the current computation unit 
-                            is responsible for the first chunk of data (i.e., whether `cp_rank == 0`). 
+        sm_scale (float, optional): The scaling factor for the softmax operation
+                            (default is None).
+        is_causal (bool, optional): Whether the attention is causal
+                            (default is True).
+        CP0 (bool, optional): A configuration parameter that indicates whether
+                            the current computation unit is responsible for the
+                            first chunk of data (i.e., whether `cp_rank == 0`).
         dtype (str, optional): The data type of the tensors (default is 'float16').
 
     Returns:
         torch.Tensor: The result of the sparse multi-head attention computation.
 
     Note:
-        that the first kv_stride - 1 token's out would be nan. since this isn't used, we assume it doesn't matter. (**still, one might have to handle carefully in backward to avoid 'dout * nan' propagated!**)
-        It might be OK to set these nan to zero, but we assume it might serve as a reminder of taking care of these out in 'delta = out * dout'.
-        The above feature might be replaced with out being undefined if we fix CP0 logic (this logic is currently wrong due to some bug in compiler)
-    
-    
-    
-    '''
+        that the first kv_stride - 1 token's out would be nan. since this isn't used,
+                     we assume it doesn't matter. (**still, one might have to handle
+                     carefully in backward to avoid 'dout * nan' propagated!**)
+        It might be OK to set these nan to zero, but we assume it might serve as a
+                    reminder of taking care of these out in 'delta = out * dout'.
+        The above feature might be replaced with out being undefined if we fix CP0 logic
+                     (this logic is currently wrong due to some bug in compiler)
+
+
+
+    """
     assert dim == tilelang.math.next_power_of_2(
         dim), f"haven't check padding correctness yet, dim={dim}"
     assert tail_dim == tilelang.math.next_power_of_2(
@@ -82,8 +89,7 @@ def _sparse_mla_kernel(batch,
         ],
     )
     def _sparse_mla_fwd_func(block_I, threads):
-
-        '''
+        """
         Performs the forward computation for sparse multi-head attention.
 
         Args:
@@ -91,10 +97,9 @@ def _sparse_mla_kernel(batch,
             threads (int): The number of threads to be used in the computation.
 
         Returns:
-            None: The function does not return a value, but it performs in-place computation 
+            None: The function does not return a value, but it performs in-place computation
                 for the forward pass of the sparse multi-head attention kernel.
-        '''
-
+        """
         q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
         o_shape = (batch, seq_len, ori_heads, dim)
@@ -103,9 +108,13 @@ def _sparse_mla_kernel(batch,
         heads = head_kv
         padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
         if padded_H != heads:
-            assert kv_group == 1, 'here we solve the heads padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)'
+            assert kv_group == 1, 'here we solve the heads padding automatically,'\
+                ' other wise you should handle Q copy and Output copy with your mask'\
+                ' (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H '\
+                'would be handled automatically)'
 
-        assert topk % block_I == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
+        assert topk % block_I == 0, \
+            'otherwise will load some index=0 thus causing wrong kv to be loaded'
         BI = block_I
         NI = tilelang.cdiv(topk, block_I)
         assert NI % 2 == 0, 'NI should be a multiple of 2'
@@ -128,8 +137,7 @@ def _sparse_mla_kernel(batch,
                 Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
                 Output: T.Tensor(o_shape, dtype),  # type: ignore
         ):
-
-            '''
+            """
             Computes the forward pass of sparse multi-head attention.
 
             This function performs the main computation for sparse multi-head attention,
@@ -139,18 +147,18 @@ def _sparse_mla_kernel(batch,
             Args:
                 Q (T.Tensor): Query tensor of shape `q_shape` and specified `dtype`.
                 KV (T.Tensor): Key-value tensor of shape `kv_shape` and specified `dtype`.
-                Indices (T.Tensor): Indices tensor of shape `indices_shape` and specified `indices_dtype`.
-                Output (T.Tensor): Output tensor of shape `o_shape` that stores the result of the computation.
+                Indices (T.Tensor): Indices tensor of shape `indices_shape`
+                            and specified `indices_dtype`.
+                Output (T.Tensor): Output tensor of shape `o_shape` that
+                            stores the result of the computation.
 
             Returns:
                 None: The result is stored in the `Output` tensor passed by reference.
-            '''
-
-            with T.Kernel(
-                (seq_len - kv_stride + 1 if CP0 else seq_len) * REPLICATE_H,
-                    batch,
-                    kv_group,
-                    threads=threads) as (bx, by, bz):
+            """
+            with T.Kernel((seq_len - kv_stride + 1 if CP0 else seq_len) * REPLICATE_H,
+                          batch,
+                          kv_group,
+                          threads=threads) as (bx, by, bz):
                 Q_shared_l = T.alloc_shared([H_per_block, D // 2], dtype)
                 Q_shared_r = T.alloc_shared([H_per_block, D // 2], dtype)
                 Q_tail_shared = T.alloc_shared([H_per_block, D_tail], dtype)
@@ -406,46 +414,44 @@ def _sparse_mla_wrapped_kernel(
     KV: torch.Tensor,
     Indices: torch.Tensor,
 ) -> torch.Tensor:
-    '''
-    Wrapper for sparse multi-head attention kernel execution.
-    '''
+    """Wrapper for sparse multi-head attention kernel execution."""
     return _sparse_mla_kernel(batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride,
                               q_start_index_s, kv_group, sm_scale, is_causal, CP0,
                               dtype)(block_I, threads)(Q, KV, Indices)
 
 
 @_sparse_mla_wrapped_kernel.register_fake
-def _(batch, seq_len, seq_len_kv, heads, dim, tail_dim, dtype, topk, kv_stride, q_start_index_s, kv_group, sm_scale, is_causal, CP0, block_I, threads, *inputs):
-    fake_o = torch.empty([batch, seq_len, heads, dim],
-                         device=inputs[0].device,
-                         dtype=inputs[0].dtype)
-    return fake_o
+def _(batch, seq_len, seq_len_kv, heads, dim, tail_dim, dtype, topk, kv_stride, q_start_index_s,
+      kv_group, sm_scale, is_causal, CP0, block_I, threads, *inputs):
+    return torch.empty([batch, seq_len, heads, dim], device=inputs[0].device, dtype=inputs[0].dtype)
 
 
 class sparse_mla_kernel(Kernel):
-    '''
-        Sparse MLA kernel class for handling multi-head attention operations in ML models.
+    """
+    Sparse MLA kernel class for handling multi-head attention operations in ML models.
 
-        This kernel is designed to perform sparse matrix multiplications for efficient attention mechanisms, 
-        with support for multi-head attention and various configurations.
+    This kernel is designed to perform sparse matrix multiplications
+                                for efficient attention mechanisms,
+    with support for multi-head attention and various configurations.
 
-        Attributes:
-            batch (int): The batch size for the operation.
-            seq_len (int): The sequence length for the query input.
-            seq_len_kv (int): The sequence length for the key and value inputs.
-            heads (int): The number of attention heads.
-            dim (int): The dimension of the attention vectors.
-            tail_dim (int): The tail dimension of the attention vectors.
-            dtype (dtype): The data type of the tensor (e.g., float32).
-            topk (int): The top-k value for sparse attention.
-            kv_stride (int): The stride of the key-value tensor.
-            kv_group (int): The number of key-value groups.
-            sm_scale (Optional[float]): The scaling factor for the softmax operation.
-            is_causal (bool): Whether the attention mechanism is causal.
-            q_start_index_s (int): The starting index of the query tensor.
-            CP0 (bool): A configuration parameter that indicates whether the current computation unit 
-                            is responsible for the first chunk of data (i.e., whether `cp_rank == 0`). 
-    '''
+    Attributes:
+        batch (int): The batch size for the operation.
+        seq_len (int): The sequence length for the query input.
+        seq_len_kv (int): The sequence length for the key and value inputs.
+        heads (int): The number of attention heads.
+        dim (int): The dimension of the attention vectors.
+        tail_dim (int): The tail dimension of the attention vectors.
+        dtype (dtype): The data type of the tensor (e.g., float32).
+        topk (int): The top-k value for sparse attention.
+        kv_stride (int): The stride of the key-value tensor.
+        kv_group (int): The number of key-value groups.
+        sm_scale (Optional[float]): The scaling factor for the softmax operation.
+        is_causal (bool): Whether the attention mechanism is causal.
+        q_start_index_s (int): The starting index of the query tensor.
+        CP0 (bool): A configuration parameter that indicates whether
+                        the current computation unit is responsible for
+                        the first chunk of data (i.e., whether `cp_rank == 0`).
+    """
 
     supported_archs: list[int] = [90]
 
@@ -511,11 +517,10 @@ class sparse_mla_kernel(Kernel):
         threads = [384, 512]
         _configs = list(itertools.product(block_I, threads))
 
-        configs = [{
+        return [{
             'block_I': c[0],
             'threads': c[1],
         } for c in _configs]
-        return configs
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor):
         """
@@ -545,23 +550,21 @@ class sparse_mla_kernel(Kernel):
             params (optional): Unused.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Generated query, key-value, and indices tensors.
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                        Generated query, key-value, and indices tensors.
         """
-        
-        Q = torch.randn(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.dim + self.tail_dim,
-            device='cuda',
-            dtype=self.dtype)
-        KV = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.kv_group,
-            self.dim + self.tail_dim,
-            device='cuda',
-            dtype=self.dtype)
+        Q = torch.randn(self.batch,
+                        self.seq_len,
+                        self.heads,
+                        self.dim + self.tail_dim,
+                        device='cuda',
+                        dtype=self.dtype)
+        KV = torch.randn(self.batch,
+                         self.seq_len_kv,
+                         self.kv_group,
+                         self.dim + self.tail_dim,
+                         device='cuda',
+                         dtype=self.dtype)
         Indices = torch.full((self.batch, self.seq_len, self.kv_group, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
@@ -570,8 +573,7 @@ class sparse_mla_kernel(Kernel):
             for t in range(self.seq_len):
                 for h in range(self.kv_group):
                     i_i = torch.randperm(
-                        min(
-                            max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
+                        min(max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
                             self.seq_len_kv))[:self.topk]
                     Indices[b, t, h, :len(i_i)] = i_i
 
@@ -593,9 +595,10 @@ class sparse_mla_kernel(Kernel):
         print(f'Start autotuning {self.__class__.__name__}...')
 
         # Apply autotune decorator to the kernel function
-        autotuned_kernel_fn = autotune(
-            configs=self.autotune_configs, warmup=warmup, rep=rep, supply_prog=self.supply_prog)(
-                self.kernel)
+        autotuned_kernel_fn = autotune(configs=self.autotune_configs,
+                                       warmup=warmup,
+                                       rep=rep,
+                                       supply_prog=self.supply_prog)(self.kernel)
 
         # Call without config parameters to trigger autotuning, returns the tuned kernel
         tuned_kernel = autotuned_kernel_fn()
