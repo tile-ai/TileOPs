@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 import tilelang
 import tilelang.language as T
 from top.kernels.kernel import Kernel
@@ -37,7 +36,6 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 K: T.Tensor(shape_k, dtype),
                 V: T.Tensor(shape_v, dtype),
                 real_seqlen_kv: T.int32,
-                mask: T.Tensor([batch, seqlen_kv, groups], "uint8"),
                 Output: T.Tensor([batch, heads, dim], dtype),
 
         ):
@@ -50,7 +48,6 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 O_shared = T.alloc_shared([valid_block_H, dim], dtype)
                 acc_s = T.alloc_fragment([block_H, block_N], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_H, block_N], dtype)
-                mask_local = T.alloc_fragment([block_N], "uint8")
                 acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_H], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
@@ -70,7 +67,6 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 loop_range = T.ceildiv(real_seqlen_kv, block_N)
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(K[bid, k * block_N:(k + 1) * block_N, cur_kv_head, :], K_shared)
-                    T.copy(mask[bid, k * block_N:(k + 1) * block_N, cur_kv_head], mask_local)
                     T.clear(acc_s)
                     T.gemm(
                         Q_shared,
@@ -79,7 +75,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow)
                     for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.if_then_else((mask_local[j] != 0)&(k*block_N+j<real_seqlen_kv), acc_s[i, j],
+                        acc_s[i, j] = T.if_then_else((k*block_N+j<real_seqlen_kv), acc_s[i, j],
                                                      -T.infinity(accum_dtype))
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
@@ -110,7 +106,6 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 K: T.Tensor(shape_k, dtype),
                 V: T.Tensor(shape_v, dtype),
                 real_seqlen_kv: T.int32,
-                mask: T.Tensor([batch, seqlen_kv, groups], "uint8"),
                 glse: T.Tensor([batch, heads, num_split], dtype),
                 Output_partial: T.Tensor(part_shape, dtype),
                 split_length: T.Tensor(num_split, "int32"),
@@ -123,7 +118,6 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 O_shared = T.alloc_shared([valid_block_H, dim], dtype)
                 acc_s = T.alloc_fragment([block_H, valid_block_N], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_H, valid_block_N], dtype)
-                mask_local = T.alloc_fragment([valid_block_N], "uint8")
                 acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_H], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
@@ -155,10 +149,6 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                         K[bid, (seqlen_kv // (num_split * block_N) * block_N) * sid +
                           k * valid_block_N:(seqlen_kv // (num_split * block_N) * block_N) * sid +
                           (k + 1) * valid_block_N, cur_kv_head, :], K_shared)
-                    T.copy(
-                        mask[bid, (seqlen_kv // (num_split * block_N) * block_N) * sid +
-                             k * valid_block_N:(seqlen_kv // (num_split * block_N) * block_N) * sid +
-                             (k + 1) * valid_block_N, cur_kv_head], mask_local)
                     T.clear(acc_s)
                     T.gemm(
                         Q_shared,
@@ -168,7 +158,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                         policy=T.GemmWarpPolicy.FullRow)
                     for i, j in T.Parallel(block_H, valid_block_N):
                         acc_s[i, j] = T.if_then_else(
-                            (mask_local[j] != 0) & (k * block_N + j < split_length[sid]), acc_s[i, j],
+                            (k * block_N + j < split_length[sid]), acc_s[i, j],
                             -T.infinity(accum_dtype))
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
@@ -238,14 +228,13 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 K: T.Tensor(shape_k, dtype),
                 V: T.Tensor(shape_v, dtype),
                 real_seqlen_kv: T.int32,
-                mask: T.Tensor([batch, seqlen_kv, groups], "uint8"),
                 glse: T.Tensor([batch, heads, num_split], dtype),
                 Output_partial: T.Tensor(part_shape, dtype),
                 split_length: T.Tensor(num_split, "int32"),
                 Output: T.Tensor(shape_o, dtype),
 
         ):
-            _gqa_decode_split(Q, K, V,real_seqlen_kv, mask, glse, Output_partial,split_length)
+            _gqa_decode_split(Q, K, V,real_seqlen_kv,  glse, Output_partial,split_length)
             combine(glse, Output_partial, Output)
 
         @T.prim_func
@@ -254,10 +243,9 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 K: T.Tensor(shape_k, dtype),
                 V: T.Tensor(shape_v, dtype),
                 real_seqlen_kv: T.int32,
-                mask: T.Tensor([batch, seqlen_kv, groups], "uint8"),
                 Output: T.Tensor(shape_o, dtype),
         ):
-            _gqa_decode_no_split(Q, K, V, real_seqlen_kv, mask, Output)
+            _gqa_decode_no_split(Q, K, V, real_seqlen_kv, Output)
 
         if num_split > 1:
             return gqa_decode_split
@@ -268,21 +256,14 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
 
 
 @torch.library.custom_op("top::gqa_decode_wrapped_kernel", mutates_args=())
-def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, dtype:str,
+def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: int, real_seqlen_kv:int, dim: int, dtype:str,
                                block_H: int, block_N: int, num_stages: int, threads: int,
                                num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                               mask: torch.Tensor, glse: torch.Tensor,
+                                glse: torch.Tensor,
                                Output_partial: torch.Tensor) -> torch.Tensor:
-    real_seqlen_kv = K.shape[1]
-    if real_seqlen_kv != seqlen_kv:
-        # padding_shape = (batch, seqlen_kv - real_seqlen_kv, heads, dim)
-        # padding = torch.zeros(padding_shape, dtype=Q.dtype, device=Q.device)
-        # K = torch.cat((K, padding), dim=1)
-        # V = torch.cat((V, padding), dim=1)
-        K = F.pad(K, pad=(0, 0, 0, 0, 0, seqlen_kv - real_seqlen_kv), mode='constant', value=0)
-        V = F.pad(V, pad=(0, 0, 0, 0, 0, seqlen_kv - real_seqlen_kv), mode='constant', value=0)
-        mask = F.pad(mask, pad=(0, 0, 0, seqlen_kv - real_seqlen_kv), mode='constant', value=0)
 
+    assert K.shape[1] == V.shape[1] == seqlen_kv , "error: dimension mismatch!"
+    assert real_seqlen_kv <= seqlen_kv , "error: seqlen_kv mismatch!"
     split_length = torch.zeros(num_split, dtype=torch.int32, device=Q.device)
     for k in range(num_split):
         split_length[k] = real_seqlen_kv // (num_split * block_N) * block_N
@@ -294,11 +275,11 @@ def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: i
     if (num_split == 1):
         return _gqa_decode_kernel(batch, heads, groups, seqlen_kv,
                                   dim, dtype)(block_H, block_N, num_split, num_stages,
-                                       threads)(Q, K, V, real_seqlen_kv, mask)
+                                       threads)(Q, K, V, real_seqlen_kv)
 
     return _gqa_decode_kernel(batch, heads, groups, seqlen_kv,
                               dim, dtype)(block_H, block_N, num_split, num_stages,
-                                   threads)(Q, K, V, real_seqlen_kv, mask, glse, Output_partial,split_length)
+                                   threads)(Q, K, V, real_seqlen_kv, glse, Output_partial,split_length)
 
 
 @_gqa_decode_wrapped_kernel.register_fake
@@ -365,15 +346,15 @@ class gqa_decode_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor):
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int):
         glse = torch.empty((self.batch, self.heads, self.config["num_split"]),
                            dtype=self.dtype,
                            device=Q.device)
         Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
                                      dtype=self.dtype,
                                      device=Q.device)
-        return _gqa_decode_wrapped_kernel(self.batch, self.heads, self.groups, self.seqlen_kv,
+        return _gqa_decode_wrapped_kernel(self.batch, self.heads, self.groups, self.seqlen_kv, real_seqlen_kv,
                                           self.dim, self.dtype_str,self.config["block_H"], self.config["block_N"],
                                           self.config["num_stages"], self.config["threads"],
-                                          self.config["num_split"], Q, K, V, mask, glse,
+                                          self.config["num_split"], Q, K, V, glse,
                                           Output_partial)

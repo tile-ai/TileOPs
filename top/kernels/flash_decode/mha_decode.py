@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 import tilelang
 import tilelang.language as T
 from top.kernels.kernel import Kernel
@@ -351,20 +350,14 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim,  is_causal, dtype
 
 
 @torch.library.custom_op("top::mha_decode_wrapped_kernel", mutates_args=())
-def _mha_decode_wrapped_kernel(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int,
+def _mha_decode_wrapped_kernel(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, real_seqlen_kv:int,dim: int,
                                is_causal: bool, dtype:str, block_M: int, block_N: int, num_stages: int,
                                threads: int, num_split: int, Q: torch.Tensor, K: torch.Tensor,
                                V: torch.Tensor, glse: torch.Tensor,
                                Output_partial: torch.Tensor) -> torch.Tensor:
-    real_seqlen_kv = K.shape[1]
-    if real_seqlen_kv != seqlen_kv:
-        # padding_shape = (batch, seqlen_kv - real_seqlen_kv, heads, dim)
-        # padding = torch.zeros(padding_shape, dtype=Q.dtype, device=Q.device)
-        # K = torch.cat((K, padding), dim=1)
-        # V = torch.cat((V, padding), dim=1)
-        K = F.pad(K, pad=(0, 0, 0, 0, 0, seqlen_kv - real_seqlen_kv), mode='constant', value=0)
-        V = F.pad(V, pad=(0, 0, 0, 0, 0, seqlen_kv - real_seqlen_kv), mode='constant', value=0)
 
+    assert K.shape[1] == V.shape[1] == seqlen_kv , "error: dimension mismatch!"
+    assert real_seqlen_kv <= seqlen_kv , "error: seqlen_kv mismatch!"
     split_length = torch.zeros(num_split, dtype=torch.int32, device=Q.device)
     for k in range(num_split):
         split_length[k] = real_seqlen_kv // (num_split * block_N) * block_N
@@ -456,7 +449,7 @@ class mha_decode_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int):
         #real_seqlen_kv = K.shape[1]
         glse = torch.empty((self.batch, self.heads, self.config["num_split"], self.seqlen_q),
                            dtype=self.dtype,
@@ -465,9 +458,8 @@ class mha_decode_kernel(Kernel):
             (self.batch, self.seqlen_q, self.heads, self.config["num_split"], self.dim),
             dtype=self.dtype,
             device=Q.device)
-        return _mha_decode_wrapped_kernel(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
+        return _mha_decode_wrapped_kernel(self.batch, self.heads, self.seqlen_q, self.seqlen_kv, real_seqlen_kv,
                                           self.dim,  self.is_causal,self.dtype_str, self.config["block_M"],
                                           self.config["block_N"], self.config["num_stages"],
                                           self.config["threads"], self.config["num_split"], Q, K, V,
                                           glse, Output_partial)
-
