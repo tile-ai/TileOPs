@@ -21,7 +21,7 @@ class MeanPoolingForwardOp(Op):
                  dim: int,
                  chunk_size: int,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False) -> torch.Tensor:
+                 tune=False):
         self.batch_size = batch_size
         self.total_seqlen = total_seqlen
         self.total_chunks = total_chunks
