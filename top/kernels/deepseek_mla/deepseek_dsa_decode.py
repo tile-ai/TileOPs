@@ -20,11 +20,11 @@ def _sparse_mla_kernel(batch: int,
                        topk: int,
                        kv_stride: int,
                        q_start_index_s: int,
-                       kv_group: int=1,
-                       sm_scale: float =None,
-                       is_causal: bool=True,
-                       cp0: bool=True,
-                       dtype: torch.dtype="float16") -> None:
+                       kv_group: int = 1,
+                       sm_scale: float = None,
+                       is_causal: bool = True,
+                       cp0: bool = True,
+                       dtype: torch.dtype = "float16") -> None:
     """
     This code implements sparse MLA attention.
 
@@ -338,21 +338,20 @@ def _sparse_mla_kernel(batch: int,
                         # Buffer 0
                         T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
-                            indices_local[0] = indices[b_i, s_i, g_i,
-                                                       (i_i * 2) * i_block + r * 16 + (tx - 256) // 8]
+                            indices_local[0] = indices[b_i, s_i, g_i, (i_i * 2) * i_block + r * 16 +
+                                                       (tx - 256) // 8]
                             is_kv_valid[r * 16 + (tx - 256) // 8] = indices_local[0] <= max_kv_i
                             if is_kv_valid[r * 16 + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
                                     for u in T.serial(4):
                                         for v in T.vectorized(8):
-                                            kv_shared_0_l[ r * 16 + (tx - 256)
-                                                // 8, 64 * u + (tx - 256) % 8 * 8
-                                                + v ] = kv[ b_i, indices_local[0], g_i,
-                                                    64 * u + (tx - 256) % 8 * 8 
-                                                    + v ]
-                                            kv_shared_0_r[r * 16 + (tx - 256)
-                                                          // 8, 64 * u + (tx - 256) % 8 * 8
-                                                          + v] = kv[b_i, indices_local[0], g_i,
+                                            kv_shared_0_l[r * 16 + (tx - 256) // 8,
+                                                          64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = kv[b_i, indices_local[0], g_i,
+                                                                  64 * u + (tx - 256) % 8 * 8 + v]
+                                            kv_shared_0_r[r * 16 + (tx - 256) // 8,
+                                                          64 * u + (tx - 256) % 8 * 8 +
+                                                          v] = kv[b_i, indices_local[0], g_i,
                                                                   d // 2 + 64 * u +
                                                                   (tx - 256) % 8 * 8 + v]
                                 with T.attr("default", "async_scope", 1):
@@ -366,8 +365,8 @@ def _sparse_mla_kernel(batch: int,
                         # Buffer 1
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
-                            indices_local[0] = indices[b_i, s_i, g_i, (i_i * 2 + 1) * i_block + r * 16 +
-                                                       (tx - 256) // 8]
+                            indices_local[0] = indices[b_i, s_i, g_i, (i_i * 2 + 1) * i_block +
+                                                       r * 16 + (tx - 256) // 8]
                             is_kv_valid[r * 16 + (tx - 256) // 8] = indices_local[0] <= max_kv_i
                             if is_kv_valid[r * 16 + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
@@ -424,7 +423,7 @@ def _sparse_mla_wrapped_kernel(
 
 
 @_sparse_mla_wrapped_kernel.register_fake
-def _(batch:int, seq_len:int, heads:int, dim:int, *inputs) -> None:
+def _(batch: int, seq_len: int, heads: int, dim: int, *inputs) -> None:
     return torch.empty([batch, seq_len, heads, dim], device=inputs[0].device, dtype=inputs[0].dtype)
 
 
@@ -468,12 +467,12 @@ class SparseMlaKernel(Kernel):
                  topk: int,
                  kv_stride: int,
                  q_start_index_s: int,
-                 kv_group: int=1,
-                 sm_scale: float=None,
-                 is_causal: bool=True,
-                 cp0: bool=True,
+                 kv_group: int = 1,
+                 sm_scale: float = None,
+                 is_causal: bool = True,
+                 cp0: bool = True,
                  config: Optional[dict] = None,
-                 tune: bool=False) -> None:
+                 tune: bool = False) -> None:
         super().__init__()
         self.batch = batch
         self.seq_len = seq_len
@@ -544,12 +543,10 @@ class SparseMlaKernel(Kernel):
                                           indices)
 
     # @property
-    def supply_prog(self, params=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # params unused
+    def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generates synthetic data for the kernel program.
-
-        Args:
-            params (optional): Unused.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -581,7 +578,7 @@ class SparseMlaKernel(Kernel):
 
         return q, kv, indices
 
-    def autotune(self, warmup:int=10, rep:int=10) -> None:  # Removed supply_prog parameter
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:  # Removed supply_prog parameter
         """
         Performs autotuning by evaluating different kernel configurations.
 
