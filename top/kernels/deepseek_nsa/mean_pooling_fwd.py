@@ -20,6 +20,7 @@ def _mean_pooling_kernel(
 ):
     dtype = "float16"
     accum_dtype = "float32"
+    int_dtype = "int32"
 
     @tilelang.jit(
         out_idx=[-1],
@@ -33,8 +34,8 @@ def _mean_pooling_kernel(
             "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__",
             "-U__CUDA_NO_HALF2_OPERATORS__", "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
             "--expt-relaxed-constexpr", "--expt-extended-lambda",
-            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG",
-            "-DENABLE_BF16", "-DCUDA_FP8_ENABLED=0"
+            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG", "-DENABLE_BF16",
+            "-DCUDA_FP8_ENABLED=0"
         ],
     )
     def _mean_pooling_func(block_D, threads):
@@ -49,8 +50,8 @@ def _mean_pooling_kernel(
         @T.prim_func
         def _mean_pooling_main(
                 X_unpad: T.Tensor(x_shape, dtype),
-                cu_seqlens: T.Tensor(cu_seqlens_shape, "int32"),
-                chunk_indices: T.Tensor(chunk_indices_shape, "int32"),
+                cu_seqlens: T.Tensor(cu_seqlens_shape, int_dtype),
+                chunk_indices: T.Tensor(chunk_indices_shape, int_dtype),
                 Output: T.Tensor(output_shape, dtype),
         ):
             with T.Kernel(ND, total_chunks, heads, threads=threads) as (i_d, i_t, i_h):
@@ -125,6 +126,7 @@ def _(
         *inputs
 ) -> torch.Tensor:
     # Output shape is [total_chunks, heads, dim]
+    _ = (batch_size, total_seqlen, total_chunks, heads, dim, chunk_size, block_D, threads)
     x = inputs[0]
     return torch.empty(
         (total_chunks, heads, dim),
