@@ -23,11 +23,18 @@ def _mean_pooling_kernel(
 
     @tilelang.jit(
         out_idx=[-1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        # pass_configs={
+        #     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        #     tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+        #     tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        # },
+        compile_flags=[
+            "--use_fast_math", "-O3", "-Wno-deprecated-declarations",
+            "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__",
+            "-U__CUDA_NO_HALF2_OPERATORS__", "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+            "--expt-relaxed-constexpr", "--expt-extended-lambda",
+            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG"
+        ],
     )
     def _mean_pooling_func(block_D, threads):
 

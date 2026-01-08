@@ -12,7 +12,15 @@ __all__ = ["nsa_topk_fwd_kernel"]
 
 def _topk_kernel(M, N, topk, dtype="float32"):
 
-    @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(
+        out_idx=[1, 2], 
+        compile_flags=[
+            "--use_fast_math", "-O3", "-Wno-deprecated-declarations",
+            "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__",
+            "-U__CUDA_NO_HALF2_OPERATORS__", "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+            "--expt-relaxed-constexpr", "--expt-extended-lambda",
+            "--ptxas-options=-v,--register-usage-level=10", "-DNDEBUG"
+        ],)
     def _topk_func(blk_m, threads):
 
         @T.prim_func
