@@ -1,6 +1,6 @@
 [flake8]
 max-line-length = 100
-extend-ignore = E203,W503,E252
+extend-ignore = E203,W503,W504,E252
 exclude = .git,__pycache__,build,dist,3rd-party
 docstring-convention = google
 ignore =
