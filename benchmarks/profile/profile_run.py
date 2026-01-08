@@ -175,8 +175,6 @@ def run_test_script(script_path: Path, args_dict: Dict[str, Any]) -> Optional[Li
         cmd_args = build_mla_decode_cmd(args_dict)
     elif 'deepseek_dsa_decode' in script_name:
         cmd_args = build_sparse_mla_cmd(args_dict)
-    elif 'deepseek_nsa' in script_name or 'nsa' in script_name:
-        cmd_args = build_nsa_cmd(args_dict)
     elif 'mha' in script_name:
         cmd_args = build_mha_cmd(args_dict)
     elif 'gqa' in script_name:

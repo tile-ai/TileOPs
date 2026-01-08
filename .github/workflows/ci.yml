@@ -50,6 +50,9 @@ jobs:
           conda activate tileops-release
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
+          echo "===== NVCC Version ====="
+          nvcc --version || echo "nvcc not found in PATH"
+          echo "===== End NVCC Version ====="
           CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_release.log
         shell: bash
 
