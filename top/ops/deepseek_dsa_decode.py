@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from top.kernels.deepseek_mla import sparse_mla_kernel
+from top.kernels.deepseek_mla import SparseMlaKernel
 from top.kernels.kernel import Kernel
 
 from .op import Op
@@ -70,18 +70,19 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
         self.is_causal = is_causal
 
         if q_start_index_s != 0:
-            assert q_start_index_s > stride_kv, \
-                "If it is because each cp has too short length, " \
-                "you should fix the logic involving cp0 (cp_rank == 0),"\
-                " to make sure q with pos < stride_kv - 1 is masked " \
-                "(or you may just ignore how this is handled if nan in these q's Out"\
+            assert q_start_index_s > stride_kv, (
+                "If it is because each cp has too short length, "
+                "you should fix the logic involving cp0 (cp_rank == 0), "
+                "to make sure q with pos < stride_kv - 1 is masked "
+                "(or you may just ignore how this is handled if nan in these q's Out "
                 "would not effect others, which is reported to be likely to happen by wangding)"
+            )
 
         cp0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["sparse_mla_kernel"](self.batch,
+        self.kernel = self.kernel_map["SparseMlaKernel"](self.batch,
                                                            self.seq_len,
                                                            self.seq_len_kv,
                                                            self.heads,
@@ -104,9 +105,9 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
 
         Returns:
             Dict[str, Kernel]: A dictionary mapping kernel names to kernel functions.
-            The default map includes the "sparse_mla_kernel".
+            The default map includes the "SparseMlaKernel".
         """
-        return {"sparse_mla_kernel": sparse_mla_kernel}
+        return {"SparseMlaKernel": SparseMlaKernel}
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """

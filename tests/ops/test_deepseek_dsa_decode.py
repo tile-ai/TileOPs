@@ -1,4 +1,5 @@
 import argparse
+
 import torch
 
 from benchmarks import DeepSeekSparseAttentionDecodeBenchmark
