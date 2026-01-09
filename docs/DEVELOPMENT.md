@@ -165,4 +165,4 @@ When you open a PR, the following automated checks will run:
 **Note**:
 
 - Merging is blocked until all CI checks pass.
-- **Approval**: At least **2 reviewers** must approve the PR before merging.
+- **Approval**: Follow the **2+1 Policy** (2 Peers + 1 Mentor). See **[CONTRIBUTING.md](./CONTRIBUTING.md)**.
