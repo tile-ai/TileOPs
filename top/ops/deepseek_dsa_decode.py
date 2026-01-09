@@ -75,28 +75,28 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
                 "you should fix the logic involving cp0 (cp_rank == 0), "
                 "to make sure q with pos < stride_kv - 1 is masked "
                 "(or you may just ignore how this is handled if nan in these q's Out "
-                "would not effect others, which is reported to be likely to happen by wangding)"
-            )
+                "would not effect others, which is reported to be likely to happen by wangding)")
 
         cp0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["SparseMlaKernel"](self.batch,
-                                                           self.seq_len,
-                                                           self.seq_len_kv,
-                                                           self.heads,
-                                                           self.dim,
-                                                           self.dim_tail,
-                                                           self.dtype,
-                                                           self.topk,
-                                                           self.stride_kv,
-                                                           self.q_start_index_s,
-                                                           self.group_kv,
-                                                           self.sm_scale,
-                                                           self.is_causal,
-                                                           cp0,
-                                                           tune=tune)
+        self.kernel = self.kernel_map["SparseMlaKernel"](
+            self.batch,
+            self.seq_len,
+            self.seq_len_kv,
+            self.heads,
+            self.dim,
+            self.dim_tail,
+            self.dtype,
+            self.topk,
+            self.stride_kv,
+            self.q_start_index_s,
+            self.group_kv,
+            self.sm_scale,
+            self.is_causal,
+            cp0,
+            tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
