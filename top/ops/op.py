@@ -72,10 +72,10 @@ class Op(ABC):
     @abstractmethod
     def forward(
             self,
-            *args: torch.Tensor,  # noqa: U100
+            *args: object,  # noqa: U100
             **kwargs: object) -> Union[torch.Tensor, Tuple]:  # noqa: U100
         raise NotImplementedError("forward method is not implemented")
 
-    def __call__(self, *args: torch.Tensor, **kwargs: object) -> Union[torch.Tensor, Tuple]:
+    def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, Tuple]:
         """Make the op callable - delegates to forward()"""
         return self.forward(*args, **kwargs)
