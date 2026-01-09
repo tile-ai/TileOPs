@@ -83,8 +83,8 @@ ignore = [
     "B019",
     # No such file or directory
     "E902",
-    # flake8-annotations: ignore self/cls/args/kwargs
-    "ANN101", "ANN102", "ANN002", "ANN003",
+    # flake8-annotations: ignore self/cls/args/kwargs/special methods
+    "ANN101", "ANN102", "ANN002", "ANN003", "ANN204",
     # pep8-naming: allow 'import as T'
     "N812",
     # pydocstyle: missing docstring in public module
