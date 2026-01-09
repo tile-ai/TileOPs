@@ -20,31 +20,33 @@ def test_sparse_mla_decode(batch: int,
                            sm_scale: float,
                            dtype: torch.dtype,
                            tune: bool = False) -> None:
-    op = DeepSeekSparseAttentionDecodeWithKVCacheOp(batch,
-                                                    heads,
-                                                    seq_len_q,
-                                                    seq_len_kv,
-                                                    dim,
-                                                    dim_tail,
-                                                    topk,
-                                                    stride_kv,
-                                                    group_kv,
-                                                    q_start_index_s,
-                                                    sm_scale=sm_scale,
-                                                    dtype=dtype,
-                                                    tune=tune)
-    benchmark = DeepSeekSparseAttentionDecodeBenchmark(batch,
-                                                       heads,
-                                                       seq_len_q,
-                                                       seq_len_kv,
-                                                       dim,
-                                                       dim_tail,
-                                                       topk,
-                                                       stride_kv,
-                                                       group_kv,
-                                                       q_start_index_s,
-                                                       sm_scale=sm_scale,
-                                                       dtype=dtype)
+    op = DeepSeekSparseAttentionDecodeWithKVCacheOp(
+        batch,
+        heads,
+        seq_len_q,
+        seq_len_kv,
+        dim,
+        dim_tail,
+        topk,
+        stride_kv,
+        group_kv,
+        q_start_index_s,
+        sm_scale=sm_scale,
+        dtype=dtype,
+        tune=tune)
+    benchmark = DeepSeekSparseAttentionDecodeBenchmark(
+        batch,
+        heads,
+        seq_len_q,
+        seq_len_kv,
+        dim,
+        dim_tail,
+        topk,
+        stride_kv,
+        group_kv,
+        q_start_index_s,
+        sm_scale=sm_scale,
+        dtype=dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
@@ -64,11 +66,8 @@ if __name__ == "__main__":
     parser.add_argument('--group_kv', type=int, default=1, help='group_kv')
     parser.add_argument('--sm_scale', type=float, default=None, help='softmax scaling factor')
     parser.add_argument('--q_start_index_s', type=int, default=1024, help='query start index')
-    parser.add_argument('--dtype',
-                        type=str,
-                        default='float16',
-                        choices=['float16', 'bfloat16'],
-                        help='data type')
+    parser.add_argument(
+        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
