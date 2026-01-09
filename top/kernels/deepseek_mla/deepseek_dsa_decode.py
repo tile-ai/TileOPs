@@ -379,9 +379,9 @@ def _sparse_mla_kernel(batch: int,
                                                                   64 * u + (tx - 256) % 8 * 8 + v]
                                             kv_shared_1_r[r * 16 + (tx - 256) // 8,
                                                           64 * u + (tx - 256) % 8 * 8 +
-                                                          +v] = kv[b_i, indices_local[0], g_i,
-                                                                   d // 2 + 64 * u +
-                                                                   (tx - 256) % 8 * 8 + v]
+                                                          v] = kv[b_i, indices_local[0], g_i,
+                                                                  d // 2 + 64 * u +
+                                                                  (tx - 256) % 8 * 8 + v]
                                 with T.attr("default", "async_scope", 1):
                                     for v in T.vectorized(8):
                                         k_tail_shared_1[r * 16 + (tx - 256) // 8,
