@@ -1,12 +1,14 @@
 import argparse
-from top.ops import mha_decode
+
+from benchmarks import MultiHeadAttentionDecodeBenchmark
+from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
-from benchmarks import mha_decode_benchmark
 
 
-def test_mha_decode(B, H, S_q, S_kv, D, dtype, tune=False):
-    op = mha_decode(B, H, S_q, S_kv, D, dtype, tune=tune)
-    benchmark = mha_decode_benchmark(B, H, S_q, S_kv, D, dtype)
+def test_mha_decode(batch, heads, seq_len_q, seq_len_kv, dim, dtype, tune=False):
+    op = MultiHeadAttentionDecodeWithKVCacheOp(
+        batch, heads, seq_len_q, seq_len_kv, dim, dtype, tune=tune)
+    benchmark = MultiHeadAttentionDecodeBenchmark(batch, heads, seq_len_q, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)

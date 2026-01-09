@@ -1,14 +1,20 @@
 import argparse
-from top import gqa_decode_fn
+
+from benchmarks import GroupQueryAttentionDecodeBenchmark
+from top.functions import GroupQueryAttentionDecodeWithKVCacheFunc, gqa_decode_with_kvcache
 from top.utils import str2dtype
-from benchmarks import gqa_decode_benchmark
 
 
-def test_gqa_decode_fn(B, H, S_kv, D, groups, dtype):
-    fn = gqa_decode_fn(B, H, groups, S_kv, D, dtype)
-    benchmark = gqa_decode_benchmark(B, H, groups, S_kv, D, dtype)
+def test_gqa_decode_fn(batch, heads, seq_len_kv, dim, groups, dtype):
+    benchmark = GroupQueryAttentionDecodeBenchmark(batch, heads, groups, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()
+
+    print("=========Testing gqa decode function inference=========")
+    benchmark.check_fn(gqa_decode_with_kvcache, *inputs, grad=False)
+
+    print("=========Testing gqa decode function class=========")
+    fn = GroupQueryAttentionDecodeWithKVCacheFunc(batch, heads, groups, seq_len_kv, dim, dtype)
     benchmark.check_fn(fn, *inputs, grad=False)
 
 

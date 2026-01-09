@@ -1,15 +1,20 @@
-from benchmarks.benchmark import Benchmark
-from top.ops import mha_fwd, mha_bwd
+from typing import Any, Optional, Tuple
+
+import flash_attn_interface
 import torch
 from torch.nn import functional as F
-from torch.nn.attention import sdpa_kernel, SDPBackend
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+from benchmarks.benchmark import Benchmark
+from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 
 
-class mha_fwd_benchmark(Benchmark):
+class MultiHeadAttentionFwdBenchmark(Benchmark):
 
-    op_type = mha_fwd
+    op_type = MultiHeadAttentionFwdOp
 
-    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype):
+    def __init__(self, batch: int, heads: int, seq_len: int, dim: int, is_causal: bool,
+                 dtype: torch.dtype) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -18,16 +23,16 @@ class mha_fwd_benchmark(Benchmark):
         self.dtype = dtype
 
     @property
-    def total_flops(self):
+    def total_flops(self) -> float:
         flops_per_matmul = 2.0 * self.batch * self.heads * self.seq_len * self.seq_len * self.dim
         flops = flops_per_matmul * 2
         return flops / 2 if self.is_causal else flops
 
     @property
-    def total_memory(self):
+    def total_memory(self) -> int:
         return 4 * self.batch * self.heads * self.seq_len * self.dim * self.dtype.itemsize
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
         K = torch.randn(
@@ -36,22 +41,46 @@ class mha_fwd_benchmark(Benchmark):
             self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
         return Q, K, V
 
-    def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-        q_bhsd = Q.transpose(1, 2)  # [B, H, S, D]
-        k_bhsd = K.transpose(1, 2)
-        v_bhsd = V.transpose(1, 2)
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor,
+                    v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
+        k_bhsd = k.transpose(1, 2)
+        v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
         output = output_bhsd.transpose(1, 2).contiguous()
         return output, None  # do not check lse
 
+    def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
 
-class mha_bwd_benchmark(Benchmark):
+        out = flash_attn_interface.flash_attn_func(
+            q,
+            k,
+            v,
+            softmax_scale=None,  # use default 1 / sqrt(head_dim)
+            causal=self.is_causal,
+        )
 
-    op_type = mha_bwd
+        return out
 
-    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype):
+    def baseline_profile(self,
+                         *inputs: Any,
+                         warmup: int = 100,
+                         rep: int = 100,
+                         device: str = "cuda:0") -> Any:
+
+        print("===== Profiling MHA FA3 backend =====")
+        return super().baseline_profile(
+            self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
+
+
+class MultiHeadAttentionBwdBenchmark(Benchmark):
+
+    op_type = MultiHeadAttentionBwdOp
+
+    def __init__(self, batch: int, heads: int, seq_len: int, dim: int, is_causal: bool,
+                 dtype: torch.dtype) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -60,16 +89,22 @@ class mha_bwd_benchmark(Benchmark):
         self.dtype = dtype
 
     @property
-    def total_flops(self):
+    def total_flops(self) -> float:
         flops_per_matmul = 2.0 * self.batch * self.heads * self.seq_len * self.seq_len * self.dim
         flops = flops_per_matmul * 5
         return flops / 2 if self.is_causal else flops
 
+    # type: () -> float
+
     @property
-    def total_memory(self):
+    def total_memory(self) -> int:
         return 7 * self.batch * self.heads * self.seq_len * self.dim * self.dtype.itemsize
 
-    def gen_inputs(self):
+    # type: () -> int
+
+    def gen_inputs(
+        self
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(
             self.batch,
             self.seq_len,
@@ -97,29 +132,62 @@ class mha_bwd_benchmark(Benchmark):
         dO = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
 
-        fwd_op = mha_fwd(self.batch, self.heads, self.seq_len, self.dim, self.is_causal, self.dtype)
+        fwd_op = MultiHeadAttentionFwdOp(self.batch, self.heads, self.seq_len, self.dim,
+                                         self.is_causal, self.dtype)
         with torch.no_grad():
             O, lse = fwd_op(Q, K, V)
 
         return Q, K, V, O, dO, lse
 
-    def ref_program(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, O: torch.Tensor,
-                    dO: torch.Tensor, lse: torch.Tensor):
-        q_bhsd = Q.transpose(1, 2)  # [B, H, S, D]
-        k_bhsd = K.transpose(1, 2)
-        v_bhsd = V.transpose(1, 2)
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
+                    do: torch.Tensor,
+                    lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
+        k_bhsd = k.transpose(1, 2)
+        v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
         output = output_bhsd.transpose(1, 2).contiguous()
 
-        output.backward(dO)
-        return Q.grad, K.grad, V.grad
+        output.backward(do)
+        return q.grad, k.grad, v.grad
+
+    def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
+                         do: torch.Tensor,
+                         lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        softmax_scale = q.shape[-1]**(-0.5)
+
+        dQ = torch.empty_like(q)
+        dK = torch.empty_like(k)
+        dV = torch.empty_like(v)
+        dQ, dK, dV, _ = flash_attn_interface._flash_attn_backward(do, q, k, v, o, lse, None, None,
+                                                                  None, None, None, None, dQ, dK,
+                                                                  dV, softmax_scale, self.is_causal)
+        return dQ, dK, dV
+
+    def baseline_profile(self,
+                         *inputs: Any,
+                         warmup: int = 100,
+                         rep: int = 100,
+                         device: str = "cuda:0") -> Any:
+
+        print("===== Profiling MHA FA3 backend =====")
+        return super().baseline_profile(
+            self.baseline_program, *inputs, backend="FA3", warmup=warmup, rep=rep, device=device)
 
 
-class mha_benchmark(Benchmark):
+class MultiHeadAttentionBenchmark(Benchmark):
 
-    def __init__(self, batch, heads, seq_len, dim, is_causal, dtype, grad=True):
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 dim: int,
+                 is_causal: bool,
+                 dtype: torch.dtype,
+                 grad: bool = True) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -128,18 +196,20 @@ class mha_benchmark(Benchmark):
         self.dtype = dtype
         self.grad = grad
 
-        self.mha_fwd_bench = mha_fwd_benchmark(batch, heads, seq_len, dim, is_causal, dtype)
-        self.mha_bwd_bench = mha_bwd_benchmark(batch, heads, seq_len, dim, is_causal, dtype)
+        self.mha_fwd_bench = MultiHeadAttentionFwdBenchmark(batch, heads, seq_len, dim, is_causal,
+                                                            dtype)
+        self.mha_bwd_bench = MultiHeadAttentionBwdBenchmark(batch, heads, seq_len, dim, is_causal,
+                                                            dtype)
 
     @property
-    def total_flops(self):
+    def total_flops(self) -> float:
         return self.mha_fwd_bench.total_flops + self.mha_bwd_bench.total_flops
 
     @property
-    def total_memory(self):
+    def total_memory(self) -> int:
         return self.mha_fwd_bench.total_memory + self.mha_bwd_bench.total_memory
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(
             self.batch,
             self.seq_len,
@@ -168,13 +238,13 @@ class mha_benchmark(Benchmark):
         return Q, K, V
 
     def ref_program(self,
-                    Q: torch.Tensor,
-                    K: torch.Tensor,
-                    V: torch.Tensor,
-                    dO: torch.Tensor = None):
-        q_bhsd = Q.transpose(1, 2)  # [B, H, S, D]
-        k_bhsd = K.transpose(1, 2)
-        v_bhsd = V.transpose(1, 2)
+                    q: torch.Tensor,
+                    k: torch.Tensor,
+                    v: torch.Tensor,
+                    do: torch.Tensor = None) -> Any:
+        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
+        k_bhsd = k.transpose(1, 2)
+        v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
@@ -185,4 +255,4 @@ class mha_benchmark(Benchmark):
         else:
             loss = output.sum()
             loss.backward()
-            return output, Q.grad, K.grad, V.grad
+            return output, q.grad, k.grad, v.grad

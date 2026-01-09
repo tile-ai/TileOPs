@@ -1,11 +1,16 @@
 import torch
 from torch import nn
-from top import mha_decode_fn, gqa_decode_fn
+
+from top.functions import (
+    GroupQueryAttentionDecodeWithKVCacheFunc,
+    MultiHeadAttentionDecodeWithKVCacheFunc,
+)
 
 
-class MHADecode(nn.Module):
+class MultiHeadAttentionDecodeLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, seqlen_q, seqlen_kv, dim, dtype):
+    def __init__(self, batch_size: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int,
+                 dtype: torch.dtype):
         super().__init__()
 
         self.batch_size = batch_size
@@ -15,15 +20,24 @@ class MHADecode(nn.Module):
         self.dim = dim
         self.dtype = dtype
 
-        self.fn = mha_decode_fn(batch_size, heads, seqlen_q, seqlen_kv, dim, dtype)
+        self.fn = MultiHeadAttentionDecodeWithKVCacheFunc(batch_size, heads, seqlen_q, seqlen_kv,
+                                                          dim, dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)
 
 
-class GQADecode(nn.Module):
+class GroupQueryAttentionDecodeLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, groups, seqlen_kv, dim, dtype):
+    def __init__(
+        self,
+        batch_size: int,
+        heads: int,
+        groups: int,
+        seqlen_kv: int,
+        dim: int,
+        dtype: torch.dtype,
+    ):
         super().__init__()
 
         self.batch_size = batch_size
@@ -33,8 +47,8 @@ class GQADecode(nn.Module):
         self.dim = dim
         self.dtype = dtype
 
-        self.fn = gqa_decode_fn(batch_size, heads, groups, seqlen_kv, dim, dtype)
+        self.fn = GroupQueryAttentionDecodeWithKVCacheFunc(batch_size, heads, groups, seqlen_kv,
+                                                           dim, dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                mask: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V, mask)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)

@@ -1,11 +1,13 @@
 import torch
 from torch import nn
-from top import mha_fn, gqa_fn
+
+from top.functions import GroupQueryAttentionFunc, MultiHeadAttentionFunc
 
 
-class MHA(nn.Module):
+class MultiHeadAttentionLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, seq_len, dim, is_causal, dtype):
+    def __init__(self, batch_size: int, heads: int, seq_len: int, dim: int, is_causal: bool,
+                 dtype: torch.dtype):
         super().__init__()
 
         self.batch_size = batch_size
@@ -15,15 +17,16 @@ class MHA(nn.Module):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.fn = mha_fn(batch_size, heads, seq_len, dim, is_causal, dtype)
+        self.fn = MultiHeadAttentionFunc(batch_size, heads, seq_len, dim, is_causal, dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)
 
 
-class GQA(nn.Module):
+class GroupQueryAttentionLayer(nn.Module):
 
-    def __init__(self, batch_size, heads, heads_kv, seq_len, dim, is_causal, dtype):
+    def __init__(self, batch_size: int, heads: int, heads_kv: int, seq_len: int, dim: int,
+                 is_causal: bool, dtype: torch.dtype):
         super().__init__()
 
         self.batch_size = batch_size
@@ -34,7 +37,8 @@ class GQA(nn.Module):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.fn = gqa_fn(batch_size, heads, heads_kv, seq_len, dim, is_causal, dtype)
+        self.fn = GroupQueryAttentionFunc(batch_size, heads, heads_kv, seq_len, dim, is_causal,
+                                          dtype)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.fn(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.fn(q, k, v)

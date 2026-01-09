@@ -1,7 +1,3 @@
-# 4 levels of abstraction from low to high:
-from .kernels import *
-from .ops import *
-from .functions import *
-from .layers import *
+from . import functions, layers, ops
 
-from .utils import *
+__all__ = ["ops", "functions", "layers"]

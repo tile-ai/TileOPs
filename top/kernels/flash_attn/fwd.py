@@ -1,9 +1,11 @@
+import itertools
+from typing import Optional, Tuple
+
 import tilelang
 import tilelang.language as T
-from typing import Optional, Tuple
-from top.kernels.kernel import Kernel
-import itertools
 import torch
+
+from top.kernels.kernel import Kernel
 
 __all__ = [
     'mha_fwd_kernel', 'mha_fwd_wgmma_pipelined_kernel', 'gqa_fwd_kernel',
@@ -15,7 +17,6 @@ __all__ = [
 
 def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -25,6 +26,7 @@ def _mha_fwd_kernel(batch, heads, seq_len, dim, is_causal, dtype='float16'):
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_func(block_M, block_N, num_stages, threads):
+        shape = (batch, seq_len, heads, dim)
 
         @T.prim_func
         def _mha_fwd_main(
@@ -174,16 +176,15 @@ class mha_fwd_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         return _mha_fwd_wrapped_kernel(self.batch, self.heads, self.seq_len, self.dim,
                                        self.is_causal, self.dtype_str, self.config["block_M"],
                                        self.config["block_N"], self.config["num_stages"],
-                                       self.config["threads"], Q, K, V)
+                                       self.config["threads"], q, k, v)
 
 
 def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype="float16"):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    shape = [batch, seq_len, heads, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -193,6 +194,8 @@ def _mha_fwd_wgmma_pipelined_kernel(batch, heads, seq_len, dim, is_causal, dtype
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+
+        shape = (batch, seq_len, heads, dim)
 
         @T.macro
         def MMA0(
@@ -384,13 +387,13 @@ class mha_fwd_wgmma_pipelined_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         return _mha_fwd_wgmma_pipelined_wrapped_kernel(self.batch, self.heads, self.seq_len,
                                                        self.dim, self.is_causal, self.dtype_str,
                                                        self.config["block_M"],
                                                        self.config["block_N"],
                                                        self.config["num_stages"],
-                                                       self.config["threads"], Q, K, V)
+                                                       self.config["threads"], q, k, v)
 
 
 # GQA
@@ -400,8 +403,6 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
-    q_shape = [batch, seq_len, heads, dim]
-    kv_shape = [batch, seq_len, heads_kv, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -411,6 +412,9 @@ def _gqa_fwd_kernel(batch, heads, heads_kv, seq_len, dim, is_causal, dtype='floa
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_fwd_func(block_M, block_N, num_stages, threads):
+
+        q_shape = (batch, seq_len, heads, dim)
+        kv_shape = (batch, seq_len, heads_kv, dim)
 
         @T.prim_func
         def _gqa_fwd_main(
@@ -564,11 +568,11 @@ class gqa_fwd_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         return _gqa_fwd_wrapped_kernel(self.batch, self.heads, self.heads_kv, self.seq_len,
                                        self.dim, self.is_causal, self.dtype_str,
                                        self.config["block_M"], self.config["block_N"],
-                                       self.config["num_stages"], self.config["threads"], Q, K, V)
+                                       self.config["num_stages"], self.config["threads"], q, k, v)
 
 
 def _gqa_fwd_wgmma_pipelined_kernel(batch,
@@ -581,8 +585,6 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
-    q_shape = [batch, seq_len, heads, dim]
-    kv_shape = [batch, seq_len, heads_kv, dim]
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -592,6 +594,9 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch,
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_fwd_wgmma_pipelined_func(block_M, block_N, num_stages, threads):
+
+        q_shape = (batch, seq_len, heads, dim)
+        kv_shape = (batch, seq_len, heads_kv, dim)
 
         @T.macro
         def MMA0(
@@ -798,10 +803,10 @@ class gqa_fwd_wgmma_pipelined_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         return _gqa_fwd_wgmma_pipelined_wrapped_kernel(self.batch, self.heads, self.heads_kv,
                                                        self.seq_len, self.dim, self.is_causal,
                                                        self.dtype_str, self.config["block_M"],
                                                        self.config["block_N"],
                                                        self.config["num_stages"],
-                                                       self.config["threads"], Q, K, V)
+                                                       self.config["threads"], q, k, v)

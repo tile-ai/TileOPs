@@ -1,23 +1,27 @@
+from typing import Dict, Optional
+
 import torch
+
+from top.kernels.flash_decode import mha_decode_kernel
+from top.kernels.kernel import Kernel
+
 from .op import Op
-from top.kernels import mha_decode_kernel, Kernel
-from typing import Optional, Dict
 
-__all__ = ["mha_decode"]
+__all__ = ["MultiHeadAttentionDecodeWithKVCacheOp"]
 
 
-class mha_decode(Op):
+class MultiHeadAttentionDecodeWithKVCacheOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
-                 batch,
-                 heads,
-                 seqlen_q,
-                 seqlen_kv,
-                 dim,
-                 dtype=torch.float16,
+                 batch: int,
+                 heads: int,
+                 seqlen_q: int,
+                 seqlen_kv: int,
+                 dim: int,
+                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune=False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -31,8 +35,8 @@ class mha_decode(Op):
             batch, heads, seqlen_q, seqlen_kv, dim, False, self.dtype, tune=tune)
 
     @property
-    def default_kernel_map(self):
+    def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"mha_decode_kernel": mha_decode_kernel}
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        return self.kernel(Q, K, V)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return self.kernel(q, k, v)

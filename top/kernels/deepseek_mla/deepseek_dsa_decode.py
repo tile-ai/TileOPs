@@ -1,10 +1,12 @@
-import torch
+import itertools
+from typing import Optional
+
 import tilelang
 import tilelang.language as T
+import torch
 from tilelang.autotuner import autotune
+
 from top.kernels.kernel import Kernel
-from typing import Optional
-import itertools
 
 __all__ = ["sparse_mla_kernel"]
 
@@ -40,10 +42,7 @@ def _sparse_mla_kernel(batch,
         sm_scale = sm_scale * 1.44269504  # log2(e)
 
     head_kv = heads // kv_group
-    q_shape = [batch, seq_len, heads, dim + tail_dim]
-    kv_shape = [batch, seq_len_kv, kv_group, dim + tail_dim]
-    o_shape = [batch, seq_len, heads, dim]
-    indices_shape = [batch, seq_len, kv_group, topk]
+    ori_heads = heads
     indices_dtype = "int32"
     accum_dtype = "float"
 
@@ -59,12 +58,15 @@ def _sparse_mla_kernel(batch,
     )
     def _sparse_mla_fwd_func(block_I, threads):
 
+        q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
+        kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
+        o_shape = (batch, seq_len, ori_heads, dim)
+        indices_shape = (batch, seq_len, kv_group, topk)
+
         heads = head_kv
-        # print(f'heads = {heads}')
         padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
         if padded_H != heads:
             assert kv_group == 1, 'here we solve the heads padding automatically, other wise you should handle Q copy and Output copy with your mask (when kv_group == 1, use g_i * padded_H:(g_i+1) * padded_H would be handled automatically)'
-        # print(f'padded_H = {padded_H}, heads = {heads}')
 
         assert topk % block_I == 0, 'otherwise will load some index=0 thus causing wrong kv to be loaded'
         BI = block_I
@@ -73,9 +75,7 @@ def _sparse_mla_kernel(batch,
         D = dim
         D_tail = tail_dim
         KV_stride = kv_stride
-        # CP0 = q_start_index_s == 0
-        # if CP0:
-        #     seq_len -= kv_stride - 1
+
         if head_kv > 64:
             assert head_kv % 64 == 0, 'head_kv should be a multiple of 64'
             REPLICATE_H = head_kv // 64
@@ -381,7 +381,7 @@ class sparse_mla_kernel(Kernel):
                  kv_group=1,
                  sm_scale=None,
                  is_causal=True,
-                 CP0=True,
+                 cp0=True,
                  config: Optional[dict] = None,
                  tune=False):
         super().__init__()
@@ -398,7 +398,7 @@ class sparse_mla_kernel(Kernel):
         self.sm_scale = sm_scale
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
-        self.CP0 = CP0
+        self.CP0 = cp0
 
         self.kernel = _sparse_mla_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads,
                                          self.dim, self.tail_dim, self.topk, self.kv_stride,
@@ -423,13 +423,13 @@ class sparse_mla_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, KV: torch.Tensor, Indices: torch.Tensor):
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor):
         return _sparse_mla_wrapped_kernel(self.batch, self.seq_len, self.seq_len_kv, self.heads,
                                           self.dim, self.tail_dim, self.topk, self.kv_stride,
                                           self.q_start_index_s, self.kv_group, self.sm_scale,
                                           self.is_causal, self.CP0, self.dtype_str,
-                                          self.config["block_I"], self.config["threads"], Q, KV,
-                                          Indices)
+                                          self.config["block_I"], self.config["threads"], q, kv,
+                                          indices)
 
     # @property
     def supply_prog(self, params=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
