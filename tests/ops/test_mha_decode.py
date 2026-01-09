@@ -1,12 +1,21 @@
 import argparse
+
+import torch
+
+from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
-from benchmarks import MultiHeadAttentionDecodeBenchmark
 
 
-def test_mha_decode(B, H, S_q, S_kv, D, dtype, tune=False):
-    op = MultiHeadAttentionDecodeWithKVCacheOp(B, H, S_q, S_kv, D, dtype, tune=tune)
-    benchmark = MultiHeadAttentionDecodeBenchmark(B, H, S_q, S_kv, D, dtype)
+def test_mha_decode(b: int,
+                    h: int,
+                    s_q: int,
+                    s_kv: int,
+                    d: int,
+                    dtype: torch.dtype,
+                    tune: bool = False) -> None:
+    op = MultiHeadAttentionDecodeWithKVCacheOp(b, h, s_q, s_kv, d, dtype, tune=tune)
+    benchmark = MultiHeadAttentionDecodeBenchmark(b, h, s_q, s_kv, d, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
@@ -29,5 +38,5 @@ if __name__ == "__main__":
                     str2dtype["bfloat16"], args.tune)
     test_mha_decode(args.batch, args.heads, args.seq_len_q, args.seq_len_kv, args.dim,
                     str2dtype["float16"], args.tune)
-    test_mha_decode(args.batch, args.heads, args.seq_len_q, 5, args.dim,
-                    str2dtype["float16"], args.tune)
+    test_mha_decode(args.batch, args.heads, args.seq_len_q, 5, args.dim, str2dtype["float16"],
+                    args.tune)
