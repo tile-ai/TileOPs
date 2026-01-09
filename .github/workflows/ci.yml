@@ -33,7 +33,7 @@ jobs:
           extra_args: --all-files --show-diff-on-failure
 
   tileops_test_release:
-    needs: pre-commit
+    # needs: pre-commit
     runs-on: [self-hosted, tile-ops]
     steps:
       - name: Checkout code
@@ -62,7 +62,7 @@ jobs:
           retention-days: 7  # Equivalent to expire_in: 1 week
 
   tileops_test_nightly:
-    needs: pre-commit
+    # needs: pre-commit
     runs-on: [self-hosted, tile-ops]
     steps:
       - name: Checkout code
@@ -91,7 +91,8 @@ jobs:
           retention-days: 7  # Equivalent to expire_in: 1 week
 
   tileops_profile_release:
-    needs: [pre-commit, tileops_test_release]
+    # needs: [pre-commit, tileops_test_release]
+    needs: [tileops_test_release]
     runs-on: [self-hosted, profile]
     steps:
       - name: Checkout code

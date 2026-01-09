@@ -14,14 +14,14 @@ dependencies = [
     "cloudpickle",
     "ml_dtypes",
     "psutil",
-    "tilelang>=0.1.6.post1"
+    "tilelang>=0.1.7"
 ]
 requires-python = ">=3.8"
 license = {text = "MIT"}
 
 [project.optional-dependencies]
 dev = [
-"yapf==0.40.2",
+"yapf==0.43.0",
 "toml==0.10.2",
 "tomli==2.0.1",
 "ruff==0.6.5",
@@ -37,7 +37,7 @@ where = ["."]
 exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.yapf]
-based_on_style = "google"
+based_on_style = "yapf"
 column_limit = 100
 indent_width = 4
 spaces_before_comment = 2
@@ -88,7 +88,7 @@ ignore = [
     # pep8-naming: allow 'import as T'
     "N812",
     # pydocstyle: missing docstring in public module
-    "D100", 
+    "D100",
     # pydocstyle: missing docstring in public package
     "D104",
 ]
