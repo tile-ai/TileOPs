@@ -157,10 +157,11 @@ def _sparse_mla_kernel(batch: int,
             Returns:
                 None: The result is stored in the `output` tensor passed by reference.
             """
-            with T.Kernel((seq_len - kv_stride + 1 if cp0 else seq_len) * replicate_h,
-                          batch,
-                          kv_group,
-                          threads=threads) as (bx, by, bz):
+            with T.Kernel(
+                (seq_len - kv_stride + 1 if cp0 else seq_len) * replicate_h,
+                    batch,
+                    kv_group,
+                    threads=threads) as (bx, by, bz):
                 q_shared_l = T.alloc_shared([h_per_block, d // 2], dtype)
                 q_shared_r = T.alloc_shared([h_per_block, d // 2], dtype)
                 q_tail_shared = T.alloc_shared([h_per_block, d_tail], dtype)
@@ -378,9 +379,9 @@ def _sparse_mla_kernel(batch: int,
                                                                   64 * u + (tx - 256) % 8 * 8 + v]
                                             kv_shared_1_r[r * 16 + (tx - 256) // 8,
                                                           64 * u + (tx - 256) % 8 * 8 +
-                                                          v] = kv[b_i, indices_local[0], g_i,
-                                                                  d // 2 + 64 * u +
-                                                                  (tx - 256) % 8 * 8 + v]
+                                                          +v] = kv[b_i, indices_local[0], g_i,
+                                                                   d // 2 + 64 * u +
+                                                                   (tx - 256) % 8 * 8 + v]
                                 with T.attr("default", "async_scope", 1):
                                     for v in T.vectorized(8):
                                         k_tail_shared_1[r * 16 + (tx - 256) // 8,
@@ -552,18 +553,20 @@ class SparseMlaKernel(Kernel):
             tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
                         Generated query, key-value, and indices tensors.
         """
-        q = torch.randn(self.batch,
-                        self.seq_len,
-                        self.heads,
-                        self.dim + self.tail_dim,
-                        device='cuda',
-                        dtype=self.dtype)
-        kv = torch.randn(self.batch,
-                         self.seq_len_kv,
-                         self.kv_group,
-                         self.dim + self.tail_dim,
-                         device='cuda',
-                         dtype=self.dtype)
+        q = torch.randn(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim + self.tail_dim,
+            device='cuda',
+            dtype=self.dtype)
+        kv = torch.randn(
+            self.batch,
+            self.seq_len_kv,
+            self.kv_group,
+            self.dim + self.tail_dim,
+            device='cuda',
+            dtype=self.dtype)
         indices = torch.full((self.batch, self.seq_len, self.kv_group, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
@@ -572,7 +575,8 @@ class SparseMlaKernel(Kernel):
             for t in range(self.seq_len):
                 for h in range(self.kv_group):
                     i_i = torch.randperm(
-                        min(max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
+                        min(
+                            max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
                             self.seq_len_kv))[:self.topk]
                     indices[b, t, h, :len(i_i)] = i_i
 
@@ -594,10 +598,9 @@ class SparseMlaKernel(Kernel):
         print(f'Start autotuning {self.__class__.__name__}...')
 
         # Apply autotune decorator to the kernel function
-        autotuned_kernel_fn = autotune(configs=self.autotune_configs,
-                                       warmup=warmup,
-                                       rep=rep,
-                                       supply_prog=self.supply_prog)(self.kernel)
+        autotuned_kernel_fn = autotune(
+            configs=self.autotune_configs, warmup=warmup, rep=rep, supply_prog=self.supply_prog)(
+                self.kernel)
 
         # Call without config parameters to trigger autotuning, returns the tuned kernel
         tuned_kernel = autotuned_kernel_fn()
