@@ -27,20 +27,21 @@ class GQACtx(torch.autograd.Function):
         Returns:
             Output tensor of shape (B, S, H, D)
         """
-        O, lse = fwd_op(q, k, v)
+        o, lse = fwd_op(q, k, v)
 
-        ctx.save_for_backward(q, k, v, O, lse)
+        ctx.save_for_backward(q, k, v, o, lse)
         ctx.bwd_op = bwd_op
 
-        return O
+        return o
 
     @staticmethod
-    def backward(ctx: FunctionCtx,
-                 do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
+    def backward(
+            ctx: FunctionCtx, grad_output: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         """Backward pass for group query attention.
 
         Args:
-            do: Gradient of output tensor of shape (B, S, H, D)
+            grad_output: Gradient of output tensor of shape (B, S, H, D)
 
         Returns:
             A tuple containing:
@@ -50,9 +51,9 @@ class GQACtx(torch.autograd.Function):
             - None for fwd_op gradient
             - None for bwd_op gradient
         """
-        q, k, v, O, lse = ctx.saved_tensors
+        q, k, v, o, lse = ctx.saved_tensors
 
-        dq, dk, dv = ctx.bwd_op(q, k, v, O, do, lse)
+        dq, dk, dv = ctx.bwd_op(q, k, v, o, grad_output, lse)
 
         return dq, dk, dv, None, None
 
@@ -67,7 +68,7 @@ class GroupQueryAttentionFunc(Function):
                  dim: int,
                  is_causal: bool,
                  dtype: torch.dtype = torch.float16,
-                 tune: bool = False):
+                 tune: bool = False) -> None:
         """Initialize the GroupQueryAttentionFunc with parameters.
 
         Args:
@@ -88,10 +89,22 @@ class GroupQueryAttentionFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = GroupQueryAttentionFwdOp(
-            batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
-        self.bwd_op = GroupQueryAttentionBwdOp(
-            batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
+        self.fwd_op = GroupQueryAttentionFwdOp(batch,
+                                               heads,
+                                               heads_kv,
+                                               seq_len,
+                                               dim,
+                                               is_causal,
+                                               dtype,
+                                               tune=tune)
+        self.bwd_op = GroupQueryAttentionBwdOp(batch,
+                                               heads,
+                                               heads_kv,
+                                               seq_len,
+                                               dim,
+                                               is_causal,
+                                               dtype,
+                                               tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """Forward pass for group query attention.
@@ -127,7 +140,6 @@ def group_query_attention(q: torch.Tensor,
     Raises:
         ValueError: If input tensors are not 4-dimensional or have inconsistent shapes/dtypes
     """
-
     # Validate that q, k, v are 4-dimensional tensors
     if q.dim() != 4:
         raise ValueError(f"q must be 4-dimensional, but got {q.dim()} dimensions")
@@ -142,16 +154,23 @@ def group_query_attention(q: torch.Tensor,
                          f"but got q: {q.dtype}, k: {k.dtype}, v: {v.dtype}")
 
     # Extract dimension information
-    B, S, H, D = q.shape
+    batch, seqlen, heads, dim = q.shape
 
-    B, S, H_kv, D = k.shape
+    heads_kv = k.shape[2]
 
-    if H % H_kv != 0:
+    if heads % heads_kv != 0:
         raise ValueError(
             f"The number of query heads H must be divisible by the number of key/value heads H_kv, "
-            f"but got H: {H}, H_kv: {H_kv}")
+            f"but got H: {heads}, H_kv: {heads_kv}")
 
-    return GroupQueryAttentionFunc(B, H, H_kv, S, D, is_causal, q.dtype, tune=tune).forward(q, k, v)
+    return GroupQueryAttentionFunc(batch,
+                                   heads,
+                                   heads_kv,
+                                   seqlen,
+                                   dim,
+                                   is_causal,
+                                   q.dtype,
+                                   tune=tune).forward(q, k, v)
 
 
 gqa = group_query_attention
