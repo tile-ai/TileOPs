@@ -3,12 +3,12 @@ from typing import Dict, Optional
 import torch
 
 from top.kernels.flash_attn import (
-    flashattn_bwd_postprocess_kernel,
-    flashattn_bwd_preprocess_kernel,
-    gqa_bwd_kernel,
-    gqa_bwd_wgmma_pipelined_kernel,
-    gqa_fwd_kernel,
-    gqa_fwd_wgmma_pipelined_kernel,
+    FlashAttnBwdPostprocessKernel,
+    FlashAttnBwdPreprocessKernel,
+    GqaBwdKernel,
+    GqaBwdWgmmaPipelinedKernel,
+    GqaFwdKernel,
+    GqaFwdWgmmaPipelinedKernel,
 )
 from top.kernels.kernel import Kernel
 from top.utils import is_hopper
@@ -41,12 +41,12 @@ class GroupQueryAttentionFwdOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_fwd_kernel"](
+        self.kernel = self.kernel_map["GqaFwdKernel"](
             batch, heads, heads_kv, seq_len, dim, is_causal, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_fwd_kernel": gqa_fwd_wgmma_pipelined_kernel if is_hopper() else gqa_fwd_kernel}
+        return {"GqaFwdKernel": GqaFwdWgmmaPipelinedKernel if is_hopper() else GqaFwdKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return self.kernel(q, k, v)
@@ -77,7 +77,7 @@ class GroupQueryAttentionBwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.prep_kernel = self.kernel_map["gqa_bwd_preprocess_kernel"](batch, heads, seq_len, dim,
                                                                         self.dtype)
-        self.kernel = self.kernel_map["gqa_bwd_kernel"](
+        self.kernel = self.kernel_map["GqaBwdKernel"](
             batch, heads, heads_kv, seq_len, dim, is_causal, self.dtype, tune=tune)
         if not is_hopper():
             self.post_kernel = self.kernel_map["gqa_bwd_postprocess_kernel"](batch, heads, seq_len,
@@ -87,11 +87,11 @@ class GroupQueryAttentionBwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_bwd_preprocess_kernel":
-                flashattn_bwd_preprocess_kernel,
-            "gqa_bwd_kernel":
-                gqa_bwd_wgmma_pipelined_kernel if is_hopper() else gqa_bwd_kernel,
+                FlashAttnBwdPreprocessKernel,
+            "GqaBwdKernel":
+                GqaBwdWgmmaPipelinedKernel if is_hopper() else GqaBwdKernel,
             "gqa_bwd_postprocess_kernel":
-                flashattn_bwd_postprocess_kernel if not is_hopper() else None,
+                FlashAttnBwdPostprocessKernel if not is_hopper() else None,
         }
 
     def forward(
