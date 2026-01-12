@@ -50,6 +50,7 @@ jobs:
           conda activate tileops-release
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
+          nvcc --version
           CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_release.log
         shell: bash
 
@@ -79,6 +80,7 @@ jobs:
           conda activate tileops-nightly
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
+          nvcc --version
           CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_nightly.log
         shell: bash
 
