@@ -1,5 +1,6 @@
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
+from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .gemm import GemmOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
@@ -18,4 +19,5 @@ __all__ = [
     "GroupQueryAttentionDecodeWithKVCacheOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
+    'Fp8LightingIndexerOp'
 ]
