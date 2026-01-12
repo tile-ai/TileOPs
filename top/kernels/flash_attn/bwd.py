@@ -257,8 +257,8 @@ class MhaBwdKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 64,
-            "block_N": 64 if self.dim <= 64 else 32,
+            "block_m": 64,
+            "block_n": 64 if self.dim <= 64 else 32,
             "num_stages": 1,
             "threads": 128
         }
@@ -272,8 +272,8 @@ class MhaBwdKernel(Kernel):
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
 
         return [{
-            'block_M': c[0],
-            'block_N': c[1],
+            'block_m': c[0],
+            'block_n': c[1],
             'num_stages': c[2],
             'threads': c[3]
         } for c in _configs]
@@ -439,8 +439,8 @@ class MhaBwdWgmmaPipelinedKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 128,
-            "block_N": 128 if self.dim <= 64 else 32,
+            "block_m": 128,
+            "block_n": 128 if self.dim <= 64 else 32,
             "num_stages": 2,
             "threads": 256
         }
@@ -454,8 +454,8 @@ class MhaBwdWgmmaPipelinedKernel(Kernel):
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
 
         return [{
-            'block_M': c[0],
-            'block_N': c[1],
+            'block_m': c[0],
+            'block_n': c[1],
             'num_stages': c[2],
             'threads': c[3]
         } for c in _configs]
@@ -604,8 +604,8 @@ class GqaBwdKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 64,
-            "block_N": 64 if self.dim <= 64 else 32,
+            "block_m": 64,
+            "block_n": 64 if self.dim <= 64 else 32,
             "num_stages": 1,
             "threads": 128
         }
@@ -619,8 +619,8 @@ class GqaBwdKernel(Kernel):
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
 
         return [{
-            'block_M': c[0],
-            'block_N': c[1],
+            'block_m': c[0],
+            'block_n': c[1],
             'num_stages': c[2],
             'threads': c[3]
         } for c in _configs]
@@ -784,8 +784,8 @@ class GqaBwdWgmmaPipelinedKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 128,
-            "block_N": 128 if self.dim <= 64 else 32,
+            "block_m": 128,
+            "block_n": 128 if self.dim <= 64 else 32,
             "num_stages": 2,
             "threads": 256
         }
@@ -799,8 +799,8 @@ class GqaBwdWgmmaPipelinedKernel(Kernel):
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
 
         return [{
-            'block_M': c[0],
-            'block_N': c[1],
+            'block_m': c[0],
+            'block_n': c[1],
             'num_stages': c[2],
             'threads': c[3]
         } for c in _configs]
