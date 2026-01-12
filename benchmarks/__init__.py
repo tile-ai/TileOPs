@@ -13,19 +13,13 @@ from .flash_attn import (
 )
 from .flash_decode import GroupQueryAttentionDecodeBenchmark, MultiHeadAttentionDecodeBenchmark
 from .gemm import GemmBenchmark, MatMulBenchmark
+from .grouped_gemm import GroupedGemmBenchmark
 
 __all__ = [
-    'Benchmark',
-    'MultiHeadAttentionBenchmark',
-    'MultiHeadAttentionBwdBenchmark',
-    'MultiHeadAttentionFwdBenchmark',
-    'GroupQueryAttentionBenchmark',
-    'GroupQueryAttentionFwdBenchmark',
-    'GroupQueryAttentionBwdBenchmark',
-    'GemmBenchmark',
-    'MultiHeadAttentionDecodeBenchmark',
-    'GroupQueryAttentionDecodeBenchmark',
-    'MultiHeadLatentAttentionDecodeBenchmark',
-    'DeepSeekSparseAttentionDecodeBenchmark',
-    'MatMulBenchmark',
+    'Benchmark', 'MultiHeadAttentionBenchmark', 'MultiHeadAttentionBwdBenchmark',
+    'MultiHeadAttentionFwdBenchmark', 'GroupQueryAttentionBenchmark',
+    'GroupQueryAttentionFwdBenchmark', 'GroupQueryAttentionBwdBenchmark', 'GemmBenchmark',
+    'MultiHeadAttentionDecodeBenchmark', 'GroupQueryAttentionDecodeBenchmark',
+    'MultiHeadLatentAttentionDecodeBenchmark', 'DeepSeekSparseAttentionDecodeBenchmark',
+    'MatMulBenchmark', "GroupedGemmBenchmark"
 ]

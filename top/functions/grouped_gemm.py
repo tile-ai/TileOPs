@@ -1,19 +1,22 @@
 import torch
+
+from top.ops import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp
+
 from .function import Function
-from top.ops.grouped_gemm import grouped_gemm_nt, grouped_gemm_nn, grouped_gemm_tn
 
-__all__ = ['grouped_gemm_fn']
+__all__ = ['GroupedGemmFunc']
 
 
-class grouped_gemm_ctx(torch.autograd.Function):
+# flake8: noqa
+class GroupedGemmCtx(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, A, B, batch_sizes, batch_offsets, batch_padded_offsets, fwd_op, dA_op, dB_op):
-        O = fwd_op(A, B, batch_sizes, batch_offsets, batch_padded_offsets)
+        output = fwd_op(A, B, batch_sizes, batch_offsets, batch_padded_offsets)
         ctx.save_for_backward(A, B, batch_sizes, batch_offsets, batch_padded_offsets)
         ctx.dA_op = dA_op
         ctx.dB_op = dB_op
-        return O
+        return output  # noqa: R504
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -33,7 +36,7 @@ class grouped_gemm_ctx(torch.autograd.Function):
         return dA, dB, None, None, None, None, None, None
 
 
-class grouped_gemm_fn(Function):
+class GroupedGemmFunc(Function):
 
     def __init__(self, batch_sum, batch_count, N, K, dtype=torch.float16, tune=False):
         self.batch_sum = batch_sum
@@ -42,11 +45,11 @@ class grouped_gemm_fn(Function):
         self.K = K
         self.dtype = dtype
 
-        self.fwd_op = grouped_gemm_nt(batch_sum, batch_count, N, K, dtype, tune=tune)
-        self.dA_op = grouped_gemm_nn(batch_sum, batch_count, K, N, dtype, tune=tune)
-        self.dB_op = grouped_gemm_tn(batch_sum, batch_count, N, K, dtype, tune=tune)
+        self.fwd_op = GroupedGemmNTOp(batch_sum, batch_count, N, K, dtype, tune=tune)
+        self.dA_op = GroupedGemmNNOp(batch_sum, batch_count, K, N, dtype, tune=tune)
+        self.dB_op = GroupedGemmTNOp(batch_sum, batch_count, N, K, dtype, tune=tune)
 
     def forward(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
                 batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor) -> torch.Tensor:
-        return grouped_gemm_ctx.apply(A, B, batch_sizes, batch_offsets, batch_padded_offsets,
-                                      self.fwd_op, self.dA_op, self.dB_op)
+        return GroupedGemmCtx.apply(A, B, batch_sizes, batch_offsets, batch_padded_offsets,
+                                    self.fwd_op, self.dA_op, self.dB_op)

@@ -11,6 +11,8 @@ from .gqa_decode import (
     gqa_decode_with_kvcache,
     group_query_attention_decode_with_kvcache,
 )
+from .grouped_gemm import (
+    GroupedGemmFunc,)
 from .matmul import MatMulFunc, matmul
 from .mha import MultiHeadAttentionFunc, mha, multi_head_attention
 from .mha_decode import (
@@ -28,6 +30,7 @@ __all__ = [
     "MultiHeadLatentAttentionDecodeWithKVCacheFunc",
     "DeepSeekSparseAttentionDecodeWithKVCacheFunc",
     "MatMulFunc",
+    "GroupedGemmFunc",
     "group_query_attention",
     "multi_head_attention",
     'multi_head_attention_decode_with_kvcache',

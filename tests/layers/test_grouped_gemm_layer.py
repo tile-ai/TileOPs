@@ -1,12 +1,13 @@
 import argparse
+
+from benchmarks import GroupedGemmBenchmark
+from top.layers import GroupedGemmLayer
 from top.utils import str2dtype
-from top.layers.grouped_gemm import GROUPED_GEMM
-from benchmarks import grouped_gemm_benchmark
 
 
 def test_grouped_gemm_layer(batch_sum, batch_count, N, K, dtype):
-    grouped_gemm = GROUPED_GEMM(batch_sum, batch_count, N, K, dtype)
-    benchmark = grouped_gemm_benchmark(batch_sum, batch_count, N, K, dtype)
+    grouped_gemm = GroupedGemmLayer(batch_sum, batch_count, N, K, dtype)
+    benchmark = GroupedGemmBenchmark(batch_sum, batch_count, N, K, dtype)
     inputs = benchmark.gen_inputs()
     # enable gradients for A and B
     inputs = list(inputs)

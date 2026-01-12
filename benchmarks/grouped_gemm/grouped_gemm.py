@@ -1,12 +1,22 @@
-from benchmarks.benchmark import Benchmark
-from top.ops.grouped_gemm import grouped_gemm_nt, grouped_gemm_nn, grouped_gemm_tn, grouped_gemm_tt
-import torch
 import math
 
+import torch
 
-class grouped_gemm_nt_benchmark(Benchmark):
+from benchmarks.benchmark import Benchmark
+from top.ops import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
+
+__all__ = [
+    'GroupedGemmNTBenchmark',
+    'GroupedGemmNNBenchmark',
+    'GroupedGemmTNBenchmark',
+    'GroupedGemmTTBenchmark',
+    'GroupedGemmBenchmark',
+]
+
+
+class GroupedGemmNTBenchmark(Benchmark):
     """Benchmark for forward grouped GEMM: A @ B^T -> C"""
-    op_type = grouped_gemm_nt
+    op_type = GroupedGemmNTOp
 
     def __init__(self, batch_sum, batch_count, N, K, dtype):
         self.batch_sum = batch_sum
@@ -27,8 +37,7 @@ class grouped_gemm_nt_benchmark(Benchmark):
 
     @property
     def total_flops(self):
-        total_flops = 2.0 * self.batch_sum * self.K * self.N
-        return total_flops
+        return 2.0 * self.batch_sum * self.K * self.N
 
     @property
     def total_memory(self):
@@ -64,7 +73,7 @@ class grouped_gemm_nt_benchmark(Benchmark):
         return A, B, batch_sizes, batch_offsets, batch_padded_offsets
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
+                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
         assert A.shape[0] == sum(batch_sizes)
         assert B.shape[0] == len(batch_sizes)
         output = torch.empty((sum(batch_sizes), B.shape[1]), device=A.device, dtype=A.dtype)
@@ -78,9 +87,9 @@ class grouped_gemm_nt_benchmark(Benchmark):
         return output
 
 
-class grouped_gemm_nn_benchmark(Benchmark):
+class GroupedGemmNNBenchmark(Benchmark):
     """Benchmark for backward dA grouped GEMM: A @ B -> C"""
-    op_type = grouped_gemm_nn
+    op_type = GroupedGemmNNOp
 
     def __init__(self, batch_sum, batch_count, N, K, dtype):
         self.batch_sum = batch_sum
@@ -101,8 +110,7 @@ class grouped_gemm_nn_benchmark(Benchmark):
 
     @property
     def total_flops(self):
-        total_flops = 2.0 * self.batch_sum * self.K * self.N
-        return total_flops
+        return 2.0 * self.batch_sum * self.K * self.N
 
     @property
     def total_memory(self):
@@ -139,7 +147,7 @@ class grouped_gemm_nn_benchmark(Benchmark):
         return A, B, batch_sizes, batch_offsets, batch_padded_offsets
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
+                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
         assert A.shape[0] == sum(batch_sizes)
         assert B.shape[0] == len(batch_sizes)
         output = torch.empty((sum(batch_sizes), B.shape[2]), device=A.device, dtype=A.dtype)
@@ -153,9 +161,9 @@ class grouped_gemm_nn_benchmark(Benchmark):
         return output
 
 
-class grouped_gemm_tn_benchmark(Benchmark):
+class GroupedGemmTNBenchmark(Benchmark):
     """Benchmark for backward dB grouped GEMM: A^T @ B -> C"""
-    op_type = grouped_gemm_tn
+    op_type = GroupedGemmTNOp
 
     def __init__(self, batch_sum, batch_count, N, K, dtype):
         self.batch_sum = batch_sum
@@ -176,8 +184,7 @@ class grouped_gemm_tn_benchmark(Benchmark):
 
     @property
     def total_flops(self):
-        total_flops = 2.0 * self.batch_sum * self.K * self.N
-        return total_flops
+        return 2.0 * self.batch_sum * self.K * self.N
 
     @property
     def total_memory(self):
@@ -214,12 +221,14 @@ class grouped_gemm_tn_benchmark(Benchmark):
         return A, B, batch_sizes, batch_offsets, batch_padded_offsets
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
+                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
         batch_sum_A = A.shape[0]
         batch_sum_B = B.shape[0]
         total_batch = int(batch_sizes.sum().item())
-        assert batch_sum_A == total_batch, f"A.shape[0]={batch_sum_A} != sum(batch_sizes)={total_batch}"
-        assert batch_sum_B == total_batch, f"B.shape[0]={batch_sum_B} != sum(batch_sizes)={total_batch}"
+        assert batch_sum_A == total_batch, \
+            f"A.shape[0]={batch_sum_A} != sum(batch_sizes)={total_batch}"
+        assert batch_sum_B == total_batch, \
+            f"B.shape[0]={batch_sum_B} != sum(batch_sizes)={total_batch}"
 
         N, K = A.shape[1], B.shape[1]
         batch_count = len(batch_sizes)
@@ -235,8 +244,8 @@ class grouped_gemm_tn_benchmark(Benchmark):
         return output
 
 
-class grouped_gemm_tt_benchmark(Benchmark):
-    op_type = grouped_gemm_tt
+class GroupedGemmTTBenchmark(Benchmark):
+    op_type = GroupedGemmTTOp
 
     def __init__(self, batch_sum, batch_count, N, K, dtype):
         self.batch_sum = batch_sum
@@ -293,7 +302,7 @@ class grouped_gemm_tt_benchmark(Benchmark):
             batch_padded_offsets_list, device=device, dtype=torch.int32)
         return A, B, batch_sizes, batch_offsets, batch_padded_offsets
 
-    def ref_program(self, A, B, batch_sizes, batch_offsets, batch_padded_offsets):
+    def ref_program(self, A, B, batch_sizes, batch_offsets, batch_padded_offsets):  # noqa: U100
         batch_sum_A = A.shape[0]
         batch_sum_B = B.shape[1]
         total_batch = int(batch_sizes.sum().item())
@@ -316,7 +325,7 @@ class grouped_gemm_tt_benchmark(Benchmark):
         return output
 
 
-class grouped_gemm_benchmark(Benchmark):
+class GroupedGemmBenchmark(Benchmark):
 
     def __init__(self, batch_sum, batch_count, N, K, dtype, grad=True):
         self.batch_sum = batch_sum
@@ -327,9 +336,9 @@ class grouped_gemm_benchmark(Benchmark):
         self.grad = grad
         self.batch_sizes_list = self._generate_batch_sizes()
         self.padding_M = 128
-        self.nt_benchmark = grouped_gemm_nt_benchmark(batch_sum, batch_count, N, K, dtype)
-        self.nn_benchmark = grouped_gemm_nn_benchmark(batch_sum, batch_count, N, K, dtype)
-        self.tn_benchmark = grouped_gemm_tn_benchmark(batch_sum, batch_count, N, K, dtype)
+        self.nt_benchmark = GroupedGemmNTBenchmark(batch_sum, batch_count, N, K, dtype)
+        self.nn_benchmark = GroupedGemmNNBenchmark(batch_sum, batch_count, N, K, dtype)
+        self.tn_benchmark = GroupedGemmTNBenchmark(batch_sum, batch_count, N, K, dtype)
 
     @property
     def total_flops(self):

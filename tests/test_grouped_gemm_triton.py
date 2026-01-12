@@ -1,12 +1,10 @@
-import os
+import argparse
+import math
+import time
 
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 import torch
 import triton
 import triton.language as tl
-import time
-import argparse
-import math
 
 
 @triton.autotune(
@@ -41,21 +39,6 @@ import math
             'BLOCK_SIZE_K': 32,
             'NUM_SM': 128
         }),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 256, 'NUM_SM': 128}),
     ],
     key=['group_size'],
 )
@@ -150,21 +133,6 @@ def grouped_gemm_nt_kernel(
             'BLOCK_SIZE_K': 32,
             'NUM_SM': 128
         }),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 256, 'NUM_SM': 128}),
     ],
     key=['group_size'],
 )
@@ -259,21 +227,6 @@ def grouped_gemm_nn_kernel(
             'BLOCK_SIZE_K': 32,
             'NUM_SM': 128
         }),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 256, 'NUM_SM': 128}),
     ],
     key=['group_size'],
 )
@@ -368,21 +321,6 @@ def grouped_gemm_tn_kernel(
             'BLOCK_SIZE_K': 32,
             'NUM_SM': 128
         }),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'NUM_SM': 128}),
-        # triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 256, 'NUM_SM': 128}),
     ],
     key=['group_size'],
 )
@@ -718,9 +656,13 @@ def prepare_grouped_tensors_tt(dO: torch.Tensor, A: torch.Tensor, batch_sizes: t
             torch.tensor(g_lds, dtype=torch.int32, device=dO.device), group_C)
 
 
-def grouped_gemm_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor,
-                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
+def grouped_gemm_nt(
+        A: torch.Tensor,
+        B: torch.Tensor,
+        batch_sizes: torch.Tensor,
+        batch_offsets: torch.Tensor,  # noqa: U100
+        batch_padded_offsets: torch.Tensor  # noqa: U100
+) -> torch.Tensor:
     (d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds,
      group_C) = prepare_grouped_tensors_nt(A, B, batch_sizes)
 
@@ -732,9 +674,13 @@ def grouped_gemm_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
     return torch.cat(group_C, dim=0)
 
 
-def grouped_gemm_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor,
-                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
+def grouped_gemm_nn(
+        A: torch.Tensor,
+        B: torch.Tensor,
+        batch_sizes: torch.Tensor,
+        batch_offsets: torch.Tensor,  # noqa: U100
+        batch_padded_offsets: torch.Tensor  # noqa: U100
+) -> torch.Tensor:
     (d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds,
      group_C) = prepare_grouped_tensors_nn(A, B, batch_sizes)
 
@@ -746,9 +692,13 @@ def grouped_gemm_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
     return torch.cat(group_C, dim=0)
 
 
-def grouped_gemm_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor,
-                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
+def grouped_gemm_tn(
+        A: torch.Tensor,
+        B: torch.Tensor,
+        batch_sizes: torch.Tensor,
+        batch_offsets: torch.Tensor,  # noqa: U100
+        batch_padded_offsets: torch.Tensor  # noqa: U100
+) -> torch.Tensor:
     (d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds,
      group_C) = prepare_grouped_tensors_tn(A, B, batch_sizes)
 
@@ -760,9 +710,13 @@ def grouped_gemm_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
     return torch.stack(group_C, dim=0)
 
 
-def grouped_gemm_tt(dO: torch.Tensor, A: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor,
-                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
+def grouped_gemm_tt(
+        dO: torch.Tensor,
+        A: torch.Tensor,
+        batch_sizes: torch.Tensor,
+        batch_offsets: torch.Tensor,  # noqa: U100
+        batch_padded_offsets: torch.Tensor  # noqa: U100
+) -> torch.Tensor:
     (dO_addrs, A_addrs, C_addrs, g_sizes, g_lds,
      group_C) = prepare_grouped_tensors_tt(dO, A, batch_sizes)
 
@@ -775,7 +729,7 @@ def grouped_gemm_tt(dO: torch.Tensor, A: torch.Tensor, batch_sizes: torch.Tensor
 
 
 def ref_program_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
+                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
     output = torch.empty((sum(batch_sizes), B.shape[2]), device=A.device, dtype=A.dtype)
     start = 0
     for i, size in enumerate(batch_sizes):
@@ -786,7 +740,7 @@ def ref_program_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
 
 
 def ref_program_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
+                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
     total_batch = int(batch_sizes.sum().item())
     assert A.shape[0] == total_batch, f"A.shape[0]={A.shape[0]} != sum(batch_sizes)={total_batch}"
     assert B.shape[0] == len(
@@ -802,7 +756,7 @@ def ref_program_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
 
 
 def ref_program_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
+                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
     output = torch.zeros((len(batch_sizes), A.shape[0], B.shape[1]), device=A.device, dtype=A.dtype)
     start = 0
     for i, size in enumerate(batch_sizes):
@@ -813,7 +767,7 @@ def ref_program_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
 
 
 def ref_program_tt(dO: torch.Tensor, A: torch.Tensor, batch_sizes: torch.Tensor,
-                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
+                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
     output = torch.zeros((len(batch_sizes), dO.shape[1], A.shape[1]),
                          device=dO.device,
                          dtype=dO.dtype)
@@ -837,10 +791,9 @@ def check_kernel(kernel_func, ref_func, inputs, kernel_name):
     print("  Output 0:")
     print(f"    shape: {outputs.shape} vs {outputs_ref.shape}")
     print(f"    dtype: {outputs.dtype} vs {outputs_ref.dtype}")
-
-    if torch.allclose(outputs, outputs_ref, atol=1e+1, rtol=1e-1):
+    allclose = torch.allclose(outputs, outputs_ref, atol=1e+1, rtol=1e-1)
+    if allclose:
         print(f"All checks passed for {kernel_name}.")
-        return True
     else:
         diff = torch.abs(outputs - outputs_ref)
         print(f"最大差异: {diff.max().item()}")
@@ -855,7 +808,7 @@ def check_kernel(kernel_func, ref_func, inputs, kernel_name):
             print(f"参考[{i}]: {outputs_ref[i][:5].tolist()}")
             print(f"差异[{i}]: {(outputs[i][:5] - outputs_ref[i][:5]).tolist()}")
         print(f"Checks failed for {kernel_name}.")
-        return False
+    return allclose
 
 
 def profile_kernel(kernel_func, inputs, kernel_name, total_flops):

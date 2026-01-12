@@ -1,6 +1,7 @@
-import torch
-import time
 import argparse
+import time
+
+import torch
 import triton
 import triton.language as tl
 

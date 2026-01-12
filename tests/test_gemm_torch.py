@@ -1,7 +1,8 @@
+import argparse
+import time
+
 import torch
 import torch.nn as nn
-import time
-import argparse
 
 
 def calculate_gemm_flops(M, N, K):

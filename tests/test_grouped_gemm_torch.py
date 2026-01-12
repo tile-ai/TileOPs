@@ -1,5 +1,6 @@
-import torch
 import time
+
+import torch
 
 
 class PyTorchGroupedGEMM:
@@ -7,86 +8,85 @@ class PyTorchGroupedGEMM:
     def __init__(self):
         pass
 
-    def grouped_gemm_nt(self, A, B, batch_sizes):
+    def grouped_gemm_nt(self, a, b, batch_sizes):
         outputs = []
         start = 0
         for i, size in enumerate(batch_sizes):
             end = start + size
-            part_A = A[start:end]
-            part_B = B[i]
+            part_A = a[start:end]
+            part_B = b[i]
             output = torch.mm(part_A, part_B.transpose(0, 1))
             outputs.append(output)
             start = end
         return torch.cat(outputs, dim=0)
 
-    def grouped_gemm_nn(self, A, B, batch_sizes):
+    def grouped_gemm_nn(self, a, b, batch_sizes):
         outputs = []
         start = 0
         for i, size in enumerate(batch_sizes):
             end = start + size
-            part_A = A[start:end]
-            part_B = B[i].transpose(0, 1)
+            part_A = a[start:end]
+            part_B = b[i].transpose(0, 1)
             output = torch.mm(part_A, part_B)
             outputs.append(output)
             start = end
         return torch.cat(outputs, dim=0)
 
-    def grouped_gemm_tn(self, A, B, batch_sizes):
+    def grouped_gemm_tn(self, a, b, batch_sizes):
         batch_count = len(batch_sizes)
-        N, K = A.shape[1], B.shape[1]
-        outputs = torch.zeros(batch_count, N, K, device=A.device, dtype=A.dtype)
+        N, K = a.shape[1], b.shape[1]
+        outputs = torch.zeros(batch_count, N, K, device=a.device, dtype=a.dtype)
 
         start = 0
         for i, size in enumerate(batch_sizes):
             end = start + size
-            part_A = A[start:end]
-            part_B = B[start:end]
+            part_A = a[start:end]
+            part_B = b[start:end]
             outputs[i] = torch.mm(part_A.transpose(0, 1), part_B)
             start = end
         return outputs
 
-    def grouped_gemm_tt(self, A, B, batch_sizes):
+    def grouped_gemm_tt(self, a, b, batch_sizes):
         batch_count = len(batch_sizes)
-        N, K = A.shape[1], B.shape[0]
-        outputs = torch.zeros(batch_count, N, K, device=A.device, dtype=A.dtype)
+        N, K = a.shape[1], b.shape[0]
+        outputs = torch.zeros(batch_count, N, K, device=a.device, dtype=a.dtype)
 
         start = 0
         for i, size in enumerate(batch_sizes):
             end = start + size
-            part_A = A[start:end]
-            part_B = B[:, start:end]
+            part_A = a[start:end]
+            part_B = b[:, start:end]
             outputs[i] = torch.mm(part_A.transpose(0, 1), part_B.transpose(0, 1))
             start = end
         return outputs
 
 
-def calculate_flops(batch_sizes, K, N, mode='nt'):
+def calculate_flops(batch_sizes, k, n):
     total_flops = 0
     for batch_size in batch_sizes:
-        total_flops += 2 * batch_size * K * N
+        total_flops += 2 * batch_size * k * n
     return total_flops
 
 
-def benchmark_single(gemm, A, B, batch_sizes, num_iter=100):
+def benchmark_single(gemm, a, b, batch_sizes, num_iter=100):
     for _ in range(10):
         with torch.no_grad():
-            _ = gemm(A, B, batch_sizes)
+            _ = gemm(a, b, batch_sizes)
     torch.cuda.synchronize()
     start_time = time.time()
     for _ in range(num_iter):
         with torch.no_grad():
-            _ = gemm(A, B, batch_sizes)
+            _ = gemm(a, b, batch_sizes)
     torch.cuda.synchronize()
 
-    elapsed_time = (time.time() - start_time) / num_iter
-    return elapsed_time
+    return (time.time() - start_time) / num_iter
 
 
-def test_all_grouped_gemm(batch_sum=4096, batch_count=4, K=8192, N=4864, dtype=torch.float16):
+def test_all_grouped_gemm(batch_sum=4096, batch_count=4, k=8192, n=4864, dtype=torch.float16):
     print("=" * 70)
     print("PyTorch Grouped GEMM Performance Test")
     print("=" * 70)
-    print(f"Config: batch_sum={batch_sum}, batch_count={batch_count}, K={K}, N={N}, dtype={dtype}")
+    print(f"Config: batch_sum={batch_sum}, batch_count={batch_count}, K={k}, N={n}, dtype={dtype}")
 
     base_size = batch_sum // batch_count
     remainder = batch_sum % batch_count
@@ -101,44 +101,44 @@ def test_all_grouped_gemm(batch_sum=4096, batch_count=4, K=8192, N=4864, dtype=t
 
     print("\n1. Testing NT layout (forward): A[batch_sum, K] @ B[batch_count, N, K]^T")
     print("-" * 50)
-    A_nt = torch.randn(batch_sum, K, device=device, dtype=dtype)
-    B_nt = torch.randn(batch_count, N, K, device=device, dtype=dtype)
+    A_nt = torch.randn(batch_sum, k, device=device, dtype=dtype)
+    B_nt = torch.randn(batch_count, n, k, device=device, dtype=dtype)
 
     nt_time = benchmark_single(gemm.grouped_gemm_nt, A_nt, B_nt, batch_sizes)
-    nt_flops = calculate_flops(batch_sizes, K, N, 'nt')
+    nt_flops = calculate_flops(batch_sizes, k, n)
     nt_tflops = (nt_flops / 1e12) / nt_time
     print(f"Time: {nt_time*1000:.2f} ms")
     print(f"Performance: {nt_tflops:.2f} TFLOPS")
 
     print("\n2. Testing NN layout (backward dA): A[batch_sum, N] @ B[batch_count, K, N]")
     print("-" * 50)
-    A_nn = torch.randn(batch_sum, N, device=device, dtype=dtype)
-    B_nn = torch.randn(batch_count, K, N, device=device, dtype=dtype)
+    A_nn = torch.randn(batch_sum, n, device=device, dtype=dtype)
+    B_nn = torch.randn(batch_count, k, n, device=device, dtype=dtype)
 
     nn_time = benchmark_single(gemm.grouped_gemm_nn, A_nn, B_nn, batch_sizes)
-    nn_flops = calculate_flops(batch_sizes, K, N, 'nn')
+    nn_flops = calculate_flops(batch_sizes, k, n)
     nn_tflops = (nn_flops / 1e12) / nn_time
     print(f"Time: {nn_time*1000:.2f} ms")
     print(f"Performance: {nn_tflops:.2f} TFLOPS")
 
     print("\n3. Testing TN layout (backward dB): A[batch_sum, N]^T @ B[batch_sum, K]")
     print("-" * 50)
-    A_tn = torch.randn(batch_sum, N, device=device, dtype=dtype)
-    B_tn = torch.randn(batch_sum, K, device=device, dtype=dtype)
+    A_tn = torch.randn(batch_sum, n, device=device, dtype=dtype)
+    B_tn = torch.randn(batch_sum, k, device=device, dtype=dtype)
 
     tn_time = benchmark_single(gemm.grouped_gemm_tn, A_tn, B_tn, batch_sizes)
-    tn_flops = calculate_flops(batch_sizes, K, N, 'tn')
+    tn_flops = calculate_flops(batch_sizes, k, n)
     tn_tflops = (tn_flops / 1e12) / tn_time
     print(f"Time: {tn_time*1000:.2f} ms")
     print(f"Performance: {tn_tflops:.2f} TFLOPS")
 
     print("\n4. Testing TT layout (backward dB): A[batch_sum, N]^T @ (B[K, batch_sum]^T)^T")
     print("-" * 50)
-    A_tt = torch.randn(batch_sum, N, device=device, dtype=dtype)
-    B_tt = torch.randn(K, batch_sum, device=device, dtype=dtype)
+    A_tt = torch.randn(batch_sum, n, device=device, dtype=dtype)
+    B_tt = torch.randn(k, batch_sum, device=device, dtype=dtype)
 
     tt_time = benchmark_single(gemm.grouped_gemm_tt, A_tt, B_tt, batch_sizes)
-    tt_flops = calculate_flops(batch_sizes, K, N, 'tt')
+    tt_flops = calculate_flops(batch_sizes, k, n)
     tt_tflops = (tt_flops / 1e12) / tt_time
     print(f"Time: {tt_time*1000:.2f} ms")
     print(f"Performance: {tt_tflops:.2f} TFLOPS")
@@ -147,9 +147,9 @@ def test_all_grouped_gemm(batch_sum=4096, batch_count=4, K=8192, N=4864, dtype=t
     print("-" * 50)
     print("Flow: NT(forward) -> NN(dA) -> TN(dB) -> TT(dB alternative)")
 
-    A = torch.randn(batch_sum, K, device=device, dtype=dtype)
-    B = torch.randn(batch_count, N, K, device=device, dtype=dtype)
-    grad_output = torch.ones_like(torch.randn(batch_sum, N, device=device, dtype=dtype))
+    A = torch.randn(batch_sum, k, device=device, dtype=dtype)
+    B = torch.randn(batch_count, n, k, device=device, dtype=dtype)
+    grad_output = torch.ones_like(torch.randn(batch_sum, n, device=device, dtype=dtype))
     B_nn_combined = B.transpose(1, 2).contiguous()
     B_tt_combined = A.transpose(0, 1).contiguous()
 

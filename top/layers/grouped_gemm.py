@@ -1,19 +1,20 @@
 import torch
 from torch import nn
-from top.functions.grouped_gemm import grouped_gemm_fn
+
+from top.functions import GroupedGemmFunc
 
 
-class GROUPED_GEMM(nn.Module):
+class GroupedGemmLayer(nn.Module):
 
-    def __init__(self, batch_sum, batch_count, N, K, dtype):
+    def __init__(self, batch_sum: int, batch_count: int, n: int, k: int, dtype: str):
         super().__init__()
         self.batch_sum = batch_sum
         self.batch_count = batch_count
-        self.N = N
-        self.K = K
+        self.N = n
+        self.K = k
         self.dtype = dtype
-        self.fn = grouped_gemm_fn(batch_sum, batch_count, N, K, dtype)
+        self.fn = GroupedGemmFunc(batch_sum, batch_count, n, k, dtype)
 
-    def forward(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
+    def forward(self, a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor,
                 batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor) -> torch.Tensor:
-        return self.fn(A, B, batch_sizes, batch_offsets, batch_padded_offsets)
+        return self.fn(a, b, batch_sizes, batch_offsets, batch_padded_offsets)

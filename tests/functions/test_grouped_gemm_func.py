@@ -1,9 +1,11 @@
 import argparse
-from top import grouped_gemm_fn
-from top.utils import str2dtype
-import torch
 import math
-from benchmarks import grouped_gemm_benchmark
+
+import torch
+
+from benchmarks import GroupedGemmBenchmark
+from top.functions import GroupedGemmFunc
+from top.utils import str2dtype
 
 
 def test_grouped_gemm_fn(batch_sizes_list, N, K, padding_M, dtype, tune=False):
@@ -18,8 +20,8 @@ def test_grouped_gemm_fn(batch_sizes_list, N, K, padding_M, dtype, tune=False):
                                          math.ceil((batch_sizes_list[i] + 1) / padding_M) *
                                          padding_M)
 
-    fn = grouped_gemm_fn(batch_sum, batch_count, N, K, dtype, tune=tune)
-    benchmark = grouped_gemm_benchmark(batch_sum, batch_count, N, K, dtype)
+    fn = GroupedGemmFunc(batch_sum, batch_count, N, K, dtype, tune=tune)
+    benchmark = GroupedGemmBenchmark(batch_sum, batch_count, N, K, dtype)
     inputs = benchmark.gen_inputs()
     # print("Testing forward propagation...")
     output = fn(*inputs)
