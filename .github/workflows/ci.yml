@@ -44,7 +44,6 @@ jobs:
       - name: Setup & Run tests
         run: |
           source ~/.bashrc
-          export CUDA_HOME=/usr/local/cuda-12.9
           export PATH=/usr/local/cuda-12.9/bin:$PATH
           export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
           source /home/lyc/miniconda3/etc/profile.d/conda.sh
@@ -74,7 +73,6 @@ jobs:
       - name: Setup & Run tests
         run: |
           source ~/.bashrc
-          export CUDA_HOME=/usr/local/cuda-12.9
           export PATH=/usr/local/cuda-12.9/bin:$PATH
           export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
           source /home/lyc/miniconda3/etc/profile.d/conda.sh
