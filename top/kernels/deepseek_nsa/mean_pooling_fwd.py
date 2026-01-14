@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -20,7 +20,7 @@ def _mean_pooling_kernel(
     use_offsets: int,
     dtype: str,
     accum_dtype: str,
-) -> None:
+) -> Callable:
 
     @tilelang.jit(out_idx=[1], pass_configs={"tl.disable_tma_lower": True})
     def _mean_pooling_func(bdim: int, threads: int) -> None:

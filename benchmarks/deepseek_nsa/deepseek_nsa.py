@@ -1,7 +1,6 @@
-from typing import Any
+from typing import Any, Optional
 
 import torch
-from fla.ops.common.utils import prepare_chunk_indices
 from fla.ops.utils import mean_pooling
 
 from benchmarks.benchmark import Benchmark
@@ -11,18 +10,22 @@ from top.ops import MeanPoolingForwardOp
 class MeanPoolingForwardBenchmark(Benchmark):
     op_type = MeanPoolingForwardOp
 
-    def __init__(self,
-                 batch_size: int,
-                 seq_len: int,
-                 heads: int,
-                 dim: int,
-                 chunk_size: int,
-                 chunks_per_bacth: int,
-                 seq_num: int,
-                 use_offsets: int,
-                 dtype: torch.dtype,
-                 accum_dtype: torch.dtype,
-                 tune: bool = False) -> None:
+    def __init__(
+        self,
+        batch_size: int,
+        seq_len: int,
+        heads: int,
+        dim: int,
+        chunk_size: int,
+        chunks_per_bacth: int,
+        seq_num: int,
+        use_offsets: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        tune: bool = False,
+        offsets: Optional[torch.Tensor] = None,
+        indices: Optional[torch.Tensor] = None,
+    ) -> None:
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.heads = heads
@@ -34,6 +37,9 @@ class MeanPoolingForwardBenchmark(Benchmark):
         self.dtype = dtype
         self.accum_dtype = accum_dtype
         self.tune = tune
+        # tilelang kernel needs offsets/indices to be provided
+        self.offsets = offsets
+        self.indices = indices
 
     @property
     def total_flops(self) -> int:
@@ -47,23 +53,20 @@ class MeanPoolingForwardBenchmark(Benchmark):
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x = torch.randn(
             self.batch_size, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        # fixed length
-        b = self.batch_size
-        t = self.seq_len
-
-        offsets = torch.arange(0, (b + 1) * t, t, dtype=torch.int32, device='cuda')
-        indices = prepare_chunk_indices(offsets, self.chunk_size)
-
-        return x, offsets, indices
+        return x, self.offsets, self.indices
 
     def ref_program(self, x: torch.Tensor, offsets: torch.Tensor,
                     indices: torch.Tensor) -> torch.Tensor:
-        _ = offsets, indices
+        _ = indices
+        if self.use_offsets == 1:
+            return mean_pooling(x, self.chunk_size, offsets, head_first=False)
         return mean_pooling(x, self.chunk_size, None, head_first=False)
 
     def baseline_program(self, x: torch.Tensor, offsets: torch.Tensor,
                          indices: torch.Tensor) -> torch.Tensor:
-        _ = offsets, indices
+        _ = indices
+        if self.use_offsets == 1:
+            return mean_pooling(x, self.chunk_size, offsets, head_first=False)
         return mean_pooling(x, self.chunk_size, None, head_first=False)
 
     def baseline_profile(self,
