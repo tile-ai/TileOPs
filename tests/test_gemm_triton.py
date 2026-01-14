@@ -157,7 +157,7 @@ def verify_triton_gemm_fp16(M, N, K, dtype):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Triton GEMM性能测试 - fp16累加')
+    parser = argparse.ArgumentParser(description='Triton GEMM performance test - fp16 accumulation')
     parser.add_argument('--M', type=int, default=4096, help='Number of rows in matrix A')
     parser.add_argument('--N', type=int, default=4864, help='Number of columns in matrix B')
     parser.add_argument('--K', type=int, default=8192, help='Number of columns in matrix A / rows in matrix B')
