@@ -6,6 +6,11 @@ on:
     tags:     ['**']  # All tags push will also trigger, can be removed as needed
   pull_request:
     branches: ['**']  # All branch PRs trigger CI
+  schedule:
+    # Run daily at 00:00 Beijing Time (which is 16:00 UTC)
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+    # Allow manual triggering of the workflow
 
 jobs:
   pre-commit:
@@ -64,6 +69,8 @@ jobs:
   tileops_test_nightly:
     # needs: pre-commit
     runs-on: [self-hosted, tile-ops]
+    # Only run this job when the event is schedule or workflow_dispatch
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
