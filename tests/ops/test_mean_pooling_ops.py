@@ -1,14 +1,11 @@
-import argparse
+from typing import Optional
 
 import pytest
 import torch
+from fla.ops.common.utils import prepare_chunk_indices
 
 from benchmarks.deepseek_nsa.deepseek_nsa import MeanPoolingForwardBenchmark
 from top.ops import MeanPoolingForwardOp
-
-from typing import Optional
-
-from fla.ops.common.utils import prepare_chunk_indices
 
 
 @pytest.mark.parametrize(
@@ -29,17 +26,9 @@ from fla.ops.common.utils import prepare_chunk_indices
          torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device='cuda')),
     ],
 )
-def test_mean_pooling_op(
-    batch_size: int,
-    seq_len: int,
-    heads: int,
-    dim: int,
-    chunk_size: int,
-    dtype: torch.dtype,
-    accum_dtype: torch.dtype,
-    tune: bool,
-    offsets: Optional[torch.Tensor]
-) -> None:
+def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, chunk_size: int,
+                         dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool,
+                         offsets: Optional[torch.Tensor]) -> None:
     if offsets is not None:
         assert batch_size == 1
         assert offsets[-1] == seq_len
@@ -48,8 +37,12 @@ def test_mean_pooling_op(
         seq_num = offsets.shape[0] - 1
         use_offsets = 1
     else:
-        offsets = torch.arange(0, (batch_size + 1) * seq_len, seq_len, \
-            dtype=torch.int32, device='cuda', requires_grad=False)
+        offsets = torch.arange(
+            0, (batch_size + 1) * seq_len,
+            seq_len,
+            dtype=torch.int32,
+            device='cuda',
+            requires_grad=False)
         chunks_per_bacth = (seq_len + chunk_size - 1) // chunk_size  # integer ceil
         indices = torch.randint(0, seq_len, (chunks_per_bacth, 2), dtype=torch.int32, device='cuda')
         seq_num = batch_size
@@ -88,13 +81,15 @@ def test_mean_pooling_op(
     benchmark.profile(op, *inputs)
     benchmark.baseline_profile(*inputs)
 
+
 if __name__ == "__main__":
     test_mean_pooling_op(1, 8192, 64, 128, 64, torch.float16, torch.float32, False, None)
     test_mean_pooling_op(1, 8192, 64, 128, 64, torch.float16, torch.float32, True, None)
     test_mean_pooling_op(2, 2049, 64, 128, 64, torch.float16, torch.float32, False, None)
     test_mean_pooling_op(1, 1024, 64, 128, 64, torch.float16, torch.float32, False,
-         torch.tensor([0, 256, 768, 1024], dtype=torch.int32, device='cuda'))
-    test_mean_pooling_op(1, 8192, 64, 128, 64, torch.float16, torch.float32, True,
-         torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device='cuda'))
+                         torch.tensor([0, 256, 768, 1024], dtype=torch.int32, device='cuda'))
+    test_mean_pooling_op(
+        1, 8192, 64, 128, 64, torch.float16, torch.float32, True,
+        torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device='cuda'))
     test_mean_pooling_op(1, 1000, 64, 128, 32, torch.float16, torch.float32, True,
-         torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device='cuda'))
+                         torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device='cuda'))
