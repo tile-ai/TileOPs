@@ -89,22 +89,10 @@ class GroupQueryAttentionFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = GroupQueryAttentionFwdOp(batch,
-                                               heads,
-                                               heads_kv,
-                                               seq_len,
-                                               dim,
-                                               is_causal,
-                                               dtype,
-                                               tune=tune)
-        self.bwd_op = GroupQueryAttentionBwdOp(batch,
-                                               heads,
-                                               heads_kv,
-                                               seq_len,
-                                               dim,
-                                               is_causal,
-                                               dtype,
-                                               tune=tune)
+        self.fwd_op = GroupQueryAttentionFwdOp(
+            batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
+        self.bwd_op = GroupQueryAttentionBwdOp(
+            batch, heads, heads_kv, seq_len, dim, is_causal, dtype, tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """Forward pass for group query attention.
@@ -163,14 +151,8 @@ def group_query_attention(q: torch.Tensor,
             f"The number of query heads H must be divisible by the number of key/value heads H_kv, "
             f"but got H: {heads}, H_kv: {heads_kv}")
 
-    return GroupQueryAttentionFunc(batch,
-                                   heads,
-                                   heads_kv,
-                                   seqlen,
-                                   dim,
-                                   is_causal,
-                                   q.dtype,
-                                   tune=tune).forward(q, k, v)
+    return GroupQueryAttentionFunc(
+        batch, heads, heads_kv, seqlen, dim, is_causal, q.dtype, tune=tune).forward(q, k, v)
 
 
 gqa = group_query_attention
