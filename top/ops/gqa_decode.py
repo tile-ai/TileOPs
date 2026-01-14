@@ -1,6 +1,7 @@
 from typing import Dict, Optional
 
 import torch
+import torch.nn.functional as F
 
 from top.kernels.flash_decode import gqa_decode_kernel
 from top.kernels.kernel import Kernel
@@ -39,4 +40,11 @@ class GroupQueryAttentionDecodeWithKVCacheOp(Op):
         return {"gqa_decode_kernel": gqa_decode_kernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        return self.kernel(q, k, v)
+        real_seqlen_kv = k.shape[1]
+        if real_seqlen_kv < self.seqlen_kv:
+            k = F.pad(
+                k, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode='constant', value=0)
+            v = F.pad(
+                v, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode='constant', value=0)
+
+        return self.kernel(q, k, v, real_seqlen_kv)
