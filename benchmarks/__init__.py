@@ -1,6 +1,7 @@
 from .benchmark import Benchmark  # noqa: F401
 from .deepseek_mla import (
     DeepSeekSparseAttentionDecodeBenchmark,
+    Fp8LightingIndexerBenchmark,
     MultiHeadLatentAttentionDecodeBenchmark,
 )
 from .flash_attn import (
@@ -27,5 +28,6 @@ __all__ = [
     'GroupQueryAttentionDecodeBenchmark',
     'MultiHeadLatentAttentionDecodeBenchmark',
     'DeepSeekSparseAttentionDecodeBenchmark',
+    'Fp8LightingIndexerBenchmark'
     'MatMulBenchmark',
 ]
