@@ -11,20 +11,21 @@ __all__ = ["MeanPoolingForwardOp"]
 
 class MeanPoolingForwardOp(Op):
 
-    def __init__(self,
-                 batch_size: int,
-                 seq_len: int,
-                 heads: int,
-                 dim: int,
-                 chunk_size: int,
-                 chunks_per_bacth: int,
-                 seq_num: int,
-                 use_offsets: int,
-                 dtype: torch.dtype,
-                 accum_dtype: torch.dtype,
-                 tune: bool = False,
-                 kernel_map: Optional[Dict[str, Kernel]] = None,
-                 ) -> None:
+    def __init__(
+        self,
+        batch_size: int,
+        seq_len: int,
+        heads: int,
+        dim: int,
+        chunk_size: int,
+        chunks_per_bacth: int,
+        seq_num: int,
+        use_offsets: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        tune: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+    ) -> None:
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.heads = heads

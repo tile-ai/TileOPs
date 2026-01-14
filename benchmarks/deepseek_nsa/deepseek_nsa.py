@@ -41,8 +41,8 @@ class MeanPoolingForwardBenchmark(Benchmark):
 
     @property
     def total_memory(self) -> int:  # noqa: U100
-        return self.heads * self.dim * (
-            self.seq_len + self.seq_num) * self.dtype.itemsize + 16 * self.seq_num
+        return self.heads * self.dim * (self.seq_len +
+                                        self.seq_num) * self.dtype.itemsize + 16 * self.seq_num
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x = torch.randn(
@@ -56,11 +56,13 @@ class MeanPoolingForwardBenchmark(Benchmark):
 
         return x, offsets, indices
 
-    def ref_program(self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor ) -> torch.Tensor:
+    def ref_program(self, x: torch.Tensor, offsets: torch.Tensor,
+                    indices: torch.Tensor) -> torch.Tensor:
         _ = offsets, indices
         return mean_pooling(x, self.chunk_size, None, head_first=False)
 
-    def baseline_program(self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    def baseline_program(self, x: torch.Tensor, offsets: torch.Tensor,
+                         indices: torch.Tensor) -> torch.Tensor:
         _ = offsets, indices
         return mean_pooling(x, self.chunk_size, None, head_first=False)
 
