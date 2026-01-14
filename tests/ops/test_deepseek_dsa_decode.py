@@ -1,23 +1,25 @@
 import argparse
 
+import torch
+
 from benchmarks import DeepSeekSparseAttentionDecodeBenchmark
 from top.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
 
 
-def test_sparse_mla_decode(batch,
-                           heads,
-                           seq_len_q,
-                           seq_len_kv,
-                           dim,
-                           dim_tail,
-                           topk,
-                           stride_kv,
-                           group_kv,
-                           q_start_index_s,
-                           sm_scale,
-                           dtype,
-                           tune=False):
+def test_sparse_mla_decode(batch: int,
+                           heads: int,
+                           seq_len_q: int,
+                           seq_len_kv: int,
+                           dim: int,
+                           dim_tail: int,
+                           topk: int,
+                           stride_kv: int,
+                           group_kv: int,
+                           q_start_index_s: int,
+                           sm_scale: float,
+                           dtype: torch.dtype,
+                           tune: bool = False) -> None:
     op = DeepSeekSparseAttentionDecodeWithKVCacheOp(
         batch,
         heads,

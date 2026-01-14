@@ -23,7 +23,7 @@ class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
                  q_start_index_s: int,
                  sm_scale: float = None,
                  is_causal: bool = True,
-                 dtype: torch.dtype = torch.float16):
+                 dtype: torch.dtype = torch.float16) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -40,18 +40,18 @@ class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
 
     @property
     def total_flops(self) -> float:
-        flops = self.batch * self.seq_len * (2 * self.dim +
-                                             self.dim_tail) * self.topk * 2 * self.heads
-        return flops
+        return self.batch * self.seq_len * (2 * self.dim +
+                                            self.dim_tail) * self.topk * 2 * self.heads
 
     @property
     def total_memory(self) -> float:
-        # Q: batch, seq_len, heads, dim + dim_tail
-        # KV: batch, seq_len_kv, group_kv, dim + dim_tail
-        # Indices: batch, seq_len, group_kv, topk
+        # q: batch, seq_len, heads, dim + dim_tail
+        # kv: batch, seq_len_kv, group_kv, dim + dim_tail
+        # indices: batch, seq_len, group_kv, topk
         # Output: batch, seq_len, heads, dim
-        q_memory = self.batch * self.seq_len * self.heads * (self.dim +
-                                                             self.dim_tail) * self.dtype.itemsize
+        q_memory = (
+            self.batch * self.seq_len * self.heads * (self.dim + self.dim_tail) *
+            self.dtype.itemsize)
         kv_memory = self.batch * self.seq_len_kv * self.group_kv * (
             self.dim + self.dim_tail) * self.dtype.itemsize
         indices_memory = self.batch * self.seq_len * self.group_kv * self.topk * 4  # int32
@@ -59,21 +59,21 @@ class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
         return q_memory + kv_memory + indices_memory + output_memory
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(
+        q = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
             self.dim + self.dim_tail,
             device='cuda',
             dtype=self.dtype)
-        KV = torch.randn(
+        kv = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.group_kv,
             self.dim + self.dim_tail,
             device='cuda',
             dtype=self.dtype)
-        Indices = torch.full((self.batch, self.seq_len, self.group_kv, self.topk),
+        indices = torch.full((self.batch, self.seq_len, self.group_kv, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
                              device='cuda')
@@ -84,8 +84,8 @@ class DeepSeekSparseAttentionDecodeBenchmark(Benchmark):
                         min(
                             max(1, ((t + int(self.q_start_index_s)) // self.stride_kv)),
                             self.seq_len_kv))[:self.topk]
-                    Indices[b, t, h, :len(i_i)] = i_i
-        return Q, KV, Indices
+                    indices[b, t, h, :len(i_i)] = i_i
+        return q, kv, indices
 
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         q = q.float()
