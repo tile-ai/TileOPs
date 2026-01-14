@@ -70,12 +70,11 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
         self.is_causal = is_causal
 
         if q_start_index_s != 0:
-            assert q_start_index_s > stride_kv, (
-                "If it is because each cp has too short length, "
-                "you should fix the logic involving cp0 (cp_rank == 0), "
-                "to make sure q with pos < stride_kv - 1 is masked "
-                "(or you may just ignore how this is handled if nan in these q's Out "
-                "would not effect others, which is reported to be likely to happen by wangding)")
+            assert q_start_index_s > stride_kv, (f"Invalid q_start_index_s={q_start_index_s}:"
+                                                 "must be > stride_kv={stride_kv}. "
+                                                 "This indicates incorrect cp0 masking."
+                                                 "Ensure queries with pos < stride_kv are masked "
+                                                 "to avoid NaNs in early outputs.")
 
         cp0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s
