@@ -6,7 +6,6 @@ import triton
 import triton.language as tl
 
 
-# Triton GEMM kernel实现 - 使用fp16累加
 @triton.jit
 def gemm_kernel_fp16(
     a_ptr,
@@ -48,7 +47,7 @@ def gemm_kernel_fp16(
 
 
 def triton_gemm_fp16(A, B, block_m=64, block_n=64, block_k=32):
-    assert A.shape[1] == B.shape[0], "矩阵维度不匹配"
+    assert A.shape[1] == B.shape[0], "Matrix dimensions do not match"
     M, K = A.shape
     K, N = B.shape
     C = torch.empty((M, N), device=A.device, dtype=A.dtype)
@@ -96,7 +95,7 @@ def benchmark_triton_gemm_fp16(M, N, K, dtype, num_iter=100):
         (256, 64, 32),
         (256, 128, 32),
     ]
-    print("Triton GEMM性能测试 (fp16计算和累加)")
+    print("Triton GEMM performance test (fp16 computation and accumulation)")
     print("=" * 50)
     results = []
     for config_idx, (block_m, block_n, block_k) in enumerate(block_configs, 1):
@@ -118,28 +117,28 @@ def benchmark_triton_gemm_fp16(M, N, K, dtype, num_iter=100):
                 'tflops': tflops,
                 'gflops': gflops
             })
-            print(f"配置 {config_idx}: 分块({block_m:3d},{block_n:3d},{block_k:3d})")
-            print(f"  时间: {elapsed_time * 1000:8.4f} ms")
-            print(f"  性能: {tflops:8.2f} TFLOPS")
+            print(f"Config {config_idx}: Block({block_m:3d},{block_n:3d},{block_k:3d})")
+            print(f"  Time: {elapsed_time * 1000:8.4f} ms")
+            print(f"  Performance: {tflops:8.2f} TFLOPS")
             print("-" * 40)
 
         except Exception as e:
-            print(f"配置 {config_idx}: 分块({block_m:3d},{block_n:3d},{block_k:3d}) - 失败: {e}")
+            print(f"Config {config_idx}: Block({block_m:3d},{block_n:3d},{block_k:3d}) - Failed: {e}")
             print("-" * 40)
     if results:
         best_result = max(results, key=lambda x: x['tflops'])
-        print("\n最佳配置总结 (fp16累加):")
+        print("\nBest config summary (fp16 accumulation):")
         print("=" * 50)
-        print(f"分块大小: {best_result['config']}")
-        print(f"执行时间: {best_result['time_ms']:.4f} ms")
-        print(f"计算性能: {best_result['tflops']:.2f} TFLOPS")
-        print(f"总FLOPs: {calculate_gemm_flops(M, N, K) / 1e12:.2f} TFLOPs")
+        print(f"Block size: {best_result['config']}")
+        print(f"Execution time: {best_result['time_ms']:.4f} ms")
+        print(f"Compute performance: {best_result['tflops']:.2f} TFLOPS")
+        print(f"Total FLOPs: {calculate_gemm_flops(M, N, K) / 1e12:.2f} TFLOPs")
 
     return results
 
 
 def verify_triton_gemm_fp16(M, N, K, dtype):
-    print("验证Triton GEMM正确性 (fp16累加)...")
+    print("Verifying Triton GEMM correctness (fp16 accumulation)...")
     device = 'cuda'
     A = torch.randn(M, K, device=device, dtype=dtype)
     B = torch.randn(K, N, device=device, dtype=dtype)
@@ -148,33 +147,33 @@ def verify_triton_gemm_fp16(M, N, K, dtype):
     C_triton = triton_gemm_fp16(A, B)
     error = torch.max(torch.abs(C_triton - C_torch)).item()
     relative_error = torch.mean(torch.abs(C_triton - C_torch) / torch.abs(C_torch)).item()
-    print(f"最大绝对误差: {error:.6f}")
-    print(f"平均相对误差: {relative_error:.6f}")
+    print(f"Max absolute error: {error:.6f}")
+    print(f"Average relative error: {relative_error:.6f}")
     if error < 1e-2:
-        print("✓ Triton GEMM (fp16累加) 结果正确")
+        print("✓ Triton GEMM (fp16 accumulation) results are correct")
     else:
-        print("✗ Triton GEMM (fp16累加) 结果有误")
+        print("✗ Triton GEMM (fp16 accumulation) results are incorrect")
     return error < 1e-2
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Triton GEMM性能测试 - fp16累加')
-    parser.add_argument('--M', type=int, default=4096, help='矩阵A行数')
-    parser.add_argument('--N', type=int, default=4864, help='矩阵B列数')
-    parser.add_argument('--K', type=int, default=8192, help='矩阵A列数/矩阵B行数')
+    parser.add_argument('--M', type=int, default=4096, help='Number of rows in matrix A')
+    parser.add_argument('--N', type=int, default=4864, help='Number of columns in matrix B')
+    parser.add_argument('--K', type=int, default=8192, help='Number of columns in matrix A / rows in matrix B')
     parser.add_argument(
-        '--dtype', type=str, default='float16', choices=['float16'], help='数据类型 (只支持float16)')
-    parser.add_argument('--verify', action='store_true', help='验证正确性')
+        '--dtype', type=str, default='float16', choices=['float16'], help='Data type (only float16 supported)')
+    parser.add_argument('--verify', action='store_true', help='Verify correctness')
     args = parser.parse_args()
     dtype = torch.float16
     M = args.M
     N = args.N
     K = args.K
-    print("Triton GEMM独立性能测试 (fp16计算和累加)")
+    print("Triton GEMM standalone performance test (fp16 computation and accumulation)")
     print("=" * 60)
-    print(f"矩阵维度: A[{M}, {K}] × B[{K}, {N}] = C[{M}, {N}]")
-    print(f"数据类型: {dtype} (fp16计算和累加)")
-    print(f"总计算量: {calculate_gemm_flops(M, N, K) / 1e12:.2f} TFLOPs")
+    print(f"Matrix dimensions: A[{M}, {K}] × B[{K}, {N}] = C[{M}, {N}]")
+    print(f"Data type: {dtype} (fp16 computation and accumulation)")
+    print(f"Total computation: {calculate_gemm_flops(M, N, K) / 1e12:.2f} TFLOPs")
     print()
     if args.verify:
         verify_triton_gemm_fp16(M, N, K, dtype)

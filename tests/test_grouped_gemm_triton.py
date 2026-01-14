@@ -796,17 +796,16 @@ def check_kernel(kernel_func, ref_func, inputs, kernel_name):
         print(f"All checks passed for {kernel_name}.")
     else:
         diff = torch.abs(outputs - outputs_ref)
-        print(f"最大差异: {diff.max().item()}")
-        print(f"平均差异: {diff.mean().item()}")
-        print(f"差异大于1e-1的元素数量: {(diff > 1e-1).sum().item()}")
-        print(f"输出范围: [{outputs.min().item()}, {outputs.max().item()}]")
-        print(f"参考范围: [{outputs_ref.min().item()}, {outputs_ref.max().item()}]")
+        print(f"Max difference: {diff.max().item()}")
+        print(f"Average difference: {diff.mean().item()}")
+        print(f"Number of elements with difference > 1e-1: {(diff > 1e-1).sum().item()}")
+        print(f"Output range: [{outputs.min().item()}, {outputs.max().item()}]")
+        print(f"Reference range: [{outputs_ref.min().item()}, {outputs_ref.max().item()}]")
 
-        # 查看前几个值的差异
         for i in range(min(5, len(outputs))):
-            print(f"输出[{i}]: {outputs[i][:5].tolist()}")
-            print(f"参考[{i}]: {outputs_ref[i][:5].tolist()}")
-            print(f"差异[{i}]: {(outputs[i][:5] - outputs_ref[i][:5]).tolist()}")
+            print(f"Output[{i}]: {outputs[i][:5].tolist()}")
+            print(f"Reference[{i}]: {outputs_ref[i][:5].tolist()}")
+            print(f"Difference[{i}]: {(outputs[i][:5] - outputs_ref[i][:5]).tolist()}")
         print(f"Checks failed for {kernel_name}.")
     return allclose
 
