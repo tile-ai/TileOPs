@@ -13,63 +13,56 @@ class MeanPoolingForwardBenchmark(Benchmark):
 
     def __init__(self,
                  batch_size: int,
-                 total_seqlen: int,
-                 total_chunks: int,
+                 seq_len: int,
                  heads: int,
                  dim: int,
                  chunk_size: int,
-                 tune: bool = True) -> None:
-
+                 chunks_per_bacth: int,
+                 seq_num: int,
+                 use_offsets: int,
+                 dtype: torch.dtype,
+                 accum_dtype: torch.dtype,
+                 tune: bool = False) -> None:
         self.batch_size = batch_size
-        self.total_seqlen = total_seqlen
-        self.total_chunks = total_chunks
+        self.seq_len = seq_len
         self.heads = heads
         self.dim = dim
         self.chunk_size = chunk_size
+        self.chunks_per_bacth = chunks_per_bacth
+        self.seq_num = seq_num
+        self.use_offsets = use_offsets
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
         self.tune = tune
-        self.dtype = torch.float16
 
     @property
     def total_flops(self) -> int:
-        return self.heads * self.dim * (self.total_seqlen + self.total_chunks)
+        return self.heads * self.dim * (self.seq_len + self.seq_num)
 
     @property
     def total_memory(self) -> int:  # noqa: U100
         return self.heads * self.dim * (
-            self.total_seqlen + self.total_chunks) * self.dtype.itemsize + 16 * self.total_chunks
+            self.seq_len + self.seq_num) * self.dtype.itemsize + 16 * self.seq_num
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x_unpad = torch.randn(
-            self.total_seqlen, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        x = torch.randn(
+            self.batch_size, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
         # fixed length
         b = self.batch_size
-        t = self.total_seqlen // b
+        t = self.seq_len
 
-        cu_seqlens = torch.arange(0, (b + 1) * t, t, dtype=torch.int32, device='cuda')
-        chunk_indices = prepare_chunk_indices(cu_seqlens, self.chunk_size)
+        offsets = torch.arange(0, (b + 1) * t, t, dtype=torch.int32, device='cuda')
+        indices = prepare_chunk_indices(offsets, self.chunk_size)
 
-        return x_unpad, cu_seqlens, chunk_indices
+        return x, offsets, indices
 
-    def ref_program(self, x_unpad: torch.Tensor, cu_seqlens: torch.Tensor,
-                    chunk_indices: torch.Tensor) -> torch.Tensor:
-        _ = (cu_seqlens, chunk_indices)
-        b = self.batch_size
-        t = self.total_seqlen // b
-        x = x_unpad.view(b, t, self.heads, self.dim)
+    def ref_program(self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor ) -> torch.Tensor:
+        _ = offsets, indices
+        return mean_pooling(x, self.chunk_size, None, head_first=False)
 
-        return mean_pooling(
-            x, chunk_size=self.chunk_size, cu_seqlens=None,
-            head_first=False).view(-1, self.heads, self.dim)
-
-    def baseline_program(self, x_unpad: torch.Tensor, cu_seqlens: torch.Tensor,
-                         chunk_indices: torch.Tensor) -> torch.Tensor:
-        _ = (cu_seqlens, chunk_indices)
-        b = self.batch_size
-        t = self.total_seqlen // b
-        x = x_unpad.view(b, t, self.heads, self.dim)
-        return mean_pooling(
-            x, chunk_size=self.chunk_size, cu_seqlens=None,
-            head_first=False).view(-1, self.heads, self.dim)
+    def baseline_program(self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        _ = offsets, indices
+        return mean_pooling(x, self.chunk_size, None, head_first=False)
 
     def baseline_profile(self,
                          *inputs: tuple[Any],
@@ -80,7 +73,7 @@ class MeanPoolingForwardBenchmark(Benchmark):
         return super().baseline_profile(
             self.baseline_program,
             *inputs,
-            backend="Mean Pooling",
+            backend="mean_pooling_fwd",
             warmup=warmup,
             rep=rep,
             device=device)

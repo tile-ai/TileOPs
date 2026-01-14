@@ -13,30 +13,43 @@ class MeanPoolingForwardOp(Op):
 
     def __init__(self,
                  batch_size: int,
-                 total_seqlen: int,
-                 total_chunks: int,
+                 seq_len: int,
                  heads: int,
                  dim: int,
                  chunk_size: int,
+                 chunks_per_bacth: int,
+                 seq_num: int,
+                 use_offsets: int,
+                 dtype: torch.dtype,
+                 accum_dtype: torch.dtype,
+                 tune: bool = False,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+                 ) -> None:
         self.batch_size = batch_size
-        self.total_seqlen = total_seqlen
-        self.total_chunks = total_chunks
+        self.seq_len = seq_len
         self.heads = heads
         self.dim = dim
         self.chunk_size = chunk_size
+        self.chunks_per_bacth = chunks_per_bacth
+        self.seq_num = seq_num
+        self.use_offsets = use_offsets
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
 
         kernel_args = {
             "batch_size": self.batch_size,
-            "total_seqlen": self.total_seqlen,
-            "total_chunks": self.total_chunks,
+            "seq_len": self.seq_len,
             "heads": self.heads,
             "dim": self.dim,
             "chunk_size": self.chunk_size,
+            "chunks_per_bacth": self.chunks_per_bacth,
+            "seq_num": self.seq_num,
+            "use_offsets": self.use_offsets,
+            "dtype": self.dtype,
+            "accum_dtype": self.accum_dtype,
             "tune": self.tune,
         }
         self.kernel = self.kernel_map["mean_pooling_fwd_kernel"](**kernel_args)
@@ -47,8 +60,8 @@ class MeanPoolingForwardOp(Op):
 
     def forward(
         self,
-        x_unpad: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        chunk_indices: torch.Tensor,
+        x: torch.Tensor,
+        offsets: torch.Tensor,
+        indices: torch.Tensor,
     ) -> torch.Tensor:
-        return self.kernel(x_unpad, cu_seqlens, chunk_indices)
+        return self.kernel(x, offsets, indices=indices)
