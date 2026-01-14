@@ -73,20 +73,10 @@ class MultiHeadAttentionFunc(Function):
 
         self.dtype = dtype
 
-        self.fwd_op = MultiHeadAttentionFwdOp(batch,
-                                              heads,
-                                              seq_len,
-                                              dim,
-                                              is_causal,
-                                              dtype,
-                                              tune=tune)
-        self.bwd_op = MultiHeadAttentionBwdOp(batch,
-                                              heads,
-                                              seq_len,
-                                              dim,
-                                              is_causal,
-                                              dtype,
-                                              tune=tune)
+        self.fwd_op = MultiHeadAttentionFwdOp(
+            batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
+        self.bwd_op = MultiHeadAttentionBwdOp(
+            batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return MHACtx.apply(q, k, v, self.fwd_op, self.bwd_op)
@@ -132,8 +122,9 @@ def multi_head_attention(q: torch.Tensor,
     # Extract dimension information
     batch, seqlen, heads, dim = q.shape
 
-    return MultiHeadAttentionFunc(batch, heads, seqlen, dim, is_causal, q.dtype,
-                                  tune=tune).forward(q=q, k=k, v=v)
+    return MultiHeadAttentionFunc(
+        batch, heads, seqlen, dim, is_causal, q.dtype, tune=tune).forward(
+            q=q, k=k, v=v)
 
 
 mha = multi_head_attention
