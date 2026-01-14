@@ -1,11 +1,14 @@
 import argparse
 
+import torch
+
 from benchmarks import MultiHeadAttentionBenchmark
 from top.functions import MultiHeadAttentionFunc, mha
 from top.utils import str2dtype
 
 
-def test_mha_fn(batch, seq_len, heads, dim, causal, dtype):
+def test_mha_fn(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
+                dtype: torch.dtype) -> None:
     benchmark = MultiHeadAttentionBenchmark(batch, heads, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
