@@ -161,8 +161,8 @@ class MhaFwdKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 64,
-            "block_N": 64 if self.dim <= 128 else 32,
+            "block_m": 64,
+            "block_n": 64 if self.dim <= 128 else 32,
             "num_stages": 1,
             "threads": 128
         }
@@ -176,8 +176,8 @@ class MhaFwdKernel(Kernel):
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
 
         return [{
-            'block_M': c[0],
-            'block_N': c[1],
+            'block_m': c[0],
+            'block_n': c[1],
             'num_stages': c[2],
             'threads': c[3]
         } for c in _configs]
@@ -185,8 +185,8 @@ class MhaFwdKernel(Kernel):
     def forward(self, q: torch.Tensor, k: torch.Tensor,
                 v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return _mha_fwd_wrapped_kernel(self.batch, self.heads, self.seq_len, self.dim,
-                                       self.is_causal, self.dtype_str, self.config["block_M"],
-                                       self.config["block_N"], self.config["num_stages"],
+                                       self.is_causal, self.dtype_str, self.config["block_m"],
+                                       self.config["block_n"], self.config["num_stages"],
                                        self.config["threads"], q, k, v)
 
 
@@ -383,7 +383,7 @@ class MhaFwdWgmmaPipelinedKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"block_M": 128, "block_N": 128, "num_stages": 2, "threads": 256}
+        return {"block_m": 128, "block_n": 128, "num_stages": 2, "threads": 256}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -393,8 +393,8 @@ class MhaFwdWgmmaPipelinedKernel(Kernel):
         threads = [128, 256]
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
         return [{
-            'block_M': c[0],
-            'block_N': c[1],
+            'block_m': c[0],
+            'block_n': c[1],
             'num_stages': c[2],
             'threads': c[3]
         } for c in _configs]
@@ -403,8 +403,8 @@ class MhaFwdWgmmaPipelinedKernel(Kernel):
                 v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return _mha_fwd_wgmma_pipelined_wrapped_kernel(self.batch, self.heads, self.seq_len,
                                                        self.dim, self.is_causal, self.dtype_str,
-                                                       self.config["block_M"],
-                                                       self.config["block_N"],
+                                                       self.config["block_m"],
+                                                       self.config["block_n"],
                                                        self.config["num_stages"],
                                                        self.config["threads"], q, k, v)
 
@@ -568,8 +568,8 @@ class GqaFwdKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_M": 64,
-            "block_N": 64 if self.dim <= 128 else 32,
+            "block_m": 64,
+            "block_n": 64 if self.dim <= 128 else 32,
             "num_stages": 1,
             "threads": 128
         }
@@ -583,8 +583,8 @@ class GqaFwdKernel(Kernel):
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
 
         return [{
-            'block_M': c[0],
-            'block_N': c[1],
+            'block_m': c[0],
+            'block_n': c[1],
             'num_stages': c[2],
             'threads': c[3]
         } for c in _configs]
@@ -593,7 +593,7 @@ class GqaFwdKernel(Kernel):
                 v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return _gqa_fwd_wrapped_kernel(self.batch, self.heads, self.heads_kv, self.seq_len,
                                        self.dim, self.is_causal, self.dtype_str,
-                                       self.config["block_M"], self.config["block_N"],
+                                       self.config["block_m"], self.config["block_n"],
                                        self.config["num_stages"], self.config["threads"], q, k, v)
 
 
@@ -809,7 +809,7 @@ class GqaFwdWgmmaPipelinedKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"block_M": 128, "block_N": 128, "num_stages": 2, "threads": 256}
+        return {"block_m": 128, "block_n": 128, "num_stages": 2, "threads": 256}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -819,8 +819,8 @@ class GqaFwdWgmmaPipelinedKernel(Kernel):
         threads = [128, 256]
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
         return [{
-            'block_M': c[0],
-            'block_N': c[1],
+            'block_m': c[0],
+            'block_n': c[1],
             'num_stages': c[2],
             'threads': c[3]
         } for c in _configs]
@@ -829,7 +829,7 @@ class GqaFwdWgmmaPipelinedKernel(Kernel):
                 v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return _gqa_fwd_wgmma_pipelined_wrapped_kernel(self.batch, self.heads, self.heads_kv,
                                                        self.seq_len, self.dim, self.is_causal,
-                                                       self.dtype_str, self.config["block_M"],
-                                                       self.config["block_N"],
+                                                       self.dtype_str, self.config["block_m"],
+                                                       self.config["block_n"],
                                                        self.config["num_stages"],
                                                        self.config["threads"], q, k, v)
