@@ -4,11 +4,11 @@ import time
 import torch
 
 from benchmarks import (
-    grouped_gemm_benchmark,
-    grouped_gemm_nn_benchmark,
-    grouped_gemm_nt_benchmark,
-    grouped_gemm_tn_benchmark,
-    grouped_gemm_tt_benchmark,
+    GroupedGemmBenchmark,
+    GroupedGemmNNBenchmark,
+    GroupedGemmNTBenchmark,
+    GroupedGemmTNBenchmark,
+    GroupedGemmTTBenchmark,
 )
 from top.ops.grouped_gemm import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
 from top.utils import str2dtype
@@ -16,7 +16,7 @@ from top.utils import str2dtype
 
 def test_grouped_gemm_nt(batch_sum, batch_count, N, K, dtype, tune=False):
     op = GroupedGemmNTOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    benchmark = grouped_gemm_nt_benchmark(batch_sum, batch_count, N, K, dtype)
+    benchmark = GroupedGemmNTBenchmark(batch_sum, batch_count, N, K, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
@@ -25,7 +25,7 @@ def test_grouped_gemm_nt(batch_sum, batch_count, N, K, dtype, tune=False):
 
 def test_grouped_gemm_nn(batch_sum, batch_count, N, K, dtype, tune=False):
     op = GroupedGemmNNOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    benchmark = grouped_gemm_nn_benchmark(batch_sum, batch_count, N, K, dtype)
+    benchmark = GroupedGemmNNBenchmark(batch_sum, batch_count, N, K, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
@@ -34,7 +34,7 @@ def test_grouped_gemm_nn(batch_sum, batch_count, N, K, dtype, tune=False):
 
 def test_grouped_gemm_tn(batch_sum, batch_count, N, K, dtype, tune=False):
     op = GroupedGemmTNOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    benchmark = grouped_gemm_tn_benchmark(batch_sum, batch_count, N, K, dtype)
+    benchmark = GroupedGemmTNBenchmark(batch_sum, batch_count, N, K, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
@@ -43,7 +43,7 @@ def test_grouped_gemm_tn(batch_sum, batch_count, N, K, dtype, tune=False):
 
 def test_grouped_gemm_tt(batch_sum, batch_count, N, K, dtype, tune=False):
     op = GroupedGemmTTOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    benchmark = grouped_gemm_tt_benchmark(batch_sum, batch_count, N, K, dtype)
+    benchmark = GroupedGemmTTBenchmark(batch_sum, batch_count, N, K, dtype)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
@@ -54,7 +54,7 @@ def test_grouped_gemm_complete(batch_sum, batch_count, N, K, dtype, tune=False):
     from top.functions.grouped_gemm import GroupedGemmFunc
 
     op = GroupedGemmFunc(batch_sum, batch_count, N, K, dtype, tune=tune)
-    benchmark = grouped_gemm_benchmark(batch_sum, batch_count, N, K, dtype)
+    benchmark = GroupedGemmBenchmark(batch_sum, batch_count, N, K, dtype)
 
     inputs = benchmark.gen_inputs()
 
