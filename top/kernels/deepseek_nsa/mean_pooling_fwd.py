@@ -32,7 +32,7 @@ def _mean_pooling_kernel(
                 offsets: T.Tensor((seq_num + 1,), T.int32),
                 indices: T.Tensor((chunks_per_bacth, 2),
                                   T.int32),  # [chunks_per_bacth, 2] (seq_id, chunk_id in sequence)
-        ) -> None:  # noqa: U100
+        ) -> None:
             with T.Kernel(
                     T.ceildiv(dim, bdim), chunks_per_bacth, batch_size * heads,
                     threads=threads) as (i_d, i_t, i_bh):
@@ -106,19 +106,19 @@ def _mean_pooling_wrapped_kernel(
 
 @_mean_pooling_wrapped_kernel.register_fake
 def _(
-        batch_size: int,
-        seq_len: int,
-        heads: int,
-        dim: int,
-        chunk_size: int,
-        chunks_per_bacth: int,
-        seq_num: int,
-        use_offsets: int,
-        dtype: str,
-        accum_dtype: str,
-        bdim: int,
-        threads: int,
-        *inputs: tuple[Any],  # noqa: U100
+    batch_size: int,
+    seq_len: int,
+    heads: int,
+    dim: int,
+    chunk_size: int,
+    chunks_per_bacth: int,
+    seq_num: int,
+    use_offsets: int,
+    dtype: str,
+    accum_dtype: str,
+    bdim: int,
+    threads: int,
+    *inputs: tuple[Any],
 ) -> torch.Tensor:
     # Output shape is [batch_size, chunks_per_bacth, heads, dim]
     _ = (seq_len, chunk_size, seq_num, bdim, use_offsets, dtype, accum_dtype, threads)

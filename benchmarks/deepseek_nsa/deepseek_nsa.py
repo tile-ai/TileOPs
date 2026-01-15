@@ -46,7 +46,7 @@ class MeanPoolingForwardBenchmark(Benchmark):
         return self.heads * self.dim * (self.seq_len + self.seq_num)
 
     @property
-    def total_memory(self) -> int:  # noqa: U100
+    def total_memory(self) -> int:
         return self.heads * self.dim * (self.seq_len +
                                         self.seq_num) * self.dtype.itemsize + 16 * self.seq_num
 

@@ -24,7 +24,7 @@ class Benchmark(ABC):
         # TODO: impl this?
 
     @abstractmethod
-    def ref_program(self, *inputs: Tuple[torch.Tensor]) -> Any:  # noqa: U100
+    def ref_program(self, *inputs: Tuple[torch.Tensor]) -> Any:
         raise NotImplementedError
 
     def check(self,
@@ -141,7 +141,7 @@ class Benchmark(ABC):
                          backend: str = "Base",
                          warmup: int = 100,
                          rep: int = 100,
-                         device: str = "cuda:0") -> None:  # noqa: U100
+                         device: str = "cuda:0") -> None:
         """Benchmark the perf of the baselin op"""
         print(f"===== Profiling {backend} =====")
         print(f"{backend} profile with warmup: {warmup}, rep: {rep}")
