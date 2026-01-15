@@ -1,9 +1,11 @@
-import torch
+import itertools
+from typing import Optional
+
 import tilelang
 import tilelang.language as T
+import torch
+
 from top.kernels.kernel import Kernel
-from typing import Optional
-import itertools
 
 __all__ = ["gqa_decode_kernel"]
 
@@ -37,7 +39,6 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 V: T.Tensor(shape_v, dtype),
                 real_seqlen_kv: T.int32,
                 Output: T.Tensor([batch, heads, dim], dtype),
-
         ):
             with T.Kernel(
                     batch, heads // valid_block_H, num_split, threads=threads) as (bx, by, bz):
@@ -75,8 +76,8 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow)
                     for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.if_then_else((k*block_N+j<real_seqlen_kv), acc_s[i, j],
-                                                     -T.infinity(accum_dtype))
+                        acc_s[i, j] = T.if_then_else((k * block_N + j < real_seqlen_kv),
+                                                     acc_s[i, j], -T.infinity(accum_dtype))
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -125,11 +126,10 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 scores_sum = T.alloc_fragment([block_H], accum_dtype)
                 logsum = T.alloc_fragment([block_H], accum_dtype)
 
-
                 split_length_shared = T.alloc_shared([num_split], "int32")
-                T.copy(split_length,split_length_shared, disable_tma=True)
+                T.copy(split_length, split_length_shared, disable_tma=True)
 
-                seqlen_kv=real_seqlen_kv
+                seqlen_kv = real_seqlen_kv
 
                 bid = bx
                 hid = by
@@ -157,9 +157,8 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow)
                     for i, j in T.Parallel(block_H, valid_block_N):
-                        acc_s[i, j] = T.if_then_else(
-                            (k * block_N + j < split_length[sid]), acc_s[i, j],
-                            -T.infinity(accum_dtype))
+                        acc_s[i, j] = T.if_then_else((k * block_N + j < split_length[sid]),
+                                                     acc_s[i, j], -T.infinity(accum_dtype))
                     T.copy(scores_max, scores_max_prev)
                     T.fill(scores_max, -T.infinity(accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -232,9 +231,8 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 Output_partial: T.Tensor(part_shape, dtype),
                 split_length: T.Tensor(num_split, "int32"),
                 Output: T.Tensor(shape_o, dtype),
-
         ):
-            _gqa_decode_split(Q, K, V,real_seqlen_kv,  glse, Output_partial,split_length)
+            _gqa_decode_split(Q, K, V, real_seqlen_kv, glse, Output_partial, split_length)
             combine(glse, Output_partial, Output)
 
         @T.prim_func
@@ -256,30 +254,31 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
 
 
 @torch.library.custom_op("top::gqa_decode_wrapped_kernel", mutates_args=())
-def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: int, real_seqlen_kv:int, dim: int, dtype:str,
-                               block_H: int, block_N: int, num_stages: int, threads: int,
-                               num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                                glse: torch.Tensor,
-                               Output_partial: torch.Tensor) -> torch.Tensor:
+def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: int,
+                               real_seqlen_kv: int, dim: int, dtype: str, block_H: int,
+                               block_N: int, num_stages: int, threads: int, num_split: int,
+                               Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+                               glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
 
-    assert K.shape[1] == V.shape[1] == seqlen_kv , "error: dimension mismatch!"
-    assert real_seqlen_kv <= seqlen_kv , "error: seqlen_kv mismatch!"
+    assert K.shape[1] == V.shape[1] == seqlen_kv, "error: dimension mismatch!"
+    assert real_seqlen_kv <= seqlen_kv, "error: seqlen_kv mismatch!"
     split_length = torch.zeros(num_split, dtype=torch.int32, device=Q.device)
     for k in range(num_split):
         split_length[k] = real_seqlen_kv // (num_split * block_N) * block_N
-    split_length[-1] = real_seqlen_kv - (num_split - 1) * (real_seqlen_kv // (num_split * block_N) * block_N)
-
+    split_length[-1] = real_seqlen_kv - (num_split - 1) * (
+        real_seqlen_kv // (num_split * block_N) * block_N)
 
     if (split_length[0] == 0):
         num_split = 1
     if (num_split == 1):
-        return _gqa_decode_kernel(batch, heads, groups, seqlen_kv,
-                                  dim, dtype)(block_H, block_N, num_split, num_stages,
-                                       threads)(Q, K, V, real_seqlen_kv)
+        return _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim,
+                                  dtype)(block_H, block_N, num_split, num_stages,
+                                         threads)(Q, K, V, real_seqlen_kv)
 
-    return _gqa_decode_kernel(batch, heads, groups, seqlen_kv,
-                              dim, dtype)(block_H, block_N, num_split, num_stages,
-                                   threads)(Q, K, V, real_seqlen_kv, glse, Output_partial,split_length)
+    return _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim,
+                              dtype)(block_H, block_N, num_split, num_stages,
+                                     threads)(Q, K, V, real_seqlen_kv, glse, Output_partial,
+                                              split_length)
 
 
 @_gqa_decode_wrapped_kernel.register_fake
@@ -353,8 +352,8 @@ class gqa_decode_kernel(Kernel):
         Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
                                      dtype=self.dtype,
                                      device=Q.device)
-        return _gqa_decode_wrapped_kernel(self.batch, self.heads, self.groups, self.seqlen_kv, real_seqlen_kv,
-                                          self.dim, self.dtype_str,self.config["block_H"], self.config["block_N"],
+        return _gqa_decode_wrapped_kernel(self.batch, self.heads, self.groups, self.seqlen_kv,
+                                          real_seqlen_kv, self.dim, self.dtype_str,
+                                          self.config["block_H"], self.config["block_N"],
                                           self.config["num_stages"], self.config["threads"],
-                                          self.config["num_split"], Q, K, V, glse,
-                                          Output_partial)
+                                          self.config["num_split"], Q, K, V, glse, Output_partial)
