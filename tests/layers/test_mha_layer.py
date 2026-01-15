@@ -1,11 +1,14 @@
 import argparse
 
+import torch
+
 from benchmarks import MultiHeadAttentionBenchmark
 from top.layers import MultiHeadAttentionLayer
 from top.utils import str2dtype
 
 
-def test_mha_layer(batch, seq_len, heads, dim, causal, dtype):
+def test_mha_layer(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
+                   dtype: torch.dtype) -> None:
 
     mha = MultiHeadAttentionLayer(batch, heads, seq_len, dim, causal, dtype)
     benchmark = MultiHeadAttentionBenchmark(batch, heads, seq_len, dim, causal, dtype)

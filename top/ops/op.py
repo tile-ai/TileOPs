@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Union
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 
@@ -17,7 +17,7 @@ class Op(ABC):
     - Autotuning interface
 
     Examples:
-        >>> from top.ops import MultiHeadAttentionFwdOp  # MultiHeadAttentionFwdOp is a subclass of Op
+        >>> from top.ops import MultiHeadAttentionFwdOp #MultiHeadAttentionFwdOp is a subclass of Op
         >>> op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
         >>> Q, K, V = op.gen_inputs()
         >>> output = op(Q, K, V)
@@ -48,7 +48,7 @@ class Op(ABC):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         raise NotImplementedError("Op must implement default_kernel_map")
 
-    def dispatch_kernel(self, kernel_map: Optional[Dict[str, Kernel]] = None):
+    def dispatch_kernel(self, kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
         assert self.default_kernel_map is not None and len(self.default_kernel_map) > 0
         for name, default_kernel in self.default_kernel_map.items():
             if kernel_map is not None and name in kernel_map:
@@ -61,7 +61,7 @@ class Op(ABC):
                     f'{kernel_type.__name__} is not supported on architecture {current_arch}'
             self.kernel_map[name] = kernel_type
 
-    def autotune(self):
+    def autotune(self) -> None:
         """Autotune all kernels of the op"""
         for attr_name in dir(self):
             attr = getattr(self, attr_name)
@@ -69,9 +69,12 @@ class Op(ABC):
                 attr.autotune()
 
     @abstractmethod
-    def forward(self, *args: Any, **kwargs: Any):
+    def forward(
+            self,
+            *args: object,  # noqa: U100
+            **kwargs: object) -> Union[torch.Tensor, Tuple]:  # noqa: U100
         raise NotImplementedError("forward method is not implemented")
 
-    def __call__(self, *args: Any, **kwargs: Any):
+    def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, Tuple]:
         """Make the op callable - delegates to forward()"""
         return self.forward(*args, **kwargs)
