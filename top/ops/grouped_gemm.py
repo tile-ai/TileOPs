@@ -117,7 +117,7 @@ class GroupedGemmTTOp(Op):
     """
     Grouped GEMM backward that calculates dB with transpose on A and transpose on B^T:
 
-      A^T @ (B^T)^T -> C
+      A^T @ B^T -> C
     """
 
     def __init__(self,

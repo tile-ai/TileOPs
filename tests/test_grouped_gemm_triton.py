@@ -791,7 +791,7 @@ def check_kernel(kernel_func, ref_func, inputs, kernel_name):
     print("  Output 0:")
     print(f"    shape: {outputs.shape} vs {outputs_ref.shape}")
     print(f"    dtype: {outputs.dtype} vs {outputs_ref.dtype}")
-    allclose = torch.allclose(outputs, outputs_ref, atol=1e+1, rtol=1e-1)
+    allclose = torch.allclose(outputs, outputs_ref, atol=1e-2, rtol=1e-2)
     if allclose:
         print(f"All checks passed for {kernel_name}.")
     else:
@@ -824,11 +824,9 @@ def profile_kernel(kernel_func, inputs, kernel_name, total_flops):
     elapsed_time = (time.time() - start_time) / 10
 
     tflops = (total_flops / 1e12) / elapsed_time
-    bandwidth = 0.01
 
     print(f"{kernel_name} latency: {elapsed_time * 1000:.2f} ms")
     print(f"{kernel_name} TFlops: {tflops:.2f} TFlops")
-    print(f"{kernel_name} Bandwidth: {bandwidth:.2f} GB/s")
 
 
 def calculate_flops_nt(batch_sizes, K, N):
