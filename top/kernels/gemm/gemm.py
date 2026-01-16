@@ -1,5 +1,5 @@
 import itertools
-from typing import Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -9,77 +9,83 @@ from top.kernels.kernel import Kernel
 from top.utils import get_sm_version
 
 __all__ = [
-    'gemm_kernel',
+    'GemmKernel',
 ]
 
 
-def _gemm_kernel(M, N, K, trans_A, trans_B, dtype='float16'):
+def _gemm_kernel(m: int,
+                 n: int,
+                 k: int,
+                 trans_a: bool,
+                 trans_b: bool,
+                 dtype: str = 'float16') -> Callable:
     accum_dtype = "float"
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _gemm_func(block_M, block_N, block_K, threads, num_stages, enable_rasteration):
+    def _gemm_func(block_m: int, block_n: int, block_k: int, threads: int, num_stages: int,
+                   enable_rasteration: bool) -> Callable:
 
-        A_shape = (K, M) if trans_A else (M, K)
-        B_shape = (N, K) if trans_B else (K, N)
-        A_shared_shape = (block_K, block_M) if trans_A else (block_M, block_K)
-        B_shared_shape = (block_N, block_K) if trans_B else (block_K, block_N)
+        a_shape = (k, m) if trans_a else (m, k)
+        b_shape = (n, k) if trans_b else (k, n)
+        a_shared_shape = (block_k, block_m) if trans_a else (block_m, block_k)
+        b_shared_shape = (block_n, block_k) if trans_b else (block_k, block_n)
 
         @T.prim_func
         def _gemm_main(
-                A: T.Tensor(A_shape, dtype),  # type: ignore
-                B: T.Tensor(B_shape, dtype),  # type: ignore
-                C: T.Tensor((M, N), dtype),  # type: ignore
-        ):
+                a: T.Tensor(a_shape, dtype),  # type: ignore
+                b: T.Tensor(b_shape, dtype),  # type: ignore
+                c: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
             with T.Kernel(
-                    T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=threads) as (bx, by):
-                A_shared = T.alloc_shared(A_shared_shape, dtype)
-                B_shared = T.alloc_shared(B_shared_shape, dtype)
-                C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
-                C_shared = T.alloc_shared((block_M, block_N), dtype)
+                    T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (bx, by):
+                a_shared = T.alloc_shared(a_shared_shape, dtype)
+                b_shared = T.alloc_shared(b_shared_shape, dtype)
+                c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                c_shared = T.alloc_shared((block_m, block_n), dtype)
 
                 T.annotate_layout({
-                    C_shared: tilelang.layout.make_swizzled_layout(C_shared),
+                    c_shared: tilelang.layout.make_swizzled_layout(c_shared),
                 })
                 T.use_swizzle(10, enable=enable_rasteration)
 
-                T.clear(C_local)
+                T.clear(c_local)
 
-                for k in T.Pipelined(T.ceildiv(K, block_K), num_stages=num_stages):
-                    if not trans_A:
-                        # A: (M, K)
-                        T.copy(A[by * block_M, k * block_K], A_shared)  # [block_M, block_K]
+                for _k in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                    if not trans_a:
+                        # a: (M, K)
+                        T.copy(a[by * block_m, _k * block_k], a_shared)  # [block_m, block_k]
                     else:
-                        # A: (K, M)
-                        T.copy(A[k * block_K, by * block_M], A_shared)  # [block_K, block_M]
+                        # a: (K, M)
+                        T.copy(a[_k * block_k, by * block_m], a_shared)  # [block_k, block_m]
 
-                    if not trans_B:
-                        # B: (K, N)
-                        T.copy(B[k * block_K, bx * block_N], B_shared)  # [block_K, block_N]
+                    if not trans_b:
+                        # b: (K, N)
+                        T.copy(b[_k * block_k, bx * block_n], b_shared)  # [block_k, block_n]
                     else:
-                        # B: (N, K)
-                        T.copy(B[bx * block_N, k * block_K], B_shared)  # [block_N, block_K]
-                    T.gemm(A_shared, B_shared, C_local, trans_A, trans_B)
+                        # b: (N, K)
+                        T.copy(b[bx * block_n, _k * block_k], b_shared)  # [block_n, block_k]
+                    T.gemm(a_shared, b_shared, c_local, trans_a, trans_b)
 
-                T.copy(C_local, C_shared)
-                T.copy(C_shared, C[by * block_M, bx * block_N])
+                T.copy(c_local, c_shared)
+                T.copy(c_shared, c[by * block_m, bx * block_n])
 
         return _gemm_main
 
     return _gemm_func
 
 
-class gemm_kernel(Kernel):
+class GemmKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
-                 m,
-                 n,
-                 k,
-                 dtype,
+                 m: int,
+                 n: int,
+                 k: int,
+                 dtype: str,
                  config: Optional[dict] = None,
-                 tune=False,
-                 trans_a=False,
-                 trans_b=False):
+                 tune: bool = False,
+                 trans_a: bool = False,
+                 trans_b: bool = False) -> None:
         super().__init__()
         self.M = m
         self.N = n
@@ -94,57 +100,57 @@ class gemm_kernel(Kernel):
     def default_config(self) -> dict:
         # From tilelang/examples/gemm/example_gemm_autotune.py
         sm_version = get_sm_version()
+
         if sm_version in {80}:
             return {
-                "block_M": 128,
-                "block_N": 256,
-                "block_K": 32,
+                "block_m": 128,
+                "block_n": 256,
+                "block_k": 32,
                 "num_stages": 2,
                 "threads": 128,
                 "enable_rasteration": True
             }
-        elif sm_version in {90}:
+        if sm_version in {90}:
             return {
-                "block_M": 128,
-                "block_N": 256,
-                "block_K": 64,
+                "block_m": 128,
+                "block_n": 256,
+                "block_k": 64,
                 "num_stages": 3,
                 "threads": 256,
                 "enable_rasteration": True
             }
-        else:
-            return {
-                "block_M": 128,
-                "block_N": 256,
-                "block_K": 32,
-                "num_stages": 0,
-                "threads": 128,
-                "enable_rasteration": True
-            }
+
+        return {
+            "block_m": 128,
+            "block_n": 256,
+            "block_k": 32,
+            "num_stages": 0,
+            "threads": 128,
+            "enable_rasteration": True
+        }
 
     @property
     def autotune_configs(self) -> list[dict]:
         # From tilelang/examples/gemm/example_gemm_autotune.py
-        block_M = [64, 128, 256]
-        block_N = [64, 128, 256]
-        block_K = [32, 64]
+        block_m = [64, 128, 256]
+        block_n = [64, 128, 256]
+        block_k = [32, 64]
         num_stages = [0, 1, 2, 3]
         threads = [128, 256]
         enable_rasteration = [True, False]
         _configs = list(
-            itertools.product(block_M, block_N, block_K, num_stages, threads, enable_rasteration))
+            itertools.product(block_m, block_n, block_k, num_stages, threads, enable_rasteration))
 
-        configs = [{
-            'block_M': c[0],
-            'block_N': c[1],
-            'block_K': c[2],
+        return [{
+            'block_m': c[0],
+            'block_n': c[1],
+            'block_k': c[2],
             'num_stages': c[3],
             'threads': c[4],
             'enable_rasteration': c[5]
         } for c in _configs]
-        return configs
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor):
+    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.kernel(**self.config)(a, b)
 
 
