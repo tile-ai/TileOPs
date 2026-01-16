@@ -1,6 +1,5 @@
 from typing import Optional, Tuple, Union
 
-import flash_attn_interface
 import torch
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -53,6 +52,7 @@ class MultiHeadAttentionFwdBenchmark(Benchmark):
         return output, None  # do not check lse
 
     def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        import flash_attn_interface
 
         return flash_attn_interface.flash_attn_func(
             q,
@@ -156,6 +156,7 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
     def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
                          grad_output: torch.Tensor,
                          lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        import flash_attn_interface
 
         softmax_scale = q.shape[-1]**(-0.5)
 
