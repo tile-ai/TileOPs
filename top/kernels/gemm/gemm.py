@@ -52,17 +52,17 @@ def _gemm_kernel(m: int,
 
                 for _k in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
                     if not trans_a:
-                        # a: (M, K)
+                        # a: (m, k)
                         T.copy(a[by * block_m, _k * block_k], a_shared)  # [block_m, block_k]
                     else:
-                        # a: (K, M)
+                        # a: (k, m)
                         T.copy(a[_k * block_k, by * block_m], a_shared)  # [block_k, block_m]
 
                     if not trans_b:
-                        # b: (K, N)
+                        # b: (k, n)
                         T.copy(b[_k * block_k, bx * block_n], b_shared)  # [block_k, block_n]
                     else:
-                        # b: (N, K)
+                        # b: (n, k)
                         T.copy(b[bx * block_n, _k * block_k], b_shared)  # [block_n, block_k]
                     T.gemm(a_shared, b_shared, c_local, trans_a, trans_b)
 
@@ -111,7 +111,7 @@ class GemmKernel(Kernel):
                  m: int,
                  n: int,
                  k: int,
-                 dtype: str,
+                 dtype: torch.dtype,
                  config: Optional[dict] = None,
                  tune: bool = False,
                  trans_a: bool = False,
