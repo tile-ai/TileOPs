@@ -74,6 +74,36 @@ def _gemm_kernel(m: int,
     return _gemm_func
 
 
+@torch.library.custom_op("top::gemm_wrapped_kernel", mutates_args=())
+def _gemm_wrapped_kernel(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasteration: bool,
+    a: torch.Tensor,
+    b: torch.Tensor,
+) -> torch.Tensor:
+    return _gemm_kernel(m, n, k, trans_a, trans_b, dtype)(block_m, block_n, block_k, threads,
+                                                          num_stages, enable_rasteration)(a, b)
+
+
+@_gemm_wrapped_kernel.register_fake
+def _(m: int, n: int, k: int,  # noqa: U100
+      trans_a: bool, trans_b: bool,  # noqa: U100
+      dtype: str, block_m: int, block_n: int, block_k: int,  # noqa: U100
+      num_stages: int, threads: int, enable_rasteration: bool,  # noqa: U100
+      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:  # noqa: U100
+    return torch.empty((m, n), dtype=inputs[0].dtype, device=inputs[0].device)
+
+
 class GemmKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
@@ -87,10 +117,12 @@ class GemmKernel(Kernel):
                  trans_a: bool = False,
                  trans_b: bool = False) -> None:
         super().__init__()
-        self.M = m
-        self.N = n
-        self.K = k
+        self.m = m
+        self.n = n
+        self.k = k
         self.dtype = dtype
+        self.trans_a = trans_a
+        self.trans_b = trans_b
 
         self.kernel = _gemm_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
 
@@ -151,7 +183,10 @@ class GemmKernel(Kernel):
         } for c in _configs]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return self.kernel(**self.config)(a, b)
+        return _gemm_wrapped_kernel(self.m, self.n, self.k, self.trans_a, self.trans_b,
+                                    self.dtype_str, self.config["block_m"], self.config["block_n"],
+                                    self.config["block_k"], self.config["num_stages"],
+                                    self.config["threads"], self.config["enable_rasteration"], a, b)
 
 
 # TODO: add persistent, split-k, steam-k...
