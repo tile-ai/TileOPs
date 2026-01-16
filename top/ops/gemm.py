@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from top.kernels.gemm import gemm_kernel
+from top.kernels.gemm import GemmKernel
 from top.kernels.kernel import Kernel
 
 from .op import Op
@@ -33,7 +33,7 @@ class GemmOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gemm_kernel": gemm_kernel}
+        return {"gemm_kernel": GemmKernel}
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.kernel(a, b)

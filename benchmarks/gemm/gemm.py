@@ -1,4 +1,4 @@
-from typing import Any, Tuple
+from typing import Tuple, Union
 
 import torch
 
@@ -33,16 +33,16 @@ class GemmBenchmark(Benchmark):
         return (self.m * self.k + self.k * self.n + self.m * self.n) * self.dtype.itemsize
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        A = torch.randn(self.m, self.k, device='cuda', dtype=self.dtype)
-        B = torch.randn(self.k, self.n, device='cuda', dtype=self.dtype)
-        return A, B
+        a = torch.randn(self.m, self.k, device='cuda', dtype=self.dtype)
+        b = torch.randn(self.k, self.n, device='cuda', dtype=self.dtype)
+        return a, b
 
-    def ref_program(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if self.trans_a:
-            A = A.T
+            a = a.T
         if self.trans_b:
-            B = B.T
-        return torch.matmul(A, B)
+            b = b.T
+        return torch.matmul(a, b)
 
 
 class MatMulBenchmark(Benchmark):
@@ -63,15 +63,16 @@ class MatMulBenchmark(Benchmark):
         return 3 * (self.m * self.k + self.k * self.n + self.m * self.n) * self.dtype.itemsize
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        A = torch.randn(self.m, self.k, device='cuda', dtype=self.dtype, requires_grad=self.grad)
-        B = torch.randn(self.k, self.n, device='cuda', dtype=self.dtype, requires_grad=self.grad)
-        return A, B
+        a = torch.randn(self.m, self.k, device='cuda', dtype=self.dtype, requires_grad=self.grad)
+        b = torch.randn(self.k, self.n, device='cuda', dtype=self.dtype, requires_grad=self.grad)
+        return a, b
 
-    def ref_program(self, A: torch.Tensor, B: torch.Tensor) -> Any:
-        output = torch.matmul(A, B)
+    def ref_program(
+            self, a: torch.Tensor, b: torch.Tensor
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        output = torch.matmul(a, b)
         if not self.grad:
             return output
-        else:
-            loss = output.sum()
-            loss.backward()
-        return output, A.grad, B.grad
+        loss = output.sum()
+        loss.backward()
+        return output, a.grad, b.grad

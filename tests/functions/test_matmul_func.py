@@ -1,11 +1,13 @@
 import argparse
 
+import torch
+
 from benchmarks import MatMulBenchmark
 from top.functions import MatMulFunc, matmul
 from top.utils import str2dtype
 
 
-def test_matmul(m, n, k, dtype, tune=False):
+def test_matmul(m: int, n: int, k: int, dtype: torch.dtype, tune: bool = False) -> None:
     benchmark = MatMulBenchmark(m, n, k, dtype)
 
     inputs = benchmark.gen_inputs()
