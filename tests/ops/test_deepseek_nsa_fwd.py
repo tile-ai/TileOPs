@@ -1,0 +1,78 @@
+"""Test NativeSparseAttention operation."""
+
+import pytest
+import torch
+
+from benchmarks.deepseek_nsa.deepseek_nsa import NSAFwdVarlenBenchmark
+from top.ops import NSAFwdVarlenOp
+
+
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    ("batch, heads, c_seq_len, dim, is_causal, scale, block_size, "
+     "groups, selected_blocks, dtype, accum_dtype, tune"),
+    [
+        (1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False),
+        (4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False),
+    ],
+)
+def test_nsa_varlen_op(
+    batch: int,
+    heads: int,
+    c_seq_len: int,
+    dim: int,
+    is_causal: bool,
+    scale: float,
+    block_size: int,
+    groups: int,
+    selected_blocks: int,
+    dtype: torch.dtype,
+    accum_dtype: torch.dtype,
+    tune: bool,
+) -> None:
+
+    assert groups % 16 == 0, "Group size must be a multiple of 16 in NSA"
+
+    benchmark = NSAFwdVarlenBenchmark(
+        batch=batch,
+        heads=heads,
+        c_seq_len=c_seq_len,
+        dim=dim,
+        is_causal=is_causal,
+        scale=scale,
+        block_size=block_size,
+        groups=groups,
+        selected_blocks=selected_blocks,
+        dtype=dtype,
+        accum_dtype=accum_dtype,
+        tune=tune,
+    )
+    op = NSAFwdVarlenOp(
+        batch=batch,
+        heads=heads,
+        c_seq_len=c_seq_len,
+        dim=dim,
+        is_causal=is_causal,
+        scale=scale,
+        block_size=block_size,
+        groups=groups,
+        selected_blocks=selected_blocks,
+        dtype=dtype,
+        accum_dtype=accum_dtype,
+        tune=tune,
+    )
+    inputs = benchmark.gen_inputs()
+    benchmark.check(op, *inputs)
+    benchmark.profile(op, *inputs)
+    benchmark.baseline_profile(*inputs)
+
+
+if __name__ == "__main__":
+
+    test_nsa_varlen_op(1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False)
+    test_nsa_varlen_op(4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False)

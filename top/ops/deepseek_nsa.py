@@ -3,10 +3,11 @@ from typing import Dict, Optional
 import torch
 
 from top.kernels.deepseek_nsa.mean_pooling_fwd import MeanPoolingFwdKernel
+from top.kernels.deepseek_nsa.nsa_fwd import NSAFwdVarlenKernel
 from top.kernels.kernel import Kernel
 from top.ops.op import Op
 
-__all__ = ["MeanPoolingForwardOp"]
+__all__ = ["MeanPoolingForwardOp", "NSAFwdVarlenOp"]
 
 
 class MeanPoolingForwardOp(Op):
@@ -66,3 +67,60 @@ class MeanPoolingForwardOp(Op):
         indices: torch.Tensor,
     ) -> torch.Tensor:
         return self.kernel(x, offsets, indices=indices)
+
+
+class NSAFwdVarlenOp(Op):
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        c_seq_len: int,
+        dim: int,
+        is_causal: bool,
+        scale: float,
+        block_size: int,
+        groups: int,
+        selected_blocks: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        tune: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+    ) -> None:
+
+        self.batch = batch
+        self.heads = heads
+        self.c_seq_len = c_seq_len
+        self.dim = dim
+        self.is_causal = is_causal
+        self.scale = scale
+        self.block_size = block_size
+        self.groups = groups
+        self.selected_blocks = selected_blocks
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
+        self.tune = tune
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["nsa_fwd_varlen_kernel"](
+            self.batch,
+            self.heads,
+            self.c_seq_len,
+            self.dim,
+            self.is_causal,
+            self.scale,
+            self.block_size,
+            self.groups,
+            self.selected_blocks,
+            self.dtype,
+            self.accum_dtype,
+            tune=self.tune)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"nsa_fwd_varlen_kernel": NSAFwdVarlenKernel}
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                block_indices: torch.Tensor, block_counts: torch.Tensor, offsets: torch.Tensor,
+                token_indices: torch.Tensor) -> torch.Tensor:
+        return self.kernel(q, k, v, block_indices, block_counts, offsets, token_indices)
