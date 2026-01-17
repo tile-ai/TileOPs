@@ -92,7 +92,7 @@ def _nsa_fwd_varlen_kernel(
 
                 bos = offsets[i_n]
 
-                NS = block_counts[i_t, i_h]
+                NS = block_counts[bos + i_t, i_h]
                 T.copy(q[bos + i_t, i_h * g:(i_h + 1) * g, :bk], q_shared)
 
                 T.fill(acc_o, 0)
