@@ -1,11 +1,20 @@
 import argparse
 
+import torch
+
 from benchmarks import GroupQueryAttentionBwdBenchmark, GroupQueryAttentionFwdBenchmark
 from top.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from top.utils import str2dtype
 
 
-def test_gqa_fwd(batch, seq_len, heads, heads_kv, dim, causal, dtype, tune=False):
+def test_gqa_fwd(batch: int,
+                 seq_len: int,
+                 heads: int,
+                 heads_kv: int,
+                 dim: int,
+                 causal: bool,
+                 dtype: torch.dtype,
+                 tune: bool = False) -> None:
     op = GroupQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     benchmark = GroupQueryAttentionFwdBenchmark(batch, heads, heads_kv, seq_len, dim, causal, dtype)
 
@@ -15,7 +24,14 @@ def test_gqa_fwd(batch, seq_len, heads, heads_kv, dim, causal, dtype, tune=False
     benchmark.profile(op, *inputs)
 
 
-def test_gqa_bwd(batch, seq_len, heads, heads_kv, dim, causal, dtype, tune=False):
+def test_gqa_bwd(batch: int,
+                 seq_len: int,
+                 heads: int,
+                 heads_kv: int,
+                 dim: int,
+                 causal: bool,
+                 dtype: torch.dtype,
+                 tune: bool = False) -> None:
     op = GroupQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     benchmark = GroupQueryAttentionBwdBenchmark(batch, heads, heads_kv, seq_len, dim, causal, dtype)
 

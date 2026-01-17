@@ -28,30 +28,31 @@ class MHACtx(torch.autograd.Function):
         Returns:
             Output tensor of the same shape as input q
         """
-        O, lse = fwd_op(q, k, v)
+        o, lse = fwd_op(q, k, v)
 
-        ctx.save_for_backward(q, k, v, O, lse)
+        ctx.save_for_backward(q, k, v, o, lse)
         ctx.bwd_op = bwd_op
 
-        return O
+        return o
 
     @staticmethod
-    def backward(ctx: FunctionCtx,
-                 do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
+    def backward(
+            ctx: FunctionCtx, grad_output: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         """
         Backward pass for multi-head attention.
 
         Args:
-            do: Gradient of the output tensor
+            grad_output: Gradient of the output tensor
 
         Returns:
             Gradients w.r.t. q, k, v
         """
-        q, k, v, O, lse = ctx.saved_tensors
+        q, k, v, o, lse = ctx.saved_tensors
 
-        dQ, dK, dV = ctx.bwd_op(q, k, v, O, do, lse)
+        dq, dk, dv = ctx.bwd_op(q, k, v, o, grad_output, lse)
 
-        return dQ, dK, dV, None, None
+        return dq, dk, dv, None, None
 
 
 class MultiHeadAttentionFunc(Function):
@@ -63,7 +64,7 @@ class MultiHeadAttentionFunc(Function):
                  dim: int,
                  is_causal: bool,
                  dtype: torch.dtype = torch.float16,
-                 tune: bool = False):
+                 tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
@@ -101,7 +102,6 @@ def multi_head_attention(q: torch.Tensor,
     Raises:
         ValueError: If input tensors are not 4-dimensional or have inconsistent shapes/dtypes
     """
-
     # Validate that q, k, v are 4-dimensional tensors
     if q.dim() != 4:
         raise ValueError(f"q must be 4-dimensional, but got {q.dim()} dimensions")
@@ -120,12 +120,11 @@ def multi_head_attention(q: torch.Tensor,
                          f"but got q: {q.dtype}, k: {k.dtype}, v: {v.dtype}")
 
     # Extract dimension information
-    B = q.shape[0]
-    S = q.shape[1]
-    H = q.shape[2]
-    D = q.shape[3]
+    batch, seqlen, heads, dim = q.shape
 
-    return MultiHeadAttentionFunc(B, H, S, D, is_causal, q.dtype, tune=tune).forward(q=q, k=k, v=v)
+    return MultiHeadAttentionFunc(
+        batch, heads, seqlen, dim, is_causal, q.dtype, tune=tune).forward(
+            q=q, k=k, v=v)
 
 
 mha = multi_head_attention

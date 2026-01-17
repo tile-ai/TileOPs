@@ -1,4 +1,4 @@
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import flash_attn_interface
 import torch
@@ -33,13 +33,13 @@ class MultiHeadAttentionFwdBenchmark(Benchmark):
         return 4 * self.batch * self.heads * self.seq_len * self.dim * self.dtype.itemsize
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(
+        q = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        K = torch.randn(
+        k = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        V = torch.randn(
+        v = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        return Q, K, V
+        return q, k, v
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor,
                     v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -54,7 +54,7 @@ class MultiHeadAttentionFwdBenchmark(Benchmark):
 
     def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
 
-        out = flash_attn_interface.flash_attn_func(
+        return flash_attn_interface.flash_attn_func(
             q,
             k,
             v,
@@ -62,13 +62,11 @@ class MultiHeadAttentionFwdBenchmark(Benchmark):
             causal=self.is_causal,
         )
 
-        return out
-
     def baseline_profile(self,
-                         *inputs: Any,
+                         *inputs: Union[torch.Tensor, Tuple],
                          warmup: int = 100,
                          rep: int = 100,
-                         device: str = "cuda:0") -> Any:
+                         device: str = "cuda:0") -> None:
 
         print("===== Profiling MHA FA3 backend =====")
         return super().baseline_profile(
@@ -94,18 +92,14 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
         flops = flops_per_matmul * 5
         return flops / 2 if self.is_causal else flops
 
-    # type: () -> float
-
     @property
     def total_memory(self) -> int:
         return 7 * self.batch * self.heads * self.seq_len * self.dim * self.dtype.itemsize
 
-    # type: () -> int
-
     def gen_inputs(
         self
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(
+        q = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
@@ -113,7 +107,7 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
             dtype=self.dtype,
             device='cuda',
             requires_grad=True)
-        K = torch.randn(
+        k = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
@@ -121,7 +115,7 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
             dtype=self.dtype,
             device='cuda',
             requires_grad=True)
-        V = torch.randn(
+        v = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
@@ -129,19 +123,24 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
             dtype=self.dtype,
             device='cuda',
             requires_grad=True)
-        dO = torch.randn(
+        grad_output = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
 
         fwd_op = MultiHeadAttentionFwdOp(self.batch, self.heads, self.seq_len, self.dim,
                                          self.is_causal, self.dtype)
         with torch.no_grad():
-            O, lse = fwd_op(Q, K, V)
+            o, lse = fwd_op(q, k, v)
 
-        return Q, K, V, O, dO, lse
+        return q, k, v, o, grad_output, lse
 
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
-                    do: torch.Tensor,
-                    lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def ref_program(
+            self,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            o: torch.Tensor,  # noqa: U100
+            grad_output: torch.Tensor,
+            lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:  # noqa: U100
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
@@ -150,28 +149,30 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
         output = output_bhsd.transpose(1, 2).contiguous()
 
-        output.backward(do)
+        # from IPython import embed; embed()
+        output.backward(grad_output)
         return q.grad, k.grad, v.grad
 
     def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
-                         do: torch.Tensor,
+                         grad_output: torch.Tensor,
                          lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         softmax_scale = q.shape[-1]**(-0.5)
 
-        dQ = torch.empty_like(q)
-        dK = torch.empty_like(k)
-        dV = torch.empty_like(v)
-        dQ, dK, dV, _ = flash_attn_interface._flash_attn_backward(do, q, k, v, o, lse, None, None,
-                                                                  None, None, None, None, dQ, dK,
-                                                                  dV, softmax_scale, self.is_causal)
-        return dQ, dK, dV
+        dq = torch.empty_like(q)
+        dk = torch.empty_like(k)
+        dv = torch.empty_like(v)
+        dq, dk, dv, _ = flash_attn_interface._flash_attn_backward(grad_output, q, k, v, o, lse,
+                                                                  None, None, None, None, None,
+                                                                  None, dq, dk, dv, softmax_scale,
+                                                                  self.is_causal)
+        return dq, dk, dv
 
     def baseline_profile(self,
-                         *inputs: Any,
+                         *inputs: Union[torch.Tensor, Tuple],
                          warmup: int = 100,
                          rep: int = 100,
-                         device: str = "cuda:0") -> Any:
+                         device: str = "cuda:0") -> None:
 
         print("===== Profiling MHA FA3 backend =====")
         return super().baseline_profile(
@@ -210,7 +211,7 @@ class MultiHeadAttentionBenchmark(Benchmark):
         return self.mha_fwd_bench.total_memory + self.mha_bwd_bench.total_memory
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(
+        q = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
@@ -218,7 +219,7 @@ class MultiHeadAttentionBenchmark(Benchmark):
             dtype=self.dtype,
             device='cuda',
             requires_grad=self.grad)
-        K = torch.randn(
+        k = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
@@ -226,7 +227,7 @@ class MultiHeadAttentionBenchmark(Benchmark):
             dtype=self.dtype,
             device='cuda',
             requires_grad=self.grad)
-        V = torch.randn(
+        v = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
@@ -235,13 +236,9 @@ class MultiHeadAttentionBenchmark(Benchmark):
             device='cuda',
             requires_grad=self.grad)
 
-        return Q, K, V
+        return q, k, v
 
-    def ref_program(self,
-                    q: torch.Tensor,
-                    k: torch.Tensor,
-                    v: torch.Tensor,
-                    do: torch.Tensor = None) -> Any:
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
@@ -252,7 +249,7 @@ class MultiHeadAttentionBenchmark(Benchmark):
 
         if not self.grad:
             return output
-        else:
-            loss = output.sum()
-            loss.backward()
-            return output, q.grad, k.grad, v.grad
+
+        loss = output.sum()
+        loss.backward()
+        return output, q.grad, k.grad, v.grad

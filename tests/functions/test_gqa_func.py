@@ -1,11 +1,14 @@
 import argparse
 
+import torch
+
 from benchmarks import GroupQueryAttentionBenchmark
 from top.functions import GroupQueryAttentionFunc, gqa
 from top.utils import str2dtype
 
 
-def test_gqa_fn(batch, seq_len, heads, heads_kv, dim, causal, dtype):
+def test_gqa_fn(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
+                dtype: torch.dtype) -> None:
     benchmark = GroupQueryAttentionBenchmark(batch, heads, heads_kv, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
