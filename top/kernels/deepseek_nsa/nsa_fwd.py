@@ -230,15 +230,8 @@ class NSAFwdVarlenKernel(Kernel):
         self.block_size = block_size
         self.groups = groups
         self.selected_blocks = selected_blocks
-        self.dtype = dtype
-        self.accum_dtype = accum_dtype
         self.dtype_name = str(dtype).split('.')[-1]
         self.accum_dtype_name = str(accum_dtype).split('.')[-1]
-
-        self.kernel = _nsa_fwd_varlen_kernel(self.batch, self.heads, self.c_seq_len, self.dim,
-                                             self.is_causal, self.scale, self.block_size,
-                                             self.groups, self.selected_blocks, self.dtype,
-                                             self.accum_dtype)
 
         self.init_config(config, tune)
 

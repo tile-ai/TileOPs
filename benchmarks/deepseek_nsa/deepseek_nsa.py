@@ -134,8 +134,8 @@ class NSAFwdVarlenBenchmark(Benchmark):
         block_size: int,
         groups: int,
         selected_blocks: int,
-        dtype: str,
-        accum_dtype: str,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
         tune: bool = False,
     ) -> None:
         self.batch = batch
@@ -213,7 +213,8 @@ class NSAFwdVarlenBenchmark(Benchmark):
                                 dtype=self.dtype,
                                 device="cuda").requires_grad_(True)
 
-        token_indices = prepare_token_indices(offsets).tolist()
+        token_indices = prepare_token_indices(offsets)
+        token_indices_list = token_indices.tolist()
         block_indices = torch.full(
             (1, self.c_seq_len, self.head_kv, self.selected_blocks),
             self.c_seq_len,
@@ -222,7 +223,7 @@ class NSAFwdVarlenBenchmark(Benchmark):
         )
 
         for i in range(self.c_seq_len):
-            _, t = token_indices[i]
+            _, t = token_indices_list[i]
             chunks = max(1, (t + self.block_size - 1) // self.block_size)
             for h in range(self.head_kv):
                 i_i = torch.randperm(chunks)[:self.selected_blocks]
@@ -235,7 +236,6 @@ class NSAFwdVarlenBenchmark(Benchmark):
             dtype=torch.int32,
             device="cuda",
         )
-        token_indices = prepare_token_indices(offsets)
         return (
             q.squeeze(0),
             k.squeeze(0),

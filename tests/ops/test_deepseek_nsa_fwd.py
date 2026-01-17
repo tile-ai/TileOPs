@@ -38,34 +38,23 @@ def test_nsa_varlen_op(
 
     assert groups % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    benchmark = NSAFwdVarlenBenchmark(
-        batch=batch,
-        heads=heads,
-        c_seq_len=c_seq_len,
-        dim=dim,
-        is_causal=is_causal,
-        scale=scale,
-        block_size=block_size,
-        groups=groups,
-        selected_blocks=selected_blocks,
-        dtype=dtype,
-        accum_dtype=accum_dtype,
-        tune=tune,
-    )
-    op = NSAFwdVarlenOp(
-        batch=batch,
-        heads=heads,
-        c_seq_len=c_seq_len,
-        dim=dim,
-        is_causal=is_causal,
-        scale=scale,
-        block_size=block_size,
-        groups=groups,
-        selected_blocks=selected_blocks,
-        dtype=dtype,
-        accum_dtype=accum_dtype,
-        tune=tune,
-    )
+    params = {
+        "batch": batch,
+        "heads": heads,
+        "c_seq_len": c_seq_len,
+        "dim": dim,
+        "is_causal": is_causal,
+        "scale": scale,
+        "block_size": block_size,
+        "groups": groups,
+        "selected_blocks": selected_blocks,
+        "dtype": dtype,
+        "accum_dtype": accum_dtype,
+        "tune": tune,
+    }
+    benchmark = NSAFwdVarlenBenchmark(**params)
+    op = NSAFwdVarlenOp(**params)
+    
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
     benchmark.profile(op, *inputs)
