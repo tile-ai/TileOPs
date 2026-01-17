@@ -92,14 +92,14 @@ def _nsa_fwd_varlen_kernel(
 
                 bos = offsets[i_n]
 
-                NS = block_counts[bos + i_t, i_h]
+                ns = block_counts[bos + i_t, i_h]
                 T.copy(q[bos + i_t, i_h * g:(i_h + 1) * g, :bk], q_shared)
 
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                for i in T.Pipelined(NS, num_stages=num_stages):
+                for i in T.Pipelined(ns, num_stages=num_stages):
                     i_s = block_indices[bos + i_t, i_h, i] * bs
                     if i_s <= i_t and i_s >= 0:
                         # [BS, BK]
