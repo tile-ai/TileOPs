@@ -48,7 +48,6 @@ jobs:
 
       - name: Setup & Run tests
         run: |
-          source ~/.bashrc
           conda activate tileops-release
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
@@ -76,7 +75,6 @@ jobs:
 
       - name: Setup & Run tests
         run: |
-          source ~/.bashrc
           conda activate tileops-nightly
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
