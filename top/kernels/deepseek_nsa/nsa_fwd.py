@@ -103,7 +103,7 @@ def _nsa_fwd_varlen_kernel(
                     i_s = block_indices[bos + i_t, i_h, i] * bs
                     if i_s <= i_t and i_s >= 0:
                         # [BS, BK]
-                        # TODO(TileOPs): Handle boundary conditions if i_s + bs > current_seq_len
+                        # TODO(TileOPs): may have some padding issues
                         # we should learn from mha varlen templates to handle this
                         T.copy(k[bos + i_s:bos + i_s + bs, i_h, :bk], k_shared)
 
