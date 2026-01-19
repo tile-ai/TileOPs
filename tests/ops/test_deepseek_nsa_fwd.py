@@ -19,6 +19,7 @@ def setup() -> None:
     [
         (1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False),
         (4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False),
+        (2, 16, 8192, 64, True, 0.1, 32, 16, 4, torch.float16, torch.float32, False),
     ],
 )
 def test_nsa_varlen_op(
@@ -54,7 +55,7 @@ def test_nsa_varlen_op(
     }
     benchmark = NSAFwdVarlenBenchmark(**params)
     op = NSAFwdVarlenOp(**params)
-    
+
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
     benchmark.profile(op, *inputs)
@@ -66,3 +67,4 @@ if __name__ == "__main__":
     test_nsa_varlen_op(1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False)
     test_nsa_varlen_op(4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False)
     test_nsa_varlen_op(2, 16, 8192, 64, True, 0.1, 32, 16, 4, torch.float16, torch.float32, False)
+

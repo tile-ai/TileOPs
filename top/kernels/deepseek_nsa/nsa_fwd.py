@@ -52,7 +52,7 @@ def _nsa_fwd_varlen_kernel(
 
         nk = tilelang.cdiv(dim, block_t)
         nv = tilelang.cdiv(dim, block_t)
-        assert nk == 1, "The key dimension can not be larger than 256"
+        assert nk == 1, "The key dimension can not be larger than 128"
 
         g = groups
         bs = block_s
@@ -103,7 +103,7 @@ def _nsa_fwd_varlen_kernel(
                     i_s = block_indices[bos + i_t, i_h, i] * bs
                     if i_s <= i_t and i_s >= 0:
                         # [BS, BK]
-                        # Lei: may have some padding issues
+                        # TODO(TileOPs): Handle boundary conditions if i_s + bs > current_seq_len
                         # we should learn from mha varlen templates to handle this
                         T.copy(k[bos + i_s:bos + i_s + bs, i_h, :bk], k_shared)
 

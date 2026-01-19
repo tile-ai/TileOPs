@@ -170,12 +170,13 @@ class NSAFwdVarlenBenchmark(Benchmark):
         return (q_memory + k_memory + v_memory + output_memory + block_indices_memory)
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
+        possible_split_points = torch.arange(16, self.c_seq_len)
+        num_splits = self.batch - 1
         offsets = (
             torch.cat(
                 [
                     torch.tensor([0], dtype=torch.long),
-                    torch.arange(
-                        16, self.c_seq_len)[torch.randperm(self.c_seq_len - 1)[:self.batch - 1]],
+                    possible_split_points[torch.randperm(len(possible_split_points))[:num_splits]],
                     torch.tensor([self.c_seq_len], dtype=torch.long),
                 ],
                 0,
