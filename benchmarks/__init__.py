@@ -28,5 +28,5 @@ __all__ = [
     'MultiHeadAttentionDecodeBenchmark', 'GroupQueryAttentionDecodeBenchmark',
     'MultiHeadLatentAttentionDecodeBenchmark', 'DeepSeekSparseAttentionDecodeBenchmark',
     'MatMulBenchmark', "GroupedGemmBenchmark", "GroupedGemmNTBenchmark", "GroupedGemmNNBenchmark",
-    "GroupedGemmTNBenchmark", "GroupedGemmTTBenchmark"
+    "GroupedGemmTNBenchmark", "GroupedGemmTTBenchmark","Fp8LightingIndexerOp",
 ]
