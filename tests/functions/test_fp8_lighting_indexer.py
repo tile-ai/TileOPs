@@ -6,40 +6,22 @@ from benchmarks.deepseek_mla import Fp8LightingIndexerBenchmark
 from top.functions import FP8LightingIndexerFunc
 from top.layers import FP8LightingIndexerLayer
 
+
 def test_fp8_lighting_indexer(batch,
-                             heads,
-                             seq_len,
-                             index_dim,
-                             seq_len_kv,
-                             clean_logits,
-                             dtype,
-                             tune=False):
+                              heads,
+                              seq_len,
+                              index_dim,
+                              seq_len_kv,
+                              clean_logits,
+                              dtype,
+                              tune=False):
     fn = FP8LightingIndexerFunc(
-        seq_len,
-        heads,
-        index_dim,
-        seq_len_kv,
-        clean_logits,
-        dtype=dtype,
-        tune=tune)
+        seq_len, heads, index_dim, seq_len_kv, clean_logits, dtype=dtype, tune=tune)
     layer = FP8LightingIndexerLayer(
-        seq_len,
-        heads,
-        index_dim,
-        seq_len_kv,
-        clean_logits,
-        dtype=dtype,
-        tune=tune)
+        seq_len, heads, index_dim, seq_len_kv, clean_logits, dtype=dtype, tune=tune)
     benchmark = Fp8LightingIndexerBenchmark(
-        batch,
-        heads,
-        seq_len,
-        index_dim,
-        seq_len_kv,
-        clean_logits,
-        dtype=dtype,
-        tune=tune)
-    
+        batch, heads, seq_len, index_dim, seq_len_kv, clean_logits, dtype=dtype, tune=tune)
+
     inputs = benchmark.gen_inputs()
 
     try:
@@ -58,6 +40,7 @@ def test_fp8_lighting_indexer(batch,
         print(f"❌ indexer_layer test failed: {e}")
         raise
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--seq_len', type=int, default=4096, help='sequence length')
@@ -70,6 +53,5 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_fp8_lighting_indexer(args.seq_len, args.heads, args.index_dim, args.seq_len_kv, args.clean_logits,
-                 args.config, args.tune)
-
+    test_fp8_lighting_indexer(args.seq_len, args.heads, args.index_dim, args.seq_len_kv,
+                              args.clean_logits, args.config, args.tune)
