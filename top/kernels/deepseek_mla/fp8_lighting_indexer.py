@@ -13,7 +13,11 @@ from top.kernels.kernel import Kernel
 __all__ = ["fp8_lighting_indexer_kernel"]
 
 
-def _fp8_lighting_indexer_kernel(seq_len, heads, index_dim, seq_len_kv, clean_logits=True)-> None:
+def _fp8_lighting_indexer_kernel(seq_len,
+                                 heads,
+                                 index_dim,
+                                 seq_len_kv,
+                                 clean_logits=True) -> Callable:
 
     @tilelang.jit(
         pass_configs={
@@ -107,19 +111,6 @@ def _fp8_lighting_indexer_kernel(seq_len, heads, index_dim, seq_len_kv, clean_lo
 
     return _fp8_lighting_indexer_func
 
-    # # Call the first kernel function: _fp8_lighting_indexer_func
-    # kernel_func = _fp8_lighting_indexer_func(heads, index_dim)
-
-    # # Create initial inputs
-    # # Assuming q, kv, kv_scales, logits, weights, cu_seqlen_ks, cu_seqlen_ke are available
-    # kernel_func(q.view(seq_len * heads, index_dim), kv, kv_scales, logits, weights, cu_seqlen_ks, cu_seqlen_ke)
-
-    # # Optionally call the second kernel function if clean_logits is True
-    # if clean_logits:
-    #     clean_logits_kernel(logits, cu_seqlen_ks, cu_seqlen_ke)
-
-    # return logits
-
 
 @tilelang.jit
 def clean_logits_(
@@ -153,24 +144,24 @@ def clean_logits_(
 
 
 @torch.library.custom_op("top::fp8_lighting_indexer_wrapped_kernel", mutates_args=())
-def fp8_lighting_indexer_wrapped_kernel(seq_len: int, heads: int, index_dim: int, seq_len_kv: int, clean_logits:bool,
-                                        block_N: int, num_stages: int, threads: int, block_Q: int,
-                                        IndexQ: torch.Tensor, IndexK: torch.Tensor,
-                                        IndexKScale: torch.Tensor,
-                                        Logits: torch.Tensor,
-                                        Weights: torch.Tensor, CuSeqLenKS: torch.Tensor,
+def fp8_lighting_indexer_wrapped_kernel(seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
+                                        clean_logits: bool, block_N: int, num_stages: int,
+                                        threads: int, block_Q: int, IndexQ: torch.Tensor,
+                                        IndexK: torch.Tensor, IndexKScale: torch.Tensor,
+                                        Logits: torch.Tensor, Weights: torch.Tensor,
+                                        CuSeqLenKS: torch.Tensor,
                                         CuSeqLenKE: torch.Tensor) -> torch.Tensor:
     print("seq_len:", seq_len)
     print("heads:", heads)
     print("index_dim:", index_dim)
     _fp8_lighting_indexer_kernel(seq_len, heads, index_dim,
-                                        seq_len_kv)(block_N, num_stages, threads,
-                                                    block_Q)(IndexQ.view(seq_len * heads, index_dim), IndexK, IndexKScale, Logits,
-                                                             Weights, CuSeqLenKS, CuSeqLenKE)
+                                 seq_len_kv)(block_N, num_stages, threads,
+                                             block_Q)(IndexQ.view(seq_len * heads,
+                                                                  index_dim), IndexK, IndexKScale,
+                                                      Logits, Weights, CuSeqLenKS, CuSeqLenKE)
     if clean_logits:
         clean_logits_()(Logits, CuSeqLenKS, CuSeqLenKE)
     return Logits.clone()
-
 
 
 @fp8_lighting_indexer_wrapped_kernel.register_fake
@@ -191,7 +182,7 @@ def _(
         Weights: torch.Tensor,
         CuSeqLenKS: torch.Tensor,
         CuSeqLenKE: torch.Tensor) -> torch.Tensor:
-    fake_o = torch.empty([seq_len], dtype=IndexKScale.dtype, device=IndexKScale.device)
+    fake_o = torch.empty([seq_len, seq_len_kv], dtype=IndexKScale.dtype, device=IndexKScale.device)
 
     return fake_o
 
@@ -215,8 +206,8 @@ class fp8_lighting_indexer_kernel(Kernel):
         self.clean_logits = clean_logits
         self.config = config
 
-        self.kernel = _fp8_lighting_indexer_kernel(
-            self.seq_len, self.heads, self.index_dim, self.seq_len_kv, self.clean_logits)
+        self.kernel = _fp8_lighting_indexer_kernel(self.seq_len, self.heads, self.index_dim,
+                                                   self.seq_len_kv, self.clean_logits)
 
         self.init_config(config, tune)
 
@@ -230,7 +221,7 @@ class fp8_lighting_indexer_kernel(Kernel):
         num_stages = [0, 1, 2]
         threads = [128, 256]
         block_Q = [1, 2, 4]
-        _configs = list(itertools.product(block_I, threads))
+        _configs = list(itertools.product(block_N, num_stages, threads, block_Q))
 
         configs = [{
             'block_N': c[0],
@@ -249,13 +240,14 @@ class fp8_lighting_indexer_kernel(Kernel):
             CuSeqLenKS: torch.Tensor,  # type: ignore
             CuSeqLenKE: torch.Tensor,  # type: ignore
     ) -> torch.Tensor:
-        Logits =  torch.empty([self.seq_len, self.seq_len_kv], device=IndexQ.device, dtype=torch.float32)
-        return fp8_lighting_indexer_wrapped_kernel(self.seq_len, self.heads, self.index_dim,
-                                            self.seq_len_kv, self.clean_logits, self.config["block_N"], self.config["num_stages"],
-                                            self.config["threads"], self.config["block_Q"], IndexQ, IndexK,
-                                            IndexKScale,
-                                            Logits,
-                                            Weights, CuSeqLenKS, CuSeqLenKE)
+        Logits = torch.empty([self.seq_len, self.seq_len_kv],
+                             device=IndexQ.device,
+                             dtype=torch.float32)
+        return fp8_lighting_indexer_wrapped_kernel(
+            self.seq_len, self.heads, self.index_dim, self.seq_len_kv, self.clean_logits,
+            self.config["block_N"], self.config["num_stages"], self.config["threads"],
+            self.config["block_Q"], IndexQ, IndexK, IndexKScale, Logits, Weights, CuSeqLenKS,
+            CuSeqLenKE)
 
     def supply_prog(
         self,
@@ -270,7 +262,7 @@ class fp8_lighting_indexer_kernel(Kernel):
         self.kv = kv
         seq_len, heads, index_dim = q.shape
         seq_len_kv = kv.shape[0]
-        IndexQ = torch.randn(seq_len * heads, index_dim, device='cuda', dtype=self.dtype)
+        IndexQ = torch.randn(seq_len * heads, index_dim, device='cuda', dtype=torch.float8_e4m3fn)
         IndexK = torch.randn(seq_len_kv, index_dim, device='cuda', dtype=self.dtype)
         IndexKScale = torch.randn(seq_len_kv, device='cuda', dtype=accum_dtype)
         Weights = torch.randn(seq_len, heads, device='cuda', dtype=accum_dtype)

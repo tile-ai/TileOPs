@@ -10,7 +10,7 @@ from .function import Function
 __all__ = ['Fp8LightingIndexerFunc']
 
 
-class Fp8LightingindexerCtx(torch.autograd.Function):
+class Fp8LightingIndexerCtx(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx: FunctionCtx, index_q: torch.Tensor, index_k: torch.Tensor,
@@ -46,5 +46,5 @@ class Fp8LightingIndexerFunc(Function):
 
     def forward(self, index_q: torch.Tensor, index_k: torch.Tensor, weights: torch.Tensor,
                 cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> torch.Tensor:
-        return Fp8LightingindexerCtx.apply(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke,
+        return Fp8LightingIndexerCtx.apply(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke,
                                            self.fwd_op)

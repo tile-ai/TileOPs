@@ -11,7 +11,7 @@ class Fp8LightingIndexerBenchmark(Benchmark):
     op_type = Fp8LightingIndexerOp
 
     def __init__(
-        self: int,
+        self,
         seq_len: int,
         heads: int,
         index_dim: int,
@@ -59,13 +59,10 @@ class Fp8LightingIndexerBenchmark(Benchmark):
 
     def cal_seq_idx_for_q(self, cu_seqlens_qs: torch.LongTensor, cu_seqlens_qe: torch.LongTensor,
                           seq_len: int) -> torch.IntTensor:
-        seq_idx_for_q = torch.full((seq_len,),
-                                   len(cu_seqlens_qs),
-                                   dtype=torch.int32,
-                                   device=cu_seqlens_qs.device)
-        for i in range(len(cu_seqlens_qs)):
-            seq_idx_for_q[cu_seqlens_qs[i]:cu_seqlens_qe[i]] = i
-        return seq_idx_for_q
+        seq_idx_for_q = torch.zeros(seq_len, dtype=torch.int32, device=cu_seqlens_qs.device)
+        if len(cu_seqlens_qs) > 1:
+            seq_idx_for_q[cu_seqlens_qs[1:]] = 1
+        return torch.cumsum(seq_idx_for_q, dim=0, dtype=torch.int32)
 
     # @tensor_cache
     def cal_cu_seqlen_ke_for_q(
@@ -129,7 +126,7 @@ class Fp8LightingIndexerBenchmark(Benchmark):
 
         cu_seqlens = torch.randint(0, average_q_len * 2,
                                    (total_seqlen // average_q_len * 2,)).cuda()
-        last_seq_id = torch.where(cu_seqlens.cumsum(0) >= total_seqlen)[0][0]
+        last_seq_id = torch.where(cu_seqlens.cumsum(0) >= total_seqlen).int().argmax()
         cu_seqlens = cu_seqlens[:last_seq_id]
 
         if cu_seqlens.sum() < total_seqlen:
@@ -203,8 +200,6 @@ class Fp8LightingIndexerBenchmark(Benchmark):
         q = q.float()
         k = k.float()
 
-        print("k ref:", k)
-
         seq_len_kv = kv.shape[0]
         mask_lo = torch.arange(0, seq_len_kv, device="cuda")[None, :] >= cu_seqlen_ks[:, None]
         mask_hi = torch.arange(0, seq_len_kv, device="cuda")[None, :] < cu_seqlen_ke[:, None]
@@ -214,7 +209,6 @@ class Fp8LightingIndexerBenchmark(Benchmark):
         logits = (score.relu() * weights.unsqueeze(-1).transpose(0, 1)).sum(dim=0)
         logits = logits.masked_fill(~mask, float("-inf"))
 
-        print("logits:ref", logits)
         return logits
 
     def check(self, op: Op, *inputs: Tuple[torch.Tensor]) -> None:
@@ -243,8 +237,7 @@ class Fp8LightingIndexerBenchmark(Benchmark):
             raise ValueError(f"Unsupported output type: {type(outputs)}")
 
         assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        diff = self.validate_tensor_match(
-            outputs_ref, outputs, tolerance=1e-14, tensor_name="logits")
+        self.validate_tensor_match(outputs_ref, outputs, tolerance=1e-14, tensor_name="logits")
 
         print(f"All checks passed for {op.__class__.__name__}.✅")
 
@@ -281,7 +274,7 @@ class Fp8LightingIndexerBenchmark(Benchmark):
         norm_sum = (a * a + b * b).sum()
         # assert norm_sum == 0, f"{label} all zero"
         return 2 * (a * b).sum() / norm_sum
-    
+
     def check_fn(self,
                  fn: callable,
                  *inputs: Tuple[torch.Tensor],
@@ -323,7 +316,6 @@ class Fp8LightingIndexerBenchmark(Benchmark):
 
         assert len(outputs) == len(outputs_ref), \
             f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
-        diff = self.validate_tensor_match(
-            outputs_ref, outputs, tolerance=1e-14, tensor_name="logits")
+        self.validate_tensor_match(outputs_ref, outputs, tolerance=1e-14, tensor_name="logits")
 
         print(f"All checks passed for {fn.__class__.__name__}.✅")

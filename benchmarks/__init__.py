@@ -41,5 +41,5 @@ __all__ = [
     "GroupedGemmNNBenchmark",
     "GroupedGemmTNBenchmark",
     "GroupedGemmTTBenchmark",
-    "Fp8LightingIndexerOp",
+    "Fp8LightingIndexerBenchmark",
 ]

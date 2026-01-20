@@ -29,9 +29,12 @@ if __name__ == "__main__":
     parser.add_argument('--heads', type=int, default=32, help='number of heads')
     parser.add_argument('--index_dim', type=int, default=64, help='index dim')
     parser.add_argument('--seq_len_kv', type=int, default=8192, help='key/value sequence length')
-    parser.add_argument('--clean_logits', type=bool, default=True, help='head dim')
     parser.add_argument(
-        '--config', type=Optional[dict], default=None, help='positional encoding dim')
+        '--clean_logits',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='whether to clean logits outside the valid range')
+    parser.add_argument('--config', type=str, default=None, help='positional encoding dim')
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
