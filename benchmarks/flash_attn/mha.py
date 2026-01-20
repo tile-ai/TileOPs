@@ -52,7 +52,11 @@ class MultiHeadAttentionFwdBenchmark(Benchmark):
         return output, None  # do not check lse
 
     def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        import flash_attn_interface
+        try:
+            import flash_attn_interface
+        except ImportError as e:
+            raise ImportError(
+                "flash-attn-3 not installed. To run baseline, install flash-attn-3") from e
 
         return flash_attn_interface.flash_attn_func(
             q,
@@ -156,7 +160,11 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
     def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
                          grad_output: torch.Tensor,
                          lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        import flash_attn_interface
+        try:
+            import flash_attn_interface
+        except ImportError as e:
+            raise ImportError(
+                "flash-attn-3 not installed. To run baseline, install flash-attn-3") from e
 
         softmax_scale = q.shape[-1]**(-0.5)
 
