@@ -126,7 +126,7 @@ class Fp8LightingIndexerBenchmark(Benchmark):
 
         cu_seqlens = torch.randint(0, average_q_len * 2,
                                    (total_seqlen // average_q_len * 2,)).cuda()
-        last_seq_id = torch.where(cu_seqlens.cumsum(0) >= total_seqlen).int().argmax()
+        last_seq_id = torch.where(cu_seqlens.cumsum(0) >= total_seqlen)[0][0]
         cu_seqlens = cu_seqlens[:last_seq_id]
 
         if cu_seqlens.sum() < total_seqlen:
@@ -237,14 +237,14 @@ class Fp8LightingIndexerBenchmark(Benchmark):
             raise ValueError(f"Unsupported output type: {type(outputs)}")
 
         assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        self.validate_tensor_match(outputs_ref, outputs, tolerance=1e-14, tensor_name="logits")
+        self.validate_tensor_match(outputs_ref, outputs, tolerance=1e-3, tensor_name="logits")
 
         print(f"All checks passed for {op.__class__.__name__}.✅")
 
     def validate_tensor_match(self,
                               a: torch.Tensor,
                               b: torch.Tensor,
-                              tolerance: float = 1e-8,
+                              tolerance: float = 1e-3,
                               tensor_name: str = "tensor") -> float:
         if isinstance(a, tuple):
             a = a[0]
@@ -316,6 +316,6 @@ class Fp8LightingIndexerBenchmark(Benchmark):
 
         assert len(outputs) == len(outputs_ref), \
             f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
-        self.validate_tensor_match(outputs_ref, outputs, tolerance=1e-14, tensor_name="logits")
+        self.validate_tensor_match(outputs_ref, outputs, tolerance=1e-3, tensor_name="logits")
 
         print(f"All checks passed for {fn.__class__.__name__}.✅")

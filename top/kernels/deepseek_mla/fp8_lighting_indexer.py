@@ -17,7 +17,7 @@ def _fp8_lighting_indexer_kernel(seq_len,
                                  heads,
                                  index_dim,
                                  seq_len_kv,
-                                 clean_logits=True) -> Callable:
+                                 clean_logits=True):
 
     @tilelang.jit(
         pass_configs={
