@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from top.functions import (DeepSeekSparseAttentionDecodeWithKVCacheFunc,
-                           MultiHeadLatentAttentionDecodeWithKVCacheFunc, FP8LightingIndexerFunc)
+                           MultiHeadLatentAttentionDecodeWithKVCacheFunc, Fp8LightingIndexerFunc)
 
 
 class MultiHeadLatentAttentionDecodeLayer(nn.Module):
@@ -106,7 +106,7 @@ class Fp8LightingIndexerDecodeLayer(nn.Module):
         self.seq_len_kv = seq_len_kv
         self.clean_logits = clean_logits
         self.tune = tune
-        self.fwd_op = FP8LightingIndexerFunc(
+        self.fwd_op = Fp8LightingIndexerFunc(
             seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune=tune)
 
     def forward(self, index_q: torch.Tensor, index_k: torch.Tensor, weights: torch.Tensor,

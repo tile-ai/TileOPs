@@ -3,24 +3,16 @@ import argparse
 from typing import Optional
 
 from benchmarks.deepseek_mla import Fp8LightingIndexerBenchmark
-from top.functions import FP8LightingIndexerFunc
-from top.layers import FP8LightingIndexerLayer
+from top.functions import Fp8LightingIndexerFunc
+from top.layers import Fp8LightingIndexerDecodeLayer
 
 
-def test_fp8_lighting_indexer(batch,
-                              heads,
-                              seq_len,
-                              index_dim,
-                              seq_len_kv,
-                              clean_logits,
-                              dtype,
-                              tune=False):
-    fn = FP8LightingIndexerFunc(
-        seq_len, heads, index_dim, seq_len_kv, clean_logits, dtype=dtype, tune=tune)
-    layer = FP8LightingIndexerLayer(
-        seq_len, heads, index_dim, seq_len_kv, clean_logits, dtype=dtype, tune=tune)
-    benchmark = Fp8LightingIndexerBenchmark(
-        batch, heads, seq_len, index_dim, seq_len_kv, clean_logits, dtype=dtype, tune=tune)
+def test_fp8_lighting_indexer(heads, seq_len, index_dim, seq_len_kv, clean_logits, config):
+    fn = Fp8LightingIndexerFunc(seq_len, heads, index_dim, seq_len_kv, clean_logits, config)
+    layer = Fp8LightingIndexerDecodeLayer(seq_len, heads, index_dim, seq_len_kv, clean_logits,
+                                          config)
+    benchmark = Fp8LightingIndexerBenchmark(seq_len, heads, seq_len, index_dim, seq_len_kv,
+                                            clean_logits, config)
 
     inputs = benchmark.gen_inputs()
 
@@ -54,4 +46,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     test_fp8_lighting_indexer(args.seq_len, args.heads, args.index_dim, args.seq_len_kv,
-                              args.clean_logits, args.config, args.tune)
+                              args.clean_logits, args.config)
