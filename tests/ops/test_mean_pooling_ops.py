@@ -48,38 +48,26 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
         seq_num = batch_size
         use_offsets = 0
 
-    op = MeanPoolingForwardOp(
-        batch_size=batch_size,
-        seq_len=seq_len,
-        heads=heads,
-        dim=dim,
-        chunk_size=chunk_size,
-        chunks_per_bacth=chunks_per_bacth,
-        seq_num=seq_num,
-        use_offsets=use_offsets,
-        dtype=dtype,
-        accum_dtype=accum_dtype,
-        tune=tune)
+    params = {
+        "batch_size": batch_size,
+        "seq_len": seq_len,
+        "heads": heads,
+        "dim": dim,
+        "chunk_size": chunk_size,
+        "chunks_per_bacth": chunks_per_bacth,
+        "seq_num": seq_num,
+        "use_offsets": use_offsets,
+        "dtype": dtype,
+        "accum_dtype": accum_dtype,
+        "tune": tune,
+    }
 
-    benchmark = MeanPoolingForwardBenchmark(
-        batch_size=batch_size,
-        seq_len=seq_len,
-        heads=heads,
-        dim=dim,
-        chunk_size=chunk_size,
-        chunks_per_bacth=chunks_per_bacth,
-        seq_num=seq_num,
-        use_offsets=use_offsets,
-        dtype=dtype,
-        accum_dtype=accum_dtype,
-        tune=tune,
-        offsets=offsets,
-        indices=indices)
+    op = MeanPoolingForwardOp(**params)
+
+    benchmark = MeanPoolingForwardBenchmark(**params, offsets=offsets, indices=indices)
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
-    benchmark.profile(op, *inputs)
-    benchmark.baseline_profile(*inputs)
 
 
 if __name__ == "__main__":

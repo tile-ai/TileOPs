@@ -91,7 +91,7 @@ if __name__ == "__main__":
     parser.add_argument('--K', type=int, default=4096, help='num heads')
     parser.add_argument(
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
-    parser.add_argument('--tune', action='store_true', help='enable autotune')  
+    parser.add_argument('--tune', action='store_true', help='enable autotune')
 
     args = parser.parse_args()
 
