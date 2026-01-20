@@ -58,8 +58,6 @@ def test_nsa_varlen_op(
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
-    benchmark.profile(op, *inputs)
-    benchmark.baseline_profile(*inputs)
 
 
 if __name__ == "__main__":

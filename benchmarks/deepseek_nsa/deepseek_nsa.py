@@ -6,6 +6,7 @@ from einops import rearrange, repeat
 
 from benchmarks.benchmark import Benchmark
 from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp
+from .utils import prepare_token_indices
 
 
 class MeanPoolingForwardBenchmark(Benchmark):
@@ -203,13 +204,6 @@ class NSAFwdVarlenBenchmark(Benchmark):
         self.g_swa = torch.ones((self.batch, self.c_seq_len, self.heads),
                                 dtype=self.dtype,
                                 device="cuda").requires_grad_(True)
-
-        import fla
-        from packaging.version import parse
-        if parse(fla.__version__) < parse("0.2.1"):
-            from fla.ops.common.utils import prepare_token_indices
-        else:
-            from fla.ops.utils import prepare_token_indices
 
         token_indices = prepare_token_indices(offsets)
         token_indices_list = token_indices.tolist()

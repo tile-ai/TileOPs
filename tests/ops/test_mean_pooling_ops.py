@@ -68,8 +68,6 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
 
     inputs = benchmark.gen_inputs()
     benchmark.check(op, *inputs)
-    benchmark.profile(op, *inputs)
-    benchmark.baseline_profile(*inputs)
 
 
 if __name__ == "__main__":
