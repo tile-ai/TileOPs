@@ -28,17 +28,16 @@ class GemmCtx(torch.autograd.Function):
         Returns:
             Output tensor of shape (M, N) after matrix multiplication
         """
-        O = fwd_op(a, b)
-
         ctx.save_for_backward(a, b)
         ctx.da_bwd_op = da_bwd_op
         ctx.db_bwd_op = db_bwd_op
 
-        return O
+        return fwd_op(a, b)
 
     @staticmethod
-    def backward(ctx: FunctionCtx,
-                 do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, None, None, None]:
+    def backward(
+            ctx: FunctionCtx,
+            do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, None, None, None]:  # noqa VNE002
         """Backward pass for GEMM operation.
 
         Args:
@@ -50,7 +49,7 @@ class GemmCtx(torch.autograd.Function):
         """
         a, b = ctx.saved_tensors
 
-        do = do.contiguous()
+        do = do.contiguous()  # noqa VNE002
         da = ctx.da_bwd_op(do, b)
         db = ctx.db_bwd_op(a, do)
         return da, db, None, None, None
@@ -99,7 +98,6 @@ def matmul(a: torch.Tensor, b: torch.Tensor, tune: bool = False) -> torch.Tensor
     Raises:
         ValueError: If input tensors are not 2-dimensional or have inconsistent shapes/dtypes
     """
-
     # Validate that a, b are 2-dimensional tensors
     if a.dim() != 2:
         raise ValueError(f"a must be 2-dimensional, but got {a.dim()} dimensions")
@@ -118,8 +116,8 @@ def matmul(a: torch.Tensor, b: torch.Tensor, tune: bool = False) -> torch.Tensor
                          f"but got a: {a.dtype}, b: {b.dtype}")
 
     # Extract dimension information
-    M = a.shape[0]  # Rows of a and output
-    K = a.shape[1]  # Columns of a and rows of b
-    N = b.shape[1]  # Columns of b and output
+    m = a.shape[0]  # Rows of a and output
+    k = a.shape[1]  # Columns of a and rows of b
+    n = b.shape[1]  # Columns of b and output
 
-    return MatMulFunc(M, N, K, a.dtype, tune=tune).forward(a=a, b=b)
+    return MatMulFunc(m, n, k, a.dtype, tune=tune).forward(a=a, b=b)

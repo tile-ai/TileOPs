@@ -6,17 +6,17 @@ from top.layers import LinearLayer
 from top.utils import str2dtype
 
 
-def test_linear(m, n, k, dtype, tune=False):
+def test_linear(m: int, n: int, k: int, dtype: torch.dtype, tune: bool = False) -> None:
     linear_layer = LinearLayer(m, n, k, dtype=dtype, tune=tune)
-    input = torch.randn(m, k, dtype=dtype, device='cuda', requires_grad=True)
+    input_tensor = torch.randn(m, k, dtype=dtype, device='cuda', requires_grad=True)
 
-    output = linear_layer(input)
+    output = linear_layer(input_tensor)
 
     loss = output.sum()
     loss.backward()
 
     print("Output shape:", output.shape)
-    print("Gradient shape:", input.grad.shape)
+    print("Gradient shape:", input_tensor.grad.shape)
 
 
 if __name__ == "__main__":
