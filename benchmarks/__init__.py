@@ -20,6 +20,13 @@ from .grouped_gemm import (
     GroupedGemmTNBenchmark,
     GroupedGemmTTBenchmark,
 )
+from .grouped_gemm import (
+    GroupedGemmBenchmark,
+    GroupedGemmNTBenchmark,
+    GroupedGemmNNBenchmark,
+    GroupedGemmTNBenchmark,
+    GroupedGemmTTBenchmark,
+)
 
 __all__ = [
     'Benchmark', 'MultiHeadAttentionBenchmark', 'MultiHeadAttentionBwdBenchmark',

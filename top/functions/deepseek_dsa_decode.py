@@ -54,20 +54,21 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFunc(Function):
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
 
-        self.fwd_op = DeepSeekSparseAttentionDecodeWithKVCacheOp(batch,
-                                                                 heads,
-                                                                 seq_len,
-                                                                 seq_len_kv,
-                                                                 dim,
-                                                                 dim_tail,
-                                                                 topk,
-                                                                 stride_kv,
-                                                                 group_kv,
-                                                                 q_start_index_s,
-                                                                 sm_scale,
-                                                                 is_causal,
-                                                                 dtype,
-                                                                 tune=tune)
+        self.fwd_op = DeepSeekSparseAttentionDecodeWithKVCacheOp(
+            batch,
+            heads,
+            seq_len,
+            seq_len_kv,
+            dim,
+            dim_tail,
+            topk,
+            stride_kv,
+            group_kv,
+            q_start_index_s,
+            sm_scale,
+            is_causal,
+            dtype,
+            tune=tune)
 
     def forward(self, q: torch.Tensor, kv_cache: torch.Tensor,
                 indices: torch.Tensor) -> torch.Tensor:

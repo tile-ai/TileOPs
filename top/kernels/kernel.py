@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 import torch
 from tilelang.autotuner import autotune
@@ -7,21 +7,21 @@ from tilelang.autotuner import autotune
 
 class Kernel(ABC):
     dtype: Optional[torch.dtype] = None
-    config: dict
+    config: Dict[str, Any]
     autotune_configs: Optional[list[dict]] = None
     supported_archs: Optional[list[int]] = None
     kernel: Callable[[dict], Callable]
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:  # noqa: U100
         self.config = {}
 
-    def init_config(self, config=None, tune=False):
+    def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:
         if tune:
             if config is not None:
                 import warnings
                 warnings.warn(  # noqa: B028
-                    "Both 'config' and 'tune' are set. 'config' will be ignored in favor of autotuning."
-                )
+                    "Both 'config' and 'tune' are set. "
+                    "'config' will be ignored in favor of autotuning.")
             self.autotune()
         else:
             if config is not None:
@@ -38,19 +38,19 @@ class Kernel(ABC):
         return str(self.dtype).split('.')[-1]
 
     @property
-    def default_config(self) -> dict:
+    def default_config(self) -> Dict[str, Any]:
         """Return the default config for the kernel"""
         return {}
 
     @abstractmethod
-    def forward(self, *args, **kwargs):
+    def forward(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, U100
         """Run the kernel"""
         raise NotImplementedError
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
         return self.forward(*args, **kwargs)
 
-    def autotune(self, warmup=10, rep=10):
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
         print(f'Start autotuning {self.__class__.__name__}...')

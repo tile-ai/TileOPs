@@ -27,5 +27,4 @@ __all__ = [
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
     "Fp8LightingIndexerOp",
     "MeanPoolingForwardOp",
-    "Fp8LightingIndexerOp",
 ]
