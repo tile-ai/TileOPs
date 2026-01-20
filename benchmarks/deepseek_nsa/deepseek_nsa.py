@@ -1,19 +1,8 @@
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
-import fla
 import torch
-from fla.ops.utils import mean_pooling
-from packaging.version import parse
-
-if parse(fla.__version__) < parse("0.2.1"):
-    from fla.ops.common.utils import prepare_token_indices
-else:
-    from fla.ops.utils import prepare_token_indices
-
-from typing import Union
 
 from einops import rearrange, repeat
-from native_sparse_attention.ops.parallel import parallel_nsa_fwd
 
 from benchmarks.benchmark import Benchmark
 from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp
@@ -100,6 +89,7 @@ class MeanPoolingForwardBenchmark(Benchmark):
 
     def baseline_program(self, x: torch.Tensor, offsets: torch.Tensor,
                          indices: torch.Tensor) -> torch.Tensor:
+        from fla.ops.utils import mean_pooling
         _ = indices
         if self.use_offsets == 1:
             return mean_pooling(x, self.chunk_size, offsets, head_first=False)
@@ -166,10 +156,10 @@ class NSAFwdVarlenBenchmark(Benchmark):
         k_memory = self.head_kv * self.c_seq_len * self.dim * self.dtype.itemsize
         v_memory = self.head_kv * self.c_seq_len * self.dim * self.dtype.itemsize
         output_memory = self.heads * self.c_seq_len * self.dim * self.dtype.itemsize
-        block_indices_memory = self.head_kv * self.c_seq_len * self.selected_blocks
+        block_indices_memory = self.head_kv * self.c_seq_len * self.selected_blocks * 4
         return (q_memory + k_memory + v_memory + output_memory + block_indices_memory)
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         possible_split_points = torch.arange(16, self.c_seq_len)
         num_splits = self.batch - 1
         offsets = (
@@ -213,6 +203,13 @@ class NSAFwdVarlenBenchmark(Benchmark):
         self.g_swa = torch.ones((self.batch, self.c_seq_len, self.heads),
                                 dtype=self.dtype,
                                 device="cuda").requires_grad_(True)
+
+        import fla
+        from packaging.version import parse
+        if parse(fla.__version__) < parse("0.2.1"):
+            from fla.ops.common.utils import prepare_token_indices
+        else:
+            from fla.ops.utils import prepare_token_indices
 
         token_indices = prepare_token_indices(offsets)
         token_indices_list = token_indices.tolist()
@@ -384,6 +381,7 @@ class NSAFwdVarlenBenchmark(Benchmark):
     def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                          block_indices: torch.Tensor, block_counts: torch.Tensor,
                          offsets: torch.Tensor, token_indices: torch.Tensor) -> torch.Tensor:
+        from native_sparse_attention.ops.parallel import parallel_nsa_fwd
         q = q.unsqueeze(0)
         k = k.unsqueeze(0)
         v = v.unsqueeze(0)

@@ -70,7 +70,7 @@ def _nsa_fwd_varlen_kernel(
                 offsets: T.Tensor(offsets_shape, offsets_dtype),
                 token_indices: T.Tensor(token_indices_shape, token_indices_dtype),
         ):
-            with T.Kernel(c_seq_len, nv, batch * head_kv, threads=threads) as (bx, by, bz):
+            with T.Kernel(c_seq_len, nv, head_kv, threads=threads) as (bx, by, bz):
                 q_shared = T.alloc_shared([g, bk], dtype)
                 k_shared = T.alloc_shared([bs, bk], dtype)
                 v_shared = T.alloc_shared([bs, bv], dtype)
