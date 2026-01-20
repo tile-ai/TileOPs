@@ -7,11 +7,11 @@ from top.functions import Fp8LightingIndexerFunc
 from top.layers import Fp8LightingIndexerDecodeLayer
 
 
-def test_fp8_lighting_indexer(heads, seq_len, index_dim, seq_len_kv, clean_logits, config):
+def test_fp8_lighting_indexer(seq_len, heads, index_dim, seq_len_kv, clean_logits, config):
     fn = Fp8LightingIndexerFunc(seq_len, heads, index_dim, seq_len_kv, clean_logits, config)
     layer = Fp8LightingIndexerDecodeLayer(seq_len, heads, index_dim, seq_len_kv, clean_logits,
                                           config)
-    benchmark = Fp8LightingIndexerBenchmark(seq_len, heads, seq_len, index_dim, seq_len_kv,
+    benchmark = Fp8LightingIndexerBenchmark(seq_len, heads, index_dim, seq_len_kv,
                                             clean_logits, config)
 
     inputs = benchmark.gen_inputs()

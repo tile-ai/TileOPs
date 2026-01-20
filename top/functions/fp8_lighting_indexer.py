@@ -17,7 +17,7 @@ class Fp8LightingindexerCtx(torch.autograd.Function):
                 weights: torch.Tensor, cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor,
                 fwd_op: Fp8LightingIndexerOp) -> torch.Tensor:
         o = fwd_op(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke)
-        return fwd_op(o)
+        return o
 
     @staticmethod
     def backward(ctx: FunctionCtx, do: torch.Tensor) -> Any:

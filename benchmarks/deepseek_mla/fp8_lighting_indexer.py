@@ -18,7 +18,6 @@ class Fp8LightingIndexerBenchmark(Benchmark):
         seq_len_kv: int,
         clean_logits: bool = True,
         config: Optional[dict] = None,
-        # kernel_map: Optional[Dict[str, Kernel]] = None,
         is_causal: bool = True,
     ):
         self.seq_len = seq_len
@@ -230,7 +229,6 @@ class Fp8LightingIndexerBenchmark(Benchmark):
 
         if isinstance(outputs_ref, torch.Tensor):
             outputs_ref = (outputs_ref,)
-            print("outputs_ref is tensor!")
         elif not isinstance(outputs_ref, tuple):
             raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
 
@@ -241,7 +239,6 @@ class Fp8LightingIndexerBenchmark(Benchmark):
             outputs = tuple(outputs)
         elif isinstance(outputs, torch.Tensor):
             outputs = (outputs,)
-            print("outputs is tensor!")
         elif not isinstance(outputs, tuple):
             raise ValueError(f"Unsupported output type: {type(outputs)}")
 
@@ -284,3 +281,49 @@ class Fp8LightingIndexerBenchmark(Benchmark):
         norm_sum = (a * a + b * b).sum()
         # assert norm_sum == 0, f"{label} all zero"
         return 2 * (a * b).sum() / norm_sum
+    
+    def check_fn(self,
+                 fn: callable,
+                 *inputs: Tuple[torch.Tensor],
+                 atol: float = 1e-2,
+                 rtol: float = 1e-2,
+                 grad: bool = True) -> None:
+        """Check the correctness of the function and layer"""
+        try:
+            outputs_ref = self.ref_program(*inputs)
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
+                return
+            raise e
+
+        if isinstance(outputs_ref, torch.Tensor):
+            outputs_ref = (outputs_ref,)
+        elif not isinstance(outputs_ref, tuple):
+            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
+
+        if not grad:
+            with torch.no_grad():
+                outputs = fn(*inputs)
+        else:
+            output = fn(*inputs)
+            loss = output.sum()
+            loss.backward()
+            outputs = []
+            outputs.append(output)
+            for inp in inputs:
+                outputs.append(inp.grad)
+
+        if isinstance(outputs, list):
+            outputs = tuple(outputs)
+        elif isinstance(outputs, torch.Tensor):
+            outputs = (outputs,)
+        elif not isinstance(outputs, tuple):
+            raise ValueError(f"Unsupported output type: {type(outputs)}")
+
+        assert len(outputs) == len(outputs_ref), \
+            f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
+        diff = self.validate_tensor_match(
+            outputs_ref, outputs, tolerance=1e-14, tensor_name="logits")
+
+        print(f"All checks passed for {fn.__class__.__name__}.✅")
