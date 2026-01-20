@@ -48,10 +48,11 @@ jobs:
 
       - name: Setup & Run tests
         run: |
+          source ~/miniconda3/etc/profile.d/conda.sh
           conda activate tileops-release
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_release.log
+          bash tests/ci_test.sh tileops_test_release.log
         shell: bash
 
       - name: Upload artifacts
@@ -75,10 +76,11 @@ jobs:
 
       - name: Setup & Run tests
         run: |
+          source ~/miniconda3/etc/profile.d/conda.sh
           conda activate tileops-nightly
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          CUDA_VISIBLE_DEVICES=6 bash tests/ci_test.sh tileops_test_nightly.log
+          bash tests/ci_test.sh tileops_test_nightly.log
         shell: bash
 
       - name: Upload artifacts
@@ -101,14 +103,11 @@ jobs:
 
       - name: Setup & Run tests
         run: |
-          source ~/.bashrc
-          export PATH=/usr/local/cuda-12.9/bin:$PATH
-          export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
-          source /home/lyc/miniconda3/etc/profile.d/conda.sh
-          conda activate tileops-nightly
+          source ~/miniconda3/etc/profile.d/conda.sh
+          conda activate tileops-release
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          bash benchmarks/profile_run.sh --log profile_out/tileops_profile_nightly.log
+          bash benchmarks/profile_run.sh --log profile_out/tileops_profile_release.log
         shell: bash
 
       - name: Upload profile_out artifacts
