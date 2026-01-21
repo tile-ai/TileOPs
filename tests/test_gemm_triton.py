@@ -123,7 +123,8 @@ def benchmark_triton_gemm_fp16(M, N, K, dtype, num_iter=100):
             print("-" * 40)
 
         except Exception as e:
-            print(f"Config {config_idx}: Block({block_m:3d},{block_n:3d},{block_k:3d}) - Failed: {e}")
+            print(
+                f"Config {config_idx}: Block({block_m:3d},{block_n:3d},{block_k:3d}) - Failed: {e}")
             print("-" * 40)
     if results:
         best_result = max(results, key=lambda x: x['tflops'])
@@ -160,9 +161,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Triton GEMM performance test - fp16 accumulation')
     parser.add_argument('--M', type=int, default=4096, help='Number of rows in matrix A')
     parser.add_argument('--N', type=int, default=4864, help='Number of columns in matrix B')
-    parser.add_argument('--K', type=int, default=8192, help='Number of columns in matrix A / rows in matrix B')
     parser.add_argument(
-        '--dtype', type=str, default='float16', choices=['float16'], help='Data type (only float16 supported)')
+        '--K', type=int, default=8192, help='Number of columns in matrix A / rows in matrix B')
+    parser.add_argument(
+        '--dtype',
+        type=str,
+        default='float16',
+        choices=['float16'],
+        help='Data type (only float16 supported)')
     parser.add_argument('--verify', action='store_true', help='Verify correctness')
     args = parser.parse_args()
     dtype = torch.float16
