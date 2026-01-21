@@ -29,12 +29,12 @@ class Fp8LightingIndexerOp(Op):
         self.config = config
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["fp8_lighting_indexer_kernel"](
+        self.kernel = self.kernel_map["Fp8LightingIndexerKernel"](
             seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fp8_lighting_indexer_kernel": fp8_lighting_indexer_kernel}
+        return {"Fp8LightingIndexerKernel": Fp8LightingIndexerKernel}
 
     def forward(self, index_q: torch.Tensor, index_k: torch.Tensor, weights: torch.Tensor,
                 cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> torch.Tensor:
