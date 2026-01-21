@@ -10,7 +10,7 @@ from tilelang.autotuner import autotune
 from top.kernels.kernel import Kernel
 # from utils import generate_random_cu_seqlens, per_custom_dims_cast_to_fp8
 
-__all__ = ["fp8_lighting_indexer_kernel"]
+__all__ = ["Fp8LightingIndexerKernel"]
 
 
 def _fp8_lighting_indexer_kernel(seq_len,
@@ -184,7 +184,7 @@ def _(
     return fake_o
 
 
-class fp8_lighting_indexer_kernel(Kernel):
+class Fp8LightingIndexerKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,

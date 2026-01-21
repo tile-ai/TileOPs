@@ -2,7 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from top.kernels.deepseek_mla import fp8_lighting_indexer_kernel
+from top.kernels.deepseek_mla import Fp8LightingIndexerKernel
 from top.kernels.kernel import Kernel
 
 from .op import Op
