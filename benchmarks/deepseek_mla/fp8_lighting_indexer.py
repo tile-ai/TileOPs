@@ -33,7 +33,7 @@ class Fp8LightingIndexerBenchmark(Benchmark):
     #todo
     @property
     def total_flops(self) -> float:
-        flops = self.seq_len * self.heads * self.seq_len_kv * self.index_dim * 2
+        flops = self.cost * self.heads * self.index_dim * 2
         return flops
 
     @property
@@ -209,12 +209,14 @@ class Fp8LightingIndexerBenchmark(Benchmark):
         logits = (score.relu() * weights.unsqueeze(-1).transpose(0, 1)).sum(dim=0)
         logits = logits.masked_fill(~mask, float("-inf"))
 
-        return logits
+        cost = mask.sum()
+        return logits, cost
 
     def check(self, op: Op, *inputs: Tuple[torch.Tensor]) -> None:
         """Check the correctness of the op"""
         try:
-            outputs_ref = self.ref_program(*inputs)
+            outputs_ref, cost = self.ref_program(*inputs)
+            self.cost = cost
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
@@ -283,7 +285,8 @@ class Fp8LightingIndexerBenchmark(Benchmark):
                  grad: bool = True) -> None:
         """Check the correctness of the function and layer"""
         try:
-            outputs_ref = self.ref_program(*inputs)
+            outputs_ref, cost = self.ref_program(*inputs)
+            self.cost = cost
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
