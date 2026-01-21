@@ -151,9 +151,6 @@ def fp8_lighting_indexer_wrapped_kernel(seq_len: int, heads: int, index_dim: int
                                         Logits: torch.Tensor, Weights: torch.Tensor,
                                         CuSeqLenKS: torch.Tensor,
                                         CuSeqLenKE: torch.Tensor) -> torch.Tensor:
-    print("seq_len:", seq_len)
-    print("heads:", heads)
-    print("index_dim:", index_dim)
     _fp8_lighting_indexer_kernel(seq_len, heads, index_dim,
                                  seq_len_kv)(block_N, num_stages, threads,
                                              block_Q)(IndexQ.view(seq_len * heads,
