@@ -2,7 +2,7 @@ from typing import Optional
 
 import pytest
 import torch
-from fla.ops.common.utils import prepare_chunk_indices
+from benchmarks.deepseek_nsa.utils import prepare_chunk_indices
 
 from benchmarks.deepseek_nsa.deepseek_nsa import MeanPoolingForwardBenchmark
 from top.ops import MeanPoolingForwardOp
