@@ -1,3 +1,4 @@
+import itertools
 from typing import Optional
 
 import tilelang
@@ -6,7 +7,7 @@ import torch
 
 from top.kernels.kernel import Kernel
 
-__all__ = ["FP8QuantKernel"]
+__all__ = ["Fp8QuantKernel"]
 
 
 def fast_round_scale(amax, fp8_max_inv):
@@ -77,7 +78,26 @@ def _fp8_quant_kernel(seq_len_kv, index_dim):
     return _fp8_quant_fwd_func
 
 
-class FP8QuantKernel(Kernel):
+@torch.library.custom_op("top::fp8_quant_wrapped_kernel", mutates_args=())
+def _fp8_quant_wrapped_kernel(seq_len_kv, index_dim, num_stages, block_m, group_size, round_scale,
+                              input_tensor, scale_tensor, output_tensor) -> torch.Tensor:
+    return _fp8_quant_kernel(
+        seq_len_kv,
+        index_dim,
+    )(num_stages, block_m, group_size, round_scale)(input_tensor, scale_tensor, output_tensor)
+
+
+@_fp8_quant_wrapped_kernel.register_fake
+def _(seq_len_kv, index_dim,
+      num_stages, block_m, group_size, round_scale,
+      input_tensor):
+    return torch.empty(
+        (seq_len_kv, index_dim), dtype=torch.bfloat16, device=input_tensor.device), torch.empty(
+            (seq_len_kv), dtype=torch.float32, device=input_tensor.device), torch.empty(
+                (seq_len_kv, index_dim), dtype=torch.float8, device=input_tensor.device)
+
+
+class Fp8QuantKernel(Kernel):
     """Minimal FP8 quantization kernel class placeholder.
 
     The original tilelang implementation was partially edited and caused
@@ -97,6 +117,29 @@ class FP8QuantKernel(Kernel):
         self.seq_len_kv = seq_len_kv
         self.index_dim = index_dim
         self.config = config or {}
+        self.kernel = _fp8_quant_wrapped_kernel(self.seq_len_kv, self.index_dim)
+        self.init_config(config, tune)
 
-    def forward(self, input_tensor: torch.Tensor, round_scale: bool = False):
-        raise NotImplementedError("FP8 quant kernel is a placeholder in this build.")
+    @property
+    def default_config(self) -> dict:
+        return {"num_stages": 0, "block_m": 32, "group_size": 128, "round_scale": False}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        num_stages = [0, 2]
+        block_m = [32]
+        group_size = [128]
+        round_scale = [False, True]
+        _configs = list(itertools.product(num_stages, block_m, group_size, round_scale))
+
+        return [{
+            'num_stages': c[0],
+            'block_m': c[1],
+            "group_size": c[2],
+            "round_scale": c[3]
+        } for c in _configs]
+
+    def forward(self, input_tensor: torch.Tensor):
+        return _fp8_quant_wrapped_kernel(self.seq_len_kv, self.index_dim, self.config["num_stages"],
+                                         self.config["block_m"], self.config["group_size"],
+                                         self.config["round_scale"], input_tensor)
