@@ -51,13 +51,29 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Create virtualenv and install dependencies
+      - name: Ensure persistent venv and install dependencies
         run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install -U pip setuptools wheel
-          # Prefer editable dev install from the repository per README, fallback to requirements.txt
-          pip install -e '.[dev]' -v || pip install -r requirements.txt -v
+          set -e
+          VENV_DIR="tileops_venv"
+          REQS_HASH=$(sha256sum requirements.txt 2>/dev/null | awk '{print $1}' || echo "no_requirements")
+          MARKER="${{ runner.tool_cache }}/.venv_marker_${{ runner.os }}_${REQS_HASH:0:8}"
+
+          if [[ -f "$MARKER" ]] && [[ -f "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate" ]]; then
+            echo "Found cached venv and matching marker — reusing"
+          else
+            echo "Cached venv missing or stale — creating at ${{ runner.tool_cache }}/${VENV_DIR}"
+            rm -rf "${{ runner.tool_cache }}/${VENV_DIR}" "$MARKER"
+            python -m venv "${{ runner.tool_cache }}/${VENV_DIR}"
+            # shellcheck source=/dev/null
+            source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+            python -m pip install --upgrade pip setuptools wheel --no-user
+            if [[ -f requirements.txt ]]; then
+              PIP_NO_BUILD_ISOLATION=1 pip install -r requirements.txt --no-user
+            else
+              echo "requirements.txt not found — skipping pip install -r requirements.txt"
+            fi
+            touch "$MARKER"
+          fi
         shell: bash
 
       - name: Run tests

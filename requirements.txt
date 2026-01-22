@@ -8,4 +8,4 @@ ml_dtypes
 psutil
 torch
 einops
-tilelang>=0.1.7
+tilelang==0.1.7.post1
