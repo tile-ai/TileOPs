@@ -33,8 +33,11 @@ def convert_to_uint32(x):
 
 def _topk_selector_kernel(batch, seq_len, topk, in_dtype, out_dtype):
 
-    @tilelang.jit
-    def topk_selector_fwd_func(RADIX=1<<8, BLOCK_SIZE=1024, SMEM_INPUT_SIZE=4096):
+    @tilelang.jit(
+        out_idx=[1], pass_configs={
+            tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+        })
+    def topk_selector_fwd_func(RADIX=1 << 8, BLOCK_SIZE=1024, SMEM_INPUT_SIZE=4096):
         batch = T.dynamic("batch")
         seq_len = T.dynamic("seq_len")
         # RADIX = 1 << 8
@@ -201,12 +204,12 @@ def _topk_selector_wrapped_kernel(
     BLOCK_SIZE: int,
     SMEM_INPUT_SIZE: int,
     index_score: torch.Tensor,
-    index: torch.Tensor,
     starts: torch.Tensor,
     ends: torch.Tensor,
 ) -> torch.Tensor:
-    return _topk_selector_kernel(batch, seq_len, topk, in_dtype, out_dtype)(RADIX, BLOCK_SIZE, SMEM_INPUT_SIZE)(index_score, index,
-                                                                            starts, ends)
+    return _topk_selector_kernel(batch, seq_len, topk, in_dtype,
+                                 out_dtype)(RADIX, BLOCK_SIZE, SMEM_INPUT_SIZE)(index_score, starts,
+                                                                                ends)
 
 
 @_topk_selector_wrapped_kernel.register_fake
@@ -234,13 +237,14 @@ class TopkSelectorKernel(Kernel):
         self.in_dtype_str = str(in_dtype).split('.')[-1]
         self.out_dtype_str = str(out_dtype).split('.')[-1]
 
-        self.kernel = _topk_selector_kernel(self.batch, self.seq_len, self.topk, self.in_dtype_str, self.out_dtype_str)
+        self.kernel = _topk_selector_kernel(self.batch, self.seq_len, self.topk, self.in_dtype_str,
+                                            self.out_dtype_str)
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
         return {
-            "RADIX": 1<<8,
+            "RADIX": 1 << 8,
             "BLOCK_SIZE": 1024,
             "SMEM_INPUT_SIZE": 4096,
         }
@@ -253,19 +257,17 @@ class TopkSelectorKernel(Kernel):
         Returns:
             list[dict]: A list of dictionaries containing 'block_i' and 'threads' combinations.
         """
-        RADIX = [1<<8]
+        RADIX = [1 << 8]
         BLOCK_SIZE = [1024]
         SMEM_INPUT_SIZE = [4096]
         _configs = list(itertools.product(RADIX, BLOCK_SIZE, SMEM_INPUT_SIZE))
 
-        return [{
-            'RADIX': c[0],
-            'BLOCK_SIZE': c[1],
-            'SMEM_INPUT_SIZE': c[2]
-        } for c in _configs]
+        return [{'RADIX': c[0], 'BLOCK_SIZE': c[1], 'SMEM_INPUT_SIZE': c[2]} for c in _configs]
 
-    def forward(self, index_score:torch.Tensor, starts:torch.Tensor, ends:torch.Tensor) -> torch.Tensor:
-        index = torch.empty((self.batch, self.topk), dtype=self.out_dtype, device=index_score.device)
-        return _topk_selector_wrapped_kernel(self.batch, self.seq_len, self.topk, self.in_dtype_str, self.out_dtype_str,
-                                             self.config["RADIX"], self.config["BLOCK_SIZE"], self.config["SMEM_INPUT_SIZE"],
-                                             index_score, index, starts, ends)
+    def forward(self, index_score: torch.Tensor, starts: torch.Tensor,
+                ends: torch.Tensor) -> torch.Tensor:
+        return _topk_selector_wrapped_kernel(self.batch, self.seq_len, self.topk, self.in_dtype_str,
+                                             self.out_dtype_str, self.config["RADIX"],
+                                             self.config["BLOCK_SIZE"],
+                                             self.config["SMEM_INPUT_SIZE"], index_score, starts,
+                                             ends)
