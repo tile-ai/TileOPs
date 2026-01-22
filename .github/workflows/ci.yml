@@ -78,7 +78,8 @@ jobs:
 
       - name: Run tests
         run: |
-          ${{ runner.tool_cache }}/${VENV_DIR}/bin/activate
+          VENV_DIR="tileops_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
           bash tests/ci_test.sh tileops_test_release.log
