@@ -78,7 +78,7 @@ jobs:
 
       - name: Run tests
         run: |
-          source .venv/bin/activate
+          ${{ runner.tool_cache }}/${VENV_DIR}/bin/activate
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
           bash tests/ci_test.sh tileops_test_release.log
