@@ -82,6 +82,7 @@ jobs:
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
+          python tests/ops/test_gemm.py
           bash tests/ci_test.sh tileops_test_release.log
         shell: bash
 

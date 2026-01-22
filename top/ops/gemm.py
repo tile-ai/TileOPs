@@ -36,4 +36,11 @@ class GemmOp(Op):
         return {"gemm_kernel": GemmKernel}
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        print("torch:", torch.__version__, "cuda:", torch.version.cuda, "cuda_available:",
+              torch.cuda.is_available())
+        print("device A,B:", a.device, b.device)
+        print("shape A,B:", a.shape, b.shape)
+        print("dtype A,B:", a.dtype, b.dtype)
+        print("contiguous A,B:", a.is_contiguous(), b.is_contiguous())
+        print("strides A,B:", a.stride(), b.stride())
         return self.kernel(a, b)
