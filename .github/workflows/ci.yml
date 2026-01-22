@@ -46,10 +46,23 @@ jobs:
         with:
           fetch-depth: 0  # Equivalent to GIT_STRATEGY: fetch
 
-      - name: Setup & Run tests
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Create virtualenv and install dependencies
         run: |
-          source ~/miniconda3/etc/profile.d/conda.sh
-          conda activate tileops-release
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -U pip setuptools wheel
+          # Prefer editable dev install from the repository per README, fallback to requirements.txt
+          pip install -e '.[dev]' -v || pip install -r requirements.txt -v
+        shell: bash
+
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
           bash tests/ci_test.sh tileops_test_release.log
