@@ -40,9 +40,9 @@ def _fp8_quant_kernel(seq_len_kv, index_dim):
 
         @T.prim_func
         def _fp8_quant_fwd_main(
-            input_tensor: T.Buffer[(seq_len_kv, index_dim), in_dtype],
-            scale_tensor: T.Buffer[(index_dim), scale_dtype],
-            output_tensor: T.Buffer[(seq_len_kv, index_dim), out_dtype]
+            input_tensor: T.Tensor[(seq_len_kv, index_dim), in_dtype],
+            scale_tensor: T.Tensor[(index_dim), scale_dtype],
+            output_tensor: T.Tensor[(seq_len_kv, index_dim), out_dtype]
         ):
             with T.Kernel(
                 T.ceildiv(seq_len_kv, block_m), T.ceildiv(index_dim, group_size), threads=128) as (
@@ -51,7 +51,7 @@ def _fp8_quant_kernel(seq_len_kv, index_dim):
                 ):
                 input_shared = T.alloc_shared((block_m, group_size), in_dtype)
                 input_local = T.alloc_fragment((block_m, group_size), in_dtype)
-                amainput_local = T.alloc_fragment((block_m,), scale_dtype)
+                amax_local = T.alloc_fragment((block_m,), scale_dtype)
                 s_local = T.alloc_fragment((block_m,), scale_dtype)
                 output_local = T.alloc_fragment((block_m, group_size), out_dtype)
                 output_shared = T.alloc_shared((block_m, group_size), out_dtype)
@@ -59,13 +59,13 @@ def _fp8_quant_kernel(seq_len_kv, index_dim):
                 for _ in T.Pipelined(1, num_stages=num_stages):
                     T.copy(X[pid_m * block_m, pid_n * group_size], input_shared)
                     T.copy(input_shared, input_local)
-                    T.reduce_absmax(input_local, amainput_local, dim=1)
+                    T.reduce_absmax(input_local, amax_local, dim=1)
                     for i in T.Parallel(block_m):
-                        amainput_local[i] = T.max(amainput_local[i], 1e-4)
+                        amax_local[i] = T.max(amax_local[i], 1e-4)
                         if round_scale:
-                            s_local[i] = fast_round_scale(amainput_local[i], fp8_max_inv)
+                            s_local[i] = fast_round_scale(amax_local[i], fp8_max_inv)
                         else:
-                            s_local[i] = amainput_local[i] * fp8_max_inv
+                            s_local[i] = amax_local[i] * fp8_max_inv
                     for i, j in T.Parallel(block_m, group_size):
                         output_local[i, j] = T.clamp(input_local[i, j] / s_local[i], fp8_min, fp8_max)
                     for i in T.Parallel(block_m):
