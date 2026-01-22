@@ -49,7 +49,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Ensure persistent venv and install dependencies
         run: |
@@ -104,6 +104,52 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0  # Equivalent to GIT_STRATEGY: fetch
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ensure persistent venv and install dependencies
+        run: |
+          set -e
+          VENV_DIR="tileops_venv_nightly"
+          REQS_HASH=$(sha256sum requirements.txt 2>/dev/null | awk '{print $1}' || echo "no_requirements")
+          MARKER="${{ runner.tool_cache }}/.venv_marker_${{ runner.os }}_${REQS_HASH:0:8}"
+
+          if [[ -f "$MARKER" ]] && [[ -f "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate" ]]; then
+            echo "Found cached venv and matching marker — reusing"
+          else
+            echo "Cached venv missing or stale — creating at ${{ runner.tool_cache }}/${VENV_DIR}"
+            rm -rf "${{ runner.tool_cache }}/${VENV_DIR}" "$MARKER"
+            python -m venv "${{ runner.tool_cache }}/${VENV_DIR}"
+            # shellcheck source=/dev/null
+            source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+            retry_cmd() {
+              tries=0
+              until [ $tries -ge 5 ]
+              do
+                if "$@"; then
+                  return 0
+                fi
+                tries=$((tries+1))
+                echo "Command failed. Retrying $tries/5..."
+                sleep 2
+              done
+              echo "Command failed after 5 attempts." >&2
+              return 1
+            }
+
+            python -m pip install --upgrade pip setuptools wheel --no-user
+            if [[ -f requirements.txt ]]; then
+              export PIP_NO_BUILD_ISOLATION=1 pip install -r requirements.txt --no-user
+              retry_cmd pip install git+https://github.com/tile-ai/tilelang.git --no-user
+            else
+              echo "requirements.txt not found — skipping pip install -r requirements.txt"
+            fi
+            touch "$MARKER"
+          fi
+        shell: bash
 
       - name: Setup & Run tests
         run: |
