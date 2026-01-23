@@ -33,15 +33,10 @@ class GemmBenchmark(Benchmark):
         return (self.m * self.k + self.k * self.n + self.m * self.n) * self.dtype.itemsize
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.trans_a:
-            a = torch.randn(self.k, self.m, device='cuda', dtype=self.dtype)
-        else:
-            a = torch.randn(self.m, self.k, device='cuda', dtype=self.dtype)
-
-        if self.trans_b:
-            b = torch.randn(self.n, self.k, device='cuda', dtype=self.dtype)
-        else:
-            b = torch.randn(self.k, self.n, device='cuda', dtype=self.dtype)
+        shape_a = (self.k, self.m) if self.trans_a else (self.m, self.k)
+        a = torch.randn(*shape_a, device='cuda', dtype=self.dtype)
+        shape_b = (self.n, self.k) if self.trans_b else (self.k, self.n)
+        b = torch.randn(*shape_b, device='cuda', dtype=self.dtype)
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

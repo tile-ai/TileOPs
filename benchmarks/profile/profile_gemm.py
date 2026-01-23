@@ -7,13 +7,13 @@ from top.ops import GemmOp
 from top.utils import str2dtype
 
 
-def test_gemm(m: int,
-              n: int,
-              k: int,
-              dtype: torch.dtype,
-              trans_a: bool = False,
-              trans_b: bool = False,
-              tune: bool = False) -> None:
+def run_gemm_benchmark(m: int,
+                       n: int,
+                       k: int,
+                       dtype: torch.dtype,
+                       trans_a: bool = False,
+                       trans_b: bool = False,
+                       tune: bool = False) -> None:
     op = GemmOp(m, n, k, trans_a=trans_a, trans_b=trans_b, dtype=dtype, tune=tune)
     benchmark = GemmBenchmark(m, n, k, dtype, trans_a=trans_a, trans_b=trans_b)
 
@@ -35,4 +35,5 @@ if __name__ == "__main__":
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_gemm(args.m, args.n, args.k, str2dtype[args.dtype], args.trans_a, args.trans_b, args.tune)
+    run_gemm_benchmark(args.m, args.n, args.k, str2dtype[args.dtype], args.trans_a, args.trans_b,
+                       args.tune)
