@@ -35,9 +35,8 @@ class GemmCtx(torch.autograd.Function):
         return fwd_op(a, b)
 
     @staticmethod
-    def backward(
-            ctx: FunctionCtx,
-            do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, None, None, None]:  # noqa VNE002
+    def backward(ctx: FunctionCtx,
+                 do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, None, None, None]:
         """Backward pass for GEMM operation.
 
         Args:
@@ -49,7 +48,7 @@ class GemmCtx(torch.autograd.Function):
         """
         a, b = ctx.saved_tensors
 
-        do = do.contiguous()  # noqa VNE002
+        do = do.contiguous()
         da = ctx.da_bwd_op(do, b)
         db = ctx.db_bwd_op(a, do)
         return da, db, None, None, None

@@ -90,15 +90,10 @@ class MultiHeadAttentionBwdOp(Op):
                 FlashAttnBwdPostprocessKernel if not is_hopper() else None,
         }
 
-    def forward(
-            self,
-            q: torch.Tensor,
-            k: torch.Tensor,
-            v: torch.Tensor,
-            o: torch.Tensor,
-            do: torch.Tensor,  # noqa: VNE002
-            lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        do = do.contiguous()  # noqa: VNE002
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
+                do: torch.Tensor,
+                lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        do = do.contiguous()
         delta = self.prep_kernel(o, do)
         dq = torch.zeros_like(q, dtype=torch.float32)
         dk, dv = self.kernel(q, k, v, do, lse, delta, dq)

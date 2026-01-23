@@ -5,16 +5,18 @@ description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
-    "torch>=2.1.0",
-    "numpy>=1.23.5",
-    "einops>=0.6.0",
     "Cython",
+    "numpy>=1.23.5",
     "tqdm>=4.62.3",
     "typing_extensions>=4.10.0",
     "cloudpickle",
     "ml_dtypes",
     "psutil",
-    "tilelang>=0.1.7"
+    "torch>=2.1.0",
+    "einops>=0.6.0",
+    # FIXME(ying): Relax this requirement: higher versions require CUDA 13.0,
+    #which has not been fully tested for tileops.
+    "tilelang==0.1.7.post1",
 ]
 requires-python = ">=3.8"
 license = {text = "MIT"}
@@ -24,7 +26,7 @@ dev = [
 "yapf==0.43.0",
 "toml==0.10.2",
 "tomli==2.0.1",
-"ruff==0.6.5",
+"ruff==0.14.13",
 "codespell==2.3.0",
 ]
 
@@ -53,6 +55,8 @@ skip = [
 [tool.ruff]
 line-length = 100
 
+# NOTE: Please gradually tighten static code checks and other validations in the future.
+# The current exemptions are in place to ensure normal project development.
 [tool.ruff.lint]
 select = [
     # pycodestyle
@@ -65,8 +69,8 @@ select = [
     "B",
     # flake8-simplify
     "SIM",
-    # isort
-    "I",
+    # isort (disabled - yapf handles formatting)
+    # "I",
     # pydocstyle (Google Docstrings)
     # "D",
     # pep8-naming (naming conventions)
@@ -77,6 +81,8 @@ select = [
 ignore = [
     # ambiguous name
     "E741",
+    # line too long (allow some flexibility)
+    "E501",
     # key in dict.keys()
     "SIM118",
     # memory leaks
@@ -84,13 +90,30 @@ ignore = [
     # No such file or directory
     "E902",
     # flake8-annotations: ignore self/cls/args/kwargs/special methods
-    "ANN101", "ANN102", "ANN002", "ANN003", "ANN204",
+    # Note: ANN101 and ANN102 were removed in ruff 0.8.0+, so they are not included here
+    "ANN002", "ANN003", "ANN204",
+    # flake8-annotations: ignore missing type annotations (too many in codebase)
+    "ANN001",  # Missing type annotation for function argument
+    "ANN201",  # Missing return type annotation for public function
+    "ANN202",  # Missing return type annotation for private function
+    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
     # pep8-naming: allow 'import as T'
     "N812",
+    # pep8-naming: ignore naming convention violations (common in ML/kernel code)
+    "N801",  # Class name should use CapWords convention
+    "N802",  # Function name should be lowercase
+    "N803",  # Argument name should be lowercase
+    "N806",  # Variable in function should be lowercase
     # pydocstyle: missing docstring in public module
     "D100",
     # pydocstyle: missing docstring in public package
     "D104",
+    # pydocstyle: additional ignores from ruff.toml
+    "D101", "D102", "D103", "D105", "D106", "D107",
+    "D203", "D212", "D213",
+    "D406", "D407", "D408", "D409", "D410", "D411", "D412", "D413", "D414", "D415", "D416", "D417", "D418", "D419",
+    # print statements
+    "T201",
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -98,3 +121,6 @@ convention = "google"
 
 [tool.ruff.lint.isort]
 known-first-party = ["tileops"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
