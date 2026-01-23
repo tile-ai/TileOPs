@@ -12,7 +12,7 @@ class Kernel(ABC):
     supported_archs: Optional[list[int]] = None
     kernel: Callable[[dict], Callable]
 
-    def __init__(self, *args, **kwargs) -> None:  # noqa: U100
+    def __init__(self, *args, **kwargs) -> None:
         self.config = {}
 
     def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:
@@ -43,7 +43,7 @@ class Kernel(ABC):
         return {}
 
     @abstractmethod
-    def forward(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, U100
+    def forward(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
         """Run the kernel"""
         raise NotImplementedError
 

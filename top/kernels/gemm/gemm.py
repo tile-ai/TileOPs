@@ -96,11 +96,11 @@ def _gemm_wrapped_kernel(
 
 
 @_gemm_wrapped_kernel.register_fake
-def _(m: int, n: int, k: int,  # noqa: U100
-      trans_a: bool, trans_b: bool,  # noqa: U100
-      dtype: str, block_m: int, block_n: int, block_k: int,  # noqa: U100
-      num_stages: int, threads: int, enable_rasteration: bool,  # noqa: U100
-      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:  # noqa: U100
+def _(m: int, n: int, k: int,
+      trans_a: bool, trans_b: bool,
+      dtype: str, block_m: int, block_n: int, block_k: int,
+      num_stages: int, threads: int, enable_rasteration: bool,
+      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
     return torch.empty((m, n), dtype=inputs[0].dtype, device=inputs[0].device)
 
 

@@ -25,7 +25,7 @@ def _flashattn_bwd_preprocess_kernel(batch: int, heads: int, seq_len: int, dim: 
     @T.prim_func
     def flash_bwd_prep(
             o: T.Tensor(shape, dtype),  # type: ignore
-            do: T.Tensor(shape, dtype),  # noqa: VNE002  # d(out): gradient of output reciprocal
+            do: T.Tensor(shape, dtype),  # d(out): gradient of output reciprocal
             delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
     ) -> None:
         with T.Kernel(heads, T.ceildiv(seq_len, blk), batch) as (bx, by, bz):
@@ -59,11 +59,7 @@ class FlashAttnBwdPreprocessKernel(Kernel):
         self.kernel = _flashattn_bwd_preprocess_kernel(self.batch, self.heads, self.seq_len,
                                                        self.dim, self.dtype_str)
 
-    def forward(
-            self,
-            o: torch.Tensor,
-            do: torch.Tensor  # noqa: VNE002
-    ) -> torch.Tensor:
+    def forward(self, o: torch.Tensor, do: torch.Tensor) -> torch.Tensor:
         return self.kernel(o, do)
 
 
@@ -145,7 +141,7 @@ def _mha_bwd_kernel(batch: int,
                 q: T.Tensor(shape, dtype),  # type: ignore
                 k: T.Tensor(shape, dtype),  # type: ignore
                 v: T.Tensor(shape, dtype),  # type: ignore
-                do: T.Tensor(shape, dtype),  # noqa: VNE002  # d(out): gradient of output reciprocal
+                do: T.Tensor(shape, dtype),  # d(out): gradient of output reciprocal
                 lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
                 delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
                 dq: T.Tensor(shape, accum_dtype),  # type: ignore
@@ -308,7 +304,7 @@ def _mha_bwd_wgmma_pipelined_kernel(batch: int,
                 q: T.Tensor(shape, dtype),  # type: ignore
                 k: T.Tensor(shape, dtype),  # type: ignore
                 v: T.Tensor(shape, dtype),  # type: ignore
-                do: T.Tensor(shape, dtype),  # noqa: VNE002  # d(out): gradient of output reciprocal
+                do: T.Tensor(shape, dtype),  # d(out): gradient of output reciprocal
                 lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
                 delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
                 dq: T.Tensor(shape, accum_dtype),  # type: ignore
@@ -495,7 +491,7 @@ def _gqa_bwd_kernel(batch: int,
                 q: T.Tensor(q_shape, dtype),  # type: ignore
                 k: T.Tensor(kv_shape, dtype),  # type: ignore
                 v: T.Tensor(kv_shape, dtype),  # type: ignore
-                do: T.Tensor(q_shape, dtype),  # noqa: VNE002
+                do: T.Tensor(q_shape, dtype),
                 lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
                 delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
                 dq: T.Tensor(q_shape, accum_dtype),  # type: ignore
@@ -658,7 +654,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch: int,
                 q: T.Tensor(q_shape, dtype),  # type: ignore
                 k: T.Tensor(kv_shape, dtype),  # type: ignore
                 v: T.Tensor(kv_shape, dtype),  # type: ignore
-                do: T.Tensor(q_shape, dtype),  # noqa: VNE002
+                do: T.Tensor(q_shape, dtype),
                 lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
                 delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
                 dq: T.Tensor(q_shape, accum_dtype),  # type: ignore

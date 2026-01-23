@@ -1,11 +1,11 @@
 from typing import Any, Optional, Union
 
 import torch
-
 from einops import rearrange, repeat
 
 from benchmarks.benchmark import Benchmark
 from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp
+
 from .utils import prepare_token_indices
 
 

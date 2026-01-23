@@ -656,13 +656,9 @@ def prepare_grouped_tensors_tt(dO: torch.Tensor, A: torch.Tensor, batch_sizes: t
             torch.tensor(g_lds, dtype=torch.int32, device=dO.device), group_C)
 
 
-def grouped_gemm_nt(
-        A: torch.Tensor,
-        B: torch.Tensor,
-        batch_sizes: torch.Tensor,
-        batch_offsets: torch.Tensor,  # noqa: U100
-        batch_padded_offsets: torch.Tensor  # noqa: U100
-) -> torch.Tensor:
+def grouped_gemm_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
+                    batch_offsets: torch.Tensor,
+                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
     (d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds,
      group_C) = prepare_grouped_tensors_nt(A, B, batch_sizes)
 
@@ -674,13 +670,9 @@ def grouped_gemm_nt(
     return torch.cat(group_C, dim=0)
 
 
-def grouped_gemm_nn(
-        A: torch.Tensor,
-        B: torch.Tensor,
-        batch_sizes: torch.Tensor,
-        batch_offsets: torch.Tensor,  # noqa: U100
-        batch_padded_offsets: torch.Tensor  # noqa: U100
-) -> torch.Tensor:
+def grouped_gemm_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
+                    batch_offsets: torch.Tensor,
+                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
     (d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds,
      group_C) = prepare_grouped_tensors_nn(A, B, batch_sizes)
 
@@ -692,13 +684,9 @@ def grouped_gemm_nn(
     return torch.cat(group_C, dim=0)
 
 
-def grouped_gemm_tn(
-        A: torch.Tensor,
-        B: torch.Tensor,
-        batch_sizes: torch.Tensor,
-        batch_offsets: torch.Tensor,  # noqa: U100
-        batch_padded_offsets: torch.Tensor  # noqa: U100
-) -> torch.Tensor:
+def grouped_gemm_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
+                    batch_offsets: torch.Tensor,
+                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
     (d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds,
      group_C) = prepare_grouped_tensors_tn(A, B, batch_sizes)
 
@@ -710,13 +698,9 @@ def grouped_gemm_tn(
     return torch.stack(group_C, dim=0)
 
 
-def grouped_gemm_tt(
-        dO: torch.Tensor,
-        A: torch.Tensor,
-        batch_sizes: torch.Tensor,
-        batch_offsets: torch.Tensor,  # noqa: U100
-        batch_padded_offsets: torch.Tensor  # noqa: U100
-) -> torch.Tensor:
+def grouped_gemm_tt(dO: torch.Tensor, A: torch.Tensor, batch_sizes: torch.Tensor,
+                    batch_offsets: torch.Tensor,
+                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
     (dO_addrs, A_addrs, C_addrs, g_sizes, g_lds,
      group_C) = prepare_grouped_tensors_tt(dO, A, batch_sizes)
 
@@ -729,7 +713,7 @@ def grouped_gemm_tt(
 
 
 def ref_program_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
+                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
     output = torch.empty((sum(batch_sizes), B.shape[2]), device=A.device, dtype=A.dtype)
     start = 0
     for i, size in enumerate(batch_sizes):
@@ -740,7 +724,7 @@ def ref_program_nt(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
 
 
 def ref_program_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
+                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
     total_batch = int(batch_sizes.sum().item())
     assert A.shape[0] == total_batch, f"A.shape[0]={A.shape[0]} != sum(batch_sizes)={total_batch}"
     assert B.shape[0] == len(
@@ -756,7 +740,7 @@ def ref_program_nn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
 
 
 def ref_program_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
+                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
     output = torch.zeros((len(batch_sizes), A.shape[0], B.shape[1]), device=A.device, dtype=A.dtype)
     start = 0
     for i, size in enumerate(batch_sizes):
@@ -767,7 +751,7 @@ def ref_program_tn(A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
 
 
 def ref_program_tt(dO: torch.Tensor, A: torch.Tensor, batch_sizes: torch.Tensor,
-                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
+                   batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
     output = torch.zeros((len(batch_sizes), dO.shape[1], A.shape[1]),
                          device=dO.device,
                          dtype=dO.dtype)
