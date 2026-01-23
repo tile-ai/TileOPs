@@ -2,6 +2,7 @@ from .benchmark import Benchmark  # noqa: F401
 from .deepseek_mla import (
     DeepSeekSparseAttentionDecodeBenchmark,
     MultiHeadLatentAttentionDecodeBenchmark,
+    Fp8LightingIndexerBenchmark,
 )
 from .flash_attn import (
     GroupQueryAttentionBenchmark,
@@ -22,11 +23,23 @@ from .grouped_gemm import (
 )
 
 __all__ = [
-    'Benchmark', 'MultiHeadAttentionBenchmark', 'MultiHeadAttentionBwdBenchmark',
-    'MultiHeadAttentionFwdBenchmark', 'GroupQueryAttentionBenchmark',
-    'GroupQueryAttentionFwdBenchmark', 'GroupQueryAttentionBwdBenchmark', 'GemmBenchmark',
-    'MultiHeadAttentionDecodeBenchmark', 'GroupQueryAttentionDecodeBenchmark',
-    'MultiHeadLatentAttentionDecodeBenchmark', 'DeepSeekSparseAttentionDecodeBenchmark',
-    'MatMulBenchmark', "GroupedGemmBenchmark", "GroupedGemmNTBenchmark", "GroupedGemmNNBenchmark",
-    "GroupedGemmTNBenchmark", "GroupedGemmTTBenchmark"
+    'Benchmark',
+    'MultiHeadAttentionBenchmark',
+    'MultiHeadAttentionBwdBenchmark',
+    'MultiHeadAttentionFwdBenchmark',
+    'GroupQueryAttentionBenchmark',
+    'GroupQueryAttentionFwdBenchmark',
+    'GroupQueryAttentionBwdBenchmark',
+    'GemmBenchmark',
+    'MultiHeadAttentionDecodeBenchmark',
+    'GroupQueryAttentionDecodeBenchmark',
+    'MultiHeadLatentAttentionDecodeBenchmark',
+    'DeepSeekSparseAttentionDecodeBenchmark',
+    'MatMulBenchmark',
+    "GroupedGemmBenchmark",
+    "GroupedGemmNTBenchmark",
+    "GroupedGemmNNBenchmark",
+    "GroupedGemmTNBenchmark",
+    "GroupedGemmTTBenchmark",
+    "Fp8LightingIndexerBenchmark",
 ]
