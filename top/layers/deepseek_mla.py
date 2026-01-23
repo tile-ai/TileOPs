@@ -4,7 +4,8 @@ import torch
 from torch import nn
 
 from top.functions import (DeepSeekSparseAttentionDecodeWithKVCacheFunc,
-                           MultiHeadLatentAttentionDecodeWithKVCacheFunc, Fp8LightingIndexerFunc)
+                           MultiHeadLatentAttentionDecodeWithKVCacheFunc, Fp8LightingIndexerFunc,
+                           TopkSelectorFunc)
 
 
 class MultiHeadLatentAttentionDecodeLayer(nn.Module):
@@ -113,3 +114,28 @@ class Fp8LightingIndexerDecodeLayer(nn.Module):
     def forward(self, index_q: torch.Tensor, index_k: torch.Tensor, weights: torch.Tensor,
                 cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> torch.Tensor:
         return self.fn(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke)
+
+
+class TopkSelectorLayer(nn.Module):
+
+    def __init__(self,
+                 batch: int,
+                 seq_len: int,
+                 topk: int,
+                 in_dtype: str,
+                 out_dtype: str,
+                 tune: bool = False):
+        super().__init__()
+
+        self.batch = batch
+        self.seq_len = seq_len
+        self.topk = topk
+        self.in_dtype = in_dtype
+        self.out_dtype = out_dtype
+
+        self.fn = TopkSelectorFunc(
+            batch, seq_len, topk, in_dtype, out_dtype, tune=tune)
+
+    def forward(self, index_scores: torch.Tensor, starts: torch.Tensor,
+                ends: torch.Tensor) -> torch.Tensor:
+        return self.fn(index_scores, starts, ends)
