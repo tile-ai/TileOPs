@@ -90,10 +90,7 @@ ignore = [
     # No such file or directory
     "E902",
     # flake8-annotations: ignore self/cls/args/kwargs/special methods
-    # Note: ANN101 and ANN102 are removed in ruff 0.8.0+, but kept here for
-    # compatibility with older versions. Newer ruff will warn but not fail.
-    "ANN101",  # Missing type annotation for `self` in method (removed in 0.8.0+)
-    "ANN102",  # Missing type annotation for `cls` in classmethod (removed in 0.8.0+)
+    # Note: ANN101 and ANN102 were removed in ruff 0.8.0+, so they are not included here
     "ANN002", "ANN003", "ANN204",
     # flake8-annotations: ignore missing type annotations (too many in codebase)
     "ANN001",  # Missing type annotation for function argument
