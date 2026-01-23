@@ -3,7 +3,6 @@ from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeBenchmark
 from .fp8_lighting_indexer import Fp8LightingIndexerBenchmark
 
 __all__ = [
-    "MultiHeadLatentAttentionDecodeBenchmark",
-    "DeepSeekSparseAttentionDecodeBenchmark",
+    "MultiHeadLatentAttentionDecodeBenchmark", "DeepSeekSparseAttentionDecodeBenchmark",
     "Fp8LightingIndexerBenchmark"
 ]
