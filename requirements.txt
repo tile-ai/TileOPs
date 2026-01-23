@@ -6,6 +6,7 @@ typing_extensions>=4.10.0
 cloudpickle
 ml_dtypes
 psutil
-torch
+torch==2.9.0
 einops
-tilelang>=0.1.7
+tilelang==0.1.7.post1
+pytest==9.0.2
