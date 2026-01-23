@@ -31,8 +31,8 @@ class MHADecodeCtx(torch.autograd.Function):
         Returns:
             Output tensor of the same shape as input q
         """
-        O = fwd_op(q, k, v)
-        return O
+        output = fwd_op(q, k, v)
+        return output
 
     @staticmethod
     def backward(ctx: FunctionCtx, do: torch.Tensor) -> Any:

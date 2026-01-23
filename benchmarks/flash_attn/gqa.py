@@ -149,15 +149,9 @@ class GroupQueryAttentionBwdBenchmark(Benchmark):
 
         return q, k, v, o, grad_output, lse
 
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        o: torch.Tensor,  # noqa: U100
-        grad_output: torch.Tensor,
-        lse: torch.Tensor  # noqa: U100
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:  # noqa: U100
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
+                    grad_output: torch.Tensor,
+                    lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
