@@ -1,11 +1,19 @@
 import argparse
+import pytest
+import torch
 
 from benchmarks import MultiHeadAttentionBwdBenchmark, MultiHeadAttentionFwdBenchmark
 from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from top.utils import str2dtype
 
 
-def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune=False):
+@pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", [
+    (1, 1024, 8, 64, False, torch.float16, False),
+    (2, 2048, 16, 128, True, torch.float16, False),
+    (1, 1024, 8, 64, False, torch.float16, True),
+    (2, 2048, 16, 128, True, torch.bfloat16, True),
+])
+def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune):
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     benchmark = MultiHeadAttentionFwdBenchmark(batch, heads, seq_len, dim, causal, dtype)
 
@@ -15,7 +23,12 @@ def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune=False):
     benchmark.profile(op, *inputs)
 
 
-def test_mha_bwd(batch, seq_len, heads, dim, causal, dtype, tune=False):
+@pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", [
+    (1, 1024, 8, 64, False, torch.float16, False),
+    (2, 2048, 16, 128, True, torch.float16, False),
+    (1, 1024, 8, 64, False, torch.float16, True),
+])
+def test_mha_bwd(batch, seq_len, heads, dim, causal, dtype, tune):
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     benchmark = MultiHeadAttentionBwdBenchmark(batch, heads, seq_len, dim, causal, dtype)
 
