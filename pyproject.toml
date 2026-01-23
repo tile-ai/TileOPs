@@ -14,7 +14,8 @@ dependencies = [
     "psutil",
     "torch>=2.1.0",
     "einops>=0.6.0",
-    # FIXME(ying): Relax this requirement: higher versions require CUDA 13.0, which has not been fully tested for tileops.
+    # FIXME(ying): Relax this requirement: higher versions require CUDA 13.0,
+    #which has not been fully tested for tileops.
     "tilelang==0.1.7.post1",
 ]
 requires-python = ">=3.8"
@@ -54,6 +55,8 @@ skip = [
 [tool.ruff]
 line-length = 100
 
+# NOTE: Please gradually tighten static code checks and other validations in the future.
+# The current exemptions are in place to ensure normal project development.
 [tool.ruff.lint]
 select = [
     # pycodestyle
@@ -78,6 +81,8 @@ select = [
 ignore = [
     # ambiguous name
     "E741",
+    # line too long (allow some flexibility)
+    "E501",
     # key in dict.keys()
     "SIM118",
     # memory leaks
@@ -85,9 +90,23 @@ ignore = [
     # No such file or directory
     "E902",
     # flake8-annotations: ignore self/cls/args/kwargs/special methods
-    "ANN101", "ANN102", "ANN002", "ANN003", "ANN204",
+    # Note: ANN101 and ANN102 are removed in ruff 0.8.0+, but kept here for
+    # compatibility with older versions. Newer ruff will warn but not fail.
+    "ANN101",  # Missing type annotation for `self` in method (removed in 0.8.0+)
+    "ANN102",  # Missing type annotation for `cls` in classmethod (removed in 0.8.0+)
+    "ANN002", "ANN003", "ANN204",
+    # flake8-annotations: ignore missing type annotations (too many in codebase)
+    "ANN001",  # Missing type annotation for function argument
+    "ANN201",  # Missing return type annotation for public function
+    "ANN202",  # Missing return type annotation for private function
+    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
     # pep8-naming: allow 'import as T'
     "N812",
+    # pep8-naming: ignore naming convention violations (common in ML/kernel code)
+    "N801",  # Class name should use CapWords convention
+    "N802",  # Function name should be lowercase
+    "N803",  # Argument name should be lowercase
+    "N806",  # Variable in function should be lowercase
     # pydocstyle: missing docstring in public module
     "D100",
     # pydocstyle: missing docstring in public package

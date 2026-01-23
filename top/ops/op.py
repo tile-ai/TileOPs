@@ -69,10 +69,7 @@ class Op(ABC):
                 attr.autotune()
 
     @abstractmethod
-    def forward(
-            self,
-            *args: object,  # noqa: U100
-            **kwargs: object) -> Union[torch.Tensor, Tuple]:  # noqa: U100
+    def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, Tuple]:
         raise NotImplementedError("forward method is not implemented")
 
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, Tuple]:

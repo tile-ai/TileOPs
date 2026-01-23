@@ -8,8 +8,10 @@ import torch
 from top.kernels.kernel import Kernel
 
 __all__ = [
-    'grouped_gemm_nt_kernel', 'grouped_gemm_nn_kernel', 'grouped_gemm_tn_kernel',
-    'grouped_gemm_tt_kernel'
+    "grouped_gemm_nt_kernel",
+    "grouped_gemm_nn_kernel",
+    "grouped_gemm_tn_kernel",
+    "grouped_gemm_tt_kernel",
 ]
 
 
@@ -38,7 +40,7 @@ def _grouped_gemm_nt_kernel(batch_sum, batch_count, N, K, dtype='float16'):
                 C: T.Tensor(C_shape, dtype),  # type: ignore
                 batch_sizes: T.Tensor([batch_count], "int32"),  # noqa: F821
                 batch_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
-                batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: U100,F821
+                batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
         ):
             with T.Kernel(
                     T.ceildiv(batch_sum, block_M), T.ceildiv(N, block_N),
@@ -160,7 +162,7 @@ def _grouped_gemm_nn_kernel(batch_sum, batch_count, N, K, dtype='float16'):
                 C: T.Tensor(C_shape, dtype),  # type: ignore
                 batch_sizes: T.Tensor([batch_count], "int32"),  # noqa: F821
                 batch_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
-                batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: U100,F821
+                batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
         ):
             with T.Kernel(
                     T.ceildiv(batch_sum, block_M), T.ceildiv(N, block_N),
@@ -284,7 +286,7 @@ def _grouped_gemm_tn_kernel(batch_sum, batch_count, N, K, dtype='float16'):
                 C: T.Tensor(C_shape, dtype),  # type: ignore
                 batch_sizes: T.Tensor([batch_count], "int32"),  # noqa: F821
                 batch_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
-                batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: U100,F821
+                batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
         ):
             with T.Kernel(
                     batch_count, T.ceildiv(N, block_N) * T.ceildiv(K, block_K),
@@ -401,7 +403,7 @@ def _grouped_gemm_tt_kernel(batch_sum, batch_count, n, k, dtype='float16'):
                 C: T.Tensor(C_shape, dtype),  # type: ignore
                 batch_sizes: T.Tensor([batch_count], "int32"),  # noqa: F821
                 batch_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
-                batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: U100,F821
+                batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
         ):
             with T.Kernel(
                     batch_count, T.ceildiv(n, block_n) * T.ceildiv(k, block_k),

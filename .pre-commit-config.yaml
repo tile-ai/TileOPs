@@ -33,7 +33,7 @@ repos:
     rev: v0.14.3
     hooks:
       - id: ruff-check
-        args: [--fix, --exit-non-zero-on-fix]
+        args: [--fix, --exit-non-zero-on-fix, --config, pyproject.toml]
 
   - repo: https://github.com/google/yapf
     rev: v0.43.0

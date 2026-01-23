@@ -19,8 +19,8 @@ from .flash_decode import (
 from .gemm import GemmBenchmark, MatMulBenchmark
 from .grouped_gemm import (
     GroupedGemmBenchmark,
-    GroupedGemmNTBenchmark,
     GroupedGemmNNBenchmark,
+    GroupedGemmNTBenchmark,
     GroupedGemmTNBenchmark,
     GroupedGemmTTBenchmark,
 )

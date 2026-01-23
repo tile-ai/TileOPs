@@ -12,7 +12,7 @@ class Kernel(ABC):
     supported_archs: Optional[list[int]] = None
     kernel: Callable[[dict], Callable]
 
-    def __init__(self, *args, **kwargs) -> None:  # noqa: U100
+    def __init__(self, *args, **kwargs) -> None:
         self.config = {}
 
     def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:
