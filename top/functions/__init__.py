@@ -31,7 +31,7 @@ __all__ = [
     "GroupQueryAttentionDecodeWithKVCacheFunc",
     "MultiHeadLatentAttentionDecodeWithKVCacheFunc",
     "Fp8LightingIndexerFunc",
-    "TopkSelectorBenchmark",
+    "TopkSelectorFunc",
     "DeepSeekSparseAttentionDecodeWithKVCacheFunc",
     "MatMulFunc",
     "GroupedGemmFunc",

@@ -14,22 +14,14 @@ class TopkSelectorBenchmark(Benchmark):
         batch: int,
         seq_len: int,
         topk: int,
-        in_dtype: str,
-        out_dtype: str,
-        # index_score: torch.float32,
-        # index: torch.int32,
-        # starts: torch.int32,
-        # ends: torch.int32
+        in_dtype: torch.dtype,
+        out_dtype: torch.dtype,
     ) -> None:
         self.batch = batch
         self.seq_len = seq_len
         self.topk = topk
         self.in_dtype = in_dtype
         self.out_dtype = out_dtype
-        # self.index_score = index_score
-        # self.index = index
-        # self.starts = starts
-        # self.ends = ends
 
     @property
     def total_flops(self) -> float:

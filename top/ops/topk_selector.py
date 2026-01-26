@@ -28,7 +28,7 @@ class TopkSelectorOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["TopkSelectorKernel"](self.batch, self.seq_len, self.topk,
-                                                            self.in_dtype, self.out_dtype)
+                                                            self.in_dtype, self.out_dtype, tune = tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
