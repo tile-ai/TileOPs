@@ -1,4 +1,5 @@
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
+from .fp8_quant import Fp8QuantOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_nsa import MeanPoolingForwardOp, NSAFwdVarlenOp
 from .gemm import GemmOp
@@ -24,6 +25,7 @@ __all__ = [
     "GroupedGemmTTOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
+    "Fp8QuantOp"
     "MeanPoolingForwardOp",
     "NSAFwdVarlenOp",
 ]
