@@ -83,8 +83,9 @@ class Fp8QuantKernel(Kernel):
         super().__init__()
         self.seq_len_kv = seq_len_kv
         self.index_dim = index_dim
+        self.in_dtype = in_dtype
         self.config = config or {}
-        self.kernel = _fp8_quant_wrapped_kernel(self.seq_len_kv, self.index_dim)
+        self.kernel = _fp8_quant_wrapped_kernel(self.seq_len_kv, self.index_dim, self.in_dtype)
         self.init_config(config, tune)
 
     @property

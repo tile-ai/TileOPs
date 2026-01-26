@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 
@@ -23,11 +23,11 @@ class Fp8QuantOp(Op):
         self.in_dtype = in_dtype
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["Fp8QuantKernel"](self.seq_len_kv, self.index_dim,
-                                                        self.in_dtype, self.tune)
+                                                        self.in_dtype, tune = tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"Fp8QuantKernel": Fp8QuantKernel}
 
-    def forward(self, input_tensor) -> tuple(torch.Tensor, torch.Tensor):
+    def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.kernel(input_tensor)
