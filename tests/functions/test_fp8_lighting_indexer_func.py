@@ -48,11 +48,6 @@ if __name__ == "__main__":
 
     test_fp8_lighting_indexer(args.seq_len, args.heads, args.index_dim, args.seq_len_kv,
                               args.clean_logits, args.config)
-import argparse
-
-from benchmarks.deepseek_mla import Fp8LightingIndexerBenchmark
-from top.functions import Fp8LightingIndexerFunc
-from top.layers import Fp8LightingIndexerDecodeLayer
 
 
 def test_fp8_lighting_indexer(seq_len, heads, index_dim, seq_len_kv, clean_logits, config):
