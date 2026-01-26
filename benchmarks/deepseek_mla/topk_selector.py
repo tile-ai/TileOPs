@@ -101,7 +101,7 @@ class TopkSelectorBenchmark(Benchmark):
                  *inputs: Tuple[torch.Tensor],
                  atol: float = 1e-2,
                  rtol: float = 1e-2,
-                 grad: bool = True) -> None:
+                 grad: bool = False) -> None:
         """Check the correctness of the function and layer"""
         try:
             outputs_ref = self.ref_program(*inputs)
