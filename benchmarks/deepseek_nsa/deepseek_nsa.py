@@ -484,6 +484,7 @@ class NSATopkVarlenBenchmark(Benchmark):
             ).cuda().sort()[0])
 
         chunk_offsets = prepare_chunk_offsets(offsets, self.bs)
+        token_indices = prepare_token_indices(offsets)
         chunk_num = chunk_offsets[-1].item()
 
         # float16, data Tie-breaking
@@ -495,8 +496,7 @@ class NSATopkVarlenBenchmark(Benchmark):
         k.requires_grad_(True)
 
         lse = torch.zeros((self.c_seq_len, self.heads), dtype=self.dtype, device="cuda")
-        token_indices = prepare_token_indices(offsets)
-        chunk_offsets = prepare_chunk_offsets(offsets, self.bs)
+        
 
         self.chunk_num = chunk_offsets[-1].item()
         return (
@@ -528,10 +528,11 @@ class NSATopkVarlenBenchmark(Benchmark):
         group = heads // head_kv
         selected_block_num = block_counts if isinstance(block_counts,
                                                         int) else block_counts.max().item()
-        selected_block_num = 1 << (selected_block_num - 1).bit_length()
+        # selected_block_num = 1 << (selected_block_num - 1).bit_length()
         bs = block_size
-        scale_log2 = scale * 1.44269504
-
+        LOG2_E = 1.44269504
+        scale_log2 = scale * LOG2_E
+        
         device = q.device
         accum_dtype = torch.float32
 
@@ -558,8 +559,7 @@ class NSATopkVarlenBenchmark(Benchmark):
                     end_idx = min(start_idx + bs, nc)
                     curr_bc = end_idx - start_idx
                     k_blocks = k_cmp[boc + start_idx:boc + end_idx, i_h]
-                    acc_s = torch.matmul(q_h.to(torch.float16),
-                                         k_blocks.to(torch.float16).t()).to(accum_dtype)
+                    acc_s = torch.matmul(q_h, k_blocks.t()).to(accum_dtype)
 
                     if curr_bc < bs:
                         padding = torch.full((group, bs - curr_bc),
@@ -589,7 +589,7 @@ class NSATopkVarlenBenchmark(Benchmark):
                     logsum_log2 = torch.where(
                         logsum > 0, torch.log2(logsum),
                         torch.full((group,), float('-inf'), dtype=accum_dtype, device=device))
-                    b_lse = (scores_max * scale_log2 + logsum_log2) / 1.44269504
+                    b_lse = (scores_max * scale_log2 + logsum_log2) / LOG2_E
                     b_lse = torch.where(logsum <= 0, torch.zeros_like(b_lse), b_lse)
                 lse_out[bos + i_t, i_h * group:(i_h + 1) * group] = b_lse
 
@@ -602,8 +602,7 @@ class NSATopkVarlenBenchmark(Benchmark):
                     end_idx = min(start_idx + bs, nc_topk)
                     curr_bc_tk = end_idx - start_idx
                     k_blocks = k_cmp[boc + start_idx:boc + end_idx, i_h]
-                    acc_s = torch.matmul(q_h.to(torch.float16),
-                                         k_blocks.to(torch.float16).t()).to(accum_dtype)
+                    acc_s = torch.matmul(q_h, k_blocks.t()).to(accum_dtype)
 
                     if curr_bc_tk < bs:
                         padding = torch.full((group, bs - curr_bc_tk),
@@ -620,7 +619,7 @@ class NSATopkVarlenBenchmark(Benchmark):
                         torch.ones((group, bs), dtype=accum_dtype, device=device),
                         torch.where(
                             is_hist.unsqueeze(0),
-                            torch.exp2((acc_s * scale - b_lse.unsqueeze(1)) * 1.44269504),
+                            torch.exp2((acc_s * scale - b_lse.unsqueeze(1)) * LOG2_E),
                             torch.zeros((group, bs), dtype=accum_dtype, device=device)))
 
                     b_i_current = importance.sum(dim=0)
