@@ -1,6 +1,6 @@
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
-from .deepseek_nsa import MeanPoolingForwardOp, NSAFwdVarlenOp
+from .deepseek_nsa import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp
 from .gemm import GemmOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
@@ -25,5 +25,6 @@ __all__ = [
     "MultiHeadLatentAttentionDecodeWithKVCacheOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
     "MeanPoolingForwardOp",
+    "NSATopkVarlenOp",
     "NSAFwdVarlenOp",
 ]
