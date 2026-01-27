@@ -183,8 +183,7 @@ def _nsa_topk_varlen_kernel(
                             is_curr, 1.0,
                             T.if_then_else(
                                 is_hist,
-                                T.exp2((acc_s[g_idx, c_idx] * scale - b_lse[g_idx]) * LOG2_E),
-                                0.0))
+                                T.exp2((acc_s[g_idx, c_idx] * scale - b_lse[g_idx]) * LOG2_E), 0.0))
                         acc_s[g_idx, c_idx] = imp
 
                     b_i_current = T.alloc_fragment([bc], accum_dtype)

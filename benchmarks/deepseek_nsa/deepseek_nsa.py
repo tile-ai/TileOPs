@@ -496,7 +496,6 @@ class NSATopkVarlenBenchmark(Benchmark):
         k.requires_grad_(True)
 
         lse = torch.zeros((self.c_seq_len, self.heads), dtype=self.dtype, device="cuda")
-        
 
         self.chunk_num = chunk_offsets[-1].item()
         return (
@@ -532,7 +531,7 @@ class NSATopkVarlenBenchmark(Benchmark):
         bs = block_size
         LOG2_E = 1.44269504
         scale_log2 = scale * LOG2_E
-        
+
         device = q.device
         accum_dtype = torch.float32
 
