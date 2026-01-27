@@ -73,7 +73,7 @@ class GroupedGemmNTBenchmark(Benchmark):
         return A, B, batch_sizes, batch_offsets, batch_padded_offsets
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
+                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
         assert A.shape[0] == sum(batch_sizes)
         assert B.shape[0] == len(batch_sizes)
         output = torch.empty((sum(batch_sizes), B.shape[1]), device=A.device, dtype=A.dtype)
@@ -147,7 +147,7 @@ class GroupedGemmNNBenchmark(Benchmark):
         return A, B, batch_sizes, batch_offsets, batch_padded_offsets
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
+                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
         assert A.shape[0] == sum(batch_sizes)
         assert B.shape[0] == len(batch_sizes)
         output = torch.empty((sum(batch_sizes), B.shape[2]), device=A.device, dtype=A.dtype)
@@ -221,7 +221,7 @@ class GroupedGemmTNBenchmark(Benchmark):
         return A, B, batch_sizes, batch_offsets, batch_padded_offsets
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):  # noqa: U100
+                    batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor):
         batch_sum_A = A.shape[0]
         batch_sum_B = B.shape[0]
         total_batch = int(batch_sizes.sum().item())
@@ -302,7 +302,7 @@ class GroupedGemmTTBenchmark(Benchmark):
             batch_padded_offsets_list, device=device, dtype=torch.int32)
         return A, B, batch_sizes, batch_offsets, batch_padded_offsets
 
-    def ref_program(self, A, B, batch_sizes, batch_offsets, batch_padded_offsets):  # noqa: U100
+    def ref_program(self, A, B, batch_sizes, batch_offsets, batch_padded_offsets):
         batch_sum_A = A.shape[0]
         batch_sum_B = B.shape[1]
         total_batch = int(batch_sizes.sum().item())

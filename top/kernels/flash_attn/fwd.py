@@ -125,9 +125,9 @@ def _mha_fwd_wrapped_kernel(
 
 @_mha_fwd_wrapped_kernel.register_fake
 def _(batch: int, heads: int, seq_len:
-      int, dim: int, is_causal: bool, dtype: str,  # noqa: U100
-      block_m: int, block_n: int, num_stages: int, hreads: int,  # noqa: U100
-      *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:  # noqa: U100
+      int, dim: int, is_causal: bool, dtype: str,
+      block_m: int, block_n: int, num_stages: int, hreads: int,
+      *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
     fake_o = torch.empty_like(inputs[0])
     fake_lse = fake_o.new_empty([batch, heads, seq_len])
     return fake_o, fake_lse
@@ -348,9 +348,9 @@ def _mha_fwd_wgmma_pipelined_wrapped_kernel(batch: int, heads: int, seq_len: int
 
 @_mha_fwd_wgmma_pipelined_wrapped_kernel.register_fake
 def _(batch: int, heads: int, seq_len: int,
-      dim: int, is_causal: bool, dtype: str,  # noqa: U100
-      block_m: int, block_n: int, num_stages: int, threads: int,  # noqa: U100
-      *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:  # noqa: U100
+      dim: int, is_causal: bool, dtype: str,
+      block_m: int, block_n: int, num_stages: int, threads: int,
+      *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
     fake_o = torch.empty_like(inputs[0])
     fake_lse = fake_o.new_empty([batch, heads, seq_len])
     return fake_o, fake_lse
@@ -529,8 +529,8 @@ def _gqa_fwd_wrapped_kernel(
 
 @_gqa_fwd_wrapped_kernel.register_fake
 def _(batch: int, heads: int,
-      heads_kv: int, seq_len: int, dim: int, is_causal: bool,  # noqa: U100
-      dtype: str, block_m: int, block_n: int, num_stages: int, threads: int,  # noqa: U100
+      heads_kv: int, seq_len: int, dim: int, is_causal: bool,
+      dtype: str, block_m: int, block_n: int, num_stages: int, threads: int,
       *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
     fake_o = torch.empty_like(inputs[0])
     fake_lse = fake_o.new_empty([batch, heads, seq_len])
@@ -769,9 +769,9 @@ def _gqa_fwd_wgmma_pipelined_wrapped_kernel(
 
 
 @_gqa_fwd_wgmma_pipelined_wrapped_kernel.register_fake
-def _(batch: int, heads: int, heads_kv: int,  # noqa: U100
-      seq_len: int, dim: int, is_causal: bool,  # noqa: U100
-      dtype: str, block_m: int, block_n: int, num_stages: int, threads: int,  # noqa: U100
+def _(batch: int, heads: int, heads_kv: int,
+      seq_len: int, dim: int, is_causal: bool,
+      dtype: str, block_m: int, block_n: int, num_stages: int, threads: int,
       *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
     fake_o = torch.empty_like(inputs[0])
     fake_lse = fake_o.new_empty([batch, heads, seq_len])

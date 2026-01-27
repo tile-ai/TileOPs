@@ -1,7 +1,6 @@
 from typing import Any, Optional, Union
 
 import torch
-
 from einops import rearrange, repeat
 
 from benchmarks.benchmark import Benchmark

@@ -3,10 +3,8 @@ from typing import Optional
 import torch
 from torch import nn
 
-from top.functions import (
-    DeepSeekSparseAttentionDecodeWithKVCacheFunc,
-    MultiHeadLatentAttentionDecodeWithKVCacheFunc,
-)
+from top.functions import (DeepSeekSparseAttentionDecodeWithKVCacheFunc,
+                           MultiHeadLatentAttentionDecodeWithKVCacheFunc, Fp8LightingIndexerFunc)
 
 
 class MultiHeadLatentAttentionDecodeLayer(nn.Module):
@@ -89,3 +87,29 @@ class DeepSeekSparseAttentionDecodeLayer(nn.Module):
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         return self.fn(q, kv, indices)
+
+
+class Fp8LightingIndexerDecodeLayer(nn.Module):
+
+    def __init__(self,
+                 seq_len,
+                 heads,
+                 index_dim,
+                 seq_len_kv,
+                 clean_logits=True,
+                 config: Optional[dict] = None,
+                 tune=False) -> None:
+        super().__init__()
+
+        self.seq_len = seq_len
+        self.heads = heads
+        self.index_dim = index_dim
+        self.seq_len_kv = seq_len_kv
+        self.clean_logits = clean_logits
+        self.tune = tune
+        self.fn = Fp8LightingIndexerFunc(
+            seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune=tune)
+
+    def forward(self, index_q: torch.Tensor, index_k: torch.Tensor, weights: torch.Tensor,
+                cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> torch.Tensor:
+        return self.fn(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke)

@@ -24,6 +24,7 @@ __all__ = [
     "GroupedGemmTTOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
+    "Fp8LightingIndexerOp",
     "MeanPoolingForwardOp",
     "NSATopkVarlenOp",
     "NSAFwdVarlenOp",

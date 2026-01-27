@@ -1,6 +1,3 @@
-# See https://pre-commit.com for more information
-# See https://pre-commit.com/hooks.html for more hooks
-
 ci:
   autofix_prs: false
   autofix_commit_msg: "[Lint]: [pre-commit.ci] auto fixes [...]"
@@ -33,13 +30,13 @@ repos:
         files: ^docs/spelling_wordlist\.txt$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.3  # sync with requirements-lint.txt
+    rev: v0.14.13
     hooks:
       - id: ruff-check
-        args: [--fix, --exit-non-zero-on-fix]
+        args: [--fix, --exit-non-zero-on-fix, --config, pyproject.toml]
 
   - repo: https://github.com/google/yapf
-    rev: v0.43.0  # sync with requirements-lint.txt
+    rev: v0.43.0
     hooks:
       - id: yapf
         name: yapf-multiproc-bugfix
@@ -50,7 +47,7 @@ repos:
         args: [--recursive, --in-place]
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.1  # sync with requirements-lint.txt
+    rev: v2.4.1
     hooks:
       - id: codespell
         additional_dependencies: [".[toml]"]
@@ -71,17 +68,3 @@ repos:
           - mdformat-myst==0.2.1
           - mdformat-tables==1.0.0
           - mdformat-toc==0.3.0
-
-  - repo: https://github.com/PyCQA/flake8
-    rev: 7.1.2
-    hooks:
-    -   id: flake8
-        additional_dependencies:
-            - flake8-bugbear==24.12.12
-            - flake8-comprehensions==3.16.0
-            - flake8-docstrings==1.7.0
-            - flake8-simplify==0.21.0
-            - flake8-unused-arguments==0.0.13
-            - flake8-variables-names==0.0.6
-            - flake8-return==1.2.0
-            - flake8-print==5.0.0

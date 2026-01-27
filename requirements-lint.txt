@@ -2,7 +2,7 @@
 yapf==0.43.0
 toml==0.10.2
 tomli==2.0.1
-ruff==0.6.5
+ruff==0.14.13
 codespell==2.4.1
 mdformat==0.7.17
 mdformat-gfm==0.4.1
