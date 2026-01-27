@@ -1,8 +1,10 @@
 """Test NativeSparseAttention operation."""
 
+import math
+
 import pytest
 import torch
-import math
+
 from top.ops import ManifoldConstrainedHyperConnectionPreOp
 
 

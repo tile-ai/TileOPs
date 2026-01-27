@@ -2,8 +2,8 @@ from typing import Dict, Optional
 
 import torch
 
-from top.kernels.mHC import mhc_pre_kernel
 from top.kernels.kernel import Kernel
+from top.kernels.mHC import mhc_pre_kernel
 
 from .op import Op
 

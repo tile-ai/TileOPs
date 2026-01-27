@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+
 from top.ops import ManifoldConstrainedHyperConnectionPostOp
 
 

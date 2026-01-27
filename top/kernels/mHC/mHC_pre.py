@@ -1,10 +1,11 @@
 import itertools
+import math
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
-import math
+
 from top.kernels.kernel import Kernel
 
 __all__ = ["mhc_pre_kernel"]
