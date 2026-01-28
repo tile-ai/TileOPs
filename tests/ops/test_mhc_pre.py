@@ -11,7 +11,7 @@ from top.ops import ManifoldConstrainedHyperConnectionPreOp
 @pytest.fixture(autouse=True)
 def setup() -> None:
     """Set up the test environment."""
-    torch.manual_seed(12345)
+    torch.manual_seed(1235)
 
 
 @pytest.mark.parametrize(

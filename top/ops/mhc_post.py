@@ -3,7 +3,7 @@ from typing import Dict, Optional
 import torch
 
 from top.kernels.kernel import Kernel
-from top.kernels.mHC import mhc_post_kernel
+from top.kernels.mhc import mhc_post_kernel
 
 from .op import Op
 
