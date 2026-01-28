@@ -37,7 +37,7 @@ def test_mhc_post_op(
             1, c_x).float()).reshape(n_expand * c_x) + x_res[i, :].float()
 
     test_mhc_post_op = ManifoldConstrainedHyperConnectionPostOp(
-        batch, n_expand, c_x, dtype="bfloat16")
+        batch, n_expand, c_x, dtype=str(dtype).split('.')[-1])
     x_out = test_mhc_post_op.forward(x_layer_out, h_post, x_res)
     print(x_out_ref)
     print(x_out)

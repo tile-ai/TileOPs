@@ -19,7 +19,7 @@ class ManifoldConstrainedHyperConnectionPostBenchmark(Benchmark):
     @property
     def total_flops(self) -> float:
         flops = 2 * self.batch * (
-            self.n_expand * self.n_expand * self.c_x + self.n_expand * self.c_x)
+            self.n_expand * self.n_expand * self.c_x * self.c_x + self.n_expand * self.c_x)
         return flops
 
     @property
@@ -37,16 +37,14 @@ class ManifoldConstrainedHyperConnectionPostBenchmark(Benchmark):
         return x_layer_out, h_post, x_res
 
     def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
-                    x_res: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+                    x_res: torch.Tensor) -> Tuple[torch.Tensor]:
         batch = self.batch
         n_expand = self.n_expand
         c_x = self.c_x
 
-        x_out_ref = torch.zeros([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
-        for i in range(batch):
-            x_out_ref[i, :] = (h_post[i, :].reshape(n_expand, 1).float()
-                               @ x_layer_out[i, :].reshape(1, c_x).float()).reshape(
-                                   n_expand * c_x) + x_res[i, :].float()
+        x_out_ref = (h_post.unsqueeze(2).float() @ x_layer_out.unsqueeze(1).float()).reshape(
+            batch, n_expand * c_x) + x_res.float()
+        x_out_ref = x_out_ref.bfloat16()
         return x_out_ref
 
 

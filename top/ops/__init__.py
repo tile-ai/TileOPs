@@ -30,6 +30,6 @@ __all__ = [
     "Fp8LightingIndexerOp",
     "MeanPoolingForwardOp",
     "NSAFwdVarlenOp",
-    "ManifoldConstrainedHyperConnectionOp",
+    "ManifoldConstrainedHyperConnectionPreOp",
     "ManifoldConstrainedHyperConnectionPostOp",
 ]

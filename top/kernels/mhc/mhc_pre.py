@@ -157,6 +157,7 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                 tmp2 = T.alloc_fragment([n_expand], dtype)
                 h_out_shared = T.alloc_shared([n_expand, n_expand], dtype)
 
+                eps = 0.0001
                 # exponential function...
                 # get the max value first...
                 for i, j in T.Parallel(n_expand, n_expand):
@@ -170,13 +171,14 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                     h_frag[i, j] = T.exp2((h_frag[i, j] - tmp1[i]) * 1.44269504)
 
                 #for iter_sinkhorn in T.Pipelined(sinkhorn_repeat):
+
                 for _iter_sinkhorn in T.Serial(sinkhorn_repeat):
                     T.reduce_sum(h_frag, tmp1, dim=1)
                     for j, k in T.Parallel(n_expand, n_expand):
-                        h_frag[j, k] /= (tmp1[j] + 0.0001)
+                        h_frag[j, k] /= (tmp1[j] + eps)
                     T.reduce_sum(h_frag, tmp2, dim=0)
                     for j, k in T.Parallel(n_expand, n_expand):
-                        h_frag[j, k] /= (tmp2[k] + 0.0001)
+                        h_frag[j, k] /= (tmp2[k] + eps)
 
                 T.copy(h_frag, h_out_shared)
                 for i, j in T.Parallel(n_expand, n_expand):
@@ -321,18 +323,18 @@ class mhc_pre_kernel(Kernel):
 
     def forward(self, phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat):
         # H_pre, H_post, H_res_0, H_res are tensors need to be allocated....
-        r = torch.randn([self.batch], device=x.device, dtype=self.weights_dtype)
-        H = torch.randn([self.batch, self.n_expand * self.n_expand + 2 * self.n_expand],
+        r = torch.empty([self.batch], device=x.device, dtype=self.weights_dtype)
+        H = torch.empty([self.batch, self.n_expand * self.n_expand + 2 * self.n_expand],
                         device=x.device,
                         dtype=self.weights_dtype)
-        H_pre = torch.randn((self.batch, self.n_expand), device=x.device, dtype=self.weights_dtype)
-        H_res_0 = torch.randn([self.batch, self.n_expand, self.n_expand],
+        H_pre = torch.empty((self.batch, self.n_expand), device=x.device, dtype=self.weights_dtype)
+        H_res_0 = torch.empty([self.batch, self.n_expand, self.n_expand],
                               device=x.device,
                               dtype=self.weights_dtype)
-        H_res = torch.randn([self.batch, self.n_expand, self.n_expand],
+        H_res = torch.empty([self.batch, self.n_expand, self.n_expand],
                             device=x.device,
                             dtype=self.weights_dtype)
-        H_post = torch.randn((self.batch, self.n_expand), device=x.device, dtype=self.weights_dtype)
+        H_post = torch.empty((self.batch, self.n_expand), device=x.device, dtype=self.weights_dtype)
         x_res = torch.empty_like(x, device=x.device, dtype=x.dtype)
 
         result = _mhc_pre_wrapped_kernel(self.batch, self.n_expand, self.c_x, self.dtype_str,

@@ -12,9 +12,6 @@ __all__ = ["mhc_post_kernel"]
 
 def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat16'):
 
-    def sigmoid(x):
-        return 1 / (1 + T.exp2(-x * 1.44269504))
-
     dtype = "float32"
 
     @tilelang.jit(
@@ -37,8 +34,8 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat
                 # copy the h_post matrix into fragment
                 h_post_shared = T.alloc_shared([n_expand], dtype)
                 x_layer_out_shared = T.alloc_shared([block_C], dtype)
-                x_res_shared = T.alloc_shared([n_expand, c_x], dtype)
-                x_out_shared = T.alloc_shared([n_expand * c_x], dtype)
+                x_res_shared = T.alloc_shared([n_expand, block_C], dtype)
+                x_out_shared = T.alloc_shared([n_expand * block_C], dtype)
 
                 for i in T.Parallel(n_expand):
                     h_post_shared[i] = h_post[bx, i]
@@ -50,9 +47,9 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat
                     x_res_shared[i, j] = x_res[bx, i * c_x + by * block_C + j]
 
                 for i, j in T.Parallel(n_expand, block_C):
-                    x_out_shared[i * c_x +
+                    x_out_shared[i * n_expand +
                                  j] = h_post_shared[i] * x_layer_out_shared[j] + x_res_shared[i, j]
-                    x_out[bx, i * c_x + block_C * by + j] = x_out_shared[i * c_x + j]
+                    x_out[bx, i * c_x + block_C * by + j] = x_out_shared[i * n_expand + j]
 
         @T.prim_func
         def mhc_post(

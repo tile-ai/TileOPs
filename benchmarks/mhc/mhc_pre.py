@@ -57,11 +57,7 @@ class ManifoldConstrainedHyperConnectionPreBenchmark(Benchmark):
 
         xsqr = x * x  # the square of x
         r_ref = torch.sqrt(xsqr.sum(dim=1)) / math.sqrt(n_expand * c_x)
-        H = torch.zeros([batch, n_expand * n_expand + 2 * n_expand],
-                        device="cuda",
-                        dtype=torch.float)
-        for i in range(batch):
-            H[i, :] = x[i, :].float() @ phi
+        H = x.float() @ phi
 
         H_pre_ref = H[:, :n_expand]
         H_res_ref = H[:, 2 * n_expand:]
@@ -82,17 +78,13 @@ class ManifoldConstrainedHyperConnectionPreBenchmark(Benchmark):
             H_res_ref = H_res_ref / (H_res_ref.sum(dim=-1, keepdim=True) + eps)
             H_res_ref = H_res_ref / (H_res_ref.sum(dim=-2, keepdim=True) + eps)
         x_in_reshaped = x.reshape([batch, n_expand, c_x])
-        x_res_ref = torch.zeros([batch, n_expand, c_x], device="cuda", dtype=torch.bfloat16)
-        x_layer_ref = torch.zeros([batch, c_x], device="cuda", dtype=torch.bfloat16)
 
         h_res_ref = H_res_ref
         h_pre_ref = H_pre_ref
-        for i in range(batch):
-            h_res_tmp = h_res_ref[i, :, :].float()
-            h_pre_tmp = h_pre_ref[i, :].float()
-            x_in_reshaped_tmp = x_in_reshaped[i, :, :].float()
-            x_res_ref[i, :, :] = h_res_tmp @ x_in_reshaped_tmp
-            x_layer_ref[i, :] = h_pre_tmp @ x_in_reshaped_tmp
+
+        h_res_ref.reshape(batch)
+        x_res_ref = torch.bmm(h_res_ref.float(), x_in_reshaped.float())
+        x_layer_ref = torch.bmm(h_pre_ref.float(), x_in_reshaped.float())
 
         x_res_ref = x_res_ref.reshape(batch, n_expand * c_x)
 
