@@ -133,28 +133,3 @@ class mhc_post_kernel(Kernel):
                                           self.config["num_stages"], self.config["threads"],
                                           x_layer_out, h_post, x_res)
         return result
-
-
-def main():
-    batch = 2
-    n_expand = 4
-    c_x = 1280
-    dtype = torch.float32
-
-    x_layer_out = torch.randn([batch, c_x], device="cuda", dtype=torch.bfloat16)
-    h_post = torch.randn([batch, n_expand], device="cuda", dtype=dtype)
-    x_res = torch.randn([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
-
-    x_out_ref = torch.zeros([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
-    for i in range(batch):
-        x_out_ref[i, :] = (h_post[i, :].reshape(n_expand, 1).float() @ x_layer_out[i, :].reshape(
-            1, c_x).float()).reshape(n_expand * c_x) + x_res[i, :].float()
-
-    test_mhc_kernel = mhc_post_kernel(batch, n_expand, c_x, dtype="bfloat16")
-    x_out = test_mhc_kernel.forward(x_layer_out, h_post, x_res)
-    print(x_out_ref)
-    print(x_out)
-
-
-if __name__ == "__main__":
-    main()
