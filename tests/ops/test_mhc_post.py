@@ -11,6 +11,7 @@ def setup() -> None:
     """Set up the test environment."""
     torch.manual_seed(12345)
 
+
 @pytest.mark.parametrize(
     ("batch, n_expand, c_x, dtype, tune"),
     [
@@ -32,11 +33,11 @@ def test_mhc_post_op(
 
     x_out_ref = torch.zeros([batch, n_expand * c_x], device="cuda", dtype=dtype)
     for i in range(batch):
-        x_out_ref[i, :] = (h_post[i, :].reshape(n_expand, 1).float() @ x_layer_out[i, :].reshape(1,
-                                                                                                 c_x).float()).reshape(
-            n_expand * c_x) + x_res[i, :].float()
+        x_out_ref[i, :] = (h_post[i, :].reshape(n_expand, 1).float() @ x_layer_out[i, :].reshape(
+            1, c_x).float()).reshape(n_expand * c_x) + x_res[i, :].float()
 
-    test_mhc_post_op = ManifoldConstrainedHyperConnectionPostOp(batch, n_expand, c_x, dtype="bfloat16")
+    test_mhc_post_op = ManifoldConstrainedHyperConnectionPostOp(
+        batch, n_expand, c_x, dtype="bfloat16")
     x_out = test_mhc_post_op.forward(x_layer_out, h_post, x_res)
     print(x_out_ref)
     print(x_out)
@@ -45,4 +46,3 @@ def test_mhc_post_op(
     cos_sim_x_out = torch.nn.functional.cosine_similarity(x_out_ref, x_out, dim=-1, eps=1e-8)
     print(x_out_diff.abs())
     assert cos_sim_x_out.min() > 0.99
-

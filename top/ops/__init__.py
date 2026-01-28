@@ -8,8 +8,8 @@ from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .grouped_gemm import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
-from .mHC_pre import ManifoldConstrainedHyperConnectionPreOp
-from .mHC_post import ManifoldConstrainedHyperConnectionPostOp
+from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
+from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
 from .op import Op  # noqa: F401
 
 __all__ = [
