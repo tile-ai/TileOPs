@@ -17,9 +17,9 @@ def setup() -> None:
 @pytest.mark.parametrize(
     ("batch, n_expand, c_x, dtype, tune"),
     [
-        (1, 4, 1280, torch.float16, False),
-        (2, 4, 1920, torch.float16, False),
-        (4, 4, 2560, torch.float16, False),
+        (1, 4, 1280, torch.bfloat16, False),
+        (2, 4, 1920, torch.bfloat16, False),
+        (4, 4, 2560, torch.bfloat16, False),
     ],
 )
 def test_mhc_pre_op(
@@ -33,7 +33,7 @@ def test_mhc_pre_op(
     phi = torch.randn([n_expand * c_x, n_expand * n_expand + 2 * n_expand],
                       device="cuda",
                       dtype=torch.float32)
-    x = torch.randn([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
+    x = torch.randn([batch, n_expand * c_x], device="cuda", dtype=dtype)
     b = torch.randn([n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32)
     alpha_pre = torch.randn(())
     alpha_post = torch.randn(())

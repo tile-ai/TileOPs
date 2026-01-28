@@ -77,9 +77,9 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                     acc_r_sqr[i] = T.sqrt(xsqr_sum[i])
 
                 T.copy(acc_x_phi, H[bx * block_x_b:(bx + 1) * block_x_b, :])
-
+                eps = 0.0001
                 for i in T.Parallel(block_x_b):
-                    acc_r_sqr[i] /= (n_expand * c_x)**0.5 + 0.0001
+                    acc_r_sqr[i] /= (n_expand * c_x)**0.5 + eps
                 T.copy(acc_r_sqr, r[bx * block_x_b:(bx + 1) * block_x_b])
 
         @T.macro

@@ -39,10 +39,7 @@ def test_mhc_post_op(
     test_mhc_post_op = ManifoldConstrainedHyperConnectionPostOp(
         batch, n_expand, c_x, dtype=str(dtype).split('.')[-1])
     x_out = test_mhc_post_op.forward(x_layer_out, h_post, x_res)
-    print(x_out_ref)
-    print(x_out)
 
-    x_out_diff = x_out_ref - x_out
     cos_sim_x_out = torch.nn.functional.cosine_similarity(x_out_ref, x_out, dim=-1, eps=1e-8)
-    print(x_out_diff.abs())
+
     assert cos_sim_x_out.min() > 0.99
