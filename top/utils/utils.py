@@ -1,6 +1,11 @@
 import torch
 
-str2dtype = {'float16': torch.float16, 'bfloat16': torch.bfloat16, 'float32': torch.float32}
+str2dtype = {
+    'float16': torch.float16,
+    'bfloat16': torch.bfloat16,
+    'float32': torch.float32,
+    "int32": torch.int32
+}
 
 dtype2str = {v: k for k, v in str2dtype.items()}
 
