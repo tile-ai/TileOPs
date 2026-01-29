@@ -46,7 +46,7 @@ class Fp8QuantBenchmark(Benchmark):
                                    dtype=torch.float32,
                                    device=input_tensor.device)
         for i in range(self.seq_len_kv):
-            amax_value = torch.amax(input_tensor[i, :]).clamp(min=1e-4)
+            amax_value = torch.abs(input_tensor[i, :]).amax().clamp(min=1e-4)
             scale_tensor[i] = amax_value / 448.0
             output_tensor[i, :] = torch.clamp(
                 input_tensor[i, :] / scale_tensor[i], min=-448.0, max=448.0)
@@ -90,8 +90,10 @@ class Fp8QuantBenchmark(Benchmark):
             if output_ref is not None:  # skip checking for None placeholders in ref
                 output = output.to(torch.float32)
                 output_ref = output_ref.to(torch.float32)
+                print("output:", output)
+                print("output_ref:", output_ref)
                 cos_sim = F.cosine_similarity(output.flatten(), output_ref.flatten(), dim=0)
-                cosine_threshold = 0.98
+                cosine_threshold = 0.99
                 assert cos_sim >= cosine_threshold, f"outputs[{i}] is not close to outputs_ref[{i}]. Cosine similarity: {cos_sim.item()}"
 
         print(f"All checks passed for {op.__class__.__name__}.✅")

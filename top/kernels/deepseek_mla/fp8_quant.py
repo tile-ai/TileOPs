@@ -35,8 +35,6 @@ def _fp8_quant_kernel(seq_len_kv, index_dim, in_dtype):
                 for _ in T.Pipelined(1, num_stages=num_stages):
                     T.copy(input_tensor[pid_m * block_m, 0], input_shared)
                     T.copy(input_shared, input_local)
-                    for i in T.Parallel(block_m):
-                        amax_local[i] = T.cast(0.0, scale_dtype)
                     T.reduce_absmax(input_local, amax_local, dim=1)
                     for i in T.Parallel(block_m):
                         amax_local[i] = T.max(amax_local[i], 1e-4)
