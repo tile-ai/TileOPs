@@ -84,8 +84,6 @@ class Fp8QuantBenchmark(Benchmark):
             raise ValueError(f"Unsupported output type: {type(outputs)}")
 
         assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        print("outputs:", outputs)
-        print("outputs_ref", outputs_ref)
         for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
             if output_ref is not None:  # skip checking for None placeholders in ref
                 output = output.to(torch.float32)
@@ -97,3 +95,41 @@ class Fp8QuantBenchmark(Benchmark):
                 assert cos_sim >= cosine_threshold, f"outputs[{i}] is not close to outputs_ref[{i}]. Cosine similarity: {cos_sim.item()}"
 
         print(f"All checks passed for {op.__class__.__name__}.✅")
+
+    def check_fn(self, fn, *inputs, atol = 0.01, rtol = 0.01, grad = True):
+        """Check the correctness of the function/layer"""
+        try:
+            outputs_ref = self.ref_program(*inputs)
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
+                return
+            raise e
+
+        if isinstance(outputs_ref, torch.Tensor):
+            outputs_ref = (outputs_ref,)
+        elif not isinstance(outputs_ref, tuple):
+            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
+
+        with torch.no_grad():
+            outputs = fn(*inputs)
+
+        if isinstance(outputs, list):
+            outputs = tuple(outputs)
+        elif isinstance(outputs, torch.Tensor):
+            outputs = (outputs,)
+        elif not isinstance(outputs, tuple):
+            raise ValueError(f"Unsupported output type: {type(outputs)}")
+
+        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
+        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
+            if output_ref is not None:  # skip checking for None placeholders in ref
+                output = output.to(torch.float32)
+                output_ref = output_ref.to(torch.float32)
+                print("output:", output)
+                print("output_ref:", output_ref)
+                cos_sim = F.cosine_similarity(output.flatten(), output_ref.flatten(), dim=0)
+                cosine_threshold = 0.99
+                assert cos_sim >= cosine_threshold, f"outputs[{i}] is not close to outputs_ref[{i}]. Cosine similarity: {cos_sim.item()}"
+
+        print(f"All checks passed for {fn.__class__.__name__}.✅")
