@@ -1,5 +1,6 @@
 import argparse
 
+import pytest
 import torch
 
 from benchmarks import GroupQueryAttentionBwdBenchmark, GroupQueryAttentionFwdBenchmark
@@ -7,14 +8,14 @@ from top.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from top.utils import str2dtype
 
 
-def test_gqa_fwd(batch: int,
-                 seq_len: int,
-                 heads: int,
-                 heads_kv: int,
-                 dim: int,
-                 causal: bool,
-                 dtype: torch.dtype,
-                 tune: bool = False) -> None:
+@pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
+    (1, 1024, 8, 4, 64, False, torch.float16, False),
+    (2, 2048, 16, 8, 128, True, torch.float16, False),
+    (1, 1024, 8, 4, 64, False, torch.bfloat16, True),
+    (2, 2048, 16, 8, 128, True, torch.bfloat16, True),
+])
+def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
+                 dtype: torch.dtype, tune: bool) -> None:
     op = GroupQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     benchmark = GroupQueryAttentionFwdBenchmark(batch, heads, heads_kv, seq_len, dim, causal, dtype)
 
@@ -24,14 +25,14 @@ def test_gqa_fwd(batch: int,
     benchmark.profile(op, *inputs)
 
 
-def test_gqa_bwd(batch: int,
-                 seq_len: int,
-                 heads: int,
-                 heads_kv: int,
-                 dim: int,
-                 causal: bool,
-                 dtype: torch.dtype,
-                 tune: bool = False) -> None:
+@pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
+    (1, 512, 8, 4, 64, False, torch.float16, False),
+    (2, 1024, 16, 8, 128, True, torch.float16, False),
+    (1, 512, 8, 4, 64, False, torch.bfloat16, True),
+    (2, 1024, 16, 8, 128, True, torch.bfloat16, True),
+])
+def test_gqa_bwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
+                 dtype: torch.dtype, tune: bool) -> None:
     op = GroupQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     benchmark = GroupQueryAttentionBwdBenchmark(batch, heads, heads_kv, seq_len, dim, causal, dtype)
 
