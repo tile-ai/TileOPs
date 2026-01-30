@@ -6,7 +6,7 @@ from .fp8_quant import Fp8QuantBenchmark
 
 __all__ = [
     "MultiHeadLatentAttentionDecodeBenchmark", "DeepSeekSparseAttentionDecodeBenchmark",
-    "Fp8LightingIndexerBenchmark"
+    "Fp8LightingIndexerBenchmark",
     "TopkSelectorBenchmark",
     "Fp8QuantBenchmark",
 ]
