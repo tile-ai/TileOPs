@@ -40,9 +40,6 @@ def _topk_selector_kernel(batch, seq_len, topk, in_dtype, out_dtype):
     def topk_selector_fwd_func(RADIX=1 << 8, BLOCK_SIZE=1024, SMEM_INPUT_SIZE=4096):
         batch = T.dynamic("batch")
         seq_len = T.dynamic("seq_len")
-        # RADIX = 1 << 8
-        # BLOCK_SIZE = 1024
-        # SMEM_INPUT_SIZE = 4096  # assume the threshold bucket size after first pass is less than 4K
 
         @T.prim_func
         def _topk_selector_kernel_main(
@@ -214,7 +211,7 @@ def _topk_selector_wrapped_kernel(
 
 @_topk_selector_wrapped_kernel.register_fake
 def _(batch, seq_len, topk, in_dtype, out_dtype, *inputs) -> None:
-    return torch.empty([batch, seq_len, topk], device=inputs[0].device, dtype=inputs[0].dtype)
+    return torch.empty([batch, topk], device=inputs[0].device, dtype=torch.int32)
 
 
 class TopkSelectorKernel(Kernel):

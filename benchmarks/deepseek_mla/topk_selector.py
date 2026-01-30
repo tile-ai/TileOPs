@@ -14,25 +14,18 @@ class TopkSelectorBenchmark(Benchmark):
         batch: int,
         seq_len: int,
         topk: int,
-        in_dtype: str,
-        out_dtype: str,
-        # index_score: torch.float32,
-        # index: torch.int32,
-        # starts: torch.int32,
-        # ends: torch.int32
+        in_dtype: torch.dtype,
+        out_dtype: torch.dtype,
     ) -> None:
         self.batch = batch
         self.seq_len = seq_len
         self.topk = topk
         self.in_dtype = in_dtype
         self.out_dtype = out_dtype
-        # self.index_score = index_score
-        # self.index = index
-        # self.starts = starts
-        # self.ends = ends
 
     @property
     def total_flops(self) -> float:
+
         return None
 
     @property
@@ -88,7 +81,7 @@ class TopkSelectorBenchmark(Benchmark):
 
         assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
 
-        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
+        for i, (_output, _output_ref) in enumerate(zip(outputs, outputs_ref)):
             ref_np = outputs_ref[i].cpu().to(torch.int32).numpy()
             trt_np = outputs[i].cpu().to(torch.int32).numpy()
 
@@ -108,7 +101,7 @@ class TopkSelectorBenchmark(Benchmark):
                  *inputs: Tuple[torch.Tensor],
                  atol: float = 1e-2,
                  rtol: float = 1e-2,
-                 grad: bool = True) -> None:
+                 grad: bool = False) -> None:
         """Check the correctness of the function and layer"""
         try:
             outputs_ref = self.ref_program(*inputs)
@@ -144,7 +137,7 @@ class TopkSelectorBenchmark(Benchmark):
 
         assert len(outputs) == len(outputs_ref), \
             f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
-        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
+        for i, (_output, _output_ref) in enumerate(zip(outputs, outputs_ref)):
             ref_np = outputs_ref[i].cpu().to(torch.int32).numpy()
             trt_np = outputs[i].cpu().to(torch.int32).numpy()
 

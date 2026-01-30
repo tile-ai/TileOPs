@@ -33,8 +33,10 @@ class GemmBenchmark(Benchmark):
         return (self.m * self.k + self.k * self.n + self.m * self.n) * self.dtype.itemsize
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.m, self.k, device='cuda', dtype=self.dtype)
-        b = torch.randn(self.k, self.n, device='cuda', dtype=self.dtype)
+        shape_a = (self.k, self.m) if self.trans_a else (self.m, self.k)
+        a = torch.randn(*shape_a, device='cuda', dtype=self.dtype)
+        shape_b = (self.n, self.k) if self.trans_b else (self.k, self.n)
+        b = torch.randn(*shape_b, device='cuda', dtype=self.dtype)
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -43,6 +45,10 @@ class GemmBenchmark(Benchmark):
         if self.trans_b:
             b = b.T
         return torch.matmul(a, b)
+
+    def baseline_profile(self, *inputs, warmup=100, rep=10, device="cuda:0") -> None:
+        return super().baseline_profile(
+            self.ref_program, *inputs, backend="torch", warmup=warmup, rep=rep, device=device)
 
 
 class MatMulBenchmark(Benchmark):
