@@ -5,7 +5,6 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import Benchmark
 from top.ops import Fp8QuantOp
-from top.ops import Op
 
 
 class Fp8QuantBenchmark(Benchmark):
@@ -39,97 +38,66 @@ class Fp8QuantBenchmark(Benchmark):
         return input_tensor
 
     def ref_program(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        output_tensor = torch.empty((self.seq_len_kv, self.index_dim),
-                                    dtype=torch.torch.float32,
-                                    device=input_tensor.device)
-        scale_tensor = torch.empty((self.seq_len_kv),
-                                   dtype=torch.float32,
-                                   device=input_tensor.device)
-        for i in range(self.seq_len_kv):
-            amax_value = torch.abs(input_tensor[i, :]).amax().clamp(min=1e-4)
-            scale_tensor[i] = amax_value / 448.0
-            output_tensor[i, :] = torch.clamp(
-                input_tensor[i, :] / scale_tensor[i], min=-448.0, max=448.0)
-
+        amax_value = torch.abs(input_tensor).amax(dim=1, keepdim=True).clamp(min=1e-4)
+        scale_tensor = amax_value / 448.0
+        output_tensor = torch.clamp(input_tensor / scale_tensor, min=-448.0, max=448.0)
         output_tensor = output_tensor.to(torch.float8_e4m3fn)
-        return scale_tensor, output_tensor
+        return scale_tensor.squeeze(dim=1), output_tensor
+
+    def __check_common(self,
+                       *inputs: Tuple[torch.Tensor],
+                       atol: float,
+                       rtol: float,
+                       op=None,
+                       fn=None) -> None:
+        """Common logic to check the correctness of the operation or function"""
+        try:
+            outputs_ref = self.ref_program(*inputs)
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print(f"⚠️  Skipped checking due to OOM in ref: {e}")
+                return
+            raise e
+
+        if isinstance(outputs_ref, torch.Tensor):
+            outputs_ref = (outputs_ref,)
+        elif not isinstance(outputs_ref, tuple):
+            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
+
+        with torch.no_grad():
+            outputs = fn(*inputs) if fn else op(*inputs)
+
+        if isinstance(outputs, list):
+            outputs = tuple(outputs)
+        elif isinstance(outputs, torch.Tensor):
+            outputs = (outputs,)
+        elif not isinstance(outputs, tuple):
+            raise ValueError(f"Unsupported output type: {type(outputs)}")
+
+        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
+        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
+            if output_ref is not None:
+                output = output.to(torch.float32)
+                output_ref = output_ref.to(torch.float32)
+                cos_sim = F.cosine_similarity(output.flatten(), output_ref.flatten(), dim=0)
+                cosine_threshold = 0.99
+                assert cos_sim >= cosine_threshold, f"outputs[{i}] is not close to outputs_ref[{i}]. Cosine similarity: {cos_sim.item()}"
+
+        print("All checks passed.✅")
 
     def check(self,
-              op: Op,
+              op,
               *inputs: Tuple[torch.Tensor],
               atol: float = 1e-2,
               rtol: float = 1e-2) -> None:
-        """Check the correctness of the op"""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
+        """Check the correctness of the operation"""
+        self.__check_common(*inputs, atol=atol, rtol=rtol, op=op)
 
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        with torch.no_grad():
-            outputs = op(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
-            if output_ref is not None:  # skip checking for None placeholders in ref
-                output = output.to(torch.float32)
-                output_ref = output_ref.to(torch.float32)
-                print("output:", output)
-                print("output_ref:", output_ref)
-                cos_sim = F.cosine_similarity(output.flatten(), output_ref.flatten(), dim=0)
-                cosine_threshold = 0.99
-                assert cos_sim >= cosine_threshold, f"outputs[{i}] is not close to outputs_ref[{i}]. Cosine similarity: {cos_sim.item()}"
-
-        print(f"All checks passed for {op.__class__.__name__}.✅")
-
-    def check_fn(self, fn, *inputs, atol=0.01, rtol=0.01, grad=True):
+    def check_fn(self,
+                 fn,
+                 *inputs: Tuple[torch.Tensor],
+                 atol: float = 1e-2,
+                 rtol: float = 1e-2,
+                 grad=False) -> None:
         """Check the correctness of the function/layer"""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        with torch.no_grad():
-            outputs = fn(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref)):
-            if output_ref is not None:  # skip checking for None placeholders in ref
-                output = output.to(torch.float32)
-                output_ref = output_ref.to(torch.float32)
-                print("output:", output)
-                print("output_ref:", output_ref)
-                cos_sim = F.cosine_similarity(output.flatten(), output_ref.flatten(), dim=0)
-                cosine_threshold = 0.99
-                assert cos_sim >= cosine_threshold, f"outputs[{i}] is not close to outputs_ref[{i}]. Cosine similarity: {cos_sim.item()}"
-
-        print(f"All checks passed for {fn.__class__.__name__}.✅")
+        self.__check_common(*inputs, atol=atol, rtol=rtol, fn=fn)

@@ -5,7 +5,8 @@ from .topk_selector import TopkSelectorBenchmark
 from .fp8_quant import Fp8QuantBenchmark
 
 __all__ = [
-    "MultiHeadLatentAttentionDecodeBenchmark", "DeepSeekSparseAttentionDecodeBenchmark",
+    "MultiHeadLatentAttentionDecodeBenchmark",
+    "DeepSeekSparseAttentionDecodeBenchmark",
     "Fp8LightingIndexerBenchmark",
     "TopkSelectorBenchmark",
     "Fp8QuantBenchmark",

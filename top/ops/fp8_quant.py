@@ -22,8 +22,8 @@ class Fp8QuantOp(Op):
         self.index_dim = index_dim
         self.in_dtype = in_dtype
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["Fp8QuantKernel"](self.seq_len_kv, self.index_dim,
-                                                        self.in_dtype, tune = tune)
+        self.kernel = self.kernel_map["Fp8QuantKernel"](
+            self.seq_len_kv, self.index_dim, self.in_dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

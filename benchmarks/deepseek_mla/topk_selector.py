@@ -116,17 +116,8 @@ class TopkSelectorBenchmark(Benchmark):
         elif not isinstance(outputs_ref, tuple):
             raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
 
-        if not grad:
-            with torch.no_grad():
-                outputs = fn(*inputs)
-        else:
-            output = fn(*inputs)
-            loss = output.sum()
-            loss.backward()
-            outputs = []
-            outputs.append(output)
-            for inp in inputs:
-                outputs.append(inp.grad)
+        with torch.no_grad():
+            outputs = fn(*inputs)
 
         if isinstance(outputs, list):
             outputs = tuple(outputs)
