@@ -30,7 +30,7 @@ class Fp8QuantBenchmark(Benchmark):
     @property
     def total_memory(self) -> float:
         # input_tensor: seq_len_kv, index_dim
-        input_tensor_memory = self.seq_len_kv * self.index_dim * torch.float16.itemsize
+        input_tensor_memory = self.seq_len_kv * self.index_dim * self.in_dtype.itemsize
         return input_tensor_memory
 
     def gen_inputs(self) -> torch.Tensor:
