@@ -12,8 +12,8 @@ class Fp8QuantCtx(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx: FunctionCtx, input_tensor: torch.Tensor, fwd_op: Fp8QuantOp) -> Any:
-        output_tensor, scale_tensor = fwd_op(input_tensor)
-        return output_tensor, scale_tensor
+        scale_tensor, output_tensor = fwd_op(input_tensor)
+        return scale_tensor, output_tensor
 
     @staticmethod
     def backward(ctx: FunctionCtx, *args: Any) -> Any:
