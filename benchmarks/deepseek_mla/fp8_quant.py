@@ -96,7 +96,7 @@ class Fp8QuantBenchmark(Benchmark):
 
         print(f"All checks passed for {op.__class__.__name__}.✅")
 
-    def check_fn(self, fn, *inputs, atol = 0.01, rtol = 0.01, grad = True):
+    def check_fn(self, fn, *inputs, atol=0.01, rtol=0.01, grad=True):
         """Check the correctness of the function/layer"""
         try:
             outputs_ref = self.ref_program(*inputs)

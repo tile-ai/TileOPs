@@ -9,6 +9,5 @@ __all__ = [
     "MultiHeadAttentionLayer", "GroupQueryAttentionLayer", "MultiHeadAttentionDecodeLayer",
     "GroupQueryAttentionDecodeLayer", "MultiHeadLatentAttentionDecodeLayer",
     "DeepSeekSparseAttentionDecodeLayer", "Fp8LightingIndexerDecodeLayer", "TopkSelectorLayer",
-    "Fp8QuantLayer",
-    "LinearLayer", "GroupedGemmLayer"
+    "Fp8QuantLayer", "LinearLayer", "GroupedGemmLayer"
 ]

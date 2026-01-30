@@ -133,28 +133,22 @@ class TopkSelectorLayer(nn.Module):
         self.in_dtype = in_dtype
         self.out_dtype = out_dtype
 
-        self.fn = TopkSelectorFunc(
-            batch, seq_len, topk, in_dtype, out_dtype, tune=tune)
+        self.fn = TopkSelectorFunc(batch, seq_len, topk, in_dtype, out_dtype, tune=tune)
 
     def forward(self, index_scores: torch.Tensor, starts: torch.Tensor,
                 ends: torch.Tensor) -> torch.Tensor:
         return self.fn(index_scores, starts, ends)
-    
+
+
 class Fp8QuantLayer(nn.Module):
-        def __init__(self,
-                         seq_len_kv: int,
-                         index_dim: int,
-                         in_dtype: torch.dtype = torch.float16,
-                         num_stages: int = 2,
-                         block_m: int = 128):
-                super().__init__()
-                self.fn = Fp8QuantFunc(
-                seq_len_kv,
-                index_dim,
-                in_dtype,
-                num_stages,
-                block_m
-                )
-        
-        def forward(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-                return self.fn(input_tensor)
+
+    def __init__(self,
+                 seq_len_kv: int,
+                 index_dim: int,
+                 in_dtype: torch.dtype = torch.float16,
+                 tune: bool = False):
+        super().__init__()
+        self.fn = Fp8QuantFunc(seq_len_kv, index_dim, in_dtype)
+
+    def forward(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.fn(input_tensor)
