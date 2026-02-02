@@ -32,20 +32,19 @@ def _fp8_quant_kernel(seq_len_kv, index_dim, in_dtype):
                 output_local = T.alloc_fragment((block_m, index_dim), out_dtype)
                 output_shared = T.alloc_shared((block_m, index_dim), out_dtype)
 
-                for _ in T.Pipelined(1, num_stages=num_stages):
-                    T.copy(input_tensor[pid_m * block_m, 0], input_shared)
-                    T.copy(input_shared, input_local)
-                    T.reduce_absmax(input_local, amax_local, dim=1)
-                    for i in T.Parallel(block_m):
-                        amax_local[i] = T.max(amax_local[i], 1e-4)
-                        scale_local[i] = amax_local[i] * fp8_max_inv
-                    for i, j in T.Parallel(block_m, index_dim):
-                        output_local[i, j] = T.clamp(input_local[i, j] / scale_local[i], fp8_min,
-                                                     fp8_max)
-                    for i in T.Parallel(block_m):
-                        scale_tensor[pid_m * block_m + i] = scale_local[i]
-                    T.copy(output_local, output_shared)
-                    T.copy(output_shared, output_tensor[pid_m * block_m, 0])
+                T.copy(input_tensor[pid_m * block_m, 0], input_shared)
+                T.copy(input_shared, input_local)
+                T.reduce_absmax(input_local, amax_local, dim=1)
+                for i in T.Parallel(block_m):
+                    amax_local[i] = T.max(amax_local[i], 1e-4)
+                    scale_local[i] = amax_local[i] * fp8_max_inv
+                for i, j in T.Parallel(block_m, index_dim):
+                    output_local[i, j] = T.clamp(input_local[i, j] / scale_local[i], fp8_min,
+                                                 fp8_max)
+                for i in T.Parallel(block_m):
+                    scale_tensor[pid_m * block_m + i] = scale_local[i]
+                T.copy(output_local, output_shared)
+                T.copy(output_shared, output_tensor[pid_m * block_m, 0])
 
         return _fp8_quant_fwd_main
 
