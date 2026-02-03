@@ -1,10 +1,10 @@
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Tuple
 
 import torch
 from einops import rearrange, repeat
 
 from benchmarks.benchmark import Benchmark
-from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp
+from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp
 from .utils import prepare_token_indices, prepare_chunk_offsets
 
 
@@ -686,3 +686,275 @@ class NSATopkVarlenBenchmark(Benchmark):
         print("===== Profiling FLA NSA_Topk backend =====")
         return super().baseline_profile(
             self.baseline_program, *inputs, backend="FLA", warmup=warmup, rep=rep, device=device)
+
+
+class NSACmpFwdVarlenBenchmark(Benchmark):
+    op_type = NSACmpFwdVarlenOp
+
+    def __init__(
+        self,
+        seq_num: int,
+        c_seq_len: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        group: int,
+        scale: float,
+        bc: int,
+        bs: int,
+        bk: int,
+        bv: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        tune: bool = False,
+    ) -> None:
+        self.seq_num = seq_num
+        self.c_seq_len = c_seq_len
+        self.heads = heads
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.group = group
+        self.scale = scale
+        self.bc = bc
+        self.bs = bs
+        self.bk = bk
+        self.bv = bv
+        self.tune = tune
+
+        self.head_kv = self.heads // self.group
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
+
+    @property
+    def total_flops(self) -> int:
+        # Step 1 (LSE) + Step 2 (Scores)
+        return (2 * self.heads * self.dim_k * self.c_seq_len**2) // self.bs
+
+    @property
+    def total_memory(self) -> int:
+        # q: read once, k_cmp: read twice per preceding block per token, block_indices: write once
+        q_read = self.heads * self.c_seq_len * self.dim_k * self.dtype.itemsize
+        k_read = (self.head_kv * self.dim_k * self.c_seq_len**2 * self.dtype.itemsize) // self.bs
+        v_read = (self.head_kv * self.dim_v * self.c_seq_len**2 * self.dtype.itemsize) // self.bs
+        return q_read + k_read + v_read
+
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        valid_range = self.c_seq_len - self.bs
+        rand_indices = torch.randperm(valid_range)[:self.seq_num - 1]
+        offsets = torch.cat([
+            torch.tensor([0]), 
+            torch.arange(self.bs, self.c_seq_len)[rand_indices], 
+            torch.tensor([self.c_seq_len])
+        ], 0).cuda().sort()[0].to(torch.int32)
+
+        chunk_offsets = prepare_chunk_offsets(offsets, self.bs).to(torch.int32)
+        token_indices = prepare_token_indices(offsets).to(torch.int32)
+        chunk_num = chunk_offsets[-1].item()
+
+        # float16, data Tie-breaking
+        q = torch.randn(
+            (self.c_seq_len, self.heads, self.dim_k), dtype=self.dtype, device="cuda")
+        k = torch.randn((chunk_num, self.head_kv, self.dim_k), dtype=self.dtype, device="cuda")
+        v = torch.randn((chunk_num, self.head_kv, self.dim_v), dtype=self.dtype, device="cuda")
+
+        self.chunk_num = chunk_offsets[-1].item()
+        return (
+            q,
+            k,
+            v,
+            offsets.to(torch.int32),
+            chunk_offsets.to(torch.int32),
+            token_indices.to(torch.int32),
+        )
+
+   
+
+    def parallel_nsa_compression_fwd_pytorch(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        block_size: int,
+        scale: float,
+        offsets: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """PyTorch reference implementation on GPU"""
+        # Clone inputs to allocate fresh memory (use _ref suffix)
+        q_ref = q.clone().contiguous()
+        k_cmp_ref = k_cmp.clone().contiguous()
+        v_cmp_ref = v_cmp.clone().contiguous()
+        offsets_ref = offsets.clone().contiguous()
+        
+        seq_len, heads, dim_k = q_ref.shape
+        num_chunks, head_kv, _ = k_cmp_ref.shape
+        dim_v = v_cmp_ref.shape[-1]
+        group = heads // head_kv
+        device = q_ref.device
+        num_seq = len(offsets_ref) - 1
+        
+        o = torch.zeros((seq_len, heads, dim_v), dtype=torch.float32, device=device)
+        lse = torch.full((seq_len, heads), float('-inf'), dtype=torch.float32, device=device)
+        
+        chunk_offsets = prepare_chunk_offsets(offsets_ref, block_size)
+        
+        for i_n in range(num_seq):
+            bos, eos = offsets_ref[i_n].item(), offsets_ref[i_n + 1].item()
+            boc = chunk_offsets[i_n].item()
+            
+            for i_t in range(eos - bos):
+                nc = (i_t + 1) // block_size
+                if nc == 0:
+                    lse[bos + i_t] = 0.0
+                    continue
+                
+                # [HQ, dim_k]
+                q_curr = q_ref[bos + i_t].float()
+                # [nc, H, dim_k] -> [H, nc, dim_k]
+                k_curr = k_cmp_ref[boc : boc + nc].transpose(0, 1).float()
+                # [nc, H, dim_v] -> [H, nc, dim_v]
+                v_curr = v_cmp_ref[boc : boc + nc].transpose(0, 1).float()
+                
+                # Expand K/V for GQA
+                k_curr = k_curr.unsqueeze(1).expand(-1, group, -1, -1).reshape(heads, nc, dim_k)
+                v_curr = v_curr.unsqueeze(1).expand(-1, group, -1, -1).reshape(heads, nc, dim_v)
+                
+                # scores: [HQ, nc]
+                scores = torch.matmul(q_curr.unsqueeze(1), k_curr.transpose(-1, -2)).squeeze(1) * scale
+                
+                # LSE and Softmax
+                m = torch.max(scores, dim=-1, keepdim=True)[0]
+                exp_scores = torch.exp(scores - m)
+                sum_exp = torch.sum(exp_scores, dim=-1, keepdim=True)
+                
+                # probs: [HQ, nc]
+                probs = exp_scores / sum_exp
+                
+                # output: [HQ, dim_v]
+                out = torch.matmul(probs.unsqueeze(1), v_curr).squeeze(1)
+                
+                o[bos + i_t] = out
+                lse[bos + i_t] = (m + torch.log(sum_exp)).squeeze(-1)
+        
+        # Compare original inputs with cloned versions after computation
+        if not torch.equal(q, q_ref):
+            diff = (q - q_ref).abs().max().item()
+            print(f"⚠️  [REF DEBUG] q was modified! max diff: {diff}")
+        if not torch.equal(k_cmp, k_cmp_ref):
+            diff = (k_cmp - k_cmp_ref).abs().max().item()
+            print(f"⚠️  [REF DEBUG] k_cmp was modified! max diff: {diff}")
+        if not torch.equal(v_cmp, v_cmp_ref):
+            diff = (v_cmp - v_cmp_ref).abs().max().item()
+            print(f"⚠️  [REF DEBUG] v_cmp was modified! max diff: {diff}")
+        if not torch.equal(offsets, offsets_ref):
+            diff = (offsets.float() - offsets_ref.float()).abs().max().item()
+            print(f"⚠️  [REF DEBUG] offsets was modified! max diff: {diff}")
+                
+        return o.to(self.dtype), lse.to(self.dtype)
+
+    def parallel_nsa_compression_fwd_pytorch_cpu(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        block_size: int,
+        scale: float,
+        offsets: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """PyTorch reference implementation - runs entirely on CPU to avoid GPU pollution"""
+        device = q.device
+        
+        # Move all inputs to CPU
+        q_cpu = q.cpu().float()
+        k_cmp_cpu = k_cmp.cpu().float()
+        v_cmp_cpu = v_cmp.cpu().float()
+        offsets_cpu = offsets.cpu()
+        
+        seq_len, heads, dim_k = q_cpu.shape
+        _, head_kv, _ = k_cmp_cpu.shape
+        dim_v = v_cmp_cpu.shape[-1]
+        group = heads // head_kv
+        num_seq = len(offsets_cpu) - 1
+        
+        o = torch.zeros((seq_len, heads, dim_v), dtype=torch.float32)
+        lse = torch.full((seq_len, heads), float('-inf'), dtype=torch.float32)
+        
+        chunk_offsets = prepare_chunk_offsets(offsets_cpu, block_size)
+        
+        for i_n in range(num_seq):
+            bos, eos = offsets_cpu[i_n].item(), offsets_cpu[i_n + 1].item()
+            boc = chunk_offsets[i_n].item()
+            
+            for i_t in range(eos - bos):
+                nc = (i_t + 1) // block_size
+                if nc == 0:
+                    lse[bos + i_t] = 0.0
+                    continue
+                
+                # q_curr: [heads, dim_k]
+                q_curr = q_cpu[bos + i_t]
+                # k_curr: [head_kv, nc, dim_k]
+                k_curr = k_cmp_cpu[boc : boc + nc].transpose(0, 1)
+                # v_curr: [head_kv, nc, dim_v]
+                v_curr = v_cmp_cpu[boc : boc + nc].transpose(0, 1)
+                
+                # Expand K/V for GQA: [head_kv, nc, dim] -> [heads, nc, dim]
+                k_curr = k_curr.unsqueeze(1).expand(-1, group, -1, -1).reshape(heads, nc, dim_k)
+                v_curr = v_curr.unsqueeze(1).expand(-1, group, -1, -1).reshape(heads, nc, dim_v)
+                
+                # scores: [heads, nc]
+                scores = torch.einsum('hd,hnd->hn', q_curr, k_curr) * scale
+                
+                # Softmax with numerical stability
+                m = scores.max(dim=-1, keepdim=True)[0]
+                exp_scores = torch.exp(scores - m)
+                sum_exp = exp_scores.sum(dim=-1, keepdim=True)
+                probs = exp_scores / sum_exp
+                
+                # output: [heads, dim_v]
+                out = torch.einsum('hn,hnd->hd', probs, v_curr)
+                
+                o[bos + i_t] = out
+                lse[bos + i_t] = (m + torch.log(sum_exp)).squeeze(-1)
+        
+        # Move results back to original device
+        return o.to(device=device, dtype=self.dtype), lse.to(device=device, dtype=self.dtype)
+
+ 
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.LongTensor,
+        chunk_offsets: torch.LongTensor,
+        token_indices: torch.LongTensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        _ = chunk_offsets, token_indices
+        return self.parallel_nsa_compression_fwd_pytorch(q, k_cmp, v_cmp, self.bs, self.scale, offsets)
+
+
+    def baseline_program(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.LongTensor,
+        chunk_offsets: torch.LongTensor,
+        token_indices: torch.LongTensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        from native_sparse_attention.ops.parallel import parallel_nsa_compression_fwd
+        out, lse = parallel_nsa_compression_fwd(q.unsqueeze(0), k_cmp.unsqueeze(0), v_cmp.unsqueeze(0), self.bs, self.scale, offsets,token_indices)
+        return out.squeeze(0).to(self.dtype), lse.squeeze(0).to(self.dtype)
+
+
+    def baseline_profile(
+        self,
+        *inputs: tuple[torch.Tensor, ...],
+        warmup: int = 100,
+        rep: int = 100,
+        device: str = "cuda",
+    ) -> torch.Tensor:
+        print("===== Profiling FLA NSA_Compression backend =====")
+        return super().baseline_profile(
+            self.baseline_program, *inputs, backend="FLA NSA_Compression", warmup=warmup, rep=rep, device=device)

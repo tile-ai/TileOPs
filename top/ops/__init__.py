@@ -1,6 +1,6 @@
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
-from .deepseek_nsa import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp
+from .deepseek_nsa import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .topk_selector import TopkSelectorOp
 from .gemm import GemmOp
@@ -33,6 +33,7 @@ __all__ = [
     "MeanPoolingForwardOp",
     "NSATopkVarlenOp",
     "NSAFwdVarlenOp",
+    "NSACmpFwdVarlenOp",
     "ManifoldConstrainedHyperConnectionPreOp",
     "ManifoldConstrainedHyperConnectionPostOp",
 ]
