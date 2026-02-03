@@ -37,22 +37,8 @@ def test_nsa_cmp_fwd_varlen_op(
 
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    params = {
-        "seq_num": seq_num,
-        "c_seq_len": c_seq_len,
-        "heads": heads,
-        "dim_k": dim_k,
-        "dim_v": dim_v,
-        "group": group,
-        "scale": scale,
-        "bc": bc,
-        "bs": bs,
-        "bk": bk,
-        "bv": bv,
-        "dtype": dtype,
-        "accum_dtype": accum_dtype,
-        "tune": tune,
-    }
+    # Use locals() to create params dictionary from function arguments
+    params = locals().copy()
     benchmark = NSACmpFwdVarlenBenchmark(**params)
     inputs = benchmark.gen_inputs()
 
