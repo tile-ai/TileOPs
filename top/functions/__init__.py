@@ -6,6 +6,7 @@ from .deepseek_mla_decode import (
 )
 from .fp8_lighting_indexer import Fp8LightingIndexerFunc
 from .topk_selector import TopkSelectorFunc
+from .fp8_quant import Fp8QuantFunc
 from .function import Function
 from .gqa import GroupQueryAttentionFunc, gqa, group_query_attention
 from .gqa_decode import (
@@ -31,6 +32,7 @@ __all__ = [
     "GroupQueryAttentionDecodeWithKVCacheFunc",
     "MultiHeadLatentAttentionDecodeWithKVCacheFunc",
     "Fp8LightingIndexerFunc",
+    "Fp8QuantFunc",
     "TopkSelectorFunc",
     "DeepSeekSparseAttentionDecodeWithKVCacheFunc",
     "MatMulFunc",

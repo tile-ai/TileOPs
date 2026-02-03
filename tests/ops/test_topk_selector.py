@@ -25,4 +25,7 @@ def test_topk_selector_op(batch: int, seq_len: int, topk: int, in_dtype: str, ou
 
 
 if __name__ == "__main__":
-    pytest.main()
+    test_topk_selector_op(64, 32 * 1024, 1024, "float32", "int32", False)
+    test_topk_selector_op(64, 32 * 1024, 2048, "float32", "int32", False)
+    test_topk_selector_op(128, 64 * 1024, 1024, "float32", "int32", False)
+    test_topk_selector_op(128, 64 * 1024, 2048, "float32", "int32", False)
