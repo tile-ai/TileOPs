@@ -11,11 +11,10 @@ def setup() -> None:
 
 
 @pytest.mark.parametrize(
-    ("seq_num, c_seq_len, heads, dim_k, dim_v, chunk_num, group, scale, bc, bs, bk, bv, "
+    ("seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, bk, bv, "
      "dtype, accum_dtype, tune"),
     [
-        (5, 1024, 32, 128, 128, 1024 // 32, 16, 128**-0.5, 32, 32, 128, 128, torch.float16, torch.float32, False),
-        (3, 512, 32, 128, 128, 512 // 32, 16, 128**-0.5, 32, 32, 128, 128, torch.float16, torch.float32, False),
+        (9, 8192, 32, 128, 128, 16, 128**-0.5, 32, 32, 128, 128, torch.float16, torch.float32, False),
     ],
 )
 def test_nsa_cmp_fwd_varlen_op(
@@ -55,7 +54,7 @@ def test_nsa_cmp_fwd_varlen_op(
     }
     benchmark = NSACmpFwdVarlenBenchmark(**params)
     inputs = benchmark.gen_inputs()
-    # Update chunk_num based on generated inputs
+    
     params["chunk_num"] = benchmark.chunk_num
     op = NSACmpFwdVarlenOp(**params)
     benchmark.check(op, *inputs)
@@ -63,7 +62,7 @@ def test_nsa_cmp_fwd_varlen_op(
 
 if __name__ == "__main__":
     test_nsa_cmp_fwd_varlen_op(
-        seq_num=9,
+        seq_num=12,
         c_seq_len=8192,
         heads=32,
         dim_k=128,
@@ -78,3 +77,4 @@ if __name__ == "__main__":
         accum_dtype=torch.float32,
         tune=False
     )
+    
