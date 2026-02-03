@@ -14,7 +14,8 @@ def setup() -> None:
     ("seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, bk, bv, "
      "dtype, accum_dtype, tune"),
     [
-        (9, 8192, 32, 128, 128, 16, 128**-0.5, 32, 32, 128, 128, torch.float16, torch.float32, False),
+        (9, 8192, 32, 128, 128, 16, 128**
+         -0.5, 32, 32, 128, 128, torch.float16, torch.float32, False),
     ],
 )
 def test_nsa_cmp_fwd_varlen_op(
@@ -54,7 +55,7 @@ def test_nsa_cmp_fwd_varlen_op(
     }
     benchmark = NSACmpFwdVarlenBenchmark(**params)
     inputs = benchmark.gen_inputs()
-    
+
     params["chunk_num"] = benchmark.chunk_num
     op = NSACmpFwdVarlenOp(**params)
     benchmark.check(op, *inputs)
@@ -75,6 +76,4 @@ if __name__ == "__main__":
         bv=128,
         dtype=torch.float16,
         accum_dtype=torch.float32,
-        tune=False
-    )
-    
+        tune=False)
