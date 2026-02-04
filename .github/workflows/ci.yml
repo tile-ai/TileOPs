@@ -54,7 +54,7 @@ jobs:
       - name: Ensure persistent venv and install dependencies
         run: |
           set -e
-          VENV_DIR="tileops_venv"
+          VENV_DIR="tileops_release_venv"
 
           echo "Creating fresh venv at ${{ runner.tool_cache }}/${VENV_DIR}"
           rm -rf "${{ runner.tool_cache }}/${VENV_DIR}"
@@ -67,7 +67,7 @@ jobs:
 
       - name: Run tests
         run: |
-          VENV_DIR="tileops_venv"
+          VENV_DIR="tileops_release_venv"
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
@@ -78,7 +78,7 @@ jobs:
         if: ${{ always() }}
         run: |
           set -e
-          VENV_DIR="tileops_venv"
+          VENV_DIR="tileops_release_venv"
           VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
           echo "Removing venv at: ${VENV_PATH}"
           rm -rf "${VENV_PATH}"
@@ -94,7 +94,7 @@ jobs:
 
   tileops_test_nightly:
     # needs: pre-commit
-    runs-on: [self-hosted, tile-ops]
+    runs-on: [self-hosted, tile-ops, venv]
     # Only run this job when the event is schedule or workflow_dispatch
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
@@ -139,20 +139,25 @@ jobs:
           retry_cmd pip install git+https://github.com/tile-ai/tilelang.git --no-user
         shell: bash
 
+      - name: Run tests
+        run: |
+          VENV_DIR="tileops_venv_nightly"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          export PYTHONPATH="$(pwd):$PYTHONPATH"
+          echo "PYTHONPATH=$PYTHONPATH"
+          bash tests/ci_test.sh tileops_test_nightly.log
+        shell: bash
+
       - name: Cleanup venv
         if: ${{ always() }}
         run: |
           set -e
-          VENV_DIR="tileops_venv"
+          VENV_DIR="tileops_venv_nightly"
           VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
           echo "Removing venv at: ${VENV_PATH}"
           rm -rf "${VENV_PATH}"
         shell: bash
 
-      - name: Run tests
-        run: |
-          VENV_DIR="tileops_venv_nightly"
-          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: always()  # Equivalent to when: always
