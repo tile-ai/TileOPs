@@ -103,15 +103,56 @@ jobs:
         with:
           fetch-depth: 0  # Equivalent to GIT_STRATEGY: fetch
 
-      - name: Setup & Run tests
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ensure persistent venv and install dependencies
         run: |
-          source ~/miniconda3/etc/profile.d/conda.sh
-          conda activate tileops-nightly
-          export PYTHONPATH="$(pwd):$PYTHONPATH"
-          echo "PYTHONPATH=$PYTHONPATH"
-          bash tests/ci_test.sh tileops_test_nightly.log
+          set -e
+          VENV_DIR="tileops_venv_nightly"
+
+          echo "Creating fresh venv at ${{ runner.tool_cache }}/${VENV_DIR}"
+          rm -rf "${{ runner.tool_cache }}/${VENV_DIR}" "$MARKER"
+          python -m venv "${{ runner.tool_cache }}/${VENV_DIR}"
+          # shellcheck source=/dev/null
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          retry_cmd() {
+            tries=0
+            until [ $tries -ge 5 ]
+            do
+              if "$@"; then
+                return 0
+              fi
+              tries=$((tries+1))
+              echo "Command failed. Retrying $tries/5..."
+              sleep 2
+            done
+            echo "Command failed after 5 attempts." >&2
+            return 1
+          }
+
+          python -m pip install --upgrade pip setuptools wheel --no-user
+          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
+          pip uninstall -y tilelang
+          retry_cmd pip install git+https://github.com/tile-ai/tilelang.git --no-user
         shell: bash
 
+      - name: Cleanup venv
+        if: ${{ always() }}
+        run: |
+          set -e
+          VENV_DIR="tileops_venv"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          echo "Removing venv at: ${VENV_PATH}"
+          rm -rf "${VENV_PATH}"
+        shell: bash
+
+      - name: Run tests
+        run: |
+          VENV_DIR="tileops_venv_nightly"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: always()  # Equivalent to when: always
