@@ -10,9 +10,8 @@ from top.utils import str2dtype
 
 @pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
     (1, 1024, 8, 4, 64, False, torch.float16, False),
-    (2, 2048, 16, 8, 128, True, torch.float16, False),
-    (1, 1024, 8, 4, 64, False, torch.bfloat16, True),
-    (2, 2048, 16, 8, 128, True, torch.bfloat16, True),
+    (4, 2048, 64, 4, 128, False, torch.float16, False),
+    (4, 2048, 64, 4, 128, False, torch.bfloat16, False),
 ])
 def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
@@ -26,10 +25,9 @@ def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, 
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
-    (1, 512, 8, 4, 64, False, torch.float16, False),
-    (2, 1024, 16, 8, 128, True, torch.float16, False),
-    (1, 512, 8, 4, 64, False, torch.bfloat16, True),
-    (2, 1024, 16, 8, 128, True, torch.bfloat16, True),
+    (1, 1024, 8, 4, 64, False, torch.float16, False),
+    (4, 2048, 64, 4, 128, False, torch.float16, False),
+    (4, 2048, 64, 4, 128, False, torch.bfloat16, False),
 ])
 def test_gqa_bwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:

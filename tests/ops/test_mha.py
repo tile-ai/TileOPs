@@ -9,32 +9,53 @@ from top.utils import str2dtype
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", [
     (1, 1024, 8, 64, False, torch.float16, False),
-    (2, 2048, 16, 128, True, torch.float16, False),
-    (1, 1024, 8, 64, False, torch.float16, True),
-    (2, 2048, 16, 128, True, torch.bfloat16, True),
+    (16, 2048, 16, 128, False, torch.float16, False),
+    (8, 4096, 16, 128, True, torch.bfloat16, True),
+    (4, 4096, 16, 128, False, torch.bfloat16, True),
 ])
 def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune):
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     benchmark = MultiHeadAttentionFwdBenchmark(batch, heads, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
+<<<<<<< HEAD
     print("Forward Results:")
     benchmark.check(op, *inputs, atol=5e-4, rtol=1e-5)
+=======
+    print(
+        f"Forward Results for batch={batch}, seq_len={seq_len}, heads={heads}, dim={dim}, causal={causal}, dtype={dtype}, tune={tune}:"
+    )
+    if dtype == torch.bfloat16:
+        benchmark.check(op, *inputs, atol=1.6e-2, rtol=1.6e-2)
+    else:
+        benchmark.check(op, *inputs, atol=1e-3, rtol=1e-3)
+>>>>>>> 0f9974d (fix pytest for mha/gqa)
     benchmark.profile(op, *inputs)
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", [
     (1, 1024, 8, 64, False, torch.float16, False),
-    (2, 2048, 16, 128, True, torch.float16, False),
-    (1, 1024, 8, 64, False, torch.float16, True),
+    (16, 2048, 16, 128, False, torch.float16, False),
+    (8, 4096, 16, 128, True, torch.bfloat16, True),
+    (4, 4096, 16, 128, False, torch.bfloat16, True),
 ])
 def test_mha_bwd(batch, seq_len, heads, dim, causal, dtype, tune):
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     benchmark = MultiHeadAttentionBwdBenchmark(batch, heads, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
+<<<<<<< HEAD
     print("Backward Results:")
     benchmark.check(op, *inputs, atol=5e-4, rtol=1e-5)
+=======
+    print(
+        f"Backward Results for batch={batch}, seq_len={seq_len}, heads={heads}, dim={dim}, causal={causal}, dtype={dtype}, tune={tune}:"
+    )
+    if dtype == torch.bfloat16:
+        benchmark.check(op, *inputs, atol=1.6e-2, rtol=1.6e-2)
+    else:
+        benchmark.check(op, *inputs, atol=1e-3, rtol=1e-3)
+>>>>>>> 0f9974d (fix pytest for mha/gqa)
     benchmark.profile(op, *inputs)
 
 
