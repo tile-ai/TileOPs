@@ -12,7 +12,7 @@ dependencies = [
     "cloudpickle",
     "ml_dtypes",
     "psutil",
-    "torch==2.9.0",
+    "torch>=2.1.0,<2.10.0",
     "einops>=0.6.0",
     # FIXME(ying): Relax this requirement: higher versions require CUDA 13.0,
     #which has not been fully tested for tileops.
