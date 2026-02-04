@@ -20,8 +20,6 @@ def _fp8_lighting_indexer_kernel(seq_len, heads, index_dim, seq_len_kv, clean_lo
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },)
     def _fp8_lighting_indexer_func(
-        # heads,
-        # index_dim,
         block_N=256,
         num_stages=3,
         threads=512,
@@ -42,7 +40,6 @@ def _fp8_lighting_indexer_kernel(seq_len, heads, index_dim, seq_len_kv, clean_lo
         logits_shape = [seq_len, seq_len_kv]
 
         @T.prim_func
-        # def mqa_attn_return_logits_kernel(
         def _fp8_lighting_indexer_main(
                 IndexQ: T.Tensor(index_q_shape, dtype),  # type: ignore
                 IndexK: T.Tensor(index_k_shape, dtype),  # type: ignore
