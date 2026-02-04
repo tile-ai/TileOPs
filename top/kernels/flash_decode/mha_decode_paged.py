@@ -399,21 +399,11 @@ def _mha_decode_wrapped_kernel(batch: int, heads: int, seqlen_q: int, seqlen_kv:
                                glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
     assert K.shape[0] == V.shape[0] == seqlen_kv, "error: dimension mismatch!"
     real_max = real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
-    split_length = torch.zeros(batch, num_split, dtype=torch.int32, device=Q.device)
-    for i in range(batch):
-        for k in range(num_split):
-            split_length[i, k] = real_max // (num_split * block_N) * block_N
-        split_length[i, -1] = real_max - (num_split - 1) * (
-            real_max // (num_split * block_N) * block_N)
-    acc_split_length = torch.zeros(batch, num_split, dtype=torch.int32, device=Q.device)
-    for i in range(batch):
-        acc_split_length[i, 0] = split_length[i, 0]
-    for i in range(batch):
-        for k in range(1, num_split):
-            acc_split_length[i, k] = acc_split_length[i, k - 1] + split_length[i, k]
-
-    print(f"acc_split_length: {acc_split_length}")
-    print(f"split_length: {split_length}")
+    chunk_size = real_max // (num_split * block_N) * block_N
+    split_length = torch.full((batch, num_split), chunk_size, dtype=torch.int32, device=Q.device)
+    if num_split > 0:
+        split_length[:, -1] = int(real_max - (num_split - 1) * chunk_size)
+    acc_split_length = torch.cumsum(split_length, dim=1).to(torch.int32)
     if num_split == 1:
         return _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal,
                                   dtype)(block_M, block_N, num_split, num_stages,

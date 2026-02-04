@@ -57,7 +57,6 @@ def _torch_ref_mha_decode_paged(
     ("batch", "heads", "seqlen_q", "seqlen_kv", "dim", "page_size", "is_causal", "dtype", "tune"),
     [
         (1, 16, 1, 512, 128, 128, False, torch.float16, False),
-        (1, 16, 1, 512, 128, 128, False, torch.float16, False),
         (1, 8, 1, 1024, 64, 256, False, torch.float16, False),
         (2, 8, 1, 1024, 64, 256, False, torch.float16, False),
         (1, 8, 1, 512, 64, 256, False, torch.float16, False),
