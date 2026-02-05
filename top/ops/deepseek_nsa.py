@@ -214,37 +214,46 @@ class GQAWindowSlidingOp(Op):
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens_q: torch.Tensor,
                 cu_seqlens_k: torch.Tensor, max_seqlen_q: int) -> torch.Tensor:
         # Security validation: prevent OOB writes by validating input tensors
+        # Using explicit if statements instead of assert to ensure validation
+        # is always performed, even with Python -O optimization flag
+
         # 1. Check tensor shapes
-        assert cu_seqlens_q.shape[0] == self.batch_size + 1, \
-            f"cu_seqlens_q.shape[0] ({cu_seqlens_q.shape[0]}) must equal batch_size + 1 ({self.batch_size + 1})"
-        assert cu_seqlens_k.shape[0] == self.batch_size + 1, \
-            f"cu_seqlens_k.shape[0] ({cu_seqlens_k.shape[0]}) must equal batch_size + 1 ({self.batch_size + 1})"
+        if cu_seqlens_q.shape[0] != self.batch_size + 1:
+            raise ValueError(
+                f"cu_seqlens_q.shape[0] ({cu_seqlens_q.shape[0]}) must equal batch_size + 1 ({self.batch_size + 1})"
+            )
+        if cu_seqlens_k.shape[0] != self.batch_size + 1:
+            raise ValueError(
+                f"cu_seqlens_k.shape[0] ({cu_seqlens_k.shape[0]}) must equal batch_size + 1 ({self.batch_size + 1})"
+            )
 
         # 2. Check that values are non-decreasing
         cu_seqlens_q_diff = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
-        assert torch.all(cu_seqlens_q_diff >= 0), \
-            "cu_seqlens_q must be non-decreasing"
+        if not torch.all(cu_seqlens_q_diff >= 0):
+            raise ValueError("cu_seqlens_q must be non-decreasing")
         cu_seqlens_k_diff = cu_seqlens_k[1:] - cu_seqlens_k[:-1]
-        assert torch.all(cu_seqlens_k_diff >= 0), \
-            "cu_seqlens_k must be non-decreasing"
+        if not torch.all(cu_seqlens_k_diff >= 0):
+            raise ValueError("cu_seqlens_k must be non-decreasing")
 
         # 3. Check that maximum values don't exceed tensor dimensions
         max_q_idx = cu_seqlens_q[-1].item()
-        assert max_q_idx <= self.uq, \
-            f"cu_seqlens_q[-1] ({max_q_idx}) must not exceed uq ({self.uq})"
+        if max_q_idx > self.uq:
+            raise ValueError(f"cu_seqlens_q[-1] ({max_q_idx}) must not exceed uq ({self.uq})")
         max_kv_idx = cu_seqlens_k[-1].item()
-        assert max_kv_idx <= self.ukv, \
-            f"cu_seqlens_k[-1] ({max_kv_idx}) must not exceed ukv ({self.ukv})"
+        if max_kv_idx > self.ukv:
+            raise ValueError(f"cu_seqlens_k[-1] ({max_kv_idx}) must not exceed ukv ({self.ukv})")
 
         # 4. Check that max_seqlen_q is consistent with actual maximum sequence length
         actual_max_seqlen_q = cu_seqlens_q_diff.max().item()
-        assert max_seqlen_q >= actual_max_seqlen_q, \
-            f"max_seqlen_q ({max_seqlen_q}) must be >= actual max sequence length ({actual_max_seqlen_q})"
+        if max_seqlen_q < actual_max_seqlen_q:
+            raise ValueError(
+                f"max_seqlen_q ({max_seqlen_q}) must be >= actual max sequence length ({actual_max_seqlen_q})"
+            )
 
         # 5. Additional safety: ensure cu_seqlens_q starts at 0
-        assert cu_seqlens_q[0].item() == 0, \
-            f"cu_seqlens_q[0] must be 0, got {cu_seqlens_q[0].item()}"
-        assert cu_seqlens_k[0].item() == 0, \
-            f"cu_seqlens_k[0] must be 0, got {cu_seqlens_k[0].item()}"
+        if cu_seqlens_q[0].item() != 0:
+            raise ValueError(f"cu_seqlens_q[0] must be 0, got {cu_seqlens_q[0].item()}")
+        if cu_seqlens_k[0].item() != 0:
+            raise ValueError(f"cu_seqlens_k[0] must be 0, got {cu_seqlens_k[0].item()}")
 
         return self.kernel(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q)
