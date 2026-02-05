@@ -6,10 +6,17 @@ from top.kernels.deepseek_nsa.mean_pooling_fwd import MeanPoolingFwdKernel
 from top.kernels.deepseek_nsa.nsa_fwd import NSAFwdVarlenKernel
 from top.kernels.deepseek_nsa.nsa_topk import NSATopkVarlenKernel
 from top.kernels.deepseek_nsa.nsa_cmp_fwd import NSACmpFwdVarlenKernel
+from top.kernels.deepseek_nsa.gqa_window_sliding import GQAWindowSlidingKernel
 from top.kernels.kernel import Kernel
 from top.ops.op import Op
 
-__all__ = ["MeanPoolingForwardOp", "NSAFwdVarlenOp", "NSATopkVarlenOp", "NSACmpFwdVarlenOp"]
+__all__ = [
+    "MeanPoolingForwardOp",
+    "NSAFwdVarlenOp",
+    "NSATopkVarlenOp",
+    "NSACmpFwdVarlenOp",
+    "GQAWindowSlidingOp",
+]
 
 
 class MeanPoolingForwardOp(Op):
@@ -157,3 +164,37 @@ class NSACmpFwdVarlenOp(Op):
                 offsets: torch.Tensor, chunk_offsets: torch.Tensor,
                 token_indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.kernel(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
+
+
+class GQAWindowSlidingOp(Op):
+
+    def __init__(
+        self,
+        batch_size: int,
+        groups: int,
+        uq: int,
+        ukv: int,
+        heads: int,
+        dim: int,
+        is_causal: bool,
+        window_size_left: int,
+        window_size_right: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        tune: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+    ) -> None:
+        params = {k: v for k, v in locals().items() if k not in ('self', 'kernel_map')}
+        for key, value in params.items():
+            setattr(self, key, value)
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["gqa_window_sliding_kernel"](**params)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"gqa_window_sliding_kernel": GQAWindowSlidingKernel}
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens_q: torch.Tensor,
+                cu_seqlens_k: torch.Tensor, max_seqlen_q: int) -> torch.Tensor:
+        return self.kernel(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q)
