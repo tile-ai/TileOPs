@@ -4,7 +4,11 @@ import torch
 from einops import rearrange, repeat
 
 from benchmarks.benchmark import Benchmark
+<<<<<<< HEAD
 from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp, GQAWindowSlidingOp
+=======
+from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp
+>>>>>>> main
 from .utils import prepare_token_indices, prepare_chunk_offsets
 
 

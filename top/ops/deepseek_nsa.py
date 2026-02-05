@@ -149,7 +149,23 @@ class NSACmpFwdVarlenOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
-        params = {k: v for k, v in locals().items() if k not in ('self', 'kernel_map')}
+        params = {
+            "seq_num": seq_num,
+            "c_seq_len": c_seq_len,
+            "heads": heads,
+            "dim_k": dim_k,
+            "dim_v": dim_v,
+            "chunk_num": chunk_num,
+            "group": group,
+            "scale": scale,
+            "bc": bc,
+            "bs": bs,
+            "bk": bk,
+            "bv": bv,
+            "dtype": dtype,
+            "accum_dtype": accum_dtype,
+            "tune": tune,
+        }
         for key, value in params.items():
             setattr(self, key, value)
 

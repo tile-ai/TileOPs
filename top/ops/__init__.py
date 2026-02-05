@@ -36,7 +36,10 @@ __all__ = [
     "NSATopkVarlenOp",
     "NSAFwdVarlenOp",
     "NSACmpFwdVarlenOp",
+<<<<<<< HEAD
     "GQAWindowSlidingOp",
+=======
+>>>>>>> main
     "ManifoldConstrainedHyperConnectionPreOp",
     "ManifoldConstrainedHyperConnectionPostOp",
 ]
