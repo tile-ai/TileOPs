@@ -1,12 +1,28 @@
 import argparse
 
+import pytest
+import torch
+
 from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
 from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc, mla_decode_with_kvcache
 from top.layers import MultiHeadLatentAttentionDecodeLayer
 from top.utils import str2dtype
 
 
-def test_mla_decode_fn(batch, kv_head_num, seq_len_kv, heads, dim, pe_dim, dtype):
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "batch, kv_head_num, seq_len_kv, heads, dim, pe_dim, dtype",
+    [
+        (32, 1, 8192, 128, 512, 64, torch.float16),
+    ],
+)
+def test_mla_decode_fn(batch: int, kv_head_num: int, seq_len_kv: int, heads: int, dim: int,
+                       pe_dim: int, dtype: torch.dtype):
 
     mla_layer = MultiHeadLatentAttentionDecodeLayer(batch, heads, kv_head_num, seq_len_kv, dim,
                                                     pe_dim, dtype)

@@ -1,6 +1,7 @@
 import argparse
-import math
 
+import pytest
+import math
 import torch
 
 from benchmarks import GroupedGemmBenchmark
@@ -8,7 +9,20 @@ from top.functions import GroupedGemmFunc
 from top.utils import str2dtype
 
 
-def test_grouped_gemm_fn(batch_sizes_list, N, K, padding_M, dtype, tune=False):
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "batch_sizes_list, N, K, padding_M, dtype, tune",
+    [
+        ([4096, 4096, 4096, 4096], 4864, 8192, 128, torch.float16, False),
+    ],
+)
+def test_grouped_gemm_fn(batch_sizes_list: list, N: int, K: int, padding_M: int, dtype: torch.dtype,
+                         tune: bool):
     batch_sum = sum(batch_sizes_list)
     batch_count = len(batch_sizes_list)
     batch_offsets_list = [0]

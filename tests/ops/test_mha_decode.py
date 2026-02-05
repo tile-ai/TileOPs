@@ -13,6 +13,11 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(42)
 
 
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    torch.manual_seed(123)
+
+
 @pytest.mark.parametrize(
     "b, h, s_q, s_kv, d, dtype, tune",
     [

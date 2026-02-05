@@ -1,5 +1,5 @@
 import argparse
-
+import pytest
 import torch
 
 from benchmarks import GroupQueryAttentionBenchmark
@@ -7,6 +7,18 @@ from top.layers import GroupQueryAttentionLayer
 from top.utils import str2dtype
 
 
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, heads_kv, dim, causal, dtype",
+    [
+        (8, 1024, 32, 32, 128, False, torch.float16),
+    ],
+)
 def test_gqa_layer(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                    dtype: torch.dtype) -> None:
 

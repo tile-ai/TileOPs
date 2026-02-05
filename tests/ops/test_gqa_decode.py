@@ -8,6 +8,11 @@ from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
 
 
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    torch.manual_seed(123)
+
+
 @pytest.mark.parametrize(
     "b, h, g, s_kv, d, dtype, tune",
     [

@@ -8,6 +8,11 @@ from top.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
 
 
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    torch.manual_seed(123)
+
+
 @pytest.mark.parametrize(
     "batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, group_kv, q_start_index_s, sm_scale, dtype, tune",
     [

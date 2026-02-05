@@ -2,7 +2,7 @@
 # Check: https://docs.pytorch.org/tutorials/advanced/python_custom_ops.html
 
 import argparse
-
+import pytest
 import torch
 
 from benchmarks import MultiHeadAttentionFwdBenchmark
@@ -10,7 +10,21 @@ from top.ops import MultiHeadAttentionFwdOp
 from top.utils import str2dtype
 
 
-def test_mha_kernel_compile(B, S, H, D, causal, dtype):
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "B, S, H, D, causal, dtype",
+    [
+        (8, 1024, 32, 128, False, torch.float16),
+        (4, 512, 16, 64, True, torch.bfloat16),
+        (2, 2048, 64, 128, False, torch.float16),
+    ],
+)
+def test_mha_kernel_compile(B: int, S: int, H: int, D: int, causal: bool, dtype: torch.dtype):
     op = MultiHeadAttentionFwdOp(B, H, S, D, causal, dtype)
     benchmark = MultiHeadAttentionFwdBenchmark(B, H, S, D, causal, dtype)
 
@@ -34,5 +48,8 @@ if __name__ == "__main__":
         '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
     args = parser.parse_args()
 
-    test_mha_kernel_compile(args.batch, args.seq_len, args.heads, args.dim, args.causal,
-                            str2dtype[args.dtype])
+    # Convert string dtype to torch.dtype
+    dtype = str2dtype[args.dtype]
+
+    # Run the test with command line arguments
+    test_mha_kernel_compile(args.batch, args.seq_len, args.heads, args.dim, args.causal, dtype)

@@ -8,6 +8,11 @@ from top.ops import GemmOp
 from top.utils import str2dtype
 
 
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    torch.manual_seed(123)
+
+
 @pytest.mark.parametrize(
     "m, n, k, dtype, trans_a, trans_b, tune",
     [

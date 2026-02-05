@@ -1,4 +1,6 @@
 import argparse
+
+import pytest
 import torch
 
 from benchmarks import TopkSelectorBenchmark
@@ -7,12 +9,20 @@ from top.layers import TopkSelectorLayer
 from top.utils import str2dtype
 
 
-def test_topk_selector(batch: int,
-                       seq_len: int,
-                       topk: int,
-                       in_dtype: torch.dtype,
-                       out_dtype: torch.dtype,
-                       tune: bool = False) -> None:
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, topk, in_dtype, out_dtype, tune",
+    [
+        (64, 32 * 1024, 2048, torch.float32, torch.int32, False),
+    ],
+)
+def test_topk_selector(batch: int, seq_len: int, topk: int, in_dtype: torch.dtype,
+                       out_dtype: torch.dtype, tune: bool) -> None:
     fn = TopkSelectorFunc(batch, seq_len, topk, in_dtype, out_dtype, tune=tune)
     layer = TopkSelectorLayer(
         batch,

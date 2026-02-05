@@ -16,10 +16,10 @@ failed_count=0
 
 # Find all .py files in current directory where script is located
 script_dir=$(dirname -- "${BASH_SOURCE[0]}")
-test_files=$(find "$script_dir/ops" -name "test*.py" -type f | sort)
+test_files=$(find "$script_dir" -name "test*.py" -type f | sort)
 
 if [ -z "$test_files" ]; then
-  echo "No test files found in $script_dir/ops" | tee -a "$LOG_FILE"
+  echo "No test files found in $script_dir" | tee -a "$LOG_FILE"
   exit 1
 fi
 

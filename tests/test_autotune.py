@@ -1,10 +1,24 @@
 import argparse
+import pytest
+import torch
 
 from top.ops import MultiHeadAttentionFwdOp
 from top.utils import str2dtype
 
 
-def test_mha_kernel_autotune(B, S, H, D, causal, dtype):
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "B, S, H, D, causal, dtype",
+    [
+        (8, 1024, 32, 128, False, torch.float16),
+    ],
+)
+def test_mha_kernel_autotune(B: int, S: int, H: int, D: int, causal: bool, dtype: torch.dtype):
     # 1. test autotune at initialization
     op = MultiHeadAttentionFwdOp(B, H, S, D, causal, dtype, tune=True)
 

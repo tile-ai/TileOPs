@@ -1,6 +1,7 @@
 import argparse
 import time
 
+import pytest
 import torch
 import triton
 import triton.language as tl
@@ -79,7 +80,19 @@ def calculate_gemm_flops(M, N, K):
     return 2.0 * M * N * K
 
 
-def benchmark_triton_gemm_fp16(M, N, K, dtype, num_iter=100):
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "M, N, K, dtype, num_iter",
+    [
+        (4096, 4864, 8192, torch.float16, 100),
+    ],
+)
+def test_benchmark_triton_gemm_fp16(M: int, N: int, K: int, dtype, num_iter: int):
     device = 'cuda'
     A = torch.randn(M, K, device=device, dtype=dtype)
     B = torch.randn(K, N, device=device, dtype=dtype)
@@ -138,7 +151,13 @@ def benchmark_triton_gemm_fp16(M, N, K, dtype, num_iter=100):
     return results
 
 
-def verify_triton_gemm_fp16(M, N, K, dtype):
+@pytest.mark.parametrize(
+    "M, N, K, dtype",
+    [
+        (512, 512, 512, torch.float16),
+    ],
+)
+def test_verify_triton_gemm_fp16(M: int, N: int, K: int, dtype):
     print("Verifying Triton GEMM correctness (fp16 accumulation)...")
     device = 'cuda'
     A = torch.randn(M, K, device=device, dtype=dtype)
@@ -182,6 +201,6 @@ if __name__ == "__main__":
     print(f"Total computation: {calculate_gemm_flops(M, N, K) / 1e12:.2f} TFLOPs")
     print()
     if args.verify:
-        verify_triton_gemm_fp16(M, N, K, dtype)
+        test_verify_triton_gemm_fp16(M, N, K, dtype)
         print()
-    benchmark_triton_gemm_fp16(M, N, K, dtype)
+    test_benchmark_triton_gemm_fp16(M, N, K, dtype, num_iter=100)

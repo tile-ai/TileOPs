@@ -1,15 +1,28 @@
 import argparse
 import time
 
+import pytest
 import torch
 import torch.nn as nn
+
+
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
 
 
 def calculate_gemm_flops(M, N, K):
     return 2.0 * M * N * K
 
 
-def benchmark_pytorch_gemm(M, N, K, dtype, num_iter=100):
+@pytest.mark.parametrize(
+    "M, N, K, dtype, num_iter",
+    [
+        (16384, 8192, 13824, torch.float16, 100),
+    ],
+)
+def test_pytorch_gemm(M: int, N: int, K: int, dtype, num_iter: int):
     device = 'cuda'
     A = torch.randn(M, K, device=device, dtype=dtype)
     B = torch.randn(K, N, device=device, dtype=dtype)
@@ -29,7 +42,13 @@ def benchmark_pytorch_gemm(M, N, K, dtype, num_iter=100):
     return elapsed_time, tflops, flops
 
 
-def benchmark_cublas_gemm(M, N, K, dtype, num_iter=100):
+@pytest.mark.parametrize(
+    "M, N, K, dtype, num_iter",
+    [
+        (16384, 8192, 13824, torch.float16, 100),
+    ],
+)
+def test_cublas_gemm(M: int, N: int, K: int, dtype, num_iter: int):
     device = 'cuda'
     linear = nn.Linear(K, N, bias=False).to(device).to(dtype)
     input_tensor = torch.randn(M, K, device=device, dtype=dtype)
@@ -72,7 +91,7 @@ if __name__ == "__main__":
     print("Configuration:")
     print(f"  M: {M}, N: {N}, K: {K}")
     print(f"  Data type: {dtype}")
-    base_time, base_tflops, flops = benchmark_pytorch_gemm(M, N, K, dtype)
+    base_time, base_tflops, flops = test_pytorch_gemm(M, N, K, dtype)
     print("\nPyTorch torch.matmul:")
     print(f"  Time: {base_time * 1000:.4f} ms")
     print(f"  Performance: {base_tflops:.2f} TFLOPS")

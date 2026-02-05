@@ -1,11 +1,25 @@
 import argparse
+import pytest
+import torch
 
 from benchmarks import GroupedGemmBenchmark
 from top.layers import GroupedGemmLayer
 from top.utils import str2dtype
 
 
-def test_grouped_gemm_layer(batch_sum, batch_count, N, K, dtype):
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, N, K, dtype",
+    [
+        (16384, 4, 4864, 8192, torch.float16),
+    ],
+)
+def test_grouped_gemm_layer(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype):
     grouped_gemm = GroupedGemmLayer(batch_sum, batch_count, N, K, dtype)
     benchmark = GroupedGemmBenchmark(batch_sum, batch_count, N, K, dtype)
     inputs = benchmark.gen_inputs()

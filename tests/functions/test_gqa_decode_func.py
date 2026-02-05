@@ -1,11 +1,27 @@
 import argparse
 
+import pytest
+import torch
+
 from benchmarks import GroupQueryAttentionDecodeBenchmark
 from top.functions import GroupQueryAttentionDecodeWithKVCacheFunc, gqa_decode_with_kvcache
 from top.utils import str2dtype
 
 
-def test_gqa_decode_fn(batch, heads, seq_len_kv, dim, groups, dtype):
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "batch, heads, seq_len_kv, dim, groups, dtype",
+    [
+        (1, 32, 8192, 128, 1, torch.float16),
+    ],
+)
+def test_gqa_decode_fn(batch: int, heads: int, seq_len_kv: int, dim: int, groups: int,
+                       dtype: torch.dtype):
     benchmark = GroupQueryAttentionDecodeBenchmark(batch, heads, groups, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()

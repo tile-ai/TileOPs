@@ -1,11 +1,26 @@
 import argparse
+import pytest
+import torch
 
 from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.layers import MultiHeadAttentionDecodeLayer
 from top.utils import str2dtype
 
 
-def test_mha_decode_layer(batch, seq_len_q, seq_len_kv, heads, dim, dtype):
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len_q, seq_len_kv, heads, dim, dtype",
+    [
+        (1, 128, 8192, 32, 128, torch.float16),
+    ],
+)
+def test_mha_decode_layer(batch: int, seq_len_q: int, seq_len_kv: int, heads: int, dim: int,
+                          dtype: torch.dtype):
     fn = MultiHeadAttentionDecodeLayer(batch, heads, seq_len_q, seq_len_kv, dim, dtype)
     benchmark = MultiHeadAttentionDecodeBenchmark(batch, heads, seq_len_q, seq_len_kv, dim, dtype)
 

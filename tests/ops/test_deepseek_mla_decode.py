@@ -8,6 +8,11 @@ from top.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
 
 
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    torch.manual_seed(123)
+
+
 @pytest.mark.parametrize(
     "batch, heads, head_num_kv, seq_len_kv, dim, dim_pe, dtype, tune",
     [

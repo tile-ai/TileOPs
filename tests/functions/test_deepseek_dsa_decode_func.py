@@ -1,24 +1,29 @@
 import argparse
 
+import pytest
+import torch
+
 from benchmarks import DeepSeekSparseAttentionDecodeBenchmark
 from top.functions import DeepSeekSparseAttentionDecodeWithKVCacheFunc
 from top.layers import DeepSeekSparseAttentionDecodeLayer
 from top.utils import str2dtype
 
 
-def test_sparse_mla_decode(batch,
-                           heads,
-                           seq_len_q,
-                           seq_len_kv,
-                           dim,
-                           dim_tail,
-                           topk,
-                           stride_kv,
-                           group_kv,
-                           q_start_index_s,
-                           sm_scale,
-                           dtype,
-                           tune=False):
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    """Set up the test environment."""
+    torch.manual_seed(1234)
+
+
+@pytest.mark.parametrize(
+    "batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, group_kv, q_start_index_s, sm_scale, dtype, tune",
+    [
+        (1, 128, 1024, 2048, 512, 64, 2048, 1, 1, 1024, None, torch.float16, False),
+    ],
+)
+def test_sparse_mla_decode(batch: int, heads: int, seq_len_q: int, seq_len_kv: int, dim: int,
+                           dim_tail: int, topk: int, stride_kv: int, group_kv: int,
+                           q_start_index_s: int, sm_scale: float, dtype: torch.dtype, tune: bool):
     fn = DeepSeekSparseAttentionDecodeWithKVCacheFunc(
         batch,
         heads,
