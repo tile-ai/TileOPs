@@ -8,6 +8,11 @@ from top.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from top.utils import str2dtype
 
 
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    torch.manual_seed(123)
+
+
 @pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
     (1, 1024, 8, 4, 64, False, torch.float16, False),
     (4, 2048, 64, 4, 128, False, torch.float16, False),

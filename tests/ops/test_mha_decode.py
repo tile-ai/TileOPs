@@ -1,6 +1,7 @@
 import argparse
 
 import torch
+import pytest
 
 from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
@@ -12,13 +13,14 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(42)
 
 
-def test_mha_decode(b: int,
-                    h: int,
-                    s_q: int,
-                    s_kv: int,
-                    d: int,
-                    dtype: torch.dtype,
-                    tune: bool = False) -> None:
+@pytest.mark.parametrize(
+    "b, h, s_q, s_kv, d, dtype, tune",
+    [
+        (1, 32, 128, 8192, 128, torch.bfloat16, False),
+    ],
+)
+def test_mha_decode(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
+                    tune: bool) -> None:
     op = MultiHeadAttentionDecodeWithKVCacheOp(b, h, s_q, s_kv, d, dtype, tune=tune)
     benchmark = MultiHeadAttentionDecodeBenchmark(b, h, s_q, s_kv, d, dtype)
 

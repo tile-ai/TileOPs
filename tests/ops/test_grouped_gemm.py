@@ -2,6 +2,7 @@ import argparse
 import time
 
 import torch
+import pytest
 
 from benchmarks import (
     GroupedGemmBenchmark,
@@ -14,7 +15,14 @@ from top.ops.grouped_gemm import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTN
 from top.utils import str2dtype
 
 
-def test_grouped_gemm_nt(batch_sum, batch_count, N, K, dtype, tune=False):
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, N, K, dtype, tune",
+    [
+        (16384, 4, 4864, 4096, torch.float16, False),
+    ],
+)
+def test_grouped_gemm_nt(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
+                         tune: bool):
     op = GroupedGemmNTOp(batch_sum, batch_count, N, K, dtype, tune=tune)
     benchmark = GroupedGemmNTBenchmark(batch_sum, batch_count, N, K, dtype)
 
@@ -23,7 +31,14 @@ def test_grouped_gemm_nt(batch_sum, batch_count, N, K, dtype, tune=False):
     benchmark.profile(op, *inputs)
 
 
-def test_grouped_gemm_nn(batch_sum, batch_count, N, K, dtype, tune=False):
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, N, K, dtype, tune",
+    [
+        (16384, 4, 4864, 4096, torch.float16, False),
+    ],
+)
+def test_grouped_gemm_nn(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
+                         tune: bool):
     op = GroupedGemmNNOp(batch_sum, batch_count, N, K, dtype, tune=tune)
     benchmark = GroupedGemmNNBenchmark(batch_sum, batch_count, N, K, dtype)
 
@@ -32,7 +47,14 @@ def test_grouped_gemm_nn(batch_sum, batch_count, N, K, dtype, tune=False):
     benchmark.profile(op, *inputs)
 
 
-def test_grouped_gemm_tn(batch_sum, batch_count, N, K, dtype, tune=False):
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, N, K, dtype, tune",
+    [
+        (16384, 4, 4864, 4096, torch.float16, False),
+    ],
+)
+def test_grouped_gemm_tn(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
+                         tune: bool):
     op = GroupedGemmTNOp(batch_sum, batch_count, N, K, dtype, tune=tune)
     benchmark = GroupedGemmTNBenchmark(batch_sum, batch_count, N, K, dtype)
 
@@ -41,7 +63,14 @@ def test_grouped_gemm_tn(batch_sum, batch_count, N, K, dtype, tune=False):
     benchmark.profile(op, *inputs)
 
 
-def test_grouped_gemm_tt(batch_sum, batch_count, N, K, dtype, tune=False):
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, N, K, dtype, tune",
+    [
+        (16384, 4, 4864, 4096, torch.float16, False),
+    ],
+)
+def test_grouped_gemm_tt(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
+                         tune: bool):
     op = GroupedGemmTTOp(batch_sum, batch_count, N, K, dtype, tune=tune)
     benchmark = GroupedGemmTTBenchmark(batch_sum, batch_count, N, K, dtype)
 
@@ -50,7 +79,14 @@ def test_grouped_gemm_tt(batch_sum, batch_count, N, K, dtype, tune=False):
     benchmark.profile(op, *inputs)
 
 
-def test_grouped_gemm_complete(batch_sum, batch_count, N, K, dtype, tune=False):
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, N, K, dtype, tune",
+    [
+        (16384, 4, 4864, 4096, torch.float16, False),
+    ],
+)
+def test_grouped_gemm_complete(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
+                               tune: bool):
     from top.functions.grouped_gemm import GroupedGemmFunc
 
     op = GroupedGemmFunc(batch_sum, batch_count, N, K, dtype, tune=tune)

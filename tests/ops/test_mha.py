@@ -7,6 +7,11 @@ from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from top.utils import str2dtype
 
 
+@pytest.fixture(autouse=True)
+def setup() -> None:
+    torch.manual_seed(123)
+
+
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", [
     (1, 1024, 8, 64, False, torch.float16, False),
     (16, 2048, 16, 128, False, torch.float16, False),

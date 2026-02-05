@@ -1,19 +1,21 @@
 import argparse
 
 import torch
+import pytest
 
 from benchmarks import GroupQueryAttentionDecodeBenchmark
 from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
 
 
-def test_gqa_decode(b: int,
-                    h: int,
-                    g: int,
-                    s_kv: int,
-                    d: int,
-                    dtype: torch.dtype,
-                    tune: bool = False) -> None:
+@pytest.mark.parametrize(
+    "b, h, g, s_kv, d, dtype, tune",
+    [
+        (1, 32, 8, 8192, 128, torch.float16, False),
+    ],
+)
+def test_gqa_decode(b: int, h: int, g: int, s_kv: int, d: int, dtype: torch.dtype,
+                    tune: bool) -> None:
     op = GroupQueryAttentionDecodeWithKVCacheOp(b, h, g, s_kv, d, dtype, tune=tune)
     benchmark = GroupQueryAttentionDecodeBenchmark(b, h, g, s_kv, d, dtype)
 

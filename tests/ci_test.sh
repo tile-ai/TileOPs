@@ -4,7 +4,7 @@
 LOG_FILE="${1:-tileops_test.log}"
 
 # Run all Python test files in tests directory
-echo -e "\033[0;34mRunning all Python test files...\033[0m" | tee -a "$LOG_FILE"
+echo -e "\033[0;34mRunning all Python test files...\033[0m"
 
 # Store test results for summary
 declare -a test_names
@@ -16,32 +16,36 @@ failed_count=0
 
 # Find all .py files in current directory where script is located
 script_dir=$(dirname -- "${BASH_SOURCE[0]}")
-test_files=$(find "$script_dir" -name "test*.py" -type f | sort)
+test_files=$(find "$script_dir/ops" -name "test*.py" -type f | sort)
 
 if [ -z "$test_files" ]; then
-  echo "No test files found in $(dirname "$script_dir")" | tee -a "$LOG_FILE"
+  echo "No test files found in $script_dir/ops" | tee -a "$LOG_FILE"
   exit 1
 fi
 
 # Table header alignment, assuming filename max length of 50 characters
-printf "| %-50s | %-8s |\n" "Test File" "Status" | tee -a "$LOG_FILE"
-printf "|%s|\n" "--------------------------------------------------|----------" | tee -a "$LOG_FILE"
+printf "| %-50s | %-8s |\n" "Test File" "Status"
+printf "|%s|\n" "--------------------------------------------------|----------"
 
 # Run each test file
 for test_file in $test_files; do
   file_name=$(basename "$test_file")
-  echo -e "\033[0;36mRunning test: $test_file\033[0m" | tee -a "$LOG_FILE"
+  echo -e "\033[0;36mRunning test: $test_file\033[0m"
   echo "----------------------------------------" >> "$LOG_FILE"
 
-  if python "$test_file" >> "$LOG_FILE" 2>&1; then
-    echo -e "\033[0;32m[PASS] $test_file\033[0m" | tee -a "$LOG_FILE"
-    printf "| %-50s | ✅ Pass  |\n" "$file_name" | tee -a "$LOG_FILE"
+  # Extract the module name from the path for pytest
+  relative_path=${test_file#$script_dir/}
+
+  # Run pytest on the specific test file
+  if python -m pytest "$test_file" -v -r fE >> "$LOG_FILE" 2>&1; then
+    echo -e "\033[0;32m[PASS] $test_file\033[0m"
+    printf "| %-50s | ✅ Pass  |\n" "$file_name"
     test_names+=("$file_name")
     test_results+=("✅ Pass")
     passed_count=$((passed_count + 1))
   else
-    echo -e "\033[0;31m[FAIL] $test_file\033[0m" | tee -a "$LOG_FILE"
-    printf "| %-50s | ❌ Fail  |\n" "$file_name" | tee -a "$LOG_FILE"
+    echo -e "\033[0;31m[FAIL] $test_file\033[0m"
+    printf "| %-50s | ❌ Fail  |\n" "$file_name"
     test_names+=("$file_name")
     test_results+=("❌ Fail")
     failed_count=$((failed_count + 1))
