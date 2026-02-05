@@ -85,14 +85,9 @@ def _gqa_window_sliding_kernel(
 
                 if is_causal:
                     max_visible_k_idx = offset + (bx + 1) * block_m
-                    if has_window and window_size_left >= 0:
-                        loop_range = T.min(
-                            T.ceildiv(max_visible_k_idx, block_n),
-                            T.ceildiv(kv_current_seqlen, block_n))
-                    else:
-                        loop_range = T.min(
-                            T.ceildiv(max_visible_k_idx, block_n),
-                            T.ceildiv(kv_current_seqlen, block_n))
+                    loop_range = T.min(
+                        T.ceildiv(max_visible_k_idx, block_n),
+                        T.ceildiv(kv_current_seqlen, block_n))
                 else:
                     loop_range = T.ceildiv(kv_current_seqlen, block_n)
 
@@ -177,8 +172,10 @@ def _gqa_window_sliding_kernel(
 
                 T.copy(acc_o, o_shared)
                 for i, d in T.Parallel(block_m, dim):
-                    if bx * block_m + i < q_current_seqlen:
-                        output_unpad[q_start_idx + bx * block_m + i, head_idx, d] = o_shared[i, d]
+                    q_pos = bx * block_m + i
+                    output_idx = q_start_idx + q_pos
+                    if q_pos < q_current_seqlen and output_idx < q_end_idx:
+                        output_unpad[output_idx, head_idx, d] = o_shared[i, d]
 
         return _parallel_gqa_window_sliding_main
 
