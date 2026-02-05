@@ -12,7 +12,7 @@ def test_mla_decode(batch, heads, head_num_kv, seq_len_kv, dim, dim_pe, dtype, t
                                                         dim_pe, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=3e-4, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 

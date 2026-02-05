@@ -10,7 +10,7 @@ def test_gqa_decode_layer(batch, heads, seq_len_kv, dim, groups, dtype):
     benchmark = GroupQueryAttentionDecodeBenchmark(batch, heads, groups, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check_fn(fn, *inputs, grad=False)
+    benchmark.check_fn(fn, *inputs, grad=False, atol=3e-4, rtol=1e-5)
 
 
 if __name__ == "__main__":

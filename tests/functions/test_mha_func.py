@@ -14,11 +14,11 @@ def test_mha_fn(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
     inputs = benchmark.gen_inputs()
 
     print("=========Testing mha function inference=========")
-    benchmark.check_fn(mha, *inputs)
+    benchmark.check_fn(mha, *inputs, atol=3e-4, rtol=1e-5)
 
     print("=========Testing mha function class=========")
     fn = MultiHeadAttentionFunc(batch, heads, seq_len, dim, causal, dtype)
-    benchmark.check_fn(fn, *inputs)
+    benchmark.check_fn(fn, *inputs, atol=3e-4, rtol=1e-5)
 
 
 if __name__ == "__main__":

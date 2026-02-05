@@ -18,7 +18,7 @@ def test_gqa_decode(b: int,
     benchmark = GroupQueryAttentionDecodeBenchmark(b, h, g, s_kv, d, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=1e-3, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 

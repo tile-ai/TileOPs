@@ -65,7 +65,7 @@ def test_sparse_mla_decode(batch,
 
     try:
         print("Testing mla_fn...")
-        benchmark.check_fn(fn, *inputs, grad=False)
+        benchmark.check_fn(fn, *inputs, grad=False, atol=3e-4, rtol=1e-5)
         print("✅ mla_fn test passed")
     except Exception as e:
         print(f"❌ mla_fn test failed: {e}")
@@ -73,7 +73,7 @@ def test_sparse_mla_decode(batch,
 
     try:
         print("Testing mla_layer...")
-        benchmark.check_fn(layer, *inputs, grad=False)
+        benchmark.check_fn(layer, *inputs, grad=False, atol=3e-4, rtol=1e-5)
         print("✅ mla_layer test passed")
     except Exception as e:
         print(f"❌ mla_layer test failed: {e}")

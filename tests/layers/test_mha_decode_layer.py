@@ -10,7 +10,7 @@ def test_mha_decode_layer(batch, seq_len_q, seq_len_kv, heads, dim, dtype):
     benchmark = MultiHeadAttentionDecodeBenchmark(batch, heads, seq_len_q, seq_len_kv, dim, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check_fn(fn, *inputs, grad=False)
+    benchmark.check_fn(fn, *inputs, grad=False, atol=3e-4, rtol=1e-5)
 
 
 if __name__ == "__main__":

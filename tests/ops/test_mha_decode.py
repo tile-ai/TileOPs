@@ -18,7 +18,7 @@ def test_mha_decode(b: int,
     benchmark = MultiHeadAttentionDecodeBenchmark(b, h, s_q, s_kv, d, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=1.5e-3, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 
