@@ -391,7 +391,7 @@ import torch
 
 from top.ops import mla_decode_with_kvcache
 from benchmarks.profile.base import BenchmarkBase
-from tests.test_correctness.test_deepseek_mla import MLADecodeTest
+from tests.test_deepseek_mla import MLADecodeTest
 
 
 class MLADecodeProfiler(BenchmarkBase):
