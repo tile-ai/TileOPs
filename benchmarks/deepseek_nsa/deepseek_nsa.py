@@ -4,7 +4,7 @@ import torch
 from einops import rearrange, repeat
 
 from benchmarks.benchmark import Benchmark
-from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp
+from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp, GQAWindowSlidingOp
 from .utils import prepare_token_indices, prepare_chunk_offsets
 
 
@@ -860,6 +860,198 @@ class NSACmpFwdVarlenBenchmark(Benchmark):
             self.baseline_program,
             *inputs,
             backend="FLA NSA_Compression",
+            warmup=warmup,
+            rep=rep,
+            device=device)
+
+
+class GQAWindowSlidingBenchmark(Benchmark):
+    op_type = GQAWindowSlidingOp
+
+    def __init__(
+        self,
+        batch_size: int,
+        groups: int,
+        uq: int,
+        ukv: int,
+        heads: int,
+        dim: int,
+        is_causal: bool,
+        window_size_left: int,
+        window_size_right: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        tune: bool = False,
+    ) -> None:
+        self.batch_size = batch_size
+        self.groups = groups
+        self.uq = uq
+        self.ukv = ukv
+        self.heads = heads
+        self.dim = dim
+        self.is_causal = is_causal
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
+        self.tune = tune
+
+    @property
+    def total_flops(self) -> int:
+        total_flops = 2.0 * self.heads * self.uq * self.ukv * self.dim * 2
+        if self.is_causal:
+            total_flops *= 0.5
+        return int(total_flops)
+
+    @property
+    def total_memory(self) -> int:
+        head_kv = self.heads // self.groups
+        q_memory = self.uq * self.heads * self.dim * self.dtype.itemsize
+        k_memory = self.ukv * head_kv * self.dim * self.dtype.itemsize
+        v_memory = self.ukv * head_kv * self.dim * self.dtype.itemsize
+        output_memory = self.uq * self.heads * self.dim * self.dtype.itemsize
+        return q_memory + k_memory + v_memory + output_memory
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        rand_indices_q = torch.randperm(self.uq)[:self.batch_size - 1]
+        cu_seqlens_q = torch.cat(
+            [torch.tensor([0]),
+             torch.arange(1, self.uq)[rand_indices_q],
+             torch.tensor([self.uq])], 0).cuda().sort()[0].to(torch.int32)
+        rand_indices_k = torch.randperm(self.ukv)[:self.batch_size - 1]
+        cu_seqlens_k = torch.cat([
+            torch.tensor([0]),
+            torch.arange(1, self.ukv)[rand_indices_k],
+            torch.tensor([self.ukv])
+        ], 0).cuda().sort()[0].to(torch.int32)
+
+        q = torch.randn((self.uq, self.heads, self.dim), dtype=self.dtype, device="cuda")
+        k = torch.randn((self.ukv, self.heads // self.groups, self.dim),
+                        dtype=self.dtype,
+                        device="cuda")
+        v = torch.randn((self.ukv, self.heads // self.groups, self.dim),
+                        dtype=self.dtype,
+                        device="cuda")
+        max_seqlen_q = int((cu_seqlens_q[1:] - cu_seqlens_q[:-1]).max().item())
+        return q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q
+
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                    cu_seqlens_q: torch.LongTensor, cu_seqlens_k: torch.LongTensor,
+                    max_seqlen_q: int) -> torch.Tensor:
+        """PyTorch reference implementation for GQA window sliding attention (vectorized)"""
+        device = q.device
+        head_kv = self.heads // self.groups
+        scale = (1.0 / self.dim)**0.5
+        has_window = self.window_size_left >= 0 or self.window_size_right >= 0
+
+        output = torch.zeros((self.uq, self.heads, self.dim), dtype=q.dtype, device=device)
+
+        for batch_idx in range(self.batch_size):
+            q_start = cu_seqlens_q[batch_idx].item()
+            q_end = cu_seqlens_q[batch_idx + 1].item()
+            kv_start = cu_seqlens_k[batch_idx].item()
+            kv_end = cu_seqlens_k[batch_idx + 1].item()
+
+            q_seqlen = q_end - q_start
+            kv_seqlen = kv_end - kv_start
+
+            if q_seqlen == 0:
+                continue
+
+            q_batch = q[q_start:q_end]
+            k_batch = k[kv_start:kv_end]
+            v_batch = v[kv_start:kv_end]
+
+            offset = kv_seqlen - q_seqlen
+
+            output_batch = torch.zeros((q_seqlen, self.heads, self.dim),
+                                       dtype=q.dtype,
+                                       device=device)
+
+            for kv_head_idx in range(head_kv):
+                head_start = kv_head_idx * self.groups
+                head_end = head_start + self.groups
+
+                q_group = q_batch[:, head_start:head_end, :]
+                k_head = k_batch[:, kv_head_idx, :]
+                v_head = v_batch[:, kv_head_idx, :]
+
+                scores = torch.einsum('qgd,kd->qgk', q_group, k_head) * scale
+
+                q_positions = torch.arange(q_seqlen, device=device, dtype=torch.float32)
+                kv_positions = torch.arange(kv_seqlen, device=device, dtype=torch.float32)
+                q_abs_positions = q_positions.unsqueeze(-1) + offset
+                kv_abs_positions = kv_positions.unsqueeze(0)
+
+                mask = torch.zeros((q_seqlen, kv_seqlen), dtype=torch.bool, device=device)
+
+                if self.is_causal:
+                    causal_mask = (q_positions.unsqueeze(-1) + offset < kv_positions.unsqueeze(0))
+                    mask = mask | causal_mask
+
+                if has_window:
+                    if self.window_size_left >= 0:
+                        window_left_mask = kv_abs_positions < (
+                            q_abs_positions - self.window_size_left)
+                        mask = mask | window_left_mask
+
+                    if self.window_size_right >= 0:
+                        window_right_mask = kv_abs_positions > (
+                            q_abs_positions + self.window_size_right)
+                        mask = mask | window_right_mask
+
+                scores = scores.masked_fill(mask.unsqueeze(1), float('-inf'))
+
+                if self.is_causal and offset < 0:
+                    invalid_mask = (q_positions + offset < 0)
+                    scores = scores.masked_fill(
+                        invalid_mask.unsqueeze(-1).unsqueeze(-1), float('-inf'))
+
+                probs = torch.softmax(scores, dim=-1)
+
+                out_group = torch.einsum('qgk,kd->qgd', probs, v_head)
+
+                if self.is_causal and offset < 0:
+                    invalid_positions = (q_positions + offset < 0)
+                    out_group[invalid_positions] = 0
+
+                output_batch[:, head_start:head_end, :] = out_group
+
+            output[q_start:q_end] = output_batch
+
+        return output
+
+    def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                         cu_seqlens_q: torch.LongTensor, cu_seqlens_k: torch.LongTensor,
+                         max_seqlen_q: int) -> torch.Tensor:
+        import flash_attn
+        max_seqlen_k = int((cu_seqlens_k[1:] - cu_seqlens_k[:-1]).max().item())
+        return flash_attn.flash_attn_varlen_func(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            max_seqlen_q,
+            max_seqlen_k,
+            0.0,
+            causal=self.is_causal,
+            window_size=(self.window_size_left, self.window_size_right)
+            if self.window_size_left >= 0 or self.window_size_right >= 0 else (-1, -1),
+        )
+
+    def baseline_profile(
+        self,
+        *inputs: tuple[torch.Tensor, ...],
+        warmup: int = 100,
+        rep: int = 100,
+        device: str = "cuda",
+    ) -> torch.Tensor:
+        print("===== Profiling FLA GQA Window Sliding backend =====")
+        return super().baseline_profile(
+            self.baseline_program,
+            *inputs,
+            backend="FLA GQA Window Sliding",
             warmup=warmup,
             rep=rep,
             device=device)
