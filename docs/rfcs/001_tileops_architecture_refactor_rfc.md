@@ -151,7 +151,7 @@ benchmarks/microbenchmarks/
 └── cuda/            # Stream and overlap tests
 ```
 
-## 4. Reforactor Details
+## 4. Refactor Details
 
 ### 4.1 Test Framework Design
 
