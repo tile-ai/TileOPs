@@ -1,16 +1,10 @@
-import argparse
+import sys
 
 import pytest
 import torch
 
 from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
 from top.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
-from top.utils import str2dtype
-
-
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    torch.manual_seed(123)
 
 
 @pytest.mark.parametrize(
@@ -32,17 +26,5 @@ def test_mla_decode(batch: int, heads: int, head_num_kv: int, seq_len_kv: int, d
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--batch', type=int, default=32, help='batch size')
-    parser.add_argument('--head_num_kv', type=int, default=1, help='number of key/value heads')
-    parser.add_argument('--seq_len_kv', type=int, default=8192, help='key/value sequence length')
-    parser.add_argument('--heads', type=int, default=128, help='num heads')
-    parser.add_argument('--dim', type=int, default=512, help='head dim')
-    parser.add_argument('--dim_pe', type=int, default=64, help='positional encoding dim')
-    parser.add_argument(
-        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
-    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
-    args = parser.parse_args()
-
-    test_mla_decode(args.batch, args.heads, args.head_num_kv, args.seq_len_kv, args.dim,
-                    args.dim_pe, str2dtype[args.dtype], args.tune)
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

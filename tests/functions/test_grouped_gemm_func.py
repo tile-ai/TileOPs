@@ -1,12 +1,9 @@
-import argparse
-
 import pytest
 import math
 import torch
 
 from benchmarks import GroupedGemmBenchmark
 from top.functions import GroupedGemmFunc
-from top.utils import str2dtype
 
 
 @pytest.fixture(autouse=True)
@@ -58,23 +55,7 @@ def test_grouped_gemm_fn(batch_sizes_list: list, N: int, K: int, padding_M: int,
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--batch_sizes_list', type=str, default="4096,4096,4096,4096", help='batch size list')
-    parser.add_argument('--N', type=int, default=4864, help='N')
-    parser.add_argument('--K', type=int, default=8192, help='K')
-    parser.add_argument('--padding_M', type=int, default=128, help='padding M')
-    parser.add_argument(
-        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
-    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
-    args = parser.parse_args()
+    import sys
 
-    batch_sizes_list = [int(x) for x in args.batch_sizes_list.split(',')]
-
-    test_grouped_gemm_fn(
-        batch_sizes_list=batch_sizes_list,
-        N=args.N,
-        K=args.K,
-        padding_M=args.padding_M,
-        dtype=str2dtype[args.dtype],
-        tune=args.tune)
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

@@ -71,13 +71,7 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
 
 
 if __name__ == "__main__":
-    test_mean_pooling_op(1, 8192, 64, 128, 64, torch.float16, torch.float32, False, None)
-    test_mean_pooling_op(1, 8192, 64, 128, 64, torch.float16, torch.float32, True, None)
-    test_mean_pooling_op(2, 2049, 64, 128, 64, torch.float16, torch.float32, False, None)
-    test_mean_pooling_op(1, 1024, 64, 128, 64, torch.float16, torch.float32, False,
-                         torch.tensor([0, 256, 768, 1024], dtype=torch.int32, device='cuda'))
-    test_mean_pooling_op(
-        1, 8192, 64, 128, 64, torch.float16, torch.float32, True,
-        torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device='cuda'))
-    test_mean_pooling_op(1, 1000, 64, 128, 32, torch.float16, torch.float32, True,
-                         torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device='cuda'))
+    import sys
+
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

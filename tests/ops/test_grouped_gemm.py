@@ -1,4 +1,4 @@
-import argparse
+import sys
 import time
 
 import torch
@@ -12,12 +12,6 @@ from benchmarks import (
     GroupedGemmTTBenchmark,
 )
 from top.ops.grouped_gemm import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
-from top.utils import str2dtype
-
-
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    torch.manual_seed(123)
 
 
 @pytest.mark.parametrize(
@@ -125,29 +119,5 @@ def test_grouped_gemm_complete(batch_sum: int, batch_count: int, N: int, K: int,
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_sum', type=int, default=16384, help='sum of batch_size_list')
-    parser.add_argument('--batch_count', type=int, default=4, help='length of batch_size_list')
-    parser.add_argument('--N', type=int, default=4864, help='head dim')
-    parser.add_argument('--K', type=int, default=4096, help='num heads')
-    parser.add_argument(
-        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
-    parser.add_argument('--tune', action='store_true', help='enable autotune')
-
-    args = parser.parse_args()
-
-    print("Testing grouped_gemm_nt (forward)...")
-    test_grouped_gemm_nt(args.batch_sum, args.batch_count, args.N, args.K, str2dtype[args.dtype],
-                         args.tune)
-    print("Testing grouped_gemm_nn (backward dA)...")
-    test_grouped_gemm_nn(args.batch_sum, args.batch_count, args.N, args.K, str2dtype[args.dtype],
-                         args.tune)
-    print("Testing grouped_gemm_tn (backward dB)...")
-    test_grouped_gemm_tn(args.batch_sum, args.batch_count, args.N, args.K, str2dtype[args.dtype],
-                         args.tune)
-    print("Testing grouped_gemm_tt (backward dB)...")
-    test_grouped_gemm_tt(args.batch_sum, args.batch_count, args.N, args.K, str2dtype[args.dtype],
-                         args.tune)
-    print("Testing complete grouped_gemm function...")
-    test_grouped_gemm_complete(args.batch_sum, args.batch_count, args.N, args.K,
-                               str2dtype[args.dtype], args.tune)
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

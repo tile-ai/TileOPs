@@ -1,15 +1,11 @@
 """Test NativeSparseAttention operation."""
 
+import sys
+
 import pytest
 import torch
 
 from top.ops import ManifoldConstrainedHyperConnectionPostOp
-
-
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(12345)
 
 
 @pytest.mark.parametrize(
@@ -43,3 +39,8 @@ def test_mhc_post_op(
     cos_sim_x_out = torch.nn.functional.cosine_similarity(x_out_ref, x_out, dim=-1, eps=1e-8)
 
     assert cos_sim_x_out.min() > 0.99
+
+
+if __name__ == "__main__":
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

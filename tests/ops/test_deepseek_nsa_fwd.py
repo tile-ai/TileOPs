@@ -1,16 +1,11 @@
 """Test NativeSparseAttention operation."""
+import sys
 
 import pytest
 import torch
 
 from benchmarks.deepseek_nsa.deepseek_nsa import NSAFwdVarlenBenchmark
 from top.ops import NSAFwdVarlenOp
-
-
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
 
 
 @pytest.mark.parametrize(
@@ -61,7 +56,5 @@ def test_nsa_varlen_op(
 
 
 if __name__ == "__main__":
-
-    test_nsa_varlen_op(1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False)
-    test_nsa_varlen_op(4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False)
-    test_nsa_varlen_op(2, 16, 8192, 64, True, 0.1, 32, 16, 4, torch.float16, torch.float32, False)
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

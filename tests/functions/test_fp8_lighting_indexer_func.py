@@ -1,5 +1,3 @@
-import argparse
-
 import pytest
 import torch
 
@@ -48,19 +46,7 @@ def test_fp8_lighting_indexer(seq_len: int, heads: int, index_dim: int, seq_len_
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--seq_len', type=int, default=4096, help='sequence length')
-    parser.add_argument('--heads', type=int, default=32, help='number of heads')
-    parser.add_argument('--index_dim', type=int, default=64, help='index dim')
-    parser.add_argument('--seq_len_kv', type=int, default=8192, help='key/value sequence length')
-    parser.add_argument(
-        '--clean_logits',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help='whether to clean logits outside the valid range')
-    parser.add_argument('--config', type=str, default=None, help='positional encoding dim')
-    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
-    args = parser.parse_args()
+    import sys
 
-    test_fp8_lighting_indexer(args.seq_len, args.heads, args.index_dim, args.seq_len_kv,
-                              args.clean_logits, args.config)
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

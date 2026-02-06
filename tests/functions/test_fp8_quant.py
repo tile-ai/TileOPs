@@ -39,7 +39,7 @@ def test_fp8_quant(seq_len_kv, index_dim, in_dtype, tune):
 
 
 if __name__ == "__main__":
-    test_fp8_quant(8192, 64, torch.float16, False)
-    test_fp8_quant(8192, 64, torch.bfloat16, False)
-    test_fp8_quant(4096, 128, torch.float32, False)
-    test_fp8_quant(16384, 32, torch.float32, False)
+    import sys
+
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

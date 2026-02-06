@@ -1,13 +1,10 @@
+import sys
+
 import pytest
 import torch
 
 from benchmarks.deepseek_nsa.deepseek_nsa import NSATopkVarlenBenchmark
 from top.ops import NSATopkVarlenOp
-
-
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    torch.manual_seed(1234)
 
 
 @pytest.mark.parametrize(
@@ -58,7 +55,5 @@ def test_nsa_topk_varlen_op(
 
 
 if __name__ == "__main__":
-    test_nsa_topk_varlen_op(5, 1024, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32,
-                            False)
-    test_nsa_topk_varlen_op(3, 512, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32,
-                            False)
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)
