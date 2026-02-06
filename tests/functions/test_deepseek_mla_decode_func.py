@@ -17,7 +17,7 @@ def test_mla_decode_fn(batch, kv_head_num, seq_len_kv, heads, dim, pe_dim, dtype
 
     try:
         print("Testing mla_fn interface...")
-        benchmark.check_fn(mla_decode_with_kvcache, *inputs, grad=False)
+        benchmark.check_fn(mla_decode_with_kvcache, *inputs, grad=False, atol=3e-4, rtol=1e-5)
         print("✅ mla_fn test passed")
     except Exception as e:
         print(f"❌ mla_fn test failed: {e}")
@@ -27,7 +27,7 @@ def test_mla_decode_fn(batch, kv_head_num, seq_len_kv, heads, dim, pe_dim, dtype
         print("Testing mla_fn class...")
         fn = MultiHeadLatentAttentionDecodeWithKVCacheFunc(batch, heads, kv_head_num, seq_len_kv,
                                                            dim, pe_dim, dtype)
-        benchmark.check_fn(fn, *inputs, grad=False)
+        benchmark.check_fn(fn, *inputs, grad=False, atol=3e-4, rtol=1e-5)
         print("✅ mla_fn test passed")
     except Exception as e:
         print(f"❌ mla_fn test failed: {e}")
@@ -35,7 +35,7 @@ def test_mla_decode_fn(batch, kv_head_num, seq_len_kv, heads, dim, pe_dim, dtype
 
     try:
         print("Testing mla_layer...")
-        benchmark.check_fn(mla_layer, *inputs, grad=False)
+        benchmark.check_fn(mla_layer, *inputs, grad=False, atol=3e-4, rtol=1e-5)
         print("✅ mla_layer test passed")
     except Exception as e:
         print(f"❌ mla_layer test failed: {e}")

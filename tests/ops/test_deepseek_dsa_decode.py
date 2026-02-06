@@ -49,7 +49,7 @@ def test_sparse_mla_decode(batch: int,
         dtype=dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=3e-4, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 

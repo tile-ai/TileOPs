@@ -20,7 +20,7 @@ def test_topk_selector_op(batch: int, seq_len: int, topk: int, in_dtype: str, ou
 
     inputs = benchmark.gen_inputs()
 
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=1e-4, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 

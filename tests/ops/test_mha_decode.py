@@ -6,6 +6,11 @@ from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
 from top.utils import str2dtype
 
+# Set fixed seed for reproducibility
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(42)
+
 
 def test_mha_decode(b: int,
                     h: int,
@@ -18,7 +23,7 @@ def test_mha_decode(b: int,
     benchmark = MultiHeadAttentionDecodeBenchmark(b, h, s_q, s_kv, d, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=2e-3, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 

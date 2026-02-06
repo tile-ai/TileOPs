@@ -57,7 +57,7 @@ def test_nsa_varlen_op(
     op = NSAFwdVarlenOp(**params)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=5e-4, rtol=1e-5)
 
 
 if __name__ == "__main__":
