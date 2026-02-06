@@ -56,7 +56,7 @@ This coupling leads to:
 - Complex and hard-to-maintain test code
 - Difficulty in separating performance testing from correctness testing
 
-## 3. Reforactor Overview
+## 3. Refactor Overview
 
 ### 3.1 Core Goals
 
