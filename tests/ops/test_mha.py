@@ -11,7 +11,7 @@ def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune=False):
 
     inputs = benchmark.gen_inputs()
     print("Forward Results:")
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=5e-4, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 
@@ -21,7 +21,7 @@ def test_mha_bwd(batch, seq_len, heads, dim, causal, dtype, tune=False):
 
     inputs = benchmark.gen_inputs()
     print("Backward Results:")
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=5e-4, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 

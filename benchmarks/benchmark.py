@@ -30,8 +30,8 @@ class Benchmark(ABC):
     def check(self,
               op: Op,
               *inputs: Tuple[torch.Tensor],
-              atol: float = 1e-2,
-              rtol: float = 1e-2) -> None:
+              atol: float = 1e-08,
+              rtol: float = 1e-05) -> None:
         """Check the correctness of the op"""
         try:
             outputs_ref = self.ref_program(*inputs)
@@ -68,8 +68,8 @@ class Benchmark(ABC):
     def check_fn(self,
                  fn: callable,
                  *inputs: Tuple[torch.Tensor],
-                 atol: float = 1e-2,
-                 rtol: float = 1e-2,
+                 atol: float = 1e-08,
+                 rtol: float = 1e-05,
                  grad: bool = True) -> None:
         """Check the correctness of the function and layer"""
         try:

@@ -16,7 +16,8 @@ def test_mha_kernel_compile(B, S, H, D, causal, dtype):
 
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = benchmark.gen_inputs()
-    benchmark.check(compiled_op, *inputs)  # will throw an error if not compatible
+    benchmark.check(
+        compiled_op, *inputs, atol=3e-4, rtol=1e-5)  # will throw an error if not compatible
     benchmark.profile(compiled_op, *inputs)
 
     print('Successfully validate the compatibility with torch.compile().✅')

@@ -51,7 +51,7 @@ def test_nsa_cmp_fwd_varlen_op(
 
     params["chunk_num"] = benchmark.chunk_num
     op = NSACmpFwdVarlenOp(**params)
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=4e-3, rtol=1e-5)
 
 
 if __name__ == "__main__":

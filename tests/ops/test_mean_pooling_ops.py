@@ -67,7 +67,7 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
     benchmark = MeanPoolingForwardBenchmark(**params, offsets=offsets, indices=indices)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=1e-3, rtol=1e-5)
 
 
 if __name__ == "__main__":

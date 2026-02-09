@@ -20,7 +20,7 @@ def test_gqa_fwd(batch: int,
 
     inputs = benchmark.gen_inputs()
     print("Forward Results:")
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=5e-4, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 
@@ -37,7 +37,7 @@ def test_gqa_bwd(batch: int,
 
     inputs = benchmark.gen_inputs()
     print("Backward Results:")
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=5e-4, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 

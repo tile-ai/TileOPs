@@ -14,7 +14,7 @@ def test_mha_layer(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
     benchmark = MultiHeadAttentionBenchmark(batch, heads, seq_len, dim, causal, dtype)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check_fn(mha, *inputs)
+    benchmark.check_fn(mha, *inputs, atol=3e-4, rtol=1e-5)
 
 
 if __name__ == "__main__":
