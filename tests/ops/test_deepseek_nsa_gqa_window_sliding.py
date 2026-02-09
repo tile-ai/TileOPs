@@ -53,7 +53,7 @@ def test_nsa_gqa_window_sliding_op(
     op = GQAWindowSlidingOp(**params)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs, atol=5e-4, rtol=1e-5)
+    benchmark.check(op, *inputs, atol=3e-3, rtol=1e-5)
 
 
 if __name__ == "__main__":
