@@ -1,5 +1,3 @@
-import sys
-
 import pytest
 
 from benchmarks import TopkSelectorBenchmark
@@ -28,5 +26,4 @@ def test_topk_selector_op(batch: int, seq_len: int, topk: int, in_dtype: str, ou
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

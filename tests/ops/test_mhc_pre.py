@@ -1,7 +1,6 @@
 """Test NativeSparseAttention operation."""
 
 import math
-import sys
 
 import pytest
 import torch
@@ -92,5 +91,4 @@ def test_mhc_pre_op(
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

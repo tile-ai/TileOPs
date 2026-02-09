@@ -1,5 +1,3 @@
-import sys
-
 import torch
 import pytest
 
@@ -24,5 +22,4 @@ def test_gqa_decode(b: int, h: int, g: int, s_kv: int, d: int, dtype: torch.dtyp
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

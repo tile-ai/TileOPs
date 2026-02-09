@@ -1,5 +1,3 @@
-import sys
-
 import pytest
 import torch
 
@@ -53,5 +51,4 @@ def test_topk_selector(batch: int, seq_len: int, topk: int, in_dtype: torch.dtyp
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

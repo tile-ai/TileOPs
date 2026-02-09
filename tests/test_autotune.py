@@ -1,5 +1,3 @@
-import sys
-
 import pytest
 import torch
 
@@ -21,5 +19,4 @@ def test_mha_kernel_autotune(B: int, S: int, H: int, D: int, causal: bool, dtype
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

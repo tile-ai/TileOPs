@@ -1,4 +1,3 @@
-import sys
 import time
 
 import pytest
@@ -171,5 +170,4 @@ def test_verify_triton_gemm_fp16(M: int, N: int, K: int, dtype):
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

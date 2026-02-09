@@ -1,5 +1,3 @@
-import sys
-
 import torch
 import pytest
 
@@ -25,5 +23,4 @@ def test_gemm(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b
 
 if __name__ == "__main__":
     # Run tests with pytest
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

@@ -1,4 +1,3 @@
-import sys
 import time
 
 import pytest
@@ -63,5 +62,4 @@ def test_cublas_gemm(M: int, N: int, K: int, dtype, num_iter: int):
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

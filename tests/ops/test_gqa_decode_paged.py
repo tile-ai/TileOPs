@@ -1,7 +1,6 @@
 """Test GroupQueryAttentionDecodePagedWithKVCacheOp (paged GQA decode with dynamic KV cache)."""
 
 import math
-import sys
 
 import pytest
 import torch
@@ -115,5 +114,4 @@ def test_gqa_decode_paged_op(
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

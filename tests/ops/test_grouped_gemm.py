@@ -1,4 +1,3 @@
-import sys
 import time
 
 import torch
@@ -119,5 +118,4 @@ def test_grouped_gemm_complete(batch_sum: int, batch_count: int, N: int, K: int,
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

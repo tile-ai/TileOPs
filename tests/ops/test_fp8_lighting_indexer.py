@@ -1,4 +1,3 @@
-import sys
 from typing import Optional
 
 import pytest
@@ -27,5 +26,4 @@ def test_indexer(seq_len: int, heads: int, index_dim: int, seq_len_kv: int, clea
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

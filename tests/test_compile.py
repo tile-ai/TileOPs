@@ -1,8 +1,6 @@
 # This test validates the compatibility of TileOps operators with torch.compile().
 # Check: https://docs.pytorch.org/tutorials/advanced/python_custom_ops.html
 
-import sys
-
 import pytest
 import torch
 
@@ -32,5 +30,4 @@ def test_mha_kernel_compile(B: int, S: int, H: int, D: int, causal: bool, dtype:
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

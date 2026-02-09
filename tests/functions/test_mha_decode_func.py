@@ -1,4 +1,3 @@
-import sys
 import pytest
 import torch
 
@@ -27,5 +26,4 @@ def test_mha_decode_fn(batch: int, seq_len_q: int, seq_len_kv: int, heads: int, 
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

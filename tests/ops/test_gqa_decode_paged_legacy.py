@@ -1,7 +1,5 @@
 """Legacy-style test for GroupQueryAttentionDecodePagedWithKVCacheOp (argparse + check + profile)."""
 
-import sys
-
 import pytest
 import torch
 
@@ -34,5 +32,4 @@ def test_gqa_decode_paged(
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])

@@ -1,4 +1,3 @@
-import sys
 import pytest
 
 import torch
@@ -52,5 +51,4 @@ def test_mla_decode_fn(batch: int, kv_head_num: int, seq_len_kv: int, heads: int
 
 
 if __name__ == "__main__":
-    errno = pytest.main([__file__, "-vvs"])
-    sys.exit(errno)
+    pytest.main([__file__, "-vvs"])
