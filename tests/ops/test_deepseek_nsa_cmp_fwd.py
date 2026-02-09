@@ -1,3 +1,4 @@
+import inspect
 import pytest
 import torch
 
@@ -37,8 +38,14 @@ def test_nsa_cmp_fwd_varlen_op(
 
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    # Use locals() to create params dictionary from function arguments
-    params = locals().copy()
+    # Create params dictionary from function arguments, excluding pytest internals
+    # Filter out any keys that start with '@' (pytest internal variables)
+    sig = inspect.signature(test_nsa_cmp_fwd_varlen_op)
+    params = {
+        name: locals()[name]
+        for name in sig.parameters.keys()
+        if not name.startswith('@')
+    }
     benchmark = NSACmpFwdVarlenBenchmark(**params)
     inputs = benchmark.gen_inputs()
 
