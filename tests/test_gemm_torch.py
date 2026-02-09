@@ -1,4 +1,4 @@
-import argparse
+import sys
 import time
 
 import pytest
@@ -63,30 +63,5 @@ def test_cublas_gemm(M: int, N: int, K: int, dtype, num_iter: int):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='GEMM Performance Benchmark')
-    parser.add_argument('--M', type=int, default=16384, help='Matrix A rows')
-    parser.add_argument('--N', type=int, default=8192, help='Matrix B columns')
-    parser.add_argument('--K', type=int, default=13824, help='Matrix A columns / Matrix B rows')
-    parser.add_argument(
-        '--dtype',
-        type=str,
-        default='float16',
-        choices=['float16', 'float32', 'bfloat16'],
-        help='Data type')
-    args = parser.parse_args()
-    dtype_map = {'float16': torch.float16, 'float32': torch.float32, 'bfloat16': torch.bfloat16}
-    M = args.M
-    N = args.N
-    K = args.K
-    dtype = dtype_map[args.dtype]
-    print("=" * 60)
-    print("GEMM Performance Benchmark")
-    print("=" * 60)
-    print("Configuration:")
-    print(f"  M: {M}, N: {N}, K: {K}")
-    print(f"  Data type: {dtype}")
-    base_time, base_tflops, flops = test_pytorch_gemm(M, N, K, dtype)
-    print("\nPyTorch torch.matmul:")
-    print(f"  Time: {base_time * 1000:.4f} ms")
-    print(f"  Performance: {base_tflops:.2f} TFLOPS")
-    print(f"  Total FLOPs: {flops / 1e12:.2f} TFLOPs")
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

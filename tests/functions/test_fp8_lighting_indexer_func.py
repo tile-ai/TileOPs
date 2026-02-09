@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from benchmarks.deepseek_mla import Fp8LightingIndexerBenchmark
@@ -39,7 +41,5 @@ def test_fp8_lighting_indexer(seq_len: int, heads: int, index_dim: int, seq_len_
 
 
 if __name__ == "__main__":
-    import sys
-
     errno = pytest.main([__file__, "-vvs"])
     sys.exit(errno)

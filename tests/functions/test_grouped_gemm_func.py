@@ -1,3 +1,4 @@
+import sys
 import pytest
 import math
 import torch
@@ -49,7 +50,5 @@ def test_grouped_gemm_fn(batch_sizes_list: list, N: int, K: int, padding_M: int,
 
 
 if __name__ == "__main__":
-    import sys
-
     errno = pytest.main([__file__, "-vvs"])
     sys.exit(errno)

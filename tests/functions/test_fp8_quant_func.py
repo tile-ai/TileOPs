@@ -1,3 +1,4 @@
+import sys
 import pytest
 import torch
 
@@ -39,7 +40,5 @@ def test_fp8_quant(seq_len_kv, index_dim, in_dtype, tune):
 
 
 if __name__ == "__main__":
-    import sys
-
     errno = pytest.main([__file__, "-vvs"])
     sys.exit(errno)

@@ -71,7 +71,8 @@ jobs:
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          bash tests/ci_test.sh tileops_test_release.log
+          set -o pipefail
+          python -m pytest -q tests  | tee tileops_test_release.log
         shell: bash
 
       - name: Cleanup venv
@@ -145,7 +146,8 @@ jobs:
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
-          bash tests/ci_test.sh tileops_test_nightly.log
+          set -o pipefail
+          python -m pytest -q tests | tee tileops_test_nightly.log
         shell: bash
 
       - name: Cleanup venv

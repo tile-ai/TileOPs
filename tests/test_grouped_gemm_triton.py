@@ -1,4 +1,6 @@
+import sys
 import argparse
+
 import math
 import time
 
@@ -946,4 +948,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

@@ -1,3 +1,4 @@
+import sys
 import time
 
 import pytest
@@ -198,4 +199,5 @@ def test_all_grouped_gemm(batch_sum, batch_count, k, n, dtype):
 
 
 if __name__ == "__main__":
-    test_all_grouped_gemm(batch=4096, batch_count=4, k=8192, n=4864, dtype=torch.float16)
+    errno = pytest.main([__file__, "-vvs"])
+    sys.exit(errno)

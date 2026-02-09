@@ -1,3 +1,4 @@
+import sys
 import torch
 import pytest
 
@@ -24,7 +25,5 @@ def test_mha_decode(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dt
 
 
 if __name__ == "__main__":
-    import sys
-
     errno = pytest.main([__file__, "-vvs"])
     sys.exit(errno)

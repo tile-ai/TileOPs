@@ -1,3 +1,4 @@
+import sys
 from typing import Optional
 
 import pytest
@@ -71,7 +72,5 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
 
 
 if __name__ == "__main__":
-    import sys
-
     errno = pytest.main([__file__, "-vvs"])
     sys.exit(errno)

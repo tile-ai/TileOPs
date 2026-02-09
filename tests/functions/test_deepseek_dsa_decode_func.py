@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 import torch
 
@@ -77,7 +79,5 @@ def test_sparse_mla_decode(batch: int, heads: int, seq_len_q: int, seq_len_kv: i
 
 
 if __name__ == "__main__":
-    import sys
-
     errno = pytest.main([__file__, "-vvs"])
     sys.exit(errno)
