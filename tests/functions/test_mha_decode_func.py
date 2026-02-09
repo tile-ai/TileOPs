@@ -5,12 +5,6 @@ from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.functions import MultiHeadAttentionDecodeWithKVCacheFunc, mha_decode_with_kvcache
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "batch, seq_len_q, seq_len_kv, heads, dim, dtype",
     [

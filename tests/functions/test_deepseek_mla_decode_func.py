@@ -6,12 +6,6 @@ from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc, mla_dec
 from top.layers import MultiHeadLatentAttentionDecodeLayer
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "batch, kv_head_num, seq_len_kv, heads, dim, pe_dim, dtype",
     [

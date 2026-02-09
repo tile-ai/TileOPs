@@ -5,12 +5,6 @@ from benchmarks import MultiHeadAttentionDecodeBenchmark
 from top.layers import MultiHeadAttentionDecodeLayer
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "batch, seq_len_q, seq_len_kv, heads, dim, dtype",
     [

@@ -5,12 +5,6 @@ from benchmarks import MatMulBenchmark
 from top.functions import MatMulFunc, matmul
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "m, n, k, dtype, tune",
     [

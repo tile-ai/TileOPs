@@ -6,12 +6,6 @@ from top.functions import TopkSelectorFunc
 from top.layers import TopkSelectorLayer
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "batch, seq_len, topk, in_dtype, out_dtype, tune",
     [

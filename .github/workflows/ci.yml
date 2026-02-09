@@ -165,30 +165,3 @@ jobs:
           name: tileops_test_nightly.log
           path: tileops_test_nightly.log
           retention-days: 7  # Equivalent to expire_in: 1 week
-
-  tileops_profile_release:
-    # needs: [pre-commit, tileops_test_release]
-    needs: [tileops_test_release]
-    runs-on: [self-hosted, profile]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0  # Equivalent to GIT_STRATEGY: fetch
-
-      - name: Setup & Run tests
-        run: |
-          source ~/miniconda3/etc/profile.d/conda.sh
-          conda activate tileops-release
-          export PYTHONPATH="$(pwd):$PYTHONPATH"
-          echo "PYTHONPATH=$PYTHONPATH"
-          bash benchmarks/profile_run.sh --log profile_out/tileops_profile_release.log
-        shell: bash
-
-      - name: Upload profile_out artifacts
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: profile_out
-          path: profile_out/
-          retention-days: 7

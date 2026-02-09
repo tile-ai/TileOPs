@@ -1,15 +1,8 @@
 import pytest
-import torch
 
 from benchmarks.deepseek_mla import Fp8LightingIndexerBenchmark
 from top.functions import Fp8LightingIndexerFunc
 from top.layers import Fp8LightingIndexerDecodeLayer
-
-
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
 
 
 @pytest.mark.parametrize(

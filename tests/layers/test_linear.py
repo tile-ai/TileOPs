@@ -4,12 +4,6 @@ import torch
 from top.layers import LinearLayer
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "m, n, k, dtype, tune",
     [

@@ -5,12 +5,6 @@ from benchmarks import GroupQueryAttentionDecodeBenchmark
 from top.layers import GroupQueryAttentionDecodeLayer
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "batch, heads, seq_len_kv, dim, groups, dtype",
     [

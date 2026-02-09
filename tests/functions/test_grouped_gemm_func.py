@@ -6,12 +6,6 @@ from benchmarks import GroupedGemmBenchmark
 from top.functions import GroupedGemmFunc
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "batch_sizes_list, N, K, padding_M, dtype, tune",
     [

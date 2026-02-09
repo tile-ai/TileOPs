@@ -5,12 +5,6 @@ from benchmarks import GroupQueryAttentionBenchmark
 from top.functions import GroupQueryAttentionFunc, gqa
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "batch, seq_len, heads, heads_kv, dim, causal, dtype",
     [

@@ -6,12 +6,6 @@ from top.functions import DeepSeekSparseAttentionDecodeWithKVCacheFunc
 from top.layers import DeepSeekSparseAttentionDecodeLayer
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, group_kv, q_start_index_s, sm_scale, dtype, tune",
     [
