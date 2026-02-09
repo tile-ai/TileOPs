@@ -6,12 +6,6 @@ import torch
 import torch.nn as nn
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 def calculate_gemm_flops(M, N, K):
     return 2.0 * M * N * K
 

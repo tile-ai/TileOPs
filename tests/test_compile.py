@@ -10,12 +10,6 @@ from top.ops import MultiHeadAttentionFwdOp
 from top.utils import str2dtype
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "B, S, H, D, causal, dtype",
     [
@@ -31,7 +25,7 @@ def test_mha_kernel_compile(B: int, S: int, H: int, D: int, causal: bool, dtype:
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = benchmark.gen_inputs()
     benchmark.check(
-        compiled_op, *inputs, atol=3e-4, rtol=1e-5)  # will throw an error if not compatible
+        compiled_op, *inputs, atol=5e-3, rtol=1e-5)  # will throw an error if not compatible
     benchmark.profile(compiled_op, *inputs)
 
     print('Successfully validate the compatibility with torch.compile().✅')

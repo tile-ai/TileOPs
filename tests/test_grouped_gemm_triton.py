@@ -830,12 +830,6 @@ def calculate_flops_tt(batch_sizes, K, N):
     return 2.0 * sum(size * N * K for size in batch_sizes)
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "batch_sum, batch_count, K, N, dtype",
     [

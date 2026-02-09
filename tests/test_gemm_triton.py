@@ -80,12 +80,6 @@ def calculate_gemm_flops(M, N, K):
     return 2.0 * M * N * K
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "M, N, K, dtype, num_iter",
     [

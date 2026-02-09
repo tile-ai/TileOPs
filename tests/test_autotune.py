@@ -6,12 +6,6 @@ from top.ops import MultiHeadAttentionFwdOp
 from top.utils import str2dtype
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     "B, S, H, D, causal, dtype",
     [

@@ -4,12 +4,6 @@ import pytest
 import torch
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 class PyTorchGroupedGEMM:
 
     def __init__(self):
