@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from top.kernels.gemm import GemmKernel, GemvKernel
+from top.kernels.gemm import GemmKernel
 from top.kernels.kernel import Kernel
 
 from .op import Op
@@ -28,15 +28,12 @@ class GemmOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        if m == 1:
-            self.kernel = self.kernel_map["gemv_kernel"](n, k, self.dtype, tune=tune)
-        else:
-            self.kernel = self.kernel_map["gemm_kernel"](
-                m, n, k, self.dtype, tune=tune, trans_a=trans_a, trans_b=trans_b)
+        self.kernel = self.kernel_map["gemm_kernel"](
+            m, n, k, self.dtype, tune=tune, trans_a=trans_a, trans_b=trans_b)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gemm_kernel": GemmKernel, "gemv_kernel": GemvKernel}
+        return {"gemm_kernel": GemmKernel}
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.kernel(a, b)

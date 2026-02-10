@@ -1,3 +1,3 @@
-from .gemm import GemmKernel, GemvKernel
+from .gemm import GemmKernel
 
-__all__ = ["GemmKernel", "GemvKernel"]
+__all__ = ["GemmKernel"]
