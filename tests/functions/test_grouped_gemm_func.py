@@ -1,14 +1,19 @@
-import argparse
+import pytest
 import math
-
 import torch
 
 from benchmarks import GroupedGemmBenchmark
 from top.functions import GroupedGemmFunc
-from top.utils import str2dtype
 
 
-def test_grouped_gemm_fn(batch_sizes_list, N, K, padding_M, dtype, tune=False):
+@pytest.mark.parametrize(
+    "batch_sizes_list, N, K, padding_M, dtype, tune",
+    [
+        ([4096, 4096, 4096, 4096], 4864, 8192, 128, torch.float16, False),
+    ],
+)
+def test_grouped_gemm_fn(batch_sizes_list: list, N: int, K: int, padding_M: int, dtype: torch.dtype,
+                         tune: bool):
     batch_sum = sum(batch_sizes_list)
     batch_count = len(batch_sizes_list)
     batch_offsets_list = [0]
@@ -44,23 +49,4 @@ def test_grouped_gemm_fn(batch_sizes_list, N, K, padding_M, dtype, tune=False):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--batch_sizes_list', type=str, default="4096,4096,4096,4096", help='batch size list')
-    parser.add_argument('--N', type=int, default=4864, help='N')
-    parser.add_argument('--K', type=int, default=8192, help='K')
-    parser.add_argument('--padding_M', type=int, default=128, help='padding M')
-    parser.add_argument(
-        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
-    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
-    args = parser.parse_args()
-
-    batch_sizes_list = [int(x) for x in args.batch_sizes_list.split(',')]
-
-    test_grouped_gemm_fn(
-        batch_sizes_list=batch_sizes_list,
-        N=args.N,
-        K=args.K,
-        padding_M=args.padding_M,
-        dtype=str2dtype[args.dtype],
-        tune=args.tune)
+    pytest.main([__file__, "-vvs"])

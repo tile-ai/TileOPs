@@ -30,7 +30,4 @@ def test_fp8_quant_op(seq_len_kv: int, index_dim: int, in_dtype: torch.dtype, tu
 
 
 if __name__ == "__main__":
-    test_fp8_quant_op(8192, 64, torch.float16, False)
-    test_fp8_quant_op(8192, 64, torch.bfloat16, False)
-    test_fp8_quant_op(4096, 128, torch.float32, False)
-    test_fp8_quant_op(16384, 32, torch.float32, False)
+    pytest.main([__file__, "-vvs"])
