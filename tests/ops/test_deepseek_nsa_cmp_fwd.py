@@ -37,7 +37,7 @@ def test_nsa_cmp_fwd_varlen_op(
     # to avoid including pytest-injected local variables.
     # Note: Need to capture locals() before list comprehension due to scope issues
     local_vars = locals()
-    sig = inspect.signature(test_nsa_cmp_fwd_varlen_op)
+    sig = inspect.signature(globals()[inspect.stack()[0].function])
     params = {name: local_vars[name] for name in sig.parameters}
     benchmark = NSACmpFwdVarlenBenchmark(**params)
     inputs = benchmark.gen_inputs()
