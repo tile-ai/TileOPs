@@ -9,12 +9,6 @@ import torch.nn.functional as F
 from top.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(12345)
-
-
 def _torch_ref_mha_decode_paged(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -112,3 +106,7 @@ def test_mha_decode_paged_op(
         output.reshape(batch, -1), output_ref.reshape(batch, -1), dim=-1, eps=1e-8)
     assert cos_sim.min() > 0.99, f"cosine similarity {cos_sim.min().item()} too low"
     torch.cuda.empty_cache()
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-vvs"])

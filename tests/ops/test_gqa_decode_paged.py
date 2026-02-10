@@ -10,11 +10,6 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from top.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    torch.manual_seed(12345)
-
-
 def _torch_ref_gqa_decode_paged(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -116,3 +111,7 @@ def test_gqa_decode_paged_op(
     cos_sim = F.cosine_similarity(
         output.reshape(batch, -1), output_ref.reshape(batch, -1), dim=-1, eps=1e-8)
     assert cos_sim.min() > 0.99, f"cosine similarity {cos_sim.min().item()} too low"
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-vvs"])

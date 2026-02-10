@@ -15,7 +15,7 @@ from top.layers import Fp8QuantLayer
         (16384, 32, torch.float32, False),
     ],
 )
-def test_fp8_quant(seq_len_kv, index_dim, in_dtype, tune=False):
+def test_fp8_quant(seq_len_kv, index_dim, in_dtype, tune):
     fn = Fp8QuantFunc(seq_len_kv, index_dim, in_dtype, tune=tune)
     layer = Fp8QuantLayer(seq_len_kv, index_dim, in_dtype, tune=tune)
     benchmark = Fp8QuantBenchmark(seq_len_kv, index_dim, in_dtype)
@@ -39,7 +39,4 @@ def test_fp8_quant(seq_len_kv, index_dim, in_dtype, tune=False):
 
 
 if __name__ == "__main__":
-    test_fp8_quant(8192, 64, torch.float16, False)
-    test_fp8_quant(8192, 64, torch.bfloat16, False)
-    test_fp8_quant(4096, 128, torch.float32, False)
-    test_fp8_quant(16384, 32, torch.float32, False)
+    pytest.main([__file__, "-vvs"])

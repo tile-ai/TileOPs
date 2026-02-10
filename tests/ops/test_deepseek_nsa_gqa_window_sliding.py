@@ -7,12 +7,6 @@ from benchmarks.deepseek_nsa.deepseek_nsa import GQAWindowSlidingBenchmark
 from top.ops import GQAWindowSlidingOp
 
 
-@pytest.fixture(autouse=True)
-def setup() -> None:
-    """Set up the test environment."""
-    torch.manual_seed(1234)
-
-
 @pytest.mark.parametrize(
     ("batch_size", "groups", "uq", "ukv", "heads", "dim", "is_causal", "window_size_left",
      "window_size_right", "dtype", "accum_dtype", "tune"),
@@ -57,47 +51,8 @@ def test_nsa_gqa_window_sliding_op(
     op = GQAWindowSlidingOp(**params)
 
     inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=3e-3, rtol=1e-5)
 
 
 if __name__ == "__main__":
-
-    test_nsa_gqa_window_sliding_op(
-        batch_size=1,
-        groups=16,
-        uq=1024,
-        ukv=1024,
-        heads=64,
-        dim=128,
-        is_causal=True,
-        window_size_left=32,
-        window_size_right=-1,
-        dtype=torch.float16,
-        accum_dtype=torch.float32,
-        tune=False)
-    test_nsa_gqa_window_sliding_op(
-        batch_size=3,
-        groups=16,
-        uq=8192,
-        ukv=8192,
-        heads=64,
-        dim=128,
-        is_causal=True,
-        window_size_left=2048,
-        window_size_right=0,
-        dtype=torch.float16,
-        accum_dtype=torch.float32,
-        tune=False)
-    test_nsa_gqa_window_sliding_op(
-        batch_size=3,
-        groups=16,
-        uq=8192,
-        ukv=8192,
-        heads=64,
-        dim=128,
-        is_causal=False,
-        window_size_left=-1,
-        window_size_right=-1,
-        dtype=torch.float16,
-        accum_dtype=torch.float32,
-        tune=False)
+    pytest.main([__file__, "-vvs"])
