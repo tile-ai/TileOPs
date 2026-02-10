@@ -148,7 +148,6 @@ class MultiHeadAttentionBwdBenchmark(Benchmark):
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
         output = output_bhsd.transpose(1, 2).contiguous()
 
-        # from IPython import embed; embed()
         output.backward(grad_output)
         return q.grad, k.grad, v.grad
 

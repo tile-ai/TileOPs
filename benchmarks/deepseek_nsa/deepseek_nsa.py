@@ -1,10 +1,10 @@
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Tuple
 
 import torch
 from einops import rearrange, repeat
 
 from benchmarks.benchmark import Benchmark
-from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp
+from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp, GQAWindowSlidingOp
 from .utils import prepare_token_indices, prepare_chunk_offsets
 
 
@@ -686,3 +686,372 @@ class NSATopkVarlenBenchmark(Benchmark):
         print("===== Profiling FLA NSA_Topk backend =====")
         return super().baseline_profile(
             self.baseline_program, *inputs, backend="FLA", warmup=warmup, rep=rep, device=device)
+
+
+class NSACmpFwdVarlenBenchmark(Benchmark):
+    op_type = NSACmpFwdVarlenOp
+
+    def __init__(
+        self,
+        seq_num: int,
+        c_seq_len: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        group: int,
+        scale: float,
+        bc: int,
+        bs: int,
+        bk: int,
+        bv: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        tune: bool = False,
+    ) -> None:
+        self.seq_num = seq_num
+        self.c_seq_len = c_seq_len
+        self.heads = heads
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.group = group
+        self.scale = scale
+        self.bc = bc
+        self.bs = bs
+        self.bk = bk
+        self.bv = bv
+        self.tune = tune
+
+        self.head_kv = self.heads // self.group
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
+
+    @property
+    def total_flops(self) -> int:
+        return (2 * self.heads * self.dim_k * self.c_seq_len**2) // self.bs
+
+    @property
+    def total_memory(self) -> int:
+        # q: read once, k_cmp: read twice per preceding block per token, block_indices: write once
+        q_read = self.heads * self.c_seq_len * self.dim_k * self.dtype.itemsize
+        k_read = (self.head_kv * self.dim_k * self.c_seq_len**2 * self.dtype.itemsize) // self.bs
+        v_read = (self.head_kv * self.dim_v * self.c_seq_len**2 * self.dtype.itemsize) // self.bs
+        return q_read + k_read + v_read
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        valid_range = self.c_seq_len - self.bs
+        rand_indices = torch.randperm(valid_range)[:self.seq_num - 1]
+        offsets = torch.cat([
+            torch.tensor([0]),
+            torch.arange(self.bs, self.c_seq_len)[rand_indices],
+            torch.tensor([self.c_seq_len])
+        ], 0).cuda().sort()[0].to(torch.int32)
+
+        chunk_offsets = prepare_chunk_offsets(offsets, self.bs).to(torch.int32)
+        token_indices = prepare_token_indices(offsets).to(torch.int32)
+        chunk_num = chunk_offsets[-1].item()
+
+        # float16, data Tie-breaking
+        q = torch.randn((self.c_seq_len, self.heads, self.dim_k), dtype=self.dtype, device="cuda")
+        k = torch.randn((chunk_num, self.head_kv, self.dim_k), dtype=self.dtype, device="cuda")
+        v = torch.randn((chunk_num, self.head_kv, self.dim_v), dtype=self.dtype, device="cuda")
+
+        self.chunk_num = chunk_offsets[-1].item()
+        return (
+            q,
+            k,
+            v,
+            offsets.to(torch.int32),
+            chunk_offsets.to(torch.int32),
+            token_indices.to(torch.int32),
+        )
+
+    def parallel_nsa_compression_fwd_pytorch(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        block_size: int,
+        scale: float,
+        offsets: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """PyTorch reference implementation on GPU"""
+        seq_len, heads, dim_k = q.shape
+        _, head_kv, _ = k_cmp.shape
+        dim_v = v_cmp.shape[-1]
+        group = heads // head_kv
+        device = q.device
+        num_seq = len(offsets) - 1
+
+        o = torch.zeros((seq_len, heads, dim_v), dtype=torch.float32, device=device)
+        lse = torch.full((seq_len, heads), float('-inf'), dtype=torch.float32, device=device)
+
+        chunk_offsets = prepare_chunk_offsets(offsets, block_size)
+
+        for i_n in range(num_seq):
+            bos, eos = offsets[i_n].item(), offsets[i_n + 1].item()
+            boc = chunk_offsets[i_n].item()
+
+            for i_t in range(eos - bos):
+                nc = (i_t + 1) // block_size
+                if nc == 0:
+                    lse[bos + i_t] = 0.0
+                    continue
+
+                q_curr = q[bos + i_t].float()
+                k_curr = k_cmp[boc:boc + nc].transpose(0, 1).float()
+                v_curr = v_cmp[boc:boc + nc].transpose(0, 1).float()
+
+                k_curr = k_curr.unsqueeze(1).expand(-1, group, -1, -1).reshape(heads, nc, dim_k)
+                v_curr = v_curr.unsqueeze(1).expand(-1, group, -1, -1).reshape(heads, nc, dim_v)
+
+                scores = torch.matmul(q_curr.unsqueeze(1), k_curr.transpose(-1,
+                                                                            -2)).squeeze(1) * scale
+
+                m = torch.max(scores, dim=-1, keepdim=True)[0]
+                exp_scores = torch.exp(scores - m)
+                sum_exp = torch.sum(exp_scores, dim=-1, keepdim=True)
+
+                probs = exp_scores / sum_exp
+
+                out = torch.matmul(probs.unsqueeze(1), v_curr).squeeze(1)
+
+                o[bos + i_t] = out
+                lse[bos + i_t] = (m + torch.log(sum_exp)).squeeze(-1)
+
+        return o.to(self.dtype), lse.to(self.dtype)
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.LongTensor,
+        chunk_offsets: torch.LongTensor,
+        token_indices: torch.LongTensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        _ = chunk_offsets, token_indices
+        return self.parallel_nsa_compression_fwd_pytorch(q, k_cmp, v_cmp, self.bs, self.scale,
+                                                         offsets)
+
+    def baseline_program(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.LongTensor,
+        chunk_offsets: torch.LongTensor,
+        token_indices: torch.LongTensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        from native_sparse_attention.ops.parallel import parallel_nsa_compression_fwd
+        out, lse = parallel_nsa_compression_fwd(
+            q.unsqueeze(0), k_cmp.unsqueeze(0), v_cmp.unsqueeze(0), self.bs, self.scale, offsets,
+            token_indices)
+        return out.squeeze(0).to(self.dtype), lse.squeeze(0).to(self.dtype)
+
+    def baseline_profile(
+        self,
+        *inputs: tuple[torch.Tensor, ...],
+        warmup: int = 100,
+        rep: int = 100,
+        device: str = "cuda",
+    ) -> torch.Tensor:
+        print("===== Profiling FLA NSA_Compression backend =====")
+        return super().baseline_profile(
+            self.baseline_program,
+            *inputs,
+            backend="FLA NSA_Compression",
+            warmup=warmup,
+            rep=rep,
+            device=device)
+
+
+class GQAWindowSlidingBenchmark(Benchmark):
+    op_type = GQAWindowSlidingOp
+
+    def __init__(
+        self,
+        batch_size: int,
+        groups: int,
+        uq: int,
+        ukv: int,
+        heads: int,
+        dim: int,
+        is_causal: bool,
+        window_size_left: int,
+        window_size_right: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        tune: bool = False,
+    ) -> None:
+        self.batch_size = batch_size
+        self.groups = groups
+        self.uq = uq
+        self.ukv = ukv
+        self.heads = heads
+        self.dim = dim
+        self.is_causal = is_causal
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
+        self.tune = tune
+
+    @property
+    def total_flops(self) -> int:
+        total_flops = 2.0 * self.heads * self.uq * self.ukv * self.dim * 2
+        if self.is_causal:
+            total_flops *= 0.5
+        return int(total_flops)
+
+    @property
+    def total_memory(self) -> int:
+        head_kv = self.heads // self.groups
+        q_memory = self.uq * self.heads * self.dim * self.dtype.itemsize
+        k_memory = self.ukv * head_kv * self.dim * self.dtype.itemsize
+        v_memory = self.ukv * head_kv * self.dim * self.dtype.itemsize
+        output_memory = self.uq * self.heads * self.dim * self.dtype.itemsize
+        return q_memory + k_memory + v_memory + output_memory
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        rand_indices_q = torch.randperm(self.uq)[:self.batch_size - 1]
+        cu_seqlens_q = torch.cat(
+            [torch.tensor([0]),
+             torch.arange(1, self.uq)[rand_indices_q],
+             torch.tensor([self.uq])], 0).cuda().sort()[0].to(torch.int32)
+        rand_indices_k = torch.randperm(self.ukv)[:self.batch_size - 1]
+        cu_seqlens_k = torch.cat([
+            torch.tensor([0]),
+            torch.arange(1, self.ukv)[rand_indices_k],
+            torch.tensor([self.ukv])
+        ], 0).cuda().sort()[0].to(torch.int32)
+
+        q = torch.randn((self.uq, self.heads, self.dim), dtype=self.dtype, device="cuda")
+        k = torch.randn((self.ukv, self.heads // self.groups, self.dim),
+                        dtype=self.dtype,
+                        device="cuda")
+        v = torch.randn((self.ukv, self.heads // self.groups, self.dim),
+                        dtype=self.dtype,
+                        device="cuda")
+        max_seqlen_q = int((cu_seqlens_q[1:] - cu_seqlens_q[:-1]).max().item())
+        return q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q
+
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                    cu_seqlens_q: torch.LongTensor, cu_seqlens_k: torch.LongTensor,
+                    max_seqlen_q: int) -> torch.Tensor:
+        """PyTorch reference implementation for GQA window sliding attention (vectorized)"""
+        device = q.device
+        head_kv = self.heads // self.groups
+        scale = (1.0 / self.dim)**0.5
+        has_window = self.window_size_left >= 0 or self.window_size_right >= 0
+
+        output = torch.zeros((self.uq, self.heads, self.dim), dtype=q.dtype, device=device)
+
+        for batch_idx in range(self.batch_size):
+            q_start = cu_seqlens_q[batch_idx].item()
+            q_end = cu_seqlens_q[batch_idx + 1].item()
+            kv_start = cu_seqlens_k[batch_idx].item()
+            kv_end = cu_seqlens_k[batch_idx + 1].item()
+
+            q_seqlen = q_end - q_start
+            kv_seqlen = kv_end - kv_start
+
+            if q_seqlen == 0:
+                continue
+
+            q_batch = q[q_start:q_end]
+            k_batch = k[kv_start:kv_end]
+            v_batch = v[kv_start:kv_end]
+
+            offset = kv_seqlen - q_seqlen
+
+            output_batch = torch.zeros((q_seqlen, self.heads, self.dim),
+                                       dtype=q.dtype,
+                                       device=device)
+
+            for kv_head_idx in range(head_kv):
+                head_start = kv_head_idx * self.groups
+                head_end = head_start + self.groups
+
+                q_group = q_batch[:, head_start:head_end, :]
+                k_head = k_batch[:, kv_head_idx, :]
+                v_head = v_batch[:, kv_head_idx, :]
+
+                scores = torch.einsum('qgd,kd->qgk', q_group, k_head) * scale
+
+                q_positions = torch.arange(q_seqlen, device=device, dtype=torch.float32)
+                kv_positions = torch.arange(kv_seqlen, device=device, dtype=torch.float32)
+                q_abs_positions = q_positions.unsqueeze(-1) + offset
+                kv_abs_positions = kv_positions.unsqueeze(0)
+
+                mask = torch.zeros((q_seqlen, kv_seqlen), dtype=torch.bool, device=device)
+
+                if self.is_causal:
+                    causal_mask = (q_positions.unsqueeze(-1) + offset < kv_positions.unsqueeze(0))
+                    mask = mask | causal_mask
+
+                if has_window:
+                    if self.window_size_left >= 0:
+                        window_left_mask = kv_abs_positions < (
+                            q_abs_positions - self.window_size_left)
+                        mask = mask | window_left_mask
+
+                    if self.window_size_right >= 0:
+                        window_right_mask = kv_abs_positions > (
+                            q_abs_positions + self.window_size_right)
+                        mask = mask | window_right_mask
+
+                scores = scores.masked_fill(mask.unsqueeze(1), float('-inf'))
+
+                if self.is_causal and offset < 0:
+                    invalid_mask = (q_positions + offset < 0)
+                    scores = scores.masked_fill(
+                        invalid_mask.unsqueeze(-1).unsqueeze(-1), float('-inf'))
+
+                probs = torch.softmax(scores, dim=-1)
+
+                out_group = torch.einsum('qgk,kd->qgd', probs, v_head)
+
+                if self.is_causal and offset < 0:
+                    invalid_positions = (q_positions + offset < 0)
+                    out_group[invalid_positions] = 0
+
+                output_batch[:, head_start:head_end, :] = out_group
+
+            output[q_start:q_end] = output_batch
+
+        return output
+
+    def baseline_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                         cu_seqlens_q: torch.LongTensor, cu_seqlens_k: torch.LongTensor,
+                         max_seqlen_q: int) -> torch.Tensor:
+        import flash_attn
+        max_seqlen_k = int((cu_seqlens_k[1:] - cu_seqlens_k[:-1]).max().item())
+        return flash_attn.flash_attn_varlen_func(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            max_seqlen_q,
+            max_seqlen_k,
+            0.0,
+            causal=self.is_causal,
+            window_size=(self.window_size_left, self.window_size_right)
+            if self.window_size_left >= 0 or self.window_size_right >= 0 else (-1, -1),
+        )
+
+    def baseline_profile(
+        self,
+        *inputs: tuple[torch.Tensor, ...],
+        warmup: int = 100,
+        rep: int = 100,
+        device: str = "cuda",
+    ) -> torch.Tensor:
+        print("===== Profiling FLA GQA Window Sliding backend =====")
+        return super().baseline_profile(
+            self.baseline_program,
+            *inputs,
+            backend="FLA GQA Window Sliding",
+            warmup=warmup,
+            rep=rep,
+            device=device)

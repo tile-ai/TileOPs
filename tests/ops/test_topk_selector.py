@@ -1,4 +1,5 @@
 import pytest
+
 from benchmarks import TopkSelectorBenchmark
 from top.ops import TopkSelectorOp
 from top.utils import str2dtype
@@ -20,9 +21,9 @@ def test_topk_selector_op(batch: int, seq_len: int, topk: int, in_dtype: str, ou
 
     inputs = benchmark.gen_inputs()
 
-    benchmark.check(op, *inputs)
+    benchmark.check(op, *inputs, atol=1e-4, rtol=1e-5)
     benchmark.profile(op, *inputs)
 
 
 if __name__ == "__main__":
-    pytest.main()
+    pytest.main([__file__, "-vvs"])

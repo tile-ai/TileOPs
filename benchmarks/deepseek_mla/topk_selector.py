@@ -3,7 +3,7 @@ from typing import Tuple
 import torch
 
 from benchmarks.benchmark import Benchmark
-from top.ops import TopkSelectorOp, Op
+from top.ops import TopkSelectorOp
 
 
 class TopkSelectorBenchmark(Benchmark):
@@ -50,12 +50,13 @@ class TopkSelectorBenchmark(Benchmark):
         indexes_ref = torch.topk(index_score, self.topk, dim=-1)[1]
         return indexes_ref
 
-    def check(self,
-              op: Op,
-              *inputs: Tuple[torch.Tensor],
-              atol: float = 1e-2,
-              rtol: float = 1e-2) -> None:
-        """Check the correctness of the op"""
+    def __check_common(self,
+                       *inputs: Tuple[torch.Tensor],
+                       atol: float,
+                       rtol: float,
+                       op=None,
+                       fn=None) -> None:
+        """Common logic to check the correctness of the operation or function"""
         try:
             outputs_ref = self.ref_program(*inputs)
         except RuntimeError as e:
@@ -70,63 +71,7 @@ class TopkSelectorBenchmark(Benchmark):
             raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
 
         with torch.no_grad():
-            outputs = op(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-
-        for i, (_output, _output_ref) in enumerate(zip(outputs, outputs_ref)):
-            ref_np = outputs_ref[i].cpu().to(torch.int32).numpy()
-            trt_np = outputs[i].cpu().to(torch.int32).numpy()
-
-            ref_list = ref_np.flatten().tolist()
-            trt_list = trt_np.flatten().tolist()
-
-            set_ref = set(ref_list)
-            set_trt = set(trt_list)
-            intersection = set_ref & set_trt
-            assert len(intersection) / len(
-                set_ref) == 1.0, "outputs[{i}] is not close to outputs_ref[{i}]"
-
-        print(f"All checks passed for {op.__class__.__name__}.✅")
-
-    def check_fn(self,
-                 fn: callable,
-                 *inputs: Tuple[torch.Tensor],
-                 atol: float = 1e-2,
-                 rtol: float = 1e-2,
-                 grad: bool = False) -> None:
-        """Check the correctness of the function and layer"""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        if not grad:
-            with torch.no_grad():
-                outputs = fn(*inputs)
-        else:
-            output = fn(*inputs)
-            loss = output.sum()
-            loss.backward()
-            outputs = []
-            outputs.append(output)
-            for inp in inputs:
-                outputs.append(inp.grad)
+            outputs = fn(*inputs) if fn else op(*inputs)
 
         if isinstance(outputs, list):
             outputs = tuple(outputs)
@@ -151,3 +96,20 @@ class TopkSelectorBenchmark(Benchmark):
                 set_ref) == 1.0, "outputs[{i}] is not close to outputs_ref[{i}]"
 
         print(f"All checks passed for {fn.__class__.__name__}.✅")
+
+    def check(self,
+              op,
+              *inputs: Tuple[torch.Tensor],
+              atol: float = 1e-2,
+              rtol: float = 1e-2) -> None:
+        """Check the correctness of the operation"""
+        self.__check_common(*inputs, atol=atol, rtol=rtol, op=op)
+
+    def check_fn(self,
+                 fn,
+                 *inputs: Tuple[torch.Tensor],
+                 atol: float = 1e-2,
+                 rtol: float = 1e-2,
+                 grad=False) -> None:
+        """Check the correctness of the function/layer"""
+        self.__check_common(*inputs, atol=atol, rtol=rtol, fn=fn)
