@@ -35,8 +35,10 @@ def test_nsa_cmp_fwd_varlen_op(
 
     # Create params dictionary from function arguments, excluding pytest internals
     # Filter out any keys that start with '@' (pytest internal variables)
+    # Note: Need to capture locals() before list comprehension due to scope issues
+    local_vars = locals()
     sig = inspect.signature(test_nsa_cmp_fwd_varlen_op)
-    params = {name: locals()[name] for name in sig.parameters.keys() if not name.startswith('@')}
+    params = {name: local_vars[name] for name in sig.parameters.keys() if not name.startswith('@')}
     benchmark = NSACmpFwdVarlenBenchmark(**params)
     inputs = benchmark.gen_inputs()
 
