@@ -33,7 +33,15 @@ class ManifoldConstrainedHyperConnectionPreOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"mhc_pre_kernel": mhc_pre_kernel}
 
-    def forward(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor, alpha_pre: float,
-                alpha_post: float, alpha_res: float, sinkhorn_repeat: int) -> torch.Tensor:
+    def forward(self,
+                phi: torch.Tensor,
+                x: torch.Tensor,
+                b: torch.Tensor,
+                alpha_pre: float,
+                alpha_post: float,
+                alpha_res: float,
+                sinkhorn_repeat: int,
+                sinkhorn_eps: float = 0.02) -> torch.Tensor:
 
-        return self.kernel(phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat)
+        return self.kernel(phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat,
+                           sinkhorn_eps)

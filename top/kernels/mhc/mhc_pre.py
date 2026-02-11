@@ -147,6 +147,7 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
         def _get_H_res(
                 H_res_0: T.Tensor([batch, n_expand, n_expand], dtype),
                 sinkhorn_repeat: T.int,
+                sinkhorn_eps: T.float,
                 H_res: T.Tensor([batch, n_expand, n_expand], dtype),
         ):
             with T.Kernel(batch, threads=threads) as (bx):
@@ -156,7 +157,7 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                 tmp2 = T.alloc_fragment([n_expand], dtype)
                 h_out_shared = T.alloc_shared([n_expand, n_expand], dtype)
 
-                eps = 0.0001
+                eps = sinkhorn_eps
                 # exponential function...
                 # get the max value first...
                 for i, j in T.Parallel(n_expand, n_expand):
@@ -239,13 +240,14 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                 H_post: T.Tensor([batch, n_expand], dtype),
                 H_res_0: T.Tensor([batch, n_expand, n_expand], dtype),
                 sinkhorn_repeat: T.int,
+                sinkhorn_eps: T.float,
                 H_res: T.Tensor([batch, n_expand, n_expand], dtype),
                 x_res: T.Tensor([batch, n_expand * c_x], x_dtype),
                 x_layer: T.Tensor([batch, c_x], x_dtype),
         ):
             _get_H_0_no_split(phi, x, r, H)
             _get_H_1(H, r, b, alpha_pre, alpha_post, alpha_res, H_pre, H_post, H_res_0)
-            _get_H_res(H_res_0, sinkhorn_repeat, H_res)
+            _get_H_res(H_res_0, sinkhorn_repeat, sinkhorn_eps, H_res)
             _get_x(x, H_pre, H_res, x_res, x_layer)
 
         return mhc_pre
@@ -259,12 +261,13 @@ def _mhc_pre_wrapped_kernel(batch: int, n_expand: int, c_x: int, dtype: str, blo
                             x: torch.Tensor, H: torch.Tensor, r: torch.Tensor, b: torch.Tensor,
                             alpha_pre: float, alpha_post: float, alpha_res: float,
                             H_pre: torch.Tensor, H_post: torch.Tensor, H_res_0: torch.Tensor,
-                            sinkhorn_repeat: int, H_res: torch.Tensor,
+                            sinkhorn_repeat: int, sinkhorn_eps: float, H_res: torch.Tensor,
                             x_res: torch.Tensor) -> torch.Tensor:
     return _mhc_pre_kernel(batch, n_expand, c_x,
                            dtype)(block_x_b, block_C, num_stages,
                                   threads)(phi, x, H, r, b, alpha_pre, alpha_post, alpha_res, H_pre,
-                                           H_post, H_res_0, sinkhorn_repeat, H_res, x_res)
+                                           H_post, H_res_0, sinkhorn_repeat, sinkhorn_eps, H_res,
+                                           x_res)
 
 
 @_mhc_pre_wrapped_kernel.register_fake
@@ -320,7 +323,15 @@ class mhc_pre_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat):
+    def forward(self,
+                phi,
+                x,
+                b,
+                alpha_pre,
+                alpha_post,
+                alpha_res,
+                sinkhorn_repeat,
+                sinkhorn_eps=0.02):
         # H_pre, H_post, H_res_0, H_res are tensors need to be allocated....
         r = torch.empty([self.batch], device=x.device, dtype=self.weights_dtype)
         H = torch.empty([self.batch, self.n_expand * self.n_expand + 2 * self.n_expand],
@@ -340,5 +351,5 @@ class mhc_pre_kernel(Kernel):
                                          self.config["block_x_b"], self.config["block_C"],
                                          self.config["num_stages"], self.config["threads"], phi, x,
                                          H, r, b, alpha_pre, alpha_post, alpha_res, H_pre, H_post,
-                                         H_res_0, sinkhorn_repeat, H_res, x_res)
+                                         H_res_0, sinkhorn_repeat, sinkhorn_eps, H_res, x_res)
         return x_res, result

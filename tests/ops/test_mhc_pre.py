@@ -33,11 +33,12 @@ def test_mhc_pre_op(
     alpha_post = torch.randn(())
     alpha_res = torch.randn(())
     sinkhorn_repeat = 20
+    eps = 0.02
     #test_mhc_kernel = mhc_pre_kernel(batch, n_expand, c_x, dtype=torch.bfloat16)
     test_mhc_pre_op = ManifoldConstrainedHyperConnectionPreOp(
         batch, n_expand, c_x, dtype=torch.bfloat16)
     x_res, x_layer = test_mhc_pre_op.forward(phi, x, b, alpha_pre, alpha_post, alpha_res,
-                                             sinkhorn_repeat)
+                                             sinkhorn_repeat, eps)
 
     # check the correctness with torch...
     xsqr = x * x  # the square of x
@@ -57,7 +58,6 @@ def test_mhc_pre_op(
     H_pre_ref = torch.sigmoid(alpha_pre * H_pre_ref / r_ref.unsqueeze(-1) + b_pre_ref)
     H_res_ref = alpha_res * H_res_ref / r_ref.unsqueeze(-1).unsqueeze(-1) + b_res_ref
 
-    eps = 0.0001
     H_res_ref_tmp = H_res_ref.max(dim=-1, keepdim=True).values
 
     H_res_ref = torch.exp(H_res_ref - H_res_ref_tmp)
