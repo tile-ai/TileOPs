@@ -11,6 +11,9 @@ from top.ops import GemvOp
         (1024, 1024, torch.float16, False),
         (7168, 16384, torch.float16, True),
         (18432, 7168, torch.float16, True),
+        (1024, 1024, torch.bfloat16, False),
+        (7168, 16384, torch.bfloat16, True),
+        (18432, 7168, torch.bfloat16, True),
     ],
 )
 def test_gemv(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
@@ -19,7 +22,10 @@ def test_gemv(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
 
     inputs = benchmark.gen_inputs()
 
-    benchmark.check(op, *inputs, atol=1e-3, rtol=1e-3)
+    if dtype == torch.float16:
+        benchmark.check(op, *inputs, atol=1e-3, rtol=1e-3)
+    else:
+        benchmark.check(op, *inputs, atol=1.6e-2, rtol=1.6e-2)
     benchmark.profile(op, *inputs)
 
 
