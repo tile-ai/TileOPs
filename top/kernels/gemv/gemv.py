@@ -20,7 +20,6 @@ def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
     def _gemv_func(
         block_n: int,
         reduce_threads: int,
-        tile_k: int = 8,
     ) -> Callable:
 
         max_transaction_size_in_bits = 128
@@ -78,16 +77,15 @@ def _gemv_wrapped_kernel(
     dtype: str,
     block_n: int,
     reduce_threads: int,
-    tile_k: int,
     a: torch.Tensor,
     b: torch.Tensor,
 ) -> torch.Tensor:
-    return _gemv_kernel(n, k, dtype)(block_n, reduce_threads, tile_k)(a, b)
+    return _gemv_kernel(n, k, dtype)(block_n, reduce_threads)(a, b)
 
 
 @_gemv_wrapped_kernel.register_fake
 def _(n: int, k: int,  # noqa: U100
-      dtype: str, block_n: int, reduce_threads: int, tile_k: int,  # noqa: U100
+      dtype: str, block_n: int, reduce_threads: int,  # noqa: U100
       *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:  # noqa: U100
     return torch.empty((n,), dtype=inputs[0].dtype, device=inputs[0].device)
 
@@ -118,14 +116,12 @@ class GemvKernel(Kernel):
         if sm_version in {90}:
             return {
                 "block_n": 32,
-                "reduce_threads": 1,
-                "tile_k": 8,
+                "reduce_threads": 8,
             }
 
         return {
             "block_n": 128,
             "reduce_threads": 32,
-            "tile_k": 8,
         }
 
     @property
@@ -133,16 +129,14 @@ class GemvKernel(Kernel):
         # From tilelang/examples/gemm/example_gemm_autotune.py
         block_n = [64, 128, 256]
         reduce_threads = [16, 32]
-        tile_k = [8, 16]
-        _configs = list(itertools.product(block_n, reduce_threads, tile_k))
+        _configs = list(itertools.product(block_n, reduce_threads))
 
         return [{
             'block_n': c[0],
             'reduce_threads': c[1],
-            'tile_k': c[2],
         } for c in _configs]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         a = a.flatten().contiguous()
         return _gemv_wrapped_kernel(self.n, self.k, self.dtype_str, self.config["block_n"],
-                                    self.config["reduce_threads"], self.config["tile_k"], a, b)
+                                    self.config["reduce_threads"], a, b)
