@@ -6,7 +6,7 @@ import tilelang.language as T
 import torch
 
 from top.kernels.kernel import Kernel
-from top.utils import get_sm_version
+from top.utils import get_sm_version, str2dtype
 
 __all__ = [
     'GemvKernel',
@@ -23,8 +23,8 @@ def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
         tile_k: int = 8,
     ) -> Callable:
 
-        # MAX_TRANSACTION_SIZE_IN_BITS = 128
-        # tile_k = MAX_TRANSACTION_SIZE_IN_BITS // 16
+        max_transaction_size_in_bits = 128
+        tile_k = max_transaction_size_in_bits // (str2dtype[dtype].itemsize * 8)
         block_k = reduce_threads * tile_k
 
         @T.prim_func

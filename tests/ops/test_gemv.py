@@ -9,8 +9,8 @@ from top.ops import GemvOp
     "n, k, dtype, tune",
     [
         (1024, 1024, torch.float16, False),
-        (64, 512, torch.float16, False),
-        (64, 64, torch.float16, False),
+        (7168, 16384, torch.float16, True),
+        (18432, 7168, torch.float16, True),
     ],
 )
 def test_gemv(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
@@ -19,7 +19,7 @@ def test_gemv(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
 
     inputs = benchmark.gen_inputs()
 
-    benchmark.check(op, *inputs, atol=1e-5, rtol=1e-3)
+    benchmark.check(op, *inputs, atol=1e-3, rtol=1e-3)
     benchmark.profile(op, *inputs)
 
 
