@@ -19,6 +19,7 @@ from .flash_decode import (
     MultiHeadAttentionDecodeBenchmark,
 )
 from .gemm import GemmBenchmark, MatMulBenchmark
+from .gemv import GemvBenchmark
 from .grouped_gemm import (
     GroupedGemmBenchmark,
     GroupedGemmNNBenchmark,
@@ -36,6 +37,7 @@ __all__ = [
     "GroupQueryAttentionFwdBenchmark",
     "GroupQueryAttentionBwdBenchmark",
     "GemmBenchmark",
+    "GemvBenchmark",
     "MultiHeadAttentionDecodeBenchmark",
     "GroupQueryAttentionDecodeBenchmark",
     "MultiHeadLatentAttentionDecodeBenchmark",
