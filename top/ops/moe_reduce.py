@@ -3,7 +3,7 @@ import torch
 
 from top.ops.op import Op
 from top.kernels.kernel import Kernel
-from top.kernels.fuse_moe.reduce import ReduceKernel
+from top.kernels.fuse_moe.moe_reduce import MoeReduceKernel
 
 __all__ = ["MoeReduceOp"]
 
@@ -17,7 +17,7 @@ class MoeReduceOp(Op):
                  tune: bool = False) -> None:
         self.config = {} if config is None else dict(config)
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["ReduceKernel"](
+        self.kernel = self.kernel_map["MoeReduceKernel"](
             num_seq=1,
             hidden_size=1,
             num_topk=1,
@@ -27,9 +27,13 @@ class MoeReduceOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ReduceKernel": ReduceKernel}
+        return {"MoeReduceKernel": MoeReduceKernel}
 
-    def forward(self, x: torch.Tensor, topk_pos: torch.Tensor, topk_scale: torch.Tensor, shared_output: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self,
+                x: torch.Tensor,
+                topk_pos: torch.Tensor,
+                topk_scale: torch.Tensor,
+                shared_output: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Forward pass of MoeReduceOp.
 
         Args:
@@ -57,7 +61,8 @@ class MoeReduceOp(Op):
 
         if shared_output is not None:
             if shared_output.ndim != 2:
-                raise ValueError(f"Expected shared_output to be 2D tensor, got {shared_output.ndim}D")
+                raise ValueError(
+                    f"Expected shared_output to be 2D tensor, got {shared_output.ndim}D")
 
             if shared_output.shape[0] != topk_pos.shape[0]:
                 raise ValueError(

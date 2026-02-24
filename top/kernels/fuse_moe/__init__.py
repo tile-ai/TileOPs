@@ -1,7 +1,7 @@
 from .count_and_gather import CountAndGatherKernel
-from .reduce import ReduceKernel
+from .moe_reduce import MoeReduceKernel
 
 __all__ = [
     "CountAndGatherKernel",
-    "ReduceKernel",
+    "MoeReduceKernel",
 ]

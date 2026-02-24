@@ -5,7 +5,7 @@ import torch
 from top.kernels.kernel import Kernel
 
 
-def _reduce_kernel(total_num_seq: int, num_seq: int, hidden_size: int, num_topk: int):
+def _moe_reduce_kernel(total_num_seq: int, num_seq: int, hidden_size: int, num_topk: int):
 
     @tilelang.jit(out_idx=[4])
     def _reduce_fwd_func(block_size: int = 256):
@@ -37,14 +37,14 @@ def _reduce_kernel(total_num_seq: int, num_seq: int, hidden_size: int, num_topk:
     return _reduce_fwd_func
 
 
-class ReduceKernel(Kernel):
+class MoeReduceKernel(Kernel):
     """Reduce kernel for MoE.
-    
+
     Performs scatter-add aggregation operation, aggregating expert outputs back to original positions.
     """
-    
+
     supported_archs: list[int] = [80, 89, 90]
-    
+
     def __init__(self,
                  num_seq: int,
                  hidden_size: int,
@@ -55,36 +55,33 @@ class ReduceKernel(Kernel):
         self.num_seq = num_seq
         self.hidden_size = hidden_size
         self.num_topk = num_topk
-        
+
         self.init_config(config, tune)
-    
+
     @property
     def default_config(self) -> dict:
         return {
             "block_size": 256,
             "items_per_16b": 8  # For FP16
         }
-    
+
     @property
     def autotune_configs(self) -> list[dict]:
         block_sizes = [256, 512]
         configs = []
         for block_size in block_sizes:
-            configs.append({
-                "block_size": block_size,
-                "items_per_16b": 8
-            })
+            configs.append({"block_size": block_size, "items_per_16b": 8})
         return configs
-    
+
     def forward(self, x, topk_pos, topk_scale, shared_output=None):
         """Forward pass of ReduceKernel.
-        
+
         Args:
             x: Input tensor (expert outputs) of shape [num_tokens, hidden_size]
             topk_pos: Position mapping tensor of shape [num_seq, num_topk]
             topk_scale: Weight tensor of shape [num_seq, num_topk]
             shared_output: Optional shared output tensor of shape [num_seq, hidden_size]
-            
+
         Returns:
             output: Aggregated output tensor of shape [num_seq, hidden_size]
         """
@@ -108,7 +105,7 @@ class ReduceKernel(Kernel):
         else:
             shared_output_fp32 = shared_output.to(torch.float32).contiguous()
 
-        output_fp32 = _reduce_kernel(
+        output_fp32 = _moe_reduce_kernel(
             total_num_seq=num_tokens,
             num_seq=num_seq,
             hidden_size=hidden_size,
@@ -116,4 +113,3 @@ class ReduceKernel(Kernel):
         )(block_size)(x_fp32, topk_pos_i32, topk_scale_fp32, shared_output_fp32)
 
         return output_fp32.to(x.dtype)
-    

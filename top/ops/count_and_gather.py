@@ -38,7 +38,9 @@ class CountAndGatherOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"CountAndGatherKernel": CountAndGatherKernel}
 
-    def forward(self, x: torch.Tensor, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, topk_ids: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of CountAndGatherOp.
 
         Args:

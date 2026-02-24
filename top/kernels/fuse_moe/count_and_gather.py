@@ -20,7 +20,7 @@ def _count_seq_and_cuseq_kernel(total_num_topk: int, num_expert: int, start_expe
             tiles: T.Tensor[(num_expert,), T.int32],
             topk_pos: T.Tensor[(total_num_topk,), T.int32],
         ):
-            with T.Kernel(1, threads=block_size) as bx:
+            with T.Kernel(1, threads=block_size) as _:
                 tx = T.get_thread_binding()
                 seqlens_shm = T.alloc_shared((num_expert,), T.int32)
 
@@ -67,7 +67,7 @@ def _gather_kernel(num_seq: int, hidden_size: int, num_topk: int, total_num_topk
             topk_pos: T.Tensor[(total_num_topk,), T.int32],
             gate_up_input_full: T.Tensor[(total_num_topk, hidden_size), T.float32],
         ):
-            with T.Kernel(1, threads=block_size) as bx:
+            with T.Kernel(1, threads=block_size) as _:
                 tx = T.get_thread_binding()
 
                 for i in T.serial(T.ceildiv(num_expert, block_size)):
@@ -82,9 +82,8 @@ def _gather_kernel(num_seq: int, hidden_size: int, num_topk: int, total_num_topk
                         iexpert = topk_ids_flat[idx]
                         if iexpert >= start_expert and iexpert < end_expert:
                             expert_idx = iexpert - start_expert
-                            pos_in_expert = T.atomic_add(seqlens_runtime[expert_idx],
-                                                         1,
-                                                         return_prev=True)
+                            pos_in_expert = T.atomic_add(
+                                seqlens_runtime[expert_idx], 1, return_prev=True)
                             irow = cu_seqlens[expert_idx] + pos_in_expert
                             topk_pos[idx] = irow
                             iseq = idx // num_topk
@@ -118,10 +117,7 @@ class CountAndGatherKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {
-            "block_size": 256,
-            "tile_m": 16
-        }
+        return {"block_size": 256, "tile_m": 16}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -130,20 +126,17 @@ class CountAndGatherKernel(Kernel):
         configs = []
         for block_size in block_sizes:
             for tile_m in tile_ms:
-                configs.append({
-                    "block_size": block_size,
-                    "tile_m": tile_m
-                })
+                configs.append({"block_size": block_size, "tile_m": tile_m})
         return configs
 
     def forward(self, x, topk_ids, rank_ep=0):
         """Run the kernel
-        
+
         Args:
             x: Input token features [num_seq, hidden_size]
             topk_ids: Expert assignment for each token [num_seq, num_topk]
             rank_ep: Expert parallel rank
-            
+
         Returns:
             gate_up_input: Gathered input for gate and up projection
             topk_pos: Position mapping for each token
@@ -155,12 +148,12 @@ class CountAndGatherKernel(Kernel):
 
     def count_and_gather(self, x, topk_ids, rank_ep=0):
         """Count and gather tokens by expert.
-        
+
         Args:
             x: Input token features [num_seq, hidden_size]
             topk_ids: Expert assignment for each token [num_seq, num_topk]
             rank_ep: Expert parallel rank
-            
+
         Returns:
             gate_up_input: Gathered input for gate and up projection
             topk_pos: Position mapping for each token
@@ -172,10 +165,10 @@ class CountAndGatherKernel(Kernel):
         num_topk = topk_ids.shape[1]
         total_num_topk = num_seq * num_topk
         num_expert = self.num_expert
-        
+
         start_expert = rank_ep * num_expert
         end_expert = (rank_ep + 1) * num_expert
-        
+
         block_size = self.config["block_size"]
 
         topk_ids_flat = topk_ids.reshape(-1).contiguous()
@@ -186,7 +179,8 @@ class CountAndGatherKernel(Kernel):
             start_expert=start_expert,
             end_expert=end_expert,
             tile_m=self.config["tile_m"],
-        )(block_size)(topk_ids_flat)
+        )(block_size)(
+            topk_ids_flat)
 
         x_fp32 = x.to(torch.float32)
         seqlens_runtime, topk_pos, gate_up_input_full = _gather_kernel(
@@ -203,4 +197,3 @@ class CountAndGatherKernel(Kernel):
         gate_up_input = gate_up_input_full[:total_tokens].to(x.dtype)
 
         return gate_up_input, topk_pos, seqlens_runtime, cu_seqlens, tiles
-

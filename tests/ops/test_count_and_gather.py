@@ -63,7 +63,8 @@ class TestCountAndGatherOp:
         rank_ep = 0
 
         x = torch.randn(num_seq, hidden_size, device="cuda")
-        topk_ids = torch.randint(0, num_expert, (num_seq, num_topk), device="cuda", dtype=torch.int32)
+        topk_ids = torch.randint(
+            0, num_expert, (num_seq, num_topk), device="cuda", dtype=torch.int32)
 
         return x, topk_ids, num_expert, rank_ep, num_seq, hidden_size, num_topk
 

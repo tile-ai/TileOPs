@@ -4,7 +4,7 @@ import torch
 from top.ops import MoeReduceOp
 
 
-def _reduce_reference(
+def _moe_reduce_reference(
     x: torch.Tensor,
     topk_pos: torch.Tensor,
     topk_scale: torch.Tensor,
@@ -44,7 +44,7 @@ def _reduce_reference(
         (64, 4, 256),
     ],
 )
-def test_reduce_op_basic(num_seq: int, num_topk: int, hidden_size: int) -> None:
+def test_moe_reduce_op_basic(num_seq: int, num_topk: int, hidden_size: int) -> None:
     num_tokens = num_seq * num_topk
     x = torch.randn(num_tokens, hidden_size, device="cuda", dtype=torch.float16)
     topk_pos = torch.randint(0, num_tokens, (num_seq, num_topk), device="cuda", dtype=torch.int32)
@@ -52,14 +52,14 @@ def test_reduce_op_basic(num_seq: int, num_topk: int, hidden_size: int) -> None:
 
     op = MoeReduceOp()
     output = op.forward(x, topk_pos, topk_scale)
-    reference = _reduce_reference(x, topk_pos, topk_scale)
+    reference = _moe_reduce_reference(x, topk_pos, topk_scale)
 
     assert output.shape == (num_seq, hidden_size)
     assert output.dtype == x.dtype
     assert torch.allclose(output, reference, atol=1e-3, rtol=1e-3)
 
 
-def test_reduce_op_with_shared_output() -> None:
+def test_moe_reduce_op_with_shared_output() -> None:
     num_seq = 16
     num_topk = 2
     hidden_size = 64
@@ -72,14 +72,14 @@ def test_reduce_op_with_shared_output() -> None:
 
     op = MoeReduceOp()
     output = op.forward(x, topk_pos, topk_scale, shared_output)
-    reference = _reduce_reference(x, topk_pos, topk_scale, shared_output)
+    reference = _moe_reduce_reference(x, topk_pos, topk_scale, shared_output)
 
     assert output.shape == (num_seq, hidden_size)
     assert output.dtype == x.dtype
     assert torch.allclose(output, reference, atol=1e-3, rtol=1e-3)
 
 
-def test_reduce_op_invalid_shape() -> None:
+def test_moe_reduce_op_invalid_shape() -> None:
     num_seq = 16
     num_topk = 2
     hidden_size = 64
