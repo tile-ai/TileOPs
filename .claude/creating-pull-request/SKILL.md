@@ -23,7 +23,7 @@ ______________________________________________________________________
    - `git diff --stat`
 1. Confirm Python environment is active (TileOPs example):
    - `conda activate top`
-1. Run formatting/lint checks and tests following `Claude.md` → Development Workflow.
+1. Run formatting/lint checks and tests following `Claude.md` → `DEVELOPMENT.md`.
 
 Notes:
 
@@ -112,9 +112,7 @@ Closes #<issue-number>
 
 ## Test plan
 - [x] pre-commit passed
-- [x] make build succeeded
-- [x] pytest <N> passed (fast mode)
-- [x] Regression benchmark: no performance regression (checked ALL modes and workloads)"
+- [x] pytest <N> passed
 ```
 
 4. Add labels (if your repo uses them):
