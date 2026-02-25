@@ -137,7 +137,7 @@ PYTHONPATH="$PWD" python -m pytest -v tests/layers/test_xxx_layer.py
 ### Main-chain regression
 
 ```bash
-PYTHONPATH="$PWD" /root/miniconda3/envs/top/bin/python -m pytest -v \
+PYTHONPATH="$PWD" python -m pytest -v \
   tests/ops/test_xxx.py \
   tests/functions/test_xxx_func.py \
   tests/layers/test_xxx_layer.py

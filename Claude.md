@@ -24,8 +24,8 @@ TileOPs (TOP) is a high-performance LLM operator library built on TileLang. The 
    - Google-style docstrings
 3. Add/update tests for changes and keep runs reproducible (fixed random seed)
 4. Validate locally:
-   - Single test example: `PYTHONPATH=`pwd` python tests/xx/test_xxx.py`
-   - Full test suite: `PYTHONPATH=`pwd` python tests`
+   - Single test example: `PYTHONPATH="$PWD" python tests/xx/test_xxx.py`
+   - Full test suite: `PYTHONPATH="$PWD" python tests`
 5. Run checks before commit: `pre-commit run --all-files`
 
 ## Architecture Organization
