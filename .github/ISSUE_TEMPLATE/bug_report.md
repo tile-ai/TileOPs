@@ -22,7 +22,7 @@ assignees: ''
 ```python
 import torch
 import tilelang
-import top
+import tileops
 
 # ...
 ```
