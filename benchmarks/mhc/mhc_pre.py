@@ -4,7 +4,7 @@ from typing import Tuple
 import torch
 
 from benchmarks.benchmark import Benchmark
-from top.ops import ManifoldConstrainedHyperConnectionPreOp
+from tileops.ops import ManifoldConstrainedHyperConnectionPreOp
 
 
 class ManifoldConstrainedHyperConnectionPreBenchmark(Benchmark):

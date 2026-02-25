@@ -3,7 +3,7 @@ import math
 import torch
 
 from benchmarks import GroupedGemmBenchmark
-from top.functions import GroupedGemmFunc
+from tileops.functions import GroupedGemmFunc
 
 
 @pytest.mark.parametrize(

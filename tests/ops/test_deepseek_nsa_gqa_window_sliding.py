@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.deepseek_nsa.deepseek_nsa import GQAWindowSlidingBenchmark
-from top.ops import GQAWindowSlidingOp
+from tileops.ops import GQAWindowSlidingOp
 
 
 @pytest.mark.parametrize(

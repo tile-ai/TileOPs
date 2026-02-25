@@ -3,7 +3,7 @@ from typing import Tuple
 import torch
 
 from benchmarks.benchmark import Benchmark
-from top.ops import TopkSelectorOp
+from tileops.ops import TopkSelectorOp
 
 
 class TopkSelectorBenchmark(Benchmark):

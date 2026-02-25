@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from benchmarks import DeepSeekSparseAttentionDecodeBenchmark
-from top.functions import DeepSeekSparseAttentionDecodeWithKVCacheFunc
-from top.layers import DeepSeekSparseAttentionDecodeLayer
+from tileops.functions import DeepSeekSparseAttentionDecodeWithKVCacheFunc
+from tileops.layers import DeepSeekSparseAttentionDecodeLayer
 
 
 @pytest.mark.parametrize(

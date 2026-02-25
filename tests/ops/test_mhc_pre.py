@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from top.ops import ManifoldConstrainedHyperConnectionPreOp
+from tileops.ops import ManifoldConstrainedHyperConnectionPreOp
 
 
 @pytest.mark.parametrize(

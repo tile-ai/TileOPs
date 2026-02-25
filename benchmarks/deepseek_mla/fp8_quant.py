@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import Benchmark
-from top.ops import Fp8QuantOp
+from tileops.ops import Fp8QuantOp
 
 
 class Fp8QuantBenchmark(Benchmark):

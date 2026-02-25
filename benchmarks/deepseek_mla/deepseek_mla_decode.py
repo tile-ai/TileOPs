@@ -5,7 +5,7 @@ from einops import einsum, rearrange
 from torch.nn import functional as F
 
 from benchmarks.benchmark import Benchmark
-from top.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
+from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 
 
 class MultiHeadLatentAttentionDecodeBenchmark(Benchmark):

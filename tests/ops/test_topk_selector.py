@@ -1,8 +1,8 @@
 import pytest
 
 from benchmarks import TopkSelectorBenchmark
-from top.ops import TopkSelectorOp
-from top.utils import str2dtype
+from tileops.ops import TopkSelectorOp
+from tileops.utils import str2dtype
 
 
 @pytest.mark.parametrize("batch, seq_len, topk, in_dtype, out_dtype, tune", [

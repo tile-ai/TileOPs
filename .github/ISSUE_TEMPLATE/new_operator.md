@@ -14,12 +14,12 @@ assignees: ''
 
 ### 1. Kernel Implementation (L1)
 
-- [ ] **Kernel**: Implement TileLang kernel in `top/kernels/<op_name>/`
+- [ ] **Kernel**: Implement TileLang kernel in `tileops/kernels/<op_name>/`
 - [ ] **Verification**: Pass functional correctness tests
 
 ### 2. Op Definition (L2)
 
-- [ ] **Interface**: Define `torch.ops` interface in `top/ops/<op_name>.py`
+- [ ] **Interface**: Define `torch.ops` interface in `tileops/ops/<op_name>.py`
 - [ ] **Unit Tests**: Implement `tests/test_<op_name>.py` (Compare vs PyTorch Ref)
   - [ ] FP16 (close: 1e-3)
   - [ ] BF16 (close: 1.6e-2)
@@ -30,12 +30,12 @@ assignees: ''
 
 ### 3. Functional API (L3)
 
-- [ ] **Autograd**: Implement `torch.autograd.Function` in `top/functions/<op_name>.py`
+- [ ] **Autograd**: Implement `torch.autograd.Function` in `tileops/functions/<op_name>.py`
 - [ ] **GradCheck**: Pass `torch.autograd.gradcheck`
 
 ### 4. Layer Wrapper (L4)
 
-- [ ] **Module**: Implement `nn.Module` in `top/layers/<op_name>.py`
+- [ ] **Module**: Implement `nn.Module` in `tileops/layers/<op_name>.py`
 - [ ] **Type Hints**: Complete type hints (strict mode checked)
 
 ### 5. Benchmark Results

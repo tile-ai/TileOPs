@@ -3,8 +3,8 @@ import argparse
 import torch
 
 from benchmarks import GemmBenchmark
-from top.ops import GemmOp
-from top.utils import str2dtype
+from tileops.ops import GemmOp
+from tileops.utils import str2dtype
 
 
 def run_gemm_benchmark(m: int,

@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import Benchmark
-from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
+from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 
 
 class MultiHeadAttentionFwdBenchmark(Benchmark):

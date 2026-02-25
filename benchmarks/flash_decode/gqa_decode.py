@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import Benchmark
-from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
+from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
 
 class GroupQueryAttentionDecodeBenchmark(Benchmark):

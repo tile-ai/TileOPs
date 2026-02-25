@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.deepseek_nsa.deepseek_nsa import NSAFwdVarlenBenchmark
-from top.ops import NSAFwdVarlenOp
+from tileops.ops import NSAFwdVarlenOp
 
 
 @pytest.mark.parametrize(

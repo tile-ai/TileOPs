@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from top.ops import MultiHeadAttentionFwdOp
+from tileops.ops import MultiHeadAttentionFwdOp
 
 
 @pytest.mark.parametrize(

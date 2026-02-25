@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import GroupedGemmBenchmark
-from top.layers import GroupedGemmLayer
+from tileops.layers import GroupedGemmLayer
 
 
 @pytest.mark.parametrize(

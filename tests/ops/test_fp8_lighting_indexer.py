@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 
 from benchmarks import Fp8LightingIndexerBenchmark
-from top.ops import Fp8LightingIndexerOp
+from tileops.ops import Fp8LightingIndexerOp
 
 
 @pytest.mark.parametrize(

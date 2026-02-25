@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from benchmarks import Fp8QuantBenchmark
-from top.functions import Fp8QuantFunc
-from top.layers import Fp8QuantLayer
+from tileops.functions import Fp8QuantFunc
+from tileops.layers import Fp8QuantLayer
 
 
 @pytest.mark.parametrize(

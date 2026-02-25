@@ -1,8 +1,8 @@
 import pytest
 
 from benchmarks.deepseek_mla import Fp8LightingIndexerBenchmark
-from top.functions import Fp8LightingIndexerFunc
-from top.layers import Fp8LightingIndexerDecodeLayer
+from tileops.functions import Fp8LightingIndexerFunc
+from tileops.layers import Fp8LightingIndexerDecodeLayer
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import MultiHeadAttentionBenchmark
-from top.layers import MultiHeadAttentionLayer
+from tileops.layers import MultiHeadAttentionLayer
 
 
 @pytest.mark.parametrize(

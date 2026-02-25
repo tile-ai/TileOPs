@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import torch
 
 from benchmarks.benchmark import Benchmark
-from top.ops import Fp8LightingIndexerOp, Op
+from tileops.ops import Fp8LightingIndexerOp, Op
 
 
 class Fp8LightingIndexerBenchmark(Benchmark):

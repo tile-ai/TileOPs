@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import GroupQueryAttentionBwdBenchmark, GroupQueryAttentionFwdBenchmark
-from top.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
+from tileops.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [

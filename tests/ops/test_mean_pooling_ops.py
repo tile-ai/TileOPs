@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.deepseek_nsa.deepseek_nsa import MeanPoolingForwardBenchmark
 from benchmarks.deepseek_nsa.utils import prepare_chunk_indices
-from top.ops import MeanPoolingForwardOp
+from tileops.ops import MeanPoolingForwardOp
 
 
 @pytest.mark.parametrize(

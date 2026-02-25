@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from top.ops import ManifoldConstrainedHyperConnectionPostOp
+from tileops.ops import ManifoldConstrainedHyperConnectionPostOp
 
 
 @pytest.mark.parametrize(

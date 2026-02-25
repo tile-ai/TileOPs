@@ -3,7 +3,7 @@ from typing import Tuple
 import torch
 
 from benchmarks.benchmark import Benchmark
-from top.ops import ManifoldConstrainedHyperConnectionPostOp
+from tileops.ops import ManifoldConstrainedHyperConnectionPostOp
 
 
 class ManifoldConstrainedHyperConnectionPostBenchmark(Benchmark):

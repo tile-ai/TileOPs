@@ -2,7 +2,7 @@ import torch
 import pytest
 
 from benchmarks import Fp8QuantBenchmark
-from top.ops import Fp8QuantOp
+from tileops.ops import Fp8QuantOp
 
 
 @pytest.mark.parametrize(

@@ -28,14 +28,14 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
 
 ### Step 1: Kernel Implementation (L1)
 
-- **Location**: `top/kernels/{operator_name}/`
+- **Location**: `tileops/kernels/{operator_name}/`
 - **Goal**: Implement the core logic using TileLang.
 - **Docstrings**: Detailed description of arguments and return values.
 - **Definition of Done**: The kernel compiles and runs correctly.
 
 ### Step 2: Op Definition & Verification (L2)
 
-- **Location**: `top/ops/{operator_name}.py`
+- **Location**: `tileops/ops/{operator_name}.py`
 - **Responsibilities**:
   - Wrap the kernel in a Python function.
   - **Docstrings**: Google Style (Args, Returns, Example).
@@ -50,7 +50,7 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
 
 ### Step 3: Functional API (L3)
 
-- **Location**: `top/functions/{operator_name}.py`
+- **Location**: `tileops/functions/{operator_name}.py`
 - **Responsibilities**:
   - Implement `torch.autograd.Function`.
   - Define `forward()` and `backward()` static methods.
@@ -60,7 +60,7 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
 
 ### Step 4: Layer Wrapper (L4)
 
-- **Location**: `top/layers/{operator_name}.py`
+- **Location**: `tileops/layers/{operator_name}.py`
 - **Description**: Expose the functionality as an `nn.Module` (e.g., `class FlashAttention(nn.Module)`).
 - **Docstrings**: Google Style (Class description, Init args, Forward args).
 - **Definition of Done**: The op is exposed as an `nn.Module` and verified in unit tests.
@@ -130,7 +130,7 @@ ______________________________________________________________________
 
 ```text
 TileOPs/
-├── top/
+├── tileops/
 │   ├── kernels/   # L1: TileLang Kernels
 │   ├── ops/       # L2: OP + Dispatcher
 │   ├── functions/ # L3: Autograd Functions

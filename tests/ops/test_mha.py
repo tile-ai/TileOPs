@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import MultiHeadAttentionBwdBenchmark, MultiHeadAttentionFwdBenchmark
-from top.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
+from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", [

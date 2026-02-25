@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from benchmarks import TopkSelectorBenchmark
-from top.functions import TopkSelectorFunc
-from top.layers import TopkSelectorLayer
+from tileops.functions import TopkSelectorFunc
+from tileops.layers import TopkSelectorLayer
 
 
 @pytest.mark.parametrize(

@@ -3,8 +3,8 @@ import pytest
 import torch
 
 from benchmarks import MultiHeadLatentAttentionDecodeBenchmark
-from top.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc, mla_decode_with_kvcache
-from top.layers import MultiHeadLatentAttentionDecodeLayer
+from tileops.functions import MultiHeadLatentAttentionDecodeWithKVCacheFunc, mla_decode_with_kvcache
+from tileops.layers import MultiHeadLatentAttentionDecodeLayer
 
 
 @pytest.mark.parametrize(

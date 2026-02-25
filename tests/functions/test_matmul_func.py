@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import MatMulBenchmark
-from top.functions import MatMulFunc, matmul
+from tileops.functions import MatMulFunc, matmul
 
 
 @pytest.mark.parametrize(

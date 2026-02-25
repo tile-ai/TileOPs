@@ -2,7 +2,7 @@ import torch
 import pytest
 
 from benchmarks import GemmBenchmark
-from top.ops import GemmOp
+from tileops.ops import GemmOp
 
 
 @pytest.mark.parametrize(

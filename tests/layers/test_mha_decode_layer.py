@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import MultiHeadAttentionDecodeBenchmark
-from top.layers import MultiHeadAttentionDecodeLayer
+from tileops.layers import MultiHeadAttentionDecodeLayer
 
 
 @pytest.mark.parametrize(

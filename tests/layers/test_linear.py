@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from top.layers import LinearLayer
+from tileops.layers import LinearLayer
 
 
 @pytest.mark.parametrize(

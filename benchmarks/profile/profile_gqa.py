@@ -3,8 +3,8 @@ import argparse
 import torch
 
 from benchmarks import GroupQueryAttentionBwdBenchmark, GroupQueryAttentionFwdBenchmark
-from top.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
-from top.utils import str2dtype
+from tileops.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
+from tileops.utils import str2dtype
 
 
 def test_gqa_fwd(B: int,

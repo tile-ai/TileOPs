@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import GroupQueryAttentionBenchmark
-from top.functions import GroupQueryAttentionFunc, gqa
+from tileops.functions import GroupQueryAttentionFunc, gqa
 
 
 @pytest.mark.parametrize(

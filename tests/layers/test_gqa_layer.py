@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import GroupQueryAttentionBenchmark
-from top.layers import GroupQueryAttentionLayer
+from tileops.layers import GroupQueryAttentionLayer
 
 
 @pytest.mark.parametrize(

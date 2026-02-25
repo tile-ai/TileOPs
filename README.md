@@ -85,7 +85,7 @@ TODO
 
 ```Python
 import torch
-from top.functions import gqa_decode_with_kvcache
+from tileops.functions import gqa_decode_with_kvcache
 
 # Generate inputs
 B, H, G, S_kv, D = 1, 32, 4, 1024, 128  # batch, heads, groups, seq_len, dim

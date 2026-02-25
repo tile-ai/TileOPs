@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import Benchmark
-from top.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
+from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
 
 
 class MultiHeadAttentionDecodePagedBenchmark(Benchmark):

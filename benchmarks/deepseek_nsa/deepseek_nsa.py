@@ -4,7 +4,7 @@ import torch
 from einops import rearrange, repeat
 
 from benchmarks.benchmark import Benchmark
-from top.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp, GQAWindowSlidingOp
+from tileops.ops import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp, GQAWindowSlidingOp
 from .utils import prepare_token_indices, prepare_chunk_offsets
 
 

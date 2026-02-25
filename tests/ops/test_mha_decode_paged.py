@@ -6,7 +6,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from top.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
+from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
 
 
 def _torch_ref_mha_decode_paged(

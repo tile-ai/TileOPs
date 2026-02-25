@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import MultiHeadAttentionDecodeBenchmark
-from top.functions import MultiHeadAttentionDecodeWithKVCacheFunc, mha_decode_with_kvcache
+from tileops.functions import MultiHeadAttentionDecodeWithKVCacheFunc, mha_decode_with_kvcache
 
 
 @pytest.mark.parametrize(

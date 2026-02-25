@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from benchmarks import MultiHeadAttentionFwdBenchmark
-from top.ops import MultiHeadAttentionFwdOp
+from tileops.ops import MultiHeadAttentionFwdOp
 
 
 @pytest.mark.parametrize(

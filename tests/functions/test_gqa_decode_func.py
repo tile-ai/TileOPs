@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from benchmarks import GroupQueryAttentionDecodeBenchmark
-from top.functions import GroupQueryAttentionDecodeWithKVCacheFunc, gqa_decode_with_kvcache
+from tileops.functions import GroupQueryAttentionDecodeWithKVCacheFunc, gqa_decode_with_kvcache
 
 
 @pytest.mark.parametrize(

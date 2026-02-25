@@ -3,7 +3,7 @@ from typing import Tuple, Union
 import torch
 
 from benchmarks.benchmark import Benchmark
-from top.ops import GemmOp
+from tileops.ops import GemmOp
 
 
 class GemmBenchmark(Benchmark):

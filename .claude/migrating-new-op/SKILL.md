@@ -19,16 +19,16 @@ When this skill is invoked, ask the user first:
 
 - **L1 (Kernel only)**
   - Deliverables: kernel implementation + kernel/functional correctness checks
-  - Typical paths: `top/kernels/<op_name>/`, minimal verification script/tests
+  - Typical paths: `tileops/kernels/<op_name>/`, minimal verification script/tests
 - **L2 (Kernel + Op)**
   - Deliverables: L1 + op interface + op unit tests + benchmark script
-  - Typical paths: `top/ops/<op_name>.py`, `tests/ops/test_<op_name>.py`, `benchmarks/benchmark_<op_name>.py`
+  - Typical paths: `tileops/ops/<op_name>.py`, `tests/ops/test_<op_name>.py`, `benchmarks/benchmark_<op_name>.py`
 - **L3 (Kernel + Op + Function)**
   - Deliverables: L2 + functional API (`torch.autograd.Function` when needed) + function tests/grad checks
-  - Typical paths: `top/functions/<op_name>.py`, `tests/functions/test_<op_name>_func.py`
+  - Typical paths: `tileops/functions/<op_name>.py`, `tests/functions/test_<op_name>_func.py`
 - **L4 (Full stack: Kernel + Op + Function + Layer)**
   - Deliverables: L3 + `nn.Module` layer wrapper + layer tests + export synchronization
-  - Typical paths: `top/layers/<op_name>.py`, `tests/layers/test_<op_name>_layer.py`
+  - Typical paths: `tileops/layers/<op_name>.py`, `tests/layers/test_<op_name>_layer.py`
 
 If user does not specify a level, default to **L2** and state this assumption explicitly.
 
@@ -87,10 +87,10 @@ ______________________________________________________________________
 
 ## Software Organization Guidelines
 
-- **Kernel layer (`top/kernels`)**: compute logic and kernel configs only.
-- **Op layer (`top/ops`)**: wraps kernel call contract and runtime dispatch.
-- **Function layer (`top/functions`)**: reusable API composition and validation.
-- **Layer (`top/layers`)**: module-level integration (`nn.Module` style).
+- **Kernel layer (`tileops/kernels`)**: compute logic and kernel configs only.
+- **Op layer (`tileops/ops`)**: wraps kernel call contract and runtime dispatch.
+- **Function layer (`tileops/functions`)**: reusable API composition and validation.
+- **Layer (`tileops/layers`)**: module-level integration (`nn.Module` style).
 - Keep dependency direction strict: `layer -> function -> op -> kernel`.
 - After refactoring, always sync exports to prevent import-time failures.
 
@@ -100,24 +100,24 @@ ______________________________________________________________________
 
 Before opening a PR, verify all required items are present:
 
-1. **L1: Kernel (`top/kernels`)**
+1. **L1: Kernel (`tileops/kernels`)**
 
 - [ ] New/updated kernel implementation exists
 - [ ] Kernel handles documented edge cases
 
-2. **L2: Op (`top/ops`)**
+2. **L2: Op (`tileops/ops`)**
 
 - [ ] Op API wraps kernel with stable argument contract
 - [ ] Op-level tests added/updated in `tests/ops`
 - [ ] Benchmark script added/updated in `benchmarks`
 
-3. **L3: Function (`top/functions`)**
+3. **L3: Function (`tileops/functions`)**
 
 - [ ] Function API added/updated for composable usage
 - [ ] Function tests added/updated in `tests/functions`
 - [ ] `gradcheck` path is added when autograd is expected
 
-4. **L4: Layer (`top/layers`, if needed)**
+4. **L4: Layer (`tileops/layers`, if needed)**
 
 - [ ] Layer class added only when module abstraction is required
 - [ ] Layer tests added/updated in `tests/layers`

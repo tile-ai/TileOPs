@@ -3,7 +3,7 @@ import math
 import torch
 
 from benchmarks.benchmark import Benchmark
-from top.ops import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
+from tileops.ops import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
 
 __all__ = [
     'GroupedGemmNTBenchmark',

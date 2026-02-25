@@ -10,7 +10,7 @@ from benchmarks import (
     GroupedGemmTNBenchmark,
     GroupedGemmTTBenchmark,
 )
-from top.ops.grouped_gemm import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
+from tileops.ops.grouped_gemm import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
 
 
 @pytest.mark.parametrize(
@@ -85,7 +85,7 @@ def test_grouped_gemm_tt(batch_sum: int, batch_count: int, N: int, K: int, dtype
 )
 def test_grouped_gemm_complete(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
                                tune: bool):
-    from top.functions.grouped_gemm import GroupedGemmFunc
+    from tileops.functions.grouped_gemm import GroupedGemmFunc
 
     op = GroupedGemmFunc(batch_sum, batch_count, N, K, dtype, tune=tune)
     benchmark = GroupedGemmBenchmark(batch_sum, batch_count, N, K, dtype)
