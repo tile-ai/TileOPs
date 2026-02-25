@@ -48,7 +48,7 @@ Rules:
 
 ## Collaboration Guide
 
-See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed steps on how to contribute code, including the "2+1 Review" policy and commit message conventions.
+See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for the development workflow, architecture, and coding standards. See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for the "2+1 Review" policy, branch naming, and commit message conventions.
 
 ## Collaboration Rules for Claude
 
