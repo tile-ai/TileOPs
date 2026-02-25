@@ -68,9 +68,10 @@ git add -p
 git commit -m "[<Area>] <short summary>"
 ```
 
-5. Push branch:
+5. Push branch (always pull before push to incorporate any remote changes):
 
 ```bash
+git pull origin <branch-name> --rebase
 git push -u origin <branch-name>
 ```
 
