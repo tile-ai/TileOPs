@@ -151,7 +151,7 @@ TileOPs/
    ```
 1. **Run Tests**: Ensure all relevant unit tests pass locally.
    ```bash
-   pytest tests/ops/test_<op_name>.py
+   PYTHONPATH="$PWD" python -m pytest tests/ops/test_<op_name>.py
    ```
 
 ### CI/CD Checks

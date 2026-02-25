@@ -1,0 +1,198 @@
+---
+name: creating-pull-request
+description: Create a high-quality PR end-to-end (pre-checks, branch/commit, PR metadata, code review handling, CI fixes) based on TileOPs workflow
+---
+
+## When to use
+
+- You have local changes and want Claude to turn them into a clean PR.
+- You want a repeatable PR workflow: format/tests -> branch/commit -> PR -> review -> CI.
+- You want the PR to match TileOPs conventions (branch naming, commands, and validation).
+
+______________________________________________________________________
+
+## Workflow
+
+### Phase 0: Pre-checks (before making a PR)
+
+**Goal**: avoid opening a PR that immediately fails formatting/tests.
+
+0. If it’s not clear what the PR is fixing/adding, ask the user what issue/task this PR is for (link or short description).
+1. Confirm repository root and current git state:
+   - `git status`
+   - `git diff --stat`
+2. Confirm Python environment is active (TileOPs example):
+   - `conda activate top`
+3. Run formatting/lint checks and tests following `Claude.md` → Development Workflow.
+
+Notes:
+
+- Keep runs reproducible (fixed seed where applicable).
+- Don’t fix unrelated failures in this PR; report them.
+
+**Pre-Checklist**
+
+- [ ] `pre-commit run --all-files` passes
+- [ ] Tests pass (see `Claude.md` for exact commands)
+- [ ] docs examples use portable env vars (prefer `PYTHONPATH="$PWD"`, avoid backticks like `pwd`)
+
+______________________________________________________________________
+
+### Phase 1: Branch + commit
+
+**Goal**: keep history clean and easy to review.
+
+1. Sync `main` first:
+
+```bash
+git fetch origin
+git switch main
+git pull --ff-only
+```
+
+2. Create a new branch:
+
+```bash
+git switch -c <branch-name>
+```
+
+3. Stage changes intentionally:
+
+```bash
+git add -p
+```
+
+4. Create a focused commit:
+
+```bash
+git commit -m "[<Area>] <short summary>"
+```
+
+5. Push branch:
+
+```bash
+git push -u origin <branch-name>
+```
+
+Branch naming + commit conventions:
+
+- Follow the project documentation (`Claude.md`, `docs/DEVELOPMENT.md`).
+
+______________________________________________________________________
+
+### Phase 2: Create PR (title/body/labels)
+
+**Goal**: PR is self-contained and matches project expectations.
+
+1. Create PR (GitHub CLI):
+
+```bash
+gh pr create --base main --head <owner>:<branch> --title "<title>"
+```
+
+PR body:
+
+- Leave the PR body for the user to fill in (interactively or edit after creation).
+
+2. PR title guidelines:
+
+- Start with bracket tags when appropriate: `[Fix]`, `[Docs]`, `[Bench]`.
+- Keep it under ~80 chars, describe the user-facing change.
+
+3. PR body should include:
+
+```markdown
+Closes #<issue-number>
+
+## Summary
+- <what was migrated/added/fixed>
+- <what was removed/replaced>
+- <other notable changes>
+
+## Test plan
+- [x] pre-commit passed
+- [x] make build succeeded
+- [x] pytest <N> passed (fast mode)
+- [x] Regression benchmark: no performance regression (checked ALL modes and workloads)"
+```
+
+4. Add labels (if your repo uses them):
+
+- docs / bug / benchmark / ci
+
+If the PR was fully AI-driven (no user discussion, no user code edits — e.g., selfplay mode), add the `All AI powered` label:
+
+```bash
+gh pr edit <PR_NUMBER> --add-label "All AI powered"
+```
+
+______________________________________________________________________
+
+### Phase 3: Handling Automated Code Reviews
+
+After PR creation, read review comments from all automated reviewers (Gemini Code Assist, Codex, Tile Paws, etc.):
+
+```bash
+gh api repos/AIGCIC/TileRT/pulls/<PR_NUMBER>/comments
+```
+
+**Every review comment MUST be replied to individually in its original thread.** Do NOT post a summary comment — reply directly in the review conversation so each finding has a one-to-one traceable response.
+
+For each comment (regardless of which bot posted it):
+
+1. **Analyze validity** — compare against existing reference implementations and project conventions
+1. **Reply in the original thread** via:
+   ```bash
+   gh api repos/AIGCIC/TileRT/pulls/<PR_NUMBER>/comments/<COMMENT_ID>/replies \
+     -f body="<reply>"
+   ```
+1. **Reply content rules**:
+   - **If accepting**: state acceptance, describe what was fixed, reference the commit hash. Example: `Accepted. Added try/except with timeout. See abc1234.`
+   - **If declining but valid for future work**: state decline with reason, then create a GitHub issue to track the suggestion. Example: `Declined for this PR — scope is limited to X. Tracked in #<issue>.`
+   - **If declining as invalid**: state decline with a specific technical reason why the suggestion is unnecessary or incorrect. Example: `Declined. The API key check at L215 (shell level) runs before the Python heredoc, so the key is already validated.`
+   - Never leave a review comment without a reply
+1. **If accepting**: apply fixes → `pre-commit run` → `make` (if needed) → commit → push, then reply with the fix commit hash
+1. **If accepting AND the finding reveals a novel pattern** (not already covered by existing guidelines): update `docs/review-guidelines.md` with the new lesson. Criteria for novelty:
+   - Not a duplicate of existing guideline items
+   - Broadly applicable (not a one-off PR-specific issue)
+   - Actionable (a reviewer can check for it in future code)
+______________________________________________________________________
+
+### Phase 4: Handle CI failures
+
+**Goal**: fix CI efficiently without broad refactors.
+
+1. Identify failing checks:
+
+- `gh pr checks` (if available)
+- or view logs in CI
+
+2. Reproduce locally when possible:
+
+- Run the same command CI runs (format/test)
+- Use the same Python environment
+
+3. Fix only the root cause:
+
+Common doc/CI issues observed in practice:
+
+- Non-portable commands in docs (use `"$PWD"` instead of backticks)
+- Tool missing from PATH (use `python -m <tool>`)
+- Formatting drift (run `pre-commit run --all-files`)
+
+4. Validate and push:
+
+- Re-run `pre-commit` and the relevant `pytest` subset
+- Push fixes to the same branch; CI should rerun
+
+______________________________________________________________________
+
+## Done criteria
+
+A PR is “done” when:
+
+- pre-commit passes locally
+- relevant tests pass locally
+- PR title/body include validation instructions
+- review feedback addressed (or explicitly resolved with rationale)
+- CI is green (or failures are proven unrelated and documented)

@@ -136,7 +136,8 @@ class Benchmark(ABC):
                 bandwidth = self.total_memory / latency * 1e-9
                 print(f"{op.__class__.__name__} tl-Bandwidth: {bandwidth:.2f} GB/s")
         else:
-            print(f"⚠️  {op.__class__.__name__} latency is 0, skipping TFlops/Bandwidth calculation")
+            print(
+                f"⚠️  {op.__class__.__name__} latency is 0, skipping TFlops/Bandwidth calculation")
 
     def baseline_profile(self,
                          baseline_op: Op,
@@ -157,8 +158,7 @@ class Benchmark(ABC):
         print(f"{backend} Baseline-latency: {latency:.2f} ms")
         if latency > 0:
             if self.total_flops is not None:
-                print(
-                    f"{backend} Baseline-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
+                print(f"{backend} Baseline-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
             if self.total_memory is not None:
                 print(
                     f"{backend} Baseline-Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s")
