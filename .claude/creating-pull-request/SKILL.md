@@ -21,9 +21,9 @@ ______________________________________________________________________
 1. Confirm repository root and current git state:
    - `git status`
    - `git diff --stat`
-2. Confirm Python environment is active (TileOPs example):
+1. Confirm Python environment is active (TileOPs example):
    - `conda activate top`
-3. Run formatting/lint checks and tests following `Claude.md` → Development Workflow.
+1. Run formatting/lint checks and tests following `Claude.md` → Development Workflow.
 
 Notes:
 
@@ -157,6 +157,7 @@ For each comment (regardless of which bot posted it):
    - Not a duplicate of existing guideline items
    - Broadly applicable (not a one-off PR-specific issue)
    - Actionable (a reviewer can check for it in future code)
+
 ______________________________________________________________________
 
 ### Phase 4: Handle CI failures
