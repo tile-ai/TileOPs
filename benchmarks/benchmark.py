@@ -122,17 +122,17 @@ class Benchmark(ABC):
         """Benchmark the perf of the op"""
         print(f"===== Profiling {op.__class__.__name__} =====")
         print(f"{op.__class__.__name__} profile with warmup: {warmup}, rep: {rep}")
+
+        def bench_fn():
+            return op(*inputs)
+
         with torch.no_grad():
-            # Always use cupti backend for better accuracy
-            latency = do_bench(lambda: op(*inputs), warmup=warmup, rep=rep, backend='cupti')
+            latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='cupti')
+            if latency <= 0:
+                # cupti backend can fail (e.g. under Nsight Compute), fall back to event-based timing
+                latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='event')
 
         print(f"{op.__class__.__name__} tl-latency: {latency:.2f} ms")
-        if latency <= 0:
-            print(
-                f"⚠️  {op.__class__.__name__} latency is {latency}, skipping TFlops/Bandwidth calculation"
-            )
-            return
-
         if self.total_flops is not None:
             print(
                 f"{op.__class__.__name__} tl-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops"
@@ -148,20 +148,19 @@ class Benchmark(ABC):
                          warmup: int = 100,
                          rep: int = 100,
                          device: str = "cuda:0") -> None:
-        """Benchmark the perf of the baselin op"""
+        """Benchmark the perf of the baseline op"""
         print(f"===== Profiling {backend} =====")
         print(f"{backend} profile with warmup: {warmup}, rep: {rep}")
 
+        def bench_fn():
+            return baseline_op(*inputs)
+
         with torch.no_grad():
-            # Always use cupti backend for better accuracy
-            latency = do_bench(
-                lambda: baseline_op(*inputs), warmup=warmup, rep=rep, backend='cupti')
+            latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='cupti')
+            if latency <= 0:
+                latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='event')
 
         print(f"{backend} Baseline-latency: {latency:.2f} ms")
-        if latency <= 0:
-            print(f"⚠️  {backend} latency is {latency}, skipping TFlops/Bandwidth calculation")
-            return
-
         if self.total_flops is not None:
             print(f"{backend} Baseline-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
         if self.total_memory is not None:
