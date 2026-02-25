@@ -127,17 +127,19 @@ class Benchmark(ABC):
             latency = do_bench(lambda: op(*inputs), warmup=warmup, rep=rep, backend='cupti')
 
         print(f"{op.__class__.__name__} tl-latency: {latency:.2f} ms")
-        if latency > 0:
-            if self.total_flops is not None:
-                print(
-                    f"{op.__class__.__name__} tl-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops"
-                )
-            if self.total_memory is not None:
-                bandwidth = self.total_memory / latency * 1e-9
-                print(f"{op.__class__.__name__} tl-Bandwidth: {bandwidth:.2f} GB/s")
-        else:
+        if latency <= 0:
             print(
-                f"⚠️  {op.__class__.__name__} latency is 0, skipping TFlops/Bandwidth calculation")
+                f"⚠️  {op.__class__.__name__} latency is {latency}, skipping TFlops/Bandwidth calculation"
+            )
+            return
+
+        if self.total_flops is not None:
+            print(
+                f"{op.__class__.__name__} tl-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops"
+            )
+        if self.total_memory is not None:
+            bandwidth = self.total_memory / latency * 1e-9
+            print(f"{op.__class__.__name__} tl-Bandwidth: {bandwidth:.2f} GB/s")
 
     def baseline_profile(self,
                          baseline_op: Op,
@@ -156,11 +158,11 @@ class Benchmark(ABC):
                 lambda: baseline_op(*inputs), warmup=warmup, rep=rep, backend='cupti')
 
         print(f"{backend} Baseline-latency: {latency:.2f} ms")
-        if latency > 0:
-            if self.total_flops is not None:
-                print(f"{backend} Baseline-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
-            if self.total_memory is not None:
-                print(
-                    f"{backend} Baseline-Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s")
-        else:
-            print(f"⚠️  {backend} latency is 0, skipping TFlops/Bandwidth calculation")
+        if latency <= 0:
+            print(f"⚠️  {backend} latency is {latency}, skipping TFlops/Bandwidth calculation")
+            return
+
+        if self.total_flops is not None:
+            print(f"{backend} Baseline-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
+        if self.total_memory is not None:
+            print(f"{backend} Baseline-Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s")

@@ -134,7 +134,7 @@ ______________________________________________________________________
 After PR creation, read review comments from all automated reviewers (Gemini Code Assist, Codex, Tile Paws, etc.):
 
 ```bash
-gh api repos/AIGCIC/TileRT/pulls/<PR_NUMBER>/comments
+gh api repos/tile-ai/TileOPs/pulls/<PR_NUMBER>/comments
 ```
 
 **Every review comment MUST be replied to individually in its original thread.** Do NOT post a summary comment — reply directly in the review conversation so each finding has a one-to-one traceable response.
@@ -144,7 +144,7 @@ For each comment (regardless of which bot posted it):
 1. **Analyze validity** — compare against existing reference implementations and project conventions
 1. **Reply in the original thread** via:
    ```bash
-   gh api repos/AIGCIC/TileRT/pulls/<PR_NUMBER>/comments/<COMMENT_ID>/replies \
+   gh api repos/tile-ai/TileOPs/pulls/<PR_NUMBER>/comments/<COMMENT_ID>/replies \
      -f body="<reply>"
    ```
 1. **Reply content rules**:
@@ -153,7 +153,7 @@ For each comment (regardless of which bot posted it):
    - **If declining as invalid**: state decline with a specific technical reason why the suggestion is unnecessary or incorrect. Example: `Declined. The API key check at L215 (shell level) runs before the Python heredoc, so the key is already validated.`
    - Never leave a review comment without a reply
 1. **If accepting**: apply fixes → `pre-commit run` → `make` (if needed) → commit → push, then reply with the fix commit hash
-1. **If accepting AND the finding reveals a novel pattern** (not already covered by existing guidelines): update `docs/review-guidelines.md` with the new lesson. Criteria for novelty:
+1. **If accepting AND the finding reveals a novel pattern** (not already covered by existing guidelines): document the new lesson in the appropriate project documentation (e.g., `docs/CONTRIBUTING.md`). Criteria for novelty:
    - Not a duplicate of existing guideline items
    - Broadly applicable (not a one-off PR-specific issue)
    - Actionable (a reviewer can check for it in future code)
