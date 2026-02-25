@@ -15,6 +15,9 @@ from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
 from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
 from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
+from .count_and_gather import CountAndGatherOp
+from .moe_reduce import MoeReduceOp
+from .fuse_moe_pertensor_fp8 import FuseMoePertensorFp8Op
 from .op import Op  # noqa: F401
 
 __all__ = [
@@ -45,4 +48,7 @@ __all__ = [
     "GQAWindowSlidingOp",
     "ManifoldConstrainedHyperConnectionPreOp",
     "ManifoldConstrainedHyperConnectionPostOp",
+    "CountAndGatherOp",
+    "MoeReduceOp",
+    "FuseMoePertensorFp8Op",
 ]
