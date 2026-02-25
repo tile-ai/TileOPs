@@ -47,7 +47,7 @@ Rules:
 
 ## Collaboration Guide
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed steps on how to contribute code, including the "2+1 Review" policy and commit message conventions.
+See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed steps on how to contribute code, including the "2+1 Review" policy and commit message conventions.
 
 ## Collaboration Rules for Claude
 
@@ -58,15 +58,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed steps on how to contribute c
 - Response should include: change summary, affected paths, validation steps, and next suggestions.
 
 
-## Documentation & Skill Index
-
-| Document                                     | Content                                                          |
-| -------------------------------------------- | ---------------------------------------------------------------- |
-| [docs/architecture.md](docs/architecture.md) | Directory structure, component descriptions, key patterns        |
-| [docs/workflow.md](docs/workflow.md)         | Complete dev workflow (issue → pre-commit → build → pytest → PR) |
-| [docs/known_issues.md](docs/known_issues.md) | Common pitfalls (CUDA / GLM5 / SparseIndexV2 / general)          |
-| [docs/interface.md](docs/interface.md)       | Interface architecture, op classification, migration checklist   |
-| [docs/designs/](docs/designs/)               | Feature design docs (MTP, SparseIndexV2, etc.)                   |
+## Skill Index
 
 | Skill                           | Trigger                                                         |
 | ------------------------------- | --------------------------------------------------------------- |
