@@ -1,0 +1,123 @@
+name: pr-validation
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - main
+      - dev
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate commit messages
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "Checking commits from $BASE_SHA to $HEAD_SHA"
+
+          # TileOPs convention: [Type] description  or  [Type][Scope] description
+          PATTERN='^\[(Feat|Feature|Fix|BugFix|Refactor|CI|Docs|Test|Build|Chore|Perf|Style|Enhancement|Bench)\](\[[a-zA-Z0-9_-]+\])? .+'
+
+          STATUS=0
+          while IFS= read -r COMMIT_SHA; do
+            SUBJECT="$(git log -1 --format=%s "$COMMIT_SHA")"
+            if [[ ! "$SUBJECT" =~ $PATTERN ]]; then
+              echo "::error::Commit $COMMIT_SHA does not follow TileOPs format."
+              echo "  Expected: [Type] description  or  [Type][Scope] description"
+              echo "  Got: $SUBJECT"
+              STATUS=1
+            else
+              echo "OK: $SUBJECT"
+            fi
+          done < <(git log --format=%H "${BASE_SHA}..${HEAD_SHA}")
+
+          exit $STATUS
+
+  validate-pr-title:
+    runs-on: ubuntu-latest
+    if: github.event.action != 'synchronize'
+    steps:
+      - name: Validate PR title format
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Expected: [Type] description  or  [Type][Scope] description
+          # Type: Feat, Feature, Fix, BugFix, Refactor, CI, Docs, Test, Build, Chore, Perf, Style, Enhancement
+          PATTERN='^\[(Feat|Feature|Fix|BugFix|Refactor|CI|Docs|Test|Build|Chore|Perf|Style|Enhancement)\](\[[a-zA-Z0-9_-]+\])? .+'
+          if [[ ! "$PR_TITLE" =~ $PATTERN ]]; then
+            echo "::error::PR title does not follow TileOPs format."
+            echo "Expected: [Type] description  or  [Type][Scope] description"
+            echo "Types: Feat, Feature, Fix, BugFix, Refactor, CI, Docs, Test, Build, Chore, Perf, Style, Enhancement"
+            echo "Got: $PR_TITLE"
+            exit 1
+          fi
+          echo "PR title is valid: $PR_TITLE"
+
+  label-pr:
+    runs-on: ubuntu-latest
+    needs: [validate-commits, validate-pr-title]
+    if: >-
+      github.event.action != 'synchronize' &&
+      needs.validate-pr-title.result == 'success' &&
+      needs.validate-commits.result == 'success'
+    steps:
+      - name: Extract type and apply label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Extract type from PR title (e.g., "[Feat][GEMV] ..." -> "Feat")
+          TYPE=$(echo "$PR_TITLE" | grep -oP '^\[\K(Feat|Feature|Fix|BugFix|Refactor|CI|Docs|Test|Build|Chore|Perf|Style|Enhancement)(?=\])' || true)
+
+          if [ -z "$TYPE" ]; then
+            echo "No type tag found in title, skipping label"
+            exit 0
+          fi
+
+          # Normalize to lowercase label
+          LABEL=$(echo "$TYPE" | tr '[:upper:]' '[:lower:]')
+          # Merge aliases
+          case "$LABEL" in
+            feature) LABEL="feat" ;;
+            bugfix)  LABEL="fix" ;;
+          esac
+
+          echo "Detected type: $TYPE -> label: $LABEL"
+
+          # Check if correct label already applied — skip if no change needed
+          CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name')
+          if echo "$CURRENT_LABELS" | grep -qx "$LABEL"; then
+            echo "Label '$LABEL' already applied, skipping"
+            exit 0
+          fi
+
+          # Remove any stale type labels
+          for l in feat fix refactor ci docs test build chore perf style enhancement; do
+            if echo "$CURRENT_LABELS" | grep -qx "$l"; then
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --remove-label "$l"
+            fi
+          done
+
+          # Ensure label exists (create if missing)
+          if ! gh label list --repo "${{ github.repository }}" --search "$LABEL" --json name --jq '.[].name' | grep -qx "$LABEL"; then
+            gh label create "$LABEL" --repo "${{ github.repository }}" --description "Auto-created by PR validation" --force
+            echo "Created label: $LABEL"
+          fi
+
+          # Apply the matching label
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "$LABEL"
+          echo "Applied label: $LABEL"

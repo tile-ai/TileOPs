@@ -18,6 +18,7 @@ ______________________________________________________________________
 **Goal**: avoid opening a PR that immediately fails formatting/tests.
 
 0. If it’s not clear what the PR is fixing/adding, ask the user what issue/task this PR is for (link or short description).
+1. **Read `docs/CONTRIBUTING.md`** to confirm the latest branch naming, commit message, and PR title conventions. Do NOT rely on other files (workflow configs, CI scripts) for naming rules — `CONTRIBUTING.md` is the single source of truth.
 1. Confirm repository root and current git state:
    - `git status`
    - `git diff --stat`
@@ -77,7 +78,9 @@ git push -u origin <branch-name>
 
 Branch naming + commit conventions:
 
-- Follow the project documentation (`Claude.md`, `docs/DEVELOPMENT.md`).
+- Follow `docs/CONTRIBUTING.md` (the single source of truth for naming conventions).
+- Commit/PR titles use bracket format: `[Type] Description` or `[Type][Scope] Description`.
+- See `Claude.md` § "Commit & PR Title Convention" for quick reference.
 
 ______________________________________________________________________
 
@@ -97,7 +100,8 @@ PR body:
 
 2. PR title guidelines:
 
-- Start with bracket tags when appropriate: `[Fix]`, `[Docs]`, `[Bench]`.
+- **Must** use bracket format from `docs/CONTRIBUTING.md`: `[Type] Description` or `[Type][Scope] Description`.
+- Examples: `[Feat][GEMV] Add forward kernel`, `[CI] Add pr-validation workflow`.
 - Keep it under ~80 chars, describe the user-facing change.
 
 3. PR body should include:

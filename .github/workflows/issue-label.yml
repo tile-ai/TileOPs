@@ -1,0 +1,60 @@
+name: issue-label
+
+permissions:
+  issues: write
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  label-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract type from title and apply label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          # Extract type from issue title (e.g., "[CI] ..." -> "CI", "[BugFix][mHC] ..." -> "BugFix")
+          TYPE=$(echo "$ISSUE_TITLE" | grep -oP '^\[\K(Feat|Feature|Fix|BugFix|Bug|Refactor|CI|Docs|Test|Build|Chore|Perf|Style|Enhancement)(?=\])' || true)
+
+          if [ -z "$TYPE" ]; then
+            echo "No type tag found in title, skipping label"
+            exit 0
+          fi
+
+          # Normalize to lowercase label
+          LABEL=$(echo "$TYPE" | tr '[:upper:]' '[:lower:]')
+          # Merge aliases
+          case "$LABEL" in
+            feature) LABEL="feat" ;;
+            bugfix|bug) LABEL="fix" ;;
+          esac
+
+          echo "Detected type: $TYPE -> label: $LABEL"
+
+          # Check if correct label already applied
+          CURRENT_LABELS=$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name')
+          if echo "$CURRENT_LABELS" | grep -qx "$LABEL"; then
+            echo "Label '$LABEL' already applied, skipping"
+            exit 0
+          fi
+
+          # Remove any stale type labels
+          for l in feat fix refactor ci docs test build chore perf style enhancement; do
+            if echo "$CURRENT_LABELS" | grep -qx "$l"; then
+              gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" --remove-label "$l"
+            fi
+          done
+
+          # Ensure label exists (create if missing)
+          if ! gh label list --repo "${{ github.repository }}" --search "$LABEL" --json name --jq '.[].name' | grep -qx "$LABEL"; then
+            gh label create "$LABEL" --repo "${{ github.repository }}" --description "Auto-created by issue labeler" --force
+            echo "Created label: $LABEL"
+          fi
+
+          # Apply the matching label
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" --add-label "$LABEL"
+          echo "Applied label: $LABEL"
