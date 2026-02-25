@@ -7,9 +7,9 @@ TileOPs (TOP) is a high-performance LLM operator library built on TileLang. The 
 ## Development Environment
 
 1. Clone repository: `git clone https://github.com/tile-ai/TileOPs && cd TileOPs`
-2. Activate environment: `conda activate top`
-3. Install dependencies: `pip install -e '.[dev]' -v`
-4. Install pre-commit hooks: `pre-commit install`
+1. Activate environment: `conda activate top`
+1. Install dependencies: `pip install -e '.[dev]' -v`
+1. Install pre-commit hooks: `pre-commit install`
 
 ## Development Workflow
 
@@ -17,16 +17,16 @@ TileOPs (TOP) is a high-performance LLM operator library built on TileLang. The 
    - Feature: `feature/<name>`
    - Fix: `fix/<description>`
    - Release: `release/<version>`
-2. Follow coding conventions:
+1. Follow coding conventions:
    - 4-space indentation
    - 100-character line width
    - Type hints required
    - Google-style docstrings
-3. Add/update tests for changes and keep runs reproducible (fixed random seed)
-4. Validate locally:
+1. Add/update tests for changes and keep runs reproducible (fixed random seed)
+1. Validate locally:
    - Single test example: `PYTHONPATH="$PWD" python tests/xx/test_xxx.py`
    - Full test suite: `PYTHONPATH="$PWD" python tests`
-5. Run checks before commit: `pre-commit run --all-files`
+1. Run checks before commit: `pre-commit run --all-files`
 
 ## Architecture Organization
 
@@ -40,6 +40,7 @@ When adding new code, follow this stack and direction strictly:
 - `layer`: nn.Module-style abstractions for model integration
 
 Rules:
+
 - Build from bottom to top: implement `kernel` first, then expose via `op`, then wire into `function`, and finally add `layer`.
 - Keep dependency direction one-way (upper layers can depend on lower layers; lower layers must not import upper layers).
 - Place tests at the corresponding level (`tests/ops`, `tests/functions`, `tests/layers`) and add kernel-related checks where applicable.
@@ -57,9 +58,8 @@ See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed steps on how to contribut
 - Add necessary docs and tests when introducing files/interfaces.
 - Response should include: change summary, affected paths, validation steps, and next suggestions.
 
-
 ## Skill Index
 
-| Skill                           | Trigger                                                         |
-| ------------------------------- | --------------------------------------------------------------- |
-| `migrating-new-op`              | Use when adding or migrating an operator to TileOPs with the required kernel->op->function->layer delivery path and validation checklist |
+| Skill              | Trigger                                                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `migrating-new-op` | Use when adding or migrating an operator to TileOPs with the required kernel->op->function->layer delivery path and validation checklist |
