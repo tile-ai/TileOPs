@@ -37,6 +37,24 @@ jobs:
           # Run on all files once, and print diff on failure
           extra_args: --all-files --show-diff-on-failure
 
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify package builds (sdist + wheel)
+        run: |
+          pip install build
+          python -m build
+          echo "Build artifacts:"
+          ls -lh dist/
+
   tileops_test_release:
     # needs: pre-commit
     runs-on: [self-hosted, tile-ops, venv]

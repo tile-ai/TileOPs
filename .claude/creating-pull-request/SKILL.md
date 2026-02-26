@@ -88,7 +88,7 @@ ______________________________________________________________________
 
 **Goal**: PR is self-contained and matches project expectations.
 
-1. Create PR (GitHub CLI):
+1. Create PR using the GitHub MCP tool (`create_pull_request`) or GitHub CLI:
 
 ```bash
 gh pr create --base main --head <owner>:<branch> --title "<title>"
@@ -97,6 +97,8 @@ gh pr create --base main --head <owner>:<branch> --title "<title>"
 PR body:
 
 - Leave the PR body for the user to fill in (interactively or edit after creation).
+
+> **IMPORTANT (MCP tool pitfall):** When using the GitHub MCP `create_pull_request` or `update_pull_request` tools, the `body` parameter must use **actual newlines** (multi-line string), NOT `\n` escape sequences. Using `\n` will render as literal `\n` text in the PR body instead of line breaks.
 
 2. PR title guidelines:
 
