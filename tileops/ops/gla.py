@@ -51,6 +51,8 @@ class GLAFwdOp(Op):
         kernel_map: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__()
+        assert seq_len % chunk_size == 0, (
+            f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
         params = {k: v for k, v in locals().items() if k not in ('self', 'kernel_map', '__class__')}
         # resolve default scale before storing
         if params['scale'] is None:

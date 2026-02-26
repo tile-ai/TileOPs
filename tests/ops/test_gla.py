@@ -82,8 +82,7 @@ def ref_gla_fwd(
         k_chunk = k[:, cs:ce]  # [B, L, H, K]
         v_chunk = v[:, cs:ce]  # [B, L, H, V]
         g_cs_chunk = g_cs[:, cs:ce]  # [B, L, H, K]
-        g_last_exp = torch.exp(g_last).unsqueeze(1)  # [B, 1, H, K]
-        k_adj = k_chunk * (g_last_exp / torch.exp(g_cs_chunk).clamp(min=1e-30))
+        k_adj = k_chunk * torch.exp(g_last.unsqueeze(1) - g_cs_chunk)
         # b_h += einsum('blhk,blhv->bhkv', k_adj, v_chunk)
         b_h = b_h + torch.einsum('blhk,blhv->bhkv', k_adj, v_chunk)
 
@@ -197,6 +196,12 @@ def test_gla_fwd(
         assert out_final is not None
         assert torch.allclose(out_final.float(), ref_final.float(), atol=1e-2, rtol=1e-2), \
             f"final_state mismatch: max err = {(out_final.float() - ref_final.float()).abs().max():.6f}"
+
+
+def test_gla_fwd_non_divisible_seq_len() -> None:
+    """GLAFwdOp must reject seq_len not divisible by chunk_size."""
+    with pytest.raises(AssertionError, match="must be divisible"):
+        GLAFwdOp(batch=1, seq_len=100, heads=4, dim_k=64, dim_v=64, chunk_size=64)
 
 
 if __name__ == "__main__":

@@ -401,8 +401,6 @@ class GLAFwdKernel(Kernel):
         # Stage 2: inter-chunk hidden state recurrence (PyTorch)
         # h_states[b, i_c, h, K, V] = state entering chunk i_c
         h_states = torch.empty(B, NT, H, K, V, dtype=torch.float32, device=q.device)
-        k_f32 = k.float()
-        v_f32 = v.float()
         for i_c in range(NT):
             cs = i_c * BT
             ce = min(cs + BT, T)
@@ -416,8 +414,8 @@ class GLAFwdKernel(Kernel):
 
             # Accumulate: b_h += k_adj^T @ v
             # k_adj[b, t, h, k] = k[b, t, h, k] * exp(g_last[b, h, k] - g_cumsum[b, t, h, k])
-            k_chunk = k_f32[:, cs:ce]  # [B, L, H, K]
-            v_chunk = v_f32[:, cs:ce]  # [B, L, H, V]
+            k_chunk = k[:, cs:ce].float()  # [B, L, H, K]
+            v_chunk = v[:, cs:ce].float()  # [B, L, H, V]
             g_cs_chunk = g_cumsum[:, cs:ce]  # [B, L, H, K]
             k_adj = k_chunk * torch.exp(g_last.unsqueeze(1) - g_cs_chunk)
             b_h = b_h + torch.einsum('blhk,blhv->bhkv', k_adj, v_chunk)
