@@ -2,20 +2,20 @@
 
 Reference tests: `tests/ops/`
 
----
+______________________________________________________________________
 
 ## Overview
 
 Each op has a pytest file at `tests/ops/test_<op_name>.py`. The test:
 
 1. Instantiates the `Op` with given parameters
-2. Generates random input tensors
-3. Runs the op and a PyTorch reference implementation
-4. Asserts numerical closeness with `torch.allclose`
+1. Generates random input tensors
+1. Runs the op and a PyTorch reference implementation
+1. Asserts numerical closeness with `torch.allclose`
 
 No benchmark infrastructure is needed — correctness only.
 
----
+______________________________________________________________________
 
 ## File Location and Naming
 
@@ -25,7 +25,7 @@ tests/ops/test_<op_name>.py
 
 File name mirrors the op module name (e.g. `tileops/ops/gqa_decode.py` → `tests/ops/test_gqa_decode.py`).
 
----
+______________________________________________________________________
 
 ## Test File Structure
 
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
 ```
 
----
+______________________________________________________________________
 
 ## Test Case Requirements
 
@@ -83,11 +83,11 @@ if __name__ == "__main__":
 
 ### dtype coverage
 
-| Op type | Required dtypes |
-|---|---|
-| General ops | `torch.float16`, `torch.bfloat16` |
+| Op type                           | Required dtypes                                                 |
+| --------------------------------- | --------------------------------------------------------------- |
+| General ops                       | `torch.float16`, `torch.bfloat16`                               |
 | Quantization ops (fp8, fp4, etc.) | Include the target quantized dtype (e.g. `torch.float8_e4m3fn`) |
-| Mixed-precision ops | Cover all relevant input/output dtype combinations |
+| Mixed-precision ops               | Cover all relevant input/output dtype combinations              |
 
 ### Random seed
 
@@ -95,12 +95,12 @@ Fix `torch.manual_seed(42)` at the top of every test function, before any tensor
 
 ### Tolerance guidelines
 
-| Op type | `atol` | `rtol` |
-|---|---|---|
-| Attention fwd (fp16/bf16) | `5e-3` | `1e-5` |
-| Attention decode | `1e-2` | `1e-2` |
-| GEMM / linear | `1e-3` | `1e-3` |
-| Elementwise / quantization | `1e-1` or custom | — |
+| Op type                    | `atol`           | `rtol` |
+| -------------------------- | ---------------- | ------ |
+| Attention fwd (fp16/bf16)  | `5e-3`           | `1e-5` |
+| Attention decode           | `1e-2`           | `1e-2` |
+| GEMM / linear              | `1e-3`           | `1e-3` |
+| Elementwise / quantization | `1e-1` or custom | —      |
 
 ### Reference implementation
 
@@ -121,6 +121,7 @@ def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
     b_f = b.float().flatten()
     return torch.nn.functional.cosine_similarity(a_f, b_f, dim=0).item()
 
+
 # in the test:
 sim = cosine_sim(out, ref)
 assert sim >= 0.999, f"cosine similarity {sim:.6f} < 0.999"
@@ -128,7 +129,7 @@ assert sim >= 0.999, f"cosine similarity {sim:.6f} < 0.999"
 
 Add a comment explaining why `torch.allclose` was replaced and what debugging was attempted.
 
----
+______________________________________________________________________
 
 ## Example: attention fwd op
 
@@ -149,34 +150,40 @@ def ref_mha_fwd(q, k, v, is_causal):
     return out.transpose(1, 2).contiguous()
 
 
-@pytest.mark.parametrize("batch, seq_len, heads, dim, is_causal, dtype, tune", [
-    (1,  1024,  8,  64, False, torch.float16,  False),
-    (4,  2048, 16, 128, False, torch.bfloat16, False),
-    (8,  4096, 16, 128, True,  torch.float16,  False),
-    (2,  1024, 32,  64, True,  torch.bfloat16, False),
-    (4,  2048, 16, 128, False, torch.bfloat16, True),
-])
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, dim, is_causal, dtype, tune",
+    [
+        (1, 1024, 8, 64, False, torch.float16, False),
+        (4, 2048, 16, 128, False, torch.bfloat16, False),
+        (8, 4096, 16, 128, True, torch.float16, False),
+        (2, 1024, 32, 64, True, torch.bfloat16, False),
+        (4, 2048, 16, 128, False, torch.bfloat16, True),
+    ],
+)
 def test_mha_fwd(batch, seq_len, heads, dim, is_causal, dtype, tune):
     torch.manual_seed(42)
-    op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, is_causal, dtype, tune=tune)
+    op = MultiHeadAttentionFwdOp(
+        batch, heads, seq_len, dim, is_causal, dtype, tune=tune
+    )
 
-    q = torch.randn(batch, seq_len, heads, dim, device='cuda', dtype=dtype)
-    k = torch.randn(batch, seq_len, heads, dim, device='cuda', dtype=dtype)
-    v = torch.randn(batch, seq_len, heads, dim, device='cuda', dtype=dtype)
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=dtype)
+    k = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=dtype)
+    v = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=dtype)
 
     with torch.no_grad():
         out = op(q, k, v)
     ref = ref_mha_fwd(q, k, v, is_causal)
 
-    assert torch.allclose(out, ref, atol=5e-3, rtol=1e-5), \
-        f"max err: {(out - ref).abs().max()}"
+    assert torch.allclose(
+        out, ref, atol=5e-3, rtol=1e-5
+    ), f"max err: {(out - ref).abs().max()}"
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
 ```
 
----
+______________________________________________________________________
 
 ## Checklist
 

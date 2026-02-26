@@ -3,18 +3,19 @@
 Reference implementations: `tileops/ops/mha.py`, `tileops/ops/gqa_decode.py`, `tileops/ops/deepseek_nsa.py`
 Base class: `tileops/ops/op.py`
 
----
+______________________________________________________________________
 
 ## Overview
 
 An `Op` is a thin orchestration layer that:
+
 1. Holds kernel instances (one or more `Kernel` subclasses)
-2. Dispatches to the correct kernel based on hardware via `dispatch_kernel`
-3. Exposes a `forward` method that calls the kernel(s) and handles any pre/post-processing
+1. Dispatches to the correct kernel based on hardware via `dispatch_kernel`
+1. Exposes a `forward` method that calls the kernel(s) and handles any pre/post-processing
 
 An `Op` does **not** implement GPU computation itself — that lives in the `Kernel`.
 
----
+______________________________________________________________________
 
 ## File Location and Naming
 
@@ -27,7 +28,7 @@ tileops/ops/<op_name>.py
 - Group multiple related ops in one file when they share the same kernel set (e.g. `mha.py` contains both `MultiHeadAttentionFwdOp` and `MultiHeadAttentionBwdOp`)
 - After creating the file, register all new classes in `tileops/ops/__init__.py`
 
----
+______________________________________________________________________
 
 ## File Structure
 
@@ -36,13 +37,14 @@ tileops/ops/<op_name>.py
 ```
 
 A single op file contains:
+
 1. Imports
-2. `__all__` declaration
-3. One or more `Op` subclasses
+1. `__all__` declaration
+1. One or more `Op` subclasses
 
 After creating the file, register the new class in `tileops/ops/__init__.py`.
 
----
+______________________________________________________________________
 
 ## Part 1: Imports
 
@@ -59,7 +61,7 @@ from .op import Op
 
 Only import `is_hopper` from `tileops.utils` if the op needs to dispatch different kernels per architecture.
 
----
+______________________________________________________________________
 
 ## Part 2: Op Class
 
@@ -172,7 +174,7 @@ For ops that need input validation or padding before calling the kernel (see `gq
         return self.kernel(q, k, ...)
 ```
 
----
+______________________________________________________________________
 
 ## Part 3: Register in `__init__.py`
 
@@ -189,7 +191,7 @@ __all__ = [
 ]
 ```
 
----
+______________________________________________________________________
 
 ## Key Points
 
@@ -201,7 +203,7 @@ __all__ = [
 - `tune=False` is always before `kernel_map`; `kernel_map` is always the last `__init__` parameter
 - `accum_dtype` is never a parameter of the Op — it is hardcoded inside the Kernel
 
----
+______________________________________________________________________
 
 ## Unit Test Requirement
 
@@ -212,10 +214,14 @@ Every new op **must** have a passing unit test in `tests/ops/test_<op_name>.py` 
 When the unit test fails due to numerical mismatch, follow this process in order:
 
 1. **Do not loosen tolerances.** A large numerical error indicates a real bug, not a precision issue. The PyTorch reference is the ground truth.
-2. **Check the algorithm first.** Compare the tilelang implementation step-by-step against the official reference URL in the kernel's docstring — scale factors, layout (BSHD vs BHSD), masking logic, softmax normalization, etc.
-3. **Check memory layout and indexing.** Verify that tensor shapes, strides, and index expressions in `T.copy` / `T.gemm` match the intended layout.
-4. **Isolate the stage.** If the kernel has multiple stages (e.g. QK gemm → softmax → PV gemm), add intermediate checks to identify which stage produces the wrong result.
-5. **Replace tilelang primitives with scalar equivalents for debugging.** If the above steps do not reveal the bug, temporarily replace tilelang primitives with simpler equivalents to rule out compiler/primitive bugs:
+
+1. **Check the algorithm first.** Compare the tilelang implementation step-by-step against the official reference URL in the kernel's docstring — scale factors, layout (BSHD vs BHSD), masking logic, softmax normalization, etc.
+
+1. **Check memory layout and indexing.** Verify that tensor shapes, strides, and index expressions in `T.copy` / `T.gemm` match the intended layout.
+
+1. **Isolate the stage.** If the kernel has multiple stages (e.g. QK gemm → softmax → PV gemm), add intermediate checks to identify which stage produces the wrong result.
+
+1. **Replace tilelang primitives with scalar equivalents for debugging.** If the above steps do not reveal the bug, temporarily replace tilelang primitives with simpler equivalents to rule out compiler/primitive bugs:
 
    - Replace `T.Pipelined` with `T.serial` (removes software pipelining)
    - Replace `T.copy(src, dst)` with a `T.Parallel` loop and element-wise assignment:
@@ -232,9 +238,10 @@ When the unit test fails due to numerical mismatch, follow this process in order
              C[i, j] += A[i, k] * B[j, k]  # adjust indices for transpose_B
      ```
    - Mark all such changes with a `# DEBUG:` comment so they are easy to find and revert.
-6. **Revert debug changes** once the bug is found and fixed. Do not leave `T.serial` / explicit loops in production code.
 
----
+1. **Revert debug changes** once the bug is found and fixed. Do not leave `T.serial` / explicit loops in production code.
+
+______________________________________________________________________
 
 - [ ] Class name is CamelCase and ends with `Op`
 - [ ] File placed at `tileops/ops/<op_name>.py` following lowercase underscore naming
