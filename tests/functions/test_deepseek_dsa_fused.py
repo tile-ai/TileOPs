@@ -12,7 +12,7 @@ from typing import Any
      "group_kv", "q_start_index_s", "quant_in_dtype", "clean_logits", "in_dtype", "out_dtype",
      "sm_scale", "is_causal", "dsa_dtype", "tune"),
     [
-        (1, 512, 1024, 64, 256, 32, 64, 32, 1, 1, 512, torch.float16, True, 'float16', 'int32',
+        (1, 512, 1024, 64, 256, 32, 128, 32, 1, 1, 512, torch.float16, True, 'float16', 'int32',
          None, True, 'float16', False),
 
         # (1,1024,2048,128,512,64,128,64,1,1,1024,'float16',True,'float32','int32',None,True,'float16',False),
@@ -38,13 +38,13 @@ from typing import Any
         #   True, torch.float32, True)
     ])
 def test_deepseek_dsa_fused(
-        seq_len_kv: int,
-        index_dim: int,
-        seq_len: int,
-        heads: int,
         batch: int,
-        topk: int,
+        seq_len: int,
+        seq_len_kv: int,
+        heads: int,
         dim: int,
+        index_dim: int,
+        topk: int,
         dim_tail: int,
         stride_kv: int,
         group_kv: int,
@@ -145,5 +145,5 @@ if __name__ == "__main__":
     #                         "int32", 0.5, True, torch.bfloat16, False),
     # test_deepseek_dsa_fused(4, 256, 128, 16, 128, 512, 25, 128, 64, 8, 1, torch.float32, False,
     #                         "float32", "int64", 1.0, True, torch.float32, True)
-    test_deepseek_dsa_fused(1, 512, 1024, 64, 256, 32, 64, 32, 1, 1, 512, torch.float16, True,
+    test_deepseek_dsa_fused(1, 512, 1024, 64, 256, 32, 128, 32, 1, 1, 512, torch.float16, True,
                             'float16', 'int32', None, True, 'float16', False)

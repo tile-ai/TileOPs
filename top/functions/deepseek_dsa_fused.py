@@ -135,8 +135,9 @@ class DeepSeekDSAFusedFunc(Function):
         self.topk_op = TopkSelectorOp(
             batch=batch,
             seq_len=seq_len,
+            seq_len_kv=seq_len_kv,
             topk=topk,
-            in_dtype=in_dtype,
+            in_dtype=torch.float32,
             out_dtype=out_dtype,
             tune=tune)
 

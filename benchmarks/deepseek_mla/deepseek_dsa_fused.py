@@ -76,9 +76,15 @@ class DeepSeekDSAFusedBenchmark:
             "cu_seqlen_ke":
                 torch.full((self.seq_len,), self.seq_len_kv, dtype=torch.int32, device=self.device),
             "starts":
-                torch.zeros(self.batch, dtype=torch.int32, device=self.device),
+                torch.zeros(self.batch, self.seq_len, dtype=torch.int32, device=self.device),
             "ends":
-                torch.full((self.batch,), self.seq_len_kv, dtype=torch.int32, device=self.device),
+                torch.full((
+                    self.batch,
+                    self.seq_len,
+                ),
+                           self.seq_len_kv,
+                           dtype=torch.int32,
+                           device=self.device),
             "query":
                 torch.randn(
                     self.batch,
