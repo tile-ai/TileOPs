@@ -10,13 +10,19 @@ on:
     branches:
       - main
       - dev
+  pull_request_target:
+    types: [opened]
+    branches:
+      - main
+      - dev
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   validate-commits:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,8 +53,8 @@ jobs:
           exit $STATUS
 
   validate-pr-title:
+    if: github.event_name == 'pull_request' && github.event.action != 'synchronize'
     runs-on: ubuntu-latest
-    if: github.event.action != 'synchronize'
     steps:
       - name: Validate PR title format
         env:
@@ -67,12 +73,8 @@ jobs:
           echo "PR title is valid: $PR_TITLE"
 
   label-pr:
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
-    needs: [validate-commits, validate-pr-title]
-    if: >-
-      github.event.action != 'synchronize' &&
-      needs.validate-pr-title.result == 'success' &&
-      needs.validate-commits.result == 'success'
     steps:
       - name: Extract type and apply label
         env:
