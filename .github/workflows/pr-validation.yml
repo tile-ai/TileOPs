@@ -64,4 +64,3 @@ jobs:
             exit 1
           fi
           echo "PR title is valid: $PR_TITLE"
-
