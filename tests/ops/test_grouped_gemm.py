@@ -91,6 +91,7 @@ def test_grouped_gemm_complete(batch_sum: int, batch_count: int, N: int, K: int,
     benchmark = GroupedGemmBenchmark(batch_sum, batch_count, N, K, dtype)
 
     inputs = benchmark.gen_inputs()
+    benchmark.check_fn(op, *inputs)
 
     for _ in range(1):
         op(*inputs)
