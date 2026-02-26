@@ -38,7 +38,7 @@ class Op(ABC):
     """
 
     kernel: Kernel
-    kernel_map: Optional[Dict[str, Kernel]] = {}
+    kernel_map: Optional[Dict[str, Kernel]] = None
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
@@ -50,6 +50,7 @@ class Op(ABC):
 
     def dispatch_kernel(self, kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
         assert self.default_kernel_map is not None and len(self.default_kernel_map) > 0
+        self.kernel_map = {}
         for name, default_kernel in self.default_kernel_map.items():
             if kernel_map is not None and name in kernel_map:
                 kernel_type = kernel_map[name]
