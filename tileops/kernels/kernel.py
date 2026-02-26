@@ -53,6 +53,10 @@ class Kernel(ABC):
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
+        if not hasattr(self, 'kernel') or self.kernel is None:
+            raise AttributeError(
+                f"Cannot autotune {self.__class__.__name__}: 'self.kernel' is not set. "
+                "Set 'self.kernel' in __init__ before calling init_config with tune=True.")
         print(f'Start autotuning {self.__class__.__name__}...')
 
         # Apply autotune decorator to the kernel function
