@@ -358,10 +358,9 @@ def test_grouped_gemm_complete(batch_sum: int, batch_count: int, N: int, K: int,
     fn = GroupedGemmFunc(batch_sum, batch_count, N, K, dtype, tune=tune)
     test = GroupedGemmCompleteTest(batch_sum, batch_count, N, K, dtype)
     inputs = test.gen_inputs()
-    # Original test only verifies the op runs without error (no backward check)
-    with torch.no_grad():
-        fn(*inputs)
-    print("GroupedGemmFunc complete forward passed.")
+    inputs[0].requires_grad_(True)  # A
+    inputs[1].requires_grad_(True)  # B
+    test.check_fn(fn, *inputs)
 
 
 if __name__ == "__main__":
