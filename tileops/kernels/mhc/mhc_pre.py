@@ -276,6 +276,8 @@ def _(
     n_expand: int,
     c_x: int,
     dtype: str,
+    block_x_b: int,
+    block_C: int,
     num_stages: int,
     threads: int,
     *input,
