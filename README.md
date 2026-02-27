@@ -57,10 +57,14 @@ TODO
 
 ## 📦 Install with pip
 
-### Requirements
+### Prerequisites
 
 - Python >= 3.10
-- Torch >= 2.1
+- PyTorch >= 2.1
+- CUDA Toolkit (required — this is a GPU kernel project)
+- A CUDA-capable NVIDIA GPU
+  - Tested architectures: **Ampere** (SM_80, SM_86) and **Hopper** (SM_90)
+  - Other architectures may work but are not tested
 - [TileLang](https://github.com/tile-ai/tilelang) == 0.1.8
 
 ### Method 1: Install from PyPI
@@ -69,12 +73,24 @@ TODO
 pip install tileops
 ```
 
-### Method 2: Install from source (editable mode for development)
+### Method 2: Install from source (for development)
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
-pip install -e '.[dev]' -v # remove -e option if you don't want to install in editable mode, -v for verbose output
+pip install -e '.[dev]' -v
+```
+
+> [!NOTE]
+> If you have CUDA and TileLang already installed system-wide and encounter build issues, try:
+> `PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -v`
+> This disables pip's build isolation so it can find your existing CUDA/TileLang installation.
+
+After installing, set up the pre-commit hooks and verify with a test run:
+
+```bash
+pre-commit install          # enables lint checks before each commit
+python -m pytest tests/ -q  # run the test suite (requires a CUDA GPU)
 ```
 
 ## 🚀 Quick Start
