@@ -72,7 +72,7 @@ git diff --cached --stat
 ```
 
 - Confirm there are staged changes. If nothing is staged, stop and ask the user what to stage.
-- Confirm the Python environment: `conda activate top`
+- Confirm the Python environment is active (venv, conda, etc.) and dependencies are installed.
 
 ### Phase 1: Run pre-commit
 
@@ -83,7 +83,7 @@ pre-commit run --all-files
 - If any hook fails, fix the issues and re-stage before proceeding.
 - Do NOT skip hooks with `--no-verify`.
 - Common fixes:
-  - Formatting: `yapf --recursive --in-place .` then re-stage
+  - Formatting: `ruff format .` then re-stage
   - Lint: `ruff check --fix .` then re-stage
   - Spelling: fix the flagged words in `docs/spelling_wordlist.txt` or the source file
 
@@ -98,6 +98,7 @@ If you are constructing the message programmatically, validate it yourself:
 ```python
 import re
 
+# Keep this in sync with VALID_TYPES in scripts/hooks/commit-msg
 VALID_TYPES = r"Feat|BugFix|Refactor|Enhancement|Doc|Chore|Bench|Lint|CI|Test"
 pattern = re.compile(rf"^\[({VALID_TYPES})\](\[[\w\-]+\])? .+")
 assert pattern.match(msg), f"Invalid commit message: {msg}"
@@ -127,9 +128,8 @@ ______________________________________________________________________
 ## Installing the hooks (one-time setup)
 
 ```bash
-pre-commit install                        # installs pre-commit hook
-cp scripts/hooks/commit-msg .git/hooks/commit-msg  # installs commit-msg hook
-chmod +x .git/hooks/commit-msg
+pre-commit install                          # installs pre-commit hook
+pre-commit install --hook-type commit-msg   # installs commit-msg hook
 ```
 
 Both must be installed for full validation.

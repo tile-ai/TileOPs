@@ -57,3 +57,11 @@ repos:
           - mdformat-myst==0.2.1
           - mdformat-tables==1.0.0
           - mdformat-toc==0.3.0
+
+  - repo: local
+    hooks:
+      - id: commit-msg-format
+        name: Validate commit message format
+        language: script
+        entry: scripts/hooks/commit-msg
+        stages: [commit-msg]

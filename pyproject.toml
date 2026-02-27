@@ -33,6 +33,8 @@ Issues = "https://github.com/tile-ai/TileOPs/issues"
 dev = [
     "ruff==0.14.13",
     "codespell==2.4.1",
+    "pre-commit>=3.0",
+    "mdformat==0.7.22",
     "pytest>=8.0",
 ]
 
