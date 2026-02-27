@@ -48,7 +48,7 @@ if ! command -v gh &> /dev/null; then
 fi
 
 if ! command -v jq &> /dev/null; then
-  echo '{"status":"error","message":"jq not found"}'
+  echo '{"status":"error","message":"jq not found. Install jq or ensure it is on PATH."}'
   exit 1
 fi
 

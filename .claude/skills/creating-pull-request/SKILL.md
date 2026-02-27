@@ -167,6 +167,8 @@ After the subagent returns `PR_NUMBER`, the main agent enters a **poll-handle lo
 
 ### Phase 3: Poll
 
+**Dependencies**: The poll script requires `gh` (GitHub CLI, authenticated) and `jq`. If either is missing, the script returns a JSON error to stdout — proceed to Phase 4a (do NOT silently work around it).
+
 Launch the poll script in background (**zero token cost** during the wait):
 
 ```bash
@@ -195,13 +197,15 @@ The script polls CI checks and review comments every 30 seconds for up to 10 min
 
 Parse the JSON and follow this decision tree **in order** (first matching branch wins):
 
-#### 4a. Timeout / error → ask user to retry later
+#### 4a. Timeout / error → STOP and ask user
 
 If `status == "error"` or `status == "timeout"`:
 
-> "PR #\{pr_number} — poll returned `{status}`.
+> "PR #\{pr_number} — poll returned `{status}`: \{message}.
 > You can retry later: `.claude/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}`
 > Or ask me to continue monitoring."
+
+**You MUST stop and ask the user.** Do NOT silently fall back to manual polling or alternative approaches. The user decides how to proceed.
 
 **Exit the loop.**
 
@@ -275,7 +279,13 @@ gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments/<COMMENT_ID>/replies \
 
 ### Phase 5: Verify done
 
-If `ci.state == "success"` AND `reviews.new_inline_comments` is empty AND `reviews.new_review_bodies` is empty (or all have been replied to):
+**All** of these must be true to declare done:
+
+1. `ci.state == "success"` — **not** "pending". If any check is still pending (e.g. waiting for a GPU runner), you cannot declare done. Re-poll or ask the user.
+1. `reviews.new_inline_comments` is empty (or all replied to)
+1. `reviews.new_review_bodies` is empty (or all replied to)
+
+If done:
 
 > "PR #\{pr_number} is ready for human review:
 >
@@ -284,6 +294,8 @@ If `ci.state == "success"` AND `reviews.new_inline_comments` is empty AND `revie
 > - URL: \{pr_url}"
 
 **Exit the loop.**
+
+If `ci.state == "pending"` and no failures/reviews to handle → **re-poll** (back to Phase 3). If still pending after max rounds, report status to user and let them decide.
 
 > **Note on `unresolved_count`**: The poll script counts all non-author inline comments (REST API lacks thread resolution state). The agent should verify it has replied to every comment in both `new_inline_comments` and `new_review_bodies` before considering the PR done.
 
