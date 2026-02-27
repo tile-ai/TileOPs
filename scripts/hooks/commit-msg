@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""commit-msg hook: enforce TileOPs commit message convention.
+
+Install:
+    pre-commit install --hook-type commit-msg
+
+Convention (from docs/CONTRIBUTING.md):
+    [Type] Description
+    [Type][Scope] Description
+
+Valid types: Feat, BugFix, Refactor, Enhancement, Doc, Chore, Bench, Lint, CI, Test
+"""
+
+import re
+import sys
+
+VALID_TYPES = [
+    "Feat",
+    "BugFix",
+    "Refactor",
+    "Enhancement",
+    "Doc",
+    "Chore",
+    "Bench",
+    "Lint",
+    "CI",
+    "Test",
+]
+
+# Matches: [Type] desc  or  [Type][Scope] desc
+_TYPES_RE = "|".join(re.escape(t) for t in VALID_TYPES)
+PATTERN = re.compile(rf"^\[({_TYPES_RE})\](\[[\w\-]+\])? .+")
+
+MAX_SUBJECT_LEN = 72
+
+
+def main() -> int:
+    commit_msg_file = sys.argv[1]
+    with open(commit_msg_file, encoding="utf-8") as f:
+        lines = f.readlines()
+
+    # Strip comment lines (git inserts these with '#')
+    subject_lines = [l for l in lines if not l.startswith("#")]
+    if not subject_lines:
+        print("ERROR: commit message is empty.", file=sys.stderr)
+        return 1
+
+    subject = subject_lines[0].rstrip("\n")
+
+    errors = []
+
+    if not PATTERN.match(subject):
+        errors.append(
+            f"  Subject must start with [Type] or [Type][Scope] followed by a space and description.\n"
+            f"  Valid types: {', '.join(VALID_TYPES)}\n"
+            f"  Examples:\n"
+            f"    [Feat] Add multi-head attention forward op\n"
+            f"    [BugFix][MHA] Fix index out of bounds\n"
+            f"  Got: {subject!r}")
+
+    if len(subject) > MAX_SUBJECT_LEN:
+        errors.append(
+            f"  Subject line too long ({len(subject)} chars, max {MAX_SUBJECT_LEN}).\n"
+            f"  Got: {subject!r}")
+
+    if subject.rstrip().endswith("."):
+        errors.append(
+            f"  Subject line must not end with a period.\n  Got: {subject!r}")
+
+    if errors:
+        print("COMMIT REJECTED — invalid commit message:\n", file=sys.stderr)
+        for err in errors:
+            print(err, file=sys.stderr)
+        print(
+            "\nFix the message and retry. See docs/CONTRIBUTING.md § 'Step 3: Commit'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
