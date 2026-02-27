@@ -58,11 +58,10 @@ ______________________________________________________________________
 1. Implement TileLang kernels by stage (same logical decomposition as reference).
 1. Keep output semantics compatible with existing interfaces.
 1. Handle core edge cases early (for example: empty paths / `num_topk == 0`).
-1. Follow the conventions in [`.claude/create-new-kernel/skill.md`](../create-new-kernel/skill.md): file layout, naming, dtype rules, memory hierarchy, attention variants, wrapper/register_fake pattern, and docstring requirements.
 
 ### Phase D: Upper Layer Wiring
 
-1. Add `op` wrapper for kernel invocation + runtime contract. Follow [`.claude/create-new-op/skill.md`](../create-new-op/skill.md) for Op class structure, kernel dispatch, and `__init__.py` registration.
+1. Add `op` wrapper for kernel invocation + runtime contract.
 1. Add `function` API for reusable composition and shape/dtype validation.
 1. Add `layer` abstraction only when module-style integration is needed.
 1. Keep dependency direction one-way: `layer -> function -> op -> kernel`.
@@ -71,7 +70,7 @@ ______________________________________________________________________
 
 1. Ensure layer-matched tests exist:
 
-- `tests/ops` for op behavior — follow [`.claude/create-new-op-test/skill.md`](../create-new-op-test/skill.md) for test structure, parametrization, dtype coverage, and debugging protocol
+- `tests/ops` for op behavior
 - `tests/functions` for functional integration
 - `tests/layers` when a layer is introduced
 
@@ -105,12 +104,11 @@ Before opening a PR, verify all required items are present:
 
 - [ ] New/updated kernel implementation exists
 - [ ] Kernel handles documented edge cases
-- [ ] Follows conventions in [`.claude/create-new-kernel/skill.md`](../create-new-kernel/skill.md)
 
 2. **L2: Op (`tileops/ops`)**
 
 - [ ] Op API wraps kernel with stable argument contract
-- [ ] Op-level tests added/updated in `tests/ops` — follows [`.claude/create-new-op-test/skill.md`](../create-new-op-test/skill.md)
+- [ ] Op-level tests added/updated in `tests/ops`
 - [ ] Benchmark script added/updated in `benchmarks`
 
 3. **L3: Function (`tileops/functions`)**
