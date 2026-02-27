@@ -257,21 +257,37 @@ class <KernelName>Kernel(Kernel):
 Key points:
 
 - `forward` calls `_<kernel_name>_wrapped_kernel` (the registered wrapper), not the raw kernel function directly
+
 - `init_config(config, tune)` must be the last call in `__init__`; it reads `default_config` and `autotune_configs`
+
 - `accum_dtype` is not stored on the class; it is hardcoded inside the kernel function
+
 - Only cast index/offset tensors (e.g. `offsets`, `token_indices`) to `torch.int32` in `forward`; do NOT cast floating-point tensors
 
 - [ ] `out_idx` in `@tilelang.jit` points to the correct output tensor position
+
 - [ ] `register_fake` output shape matches the real kernel output
+
 - [ ] `custom_op` name is unique: `"top::<kernel_name>_wrapped_kernel"`
+
 - [ ] File placed under `tileops/kernels/<feature_name>/<kernel_name>.py` and exported from its `__init__.py`
+
 - [ ] Class name is CamelCase and ends with `Kernel`
+
 - [ ] Class has docstring with: input tensor shapes, computation logic, reference URL
+
 - [ ] `supported_archs` is set appropriately
+
 - [ ] `init_config` is called at the end of `__init__`
+
 - [ ] `forward` calls the wrapper (`_<kernel_name>_wrapped_kernel`), not the raw kernel directly
+
 - [ ] Index/offset tensors (e.g. `offsets`, `token_indices`) are cast to `torch.int32` in `forward`; do NOT cast floating-point tensors
+
 - [ ] Default dtype is `float16` (exposed); accumulator is `float32` (hardcoded internally)
+
 - [ ] Global memory is copied to shared memory before computation
+
 - [ ] Reductions operate on fragments, not shared memory
+
 - [ ] `@T.prim_func` is kept minimal; complex logic is in `@T.macro` helpers

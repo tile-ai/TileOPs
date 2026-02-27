@@ -114,8 +114,12 @@ def forward(self, Q, K, V, real_seqlen_kv):
     Output_partial = torch.empty(
         (..., self.config["num_split"], ...), dtype=..., device=Q.device
     )
-    return _<attn_name>_decode_wrapped_kernel(
-        ..., self.config["num_split"], Q, K, V, glse, Output_partial
+    return (
+        _
+        < attn_name
+        > _decode_wrapped_kernel(
+            ..., self.config["num_split"], Q, K, V, glse, Output_partial
+        )
     )
 ```
 
