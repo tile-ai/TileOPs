@@ -145,7 +145,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Lock and validate GPU frequency
+      - name: Validate GPU frequency
         run: |
           set -euo pipefail
           TARGET_CLOCK_MHZ=1830
@@ -159,12 +159,6 @@ jobs:
 
           echo "Detected GPUs:"
           nvidia-smi -L
-
-          echo "Locking GPU graphics clocks to ${TARGET_CLOCK_MHZ} MHz..."
-          if ! nvidia-smi -lgc "${TARGET_CLOCK_MHZ},${TARGET_CLOCK_MHZ}"; then
-            echo "::error::Failed to lock GPU graphics clock. Ensure runner has permission."
-            exit 1
-          fi
 
           attempt=1
           while [ "$attempt" -le "$RETRIES" ]; do
