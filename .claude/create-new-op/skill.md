@@ -1,3 +1,8 @@
+---
+name: create-new-op
+description: Create a new TileOps Op — Op class structure, kernel dispatch via dispatch_kernel, forward method, and __init__.py registration. For attention-specific conventions, also use create-new-op-attention. Auto-invoke when the user asks to create, implement, or add a new Op in TileOps.
+---
+
 # Skill: Creating a New TileOps Op
 
 Reference implementations: `tileops/ops/mha.py`, `tileops/ops/gqa_decode.py`, `tileops/ops/deepseek_nsa.py`

@@ -1,3 +1,8 @@
+---
+name: create-new-op-test
+description: Write correctness unit tests for a new TileOps Op — pytest structure, parametrization, dtype coverage, tolerance guidelines, reference implementation, and debugging protocol. Auto-invoke when the user asks to write, add, or update tests for a TileOps op.
+---
+
 # Skill: Writing Op Correctness Unit Tests
 
 Reference tests: `tests/ops/`
