@@ -1,167 +1,140 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any, Optional, Tuple
 
 import torch
 from tilelang.profiler import do_bench
 
-from tileops.ops import Op
+from tests.test_base import TestBase
 
 
-class Benchmark(ABC):
+class BenchmarkBase(ABC):
+    """Abstract base class for op benchmarking.
 
-    op_type: type[Op]
+    Takes a TestBase instance to share gen_inputs().
+    Subclass must implement calculate_flops() and calculate_memory().
+    """
 
-    @property
-    def total_flops(self) -> Optional[float]:
-        raise NotImplementedError
-
-    @property
-    def total_memory(self) -> Optional[float]:
-        raise NotImplementedError
-
-    def gen_inputs(self) -> Any:
-        raise NotImplementedError
-        # TODO: impl this?
+    def __init__(self, test: TestBase):
+        self.test = test
 
     @abstractmethod
-    def ref_program(self, *inputs: Tuple[torch.Tensor]) -> Any:
+    def calculate_flops(self) -> Optional[float]:
         raise NotImplementedError
 
-    def check(self,
-              op: Op,
-              *inputs: Tuple[torch.Tensor],
-              atol: float = 1e-08,
-              rtol: float = 1e-05) -> None:
-        """Check the correctness of the op"""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        with torch.no_grad():
-            outputs = op(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref, strict=True)):
-            if output_ref is not None:  # skip checking for None placeholders in ref
-                max_err = (output - output_ref).abs().max()
-                assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
-                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {max_err}"
-
-        print(f"All checks passed for {op.__class__.__name__}.✅")
-
-    def check_fn(self,
-                 fn: callable,
-                 *inputs: Tuple[torch.Tensor],
-                 atol: float = 1e-08,
-                 rtol: float = 1e-05,
-                 grad: bool = True) -> None:
-        """Check the correctness of the function and layer"""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"⚠️  Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        if not grad:
-            with torch.no_grad():
-                outputs = fn(*inputs)
-        else:
-            output = fn(*inputs)
-            loss = output.sum()
-            loss.backward()
-            outputs = []
-            outputs.append(output)
-            for inp in inputs:
-                outputs.append(inp.grad)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), \
-            f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
-        for i, (output, output_ref) in enumerate(zip(outputs, outputs_ref, strict=True)):
-            if output_ref is not None:  # skip checking for None placeholders in ref
-                max_err = (output - output_ref).abs().max()
-                assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
-                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {max_err}"
-
-        print(f"All checks passed for {fn.__class__.__name__}.✅")
+    @abstractmethod
+    def calculate_memory(self) -> Optional[float]:
+        raise NotImplementedError
 
     def profile(self,
-                op: Op,
+                functor: Any,
                 *inputs: Tuple[torch.Tensor],
                 warmup: int = 100,
-                rep: int = 100) -> None:
-        """Benchmark the perf of the op"""
-        print(f"===== Profiling {op.__class__.__name__} =====")
-        print(f"{op.__class__.__name__} profile with warmup: {warmup}, rep: {rep}")
+                rep: int = 100) -> dict:
+        """Profile a callable and return structured results.
 
+        Works for both tileops ops and baseline implementations.
+        """
         def bench_fn():
-            return op(*inputs)
-
-        with torch.no_grad():
-            latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='cupti')
-            if latency <= 0:
-                # cupti backend can fail (e.g. under Nsight Compute), fall back to event-based timing
-                latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='event')
-
-        print(f"{op.__class__.__name__} tl-latency: {latency:.2f} ms")
-        if self.total_flops is not None:
-            print(
-                f"{op.__class__.__name__} tl-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops"
-            )
-        if self.total_memory is not None:
-            bandwidth = self.total_memory / latency * 1e-9
-            print(f"{op.__class__.__name__} tl-Bandwidth: {bandwidth:.2f} GB/s")
-
-    def baseline_profile(self,
-                         baseline_op: Op,
-                         *inputs: Tuple[torch.Tensor],
-                         backend: str = "Base",
-                         warmup: int = 100,
-                         rep: int = 100,
-                         device: str = "cuda:0") -> None:
-        """Benchmark the perf of the baseline op"""
-        print(f"===== Profiling {backend} =====")
-        print(f"{backend} profile with warmup: {warmup}, rep: {rep}")
-
-        def bench_fn():
-            return baseline_op(*inputs)
+            return functor(*inputs)
 
         with torch.no_grad():
             latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='cupti')
             if latency <= 0:
                 latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='event')
 
-        print(f"{backend} Baseline-latency: {latency:.2f} ms")
-        if self.total_flops is not None:
-            print(f"{backend} Baseline-TFlops: {self.total_flops / latency * 1e-9:.2f} TFlops")
-        if self.total_memory is not None:
-            print(f"{backend} Baseline-Bandwidth: {self.total_memory / latency * 1e-9:.2f} GB/s")
+        result = {"latency_ms": latency}
+        flops = self.calculate_flops()
+        if flops is not None:
+            result["tflops"] = flops / latency * 1e-9
+        memory = self.calculate_memory()
+        if memory is not None:
+            result["bandwidth_gbs"] = memory / latency * 1e-9
+        return result
+
+
+class BenchmarkReport:
+    """Collects benchmark results and dumps a markdown report.
+
+    All methods are static — use as BenchmarkReport.record(...).
+    Call clear() at session start, dump() at session end.
+    """
+    _records: dict = {}
+
+    @staticmethod
+    def record(name: str, params: dict, result: dict, tag: str = "tileops") -> None:
+        """Record a benchmark result.
+
+        Args:
+            name: Benchmark group name (e.g. "gemm", "mha_fwd")
+            params: Parameter dict (typically from locals())
+            result: Dict with latency_ms, tflops, bandwidth_gbs
+            tag: Label to distinguish implementations (e.g. "tileops", "baseline")
+        """
+        # Filter params to only include serializable benchmark parameters
+        filtered_params = {
+            k: v for k, v in params.items()
+            if k not in ("test", "bm", "op", "inputs", "result", "result_bl",
+                         "baseline_fn", "tune")
+            and not k.startswith("_")
+            and isinstance(v, (int, float, bool, str, torch.dtype))
+        }
+        BenchmarkReport._records.setdefault(name, []).append({
+            "params": filtered_params,
+            "result": result,
+            "tag": tag,
+        })
+
+    @staticmethod
+    def dump(path: str) -> None:
+        """Write all collected results to a markdown-formatted log file."""
+        if not BenchmarkReport._records:
+            return
+
+        lines = [
+            "# TileOPs Benchmark Report",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+        ]
+
+        result_keys = ["latency_ms", "tflops", "bandwidth_gbs"]
+
+        for name, entries in BenchmarkReport._records.items():
+            if not entries:
+                continue
+
+            lines.append(f"## {name}")
+            lines.append("")
+
+            # Group by tag
+            tag_entries = {}
+            for entry in entries:
+                tag_entries.setdefault(entry["tag"], []).append(entry)
+
+            for tag, tag_group in tag_entries.items():
+                lines.append(f"### {tag}")
+                lines.append("")
+
+                param_keys = list(tag_group[0]["params"].keys())
+                header_parts = param_keys + result_keys
+                lines.append("| " + " | ".join(header_parts) + " |")
+                lines.append("| " + " | ".join(["---"] * len(header_parts)) + " |")
+
+                for entry in tag_group:
+                    row = [str(entry["params"].get(k, "")) for k in param_keys]
+                    for rk in result_keys:
+                        val = entry["result"].get(rk)
+                        row.append(f"{val:.2f}" if val is not None else "N/A")
+                    lines.append("| " + " | ".join(row) + " |")
+
+                lines.append("")
+
+        with open(path, "w") as f:
+            f.write("\n".join(lines))
+
+        print(f"Benchmark report saved to {path}")
+
+    @staticmethod
+    def clear() -> None:
+        """Clear all collected records."""
+        BenchmarkReport._records.clear()

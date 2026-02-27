@@ -121,14 +121,32 @@ Closes #<issue-number>
 - [x] pytest <N> passed
 ```
 
-4. Add labels (if your repo uses them):
+4. Add labels:
 
-- docs / bug / benchmark / ci
+You can add labels via GitHub CLI or GitHub MCP. Use the following labels based on the PR content:
 
-If the PR was fully AI-driven (no user discussion, no user code edits — e.g., selfplay mode), add the `All AI powered` label:
+| Label Name       | Description                                |
+| ---------------- | ------------------------------------------ |
+| all ai powered   | Issue or Pull request all finished by AI   |
+| breaking change  | Introduces backward-incompatible changes   |
+| bug              | Something isn't working                    |
+| ci               | -                                          |
+| docs             | Documentation improvements                 |
+| duplicate        | Duplicate of another issue                 |
+| enhancement      | Improvement to existing functionality      |
+| feature          | New feature or new operator                |
+| fix              | Auto-created by issue labeler              |
+| good first issue | Good for newcomers                         |
+| help wanted      | Extra attention is needed                  |
+| invalid          | Not a valid issue                          |
+| question         | Further information is requested           |
+| refactor         | Code restructuring without behavior change |
+| wontfix          | This will not be worked on                 |
+
+For example, to add the "all ai powered" label:
 
 ```bash
-gh pr edit <PR_NUMBER> --add-label "All AI powered"
+gh pr edit <PR_NUMBER> --add-label "all ai powered"
 ```
 
 ______________________________________________________________________

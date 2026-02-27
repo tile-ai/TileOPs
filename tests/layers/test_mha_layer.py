@@ -1,24 +1,26 @@
 import pytest
 import torch
 
-from benchmarks import MultiHeadAttentionBenchmark
+from tests.functions.test_mha_func import MhaFuncTest
+from tests.test_base import FixtureBase
 from tileops.layers import MultiHeadAttentionLayer
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, heads, dim, causal, dtype",
-    [
-        (8, 1024, 32, 128, False, torch.float16),
-    ],
-)
+class MhaLayerFixture(FixtureBase):
+    PARAMS = [
+        ("batch, seq_len, heads, dim, causal, dtype", [
+            (8, 1024, 32, 128, False, torch.float16),
+        ]),
+    ]
+
+
+@MhaLayerFixture
 def test_mha_layer(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
                    dtype: torch.dtype) -> None:
-
     mha = MultiHeadAttentionLayer(batch, heads, seq_len, dim, causal, dtype)
-    benchmark = MultiHeadAttentionBenchmark(batch, heads, seq_len, dim, causal, dtype)
-
-    inputs = benchmark.gen_inputs()
-    benchmark.check_fn(mha, *inputs, atol=3e-4, rtol=1e-5)
+    test = MhaFuncTest(batch, heads, seq_len, dim, causal, dtype)
+    inputs = test.gen_inputs()
+    test.check_fn(mha, *inputs, atol=3e-4, rtol=1e-5)
 
 
 if __name__ == "__main__":

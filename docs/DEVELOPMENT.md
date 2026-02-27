@@ -67,8 +67,9 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
 
 ### Step 5: Benchmark Results
 
-- **Location**: `benchmarks/{operator_name}.py`
+- **Location**: `benchmarks/ops/bench_{operator_name}.py`
 - **Goal**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
+- **Execution**: `pytest benchmarks/` auto-generates `profile_run.log`.
 - **Definition of Done**: Benchmark the op and put the results in the issue.
 
 ______________________________________________________________________
@@ -93,34 +94,71 @@ ______________________________________________________________________
 
 ## 4. Testing & Benchmarking Strategy
 
-### Unified Benchmark Object Pattern
+Tests and benchmarks are **separated by concern**: `pytest tests/` validates correctness only, `pytest benchmarks/` runs profiling only and auto-generates a markdown report (`profile_run.log`).
 
-To ensure consistency between tests and benchmarks, we use a **Unified Benchmark Object** pattern.
+### Core Abstractions
 
-1. **Define**: Create a subclass of `benchmarks.Benchmark` in `benchmarks/`.
-   - Implement `gen_inputs()`: Returns random inputs for testing.
-   - Implement `ref_program()`: The pure PyTorch reference implementation.
-1. **Verify**: In `tests/`, instantiate this object and call `.check(op, inputs)` or `.check_fn(fn, inputs)`.
-1. **Profile**: In `benchmarks/`, instantiate this object and call `.profile(op, inputs)`.
+| Class             | Location                  | Role                                                                                                                        |
+| ----------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `FixtureBase`     | `tests/test_base.py`      | Metaclass-based `@decorator` that applies `pytest.mark.parametrize` from a `PARAMS` class attribute.                        |
+| `TestBase`        | `tests/test_base.py`      | ABC with `gen_inputs()`, `ref_program()`, `check()`, `check_fn()`. Each op subclasses this.                                 |
+| `BenchmarkBase`   | `benchmarks/benchmark.py` | ABC wrapping a `TestBase` instance. Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
+| `BenchmarkReport` | `benchmarks/benchmark.py` | Static collector — `record()` stores results, `dump()` writes markdown, `clear()` resets.                                   |
+
+### Pattern
+
+```python
+# tests/ops/test_mha.py
+class MhaFwdFixture(FixtureBase):
+    PARAMS = [("batch, seq_len, heads, dim, causal, dtype, tune", [...])]
+
+
+class MhaFwdTest(TestBase):
+    def gen_inputs(self): ...
+    def ref_program(self, q, k, v): ...
+
+
+@MhaFwdFixture
+def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune):
+    test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
+    op = MultiHeadAttentionFwdOp(...)
+    test.check(op, *test.gen_inputs())
+
+
+# benchmarks/ops/bench_mha.py
+class MhaFwdBenchmark(BenchmarkBase):
+    def calculate_flops(self): ...
+    def calculate_memory(self): ...
+
+
+@MhaFwdFixture  # reuses the same parametrize decorator
+def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
+    test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
+    bm = MhaFwdBenchmark(test)
+    inputs = test.gen_inputs()
+    op = MultiHeadAttentionFwdOp(...)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record("mha_fwd", locals(), result, tag="tileops")
+```
 
 ### Unit Tests
 
 - **Framework**: `pytest`
 - **Location**: `tests/`
 - **Requirement**:
-  - **Reuse**: Tests **MUST** reuse the `gen_inputs` and `check` methods from the Benchmark object.
+  - Each op defines a `TestBase` subclass in `tests/ops/` with `gen_inputs()` and `ref_program()`.
   - Tests must cover `FP16` and `BF16` data types.
-  - Tests must parameterize over common Shapes (Batch size, Heads, Sequence length).
+  - Tests must parameterize over common shapes (Batch size, Heads, Sequence length).
 
 ### Benchmarks
 
-- **Framework**: `benchmarks.benchmark.Benchmark`.
-- **Location**: `benchmarks/`.
+- **Framework**: `benchmarks.benchmark.BenchmarkBase`
+- **Location**: `benchmarks/ops/`
+- **Execution**: `pytest benchmarks/` — auto-generates `profile_run.log` (markdown format).
 - **Metrics**:
   - Latency (ms)
   - TFLOPS (Terra Floating-point Operations Per Second)
   - DRAM Bandwidth (GB/s)
-  - Speedup vs PyTorch Native or other baselines.
 
 ______________________________________________________________________
 
@@ -129,14 +167,21 @@ ______________________________________________________________________
 ```text
 TileOPs/
 ├── tileops/
-│   ├── kernels/   # L1: TileLang Kernels
-│   ├── ops/       # L2: OP + Dispatcher
-│   ├── functions/ # L3: Autograd Functions
-│   ├── layers/    # L4: nn.Module
-│   └── utils/     # Utils
-├── tests/         # Unit tests
-├── benchmarks/    # Benchmarks and performance scripts
-└── docs/          # Project documentation
+│   ├── kernels/       # L1: TileLang Kernels
+│   ├── ops/           # L2: OP + Dispatcher
+│   ├── functions/     # L3: Autograd Functions
+│   ├── layers/        # L4: nn.Module
+│   └── utils/         # Utils
+├── tests/
+│   ├── test_base.py   # FixtureBase, TestBase
+│   ├── ops/           # Op-level correctness tests
+│   ├── functions/     # Function-level (fwd+bwd) tests
+│   └── layers/        # Layer-level tests
+├── benchmarks/
+│   ├── benchmark.py   # BenchmarkBase, BenchmarkReport
+│   ├── conftest.py    # Auto report generation hooks
+│   └── ops/           # Per-op benchmark definitions
+└── docs/              # Project documentation
 ```
 
 ## 6. Pull Request Process
