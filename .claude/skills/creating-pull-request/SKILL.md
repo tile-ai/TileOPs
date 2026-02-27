@@ -135,15 +135,23 @@ ______________________________________________________________________
 
 ### Phase 3: Handling Automated Code Reviews
 
-After PR creation, read review comments from all automated reviewers (Gemini Code Assist, Codex, Tile Paws, etc.):
+> **IMPORTANT**: This phase is **mandatory** after creating a PR. Do NOT consider the PR done until all review comments have been addressed.
 
-```bash
-gh api repos/tile-ai/TileOPs/pulls/<PR_NUMBER>/comments
-```
+After PR creation, **wait briefly then fetch all review feedback**. There are two types of comments to check:
+
+1. **Inline review comments** (file-level suggestions):
+   ```bash
+   gh api repos/tile-ai/TileOPs/pulls/<PR_NUMBER>/comments
+   ```
+
+2. **PR-level reviews** (overall review body, may contain high-level feedback):
+   ```bash
+   gh api repos/tile-ai/TileOPs/pulls/<PR_NUMBER>/reviews
+   ```
 
 **Every review comment MUST be replied to individually in its original thread.** Do NOT post a summary comment — reply directly in the review conversation so each finding has a one-to-one traceable response.
 
-For each comment (regardless of which bot posted it):
+For each inline comment (regardless of which bot posted it):
 
 1. **Analyze validity** — compare against existing reference implementations and project conventions
 1. **Reply in the original thread** via:
@@ -157,6 +165,7 @@ For each comment (regardless of which bot posted it):
    - **If declining as invalid**: state decline with a specific technical reason why the suggestion is unnecessary or incorrect. Example: `Declined. The API key check at L215 (shell level) runs before the Python heredoc, so the key is already validated.`
    - Never leave a review comment without a reply
 1. **If accepting**: apply fixes → `pre-commit run` → `make` (if needed) → commit → push, then reply with the fix commit hash
+1. **If the fix requires updating the PR description** (e.g., scope changed, new files added): update the PR body via `gh pr edit <PR_NUMBER> --body "..."`
 1. **If accepting AND the finding reveals a novel pattern** (not already covered by existing guidelines): document the new lesson in the appropriate project documentation (e.g., `docs/CONTRIBUTING.md`). Criteria for novelty:
    - Not a duplicate of existing guideline items
    - Broadly applicable (not a one-off PR-specific issue)
