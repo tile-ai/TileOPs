@@ -10,7 +10,7 @@ from top.kernels.kernel import Kernel
 __all__ = ["Fp8QuantKernel"]
 
 
-def _fp8_quant_kernel(batch, seq_len_kv, index_dim, in_dtype):
+def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype):
 
     @tilelang.jit(out_idx=[1, 2])
     def _fp8_quant_fwd_func(num_stages, block_m):
@@ -21,12 +21,14 @@ def _fp8_quant_kernel(batch, seq_len_kv, index_dim, in_dtype):
         fp8_max_inv = 1 / fp8_max
 
         @T.prim_func
-        def _fp8_quant_fwd_main(input_tensor: T.Tensor[(batch, seq_len_kv, index_dim),
+        def _fp8_quant_fwd_main(input_tensor: T.Tensor[(batch, seq_len_kv, kv_group, index_dim),
                                                        in_dtype], scale_tensor: T.Tensor[(
                                                            batch,
                                                            seq_len_kv,
+                                                           kv_group,
                                                        ), scale_dtype],
-                                output_tensor: T.Tensor[(batch, seq_len_kv, index_dim), out_dtype]):
+                                output_tensor: T.Tensor[(batch, seq_len_kv, kv_group, index_dim),
+                                                        out_dtype]):
             with T.Kernel(batch, T.ceildiv(seq_len_kv, block_m), threads=128) as (bx, pid_m):
                 input_shared = T.alloc_shared((block_m, index_dim), in_dtype)
                 input_local = T.alloc_fragment((block_m, index_dim), in_dtype)

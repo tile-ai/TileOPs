@@ -18,6 +18,7 @@ class Fp8LightingIndexerOp(Op):
                  heads,
                  index_dim,
                  seq_len_kv,
+                 kv_group,
                  clean_logits=True,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune=False) -> None:
@@ -26,11 +27,12 @@ class Fp8LightingIndexerOp(Op):
         self.heads = heads
         self.index_dim = index_dim
         self.seq_len_kv = seq_len_kv
+        self.kv_group = kv_group
         self.clean_logits = clean_logits
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["Fp8LightingIndexerKernel"](
-            batch, seq_len, heads, index_dim, seq_len_kv, clean_logits, tune=tune)
+            batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -63,10 +65,10 @@ class Fp8LightingIndexerOp(Op):
 
     def per_custom_dims_cast_to_fp8(self, x: torch.Tensor, dims: Tuple[int],
                                     use_ue8m0: bool) -> Tuple[torch.Tensor, torch.Tensor]:
-        x_amax = x.to(torch.float32).abs().float().amax(dim=2, keepdim=True).clamp(1e-4)
-        sf = x_amax / 448.0
+        x_absmax = x.to(torch.float32).abs().amax(dim=-1, keepdim=True).clamp(1e-4)
+        sf = x_absmax / 448.0
         if use_ue8m0:
             assert sf.view(-1).amax().item() > 0
-            sf = torch.pow(2.0, torch.ceil(torch.log2(x.abs())))
+            sf = torch.pow(2.0, torch.ceil(torch.log2(x_absmax)))
         x_scaled = (x * (1.0 / sf)).to(torch.float8_e4m3fn)
         return x_scaled, sf.squeeze(-1)
