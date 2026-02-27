@@ -48,3 +48,6 @@ output*/
 profile_out/
 tmp/
 debug/
+
+# Exception: keep the debug folder for tests
+!testing/python/debug
