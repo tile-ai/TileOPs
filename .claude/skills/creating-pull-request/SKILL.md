@@ -140,11 +140,13 @@ ______________________________________________________________________
 After PR creation, **wait briefly then fetch all review feedback**. There are two types of comments to check:
 
 1. **Inline review comments** (file-level suggestions):
+
    ```bash
    gh api repos/tile-ai/TileOPs/pulls/<PR_NUMBER>/comments
    ```
 
-2. **PR-level reviews** (overall review body, may contain high-level feedback):
+1. **PR-level reviews** (overall review body, may contain high-level feedback):
+
    ```bash
    gh api repos/tile-ai/TileOPs/pulls/<PR_NUMBER>/reviews
    ```
