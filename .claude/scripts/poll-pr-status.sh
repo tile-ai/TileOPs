@@ -18,17 +18,33 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --interval)
       INTERVAL="$2"
+      if [[ ! "$INTERVAL" =~ ^[0-9]+$ ]]; then
+        echo '{"status":"error","message":"INTERVAL must be a positive integer"}'
+        exit 1
+      fi
       shift 2
       ;;
     --timeout)
       TIMEOUT="$2"
+      if [[ ! "$TIMEOUT" =~ ^[0-9]+$ ]]; then
+        echo '{"status":"error","message":"TIMEOUT must be a positive integer"}'
+        exit 1
+      fi
       shift 2
       ;;
     *)
       if [[ -z "$OWNER_REPO" ]]; then
         OWNER_REPO="$1"
+        if [[ ! "$OWNER_REPO" =~ ^[^/]+/[^/]+$ ]]; then
+          echo '{"status":"error","message":"OWNER_REPO must be in owner/repo format"}'
+          exit 1
+        fi
       elif [[ -z "$PR_NUMBER" ]]; then
         PR_NUMBER="$1"
+        if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+          echo '{"status":"error","message":"PR_NUMBER must be a positive integer"}'
+          exit 1
+        fi
       fi
       shift
       ;;
@@ -83,9 +99,9 @@ fetch_pr_info() {
   local pr_json
   pr_json=$(gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" 2>&1) || { log_error "gh api failed: $pr_json"; return 1; }
 
-  PR_CREATED_AT=$(echo "$pr_json" | jq -r '.created_at') || return 1
-  PR_AUTHOR=$(echo "$pr_json" | jq -r '.user.login') || return 1
-  HEAD_SHA=$(echo "$pr_json" | jq -r '.head.sha') || return 1
+  PR_CREATED_AT=$(echo "$pr_json" | jq -r '.created_at') || { log_error "Failed to parse .created_at from PR JSON"; return 1; }
+  PR_AUTHOR=$(echo "$pr_json" | jq -r '.user.login') || { log_error "Failed to parse .user.login from PR JSON"; return 1; }
+  HEAD_SHA=$(echo "$pr_json" | jq -r '.head.sha') || { log_error "Failed to parse .head.sha from PR JSON"; return 1; }
 
   if [[ -z "$PR_CREATED_AT" || -z "$PR_AUTHOR" || -z "$HEAD_SHA" ]]; then
     return 1

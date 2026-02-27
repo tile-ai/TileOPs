@@ -164,6 +164,8 @@ After the subagent returns `PR_NUMBER`, the main agent enters a **poll-handle lo
 > **do** { Phase 3 → Phase 4 → Phase 5 } **while** PR is not done
 >
 > Exit conditions: CI green + all reviews handled, OR timeout, OR max 3 rounds.
+>
+> **Critical**: Every re-poll (Phase 3) must check **both** CI status **and** review comments. Never check only one. Review bots may post comments at any time — especially after the first CI run completes.
 
 ### Phase 3: Poll
 
@@ -266,7 +268,7 @@ For each comment, classify and handle:
 **How to reply** to a review comment:
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments/<COMMENT_ID>/replies \
+gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
   -f body="<reply>"
 ```
 
