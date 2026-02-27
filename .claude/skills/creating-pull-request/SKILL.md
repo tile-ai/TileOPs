@@ -272,6 +272,14 @@ gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
   -f body="<reply>"
 ```
 
+**After replying, resolve the thread** (mark as resolved via GraphQL):
+
+```bash
+gh api graphql -f query='mutation { minimizeComment(input: {subjectId: "<node_id>", classifier: RESOLVED}) { minimizedComment { isMinimized } } }'
+```
+
+Or use the GitHub MCP `pull_request_review_write` tool / GitHub web UI to resolve threads. Every replied-to comment **must** be resolved — an unreplied or unresolved thread means the PR is not done.
+
 **Reply content rules**:
 
 - **Accepting**: `"Accepted. Fixed X. See {commit_hash}."`
@@ -283,8 +291,8 @@ gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
 
 **All** of these must be true to declare done:
 
-1. `ci.state == "success"` — **not** "pending". If any check is still pending (e.g. waiting for a GPU runner), you cannot declare done. Re-poll or ask the user.
-1. `reviews.new_inline_comments` is empty (or all replied to)
+1. `ci.state == "success"` — **not** "pending". If any check is still pending (e.g. waiting for a GPU runner), you **must keep waiting**. Print periodic "waiting for CI: \{check_name} still pending…" messages so the user sees progress, and continue polling. Do NOT skip pending checks or declare done early.
+1. `reviews.new_inline_comments` is empty (or all replied to **and resolved**)
 1. `reviews.new_review_bodies` is empty (or all replied to)
 
 If done:
@@ -292,12 +300,12 @@ If done:
 > "PR #\{pr_number} is ready for human review:
 >
 > - CI: all checks passed
-> - Automated review comments: all addressed
+> - Automated review comments: all addressed and resolved
 > - URL: \{pr_url}"
 
 **Exit the loop.**
 
-If `ci.state == "pending"` and no failures/reviews to handle → **re-poll** (back to Phase 3). If still pending after max rounds, report status to user and let them decide.
+If `ci.state == "pending"` and no failures/reviews to handle → keep polling (back to Phase 3). Print a waiting message each cycle. There is no max-rounds limit for passive waiting — only fix-push cycles count toward the 3-round limit.
 
 > **Note on `unresolved_count`**: The poll script counts all non-author inline comments (REST API lacks thread resolution state). The agent should verify it has replied to every comment in both `new_inline_comments` and `new_review_bodies` before considering the PR done.
 
@@ -312,6 +320,6 @@ ______________________________________________________________________
 
 A PR is "done" when:
 
-- CI is green (all checks passed)
-- All automated review comments have been replied to (accepted with fix or declined with reason)
+- CI is green (**all** checks passed, none pending)
+- All automated review comments have been replied to **and resolved**
 - User is notified that PR is ready for human review
