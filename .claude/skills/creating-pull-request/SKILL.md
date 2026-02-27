@@ -272,13 +272,13 @@ gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
   -f body="<reply>"
 ```
 
-**After replying, resolve the thread** (mark as resolved via GraphQL):
+**After replying, resolve the thread** via GraphQL (use the thread's `PRRT_*` node ID, not the comment ID):
 
 ```bash
-gh api graphql -f query='mutation { minimizeComment(input: {subjectId: "<node_id>", classifier: RESOLVED}) { minimizedComment { isMinimized } } }'
+gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread_node_id>"}) { thread { isResolved } } }'
 ```
 
-Or use the GitHub MCP `pull_request_review_write` tool / GitHub web UI to resolve threads. Every replied-to comment **must** be resolved — an unreplied or unresolved thread means the PR is not done.
+To get thread IDs, query `repository.pullRequest.reviewThreads`. Every replied-to thread **must** be resolved — an unresolved thread means the PR is not done.
 
 **Reply content rules**:
 
