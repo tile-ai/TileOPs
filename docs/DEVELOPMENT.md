@@ -87,7 +87,7 @@ We enforce high standards for code quality and consistency.
 ### Improvements & Type Safety
 
 - **Type Hints**: All function signatures (inputs and outputs) must be type-hinted.
-- **Strict Typing**: L2 (Op), L3 (Function) and L4 (Layer) APIs are checked with `mypy` in strict mode.
+- **Strict Typing** *(planned)*: L2 (Op), L3 (Function) and L4 (Layer) APIs will be checked with `mypy` in strict mode in a future release.
 
 ______________________________________________________________________
 

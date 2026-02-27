@@ -75,8 +75,8 @@ select = [
     # "D",
     # pep8-naming (naming conventions)
     "N",
-    # flake8-annotations (type hints)
-    "ANN",
+    # flake8-annotations (type hints) — enable when codebase has sufficient coverage
+    # "ANN",
 ]
 ignore = [
     # ambiguous name
@@ -89,14 +89,6 @@ ignore = [
     "B019",
     # No such file or directory
     "E902",
-    # flake8-annotations: ignore self/cls/args/kwargs/special methods
-    # Note: ANN101 and ANN102 were removed in ruff 0.8.0+, so they are not included here
-    "ANN002", "ANN003", "ANN204",
-    # flake8-annotations: ignore missing type annotations (too many in codebase)
-    "ANN001",  # Missing type annotation for function argument
-    "ANN201",  # Missing return type annotation for public function
-    "ANN202",  # Missing return type annotation for private function
-    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
     # pep8-naming: allow 'import as T'
     "N812",
     # pep8-naming: ignore naming convention violations (common in ML/kernel code)

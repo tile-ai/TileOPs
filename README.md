@@ -28,7 +28,7 @@ The core features of TileOPs include:
 
 <!-- * **torch.autograd Compatibility**: -->
 
-- **Lightweight Dependencies**: TileOPs depends only on TileLang and PyTorch, keeping the software stack minimal and easy to integrate.
+- **Lightweight Dependencies**: TileOPs depends only on TileLang, PyTorch, and einops, keeping the software stack minimal and easy to integrate.
 
 ## Benchmark Summary
 
@@ -61,7 +61,7 @@ TODO
 
 - Python >= 3.10
 - Torch >= 2.1
-- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.8
+- [TileLang](https://github.com/tile-ai/tilelang) == 0.1.8
 
 ### Method 1: Install from PyPI
 

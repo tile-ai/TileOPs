@@ -7,7 +7,7 @@ TileOPs (TOP) is a high-performance LLM operator library built on TileLang. The 
 ## Development Environment
 
 1. Clone repository: `git clone https://github.com/tile-ai/TileOPs && cd TileOPs`
-1. Activate environment: `conda activate top`
+1. Create and activate a virtual environment (venv, conda, etc.)
 1. Install dependencies: `pip install -e '.[dev]' -v`
 1. Install pre-commit hooks: `pre-commit install`
 

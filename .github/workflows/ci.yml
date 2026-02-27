@@ -1,4 +1,4 @@
-name: hello-self-hosted
+name: CI
 
 on:
   push:

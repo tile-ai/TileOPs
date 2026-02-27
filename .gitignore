@@ -1,91 +1,50 @@
 # Compiled Object files
-*.slo
-*.lo
 *.o
 *.obj
 *.pyc
 
-# Precompiled Headers
-*.gch
-*.pch
-
-# emacs
+# Editor files
 *~
-
-# vim
 *.swp
 *.swo
+.vscode/
+.vs/
+.idea/*
 
-debug/
+# Build artifacts
 build/
 dist/
 wheelhouse/
+build_sdist/
 __pycache__
-nnfusion.tar.gz
+*.egg-info
 
-# makeenv and test intermediate files
-tmp/
-
+# Virtual environments
 venv/
 .venv/
-.vscode/
-.vs/
+.tox/
 
-# VisualGDB files
-VisualGDB/
-toolchain.cmake
-
-# docbuild artifacts
-doc/sphinx/build/*
-doc/doxygen/*.xml
-doc/doxygen/*.html
-doc/doxygen/man/*
-doc/doxygen/latex/*
-doc/doxygen/xml/*
-doc/doxygen/html/*
-
-# git merge
+# Git merge artifacts
 *.orig
 \#*
 \.#*
 
-# idea
-.idea/*
-
-# python egg
-*.egg-info
-
-# Macos
+# macOS
 **/.DS_Store
 
-# log
+# Logs and data
 *.log
-
-# pkl
 *.pkl_*
 
-# .pytest_cache
+# Test / lint caches
 .pytest_cache
-
-# .hypothesis
 .hypothesis
-
-# .ruff_cache
 .ruff_cache
-
-# build sdist
-build_sdist/
-
-# exclude debug testing folder
-!testing/python/debug
-
-# tox
-.tox/
-
-# cache directory for clangd
 .cache/
 
-# output
+# Output / profiling
 output/
 output*/
 profile_out/
+tmp/
+debug/
