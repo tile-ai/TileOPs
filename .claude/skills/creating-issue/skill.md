@@ -1,6 +1,6 @@
 ---
 name: creating-issue
-description: Create a high-quality issue which conforms the rules of TileOPs development
+description: Create a high-quality issue which conforms to the rules of TileOPs development
 ---
 
 # Creating Issues — Guidelines and Lessons Learned
