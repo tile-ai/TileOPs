@@ -12,13 +12,13 @@ __all__ = ["GroupQueryAttentionDecodePagedWithKVCacheOp"]
 
 class GroupQueryAttentionDecodePagedWithKVCacheOp(Op):
     """Paged GQA decode with dynamic KV cache. Layout: Q [batch, heads, dim] (BHD);
-    K, V physical cache [seqlen_kv, groups, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
+    K, V physical cache [seqlen_kv, heads_kv, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
 
     def __init__(self,
                  batch: int,
                  heads: int,
-                 groups: int,
+                 heads_kv: int,
                  seqlen_kv: int,
                  dim: int,
                  page_size: int,
@@ -27,7 +27,7 @@ class GroupQueryAttentionDecodePagedWithKVCacheOp(Op):
                  tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
-        self.groups = groups
+        self.heads_kv = heads_kv
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.page_size = page_size
@@ -35,7 +35,7 @@ class GroupQueryAttentionDecodePagedWithKVCacheOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["gqa_decode_paged_kernel"](
-            batch, heads, groups, seqlen_kv, dim, page_size, self.dtype, tune=tune)
+            batch, heads, heads_kv, seqlen_kv, dim, page_size, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

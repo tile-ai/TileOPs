@@ -15,7 +15,7 @@ class GqaDecodePagedBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         t = self.test
         num_pages = t.seqlen_kv // t.page_size
-        # Q, output: batch * heads * dim; K,V: seqlen_kv * groups * dim; block_table, real_seqlen_kv: int32
+        # Q, output: batch * heads * dim; K,V: seqlen_kv * heads_kv * dim; block_table, real_seqlen_kv: int32
         return (t.batch * t.heads * t.dim * 2 +
-                2 * t.seqlen_kv * t.groups * t.dim) * t.dtype.itemsize + \
+                2 * t.seqlen_kv * t.heads_kv * t.dim) * t.dtype.itemsize + \
             t.batch * num_pages * 4 + t.batch * 4

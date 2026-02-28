@@ -11,7 +11,7 @@ from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
 class GqaDecodeFixture(FixtureBase):
     PARAMS = [
-        ("b, h, g, s_kv, d, dtype, tune", [
+        ("b, h, h_kv, s_kv, d, dtype, tune", [
             (1, 32, 8, 8192, 128, torch.float16, False),
             (4, 32, 4, 4096, 128, torch.bfloat16, False),
             (8, 64, 16, 8192, 128, torch.float16, False),
@@ -21,11 +21,11 @@ class GqaDecodeFixture(FixtureBase):
 
 class GqaDecodeTest(TestBase):
 
-    def __init__(self, batch: int, heads: int, groups: int, seq_len_kv: int, dim: int,
+    def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                  dtype: torch.dtype) -> None:
         self.batch = batch
         self.heads = heads
-        self.groups = groups
+        self.heads_kv = heads_kv
         self.seq_len_kv = seq_len_kv
         self.dim = dim
         self.dtype = dtype
@@ -33,9 +33,9 @@ class GqaDecodeTest(TestBase):
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
         K = torch.randn(
-            self.batch, self.seq_len_kv, self.groups, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device='cuda', dtype=self.dtype)
         V = torch.randn(
-            self.batch, self.seq_len_kv, self.groups, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device='cuda', dtype=self.dtype)
         return Q, K, V
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -49,10 +49,10 @@ class GqaDecodeTest(TestBase):
 
 
 @GqaDecodeFixture
-def test_gqa_decode(b: int, h: int, g: int, s_kv: int, d: int, dtype: torch.dtype,
+def test_gqa_decode(b: int, h: int, h_kv: int, s_kv: int, d: int, dtype: torch.dtype,
                     tune: bool) -> None:
-    test = GqaDecodeTest(b, h, g, s_kv, d, dtype)
-    op = GroupQueryAttentionDecodeWithKVCacheOp(b, h, g, s_kv, d, dtype, tune=tune)
+    test = GqaDecodeTest(b, h, h_kv, s_kv, d, dtype)
+    op = GroupQueryAttentionDecodeWithKVCacheOp(b, h, h_kv, s_kv, d, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 

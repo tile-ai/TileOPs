@@ -11,7 +11,7 @@ from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 
 class MlaDecodeFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, head_num_kv, seq_len_kv, dim, dim_pe, dtype, tune", [
+        ("batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune", [
             (32, 128, 1, 8192, 512, 64, torch.float16, False),
         ]),
     ]
@@ -19,11 +19,11 @@ class MlaDecodeFixture(FixtureBase):
 
 class MlaDecodeTest(TestBase):
 
-    def __init__(self, batch: int, heads: int, head_num_kv: int, seq_len_kv: int, dim: int,
+    def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                  dim_pe: int, dtype: torch.dtype) -> None:
         self.batch = batch
         self.heads = heads
-        self.head_num_kv = head_num_kv
+        self.heads_kv = heads_kv
         self.seq_len_kv = seq_len_kv
         self.dim = dim
         self.dim_pe = dim_pe
@@ -35,14 +35,14 @@ class MlaDecodeTest(TestBase):
         K = torch.randn(
             self.batch,
             self.seq_len_kv,
-            self.head_num_kv,
+            self.heads_kv,
             self.dim,
             device='cuda',
             dtype=self.dtype)
         K_pe = torch.randn(
             self.batch,
             self.seq_len_kv,
-            self.head_num_kv,
+            self.heads_kv,
             self.dim_pe,
             device='cuda',
             dtype=self.dtype)
@@ -54,8 +54,8 @@ class MlaDecodeTest(TestBase):
         Inputs:
         - q (Tensor): [batch, heads, dim]
         - q_pe (Tensor): [batch, heads, dim_pe]
-        - kv (Tensor): [batch, seqlen_kv, head_num_kv, dim]
-        - k_pe (Tensor): [batch, seqlen_kv, head_num_kv, dim_pe]
+        - kv (Tensor): [batch, seqlen_kv, heads_kv, dim]
+        - k_pe (Tensor): [batch, seqlen_kv, heads_kv, dim_pe]
         Outputs:
         - output (Tensor): [batch, heads, dim]
         """
@@ -93,11 +93,11 @@ class MlaDecodeTest(TestBase):
 
 
 @MlaDecodeFixture
-def test_mla_decode(batch: int, heads: int, head_num_kv: int, seq_len_kv: int, dim: int,
+def test_mla_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                     dim_pe: int, dtype: torch.dtype, tune: bool):
-    test = MlaDecodeTest(batch, heads, head_num_kv, seq_len_kv, dim, dim_pe, dtype)
+    test = MlaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     op = MultiHeadLatentAttentionDecodeWithKVCacheOp(
-        batch, heads, head_num_kv, seq_len_kv, dim, dim_pe, dtype, tune=tune)
+        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)
 
 

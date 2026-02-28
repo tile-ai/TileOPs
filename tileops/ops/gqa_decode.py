@@ -17,7 +17,7 @@ class GroupQueryAttentionDecodeWithKVCacheOp(Op):
     def __init__(self,
                  batch: int,
                  heads: int,
-                 groups: int,
+                 heads_kv: int,
                  seqlen_kv: int,
                  dim: int,
                  dtype: torch.dtype = torch.float16,
@@ -25,7 +25,7 @@ class GroupQueryAttentionDecodeWithKVCacheOp(Op):
                  tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
-        self.groups = groups
+        self.heads_kv = heads_kv
         self.seqlen_kv = seqlen_kv
         self.dim = dim
 
@@ -33,7 +33,7 @@ class GroupQueryAttentionDecodeWithKVCacheOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["gqa_decode_kernel"](
-            batch, heads, groups, seqlen_kv, dim, self.dtype, tune=tune)
+            batch, heads, heads_kv, seqlen_kv, dim, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

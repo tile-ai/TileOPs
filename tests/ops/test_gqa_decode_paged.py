@@ -14,7 +14,7 @@ from tileops.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
 
 class GqaDecodePagedFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, groups, seqlen_kv, dim, page_size, dtype, tune", [
+        ("batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune", [
             (1, 16, 8, 512, 128, 128, torch.float16, False),
             (2, 8, 4, 1024, 64, 256, torch.float16, False),
             (1, 32, 8, 256, 128, 64, torch.float16, False),
@@ -28,11 +28,11 @@ class GqaDecodePagedFixture(FixtureBase):
 
 class GqaDecodePagedTest(TestBase):
 
-    def __init__(self, batch: int, heads: int, groups: int, seqlen_kv: int, dim: int,
+    def __init__(self, batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
                  page_size: int, dtype: torch.dtype) -> None:
         self.batch = batch
         self.heads = heads
-        self.groups = groups
+        self.heads_kv = heads_kv
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.page_size = page_size
@@ -47,8 +47,8 @@ class GqaDecodePagedTest(TestBase):
         real_seqlen_kv[0] = min(real_seqlen_kv[0].item(), self.seqlen_kv)
 
         q = torch.randn(self.batch, self.heads, self.dim, dtype=self.dtype, device="cuda")
-        k = torch.randn(self.seqlen_kv, self.groups, self.dim, dtype=self.dtype, device="cuda")
-        v = torch.randn(self.seqlen_kv, self.groups, self.dim, dtype=self.dtype, device="cuda")
+        k = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
+        v = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
         block_table = torch.arange(
             num_pages, dtype=torch.int32, device="cuda").unsqueeze(0).expand(self.batch, -1)
 
@@ -65,12 +65,12 @@ class GqaDecodePagedTest(TestBase):
         """Reassemble paged K/V to logical layout per batch, then GQA (expand to heads) + SDPA."""
         batch, _, dim = q.shape
         seqlen_kv, _, _ = k.shape
-        kv_group_num = self.heads // self.groups
+        kv_group_num = self.heads // self.heads_kv
         out_list = []
         for i_b in range(batch):
             q_b = q[i_b:i_b + 1, :, :]
-            k_logical = torch.zeros(seqlen_kv, self.groups, dim, dtype=q.dtype, device=q.device)
-            v_logical = torch.zeros(seqlen_kv, self.groups, dim, dtype=q.dtype, device=q.device)
+            k_logical = torch.zeros(seqlen_kv, self.heads_kv, dim, dtype=q.dtype, device=q.device)
+            v_logical = torch.zeros(seqlen_kv, self.heads_kv, dim, dtype=q.dtype, device=q.device)
             num_pages = math.ceil(real_seqlen_kv[i_b].item() / self.page_size)
             for i_paged in range(num_pages):
                 start_pos = block_table[i_b, i_paged].item() * self.page_size
@@ -116,18 +116,18 @@ class GqaDecodePagedTest(TestBase):
 def test_gqa_decode_paged_op(
     batch: int,
     heads: int,
-    groups: int,
+    heads_kv: int,
     seqlen_kv: int,
     dim: int,
     page_size: int,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GqaDecodePagedTest(batch, heads, groups, seqlen_kv, dim, page_size, dtype)
+    test = GqaDecodePagedTest(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
     op = GroupQueryAttentionDecodePagedWithKVCacheOp(
         batch=batch,
         heads=heads,
-        groups=groups,
+        heads_kv=heads_kv,
         seqlen_kv=seqlen_kv,
         dim=dim,
         page_size=page_size,

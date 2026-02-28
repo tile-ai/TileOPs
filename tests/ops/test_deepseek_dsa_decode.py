@@ -9,7 +9,7 @@ from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 
 class DsaDecodeFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, group_kv, "
+        ("batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, "
          "q_start_index_s, sm_scale, dtype, tune", [
              (1, 128, 1024, 2048, 512, 64, 2048, 1, 1, 1024, None, torch.float16, False),
          ]),
@@ -19,7 +19,7 @@ class DsaDecodeFixture(FixtureBase):
 class DsaDecodeTest(TestBase):
 
     def __init__(self, batch: int, heads: int, seq_len: int, seq_len_kv: int, dim: int,
-                 dim_tail: int, topk: int, stride_kv: int, group_kv: int, q_start_index_s: int,
+                 dim_tail: int, topk: int, stride_kv: int, heads_kv: int, q_start_index_s: int,
                  sm_scale: float = None, is_causal: bool = True,
                  dtype: torch.dtype = torch.float16) -> None:
         self.batch = batch
@@ -30,7 +30,7 @@ class DsaDecodeTest(TestBase):
         self.dim_tail = dim_tail
         self.topk = topk
         self.stride_kv = stride_kv
-        self.group_kv = group_kv
+        self.heads_kv = heads_kv
         self.sm_scale = sm_scale
         self.is_causal = is_causal
         self.dtype = dtype
@@ -47,17 +47,17 @@ class DsaDecodeTest(TestBase):
         kv = torch.randn(
             self.batch,
             self.seq_len_kv,
-            self.group_kv,
+            self.heads_kv,
             self.dim + self.dim_tail,
             device='cuda',
             dtype=self.dtype)
-        indices = torch.full((self.batch, self.seq_len, self.group_kv, self.topk),
+        indices = torch.full((self.batch, self.seq_len, self.heads_kv, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
                              device='cuda')
         for b in range(self.batch):
             for t in range(self.seq_len):
-                for h in range(self.group_kv):
+                for h in range(self.heads_kv):
                     i_i = torch.randperm(
                         min(
                             max(1, ((t + int(self.q_start_index_s)) // self.stride_kv)),
@@ -113,14 +113,14 @@ class DsaDecodeTest(TestBase):
 
 @DsaDecodeFixture
 def test_sparse_mla_decode(batch: int, heads: int, seq_len_q: int, seq_len_kv: int, dim: int,
-                           dim_tail: int, topk: int, stride_kv: int, group_kv: int,
+                           dim_tail: int, topk: int, stride_kv: int, heads_kv: int,
                            q_start_index_s: int, sm_scale: float, dtype: torch.dtype,
                            tune: bool) -> None:
     test = DsaDecodeTest(
-        batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, group_kv,
+        batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype)
     op = DeepSeekSparseAttentionDecodeWithKVCacheOp(
-        batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, group_kv,
+        batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)
 

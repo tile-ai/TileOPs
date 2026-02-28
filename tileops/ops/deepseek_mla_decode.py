@@ -17,7 +17,7 @@ class MultiHeadLatentAttentionDecodeWithKVCacheOp(Op):
     def __init__(self,
                  batch: int,
                  heads: int,
-                 kv_head_num: int,
+                 heads_kv: int,
                  seqlen_kv: int,
                  dim: int,
                  pe_dim: int,
@@ -26,7 +26,7 @@ class MultiHeadLatentAttentionDecodeWithKVCacheOp(Op):
                  tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
-        self.kv_head_num = kv_head_num
+        self.heads_kv = heads_kv
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.pe_dim = pe_dim
@@ -35,7 +35,7 @@ class MultiHeadLatentAttentionDecodeWithKVCacheOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["mla_decode_kernel"](
-            batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, self.dtype, tune=tune)
+            batch, heads, heads_kv, seqlen_kv, dim, pe_dim, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
