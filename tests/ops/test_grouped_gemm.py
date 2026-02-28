@@ -5,7 +5,7 @@ import torch
 import pytest
 
 from tests.test_base import TestBase, FixtureBase
-from tileops.ops.grouped_gemm import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
+from tileops.ops.grouped_gemm import GroupedGemmOp
 
 
 # ---------------------------------------------------------------------------
@@ -35,25 +35,31 @@ def _generate_offsets(batch_sizes_list, padding_M):
 
 
 # ---------------------------------------------------------------------------
-# NT variant: A @ B^T -> C
+# Parametrized grouped GEMM test
 # ---------------------------------------------------------------------------
 
-class GroupedGemmNTFixture(FixtureBase):
+class GroupedGemmFixture(FixtureBase):
     PARAMS = [
-        ("batch_sum, batch_count, N, K, dtype, tune", [
-            (16384, 4, 4864, 4096, torch.float16, False),
+        ("batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b, tune", [
+            (16384, 4, 4864, 4096, torch.float16, False, True, False),
+            (16384, 4, 4864, 4096, torch.float16, False, False, False),
+            (16384, 4, 4864, 4096, torch.float16, True, False, False),
+            (16384, 4, 4864, 4096, torch.float16, True, True, False),
         ]),
     ]
 
 
-class GroupedGemmNTTest(TestBase):
+class GroupedGemmTest(TestBase):
 
-    def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype):
+    def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
+                 transpose_a: bool, transpose_b: bool):
         self.batch_sum = batch_sum
         self.batch_count = batch_count
         self.N = N
         self.K = K
         self.dtype = dtype
+        self.transpose_a = transpose_a
+        self.transpose_b = transpose_b
         self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
         self.padding_M = 128
 
@@ -67,8 +73,25 @@ class GroupedGemmNTTest(TestBase):
         batch_offsets_list, batch_padded_offsets_list = _generate_offsets(
             batch_sizes_list, self.padding_M)
 
-        A = torch.randn(batch_sum, K, device=device, dtype=dtype)
-        B = torch.randn(batch_count, N, K, device=device, dtype=dtype)
+        if not self.transpose_a:
+            # NT / NN: A is (batch_sum, K)
+            A = torch.randn(batch_sum, K, device=device, dtype=dtype)
+            if self.transpose_b:
+                # NT: B is (batch_count, N, K)
+                B = torch.randn(batch_count, N, K, device=device, dtype=dtype)
+            else:
+                # NN: B is (batch_count, K, N)
+                B = torch.randn(batch_count, K, N, device=device, dtype=dtype)
+        else:
+            # TN / TT: A is (batch_sum, N)
+            A = torch.randn(batch_sum, N, device=device, dtype=dtype)
+            if self.transpose_b:
+                # TT: B is (K, batch_sum)
+                B = torch.randn(K, batch_sum, device=device, dtype=dtype)
+            else:
+                # TN: B is (batch_sum, K)
+                B = torch.randn(batch_sum, K, device=device, dtype=dtype)
+
         batch_sizes = torch.tensor(batch_sizes_list, device=device, dtype=torch.int32)
         batch_offsets = torch.tensor(batch_offsets_list, device=device, dtype=torch.int32)
         batch_padded_offsets = torch.tensor(
@@ -78,233 +101,70 @@ class GroupedGemmNTTest(TestBase):
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
                     batch_offsets: torch.Tensor,
                     batch_padded_offsets: torch.Tensor) -> torch.Tensor:
-        assert A.shape[0] == sum(batch_sizes)
-        assert B.shape[0] == len(batch_sizes)
-        output = torch.empty((sum(batch_sizes), B.shape[1]), device=A.device, dtype=A.dtype)
-        start = 0
-        for i, size in enumerate(batch_sizes):
-            end = start + size
-            part_a = A[start:end]
-            part_b = B[i].transpose(0, 1).contiguous()
-            output[start:end] = torch.mm(part_a, part_b)
-            start = end
+        if not self.transpose_a:
+            # NT / NN: output is (batch_sum, N)
+            if self.transpose_b:
+                # NT: A @ B^T
+                assert A.shape[0] == sum(batch_sizes)
+                assert B.shape[0] == len(batch_sizes)
+                output = torch.empty((sum(batch_sizes), B.shape[1]), device=A.device, dtype=A.dtype)
+                start = 0
+                for i, size in enumerate(batch_sizes):
+                    size = int(size.item())
+                    end = start + size
+                    output[start:end] = torch.mm(A[start:end], B[i].transpose(0, 1).contiguous())
+                    start = end
+            else:
+                # NN: A @ B
+                assert A.shape[0] == sum(batch_sizes)
+                assert B.shape[0] == len(batch_sizes)
+                output = torch.empty((sum(batch_sizes), B.shape[2]), device=A.device, dtype=A.dtype)
+                start = 0
+                for i, size in enumerate(batch_sizes):
+                    size = int(size.item())
+                    end = start + size
+                    output[start:end] = torch.mm(A[start:end], B[i])
+                    start = end
+        else:
+            # TN / TT: output is (batch_count, N, K)
+            total_batch = int(batch_sizes.sum().item())
+            assert A.shape[0] == total_batch
+            N = A.shape[1]
+            batch_count = len(batch_sizes)
+
+            if self.transpose_b:
+                # TT: A^T @ B^T
+                K = B.shape[0]
+                assert B.shape[1] == total_batch
+                output = torch.zeros((batch_count, N, K), device=A.device, dtype=A.dtype)
+                start = 0
+                for i, size in enumerate(batch_sizes):
+                    size = int(size.item())
+                    end = start + size
+                    output[i] = torch.mm(A[start:end].transpose(0, 1),
+                                         B[:, start:end].transpose(0, 1))
+                    start = end
+            else:
+                # TN: A^T @ B
+                K = B.shape[1]
+                assert B.shape[0] == total_batch
+                output = torch.zeros((batch_count, N, K), device=A.device, dtype=A.dtype)
+                start = 0
+                for i, size in enumerate(batch_sizes):
+                    size = int(size.item())
+                    end = start + size
+                    output[i] = torch.mm(A[start:end].transpose(0, 1), B[start:end])
+                    start = end
         return output
 
 
-@GroupedGemmNTFixture
-def test_grouped_gemm_nt(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
-                         tune: bool) -> None:
-    test = GroupedGemmNTTest(batch_sum, batch_count, N, K, dtype)
-    op = GroupedGemmNTOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    test.check(op, *test.gen_inputs())
-
-
-# ---------------------------------------------------------------------------
-# NN variant: A @ B -> C
-# ---------------------------------------------------------------------------
-
-class GroupedGemmNNFixture(FixtureBase):
-    PARAMS = [
-        ("batch_sum, batch_count, N, K, dtype, tune", [
-            (16384, 4, 4864, 4096, torch.float16, False),
-        ]),
-    ]
-
-
-class GroupedGemmNNTest(TestBase):
-
-    def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype):
-        self.batch_sum = batch_sum
-        self.batch_count = batch_count
-        self.N = N
-        self.K = K
-        self.dtype = dtype
-        self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
-        self.padding_M = 128
-
-    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
-        batch_sizes_list = self.batch_sizes_list
-        N, K = self.N, self.K
-        device = 'cuda'
-        dtype = self.dtype
-        batch_sum = sum(batch_sizes_list)
-        batch_count = len(batch_sizes_list)
-        batch_offsets_list, batch_padded_offsets_list = _generate_offsets(
-            batch_sizes_list, self.padding_M)
-
-        A = torch.randn(batch_sum, K, device=device, dtype=dtype)
-        B = torch.randn(batch_count, K, N, device=device, dtype=dtype)
-        batch_sizes = torch.tensor(batch_sizes_list, device=device, dtype=torch.int32)
-        batch_offsets = torch.tensor(batch_offsets_list, device=device, dtype=torch.int32)
-        batch_padded_offsets = torch.tensor(
-            batch_padded_offsets_list, device=device, dtype=torch.int32)
-        return A, B, batch_sizes, batch_offsets, batch_padded_offsets
-
-    def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor,
-                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
-        assert A.shape[0] == sum(batch_sizes)
-        assert B.shape[0] == len(batch_sizes)
-        output = torch.empty((sum(batch_sizes), B.shape[2]), device=A.device, dtype=A.dtype)
-        start = 0
-        for i, size in enumerate(batch_sizes):
-            end = start + size
-            part_a = A[start:end]
-            part_b = B[i]
-            output[start:end] = torch.mm(part_a, part_b)
-            start = end
-        return output
-
-
-@GroupedGemmNNFixture
-def test_grouped_gemm_nn(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
-                         tune: bool) -> None:
-    test = GroupedGemmNNTest(batch_sum, batch_count, N, K, dtype)
-    op = GroupedGemmNNOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    test.check(op, *test.gen_inputs())
-
-
-# ---------------------------------------------------------------------------
-# TN variant: A^T @ B -> C
-# ---------------------------------------------------------------------------
-
-class GroupedGemmTNFixture(FixtureBase):
-    PARAMS = [
-        ("batch_sum, batch_count, N, K, dtype, tune", [
-            (16384, 4, 4864, 4096, torch.float16, False),
-        ]),
-    ]
-
-
-class GroupedGemmTNTest(TestBase):
-
-    def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype):
-        self.batch_sum = batch_sum
-        self.batch_count = batch_count
-        self.N = N
-        self.K = K
-        self.dtype = dtype
-        self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
-        self.padding_M = 128
-
-    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
-        batch_sizes_list = self.batch_sizes_list
-        N, K = self.N, self.K
-        device = 'cuda'
-        dtype = self.dtype
-        batch_sum = sum(batch_sizes_list)
-        batch_offsets_list, batch_padded_offsets_list = _generate_offsets(
-            batch_sizes_list, self.padding_M)
-
-        A = torch.randn(batch_sum, N, device=device, dtype=dtype)
-        B = torch.randn(batch_sum, K, device=device, dtype=dtype)
-        batch_sizes = torch.tensor(batch_sizes_list, device=device, dtype=torch.int32)
-        batch_offsets = torch.tensor(batch_offsets_list, device=device, dtype=torch.int32)
-        batch_padded_offsets = torch.tensor(
-            batch_padded_offsets_list, device=device, dtype=torch.int32)
-        return A, B, batch_sizes, batch_offsets, batch_padded_offsets
-
-    def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
-                    batch_offsets: torch.Tensor,
-                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
-        batch_sum_A = A.shape[0]
-        batch_sum_B = B.shape[0]
-        total_batch = int(batch_sizes.sum().item())
-        assert batch_sum_A == total_batch, \
-            f"A.shape[0]={batch_sum_A} != sum(batch_sizes)={total_batch}"
-        assert batch_sum_B == total_batch, \
-            f"B.shape[0]={batch_sum_B} != sum(batch_sizes)={total_batch}"
-
-        N, K = A.shape[1], B.shape[1]
-        batch_count = len(batch_sizes)
-        output = torch.zeros((batch_count, N, K), device=A.device, dtype=A.dtype)
-
-        start = 0
-        for i, size in enumerate(batch_sizes):
-            end = start + size
-            part_a = A[start:end, :]
-            part_b = B[start:end, :]
-            output[i] = torch.mm(part_a.transpose(0, 1), part_b)
-            start = end
-        return output
-
-
-@GroupedGemmTNFixture
-def test_grouped_gemm_tn(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
-                         tune: bool) -> None:
-    test = GroupedGemmTNTest(batch_sum, batch_count, N, K, dtype)
-    op = GroupedGemmTNOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    test.check(op, *test.gen_inputs())
-
-
-# ---------------------------------------------------------------------------
-# TT variant: A^T @ B^T -> C
-# ---------------------------------------------------------------------------
-
-class GroupedGemmTTFixture(FixtureBase):
-    PARAMS = [
-        ("batch_sum, batch_count, N, K, dtype, tune", [
-            (16384, 4, 4864, 4096, torch.float16, False),
-        ]),
-    ]
-
-
-class GroupedGemmTTTest(TestBase):
-
-    def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype):
-        self.batch_sum = batch_sum
-        self.batch_count = batch_count
-        self.N = N
-        self.K = K
-        self.dtype = dtype
-        self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
-        self.padding_M = 128
-
-    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
-        batch_sizes_list = self.batch_sizes_list
-        N, K = self.N, self.K
-        device = 'cuda'
-        dtype = self.dtype
-        batch_sum = sum(batch_sizes_list)
-        batch_offsets_list, batch_padded_offsets_list = _generate_offsets(
-            batch_sizes_list, self.padding_M)
-
-        A = torch.randn(batch_sum, N, device=device, dtype=dtype)
-        B = torch.randn(K, batch_sum, device=device, dtype=dtype)
-        batch_sizes = torch.tensor(batch_sizes_list, device=device, dtype=torch.int32)
-        batch_offsets = torch.tensor(batch_offsets_list, device=device, dtype=torch.int32)
-        batch_padded_offsets = torch.tensor(
-            batch_padded_offsets_list, device=device, dtype=torch.int32)
-        return A, B, batch_sizes, batch_offsets, batch_padded_offsets
-
-    def ref_program(self, A, B, batch_sizes, batch_offsets, batch_padded_offsets):
-        batch_sum_A = A.shape[0]
-        batch_sum_B = B.shape[1]
-        total_batch = int(batch_sizes.sum().item())
-        assert batch_sum_A == total_batch
-        assert batch_sum_B == total_batch
-        N = A.shape[1]
-        K = B.shape[0]
-        batch_count = len(batch_sizes)
-        output = torch.zeros((batch_count, N, K), device=A.device, dtype=A.dtype)
-
-        start = 0
-        for i, size in enumerate(batch_sizes):
-            size = int(size.item())
-            end = start + size
-            dO_slice = A[start:end, :]
-            A_T_slice = B[:, start:end]
-            output[i] = torch.mm(dO_slice.transpose(0, 1), A_T_slice.transpose(0, 1))
-            start = end
-
-        return output
-
-
-@GroupedGemmTTFixture
-def test_grouped_gemm_tt(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
-                         tune: bool) -> None:
-    test = GroupedGemmTTTest(batch_sum, batch_count, N, K, dtype)
-    op = GroupedGemmTTOp(batch_sum, batch_count, N, K, dtype, tune=tune)
+@GroupedGemmFixture
+def test_grouped_gemm(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
+                      transpose_a: bool, transpose_b: bool, tune: bool) -> None:
+    test = GroupedGemmTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
+    op = GroupedGemmOp(
+        batch_sum, batch_count, N, K, dtype, transpose_a=transpose_a, transpose_b=transpose_b,
+        tune=tune)
     test.check(op, *test.gen_inputs())
 
 
