@@ -70,7 +70,7 @@ def _sparse_mla_kernel(batch: int,
     assert tail_dim == tilelang.math.next_power_of_2(
         tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
     assert is_causal, 'non-causal is not supported'
-    sm_scale = (1.0 / (dim + tail_dim))**0.5 * LOG2E if sm_scale is None else sm_scale * LOG2E
+    sm_scale = ((1.0 / (dim + tail_dim))**0.5 if sm_scale is None else sm_scale) * LOG2E
 
     head_kv = heads // kv_group
     ori_heads = heads

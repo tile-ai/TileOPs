@@ -23,9 +23,8 @@ def _nsa_fwd_varlen_kernel(
     accum_dtype: str,
 ) -> Callable:
     if scale is None:
-        scale = (1.0 / dim)**0.5 * LOG2E
-    else:
-        scale = scale * LOG2E
+        scale = (1.0 / dim)**0.5
+    scale *= LOG2E
 
     @tilelang.jit(
         out_idx=[3],
