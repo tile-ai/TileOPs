@@ -286,8 +286,6 @@ class Fp8LightingIndexerBenchmark(Benchmark):
         assert a.shape == b.shape, f"Shape mismatch between tensors {tensor_name}: torch {a.shape} vs tilelang {b.shape}"
         a_finite = torch.isfinite(a)
         b_finite = torch.isfinite(b)
-        print("a_finite:", a_finite)
-        print("b_finite: ", b_finite)
         assert torch.all(a_finite == b_finite), "Error: isfinite mask mismatch"
         assert torch.isclose(
             a.masked_fill(a_finite, 0),
