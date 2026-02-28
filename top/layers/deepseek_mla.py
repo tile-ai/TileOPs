@@ -139,11 +139,12 @@ class Fp8QuantLayer(nn.Module):
     def __init__(self,
                  batch: int,
                  seq_len_kv: int,
+                 kv_group: int,
                  index_dim: int,
                  in_dtype: torch.dtype = torch.float16,
                  tune: bool = False):
         super().__init__()
-        self.fn = Fp8QuantFunc(batch, seq_len_kv, index_dim, in_dtype)
+        self.fn = Fp8QuantFunc(batch, seq_len_kv, kv_group, index_dim, in_dtype)
 
     def forward(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.fn(input_tensor)

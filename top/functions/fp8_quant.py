@@ -25,15 +25,17 @@ class Fp8QuantFunc(Function):
     def __init__(self,
                  batch: int,
                  seq_len_kv: int,
+                 kv_group: int,
                  index_dim: int,
                  in_dtype: torch.dtype = torch.float16,
                  tune: bool = False):
         self.batch = batch
         self.seq_len_kv = seq_len_kv
+        self.kv_group = kv_group
         self.index_dim = index_dim
         self.in_dtype = in_dtype
 
-        self.fwd_op = Fp8QuantOp(batch, seq_len_kv, index_dim, in_dtype)
+        self.fwd_op = Fp8QuantOp(batch, seq_len_kv, kv_group, index_dim, in_dtype)
 
     def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return Fp8QuantCtx.apply(input_tensor, self.fwd_op)

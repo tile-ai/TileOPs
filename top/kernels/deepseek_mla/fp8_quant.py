@@ -22,34 +22,37 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype):
 
         @T.prim_func
         def _fp8_quant_fwd_main(input_tensor: T.Tensor[(batch, seq_len_kv, kv_group, index_dim),
-                                                       in_dtype], scale_tensor: T.Tensor[(
-                                                           batch,
-                                                           seq_len_kv,
-                                                           kv_group,
-                                                       ), scale_dtype],
+                                                       in_dtype],
+                                scale_tensor: T.Tensor[(batch, seq_len_kv, kv_group), scale_dtype],
                                 output_tensor: T.Tensor[(batch, seq_len_kv, kv_group, index_dim),
                                                         out_dtype]):
-            with T.Kernel(batch, T.ceildiv(seq_len_kv, block_m), threads=128) as (bx, pid_m):
-                input_shared = T.alloc_shared((block_m, index_dim), in_dtype)
+            with T.Kernel(
+                    batch, T.ceildiv(seq_len_kv, block_m), kv_group, threads=128) as (bx, pid_m, g):
                 input_local = T.alloc_fragment((block_m, index_dim), in_dtype)
                 amax_local = T.alloc_fragment((block_m,), scale_dtype)
                 scale_local = T.alloc_fragment((block_m,), scale_dtype)
                 output_local = T.alloc_fragment((block_m, index_dim), out_dtype)
-                output_shared = T.alloc_shared((block_m, index_dim), out_dtype)
 
-                T.copy(input_tensor[bx, pid_m * block_m, 0], input_shared)
-                T.copy(input_shared, input_local)
+                # Load a (block_m, index_dim) tile explicitly to avoid stride bugs with extra dims
+                for i, j in T.Parallel(block_m, index_dim):
+                    input_local[i, j] = input_tensor[bx, pid_m * block_m + i, g, j]
+
+                # Reduce over index_dim to get amax per sequence position
                 T.reduce_absmax(input_local, amax_local, dim=1)
                 for i in T.Parallel(block_m):
                     amax_local[i] = T.max(amax_local[i], 1e-4)
                     scale_local[i] = amax_local[i] * fp8_max_inv
+
+                # Quantize: q = clamp(input / scale, [-448, 448])
                 for i, j in T.Parallel(block_m, index_dim):
                     output_local[i, j] = T.clamp(input_local[i, j] / scale_local[i], fp8_min,
                                                  fp8_max)
+
+                # Write back scale and output
                 for i in T.Parallel(block_m):
-                    scale_tensor[bx, pid_m * block_m + i] = scale_local[i]
-                T.copy(output_local, output_shared)
-                T.copy(output_shared, output_tensor[bx, pid_m * block_m, 0])
+                    scale_tensor[bx, pid_m * block_m + i, g] = scale_local[i]
+                for i, j in T.Parallel(block_m, index_dim):
+                    output_tensor[bx, pid_m * block_m + i, g, j] = output_local[i, j]
 
         return _fp8_quant_fwd_main
 
@@ -57,21 +60,20 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype):
 
 
 @torch.library.custom_op("top::fp8_quant_wrapped_kernel", mutates_args=())
-def _fp8_quant_wrapped_kernel(batch: int, seq_len_kv: int, index_dim: int, in_dtype: torch.dtype,
-                              num_stages: int, block_m: int,
+def _fp8_quant_wrapped_kernel(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
+                              in_dtype: torch.dtype, num_stages: int, block_m: int,
                               input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _fp8_quant_kernel(batch, seq_len_kv, index_dim, in_dtype)(num_stages, block_m)(
+    return _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype)(num_stages, block_m)(
         input_tensor)
 
 
 @_fp8_quant_wrapped_kernel.register_fake
-def _(batch, seq_len_kv, index_dim, in_dtype,
-      num_stages, block_m,
-      *inputs):
-    return torch.empty((batch, seq_len_kv), dtype=torch.float32,
-                       device=inputs[0].device), torch.empty((batch, seq_len_kv, index_dim),
-                                                             dtype=torch.float8,
-                                                             device=inputs[0].device)
+def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, num_stages, block_m, *inputs):
+    return torch.empty((batch, seq_len_kv, kv_group), dtype=torch.float32,
+                       device=inputs[0].device), torch.empty(
+                           (batch, seq_len_kv, kv_group, index_dim),
+                           dtype=torch.float8_e4m3fn,
+                           device=inputs[0].device)
 
 
 class Fp8QuantKernel(Kernel):
@@ -81,6 +83,7 @@ class Fp8QuantKernel(Kernel):
     def __init__(self,
                  batch: int,
                  seq_len_kv: int,
+                 kv_group: int,
                  index_dim: int,
                  in_dtype: torch.dtype,
                  config: Optional[dict] = None,
@@ -88,10 +91,12 @@ class Fp8QuantKernel(Kernel):
         super().__init__()
         self.batch = batch
         self.seq_len_kv = seq_len_kv
+        self.kv_group = kv_group
         self.index_dim = index_dim
         self.in_dtype = in_dtype
         self.config = config or {}
-        self.kernel = _fp8_quant_kernel(self.batch, self.seq_len_kv, self.index_dim, self.in_dtype)
+        self.kernel = _fp8_quant_kernel(self.batch, self.seq_len_kv, self.kv_group, self.index_dim,
+                                        self.in_dtype)
         self.init_config(config, tune)
 
     @property
@@ -107,6 +112,6 @@ class Fp8QuantKernel(Kernel):
         return [{'num_stages': c[0], 'block_m': c[1]} for c in _configs]
 
     def forward(self, input_tensor: torch.Tensor):
-        return _fp8_quant_wrapped_kernel(self.batch, self.seq_len_kv, self.index_dim, self.in_dtype,
-                                         self.config["num_stages"], self.config["block_m"],
-                                         input_tensor)
+        return _fp8_quant_wrapped_kernel(self.batch, self.seq_len_kv, self.kv_group, self.index_dim,
+                                         self.in_dtype, self.config["num_stages"],
+                                         self.config["block_m"], input_tensor)
