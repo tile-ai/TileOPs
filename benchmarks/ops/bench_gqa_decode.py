@@ -26,13 +26,13 @@ class GqaDecodeBenchmark(BenchmarkBase):
 
 
 @GqaDecodeFixture
-def test_gqa_decode_bench(b: int, h: int, h_kv: int, s_kv: int, d: int, dtype: torch.dtype,
-                          tune: bool) -> None:
-    test = GqaDecodeTest(b, h, h_kv, s_kv, d, dtype)
+def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
+                          dtype: torch.dtype, tune: bool) -> None:
+    test = GqaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dtype)
     bm = GqaDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = GroupQueryAttentionDecodeWithKVCacheOp(b, h, h_kv, s_kv, d, dtype, tune=tune)
+    op = GroupQueryAttentionDecodeWithKVCacheOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("gqa_decode", locals(), result, tag="tileops")
 

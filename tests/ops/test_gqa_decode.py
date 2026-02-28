@@ -11,7 +11,7 @@ from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
 class GqaDecodeFixture(FixtureBase):
     PARAMS = [
-        ("b, h, h_kv, s_kv, d, dtype, tune", [
+        ("batch, heads, heads_kv, seq_len_kv, dim, dtype, tune", [
             (1, 32, 8, 8192, 128, torch.float16, False),
             (4, 32, 4, 4096, 128, torch.bfloat16, False),
             (8, 64, 16, 8192, 128, torch.float16, False),
@@ -49,10 +49,10 @@ class GqaDecodeTest(TestBase):
 
 
 @GqaDecodeFixture
-def test_gqa_decode(b: int, h: int, h_kv: int, s_kv: int, d: int, dtype: torch.dtype,
-                    tune: bool) -> None:
-    test = GqaDecodeTest(b, h, h_kv, s_kv, d, dtype)
-    op = GroupQueryAttentionDecodeWithKVCacheOp(b, h, h_kv, s_kv, d, dtype, tune=tune)
+def test_gqa_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
+                    dtype: torch.dtype, tune: bool) -> None:
+    test = GqaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dtype)
+    op = GroupQueryAttentionDecodeWithKVCacheOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 
