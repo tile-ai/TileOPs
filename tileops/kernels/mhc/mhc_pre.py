@@ -6,6 +6,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import LOG2E
 
 __all__ = ["mhc_pre_kernel"]
 
@@ -13,7 +14,7 @@ __all__ = ["mhc_pre_kernel"]
 def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat16'):
 
     def sigmoid(x):
-        return 1 / (1 + T.exp2(-x * 1.44269504))
+        return 1 / (1 + T.exp2(-x * LOG2E))
 
     dtype = "float32"
     accum_dtype = "float32"
@@ -168,7 +169,7 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                 T.reduce_max(h_frag, tmp1)
 
                 for i, j in T.Parallel(n_expand, n_expand):
-                    h_frag[i, j] = T.exp2((h_frag[i, j] - tmp1[i]) * 1.44269504)
+                    h_frag[i, j] = T.exp2((h_frag[i, j] - tmp1[i]) * LOG2E)
 
                 #for iter_sinkhorn in T.Pipelined(sinkhorn_repeat):
 

@@ -5,6 +5,7 @@ import tilelang
 from tilelang import language as T
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import LOG2E
 
 
 def _nsa_topk_varlen_kernel(
@@ -22,8 +23,7 @@ def _nsa_topk_varlen_kernel(
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
-    LOG2_E = 1.44269504
-    scale_log2 = scale * LOG2_E
+    scale_log2 = scale * LOG2E
     head_kv = heads // group
 
     q_shape = [c_seq_len, heads, dim]
@@ -152,7 +152,7 @@ def _nsa_topk_varlen_kernel(
                     if nc == 0 or logsum[i] <= 0:
                         b_lse[i] = 0.0
                     else:
-                        b_lse[i] = (scores_max[i] * scale_log2 + T.log2(logsum[i])) / LOG2_E
+                        b_lse[i] = (scores_max[i] * scale_log2 + T.log2(logsum[i])) / LOG2E
 
                 # step2: Importance Scores alignment and streaming Top-K
                 T.sync_threads()
@@ -183,7 +183,7 @@ def _nsa_topk_varlen_kernel(
                             is_curr, 1.0,
                             T.if_then_else(
                                 is_hist,
-                                T.exp2((acc_s[g_idx, c_idx] * scale - b_lse[g_idx]) * LOG2_E), 0.0))
+                                T.exp2((acc_s[g_idx, c_idx] * scale - b_lse[g_idx]) * LOG2E), 0.0))
                         acc_s[g_idx, c_idx] = imp
 
                     b_i_current = T.alloc_fragment([bc], accum_dtype)

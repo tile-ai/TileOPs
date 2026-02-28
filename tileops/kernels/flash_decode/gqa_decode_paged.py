@@ -6,12 +6,13 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
 __all__ = ["gqa_decode_paged_kernel"]
 
 
 def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = make_log2e_scale(dim)
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -29,6 +30,9 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
 
         part_shape = [batch, heads, num_split, dim]
         valid_block_H = min(block_H, kv_group_num)
+
+        online_softmax = make_online_softmax(scale, accum_dtype, block_H, block_N)
+        rescale = make_rescale(block_H, dim)
 
         @T.macro
         def _gqa_decode_no_split(
@@ -87,19 +91,9 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
                     for i, j in T.Parallel(block_H, block_N):
                         acc_s[i, j] = T.if_then_else((k * block_N + j < seqlen_kv_b), acc_s[i, j],
                                                      -T.infinity(accum_dtype))
-                    T.copy(scores_max, scores_max_prev)
-                    T.fill(scores_max, -T.infinity(accum_dtype))
-                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                    for i in T.Parallel(block_H):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-                    for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-                    T.reduce_sum(acc_s, scores_sum, dim=1)
-                    for i in T.Parallel(block_H):
-                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
-                    for i, j in T.Parallel(block_H, dim):
-                        acc_o[i, j] *= scores_scale[i]
+                    rescale(acc_o, scores_scale)
                     T.copy(
                         V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
                           cur_kv_head, :], V_shared)
@@ -198,19 +192,9 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
                         logical_pos = start_sid + k * block_N + j
                         acc_s[i, j] = T.if_then_else(logical_pos < seqlen_kv_b, acc_s[i, j],
                                                      -T.infinity(accum_dtype))
-                    T.copy(scores_max, scores_max_prev)
-                    T.fill(scores_max, -T.infinity(accum_dtype))
-                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                    for i in T.Parallel(block_H):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-                    for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-                    T.reduce_sum(acc_s, scores_sum, dim=1)
-                    for i in T.Parallel(block_H):
-                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
-                    for i, j in T.Parallel(block_H, dim):
-                        acc_o[i, j] *= scores_scale[i]
+                    rescale(acc_o, scores_scale)
                     T.copy(
                         V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
                           cur_kv_head, :], V_shared)

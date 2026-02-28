@@ -6,6 +6,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import LOG2E
 
 __all__ = [
     'FlashAttnBwdPreprocessKernel', 'FlashAttnBwdPostprocessKernel', 'MhaBwdKernel',
@@ -123,7 +124,7 @@ def _mha_bwd_kernel(batch: int,
                     is_causal: bool,
                     dtype: str = "float16") -> Callable:
     sm_scale = (1.0 / dim)**0.5
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = (1.0 / dim)**0.5 * LOG2E
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -285,7 +286,7 @@ def _mha_bwd_wgmma_pipelined_kernel(batch: int,
                                     is_causal: bool,
                                     dtype: str = "float16") -> Callable:
     sm_scale = (1.0 / dim)**0.5
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = (1.0 / dim)**0.5 * LOG2E
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -471,7 +472,7 @@ def _gqa_bwd_kernel(batch: int,
                     is_causal: bool,
                     dtype: str = "float16") -> Callable:
     sm_scale = (1.0 / dim)**0.5
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = (1.0 / dim)**0.5 * LOG2E
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
     accum_dtype = "float"
@@ -633,7 +634,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch: int,
                                     is_causal: bool,
                                     dtype: str = "float16") -> Callable:
     sm_scale = (1.0 / dim)**0.5
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = (1.0 / dim)**0.5 * LOG2E
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
     accum_dtype = "float"

@@ -6,12 +6,13 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
 __all__ = ["mha_decode_kernel"]
 
 
 def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype):
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = make_log2e_scale(dim)
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -25,6 +26,9 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype)
         shape_q = [batch, seqlen_q, heads, dim]
         shape_kv = [batch, seqlen_kv, heads, dim]
         part_shape = [batch, seqlen_q, heads, num_split, dim]
+
+        online_softmax = make_online_softmax(scale, accum_dtype, block_M, block_N)
+        rescale = make_rescale(block_M, dim)
 
         @T.macro
         def _mha_decode_no_split(
@@ -76,19 +80,10 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype)
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow)
                     T.copy(V[bz, k * block_N:(k + 1) * block_N, by, :], V_shared)
-                    T.copy(scores_max, scores_max_prev)
-                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                    for i in T.Parallel(block_M):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-                    for i, j in T.Parallel(block_M, dim):
-                        acc_o[i, j] *= scores_scale[i]
-                    for i, j in T.Parallel(block_M, block_N):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
+                    rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                    T.reduce_sum(acc_s, scores_sum, dim=1)
-                    for i in T.Parallel(block_M):
-                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                 for i, j in T.Parallel(block_M, dim):
                     acc_o[i, j] /= logsum[i]
                 T.copy(acc_o, Output[bz, bx * block_M:(bx + 1) * block_M, by, :])
@@ -146,44 +141,6 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype)
             T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
         @T.macro
-        def Softmax(
-                acc_s: T.FragmentBuffer([block_M, block_N], accum_dtype),
-                acc_s_cast: T.FragmentBuffer([block_M, block_N], dtype),
-                scores_max: T.FragmentBuffer([block_M], accum_dtype),
-                scores_max_prev: T.FragmentBuffer([block_M], accum_dtype),
-                scores_scale: T.FragmentBuffer([block_M], accum_dtype),
-                scores_sum: T.FragmentBuffer([block_M], accum_dtype),
-                logsum: T.FragmentBuffer([block_M], accum_dtype),
-        ):
-            T.copy(scores_max, scores_max_prev)
-            T.fill(scores_max, -T.infinity(accum_dtype))
-            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-            # To do causal softmax, we need to set the scores_max to 0 if it is -inf
-            # This process is called Check_inf in FlashAttention3 code, and it only need to be done
-            # in the first ceil_div(kBlockM, kBlockN) steps.
-            # for i in T.Parallel(block_M):
-            #     scores_max[i] = T.if_then_else(scores_max[i] == -T.infinity(accum_dtype), 0, scores_max[i])
-            for i in T.Parallel(block_M):
-                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-            for i, j in T.Parallel(block_M, block_N):
-                # Instead of computing exp(x - max), we compute exp2(x * log_2(e) -
-                # max * log_2(e)) This allows the compiler to use the ffma
-                # instruction instead of fadd and fmul separately.
-                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-            T.reduce_sum(acc_s, scores_sum, dim=1)
-            for i in T.Parallel(block_M):
-                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-            T.copy(acc_s, acc_s_cast)
-
-        @T.macro
-        def Rescale(
-                acc_o: T.FragmentBuffer([block_M, dim], accum_dtype),
-                scores_scale: T.FragmentBuffer([block_M], accum_dtype),
-        ):
-            for i, j in T.Parallel(block_M, dim):
-                acc_o[i, j] *= scores_scale[i]
-
-        @T.macro
         def _mha_decode_split(
                 Q: T.Tensor(shape_q, dtype),
                 K: T.Tensor(shape_kv, dtype),
@@ -238,9 +195,10 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype)
                 # move it to input var...
                 for k in T.Pipelined(loop_range, num_stages=2):
                     MMA0(K, Q_shared, K_shared, real_seqlen_kv, acc_s, k, mid, hid, bid, sid)
-                    Softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale,
-                            scores_sum, logsum)
-                    Rescale(acc_o, scores_scale)
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale,
+                                   scores_sum, logsum)
+                    T.copy(acc_s, acc_s_cast)
+                    rescale(acc_o, scores_scale)
                     MMA1(V, V_shared, real_seqlen_kv, acc_s_cast, acc_o, k, hid, bid, sid)
 
                 for i, j in T.Parallel(block_M, dim):

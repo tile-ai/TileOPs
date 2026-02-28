@@ -6,12 +6,13 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import LOG2E, make_online_softmax, make_rescale
 
 __all__ = ["mla_decode_kernel", "mla_decode_ws_kernel"]
 
 
 def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype='float16'):
-    scale = (1.0 / (dim + pe_dim))**0.5 * 1.44269504  # log2(e)
+    scale = (1.0 / (dim + pe_dim))**0.5 * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // kv_head_num
     assert kv_head_num == 1, "kv_head_num must be 1"
@@ -25,6 +26,9 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
     def _mla_decode_func(block_H, block_N, num_split, num_stages, threads=128):
 
         VALID_BLOCK_H = min(block_H, kv_group_num)
+
+        online_softmax = make_online_softmax(scale, accum_dtype, block_H, block_N)
+        rescale = make_rescale(block_H, dim)
 
         @T.macro
         def _mla_no_split(
@@ -78,19 +82,9 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                         acc_s,
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullCol)
-                    T.copy(scores_max, scores_max_prev)
-                    T.fill(scores_max, -T.infinity(accum_dtype))
-                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                    for i in T.Parallel(block_H):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-                    for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-                    T.reduce_sum(acc_s, scores_sum, dim=1)
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
                     T.copy(acc_s, S_shared)
-                    for i in T.Parallel(block_H):
-                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-                    for i, j in T.Parallel(block_H, dim):
-                        acc_o[i, j] *= scores_scale[i]
+                    rescale(acc_o, scores_scale)
                     T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] /= logsum[i]
@@ -156,20 +150,10 @@ def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype=
                         acc_s,
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullCol)
-                    T.copy(scores_max, scores_max_prev)
-                    T.fill(scores_max, -T.infinity(accum_dtype))
-                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                    for i in T.Parallel(block_H):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-                    for i, j in T.Parallel(block_H, block_N):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-                    T.reduce_sum(acc_s, scores_sum, dim=1)
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
                     T.copy(acc_s, S_shared)
                     T.copy(S_shared, acc_s_cast)
-                    for i in T.Parallel(block_H):
-                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-                    for i, j in T.Parallel(block_H, dim):
-                        acc_o[i, j] *= scores_scale[i]
+                    rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] /= logsum[i]
@@ -357,7 +341,7 @@ class mla_decode_kernel(Kernel):
 
 
 def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype='float16'):
-    sm_scale = (1.0 / (dim + pe_dim))**0.5 * 1.44269504  # log2(e)
+    sm_scale = (1.0 / (dim + pe_dim))**0.5 * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // kv_head_num
     assert kv_head_num == 1, "kv_head_num must be 1"

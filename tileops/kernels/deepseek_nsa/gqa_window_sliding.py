@@ -5,6 +5,7 @@ import tilelang
 from tilelang import language as T
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import LOG2E
 
 
 def _gqa_window_sliding_kernel(
@@ -20,7 +21,7 @@ def _gqa_window_sliding_kernel(
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
-    scale = (1.0 / dim)**0.5 * 1.44269504
+    scale = (1.0 / dim)**0.5 * LOG2E
     head_kv = heads // groups
     has_window = window_size_left >= 0 or window_size_right >= 0
 

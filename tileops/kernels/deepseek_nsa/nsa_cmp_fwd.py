@@ -5,6 +5,7 @@ import tilelang
 from tilelang import language as T
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import LOG2E
 
 
 def _nsa_cmp_fwd_varlen_kernel(
@@ -23,8 +24,7 @@ def _nsa_cmp_fwd_varlen_kernel(
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
-    LOG2_E = 1.44269504
-    scale_log2 = scale * LOG2_E
+    scale_log2 = scale * LOG2E
     head_kv = heads // group
 
     q_shape = [c_seq_len, heads, dim_k]
@@ -139,7 +139,7 @@ def _nsa_cmp_fwd_varlen_kernel(
                     if nc == 0 or logsum[i] <= 0:
                         b_lse[i] = 0.0
                     else:
-                        b_lse[i] = (scores_max[i] * scale_log2 + T.log2(logsum[i])) / LOG2_E
+                        b_lse[i] = (scores_max[i] * scale_log2 + T.log2(logsum[i])) / LOG2E
 
                 T.copy(b_o, output[bos + i_t, i_h * group:(i_h + 1) * group, :dim_v])
                 T.copy(b_lse, temp_lse[bos + i_t, i_h * group:(i_h + 1) * group])

@@ -6,6 +6,7 @@ import tilelang
 from tilelang import language as T
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import LOG2E, make_online_softmax, make_rescale
 
 
 def _nsa_fwd_varlen_kernel(
@@ -22,9 +23,9 @@ def _nsa_fwd_varlen_kernel(
     accum_dtype: str,
 ) -> Callable:
     if scale is None:
-        scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+        scale = (1.0 / dim)**0.5 * LOG2E
     else:
-        scale = scale * 1.44269504  # log2(e)
+        scale = scale * LOG2E
 
     @tilelang.jit(
         out_idx=[3],
@@ -58,6 +59,9 @@ def _nsa_fwd_varlen_kernel(
         bs = block_s
         bk = bv = block_t
         num_stages = 4
+
+        online_softmax = make_online_softmax(scale, accum_dtype, g, bs)
+        rescale = make_rescale(g, bv)
 
         @T.prim_func
         def _nsa_fwd_varlen_main(
@@ -122,22 +126,11 @@ def _nsa_fwd_varlen_kernel(
                             policy=T.GemmWarpPolicy.FullRow)
 
                         # Softmax
-                        T.copy(scores_max, scores_max_prev)
-                        T.fill(scores_max, -T.infinity(accum_dtype))
-                        T.reduce_max(acc_s, scores_max, dim=1, clear=True)
-                        for i in T.Parallel(g):
-                            scores_scale[i] = T.exp2(scores_max_prev[i] * scale -
-                                                     scores_max[i] * scale)
-                        for i, j in T.Parallel(g, bs):
-                            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-                        T.reduce_sum(acc_s, scores_sum, dim=1)
-                        for i in T.Parallel(g):
-                            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+                        online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
                         T.copy(acc_s, acc_s_cast)
 
                         # Rescale
-                        for i, j in T.Parallel(g, bv):
-                            acc_o[i, j] *= scores_scale[i]
+                        rescale(acc_o, scores_scale)
 
                         # V * softmax(Q * K)
                         T.copy(v[bos + i_s:bos + i_s + bs, i_h, i_v * bv:(i_v + 1) * bv], v_shared)

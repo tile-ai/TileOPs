@@ -6,6 +6,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
 __all__ = [
     'MhaFwdKernel', 'MhaFwdWgmmaPipelinedKernel', 'GqaFwdKernel', 'GqaFwdWgmmaPipelinedKernel'
@@ -20,7 +21,7 @@ def _mha_fwd_kernel(batch: int,
                     dim: int,
                     is_causal: bool,
                     dtype: str = 'float16') -> Callable:
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = make_log2e_scale(dim)  # log2(e)
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -31,6 +32,8 @@ def _mha_fwd_kernel(batch: int,
         compile_flags=["-O3", "-DENABLE_BF16"])
     def _mha_fwd_func(block_m: int, block_n: int, num_stages: int, threads: int) -> Callable:
         shape = (batch, seq_len, heads, dim)
+        online_softmax = make_online_softmax(scale, accum_dtype, block_m, block_n)
+        rescale = make_rescale(block_m, dim)
 
         @T.prim_func
         def _mha_fwd_main(
@@ -78,19 +81,11 @@ def _mha_fwd_kernel(batch: int,
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow)
                     T.copy(v[bz, k_idx * block_n:(k_idx + 1) * block_n, by, :], v_shared)
-                    T.copy(scores_max, scores_max_prev)
-                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                    for i in T.Parallel(block_m):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-                    for i, j in T.Parallel(block_m, dim):
-                        acc_o[i, j] *= scores_scale[i]
-                    for i, j in T.Parallel(block_m, block_n):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum,
+                                   logsum)
                     T.copy(acc_s, acc_s_cast)
+                    rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                    T.reduce_sum(acc_s, scores_sum, dim=1)
-                    for i in T.Parallel(block_m):
-                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                 for i, j in T.Parallel(block_m, dim):
                     acc_o[i, j] /= logsum[i]
                 T.copy(acc_o, output[bz, bx * block_m:(bx + 1) * block_m, by, :])
@@ -196,7 +191,7 @@ def _mha_fwd_wgmma_pipelined_kernel(batch: int,
                                     dim: int,
                                     is_causal: bool,
                                     dtype: str = "float16") -> Callable:
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = make_log2e_scale(dim)  # log2(e)
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -243,41 +238,8 @@ def _mha_fwd_wgmma_pipelined_kernel(batch: int,
             T.copy(v[bz, k_idx * block_n:(k_idx + 1) * block_n, by, :], v_shared)
             T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
-        @T.macro
-        def softmax(
-                acc_s: T.FragmentBuffer([block_m, block_n], accum_dtype),
-                acc_s_cast: T.FragmentBuffer([block_m, block_n], dtype),
-                scores_max: T.FragmentBuffer([block_m], accum_dtype),
-                scores_max_prev: T.FragmentBuffer([block_m], accum_dtype),
-                scores_scale: T.FragmentBuffer([block_m], accum_dtype),
-                scores_sum: T.FragmentBuffer([block_m], accum_dtype),
-                logsum: T.FragmentBuffer([block_m], accum_dtype),
-        ) -> None:
-            T.copy(scores_max, scores_max_prev)
-            T.fill(scores_max, -T.infinity(accum_dtype))
-            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-            # To do causal softmax, we need to set the scores_max to 0 if it is -inf
-            # This process is called Check_inf in FlashAttention3 code, and it only need to be done
-            # in the first ceil_div(kBlockM, kBlockN) steps.
-            for i in T.Parallel(block_m):
-                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-            for i, j in T.Parallel(block_m, block_n):
-                # Instead of computing exp(x - max), we compute exp2(x * log_2(e) -
-                # max * log_2(e)) This allows the compiler to use the ffma
-                # instruction instead of fadd and fmul separately.
-                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-            T.reduce_sum(acc_s, scores_sum, dim=1)
-            for i in T.Parallel(block_m):
-                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-            T.copy(acc_s, acc_s_cast)
-
-        @T.macro
-        def rescale(
-                acc_o: T.FragmentBuffer([block_m, dim], accum_dtype),
-                scores_scale: T.FragmentBuffer([block_m], accum_dtype),
-        ) -> None:
-            for i, j in T.Parallel(block_m, dim):
-                acc_o[i, j] *= scores_scale[i]
+        online_softmax = make_online_softmax(scale, accum_dtype, block_m, block_n)
+        rescale = make_rescale(block_m, dim)
 
         @T.prim_func
         def _mha_fwd_wgmma_pipelined_main(
@@ -319,8 +281,9 @@ def _mha_fwd_wgmma_pipelined_kernel(batch: int,
                         stage=[-1, 0, 0, 1, -1, 1],
                         group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12], [13]]):
                     mma0(k, q_shared, k_shared, acc_s, k_idx, bx, by, bz)
-                    softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale,
-                            scores_sum, logsum)
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum,
+                                   logsum)
+                    T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
                     mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, bz)
                 for i, j in T.Parallel(block_m, dim):
@@ -419,7 +382,7 @@ def _gqa_fwd_kernel(batch: int,
                     dim: int,
                     is_causal: bool,
                     dtype: str = 'float16') -> Callable:
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = make_log2e_scale(dim)  # log2(e)
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
     accum_dtype = "float"
@@ -434,6 +397,8 @@ def _gqa_fwd_kernel(batch: int,
 
         q_shape = (batch, seq_len, heads, dim)
         kv_shape = (batch, seq_len, heads_kv, dim)
+        online_softmax = make_online_softmax(scale, accum_dtype, block_m, block_n)
+        rescale = make_rescale(block_m, dim)
 
         @T.prim_func
         def _gqa_fwd_main(
@@ -481,19 +446,11 @@ def _gqa_fwd_kernel(batch: int,
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow)
                     T.copy(v[bz, k_idx * block_n:(k_idx + 1) * block_n, by // groups, :], v_shared)
-                    T.copy(scores_max, scores_max_prev)
-                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                    for i in T.Parallel(block_m):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-                    for i, j in T.Parallel(block_m, dim):
-                        acc_o[i, j] *= scores_scale[i]
-                    for i, j in T.Parallel(block_m, block_n):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum,
+                                   logsum)
                     T.copy(acc_s, acc_s_cast)
+                    rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                    T.reduce_sum(acc_s, scores_sum, dim=1)
-                    for i in T.Parallel(block_m):
-                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
                 for i, j in T.Parallel(block_m, dim):
                     acc_o[i, j] /= logsum[i]
                 T.copy(acc_o, output[bz, bx * block_m:(bx + 1) * block_m, by, :])
@@ -604,7 +561,7 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch: int,
                                     dim: int,
                                     is_causal: bool,
                                     dtype: str = "float16") -> Callable:
-    scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
+    scale = make_log2e_scale(dim)  # log2(e)
     assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
     groups = heads // heads_kv
     accum_dtype = "float"
@@ -654,41 +611,8 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch: int,
             T.copy(v[bz, k_idx * block_n:(k_idx + 1) * block_n, by // groups, :], v_shared)
             T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
-        @T.macro
-        def softmax(
-                acc_s: T.FragmentBuffer([block_m, block_n], accum_dtype),
-                acc_s_cast: T.FragmentBuffer([block_m, block_n], dtype),
-                scores_max: T.FragmentBuffer([block_m], accum_dtype),
-                scores_max_prev: T.FragmentBuffer([block_m], accum_dtype),
-                scores_scale: T.FragmentBuffer([block_m], accum_dtype),
-                scores_sum: T.FragmentBuffer([block_m], accum_dtype),
-                logsum: T.FragmentBuffer([block_m], accum_dtype),
-        ) -> None:
-            T.copy(scores_max, scores_max_prev)
-            T.fill(scores_max, -T.infinity(accum_dtype))
-            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-            # To do causal softmax, we need to set the scores_max to 0 if it is -inf
-            # This process is called Check_inf in FlashAttention3 code, and it only need to be done
-            # in the first ceil_div(kBlockM, kBlockN) steps.
-            for i in T.Parallel(block_m):
-                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-            for i, j in T.Parallel(block_m, block_n):
-                # Instead of computing exp(x - max), we compute exp2(x * log_2(e) -
-                # max * log_2(e)) This allows the compiler to use the ffma
-                # instruction instead of fadd and fmul separately.
-                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-            T.reduce_sum(acc_s, scores_sum, dim=1)
-            for i in T.Parallel(block_m):
-                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-            T.copy(acc_s, acc_s_cast)
-
-        @T.macro
-        def rescale(
-                acc_o: T.FragmentBuffer([block_m, dim], accum_dtype),
-                scores_scale: T.FragmentBuffer([block_m], accum_dtype),
-        ) -> None:
-            for i, j in T.Parallel(block_m, dim):
-                acc_o[i, j] *= scores_scale[i]
+        online_softmax = make_online_softmax(scale, accum_dtype, block_m, block_n)
+        rescale = make_rescale(block_m, dim)
 
         @T.prim_func
         def _gqa_fwd_wgmma_pipelined_main(
@@ -730,8 +654,9 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch: int,
                         stage=[-1, 0, 0, 1, -1, 1],
                         group=[[0], [1, 2], [3, 4, 5, 6, 7, 8, 9, 10], [11], [12], [13]]):
                     mma0(k, q_shared, k_shared, acc_s, k_idx, bx, by, bz)
-                    softmax(acc_s, acc_s_cast, scores_max, scores_max_prev, scores_scale,
-                            scores_sum, logsum)
+                    online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum,
+                                   logsum)
+                    T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
                     mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, bz)
                 for i, j in T.Parallel(block_m, dim):
