@@ -16,6 +16,7 @@ class TopkSelectorOp(Op):
                  batch: int,
                  seq_len: int,
                  seq_len_kv: int,
+                 kv_group: int,
                  topk: int,
                  in_dtype: str,
                  out_dtype: str,
@@ -24,6 +25,7 @@ class TopkSelectorOp(Op):
         self.batch = batch
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv
+        self.kv_group = kv_group
         self.topk = topk
         self.in_dtype = in_dtype
         self.out_dtype = out_dtype
@@ -33,6 +35,7 @@ class TopkSelectorOp(Op):
             self.batch,
             self.seq_len,
             self.seq_len_kv,
+            self.kv_group,
             self.topk,
             self.in_dtype,
             self.out_dtype,

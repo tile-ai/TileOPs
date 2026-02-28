@@ -121,13 +121,15 @@ class TopkSelectorLayer(nn.Module):
                  batch: int,
                  seq_len: int,
                  seq_len_kv: int,
+                 kv_group: int,
                  topk: int,
                  in_dtype: str,
                  out_dtype: str,
                  tune: bool = False):
         super().__init__()
 
-        self.fn = TopkSelectorFunc(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype, tune=tune)
+        self.fn = TopkSelectorFunc(
+            batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, tune=tune)
 
     def forward(self, index_scores: torch.Tensor, starts: torch.Tensor,
                 ends: torch.Tensor) -> torch.Tensor:

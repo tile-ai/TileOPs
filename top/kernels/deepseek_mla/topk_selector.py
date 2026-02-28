@@ -31,7 +31,7 @@ def convert_to_uint32(x):
     return bits_uint
 
 
-def _topk_selector_kernel(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype):
+def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype):
 
     @tilelang.jit(
         out_idx=[1], pass_configs={
@@ -43,12 +43,14 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype)
 
         @T.prim_func
         def _topk_selector_kernel_main(
-            index_score: T.Tensor[(batch, seq_len, seq_len_kv), in_dtype],
-            index: T.Tensor[(batch, seq_len, topk), out_dtype],
+            index_score: T.Tensor[(batch, seq_len, seq_len_kv, kv_group), in_dtype],
+            index: T.Tensor[(batch, seq_len, topk, kv_group), out_dtype],
             starts: T.Tensor[(batch, seq_len), out_dtype],
             ends: T.Tensor[(batch, seq_len), out_dtype],
         ):
-            with T.Kernel(batch, T.ceildiv(seq_len, block_m), threads=BLOCK_SIZE) as (bx, by):
+            with T.Kernel(
+                    batch, T.ceildiv(seq_len, block_m), kv_group,
+                    threads=BLOCK_SIZE) as (bx, by, g):
                 tx = T.get_thread_binding()
                 for m_i in T.Parallel(block_m):
 
@@ -66,6 +68,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype)
                     l_start_idx = T.alloc_var(T.int32)
                     l_end_idx = T.alloc_var(T.int32)
                     l_out_pos = T.alloc_var(T.int32)
+                    l_pos = T.alloc_var(T.int32)
 
                     l_new_topk = topk
                     l_start_idx = starts[bx, by * block_m + m_i]
@@ -85,7 +88,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype)
                         input_idx = s * BLOCK_SIZE + tx
                         if input_idx < l_end_idx and input_idx >= l_start_idx and input_idx < seq_len_kv:
                             inval_int16 = convert_to_uint16(index_score[bx, by * block_m + m_i,
-                                                                        input_idx])
+                                                                        input_idx, g])
                             T.atomic_add(s_histogram[inval_int16], 1)
                     T.sync_threads()
 
@@ -115,17 +118,18 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype)
                         input_idx = s * BLOCK_SIZE + tx
                         if input_idx < l_end_idx and input_idx >= l_start_idx and input_idx < seq_len_kv:
                             bin_id = convert_to_uint16(index_score[bx, by * block_m + m_i,
-                                                                   input_idx])
+                                                                   input_idx, g])
                             l_bin_id32 = T.Cast(T.int32, bin_id)
                             if l_bin_id32 > l_threshold_bin_id:
                                 # need a pos = T.atomic_add(s_histogram[bin_id32+1], 1)
-                                pos = T.atomic_add(s_histogram[l_bin_id32 + 1], 1, return_prev=True)
-                                index[bx, by * block_m + m_i, pos] = input_idx
+                                l_pos = T.atomic_add(
+                                    s_histogram[l_bin_id32 + 1], 1, return_prev=True)
+                                index[bx, by * block_m + m_i, l_pos, g] = input_idx
 
                             elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
                                 # pos = s_num_input[0]
-                                pos = T.atomic_add(s_num_input[0], 1, return_prev=True)
-                                s_input_idx[0, pos] = input_idx
+                                l_pos = T.atomic_add(s_num_input[0], 1, return_prev=True)
+                                s_input_idx[0, l_pos] = input_idx
 
                     # stage 2: tail pass
                     for round in T.serial(4):
@@ -148,7 +152,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype)
                             if s * BLOCK_SIZE + tx < l_num_input:
                                 l_bin_id32 = T.Cast(T.int32, ((convert_to_uint32(
                                     index_score[bx, by * block_m + m_i,
-                                                s_input_idx[r_idx, s * BLOCK_SIZE + tx]]) >>
+                                                s_input_idx[r_idx, s * BLOCK_SIZE + tx], g]) >>
                                                                (24 - round * 8)) & 0xFF))
                                 T.atomic_add(s_histogram[l_bin_id32], 1)
                         T.sync_threads()
@@ -178,28 +182,27 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype)
                             if s * BLOCK_SIZE + tx < l_num_input:
                                 l_bin_id32 = T.Cast(T.int32, ((convert_to_uint32(
                                     index_score[bx, by * block_m + m_i,
-                                                s_input_idx[r_idx, s * BLOCK_SIZE + tx]]) >>
+                                                s_input_idx[r_idx, s * BLOCK_SIZE + tx], g]) >>
                                                                (24 - round * 8)) & 0xFF))
                                 if l_bin_id32 > l_threshold_bin_id:
-                                    pos = T.atomic_add(
+                                    l_pos = T.atomic_add(
                                         s_histogram[l_bin_id32 + 1], 1,
                                         return_prev=True) + l_start_pos
-                                    index[bx, by * block_m + m_i,
-                                          pos] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
+                                    index[bx, by * block_m + m_i, l_pos,
+                                          g] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
                                 elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
                                     if round == 3:
                                         l_out_pos = T.atomic_add(
                                             s_histogram[l_bin_id32 + 1], 1,
                                             return_prev=True) + l_start_pos
                                         if l_out_pos < topk:
-                                            index[bx, by * block_m + m_i,
-                                                  l_out_pos] = s_input_idx[r_idx,
-                                                                           s * BLOCK_SIZE + tx]
+                                            index[bx, by * block_m + m_i, l_out_pos,
+                                                  g] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
                                     else:
-                                        pos = T.atomic_add(
+                                        l_pos = T.atomic_add(
                                             s_num_input[r_idx ^ 1], 1, return_prev=True)
                                         s_input_idx[r_idx ^ 1,
-                                                    pos] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
+                                                    l_pos] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
 
         return _topk_selector_kernel_main
 
@@ -211,6 +214,7 @@ def _topk_selector_wrapped_kernel(
     batch: int,
     seq_len: int,
     seq_len_kv: int,
+    kv_group: int,
     topk: int,
     in_dtype: str,
     out_dtype: str,
@@ -222,14 +226,14 @@ def _topk_selector_wrapped_kernel(
     starts: torch.Tensor,
     ends: torch.Tensor,
 ) -> torch.Tensor:
-    return _topk_selector_kernel(batch, seq_len, seq_len_kv, topk, in_dtype,
+    return _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype,
                                  out_dtype)(RADIX, BLOCK_SIZE, SMEM_INPUT_SIZE,
                                             block_m)(index_score, starts, ends)
 
 
 @_topk_selector_wrapped_kernel.register_fake
-def _(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype, *inputs) -> None:
-    return torch.empty([batch, seq_len, topk], device=inputs[0].device, dtype=torch.int32)
+def _(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, *inputs) -> None:
+    return torch.empty([batch, seq_len, topk, kv_group], device=inputs[0].device, dtype=torch.int32)
 
 
 class TopkSelectorKernel(Kernel):
@@ -240,6 +244,7 @@ class TopkSelectorKernel(Kernel):
                  batch: int,
                  seq_len: int,
                  seq_len_kv: int,
+                 kv_group: int,
                  topk: int,
                  in_dtype: str,
                  out_dtype: str,
@@ -249,13 +254,15 @@ class TopkSelectorKernel(Kernel):
         self.batch = batch
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv
+        self.kv_group = kv_group
         self.topk = topk
         self.out_dtype = out_dtype
         self.in_dtype_str = str(in_dtype).split('.')[-1]
         self.out_dtype_str = str(out_dtype).split('.')[-1]
 
-        self.kernel = _topk_selector_kernel(self.batch, self.seq_len, self.seq_len_kv, self.topk,
-                                            self.in_dtype_str, self.out_dtype_str)
+        self.kernel = _topk_selector_kernel(self.batch, self.seq_len, self.seq_len_kv,
+                                            self.kv_group, self.topk, self.in_dtype_str,
+                                            self.out_dtype_str)
         self.init_config(config, tune)
 
     @property
@@ -285,8 +292,9 @@ class TopkSelectorKernel(Kernel):
 
     def forward(self, index_score: torch.Tensor, starts: torch.Tensor,
                 ends: torch.Tensor) -> torch.Tensor:
-        return _topk_selector_wrapped_kernel(self.batch, self.seq_len, self.seq_len_kv, self.topk,
-                                             self.in_dtype_str, self.out_dtype_str,
-                                             self.config["RADIX"], self.config["BLOCK_SIZE"],
+        return _topk_selector_wrapped_kernel(self.batch, self.seq_len, self.seq_len_kv,
+                                             self.kv_group, self.topk, self.in_dtype_str,
+                                             self.out_dtype_str, self.config["RADIX"],
+                                             self.config["BLOCK_SIZE"],
                                              self.config["SMEM_INPUT_SIZE"], self.config["block_m"],
                                              index_score, starts, ends)

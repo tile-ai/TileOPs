@@ -10,15 +10,18 @@ from top.utils import str2dtype
 def test_topk_selector(batch: int,
                        seq_len: int,
                        seq_len_kv: int,
+                       kv_group: int,
                        topk: int,
                        in_dtype: torch.dtype,
                        out_dtype: torch.dtype,
                        tune: bool = False) -> None:
-    fn = TopkSelectorFunc(batch, seq_len, seq_len_kv, topk, in_dtype, out_dtype, tune=tune)
+    fn = TopkSelectorFunc(
+        batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, tune=tune)
     layer = TopkSelectorLayer(
         batch,
         seq_len,
         seq_len_kv,
+        kv_group,
         topk,
         in_dtype,
         out_dtype,
@@ -28,6 +31,7 @@ def test_topk_selector(batch: int,
         batch,
         seq_len,
         seq_len_kv,
+        kv_group,
         topk,
         in_dtype,
         out_dtype,
@@ -57,11 +61,12 @@ if __name__ == "__main__":
     parser.add_argument('--batch', type=int, default=64, help='batch size')
     parser.add_argument('--seq_len', type=int, default=2048, help='sequence length')
     parser.add_argument('--seq_len_kv', type=int, default=32 * 1024, help='kv sequence length')
+    parser.add_argument('--kv_group', type=int, default=1, help='kv group')
     parser.add_argument('--topk', type=int, default=2048, help='topk')
     parser.add_argument('--in_dtype', type=str, default="float32", help='input type')
     parser.add_argument('--out_dtype', type=str, default="int32", help='output type')
     parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
     args = parser.parse_args()
 
-    test_topk_selector(args.batch, args.seq_len, args.seq_len_kv, args.topk,
+    test_topk_selector(args.batch, args.seq_len, args.seq_len_kv, args.kv_group, args.topk,
                        str2dtype[args.in_dtype], str2dtype[args.out_dtype], args.tune)

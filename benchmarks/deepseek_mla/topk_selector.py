@@ -14,6 +14,7 @@ class TopkSelectorBenchmark(Benchmark):
         batch: int,
         seq_len: int,
         seq_len_kv: int,
+        kv_group: int,
         topk: int,
         in_dtype: torch.dtype,
         out_dtype: torch.dtype,
@@ -21,6 +22,7 @@ class TopkSelectorBenchmark(Benchmark):
         self.batch = batch
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv
+        self.kv_group = kv_group
         self.topk = topk
         self.in_dtype = in_dtype
         self.out_dtype = out_dtype
@@ -32,26 +34,34 @@ class TopkSelectorBenchmark(Benchmark):
 
     @property
     def total_memory(self) -> float:
-        # index_score: batch, seq_len, seq_len_kv
-        # index: batch, seq_len, topk
+        # index_score: batch, seq_len, seq_len_kv, kv_group
+        # index: batch, seq_len, topk, kv_group
         # starts: batch, seq_len
         # ends: batch, seq_len
-        index_score_memory = self.batch * self.seq_len * self.seq_len_kv * self.in_dtype.itemsize
-        index_memory = self.batch * self.seq_len * self.topk * self.out_dtype.itemsize
+        index_score_memory = (
+            self.batch * self.seq_len * self.seq_len_kv * self.kv_group * self.in_dtype.itemsize)
+        index_memory = (
+            self.batch * self.seq_len * self.topk * self.kv_group * self.out_dtype.itemsize)
         starts_memory = self.batch * self.seq_len * self.out_dtype.itemsize
         ends_memory = self.batch * self.seq_len * self.out_dtype.itemsize
         return index_score_memory + index_memory + starts_memory + ends_memory
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         index_score = torch.randn(
-            self.batch, self.seq_len, self.seq_len_kv, dtype=self.in_dtype, device="cuda")
+            self.batch,
+            self.seq_len,
+            self.seq_len_kv,
+            self.kv_group,
+            dtype=self.in_dtype,
+            device="cuda")
         starts = torch.zeros(self.batch, self.seq_len, dtype=self.out_dtype, device="cuda")
         ends = torch.ones(
             self.batch, self.seq_len, dtype=self.out_dtype, device="cuda") * self.seq_len_kv
         return index_score, starts, ends
 
     def ref_program(self, index_score, starts, ends):
-        indexes_ref = torch.topk(index_score, self.topk, dim=-1)[1]
+        # index_score: (batch, seq_len, seq_len_kv, kv_group); topk over seq_len_kv (dim=2)
+        indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]
         return indexes_ref
 
     def __check_common(self,

@@ -119,6 +119,7 @@ class DeepSeekDSAFusedFunc(Function):
         self.quant_op = Fp8QuantOp(
             batch=batch,
             seq_len_kv=seq_len_kv,
+            kv_group=group_kv,
             index_dim=index_dim,
             in_dtype=quant_in_dtype,
             tune=tune)
@@ -129,6 +130,7 @@ class DeepSeekDSAFusedFunc(Function):
             heads=heads,
             index_dim=index_dim,
             seq_len_kv=seq_len_kv,
+            kv_group=group_kv,
             clean_logits=clean_logits,
             tune=tune)
 
@@ -136,6 +138,7 @@ class DeepSeekDSAFusedFunc(Function):
             batch=batch,
             seq_len=seq_len,
             seq_len_kv=seq_len_kv,
+            kv_group=group_kv,
             topk=topk,
             in_dtype=torch.float32,
             out_dtype=out_dtype,
