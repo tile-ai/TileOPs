@@ -15,6 +15,7 @@ from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
 from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
 from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
+from .gla import GLAFwdOp
 from .op import Op  # noqa: F401
 
 __all__ = [
@@ -45,4 +46,5 @@ __all__ = [
     "GQAWindowSlidingOp",
     "ManifoldConstrainedHyperConnectionPreOp",
     "ManifoldConstrainedHyperConnectionPostOp",
+    "GLAFwdOp",
 ]
