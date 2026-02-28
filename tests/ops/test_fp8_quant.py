@@ -19,7 +19,7 @@ class Fp8QuantFixture(FixtureBase):
     ]
 
 
-def _cosine_compare(output, output_ref):
+def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     """Compare using cosine similarity (fp8 quantization needs looser checks)."""
     output = output.to(torch.float32)
     output_ref = output_ref.to(torch.float32)

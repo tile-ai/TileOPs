@@ -92,7 +92,7 @@ class GqaDecodePagedTest(TestBase):
             out_list.append(out_b)
         return torch.cat(out_list, dim=0)
 
-    def _maxdiff_cosine_compare(self, output, output_ref, atol=0.001):
+    def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor, atol: float = 0.001) -> None:
         """Compare using max-diff and cosine similarity."""
         if isinstance(output, (tuple, list)):
             output = output[0]

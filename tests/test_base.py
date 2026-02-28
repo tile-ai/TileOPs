@@ -17,7 +17,7 @@ def _to_tuple(outputs):
     raise ValueError(f"Unsupported output type: {type(outputs)}")
 
 
-def allclose_compare(output, output_ref, atol=1e-8, rtol=1e-5):
+def allclose_compare(output: torch.Tensor, output_ref: torch.Tensor, atol: float = 1e-8, rtol: float = 1e-5) -> None:
     """Default comparison using torch.allclose."""
     max_err = (output - output_ref).abs().max()
     assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
@@ -106,8 +106,7 @@ class TestBase(ABC):
 
         comparators = [compare] * len(outputs) if callable(compare) else list(compare)
 
-        for _i, (output, output_ref, cmp) in enumerate(
-                zip(outputs, outputs_ref, comparators, strict=True)):
+        for output, output_ref, cmp in zip(outputs, outputs_ref, comparators, strict=True):
             if output_ref is not None:
                 cmp(output, output_ref)
 

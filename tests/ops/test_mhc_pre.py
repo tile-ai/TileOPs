@@ -21,7 +21,7 @@ class MhcPreFixture(FixtureBase):
     ]
 
 
-def _cosine_compare(output, output_ref):
+def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     """Compare using cosine similarity (mhc pre uses bf16 and needs looser checks)."""
     cos_sim = F.cosine_similarity(output_ref, output, dim=-1, eps=1e-8)
     assert cos_sim.min() > 0.99, \

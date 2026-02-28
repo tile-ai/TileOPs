@@ -19,7 +19,7 @@ class TopkSelectorFixture(FixtureBase):
     ]
 
 
-def _set_compare(output, output_ref):
+def _set_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     """Compare using set intersection (topk indices may be in different order)."""
     ref_np = output_ref.cpu().to(torch.int32).numpy()
     trt_np = output.cpu().to(torch.int32).numpy()

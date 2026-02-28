@@ -181,7 +181,7 @@ class Fp8LightingIndexerTest(TestBase):
         return 2 * (a * b).sum() / norm_sum
 
     @staticmethod
-    def _validate_tensor_match(output, output_ref, tolerance=1e-3):
+    def _validate_tensor_match(output: torch.Tensor, output_ref: torch.Tensor, tolerance: float = 1e-3) -> None:
         if isinstance(output, tuple):
             output = output[0]
         if isinstance(output_ref, tuple):
