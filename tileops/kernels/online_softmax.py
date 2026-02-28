@@ -26,8 +26,8 @@ def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
     """Create a reusable online softmax T.macro.
 
     The macro computes the online softmax update step:
-        1. Save previous scores_max
-        2. Update running max over current scores (clear=False keeps running max)
+        1. Save previous scores_max and reset to -inf
+        2. Reduce max over current scores
         3. Compute rescaling factor for previous accumulator
         4. Apply exp2 scaling to current scores
         5. Reduce sum and update logsum
@@ -48,6 +48,7 @@ def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
     @T.macro
     def online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum):
         T.copy(scores_max, scores_max_prev)
+        T.fill(scores_max, -T.infinity(accum_dtype))
         T.reduce_max(acc_s, scores_max, dim=1, clear=False)
         for i in T.Parallel(block_rows):
             scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
