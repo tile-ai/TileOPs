@@ -43,7 +43,7 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
             device='cuda',
             requires_grad=False)
         chunks_per_bacth = (seq_len + chunk_size - 1) // chunk_size
-        indices = torch.randint(0, seq_len, (chunks_per_bacth, 2), dtype=torch.int32, device='cuda')
+        indices = torch.empty((chunks_per_bacth, 2), dtype=torch.int32, device='cuda')
         seq_num = batch_size
         use_offsets = 0
 
