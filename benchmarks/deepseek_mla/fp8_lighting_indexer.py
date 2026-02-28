@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 
@@ -34,9 +34,10 @@ class Fp8LightingIndexerBenchmark(Benchmark):
 
     #todo
     @property
-    def total_flops(self) -> float:
-        flops = self.batch * self.cost * self.heads * self.index_dim * 2
-        return flops
+    def total_flops(self) -> Optional[float]:
+        if not hasattr(self, "cost"):
+            return None
+        return self.batch * self.cost * self.heads * self.index_dim * 2
 
     @property
     def total_memory(self) -> float:
@@ -214,25 +215,30 @@ class Fp8LightingIndexerBenchmark(Benchmark):
         q = q.float()
         k = k.float()
         batch, seq_len, heads, index_dim = q.shape
-        seq_len_kv, kv_group = k.shape[1], k.shape[2]
+        # Use benchmark's seq_len_kv and kv_group so output shape matches op/kernel
+        seq_len_kv = self.seq_len_kv
+        kv_group = self.kv_group
         heads_per_group = heads // kv_group
 
-        q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
+        # Ensure k has expected layout [batch, seq_len_kv, kv_group, index_dim]
         k = k.view(batch, seq_len_kv, kv_group, index_dim)
+        q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
 
         mask_lo = torch.arange(0, seq_len_kv, device="cuda")[None, :] >= cu_seqlen_ks[:, None]
         mask_hi = torch.arange(0, seq_len_kv, device="cuda")[None, :] < cu_seqlen_ke[:, None]
         mask = mask_lo & mask_hi
 
-        score = torch.einsum("bsghd,bgnd->bghsn", q, k)
+        score = torch.einsum("b s g h d, b n g d -> b g h s n", q, k)
 
         weights = weights.view(seq_len, kv_group, heads_per_group)
         weights = weights.permute(1, 2, 0).unsqueeze(0).unsqueeze(-1)  # [1, G, H_g, S, 1]
         score = score.relu() * weights
 
         logits = score.sum(dim=2)  # [B, G, S, N]
-        logits = logits.permute(0, 2, 1,
-                                3)  # [B, S, G, N] => [batch, seq_len, kv_group, seq_len_kv]
+        logits = logits.permute(0, 2, 3, 1)  # [batch, seq_len, seq_len_kv, kv_group]
+        # Match kernel clean_logits: set invalid positions to -inf
+        mask_expanded = mask.unsqueeze(0).unsqueeze(-1)  # [1, seq_len, seq_len_kv, 1]
+        logits = logits.masked_fill(~mask_expanded, float("-inf"))
 
         cost = mask.sum()
         return logits, cost

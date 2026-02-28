@@ -126,8 +126,8 @@ def _fp8_lighting_indexer_kernel(batch,
                             T.print(Logits[b_i, seq_len_i + bq_i, g,
                                            cu_k_s_min + nbn_i * block_N + bn_i])
 
-                        Logits[b_i, seq_len_i + bq_i, g,
-                               cu_k_s_min + nbn_i * block_N + bn_i] = logits[bn_i, bq_i, g]
+                        Logits[b_i, seq_len_i + bq_i, cu_k_s_min + nbn_i * block_N + bn_i,
+                               g] = logits[bn_i, bq_i, g]
 
         # Return the kernel function handle
         return _fp8_lighting_indexer_main
@@ -136,10 +136,7 @@ def _fp8_lighting_indexer_kernel(batch,
 
 
 @tilelang.jit
-def clean_logits_(
-    threads: int = 512,
-    block_K: int = 4096,
-):
+def clean_logits_(block_K: int = 4096,):
     batch = T.dynamic("batch")
     seq_len = T.dynamic("seq_len")
     seq_len_kv = T.dynamic("seq_len_kv")
@@ -154,14 +151,14 @@ def clean_logits_(
             CuSeqLenKS: T.Tensor([seq_len], indices_dtype),  # type: ignore
             CuSeqLenKE: T.Tensor([seq_len], indices_dtype),  # type: ignore
     ):
-        with T.Kernel(seq_len, batch, threads=threads) as (bx, by):
-            tx = T.thread_binding(0, threads, thread="threadIdx.x")
+        with T.Kernel(seq_len, batch, threads=512) as (bx, by):
+            tx = T.thread_binding(0, 512, thread="threadIdx.x")
             cu_k_s = CuSeqLenKS[bx]
             cu_k_e = CuSeqLenKE[bx]
 
             for n_i in T.Pipelined(T.ceildiv(seq_len_kv, block_K)):
-                for k_i in T.serial(block_K // threads):
-                    idx = n_i * block_K + k_i * threads + tx
+                for k_i in T.serial(block_K // 512):
+                    idx = n_i * block_K + k_i * 512 + tx
                     if idx < cu_k_s or idx >= cu_k_e:
                         for g in T.serial(kv_group):
                             Logits[by, bx, idx, g] = -T.infinity(dtype)
