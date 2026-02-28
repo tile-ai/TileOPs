@@ -13,9 +13,15 @@ class GemvFixture(FixtureBase):
             (1024, 1024, torch.float16, False),
             (7168, 16384, torch.float16, True),
             (18432, 7168, torch.float16, True),
+            # Llama-3 70B MLP gate/up proj: n=28672, k=8192
+            (28672, 8192, torch.float16, True),
+            # DeepSeek-V3 MoE aggregated output: n=57344 (8 experts × 7168)
+            (57344, 7168, torch.float16, True),
             (1024, 1024, torch.bfloat16, False),
             (7168, 16384, torch.bfloat16, True),
             (18432, 7168, torch.bfloat16, True),
+            (28672, 8192, torch.bfloat16, True),
+            (57344, 7168, torch.bfloat16, True),
         ]),
     ]
 
