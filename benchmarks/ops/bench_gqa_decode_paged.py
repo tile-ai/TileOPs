@@ -1,7 +1,11 @@
 from typing import Optional
 
-from tests.ops.test_gqa_decode_paged import GqaDecodePagedTest
+import torch
+import pytest
+
+from tests.ops.test_gqa_decode_paged import GqaDecodePagedFixture, GqaDecodePagedTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tileops.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
 
 
 class GqaDecodePagedBenchmark(BenchmarkBase):
@@ -19,3 +23,23 @@ class GqaDecodePagedBenchmark(BenchmarkBase):
         return (t.batch * t.heads * t.dim * 2 +
                 2 * t.seqlen_kv * t.heads_kv * t.dim) * t.dtype.itemsize + \
             t.batch * num_pages * 4 + t.batch * 4
+
+
+@GqaDecodePagedFixture
+def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
+                                page_size: int, dtype: torch.dtype, tune: bool) -> None:
+    test = GqaDecodePagedTest(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
+    bm = GqaDecodePagedBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = GroupQueryAttentionDecodePagedWithKVCacheOp(
+        batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune=tune)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record("gqa_decode_paged", locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record("gqa_decode_paged", locals(), result_bl, tag="baseline")
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-vvs"])
