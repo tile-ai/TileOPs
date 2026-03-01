@@ -321,6 +321,13 @@ class GroupedGemmCompleteFixture(FixtureBase):
 
 
 class GroupedGemmCompleteTest(TestBase):
+    """Parameter holder for GroupedGemmCompleteBenchmark (forward NT + backward NN + backward TN).
+
+    gen_inputs() and ref_program() implement the NT forward case only, since the
+    benchmark test function profiles each variant (NT/NN/TN) individually using
+    their respective Test classes.  This class exists so the benchmark can access
+    batch_sum, batch_count, N, K, and dtype for FLOPS/memory calculations.
+    """
 
     def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype):
         self.batch_sum = batch_sum
