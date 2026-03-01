@@ -113,10 +113,10 @@ Run these checks in order:
 **Check 1: Already in a worktree?**
 
 ```bash
-git rev-parse --is-inside-work-tree && git worktree list | grep -c "$(pwd)"
+test -f .git
 ```
 
-If the current directory is already a worktree (not the main working tree), **skip** — use current environment.
+If `.git` is a file (not a directory), this is a secondary worktree — **skip** and use current environment.
 
 **Check 2: On a feature branch with clean working tree?**
 
@@ -143,7 +143,7 @@ Report to the user:
 
 > Working in worktree: `.claude/worktrees/issue-{number}`
 
-**Note:** The branch will be renamed in Phase 6 by the `creating-pull-request` skill to follow the proper `{type}/scope/description` convention. The worktree branch is just a temporary working name.
+**Note:** The `committing-changes` skill (Phase 6a) will create a proper `{type}/scope/description` branch from main. The worktree branch is just a temporary working name.
 
 ______________________________________________________________________
 

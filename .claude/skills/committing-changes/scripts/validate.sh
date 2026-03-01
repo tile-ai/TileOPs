@@ -45,7 +45,7 @@ check_branch_name() {
     return
   fi
   # Pattern: type/scope/description  (each segment: lowercase, digits, dots, hyphens)
-  local pattern='^(feat|fix|refactor|doc|docs|chore|perf|test|bench)/[a-z0-9._-]+/[a-z0-9._-]+$'
+  local pattern='^(feat|fix|refactor|doc|chore|perf|test|bench)/[a-z0-9._-]+/[a-z0-9._-]+$'
   if [[ "$branch" =~ $pattern ]]; then
     pass "Branch name '${branch}' follows type/scope/description"
   else
@@ -78,7 +78,7 @@ check_large_files() {
         large_files="${large_files}  ${f} ($((size / 1024))KB)\n"
       fi
     fi
-  done < <(git diff-tree --no-commit-id -r HEAD --diff-filter=d --name-only 2>/dev/null)
+  done < <(git diff-tree --no-commit-id -r HEAD --name-only 2>/dev/null)
 
   if [[ -z "$large_files" ]]; then
     pass "No large files (>1MB) in commit"
