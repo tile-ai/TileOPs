@@ -196,34 +196,26 @@ def test_grouped_gemm_complete_bench(batch_sum: int, batch_count: int, N: int, K
     test = GroupedGemmCompleteTest(batch_sum, batch_count, N, K, dtype)
     bm = GroupedGemmCompleteBenchmark(test)
 
-    # Profile NT (forward)
-    nt_test = GroupedGemmNTTest(batch_sum, batch_count, N, K, dtype)
-    nt_inputs = nt_test.gen_inputs()
-    nt_op = GroupedGemmNTOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    result_nt = bm.profile(nt_op, *nt_inputs)
+    # Profile forward (NT) + backward dA (NN) + backward dB (TN)
+    variants = [
+        (GroupedGemmNTTest, GroupedGemmNTOp),
+        (GroupedGemmNNTest, GroupedGemmNNOp),
+        (GroupedGemmTNTest, GroupedGemmTNOp),
+    ]
 
-    # Profile NN (backward dA)
-    nn_test = GroupedGemmNNTest(batch_sum, batch_count, N, K, dtype)
-    nn_inputs = nn_test.gen_inputs()
-    nn_op = GroupedGemmNNOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    result_nn = bm.profile(nn_op, *nn_inputs)
+    tileops_results = []
+    baseline_results = []
+    for test_cls, op_cls in variants:
+        variant_test = test_cls(batch_sum, batch_count, N, K, dtype)
+        inputs = variant_test.gen_inputs()
+        op = op_cls(batch_sum, batch_count, N, K, dtype, tune=tune)
+        tileops_results.append(bm.profile(op, *inputs))
+        baseline_results.append(bm.profile(variant_test.ref_program, *inputs))
 
-    # Profile TN (backward dB)
-    tn_test = GroupedGemmTNTest(batch_sum, batch_count, N, K, dtype)
-    tn_inputs = tn_test.gen_inputs()
-    tn_op = GroupedGemmTNOp(batch_sum, batch_count, N, K, dtype, tune=tune)
-    result_tn = bm.profile(tn_op, *tn_inputs)
-
-    result = _combine_results(bm, result_nt, result_nn, result_tn)
+    result = _combine_results(bm, *tileops_results)
     BenchmarkReport.record("grouped_gemm_complete", locals(), result, tag="tileops")
 
-    # Profile baselines
-    result_bl = _combine_results(
-        bm,
-        bm.profile(nt_test.ref_program, *nt_inputs),
-        bm.profile(nn_test.ref_program, *nn_inputs),
-        bm.profile(tn_test.ref_program, *tn_inputs),
-    )
+    result_bl = _combine_results(bm, *baseline_results)
     BenchmarkReport.record("grouped_gemm_complete", locals(), result_bl, tag="baseline")
 
 
