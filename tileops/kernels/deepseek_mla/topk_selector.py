@@ -5,7 +5,7 @@ import torch
 import tilelang
 import tilelang.language as T
 
-from top.kernels.kernel import Kernel
+from tileops.kernels.kernel import Kernel
 
 # pass_configs = {
 #     tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
@@ -247,8 +247,8 @@ class TopkSelectorKernel(Kernel):
                  seq_len_kv: int,
                  kv_group: int,
                  topk: int,
-                 in_dtype: str,
-                 out_dtype: str,
+                 in_dtype: torch.dtype,
+                 out_dtype: torch.dtype,
                  config: Optional[dict] = None,
                  tune: bool = False):
         super().__init__()
@@ -257,9 +257,10 @@ class TopkSelectorKernel(Kernel):
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
         self.topk = topk
+        self.in_dtype = in_dtype
         self.out_dtype = out_dtype
-        self.in_dtype_str = str(in_dtype).split('.')[-1]
-        self.out_dtype_str = str(out_dtype).split('.')[-1]
+        self.in_dtype_str = self.dtype_to_str(self.in_dtype)
+        self.out_dtype_str = self.dtype_to_str(self.out_dtype)
 
         self.kernel = _topk_selector_kernel(self.batch, self.seq_len, self.seq_len_kv,
                                             self.kv_group, self.topk, self.in_dtype_str,

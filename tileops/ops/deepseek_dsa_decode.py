@@ -2,8 +2,8 @@ from typing import Dict, Optional
 
 import torch
 
-from top.kernels.deepseek_mla import SparseMlaKernel
-from top.kernels.kernel import Kernel
+from tileops.kernels.deepseek_mla import SparseMlaKernel
+from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
@@ -28,7 +28,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
         dim_tail (int): The dimension of the tail portion of the attention vectors.
         topk (int): The number of top elements to consider in sparse attention.
         stride_kv (int): The stride for the key-value sequence.
-        group_kv (int): The number of key-value groups.
+        heads_kv (int): The number of key-value heads.
         q_start_index_s (int): The start index for queries in the sequence.
         sm_scale (Optional[float], default=None): Scaling factor for the softmax function.
         is_causal (bool, default=True): Whether the attention is causal
@@ -49,7 +49,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
                  dim_tail: int,
                  topk: int,
                  stride_kv: int,
-                 group_kv: int,
+                 heads_kv: int,
                  q_start_index_s: int,
                  sm_scale: Optional[float] = None,
                  is_causal: bool = True,
@@ -64,7 +64,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
         self.dim_tail = dim_tail
         self.topk = topk
         self.stride_kv = stride_kv
-        self.group_kv = group_kv
+        self.heads_kv = heads_kv
         self.sm_scale = sm_scale
         self.dtype = dtype
         self.is_causal = is_causal
@@ -80,7 +80,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
         self.q_start_index_s = q_start_index_s
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["SparseMlaKernel"](
+        self.kernel = self.kernel_map["sparse_mla_kernel"](
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -91,7 +91,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
             self.topk,
             self.stride_kv,
             self.q_start_index_s,
-            self.group_kv,
+            self.heads_kv,
             self.sm_scale,
             self.is_causal,
             cp0,
@@ -104,9 +104,9 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
 
         Returns:
             Dict[str, Kernel]: A dictionary mapping kernel names to kernel functions.
-            The default map includes the "SparseMlaKernel".
+            The default map includes the "sparse_mla_kernel".
         """
-        return {"SparseMlaKernel": SparseMlaKernel}
+        return {"sparse_mla_kernel": SparseMlaKernel}
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
@@ -116,7 +116,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
             q (torch.Tensor): The query tensor with shape
                         (batch, seq_len, heads, dim + dim_tail).
             kv (torch.Tensor): The key-value tensor with shape
-                        (batch, seq_len_kv, group_kv, dim + dim_tail).
+                        (batch, seq_len_kv, heads_kv, dim + dim_tail).
             indices (torch.Tensor): Indices tensor for sparse attention.
 
         Returns:

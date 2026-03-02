@@ -1,0 +1,37 @@
+from typing import Dict, Optional, Tuple
+
+import torch
+
+from tileops.kernels.deepseek_mla import Fp8QuantKernel
+from tileops.kernels.kernel import Kernel
+
+from .op import Op
+
+__all__ = ["Fp8QuantOp"]
+
+
+class Fp8QuantOp(Op):
+
+    def __init__(self,
+                 batch,
+                 seq_len_kv,
+                 kv_group,
+                 index_dim,
+                 in_dtype: torch.dtype,
+                 kernel_map: Optional[Dict[str, Kernel]] = None,
+                 tune: bool = False):
+        self.batch = batch
+        self.seq_len_kv = seq_len_kv
+        self.kv_group = kv_group
+        self.index_dim = index_dim
+        self.in_dtype = in_dtype
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["fp8_quant_kernel"](
+            self.batch, self.seq_len_kv, self.kv_group, self.index_dim, self.in_dtype, tune=tune)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"fp8_quant_kernel": Fp8QuantKernel}
+
+    def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.kernel(input_tensor)

@@ -5,12 +5,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from top.kernels.kernel import Kernel
+from tileops.kernels.kernel import Kernel
 
 __all__ = ["Fp8QuantKernel"]
 
 
-def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype):
+def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
 
     @tilelang.jit(out_idx=[1, 2])
     def _fp8_quant_fwd_func(num_stages, block_m):
@@ -61,7 +61,7 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype):
 
 @torch.library.custom_op("top::fp8_quant_wrapped_kernel", mutates_args=())
 def _fp8_quant_wrapped_kernel(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
-                              in_dtype: torch.dtype, num_stages: int, block_m: int,
+                              in_dtype: str, num_stages: int, block_m: int,
                               input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     return _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype)(num_stages, block_m)(
         input_tensor)
@@ -93,11 +93,15 @@ class Fp8QuantKernel(Kernel):
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
         self.index_dim = index_dim
-        self.in_dtype = in_dtype
+        self.dtype = in_dtype
         self.config = config or {}
         self.kernel = _fp8_quant_kernel(self.batch, self.seq_len_kv, self.kv_group, self.index_dim,
-                                        self.in_dtype)
+                                        self.dtype_str)
         self.init_config(config, tune)
+
+    @property
+    def dtype_str(self) -> str:
+        return str(self.dtype).replace("torch.", "")
 
     @property
     def default_config(self) -> dict:
@@ -113,5 +117,5 @@ class Fp8QuantKernel(Kernel):
 
     def forward(self, input_tensor: torch.Tensor):
         return _fp8_quant_wrapped_kernel(self.batch, self.seq_len_kv, self.kv_group, self.index_dim,
-                                         self.in_dtype, self.config["num_stages"],
+                                         self.dtype_str, self.config["num_stages"],
                                          self.config["block_m"], input_tensor)
