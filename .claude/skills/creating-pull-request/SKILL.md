@@ -52,6 +52,7 @@ PR title rules:
 - **Must** use bracket format: `[Type] Description` or `[Type][Scope] Description`
 - Types: `[Feat]`, `[BugFix]`, `[Fix]`, `[Refactor]`, `[Enhancement]`, `[Doc]`, `[Chore]`, `[Bench]`, `[CI]`, `[Test]`, `[Perf]`
 - Keep under ~80 chars
+- **Do NOT** put issue references in the title (e.g. `(#123)`). Link issues in the PR body with `Closes #123` instead.
 
 PR body section rules:
 
