@@ -106,13 +106,18 @@ jobs:
 
           import tileops
 
-          pkg_path = Path(tileops.__file__).resolve()
-          print(f"tileops imported from: {pkg_path}")
-          assert "site-packages" in str(pkg_path), "tileops is not imported from wheel installation"
+          def test_tileops_imported_from_wheel() -> None:
+              pkg_path = Path(tileops.__file__).resolve()
+              print(f"tileops imported from: {pkg_path}")
+              assert "site-packages" in str(pkg_path), (
+                  "tileops is not imported from wheel installation"
+              )
 
-          version = importlib.metadata.version("tileops")
-          print(f"tileops version: {version}")
-          assert version
+
+          def test_tileops_version_exists() -> None:
+              version = importlib.metadata.version("tileops")
+              print(f"tileops version: {version}")
+              assert version
           PY
 
           cd "${TMP_TEST_DIR}"
