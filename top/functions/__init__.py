@@ -7,7 +7,6 @@ from .deepseek_mla_decode import (
 from .fp8_lighting_indexer import Fp8LightingIndexerFunc
 from .topk_selector import TopkSelectorFunc
 from .fp8_quant import Fp8QuantFunc
-from .deepseek_dsa_fused import DeepSeekDSAFusedFunc
 from .function import Function
 from .gqa import GroupQueryAttentionFunc, gqa, group_query_attention
 from .gqa_decode import (
@@ -36,7 +35,6 @@ __all__ = [
     "Fp8QuantFunc",
     "TopkSelectorFunc",
     "DeepSeekSparseAttentionDecodeWithKVCacheFunc",
-    "DeepSeekDSAFusedFunc",
     "MatMulFunc",
     "GroupedGemmFunc",
     "group_query_attention",
