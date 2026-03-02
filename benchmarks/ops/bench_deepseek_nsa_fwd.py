@@ -37,14 +37,15 @@ def test_nsa_fwd_bench(batch: int, heads: int, c_seq_len: int, dim: int, is_caus
     inputs = test.gen_inputs()
 
     op = NSAFwdVarlenOp(
-        batch=test.batch, heads=test.heads, c_seq_len=test.c_seq_len, dim=test.dim,
-        is_causal=test.is_causal, scale=test.scale, block_size=test.block_size,
-        groups=test.groups, selected_blocks=test.selected_blocks, dtype=test.dtype,
-        accum_dtype=test.accum_dtype, tune=tune)
+        batch=batch, heads=heads, c_seq_len=c_seq_len, dim=dim,
+        is_causal=is_causal, scale=scale, block_size=block_size,
+        groups=groups, selected_blocks=selected_blocks, dtype=dtype,
+        accum_dtype=accum_dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("nsa_fwd", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    # Use reduced warmup/rep for the slow Python-loop baseline to avoid timeouts.
+    result_bl = bm.profile(test.ref_program, *inputs, warmup=5, rep=10)
     BenchmarkReport.record("nsa_fwd", locals(), result_bl, tag="baseline")
 
 
