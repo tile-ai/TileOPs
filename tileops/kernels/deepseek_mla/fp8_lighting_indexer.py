@@ -113,19 +113,10 @@ def _fp8_lighting_indexer_kernel(batch,
                         s_reshaped[bn_i, bq_i, h_i, g] = (T.max(s_reshaped[bn_i, bq_i, h_i, g], 0) *
                                                           weights[bq_i, g * heads_per_group + h_i]
                                                          ) * index_k_scale_fragment[bn_i, g]
-                        # if T.isinf(s_reshaped[bn_i, bq_i, h_i, g]):
-                        #     T.print(s_reshaped[bn_i, bq_i, h_i, g])
-
-                    # T.print(s_reshaped)
 
                     T.reduce_sum(s_reshaped, logits, dim=-2, clear=True)
 
                     for bq_i, bn_i, g in T.Parallel(block_Q, block_N, kv_group):
-                        if T.isinf(logits[bn_i, bq_i, g]):
-                            T.print(logits[bn_i, bq_i, g])
-                            T.print(Logits[b_i, seq_len_i + bq_i, g,
-                                           cu_k_s_min + nbn_i * block_N + bn_i])
-
                         Logits[b_i, seq_len_i + bq_i, cu_k_s_min + nbn_i * block_N + bn_i,
                                g] = logits[bn_i, bq_i, g]
 
