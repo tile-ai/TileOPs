@@ -1,4 +1,4 @@
-# Claude.md
+# CLAUDE.md
 
 ## Project Overview
 
