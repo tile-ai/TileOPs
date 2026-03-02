@@ -168,5 +168,33 @@ def test_grouped_gemm(batch_sum: int, batch_count: int, N: int, K: int, dtype: t
     test.check(op, *test.gen_inputs())
 
 
+# ---------------------------------------------------------------------------
+# Complete variant: forward (NT) + backward dA (NN) + backward dB (TN)
+# ---------------------------------------------------------------------------
+
+class GroupedGemmCompleteFixture(FixtureBase):
+    PARAMS = [
+        ("batch_sum, batch_count, N, K, dtype, tune", [
+            (16384, 4, 4864, 4096, torch.float16, False),
+        ]),
+    ]
+
+
+class GroupedGemmCompleteTest(TestBase):
+    """Parameter holder for GroupedGemmCompleteBenchmark (forward NT + backward NN + backward TN).
+
+    The benchmark test function profiles each variant (NT/NN/TN) individually
+    using GroupedGemmTest; this class exists so the benchmark can access
+    batch_sum, batch_count, N, K, and dtype for FLOPS/memory calculations.
+    """
+
+    def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype):
+        self.batch_sum = batch_sum
+        self.batch_count = batch_count
+        self.N = N
+        self.K = K
+        self.dtype = dtype
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
