@@ -293,7 +293,7 @@ class Fp8LightingIndexerKernel(Kernel):
         IndexQ = torch.randn(
             batch, seq_len * heads, index_dim, device='cuda', dtype=torch.float8_e4m3fn)
         IndexK = torch.randn(
-            batch, seq_len_kv, index_dim, kv_group, device='cuda', dtype=self.dtype)
+            batch, seq_len_kv, self.kv_group, index_dim, device='cuda', dtype=self.dtype)
         IndexKScale = torch.randn(batch, seq_len_kv, kv_group, device='cuda', dtype=accum_dtype)
         Weights = torch.randn(seq_len, heads, device='cuda', dtype=accum_dtype)
         CuSeqLenKS = torch.zeros(seq_len, device='cuda', dtype=index_dtype)
