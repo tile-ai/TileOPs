@@ -94,7 +94,19 @@ Print a summary to the user:
 >
 > Proceeding to Phase 2.
 
-### 1f. Guard rails
+### 1f. Claim the issue
+
+Before any work begins, check the issue's assignees:
+
+```bash
+gh issue view {number} --repo {owner}/{repo} --json assignees --jq '.assignees[].login'
+```
+
+- **No assignees:** Assign yourself by running `gh issue edit {number} --repo {owner}/{repo} --add-assignee @me`, then proceed.
+- **Assigned to current user:** Already claimed, proceed.
+- **Assigned to someone else:** **STOP.** Report to the user: "Issue #\{number} is assigned to @\{assignee}. Will not claim — another contributor is working on it." Do NOT proceed unless the user explicitly overrides.
+
+### 1g. Guard rails
 
 - If the issue is **not found** (404): report error and **stop**.
 - If the issue is **closed**: warn the user and ask "This issue is already closed. Do you still want to proceed?"
@@ -448,6 +460,7 @@ ______________________________________________________________________
 | ----------------------------------------------- | ------------------------------------------------------ |
 | No argument provided                            | Ask user for issue number via `AskUserQuestion`        |
 | Issue not found (404)                           | Report error and **stop**                              |
+| Issue assigned to someone else                  | Report and **stop** — do not claim another's work      |
 | Issue is already closed                         | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
 | Issue has linked PR already                     | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
 | TDD tests won't pass after reasonable effort    | Escalate to user with what was tried and error details |
