@@ -55,6 +55,17 @@ EXTRA_LABELS="all ai powered|breaking change|help wanted|good first issue"
 
 ISSUE_TYPES="FEAT|BUG|PERF|REFACTOR|DOCS|TEST|META"
 
+# Issue type → GitHub label (for issue-label workflow)
+declare -A ISSUE_TYPE_TO_LABEL=(
+  [FEAT]=feature
+  [BUG]=fix
+  [PERF]=perf
+  [REFACTOR]=refactor
+  [DOCS]=docs
+  [TEST]=test
+  [META]=chore
+)
+
 # Issue type → commit/PR type prefix
 declare -A ISSUE_TO_COMMIT_TYPE=(
   [BUG]=BugFix

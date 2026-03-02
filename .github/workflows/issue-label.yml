@@ -24,18 +24,20 @@ jobs:
         run: |
           source .claude/conventions/types.sh
 
-          # Extract type from issue title (e.g., "[CI] ..." -> "CI", "[BugFix][mHC] ..." -> "BugFix")
+          # Try commit/PR-style types first (e.g. [BugFix]), then ALL-CAPS issue types (e.g. [BUG])
           TYPE=$(echo "$ISSUE_TITLE" | grep -oP "^\[\K(${COMMIT_PR_TYPES})(?=\])" || true)
 
-          if [ -z "$TYPE" ]; then
-            echo "No type tag found in title, skipping label"
-            exit 0
+          if [ -n "$TYPE" ]; then
+            LABEL="${TYPE_TO_LABEL[$TYPE]:-}"
+          else
+            TYPE=$(echo "$ISSUE_TITLE" | grep -oP "^\[\K(${ISSUE_TYPES})(?=\])" || true)
+            if [ -n "$TYPE" ]; then
+              LABEL="${ISSUE_TYPE_TO_LABEL[$TYPE]:-}"
+            fi
           fi
 
-          # Map type to label using canonical mapping
-          LABEL="${TYPE_TO_LABEL[$TYPE]:-}"
-          if [ -z "$LABEL" ]; then
-            echo "No label mapping for type '$TYPE', skipping"
+          if [ -z "$TYPE" ] || [ -z "$LABEL" ]; then
+            echo "No recognized type tag in title, skipping label"
             exit 0
           fi
 
