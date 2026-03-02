@@ -3,8 +3,8 @@ from typing import Optional
 import pytest
 import torch
 
-from tests.ops.test_mhc_pre import MhcPreFixture, MhcPreTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_mhc_pre import MhcPreFixture, MhcPreTest
 from tileops.ops import ManifoldConstrainedHyperConnectionPreOp
 
 
