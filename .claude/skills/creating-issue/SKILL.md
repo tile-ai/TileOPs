@@ -16,7 +16,8 @@ TileOps uses a `[TYPE][COMPONENT]` tag prefix — **not** Conventional Commits s
 ```
 [TYPE][COMPONENT] short description in lowercase
 
-TYPE values : PERF, BUG, FEAT, REFACTOR, TEST, DOCS, META
+TYPE values : FEAT, BUG, PERF, REFACTOR, DOCS, TEST, META
+(canonical list in .claude/conventions/types.sh)
 COMPONENT   : kernel name or subsystem — e.g., GEMV, GEMM, FLASH_ATTN, FLASH_DECODE, CI
 ```
 
