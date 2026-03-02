@@ -1,11 +1,18 @@
 name: CI
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 18 * * *"
 
 concurrency:
   # Keep only the newest run for the same PR or branch ref.
@@ -14,7 +21,7 @@ concurrency:
 
 jobs:
   pre-commit:
-    if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -39,8 +46,8 @@ jobs:
           extra_args: --all-files --show-diff-on-failure
 
   packaging:
-    if: ${{ github.repository == 'tile-ai/TileOPs' }}
-    runs-on: ubuntu-latest
+    if: ${{ (github.repository == 'tile-ai/TileOPs' && github.event_name == 'schedule') || github.event_name == 'workflow_dispatch' }}
+    runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -50,16 +57,82 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Verify package builds (sdist + wheel)
+      - name: Create clean virtual environment
         run: |
-          pip install build
-          python -m build
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          echo "Preparing clean venv at ${VENV_PATH}"
+          rm -rf "${VENV_PATH}"
+          python -m venv "${VENV_PATH}"
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          python -m pip install --upgrade pip setuptools wheel
+        shell: bash
+
+      - name: Install required dependencies
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          pip install build pytest
+        shell: bash
+
+      - name: Build wheel package
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          python -m build --wheel
           echo "Build artifacts:"
-          ls -lh dist/
+          ls -lh dist/*.whl
+        shell: bash
+
+      - name: Run unit tests against built wheel
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          pip install --force-reinstall dist/*.whl
+
+          # Run the existing tests/ suite while ensuring imports resolve from wheel.
+          TMP_TEST_DIR="$(mktemp -d)"
+          trap 'rm -rf "${TMP_TEST_DIR}"' EXIT
+          cp -r tests "${TMP_TEST_DIR}/tests"
+          unset PYTHONPATH || true
+
+          cd "${TMP_TEST_DIR}"
+          python -m pytest -q tests
+        shell: bash
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tileops-wheel-${{ github.sha }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish wheel to GitHub Release (tag only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
+          fail_on_unmatched_files: true
+
+      - name: Cleanup wheel venv
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          echo "Removing venv at: ${VENV_PATH}"
+          rm -rf "${VENV_PATH}"
+        shell: bash
 
   tileops_test_release:
     # needs: pre-commit
-    if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
@@ -112,78 +185,4 @@ jobs:
         with:
           name: tileops_test_release.log
           path: tileops_test_release.log
-          retention-days: 7  # Equivalent to expire_in: 1 week
-
-  tileops_test_nightly:
-    # needs: pre-commit
-    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-    runs-on: [self-hosted, tile-ops, venv]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0  # Equivalent to GIT_STRATEGY: fetch
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Ensure persistent venv and install dependencies
-        run: |
-          set -e
-          VENV_DIR="tileops_venv_nightly"
-
-          echo "Creating fresh venv at ${{ runner.tool_cache }}/${VENV_DIR}"
-          rm -rf "${{ runner.tool_cache }}/${VENV_DIR}" "$MARKER"
-          python -m venv "${{ runner.tool_cache }}/${VENV_DIR}"
-          # shellcheck source=/dev/null
-          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
-          retry_cmd() {
-            tries=0
-            until [ $tries -ge 5 ]
-            do
-              if "$@"; then
-                return 0
-              fi
-              tries=$((tries+1))
-              echo "Command failed. Retrying $tries/5..."
-              sleep 2
-            done
-            echo "Command failed after 5 attempts." >&2
-            return 1
-          }
-
-          python -m pip install --upgrade pip setuptools wheel --no-user
-          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
-          pip uninstall -y tilelang
-          retry_cmd pip install git+https://github.com/tile-ai/tilelang.git --no-user
-        shell: bash
-
-      - name: Run tests
-        run: |
-          VENV_DIR="tileops_venv_nightly"
-          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
-          export PYTHONPATH="$(pwd):$PYTHONPATH"
-          echo "PYTHONPATH=$PYTHONPATH"
-          set -o pipefail
-          python -m pytest -q tests | tee tileops_test_nightly.log
-        shell: bash
-
-      - name: Cleanup venv
-        if: ${{ always() }}
-        run: |
-          set -e
-          VENV_DIR="tileops_venv_nightly"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-          echo "Removing venv at: ${VENV_PATH}"
-          rm -rf "${VENV_PATH}"
-        shell: bash
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        if: always()  # Equivalent to when: always
-        with:
-          name: tileops_test_nightly.log
-          path: tileops_test_nightly.log
           retention-days: 7  # Equivalent to expire_in: 1 week
