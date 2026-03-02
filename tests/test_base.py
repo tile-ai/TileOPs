@@ -1,8 +1,27 @@
 from abc import ABC, abstractmethod
+from functools import partial
 from typing import Any, Tuple
 
 import pytest
 import torch
+
+
+def _to_tuple(outputs):
+    """Normalize outputs to a tuple."""
+    if isinstance(outputs, torch.Tensor):
+        return (outputs,)
+    if isinstance(outputs, list):
+        return tuple(outputs)
+    if isinstance(outputs, tuple):
+        return outputs
+    raise ValueError(f"Unsupported output type: {type(outputs)}")
+
+
+def allclose_compare(output: torch.Tensor, output_ref: torch.Tensor, atol: float = 1e-8, rtol: float = 1e-5) -> None:
+    """Default comparison using torch.allclose."""
+    max_err = (output - output_ref).abs().max()
+    assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
+        f"not close, max err: {max_err}"
 
 
 class FixtureMeta(type):
@@ -51,9 +70,22 @@ class TestBase(ABC):
     def check(self,
               op,
               *inputs: Tuple[torch.Tensor],
+              compare=None,
               atol: float = 1e-08,
               rtol: float = 1e-05) -> None:
-        """Check the correctness of the op against ref_program."""
+        """Check the correctness of the op against ref_program.
+
+        Args:
+            op: The operator to test.
+            *inputs: Input tensors.
+            compare: Custom comparison callable(output, output_ref) or list of
+                callables (one per output). Defaults to allclose_compare.
+            atol: Absolute tolerance for default allclose_compare.
+            rtol: Relative tolerance for default allclose_compare.
+        """
+        if compare is None:
+            compare = partial(allclose_compare, atol=atol, rtol=rtol)
+
         try:
             outputs_ref = self.ref_program(*inputs)
         except RuntimeError as e:
@@ -62,77 +94,20 @@ class TestBase(ABC):
                 return
             raise e
 
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
+        outputs_ref = _to_tuple(outputs_ref)
 
         with torch.no_grad():
             outputs = op(*inputs)
 
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        for i, (output, output_ref) in enumerate(
-                zip(outputs, outputs_ref, strict=True)):
-            if output_ref is not None:
-                max_err = (output - output_ref).abs().max()
-                assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
-                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {max_err}"
-
-        print(f"All checks passed for {op.__class__.__name__}.")
-
-    def check_fn(self,
-                 fn: callable,
-                 *inputs: Tuple[torch.Tensor],
-                 atol: float = 1e-08,
-                 rtol: float = 1e-05,
-                 grad: bool = True) -> None:
-        """Check the correctness of a function (with optional backward pass)."""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        if not grad:
-            with torch.no_grad():
-                outputs = fn(*inputs)
-        else:
-            output = fn(*inputs)
-            loss = output.sum()
-            loss.backward()
-            outputs = []
-            outputs.append(output)
-            for inp in inputs:
-                outputs.append(inp.grad)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
+        outputs = _to_tuple(outputs)
 
         assert len(outputs) == len(outputs_ref), \
             f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
-        for i, (output, output_ref) in enumerate(
-                zip(outputs, outputs_ref, strict=True)):
-            if output_ref is not None:
-                max_err = (output - output_ref).abs().max()
-                assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
-                    f"outputs[{i}] is not close to outputs_ref[{i}], max err: {max_err}"
 
-        print(f"All checks passed for {fn.__class__.__name__}.")
+        comparators = [compare] * len(outputs) if callable(compare) else list(compare)
+
+        for output, output_ref, cmp in zip(outputs, outputs_ref, comparators, strict=True):
+            if output_ref is not None:
+                cmp(output, output_ref)
+
+        print(f"All checks passed for {op.__class__.__name__}.")

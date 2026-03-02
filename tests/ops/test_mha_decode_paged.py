@@ -87,24 +87,16 @@ class MhaDecodePagedTest(TestBase):
             out_list.append(out_b)
         return torch.cat(out_list, dim=0)
 
-    def check(self, op, *inputs, atol: float = 0.001, rtol: float = 1e-05) -> None:
-        """Custom check with max-diff and cosine similarity (matches original test)."""
-        outputs_ref = self.ref_program(*inputs)
-
-        with torch.no_grad():
-            output = op(*inputs)
-
+    def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor, atol: float = 0.001) -> None:
+        """Compare using max-diff and cosine similarity."""
         if isinstance(output, (tuple, list)):
             output = output[0]
-
-        max_diff = (output - outputs_ref).abs().max().item()
+        max_diff = (output - output_ref).abs().max().item()
         assert max_diff < atol, (
             f"max diff {max_diff} too large (atol={atol})")
         cos_sim = F.cosine_similarity(
-            output.reshape(self.batch, -1), outputs_ref.reshape(self.batch, -1), dim=-1, eps=1e-8)
+            output.reshape(self.batch, -1), output_ref.reshape(self.batch, -1), dim=-1, eps=1e-8)
         assert cos_sim.min() > 0.99, f"cosine similarity {cos_sim.min().item()} too low"
-
-        print(f"All checks passed for {op.__class__.__name__}.")
 
 
 @MhaDecodePagedFixture
@@ -131,7 +123,7 @@ def test_mha_decode_paged_op(
         dtype=dtype,
         tune=tune,
     )
-    test.check(op, *test.gen_inputs())
+    test.check(op, *test.gen_inputs(), compare=test._maxdiff_cosine_compare)
 
 
 if __name__ == "__main__":

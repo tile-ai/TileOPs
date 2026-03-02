@@ -19,6 +19,18 @@ class TopkSelectorFixture(FixtureBase):
     ]
 
 
+def _set_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
+    """Compare using set intersection (topk indices may be in different order)."""
+    ref_np = output_ref.cpu().to(torch.int32).numpy()
+    trt_np = output.cpu().to(torch.int32).numpy()
+
+    set_ref = set(ref_np.flatten().tolist())
+    set_trt = set(trt_np.flatten().tolist())
+    intersection = set_ref & set_trt
+    assert len(intersection) / len(set_ref) == 1.0, \
+        "output indices do not match reference indices"
+
+
 class TopkSelectorTest(TestBase):
 
     def __init__(self, batch: int, seq_len: int, topk: int, in_dtype: torch.dtype,
@@ -40,101 +52,6 @@ class TopkSelectorTest(TestBase):
         indexes_ref = torch.topk(index_score, self.topk, dim=-1)[1]
         return indexes_ref
 
-    def check(self,
-              op,
-              *inputs: Tuple[torch.Tensor],
-              atol: float = 1e-4,
-              rtol: float = 1e-5) -> None:
-        """Check using set intersection (topk indices may be in different order)."""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        with torch.no_grad():
-            outputs = op(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), \
-            f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
-        for i, (output, output_ref) in enumerate(
-                zip(outputs, outputs_ref, strict=True)):
-            ref_np = output_ref.cpu().to(torch.int32).numpy()
-            trt_np = output.cpu().to(torch.int32).numpy()
-
-            ref_list = ref_np.flatten().tolist()
-            trt_list = trt_np.flatten().tolist()
-
-            set_ref = set(ref_list)
-            set_trt = set(trt_list)
-            intersection = set_ref & set_trt
-            assert len(intersection) / len(set_ref) == 1.0, \
-                f"outputs[{i}] is not close to outputs_ref[{i}]"
-
-        print(f"All checks passed for {op.__class__.__name__}.")
-
-    def check_fn(self,
-                 fn: callable,
-                 *inputs: Tuple[torch.Tensor],
-                 atol: float = 1e-4,
-                 rtol: float = 1e-5,
-                 grad: bool = False) -> None:
-        """Check function using set intersection."""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        with torch.no_grad():
-            outputs = fn(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), \
-            f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
-        for i, (output, output_ref) in enumerate(
-                zip(outputs, outputs_ref, strict=True)):
-            ref_np = output_ref.cpu().to(torch.int32).numpy()
-            trt_np = output.cpu().to(torch.int32).numpy()
-
-            ref_list = ref_np.flatten().tolist()
-            trt_list = trt_np.flatten().tolist()
-
-            set_ref = set(ref_list)
-            set_trt = set(trt_list)
-            intersection = set_ref & set_trt
-            assert len(intersection) / len(set_ref) == 1.0, \
-                f"outputs[{i}] is not close to outputs_ref[{i}]"
-
-        print(f"All checks passed for {fn.__class__.__name__}.")
-
 
 @TopkSelectorFixture
 def test_topk_selector_op(batch: int, seq_len: int, topk: int, in_dtype_str: str,
@@ -143,7 +60,7 @@ def test_topk_selector_op(batch: int, seq_len: int, topk: int, in_dtype_str: str
     out_dtype = str2dtype[out_dtype_str]
     test = TopkSelectorTest(batch, seq_len, topk, in_dtype, out_dtype)
     op = TopkSelectorOp(batch, seq_len, topk, in_dtype, out_dtype, tune=tune)
-    test.check(op, *test.gen_inputs())
+    test.check(op, *test.gen_inputs(), compare=_set_compare)
 
 
 if __name__ == "__main__":

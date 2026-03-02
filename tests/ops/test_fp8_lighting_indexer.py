@@ -181,100 +181,28 @@ class Fp8LightingIndexerTest(TestBase):
         return 2 * (a * b).sum() / norm_sum
 
     @staticmethod
-    def _validate_tensor_match(a: torch.Tensor, b: torch.Tensor,
-                               tolerance: float = 1e-3) -> float:
-        if isinstance(a, tuple):
-            a = a[0]
-        if isinstance(b, tuple):
-            b = b[0]
+    def _validate_tensor_match(output: torch.Tensor, output_ref: torch.Tensor, tolerance: float = 1e-3) -> None:
+        if isinstance(output, tuple):
+            output = output[0]
+        if isinstance(output_ref, tuple):
+            output_ref = output_ref[0]
 
-        a_finite = torch.isfinite(a)
-        b_finite = torch.isfinite(b)
+        a_finite = torch.isfinite(output)
+        b_finite = torch.isfinite(output_ref)
         assert torch.all(a_finite == b_finite), "Error: isfinite mask mismatch"
         assert torch.isclose(
-            a.masked_fill(a_finite, 0),
-            b.masked_fill(b_finite, 0),
+            output.masked_fill(a_finite, 0),
+            output_ref.masked_fill(b_finite, 0),
             rtol=0,
             atol=0,
             equal_nan=True,
         ).all(), "Error: nonfinite value mismatch"
-        a = a.masked_fill(~a_finite, 0)
-        b = b.masked_fill(~b_finite, 0)
-        correlation = Fp8LightingIndexerTest._compute_correlation(a, b)
+        output = output.masked_fill(~a_finite, 0)
+        output_ref = output_ref.masked_fill(~b_finite, 0)
+        correlation = Fp8LightingIndexerTest._compute_correlation(output, output_ref)
         difference = 1.0 - correlation
         assert 0 <= difference <= tolerance, \
             f"outputs is not close to outputs_ref, difference: {difference}"
-        return difference
-
-    def check(self,
-              op,
-              *inputs: Tuple[torch.Tensor],
-              atol: float = 1e-3,
-              rtol: float = 1e-3) -> None:
-        """Check using correlation-based validation for fp8 indexer."""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        with torch.no_grad():
-            outputs = op(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        self._validate_tensor_match(outputs_ref[0], outputs[0], tolerance=atol)
-
-        print(f"All checks passed for {op.__class__.__name__}.")
-
-    def check_fn(self,
-                 fn: callable,
-                 *inputs: Tuple[torch.Tensor],
-                 atol: float = 1e-3,
-                 rtol: float = 1e-3,
-                 grad: bool = False) -> None:
-        """Check function using correlation-based validation."""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        with torch.no_grad():
-            outputs = fn(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), \
-            f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
-        self._validate_tensor_match(outputs_ref[0], outputs[0], tolerance=atol)
-
-        print(f"All checks passed for {fn.__class__.__name__}.")
 
 
 @Fp8LightingIndexerFixture
@@ -283,7 +211,7 @@ def test_indexer(seq_len: int, heads: int, index_dim: int, seq_len_kv: int, clea
     test = Fp8LightingIndexerTest(seq_len, heads, index_dim, seq_len_kv, clean_logits, config)
     op = Fp8LightingIndexerOp(
         seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune=tune)
-    test.check(op, *test.gen_inputs())
+    test.check(op, *test.gen_inputs(), compare=Fp8LightingIndexerTest._validate_tensor_match)
 
 
 if __name__ == "__main__":

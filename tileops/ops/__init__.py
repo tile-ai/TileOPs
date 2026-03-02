@@ -5,11 +5,10 @@ from .fp8_quant import Fp8QuantOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_nsa import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp, GQAWindowSlidingOp
 from .gemm import GemmOp
-from .gemv import GemvOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
-from .grouped_gemm import GroupedGemmNNOp, GroupedGemmNTOp, GroupedGemmTNOp, GroupedGemmTTOp
+from .grouped_gemm import GroupedGemmOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
@@ -24,15 +23,11 @@ __all__ = [
     "GroupQueryAttentionFwdOp",
     "GroupQueryAttentionBwdOp",
     "GemmOp",
-    "GemvOp",
     "MultiHeadAttentionDecodeWithKVCacheOp",
     "MultiHeadAttentionDecodePagedWithKVCacheOp",
     "GroupQueryAttentionDecodeWithKVCacheOp",
     "GroupQueryAttentionDecodePagedWithKVCacheOp",
-    "GroupedGemmNTOp",
-    "GroupedGemmNNOp",
-    "GroupedGemmTNOp",
-    "GroupedGemmTTOp",
+    "GroupedGemmOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
     "Fp8LightingIndexerOp",

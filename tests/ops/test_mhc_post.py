@@ -3,6 +3,7 @@
 from typing import Tuple
 
 import torch
+import torch.nn.functional as F
 import pytest
 
 from tests.test_base import TestBase, FixtureBase
@@ -17,6 +18,13 @@ class MhcPostFixture(FixtureBase):
             (4, 4, 2560, torch.bfloat16, False),
         ]),
     ]
+
+
+def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
+    """Compare using cosine similarity (mhc post uses bf16 and needs looser checks)."""
+    cos_sim = F.cosine_similarity(output_ref, output, dim=-1, eps=1e-8)
+    assert cos_sim.min() > 0.99, \
+        f"cosine similarity too low: {cos_sim.min().item()}"
 
 
 class MhcPostTest(TestBase):
@@ -48,46 +56,6 @@ class MhcPostTest(TestBase):
         x_out_ref = x_out_ref.bfloat16()
         return x_out_ref
 
-    def check(self,
-              op,
-              *inputs: Tuple[torch.Tensor],
-              atol: float = 1e-2,
-              rtol: float = 1e-2) -> None:
-        """Check using cosine similarity (mhc post uses bf16 and needs looser checks)."""
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
-                return
-            raise e
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        elif not isinstance(outputs_ref, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs_ref)}")
-
-        with torch.no_grad():
-            outputs = op(*inputs)
-
-        if isinstance(outputs, list):
-            outputs = tuple(outputs)
-        elif isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        elif not isinstance(outputs, tuple):
-            raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-        assert len(outputs) == len(outputs_ref), "outputs and outputs_ref have different size"
-        for i, (output, output_ref) in enumerate(
-                zip(outputs, outputs_ref, strict=True)):
-            if output_ref is not None:
-                cos_sim = torch.nn.functional.cosine_similarity(
-                    output_ref, output, dim=-1, eps=1e-8)
-                assert cos_sim.min() > 0.99, \
-                    f"outputs[{i}]: cosine similarity too low: {cos_sim.min().item()}"
-
-        print(f"All checks passed for {op.__class__.__name__}.")
-
 
 @MhcPostFixture
 def test_mhc_post_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
@@ -95,7 +63,7 @@ def test_mhc_post_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
     test = MhcPostTest(batch, n_expand, c_x, dtype)
     op = ManifoldConstrainedHyperConnectionPostOp(
         batch, n_expand, c_x, dtype=str(dtype).split('.')[-1])
-    test.check(op, *test.gen_inputs())
+    test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 
 if __name__ == "__main__":

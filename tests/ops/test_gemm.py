@@ -11,6 +11,18 @@ class GemmFixture(FixtureBase):
     PARAMS = [
         ("m, n, k, dtype, trans_a, trans_b, tune", [
             (1024, 1024, 1024, torch.float16, False, False, False),
+            (1, 1024, 1024, torch.float16, False, True, False),
+            (1, 7168, 16384, torch.float16, False, True, True),
+            (1, 18432, 7168, torch.float16, False, True, True),
+            (1024, 1, 1024, torch.float16, False, False, False),
+            (7168, 1, 16384, torch.float16, False, False, True),
+            (18432, 1, 7168, torch.float16, False, False, True),
+            (1, 1024, 1024, torch.bfloat16, False, True, False),
+            (1, 7168, 16384, torch.bfloat16, False, True, True),
+            (1, 18432, 7168, torch.bfloat16, False, True, True),
+            (1024, 1, 1024, torch.bfloat16, False, False, False),
+            (7168, 1, 16384, torch.bfloat16, False, False, True),
+            (18432, 1, 7168, torch.bfloat16, False, False, True),
         ]),
     ]
 
@@ -46,7 +58,11 @@ def test_gemm(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b
               tune: bool) -> None:
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
     op = GemmOp(m, n, k, trans_a=trans_a, trans_b=trans_b, dtype=dtype, tune=tune)
-    test.check(op, *test.gen_inputs())
+    if dtype == torch.float16:
+        tolerances = {"atol": 1e-3, "rtol": 1e-3}
+    else:
+        tolerances = {"atol": 1.6e-2, "rtol": 1.6e-2}
+    test.check(op, *test.gen_inputs(), **tolerances)
 
 
 if __name__ == "__main__":
