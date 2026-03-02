@@ -5,7 +5,6 @@ from .fp8_quant import Fp8QuantOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_nsa import MeanPoolingForwardOp, NSAFwdVarlenOp, NSATopkVarlenOp, NSACmpFwdVarlenOp, GQAWindowSlidingOp
 from .gemm import GemmOp
-from .gemv import GemvOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
@@ -24,7 +23,6 @@ __all__ = [
     "GroupQueryAttentionFwdOp",
     "GroupQueryAttentionBwdOp",
     "GemmOp",
-    "GemvOp",
     "MultiHeadAttentionDecodeWithKVCacheOp",
     "MultiHeadAttentionDecodePagedWithKVCacheOp",
     "GroupQueryAttentionDecodeWithKVCacheOp",
