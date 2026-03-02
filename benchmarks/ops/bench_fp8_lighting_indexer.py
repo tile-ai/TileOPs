@@ -2,7 +2,8 @@ from typing import Optional
 
 import torch
 
-from benchmarks.benchmark import BenchmarkBase
+from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerTest
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 
 
 class Fp8LightingIndexerBenchmark(BenchmarkBase):

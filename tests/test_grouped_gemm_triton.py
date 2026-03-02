@@ -1,7 +1,9 @@
 import argparse
+
 import math
 import time
 
+import pytest
 import torch
 import triton
 import triton.language as tl
@@ -829,22 +831,32 @@ def calculate_flops_tt(batch_sizes, K, N):
     return 2.0 * sum(size * N * K for size in batch_sizes)
 
 
-def test_grouped_gemm_nt(batch_sum: int, batch_count: int, K: int, N: int, dtype=torch.float16):
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, K, N, dtype",
+    [
+        (16384, 4, 8192, 13824, torch.float16),
+    ],
+)
+def test_grouped_gemm_nt(batch_sum: int, batch_count: int, K: int, N: int, dtype: torch.dtype):
     print("Testing grouped_gemm_nt (forward)...")
 
     inputs = prepare_nt_inputs(batch_sum, batch_count, K, N, dtype)
     batch_sizes = inputs[2]
 
     success = check_kernel(grouped_gemm_nt, ref_program_nt, inputs, "grouped_gemm_nt")
+    assert success, "grouped_gemm_nt correctness check failed"
 
-    if success:
-        total_flops = calculate_flops_nt(batch_sizes.tolist(), K, N)
-        profile_kernel(grouped_gemm_nt, inputs, "grouped_gemm_nt", total_flops)
-
-    return success
+    total_flops = calculate_flops_nt(batch_sizes.tolist(), K, N)
+    profile_kernel(grouped_gemm_nt, inputs, "grouped_gemm_nt", total_flops)
 
 
-def test_grouped_gemm_nn(batch_sum: int, batch_count: int, K: int, N: int, dtype=torch.float16):
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, K, N, dtype",
+    [
+        (16384, 4, 8192, 13824, torch.float16),
+    ],
+)
+def test_grouped_gemm_nn(batch_sum: int, batch_count: int, K: int, N: int, dtype: torch.dtype):
     print("\nTesting grouped_gemm_nn (backward dA)...")
 
     inputs = prepare_nn_inputs(batch_sum, batch_count, K, N, dtype)
@@ -855,42 +867,48 @@ def test_grouped_gemm_nn(batch_sum: int, batch_count: int, K: int, N: int, dtype
 
     batch_sizes = inputs[2]
     success = check_kernel(grouped_gemm_nn, ref_program_nn, inputs, "grouped_gemm_nn")
+    assert success, "grouped_gemm_nn correctness check failed"
 
-    if success:
-        total_flops = calculate_flops_nn(batch_sizes.tolist(), K, N)
-        profile_kernel(grouped_gemm_nn, inputs, "grouped_gemm_nn", total_flops)
-
-    return success
+    total_flops = calculate_flops_nn(batch_sizes.tolist(), K, N)
+    profile_kernel(grouped_gemm_nn, inputs, "grouped_gemm_nn", total_flops)
 
 
-def test_grouped_gemm_tn(batch_sum: int, batch_count: int, K: int, N: int, dtype=torch.float16):
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, K, N, dtype",
+    [
+        (16384, 4, 8192, 13824, torch.float16),
+    ],
+)
+def test_grouped_gemm_tn(batch_sum: int, batch_count: int, K: int, N: int, dtype: torch.dtype):
     print("\nTesting grouped_gemm_tn (backward dB)...")
 
     inputs = prepare_tn_inputs(batch_sum, batch_count, K, N, dtype)
     batch_sizes = inputs[2]
 
     success = check_kernel(grouped_gemm_tn, ref_program_tn, inputs, "grouped_gemm_tn")
+    assert success, "grouped_gemm_tn correctness check failed"
 
-    if success:
-        total_flops = calculate_flops_tn(batch_sizes.tolist(), K, N)
-        profile_kernel(grouped_gemm_tn, inputs, "grouped_gemm_tn", total_flops)
-
-    return success
+    total_flops = calculate_flops_tn(batch_sizes.tolist(), K, N)
+    profile_kernel(grouped_gemm_tn, inputs, "grouped_gemm_tn", total_flops)
 
 
-def test_grouped_gemm_tt(batch_sum: int, batch_count: int, K: int, N: int, dtype=torch.float16):
-    print("\nTesting grouped_gemm_tn (backward dB)...")
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, K, N, dtype",
+    [
+        (16384, 4, 8192, 13824, torch.float16),
+    ],
+)
+def test_grouped_gemm_tt(batch_sum: int, batch_count: int, K: int, N: int, dtype: torch.dtype):
+    print("\nTesting grouped_gemm_tt (backward dB)...")
 
     inputs = prepare_tt_inputs(batch_sum, batch_count, K, N, dtype)
     batch_sizes = inputs[2]
 
     success = check_kernel(grouped_gemm_tt, ref_program_tt, inputs, "grouped_gemm_tt")
+    assert success, "grouped_gemm_tt correctness check failed"
 
-    if success:
-        total_flops = calculate_flops_tt(batch_sizes.tolist(), K, N)
-        profile_kernel(grouped_gemm_tt, inputs, "grouped_gemm_tt", total_flops)
-
-    return success
+    total_flops = calculate_flops_tt(batch_sizes.tolist(), K, N)
+    profile_kernel(grouped_gemm_tt, inputs, "grouped_gemm_tt", total_flops)
 
 
 def main():
@@ -921,4 +939,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    pytest.main([__file__, "-vvs"])

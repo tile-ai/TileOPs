@@ -1,0 +1,72 @@
+name: pr-validation
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - main
+      - dev
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Source type conventions
+        id: types
+        run: |
+          source .claude/conventions/types.sh
+          echo "pattern=$COMMIT_MSG_PATTERN" >> "$GITHUB_OUTPUT"
+      - name: Validate commit messages
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "Checking commits from $BASE_SHA to $HEAD_SHA"
+
+          PATTERN='${{ steps.types.outputs.pattern }}'
+
+          STATUS=0
+          while IFS= read -r COMMIT_SHA; do
+            SUBJECT="$(git log -1 --format=%s "$COMMIT_SHA")"
+            if [[ ! "$SUBJECT" =~ $PATTERN ]]; then
+              echo "::error::Commit $COMMIT_SHA does not follow TileOPs format."
+              echo "  Expected: [Type] description  or  [Type][Scope] description"
+              echo "  Got: $SUBJECT"
+              STATUS=1
+            else
+              echo "OK: $SUBJECT"
+            fi
+          done < <(git log --format=%H "${BASE_SHA}..${HEAD_SHA}")
+
+          exit $STATUS
+
+  validate-pr-title:
+    runs-on: ubuntu-latest
+    if: github.event.action != 'synchronize'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .claude/conventions
+          sparse-checkout-cone-mode: false
+      - name: Validate PR title format
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          source .claude/conventions/types.sh
+          if [[ ! "$PR_TITLE" =~ $COMMIT_MSG_PATTERN ]]; then
+            echo "::error::PR title does not follow TileOPs format."
+            echo "Expected: [Type] description  or  [Type][Scope] description"
+            echo "Types: $COMMIT_PR_TYPES"
+            echo "Got: $PR_TITLE"
+            exit 1
+          fi
+          echo "PR title is valid: $PR_TITLE"

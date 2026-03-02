@@ -1,6 +1,6 @@
 ci:
   autofix_prs: false
-  autofix_commit_msg: "[Lint]: [pre-commit.ci] auto fixes [...]"
+  autofix_commit_msg: "[Chore][Lint] pre-commit.ci auto fixes"
   autoupdate_commit_msg: "[CI] [pre-commit.ci] autoupdate"
   autoupdate_schedule: monthly
 default_stages: [pre-commit, pre-push, manual]
@@ -34,17 +34,6 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix, --config, pyproject.toml]
-
-  - repo: https://github.com/google/yapf
-    rev: v0.43.0
-    hooks:
-      - id: yapf
-        name: yapf-multiproc-bugfix
-        args: [--in-place, top/__init__.py]
-        always_run: true
-        pass_filenames: false
-      - id: yapf
-        args: [--recursive, --in-place]
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1

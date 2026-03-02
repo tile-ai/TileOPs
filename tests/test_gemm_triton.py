@@ -1,6 +1,6 @@
-import argparse
 import time
 
+import pytest
 import torch
 import triton
 import triton.language as tl
@@ -79,7 +79,13 @@ def calculate_gemm_flops(M, N, K):
     return 2.0 * M * N * K
 
 
-def benchmark_triton_gemm_fp16(M, N, K, dtype, num_iter=100):
+@pytest.mark.parametrize(
+    "M, N, K, dtype, num_iter",
+    [
+        (4096, 4864, 8192, torch.float16, 100),
+    ],
+)
+def test_benchmark_triton_gemm_fp16(M: int, N: int, K: int, dtype, num_iter: int):
     device = 'cuda'
     A = torch.randn(M, K, device=device, dtype=dtype)
     B = torch.randn(K, N, device=device, dtype=dtype)
@@ -138,7 +144,13 @@ def benchmark_triton_gemm_fp16(M, N, K, dtype, num_iter=100):
     return results
 
 
-def verify_triton_gemm_fp16(M, N, K, dtype):
+@pytest.mark.parametrize(
+    "M, N, K, dtype",
+    [
+        (512, 512, 512, torch.float16),
+    ],
+)
+def test_verify_triton_gemm_fp16(M: int, N: int, K: int, dtype):
     print("Verifying Triton GEMM correctness (fp16 accumulation)...")
     device = 'cuda'
     A = torch.randn(M, K, device=device, dtype=dtype)
@@ -158,30 +170,4 @@ def verify_triton_gemm_fp16(M, N, K, dtype):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Triton GEMM performance test - fp16 accumulation')
-    parser.add_argument('--M', type=int, default=4096, help='Number of rows in matrix A')
-    parser.add_argument('--N', type=int, default=4864, help='Number of columns in matrix B')
-    parser.add_argument(
-        '--K', type=int, default=8192, help='Number of columns in matrix A / rows in matrix B')
-    parser.add_argument(
-        '--dtype',
-        type=str,
-        default='float16',
-        choices=['float16'],
-        help='Data type (only float16 supported)')
-    parser.add_argument('--verify', action='store_true', help='Verify correctness')
-    args = parser.parse_args()
-    dtype = torch.float16
-    M = args.M
-    N = args.N
-    K = args.K
-    print("Triton GEMM standalone performance test (fp16 computation and accumulation)")
-    print("=" * 60)
-    print(f"Matrix dimensions: A[{M}, {K}] × B[{K}, {N}] = C[{M}, {N}]")
-    print(f"Data type: {dtype} (fp16 computation and accumulation)")
-    print(f"Total computation: {calculate_gemm_flops(M, N, K) / 1e12:.2f} TFLOPs")
-    print()
-    if args.verify:
-        verify_triton_gemm_fp16(M, N, K, dtype)
-        print()
-    benchmark_triton_gemm_fp16(M, N, K, dtype)
+    pytest.main([__file__, "-vvs"])

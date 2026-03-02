@@ -1,42 +1,60 @@
-import argparse
+from typing import Tuple
 
 import torch
+import pytest
+from torch.nn import functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks import GroupQueryAttentionDecodeBenchmark
-from top.ops import GroupQueryAttentionDecodeWithKVCacheOp
-from top.utils import str2dtype
+from tests.test_base import TestBase, FixtureBase
+from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
 
-def test_gqa_decode(b: int,
-                    h: int,
-                    g: int,
-                    s_kv: int,
-                    d: int,
-                    dtype: torch.dtype,
-                    tune: bool = False) -> None:
-    op = GroupQueryAttentionDecodeWithKVCacheOp(b, h, g, s_kv, d, dtype, tune=tune)
-    benchmark = GroupQueryAttentionDecodeBenchmark(b, h, g, s_kv, d, dtype)
+class GqaDecodeFixture(FixtureBase):
+    PARAMS = [
+        ("batch, heads, heads_kv, seq_len_kv, dim, dtype, tune", [
+            (1, 32, 8, 8192, 128, torch.float16, False),
+            (4, 32, 4, 4096, 128, torch.bfloat16, False),
+            (8, 64, 16, 8192, 128, torch.float16, False),
+        ]),
+    ]
 
-    inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs, atol=1e-2, rtol=1e-2)
-    benchmark.profile(op, *inputs)
+
+class GqaDecodeTest(TestBase):
+
+    def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
+                 dtype: torch.dtype) -> None:
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len_kv = seq_len_kv
+        self.dim = dim
+        self.dtype = dtype
+
+    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        Q = torch.randn(self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        K = torch.randn(
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device='cuda', dtype=self.dtype)
+        V = torch.randn(
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device='cuda', dtype=self.dtype)
+        return Q, K, V
+
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        q_bhsd = q.unsqueeze(1).transpose(1, 2)  # [B, H, 1, D]
+        k_bhsd = k.transpose(1, 2)  # [B, H, S_kv, D]
+        v_bhsd = v.transpose(1, 2)  # [B, H, S_kv, D]
+        with sdpa_kernel(backends=[SDPBackend.MATH]):
+            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, enable_gqa=True)
+        output = output_bhsd.transpose(1, 2).squeeze(1).contiguous()
+        return output
+
+
+@GqaDecodeFixture
+def test_gqa_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
+                    dtype: torch.dtype, tune: bool) -> None:
+    test = GqaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dtype)
+    op = GroupQueryAttentionDecodeWithKVCacheOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
+    test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--batch', type=int, default=1, help='batch size')
-    parser.add_argument('--groups', type=int, default=8, help='number of groups')
-    parser.add_argument('--seq_len_kv', type=int, default=8192, help='key/value sequence length')
-    parser.add_argument('--heads', type=int, default=32, help='num heads')
-    parser.add_argument('--dim', type=int, default=128, help='head dim')
-    parser.add_argument(
-        '--dtype', type=str, default='float16', choices=['float16', 'bfloat16'], help='data type')
-    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
-    args = parser.parse_args()
-
-    test_gqa_decode(args.batch, args.heads, args.groups, args.seq_len_kv, args.dim,
-                    str2dtype['float16'], args.tune)
-    test_gqa_decode(args.batch, args.heads, args.groups, args.seq_len_kv, args.dim,
-                    str2dtype['bfloat16'], args.tune)
-    test_gqa_decode(args.batch, args.heads, args.groups, 10, args.dim, str2dtype[args.dtype],
-                    args.tune)
+    pytest.main([__file__, "-vvs"])

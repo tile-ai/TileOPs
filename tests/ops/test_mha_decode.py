@@ -1,47 +1,61 @@
-import argparse
+from typing import Tuple
 
 import torch
+import pytest
+from torch.nn import functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks import MultiHeadAttentionDecodeBenchmark
-from top.ops import MultiHeadAttentionDecodeWithKVCacheOp
-from top.utils import str2dtype
-
-# Set fixed seed for reproducibility
-torch.manual_seed(42)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(42)
+from tests.test_base import TestBase, FixtureBase
+from tileops.ops import MultiHeadAttentionDecodeWithKVCacheOp
 
 
-def test_mha_decode(b: int,
-                    h: int,
-                    s_q: int,
-                    s_kv: int,
-                    d: int,
-                    dtype: torch.dtype,
-                    tune: bool = False) -> None:
+class MhaDecodeFixture(FixtureBase):
+    PARAMS = [
+        ("b, h, s_q, s_kv, d, dtype, tune", [
+            (1, 32, 128, 8192, 128, torch.float16, False),
+            (1, 32, 128, 8192, 128, torch.bfloat16, False),
+            (1, 32, 128, 5, 128, torch.float16, False),
+        ]),
+    ]
+
+
+class MhaDecodeTest(TestBase):
+
+    def __init__(self, batch: int, heads: int, seq_len_q: int, seq_len_kv: int, dim: int,
+                 dtype: torch.dtype) -> None:
+        self.batch = batch
+        self.heads = heads
+        self.seq_len_q = seq_len_q
+        self.seq_len_kv = seq_len_kv
+        self.dim = dim
+        self.dtype = dtype
+
+    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        Q = torch.randn(
+            self.batch, self.seq_len_q, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        K = torch.randn(
+            self.batch, self.seq_len_kv, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        V = torch.randn(
+            self.batch, self.seq_len_kv, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        return Q, K, V
+
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        q_bhsd = q.transpose(1, 2)  # [B, H, S_q, D]
+        k_bhsd = k.transpose(1, 2)  # [B, H, S_kv, D]
+        v_bhsd = v.transpose(1, 2)  # [B, H, S_kv, D]
+        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
+            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
+        output = output_bhsd.transpose(1, 2).contiguous()
+        return output
+
+
+@MhaDecodeFixture
+def test_mha_decode(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
+                    tune: bool) -> None:
+    test = MhaDecodeTest(b, h, s_q, s_kv, d, dtype)
     op = MultiHeadAttentionDecodeWithKVCacheOp(b, h, s_q, s_kv, d, dtype, tune=tune)
-    benchmark = MultiHeadAttentionDecodeBenchmark(b, h, s_q, s_kv, d, dtype)
-
-    inputs = benchmark.gen_inputs()
-    benchmark.check(op, *inputs, atol=2e-3, rtol=1e-5)
-    benchmark.profile(op, *inputs)
+    test.check(op, *test.gen_inputs(), atol=2e-3, rtol=1e-5)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--batch', type=int, default=1, help='batch size')
-    parser.add_argument('--seq_len_q', type=int, default=128, help='query sequence length')
-    parser.add_argument('--seq_len_kv', type=int, default=8192, help='key/value sequence length')
-    parser.add_argument('--heads', type=int, default=32, help='num heads')
-    parser.add_argument('--dim', type=int, default=128, help='head dim')
-    parser.add_argument(
-        '--dtype', type=str, default='bfloat16', choices=['float16', 'bfloat16'], help='data type')
-    parser.add_argument('--tune', action='store_true', default=False, help='enable autotune')
-    args = parser.parse_args()
-
-    test_mha_decode(args.batch, args.heads, args.seq_len_q, args.seq_len_kv, args.dim,
-                    str2dtype["bfloat16"], args.tune)
-    test_mha_decode(args.batch, args.heads, args.seq_len_q, args.seq_len_kv, args.dim,
-                    str2dtype["float16"], args.tune)
-    test_mha_decode(args.batch, args.heads, args.seq_len_q, 5, args.dim, str2dtype["float16"],
-                    args.tune)
+    pytest.main([__file__, "-vvs"])

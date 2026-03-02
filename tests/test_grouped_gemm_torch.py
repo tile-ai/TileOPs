@@ -1,5 +1,6 @@
 import time
 
+import pytest
 import torch
 
 
@@ -82,7 +83,13 @@ def benchmark_single(gemm, a, b, batch_sizes, num_iter=100):
     return (time.time() - start_time) / num_iter
 
 
-def test_all_grouped_gemm(batch_sum=4096, batch_count=4, k=8192, n=4864, dtype=torch.float16):
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, k, n, dtype",
+    [
+        (4096, 4, 8192, 4864, torch.float16),
+    ],
+)
+def test_all_grouped_gemm(batch_sum, batch_count, k, n, dtype):
     print("=" * 70)
     print("PyTorch Grouped GEMM Performance Test")
     print("=" * 70)
@@ -191,4 +198,4 @@ def test_all_grouped_gemm(batch_sum=4096, batch_count=4, k=8192, n=4864, dtype=t
 
 
 if __name__ == "__main__":
-    test_all_grouped_gemm()
+    pytest.main([__file__, "-vvs"])

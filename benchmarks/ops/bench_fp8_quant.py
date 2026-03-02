@@ -1,6 +1,7 @@
 from typing import Optional
 
-from benchmarks.benchmark import BenchmarkBase
+from tests.ops.test_fp8_quant import Fp8QuantTest
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 
 
 class Fp8QuantBenchmark(BenchmarkBase):

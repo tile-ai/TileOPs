@@ -1,0 +1,68 @@
+name: issue-label
+
+permissions:
+  contents: read
+  issues: write
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  label-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .claude/conventions
+          sparse-checkout-cone-mode: false
+      - name: Extract type from title and apply label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          source .claude/conventions/types.sh
+
+          # Try commit/PR-style types first (e.g. [BugFix]), then ALL-CAPS issue types (e.g. [BUG])
+          TYPE=$(echo "$ISSUE_TITLE" | grep -oP "^\[\K(${COMMIT_PR_TYPES})(?=\])" || true)
+
+          if [ -n "$TYPE" ]; then
+            LABEL="${TYPE_TO_LABEL[$TYPE]:-}"
+          else
+            TYPE=$(echo "$ISSUE_TITLE" | grep -oP "^\[\K(${ISSUE_TYPES})(?=\])" || true)
+            if [ -n "$TYPE" ]; then
+              LABEL="${ISSUE_TYPE_TO_LABEL[$TYPE]:-}"
+            fi
+          fi
+
+          if [ -z "$TYPE" ] || [ -z "$LABEL" ]; then
+            echo "No recognized type tag in title, skipping label"
+            exit 0
+          fi
+
+          echo "Detected type: $TYPE -> label: $LABEL"
+
+          # Check if correct label already applied
+          CURRENT_LABELS=$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name')
+          if echo "$CURRENT_LABELS" | grep -qx "$LABEL"; then
+            echo "Label '$LABEL' already applied, skipping"
+            exit 0
+          fi
+
+          # Remove any stale type labels
+          for l in $ALL_TYPE_LABELS; do
+            if echo "$CURRENT_LABELS" | grep -qx "$l"; then
+              gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" --remove-label "$l"
+            fi
+          done
+
+          # Ensure label exists (create if missing)
+          if ! gh label list --repo "${{ github.repository }}" --search "$LABEL" --json name --jq '.[].name' | grep -qx "$LABEL"; then
+            gh label create "$LABEL" --repo "${{ github.repository }}" --description "Auto-created by issue labeler" --force
+            echo "Created label: $LABEL"
+          fi
+
+          # Apply the matching label
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" --add-label "$LABEL"
+          echo "Applied label: $LABEL"

@@ -1,7 +1,7 @@
 ---
 name: New Operator Sub-task
 about: A specific sub-task for implementing a part of a new operator
-title: '[New Op Sub-task] <Operator Name> - <L1/L2/L3/L4/Benchmark>'
+title: '[New Op Sub-task] <Operator Name> - <L1/L2/Benchmark>'
 labels: sub-task, operator
 assignees: ''
 ---
@@ -18,8 +18,6 @@ Part of #
 
 - [ ] **L1: Kernel Implementation** (Write TileLang kernel)
 - [ ] **L2: Op Implementation** (Wrapper + Unit Tests + Benchmarks)
-- [ ] **L3: Function Implementation** (Autograd Function)
-- [ ] **L4: Layer Implementation** (nn.Module Wrapper)
 - [ ] **Benchmarks** (Performance Profiling)
 
 ## Description
@@ -34,5 +32,3 @@ Part of #
 - [ ] **(L1 Only)** Kernel verified on unit tests.
 - [ ] **(L2 Only)** Unit tests match PyTorch reference (FP16/BF16).
 - [ ] **(L2 Only)** Benchmarks implemented (Latency/TFLOPS/Bandwidth).
-- [ ] **(L3 Only)** GradCheck passed.
-- [ ] **(L4 Only)** Verified as `nn.Module`.
