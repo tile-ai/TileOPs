@@ -45,8 +45,14 @@ def test_fp8_lighting_indexer_bench(seq_len: int, heads: int, index_dim: int, se
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("fp8_lighting_indexer", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("fp8_lighting_indexer", locals(), result_bl, tag="baseline")
+    try:
+        result_bl = bm.profile(test.ref_program, *inputs)
+    except RuntimeError as e:
+        if "out of memory" not in str(e).lower():
+            raise
+        result_bl = None
+    if result_bl is not None:
+        BenchmarkReport.record("fp8_lighting_indexer", locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":
