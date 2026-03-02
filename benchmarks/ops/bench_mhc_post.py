@@ -1,7 +1,11 @@
 from typing import Optional
 
-from tests.ops.test_mhc_post import MhcPostTest
+import pytest
+import torch
+
+from tests.ops.test_mhc_post import MhcPostFixture, MhcPostTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tileops.ops import ManifoldConstrainedHyperConnectionPostOp
 
 
 class MhcPostBenchmark(BenchmarkBase):
@@ -15,3 +19,23 @@ class MhcPostBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         t = self.test
         return (t.n_expand * 2 + 1) * t.c_x
+
+
+@MhcPostFixture
+def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
+                         tune: bool) -> None:
+    test = MhcPostTest(batch, n_expand, c_x, dtype)
+    bm = MhcPostBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = ManifoldConstrainedHyperConnectionPostOp(
+        batch, n_expand, c_x, dtype=str(dtype).split('.')[-1], tune=tune)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record("mhc_post", locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record("mhc_post", locals(), result_bl, tag="baseline")
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-vvs"])
