@@ -95,33 +95,14 @@ jobs:
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
           pip install --force-reinstall dist/*.whl
 
-          # Ensure imports resolve from installed wheel, not repo source tree.
+          # Run the existing tests/ suite while ensuring imports resolve from wheel.
           TMP_TEST_DIR="$(mktemp -d)"
           trap 'rm -rf "${TMP_TEST_DIR}"' EXIT
+          cp -r tests "${TMP_TEST_DIR}/tests"
           unset PYTHONPATH || true
 
-          cat <<'PY' > "${TMP_TEST_DIR}/test_tileops_wheel.py"
-          import importlib.metadata
-          from pathlib import Path
-
-          import tileops
-
-          def test_tileops_imported_from_wheel() -> None:
-              pkg_path = Path(tileops.__file__).resolve()
-              print(f"tileops imported from: {pkg_path}")
-              assert "site-packages" in str(pkg_path), (
-                  "tileops is not imported from wheel installation"
-              )
-
-
-          def test_tileops_version_exists() -> None:
-              version = importlib.metadata.version("tileops")
-              print(f"tileops version: {version}")
-              assert version
-          PY
-
           cd "${TMP_TEST_DIR}"
-          python -m pytest -q test_tileops_wheel.py
+          python -m pytest -q tests
         shell: bash
 
       - name: Upload wheel artifact
