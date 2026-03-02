@@ -105,6 +105,14 @@ gh pr edit <PR_NUMBER> --add-label "<label1>" --add-label "<label2>"
 
 Re-run the gate until it passes.
 
+## Responding to reviewer feedback
+
+When addressing reviewer comments (from Copilot, Gemini, or humans):
+
+- **Always reply inline** on the specific comment thread. Never post a summary comment on the PR conversation.
+- Use the review API to create inline comments on the exact lines being discussed.
+- For each comment: acknowledge, state what was fixed, and reference the commit SHA.
+
 ## Return format
 
 Report exactly:

@@ -55,7 +55,7 @@ EXTRA_LABELS="all ai powered|breaking change|help wanted|good first issue"
 
 ISSUE_TYPES="FEAT|BUG|PERF|REFACTOR|DOCS|TEST|META|BENCHMARK"
 
-# Issue type → GitHub label (for issue-label workflow)
+# Issue type → GitHub label (for auto-label workflow)
 declare -A ISSUE_TYPE_TO_LABEL=(
   [FEAT]=feature
   [BUG]=bug
