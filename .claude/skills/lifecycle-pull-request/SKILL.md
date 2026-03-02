@@ -85,7 +85,7 @@ Run the poll script as a **blocking** Bash call:
 .claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}
 ```
 
-Use Bash tool with `timeout: 660000` (covers the script's 10-minute timeout plus buffer).
+Use Bash tool with `timeout: 6060000` (covers the script's 100-minute timeout plus buffer).
 
 The script returns structured JSON:
 
