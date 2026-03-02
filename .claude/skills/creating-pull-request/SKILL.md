@@ -40,12 +40,15 @@ Use `gh pr create`. **Do NOT use the GitHub MCP tool** — `gh` CLI avoids the `
 
 ```bash
 gh pr create --base main --head "$(git branch --show-current)" \
+  --draft \
   --title "[Type] Description" \
   --body "$(cat <<'PREOF'
 <fill in from template.md>
 PREOF
 )"
 ```
+
+**Draft-first workflow:** Always create PRs as draft. This defers Copilot code review and human reviewer notifications until CI and Gemini review pass. The `lifecycle-pull-request` skill handles the draft→ready transition.
 
 PR title rules:
 

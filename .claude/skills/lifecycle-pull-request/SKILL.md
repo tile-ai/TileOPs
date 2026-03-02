@@ -11,10 +11,16 @@ description: Full PR lifecycle — commit, create PR, monitor CI, handle reviews
 ## Workflow
 
 ```text
-Phase 1: /committing-changes  →  BRANCH, COMMIT_MSG
-Phase 2: /creating-pull-request  →  PR_NUMBER, PR_URL
-Phase 3-5: Poll-Handle Loop (max 3 fix-push rounds)
+Phase 1:   /committing-changes        →  BRANCH, COMMIT_MSG
+Phase 2:   /creating-pull-request      →  PR_NUMBER, PR_URL (draft)
+Phase 3-5: Poll-Handle Loop (CI + Gemini review, max 3 fix-push rounds)
+Phase 6:   Mark PR ready for review    →  triggers Copilot review + human notifications
+Phase 7-9: Poll-Handle Loop (Copilot review, max 3 fix-push rounds)
 ```
+
+### Draft-first strategy
+
+PRs are created as **draft** (Phase 2). This defers Copilot code review and human reviewer notifications until CI passes and Gemini review is addressed. Phase 6 marks the PR ready, triggering the second round of reviews.
 
 ______________________________________________________________________
 
@@ -189,3 +195,45 @@ If done:
 - **Max 3 fix-push rounds.** After 3 cycles still failing → escalate to user.
 - Each "round" = one poll + one fix + one push. Passive waiting (pending CI) does NOT count.
 - Re-poll after fix counts as the next round.
+
+______________________________________________________________________
+
+## Phase 6: Mark PR Ready for Review
+
+After the draft poll-handle loop (Phase 3–5) completes with CI green and Gemini comments addressed, mark the PR as ready:
+
+```bash
+gh pr ready {pr_number} --repo {owner}/{repo}
+```
+
+This triggers:
+
+- **Copilot code review** (ruleset: `review_on_push: true`, `review_draft_pull_requests: false`)
+- **Required reviewer notifications** (human reviewers get pinged)
+
+Report to the user:
+
+> "PR #\{pr_number} marked as ready for review. CI is green and Gemini comments are addressed.
+> Copilot review and human reviewer notifications are now triggered.
+> Entering second poll-handle loop for Copilot review..."
+
+______________________________________________________________________
+
+## Phase 7–9: Poll & Handle (Copilot Review)
+
+Re-enter the same poll-handle loop as Phase 3–5, with the same logic:
+
+- **Phase 7: Poll** — same as Phase 3
+- **Phase 8: Handle** — same as Phase 4 (CI fixes, review comment replies)
+- **Phase 9: Verify done** — same as Phase 5
+
+The same loop constraints apply: max 3 fix-push rounds, passive waiting doesn't count.
+
+When the loop exits successfully:
+
+> "PR #\{pr_number} is ready for human review:
+>
+> - CI: all checks passed
+> - Gemini review: addressed (draft phase)
+> - Copilot review: addressed (ready phase)
+> - URL: \{pr_url}"
