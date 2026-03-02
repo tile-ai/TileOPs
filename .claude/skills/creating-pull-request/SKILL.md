@@ -16,9 +16,11 @@ description: Create a PR with correct title, body, and labels following TileOPs 
 
 ## Reference
 
-Read `docs/CONTRIBUTING.md` before proceeding. It is the **single source of truth** for PR title conventions.
+Read `docs/CONTRIBUTING.md` before proceeding for PR title conventions.
 
 For PR body format, see [template.md](template.md).
+
+**Source of truth** for type lists, regex patterns, and label mappings: `.claude/conventions/types.sh`.
 
 ## Steps
 
@@ -48,7 +50,7 @@ PREOF
 PR title rules:
 
 - **Must** use bracket format: `[Type] Description` or `[Type][Scope] Description`
-- Types: `[Feat]`, `[BugFix]`, `[Fix]`, `[Refactor]`, `[Enhancement]`, `[Doc]`, `[Chore]`, `[Bench]`, `[CI]`
+- Types: `[Feat]`, `[BugFix]`, `[Fix]`, `[Refactor]`, `[Enhancement]`, `[Doc]`, `[Chore]`, `[Bench]`, `[CI]`, `[Test]`, `[Perf]`
 - Keep under ~80 chars
 
 PR body section rules:
@@ -67,11 +69,15 @@ PR body section rules:
 | PR Type              | Label             |
 | -------------------- | ----------------- |
 | `[Feat]`             | `feature`         |
-| `[BugFix]` / `[Fix]` | `bug` or `fix`    |
+| `[BugFix]` / `[Fix]` | `fix`             |
 | `[Enhancement]`      | `enhancement`     |
 | `[Refactor]`         | `refactor`        |
-| `[Doc]`              | `documentation`   |
-| `[Chore]` / `[CI]`   | `ci` or `chore`   |
+| `[Doc]`              | `docs`            |
+| `[Chore]`            | `chore`           |
+| `[Bench]`            | `bench`           |
+| `[CI]`               | `ci`              |
+| `[Test]`             | `test`            |
+| `[Perf]`             | `perf`            |
 | Breaking change      | `breaking change` |
 
 Additional labels (stack as needed):

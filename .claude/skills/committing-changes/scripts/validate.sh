@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# Source canonical type definitions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+source "$REPO_ROOT/.claude/conventions/types.sh"
+
 MODE="${1:---pre}"
 ERRORS=0
 
@@ -45,8 +50,7 @@ check_branch_name() {
     return
   fi
   # Pattern: type/scope/description  (each segment: lowercase, digits, dots, hyphens)
-  local pattern='^(feat|fix|refactor|doc|chore|perf|test|bench)/[a-z0-9._-]+/[a-z0-9._-]+$'
-  if [[ "$branch" =~ $pattern ]]; then
+  if [[ "$branch" =~ $BRANCH_NAME_PATTERN ]]; then
     pass "Branch name '${branch}' follows type/scope/description"
   else
     fail "Branch '${branch}' must match type/scope/description (e.g. feat/flash-attn/fwd-kernel)"
@@ -60,8 +64,7 @@ check_commit_message() {
     fail "No commits found on current branch"
     return
   fi
-  local pattern='^\[(Feat|BugFix|Fix|Refactor|Enhancement|Doc|Chore|Bench|CI)\](\[.+\])? .+'
-  if [[ "$msg" =~ $pattern ]]; then
+  if [[ "$msg" =~ $COMMIT_MSG_PATTERN ]]; then
     pass "Commit message '${msg}' follows [Type] Description"
   else
     fail "Commit message '${msg}' must match [Type] Description (e.g. [Feat] Add forward op)"

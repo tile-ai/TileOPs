@@ -8,6 +8,11 @@
 
 set -euo pipefail
 
+# Source canonical type definitions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+source "$REPO_ROOT/.claude/conventions/types.sh"
+
 OWNER_REPO="${1:?Usage: validate.sh <owner/repo> <pr_number>}"
 PR_NUMBER="${2:?Usage: validate.sh <owner/repo> <pr_number>}"
 
@@ -40,8 +45,7 @@ echo ""
 # --- Checks ---
 
 # 1. PR title format
-TITLE_PATTERN='^\[(Feat|BugFix|Fix|Refactor|Enhancement|Doc|Chore|Bench|CI)\](\[.+\])? .+'
-if [[ "$TITLE" =~ $TITLE_PATTERN ]]; then
+if [[ "$TITLE" =~ $COMMIT_MSG_PATTERN ]]; then
   pass "PR title follows [Type] Description format"
 else
   fail "PR title must match [Type] Description (e.g. [Feat] Add forward op)"

@@ -380,7 +380,7 @@ Run the poll script as a **blocking** Bash call:
 .claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}
 ```
 
-Use Bash tool with `timeout: 660000` (covers the script's 10-minute timeout plus buffer).
+Use Bash tool with `timeout: 6060000` (covers the script's 100-minute timeout plus buffer).
 
 The script returns structured JSON:
 
@@ -462,12 +462,15 @@ ______________________________________________________________________
 
 Derived from the issue title's `[TYPE]` tag. Used in Phase 6 for PR title prefix and branch naming.
 
+Canonical mappings are defined in `.claude/conventions/types.sh` (`ISSUE_TO_COMMIT_TYPE` / `ISSUE_TO_BRANCH_PREFIX`).
+
 | Issue `[TYPE]` | PR Title Prefix | Branch Prefix |
 | -------------- | --------------- | ------------- |
 | `BUG`          | `[BugFix]`      | `fix/`        |
 | `FEAT`         | `[Feat]`        | `feat/`       |
 | `PERF`         | `[Enhancement]` | `perf/`       |
 | `REFACTOR`     | `[Refactor]`    | `refactor/`   |
-| `DOCS`         | `[Doc]`         | `docs/`       |
-| `TEST`         | `[Chore]`       | `test/`       |
+| `DOCS`         | `[Doc]`         | `doc/`        |
+| `TEST`         | `[Test]`        | `test/`       |
+| `META`         | `[Chore]`       | `chore/`      |
 | (not found)    | `[Fix]`         | `fix/`        |

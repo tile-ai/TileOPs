@@ -12,11 +12,13 @@
 
 #
 
-# Types:
+# Types (canonical list in .claude/conventions/types.sh):
 
 # [Feat] — New features or operators
 
 # [BugFix] — Bug fixes
+
+# [Fix] — Non-bug corrections
 
 # [Refactor] — Code restructuring without behavior change
 
@@ -29,6 +31,10 @@
 # [Bench] — Benchmark updates
 
 # [CI] — CI/CD changes
+
+# [Test] — Test changes
+
+# [Perf] — Performance improvements
 
 #
 

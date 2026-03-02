@@ -15,9 +15,11 @@ description: Pre-check, branch, commit, and push changes following TileOPs conve
 
 ## Reference
 
-Read `docs/CONTRIBUTING.md` before proceeding. It is the **single source of truth** for branch naming and commit message conventions.
+Read `docs/CONTRIBUTING.md` before proceeding for branch naming and commit message conventions.
 
 For commit message format, see [template.txt](template.txt).
+
+**Source of truth** for type lists, regex patterns, and label mappings: `.claude/conventions/types.sh`.
 
 ## Steps
 

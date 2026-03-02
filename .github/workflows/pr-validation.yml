@@ -21,14 +21,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Source type conventions
+        id: types
+        run: |
+          source .claude/conventions/types.sh
+          echo "pattern=$COMMIT_MSG_PATTERN" >> "$GITHUB_OUTPUT"
       - name: Validate commit messages
         run: |
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           echo "Checking commits from $BASE_SHA to $HEAD_SHA"
 
-          # TileOPs convention: [Type] description  or  [Type][Scope] description
-          PATTERN='^\[(Feat|Feature|Fix|BugFix|Refactor|CI|Docs|Test|Build|Chore|Perf|Style|Enhancement|Bench)\](\[[a-zA-Z0-9_-]+\])? .+'
+          PATTERN='${{ steps.types.outputs.pattern }}'
 
           STATUS=0
           while IFS= read -r COMMIT_SHA; do
@@ -49,17 +53,19 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event.action != 'synchronize'
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .claude/conventions
+          sparse-checkout-cone-mode: false
       - name: Validate PR title format
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          # Expected: [Type] description  or  [Type][Scope] description
-          # Type: Feat, Feature, Fix, BugFix, Refactor, CI, Docs, Test, Build, Chore, Perf, Style, Enhancement
-          PATTERN='^\[(Feat|Feature|Fix|BugFix|Refactor|CI|Docs|Test|Build|Chore|Perf|Style|Enhancement)\](\[[a-zA-Z0-9_-]+\])? .+'
-          if [[ ! "$PR_TITLE" =~ $PATTERN ]]; then
+          source .claude/conventions/types.sh
+          if [[ ! "$PR_TITLE" =~ $COMMIT_MSG_PATTERN ]]; then
             echo "::error::PR title does not follow TileOPs format."
             echo "Expected: [Type] description  or  [Type][Scope] description"
-            echo "Types: Feat, Feature, Fix, BugFix, Refactor, CI, Docs, Test, Build, Chore, Perf, Style, Enhancement"
+            echo "Types: $COMMIT_PR_TYPES"
             echo "Got: $PR_TITLE"
             exit 1
           fi
