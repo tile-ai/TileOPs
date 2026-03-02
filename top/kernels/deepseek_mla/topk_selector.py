@@ -44,7 +44,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
         @T.prim_func
         def _topk_selector_kernel_main(
             index_score: T.Tensor[(batch, seq_len, seq_len_kv, kv_group), in_dtype],
-            index: T.Tensor[(batch, seq_len, topk, kv_group), out_dtype],
+            index: T.Tensor[(batch, seq_len, kv_group, topk), out_dtype],
             starts: T.Tensor[(batch, seq_len), out_dtype],
             ends: T.Tensor[(batch, seq_len), out_dtype],
         ):
@@ -124,7 +124,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                                 # need a pos = T.atomic_add(s_histogram[bin_id32+1], 1)
                                 l_pos = T.atomic_add(
                                     s_histogram[l_bin_id32 + 1], 1, return_prev=True)
-                                index[bx, by * block_m + m_i, l_pos, g] = input_idx
+                                index[bx, by * block_m + m_i, g, l_pos] = input_idx
 
                             elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
                                 # pos = s_num_input[0]
@@ -188,16 +188,17 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                                     l_pos = T.atomic_add(
                                         s_histogram[l_bin_id32 + 1], 1,
                                         return_prev=True) + l_start_pos
-                                    index[bx, by * block_m + m_i, l_pos,
-                                          g] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
+                                    index[bx, by * block_m + m_i, g,
+                                          l_pos] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
                                 elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
                                     if round == 3:
                                         l_out_pos = T.atomic_add(
                                             s_histogram[l_bin_id32 + 1], 1,
                                             return_prev=True) + l_start_pos
                                         if l_out_pos < topk:
-                                            index[bx, by * block_m + m_i, l_out_pos,
-                                                  g] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
+                                            index[bx, by * block_m + m_i, g,
+                                                  l_out_pos] = s_input_idx[r_idx,
+                                                                           s * BLOCK_SIZE + tx]
                                     else:
                                         l_pos = T.atomic_add(
                                             s_num_input[r_idx ^ 1], 1, return_prev=True)
@@ -233,7 +234,7 @@ def _topk_selector_wrapped_kernel(
 
 @_topk_selector_wrapped_kernel.register_fake
 def _(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, *inputs) -> None:
-    return torch.empty([batch, seq_len, topk, kv_group], device=inputs[0].device, dtype=torch.int32)
+    return torch.empty([batch, seq_len, kv_group, topk], device=inputs[0].device, dtype=torch.int32)
 
 
 class TopkSelectorKernel(Kernel):

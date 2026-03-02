@@ -61,8 +61,9 @@ class TopkSelectorBenchmark(Benchmark):
 
     def ref_program(self, index_score, starts, ends):
         # index_score: (batch, seq_len, seq_len_kv, kv_group); topk over seq_len_kv (dim=2)
-        indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]
-        return indexes_ref
+        indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]  # (B, S, topk, G)
+        # Match kernel/output layout: (batch, seq_len, kv_group, topk)
+        return indexes_ref.permute(0, 1, 3, 2)
 
     def __check_common(self,
                        *inputs: Tuple[torch.Tensor],

@@ -152,7 +152,7 @@ def clean_logits_(block_K: int = 4096,):
             CuSeqLenKE: T.Tensor([seq_len], indices_dtype),  # type: ignore
     ):
         with T.Kernel(seq_len, batch, threads=512) as (bx, by):
-            tx = T.thread_binding(0, 512, thread="threadIdx.x")
+            tx = T.get_thread_binding()
             cu_k_s = CuSeqLenKS[bx]
             cu_k_e = CuSeqLenKE[bx]
 
