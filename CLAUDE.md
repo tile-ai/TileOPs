@@ -24,15 +24,6 @@ TileOPs (TOP) is a high-performance LLM operator library built on TileLang. The 
 - Add necessary docs and tests when introducing files/interfaces.
 - Response should include: change summary, affected paths, validation steps, and next suggestions.
 
-## Security Rules
-
-- **Never** hardcode secrets, tokens, passwords, or API keys in any file.
-- **Never** print or echo secrets in GitHub workflow steps (e.g. `echo ${{ secrets.XXX }}`). Use environment variables and let GitHub mask them automatically.
-- **Always** review GitHub workflow changes for secret exposure before committing: check `env:` blocks, `run:` scripts, and `with:` parameters.
-- **Never** commit `.env`, `.pem`, `.key`, `credentials.json`, or similar sensitive files. These are in `.gitignore`.
-- When creating or modifying workflows, use `${{ secrets.GITHUB_TOKEN }}` via `env:` — never inline in shell commands.
-- Gitleaks runs as a pre-commit hook to catch leaked secrets. Do not bypass it (`SKIP=gitleaks` is not allowed without explicit user approval).
-
 ## Skill Index
 
 | Skill                    | Trigger                                                                                                                 |
