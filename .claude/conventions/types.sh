@@ -53,17 +53,18 @@ EXTRA_LABELS="all ai powered|breaking change|help wanted|good first issue"
 # Issue types (ALL CAPS, used in issue titles)
 # ---------------------------------------------------------------------------
 
-ISSUE_TYPES="FEAT|BUG|PERF|REFACTOR|DOCS|TEST|META"
+ISSUE_TYPES="FEAT|BUG|PERF|REFACTOR|DOCS|TEST|META|BENCHMARK"
 
 # Issue type → GitHub label (for issue-label workflow)
 declare -A ISSUE_TYPE_TO_LABEL=(
   [FEAT]=feature
-  [BUG]=fix
+  [BUG]=bug
   [PERF]=perf
   [REFACTOR]=refactor
   [DOCS]=docs
   [TEST]=test
   [META]=chore
+  [BENCHMARK]=bench
 )
 
 # Issue type → commit/PR type prefix
