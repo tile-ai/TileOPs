@@ -29,6 +29,11 @@ repos:
         args: [--ignore-case]
         files: ^docs/spelling_wordlist\.txt$
 
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.13
     hooks:

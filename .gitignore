@@ -51,3 +51,14 @@ debug/
 
 # Exception: keep the debug folder for tests
 !testing/python/debug
+
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.yaml
+secrets.yml
+
+docs/plans/
