@@ -35,10 +35,10 @@ def test_nsa_topk_bench(seq_num: int, c_seq_len: int, heads: int, dim: int, grou
     inputs = test.gen_inputs()
 
     op = NSATopkVarlenOp(
-        seq_num=test.seq_num, c_seq_len=test.c_seq_len, heads=test.heads, dim=test.dim,
-        chunk_num=test.chunk_num, group=test.group, scale=test.scale,
-        selected_block_num=test.selected_block_num, bc=test.bc, bs=test.bs, bk=test.bk,
-        dtype=test.dtype, accum_dtype=test.accum_dtype, tune=tune)
+        seq_num=seq_num, c_seq_len=c_seq_len, heads=heads, dim=dim,
+        chunk_num=test.chunk_num, group=group, scale=scale,
+        selected_block_num=selected_block_num, bc=bc, bs=bs, bk=bk,
+        dtype=dtype, accum_dtype=accum_dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("nsa_topk", locals(), result, tag="tileops")
 
