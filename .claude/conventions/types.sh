@@ -44,7 +44,7 @@ declare -A TYPE_TO_LABEL=(
 )
 
 # All type-related labels (used for stale-label cleanup)
-ALL_TYPE_LABELS="feature fix refactor enhancement docs chore bench ci test perf"
+ALL_TYPE_LABELS="feature fix bug refactor enhancement docs chore bench ci test perf"
 
 # Extra labels (not derived from types)
 EXTRA_LABELS="all ai powered|breaking change|help wanted|good first issue"
@@ -76,6 +76,7 @@ declare -A ISSUE_TO_COMMIT_TYPE=(
   [DOCS]=Doc
   [TEST]=Test
   [META]=Chore
+  [BENCHMARK]=Bench
 )
 
 # Issue type → branch prefix
@@ -87,6 +88,7 @@ declare -A ISSUE_TO_BRANCH_PREFIX=(
   [DOCS]=doc
   [TEST]=test
   [META]=chore
+  [BENCHMARK]=bench
 )
 
 # Default for unrecognized issue types

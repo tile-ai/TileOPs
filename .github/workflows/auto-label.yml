@@ -17,6 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           sparse-checkout: .claude/conventions
           sparse-checkout-cone-mode: false
       - name: Extract type from title and apply label
@@ -30,6 +31,7 @@ jobs:
         run: |
           source .claude/conventions/types.sh
 
+          LABEL=""
           if [ "$EVENT_NAME" = "issues" ]; then
             TITLE="$ISSUE_TITLE"
             NUMBER="$ISSUE_NUMBER"
@@ -61,7 +63,7 @@ jobs:
           echo "Detected type: $TYPE -> label: $LABEL"
 
           # Check if correct label already applied
-          CURRENT_LABELS=$(gh $GH_CMD view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
+          CURRENT_LABELS=$(gh "$GH_CMD" view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
           if echo "$CURRENT_LABELS" | grep -qx "$LABEL"; then
             echo "Label '$LABEL' already applied, skipping"
             exit 0
@@ -70,7 +72,7 @@ jobs:
           # Remove any stale type labels
           for l in $ALL_TYPE_LABELS; do
             if echo "$CURRENT_LABELS" | grep -qx "$l"; then
-              gh $GH_CMD edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l"
+              gh "$GH_CMD" edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l"
             fi
           done
 
@@ -81,5 +83,5 @@ jobs:
           fi
 
           # Apply the matching label
-          gh $GH_CMD edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$LABEL"
+          gh "$GH_CMD" edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$LABEL"
           echo "Applied label: $LABEL"
