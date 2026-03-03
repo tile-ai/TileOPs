@@ -39,26 +39,60 @@ fix: gemv stride access                      ← too vague, no TYPE/COMPONENT ta
 
 ______________________________________________________________________
 
-## 2. Issue Body Structure
+## 2. Issue Body Structure (Required Template)
+
+Every issue body **MUST** contain these sections. The `lifecycle-issue-fixer` skill validates their presence before proceeding.
 
 ```markdown
-## Problem
+## Description
 Clear description of the observed issue. Include:
 - Which file/function is affected
 - Why it is wrong or suboptimal (root cause if known)
 - Code snippet showing the problematic pattern
 
-## Proposed Fix  (for PERF/BUG issues)
-- Concrete change description with before/after code snippets
-- Expected improvement (quantified where possible)
+## Goal
+What needs to be achieved to resolve this issue.
 
-## Expected Impact  (for PERF issues)
-- Table of optimizations and estimated gains
-- Affected benchmark shapes
+## Plan
+<!-- type: proposal | fixed -->
+<!-- proposal: agent may explore autonomously (default) -->
+<!-- fixed: agent must follow strictly -->
+- Step 1: ...
+- Step 2: ...
 
-## Next Steps
-- Whether a PR will follow, and roughly what it will contain
+## Constraints
+<!-- Empty by default. Add hard constraints if needed. -->
+
+## Acceptance Criteria
+- [ ] Modified files pass unit tests
+- [ ] {Additional verifiable criteria}
 ```
+
+### Arguments for structured creation
+
+When invoking this skill, you can pass structured arguments:
+
+- `--plan "fixed: 1. Step one 2. Step two"` — override plan section with explicit steps
+- `--constraints "Do not modify public API"` — add constraints
+- `--criteria "Performance improves by 10%"` — add acceptance criteria
+
+**Without arguments (smart defaults):**
+
+1. Extract Goal from the natural language description provided by the user
+2. Plan defaults to `proposal`, steps inferred from the description
+3. Constraints defaults to empty
+4. Acceptance Criteria defaults to "Modified files pass unit tests"
+
+### HARD GATE — Validate template completeness
+
+Before creating the issue, verify all required sections are present:
+
+- `## Description` — must not be empty
+- `## Goal` — must not be empty
+- `## Plan` — must contain at least one step
+- `## Acceptance Criteria` — must contain at least one checkbox
+
+**If any section is missing or empty: STOP.** Fix the issue body before creating.
 
 ______________________________________________________________________
 

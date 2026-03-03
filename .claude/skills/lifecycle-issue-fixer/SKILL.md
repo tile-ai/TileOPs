@@ -23,12 +23,12 @@ ______________________________________________________________________
 
 ## Workflow Overview
 
-- **Phase 1: Read Issue** — fetch and understand the issue
+- **Phase 1: Read Issue** — fetch, validate template, create context.json
 - **Phase 2: Worktree** — smart detection, create worktree if needed
-- **Phase 3: Explore Code** — understand affected code paths
-- **Phase 4: TDD Implementation** — `Skill("superpowers:test-driven-development")`
-- **Phase 5: Verify** — `Skill("superpowers:verification-before-completion")` + test suite + pre-commit
-- **Phase 6: Commit, Create PR & Lifecycle** — `Skill("committing-changes")` → `Skill("creating-pull-request")` → poll CI/reviews
+- **Phase 3: Explore Code** — understand affected code paths, update context.json
+- **Phase 4: TDD Implementation** — red-green-refactor with HARD GATE enforcement
+- **Phase 5: Verify** — run tests + check acceptance criteria
+- **Phase 6: PR Lifecycle** — `Skill("lifecycle-pull-request")`
 
 ### Skill invocation rule
 
@@ -38,7 +38,7 @@ ______________________________________________________________________
 
 ## Phase 1: Read & Understand Issue
 
-**Goal:** Parse the issue reference, fetch full issue data, and summarize understanding before proceeding.
+**Goal:** Parse the issue reference, fetch full issue data, validate the template, and create the context file.
 
 ### 1a. Parse issue reference
 
@@ -68,33 +68,71 @@ issue_read(method="get_comments", owner={owner}, repo={repo}, issue_number={numb
 issue_read(method="get_labels", owner={owner}, repo={repo}, issue_number={number})
 ```
 
-### 1d. Extract key information
+### 1d. HARD GATE — Validate issue template
+
+The issue body **MUST** contain these sections:
+
+- `## Description` — problem description
+- `## Goal` — completion objective
+- `## Plan` — execution route (with `proposal` or `fixed` type)
+- `## Acceptance Criteria` — verifiable conditions
+
+**If any section is missing: STOP.** Report to the user:
+
+> "Issue #{number} is missing required sections: {list}. Please update the issue body with the required template before proceeding."
+
+Do NOT proceed until the template is valid.
+
+### 1e. Extract key information
 
 From the issue title, body, labels, and comments, extract:
 
 - **Type**: Parse `[TYPE]` from title (BUG, FEAT, PERF, REFACTOR, DOCS, TEST) — see Issue Type Mapping below
 - **Component**: Parse `[COMPONENT]` from title if present
-- **What**: The bug description or feature request
-- **Where**: Any mentioned file paths, function names, error messages, or stack traces
-- **Acceptance criteria**: Any checkboxes, expected behavior, or test cases described
+- **Plan type**: Parse `<!-- type: proposal | fixed -->` comment from Plan section. Default: `proposal`
+- **Goal**: Content of `## Goal` section
+- **Execution route**: Steps listed in `## Plan` section
+- **Constraints**: Content of `## Constraints` section (may be empty)
+- **Acceptance criteria**: Checkboxes from `## Acceptance Criteria` section
 
-### 1e. Summarize and confirm
+### 1f. Create context file
+
+Write `docs/plans/issue-{number}-context.json`:
+
+```json
+{
+  "issue": {number},
+  "type": "{TYPE}",
+  "component": "{COMPONENT}",
+  "plan_type": "proposal | fixed",
+  "goal": "{goal text}",
+  "acceptance_criteria": ["{AC-1}", "{AC-2}"],
+  "execution_route": ["{step-1}", "{step-2}"],
+  "constraints": ["{constraint-1}"],
+  "affected_files": [],
+  "test_targets": [],
+  "bench_targets": [],
+  "code_understanding": ""
+}
+```
+
+### 1g. Summarize and confirm
 
 Print a summary to the user:
 
 > **Issue #\{number}: \{title}**
 >
-> **Type:** \{type} | **Component:** \{component}
+> **Type:** \{type} | **Component:** \{component} | **Plan:** \{plan_type}
 >
-> **Understanding:**
+> **Goal:** \{goal}
 >
-> - {what needs to be done}
-> - {which code areas are affected}
-> - {acceptance criteria}
+> **Execution route:** \{steps}
+>
+> **Acceptance criteria:** \{AC list}
 >
 > Proceeding to Phase 2.
 
-### 1f. Claim the issue
+### 1h. Claim the issue
 
 Before any work begins, check the issue's assignees:
 
@@ -106,7 +144,7 @@ gh issue view {number} --repo {owner}/{repo} --json assignees --jq '.assignees[]
 - **Assigned to current user:** Already claimed, proceed.
 - **Assigned to someone else:** **STOP.** Report to the user: "Issue #\{number} is assigned to @\{assignee}. Will not claim — another contributor is working on it." Do NOT proceed unless the user explicitly overrides.
 
-### 1g. Guard rails
+### 1i. Guard rails
 
 - If the issue is **not found** (404): report error and **stop**.
 - If the issue is **closed**: warn the user and ask "This issue is already closed. Do you still want to proceed?"
@@ -155,8 +193,6 @@ Report to the user:
 
 > Working in worktree: `.claude/worktrees/issue-{number}`
 
-**Note:** The `committing-changes` skill (Phase 6a) will create a proper `{type}/scope/description` branch from main. The worktree branch is just a temporary working name.
-
 ______________________________________________________________________
 
 ## Phase 3: Explore Relevant Code
@@ -199,7 +235,14 @@ Agent(
 )
 ```
 
-### 3d. Summarize findings
+### 3d. Update context file
+
+Update `docs/plans/issue-{number}-context.json` with:
+
+- `affected_files`: list of files that need to be modified
+- `code_understanding`: summary of key findings (root cause, insertion points, edge cases)
+
+### 3e. Summarize findings
 
 Before proceeding to implementation, summarize:
 
@@ -214,42 +257,53 @@ ______________________________________________________________________
 
 **Goal:** Implement the fix/feature using strict test-driven development.
 
-### Invoke the TDD skill via Skill tool
+### Plan enforcement
 
-**You MUST use the `Skill` tool** to invoke `superpowers:test-driven-development`:
+Read `plan_type` from context.json:
 
+- **`fixed`**: Follow `execution_route` steps **strictly and in order**. Do not deviate.
+- **`proposal`**: Use `execution_route` as guidance but explore autonomously. The TDD cycle below is still mandatory.
+
+### HARD GATE — TDD red-green-refactor cycle
+
+Implementation **MUST** follow this sequence. Skipping any step is not permitted.
+
+**1. Write or update tests first**
+
+- Create/modify test files for the affected functionality
+- Update context.json `test_targets` with the test file paths
+- If benchmarks are affected (kernel changes), update `bench_targets` too
+
+**2. Confirm FAIL (red)**
+
+```bash
+.claude/skills/lifecycle-issue-fixer/scripts/run-affected-tests.sh docs/plans/issue-{number}-context.json
 ```
-Skill(skill="superpowers:test-driven-development")
-```
 
-Before invoking, print the context so the TDD skill has it in the conversation:
+The new/modified tests **MUST fail**. If they pass without any implementation changes, the tests are not testing the right thing — revise them.
 
-> **Issue:** #\{number} — \{title}
->
-> **Problem:** {summary from Phase 1}
->
-> **Affected code:** {findings from Phase 3}
->
-> **Files to modify:** {list from Phase 3}
->
-> **Test files:** {existing test files from Phase 3}
-
-The TDD skill will enforce the red-green-refactor cycle:
-
-1. Write a failing test that captures the expected behavior
-1. Run it to confirm it fails
-1. Write the minimal implementation to make it pass
-1. Run tests to confirm they pass
-1. Refactor if needed
-
-**Do NOT commit in this phase** — committing is handled in Phase 6.
-
-### Implementation guidelines
+**3. Write the minimal implementation**
 
 - Follow the project's 2-layer architecture: `kernel` → `op` (see `docs/DEVELOPMENT.md`)
 - Keep dependency direction strict: `op -> kernel`, never the reverse
 - Prefer minimal, targeted changes — do not refactor unrelated code
-- Use the test command pattern: `PYTHONPATH="$PWD" python -m pytest -v {test_file}`
+
+**4. Confirm PASS (green)**
+
+```bash
+.claude/skills/lifecycle-issue-fixer/scripts/run-affected-tests.sh docs/plans/issue-{number}-context.json
+```
+
+All tests and benchmarks in context.json **MUST pass**.
+
+**5. Refactor if needed**
+
+If code can be improved without changing behavior:
+
+- Refactor
+- Run tests again to confirm still PASS
+
+**Do NOT commit in this phase** — committing is handled in Phase 6.
 
 ______________________________________________________________________
 
@@ -257,156 +311,51 @@ ______________________________________________________________________
 
 **Goal:** Confirm the implementation is correct and causes no regressions before creating a PR.
 
-### Invoke verification skill via Skill tool
-
-**You MUST use the `Skill` tool** to invoke `superpowers:verification-before-completion`:
-
-```
-Skill(skill="superpowers:verification-before-completion")
-```
-
-This ensures all claims are backed by evidence — run the checks below as part of that skill.
-
-### 5a. Run the full relevant test suite
-
-Not just the new tests — run the entire test file and any related test files:
+### 5a. Run full test suite from context
 
 ```bash
-PYTHONPATH="$PWD" python -m pytest -v tests/ops/test_{component}.py
+.claude/skills/lifecycle-issue-fixer/scripts/run-affected-tests.sh docs/plans/issue-{number}-context.json
 ```
 
-If there are kernel-level tests, run those too:
+Verify ALL tests and benchmarks pass.
 
-```bash
-PYTHONPATH="$PWD" python -m pytest -v tests/kernels/test_{component}.py
-```
+### 5b. Check acceptance criteria
 
-### 5b. Run pre-commit
+Read `acceptance_criteria` from `docs/plans/issue-{number}-context.json`. For each criterion:
 
-```bash
-pre-commit run --all-files
-```
+- Verify it is satisfied
+- Document the evidence
 
-If pre-commit fails:
-
-- Auto-fix formatting issues (ruff, black, isort are typically auto-fixable)
-- Re-run `pre-commit run --all-files` to confirm
-- If it fails again on non-auto-fixable issues, fix manually
-
-### 5c. Confirm no regressions
-
-Verify:
-
-- [ ] All pre-existing tests still pass
-- [ ] New tests pass
-- [ ] `pre-commit run --all-files` passes
-- [ ] No untracked files that should be committed are left behind
-
-### 5d. Report
+### 5c. Report
 
 Print a verification summary:
 
 > **Verification complete:**
 >
 > - Tests: \{N} passed, \{M} failed
-> - Pre-commit: {pass/fail}
+> - Benchmarks: \{N} passed, \{M} failed
+> - Acceptance criteria: \{X}/\{Y} met
 > - Ready for PR: {yes/no}
 
 If any verification fails, fix the issues before proceeding. If unable to fix after reasonable effort, escalate to the user.
 
 ______________________________________________________________________
 
-## Phase 6: Commit, Create PR & Lifecycle
+## Phase 6: PR Lifecycle
 
 **Goal:** Commit changes, create a high-quality PR that closes the issue, then monitor CI and handle reviews.
 
-This phase directly invokes the project's `committing-changes` and `creating-pull-request` skills, then runs the poll-handle loop from `lifecycle-pull-request`.
-
-### 6a. Commit & Push — invoke `committing-changes` skill
-
-**You MUST use the `Skill` tool** to invoke `committing-changes`:
+Invoke the `lifecycle-pull-request` skill:
 
 ```
-Skill(skill="committing-changes", args="<context>")
+Skill(skill="lifecycle-pull-request", args="Issue #{number}: {goal}. Context: docs/plans/issue-{number}-context.json")
 ```
 
-Pass the following as args:
-
-> Committing fix for issue #\{number}: \{title}.
-> Branch type: `{branch_prefix}` (see Issue Type Mapping).
-> Commit tag: `{pr_type_prefix}` (see Issue Type Mapping).
-
-The skill will:
-
-1. Sync with main, create a feature branch following `type/scope/description` convention
-1. Stage specific files (never `git add .`)
-1. Run pre-commit validation (HARD GATE)
-1. Commit with proper `[Type] Description` format
-1. Run post-commit validation (HARD GATE)
-1. Push to origin
-
-**Capture the output:** `BRANCH`, `COMMIT_MSG`, `FILES_CHANGED`.
-
-If the skill fails, fix the reported issues and re-invoke. Do NOT proceed until push succeeds.
-
-### 6b. Create PR — invoke `creating-pull-request` skill
-
-**You MUST use the `Skill` tool** to invoke `creating-pull-request`:
-
-```
-Skill(skill="creating-pull-request", args="<context>")
-```
-
-Pass the following as args:
-
-> PR for issue #\{number}: \{title}.
-> PR title: `{pr_type_prefix} {description}` (see Issue Type Mapping).
-> PR body MUST include: `Closes #{number}`.
-> Labels: add the type label AND `all-ai-powered` label.
-
-The skill will:
-
-1. Create the PR via `gh pr create` (NOT the GitHub MCP tool)
-1. Add required labels
-1. Validate the PR (HARD GATE)
-
-**Capture the output:** `PR_NUMBER`, `PR_URL`, `BRANCH`.
-
-If the skill fails, fix the reported issues and re-invoke. Do NOT proceed until validation passes.
-
-### 6c. Trigger Gemini Review
-
-Gemini does not review draft PRs automatically. Trigger it:
-
-```bash
-gh pr comment {pr_number} --repo {owner}/{repo} --body "/gemini review"
-```
-
-### 6d. Draft Poll & Handle (CI + Copilot + Gemini reviews, max 3 rounds)
-
-The PR is created as **draft**. Copilot reviews drafts automatically; Gemini was triggered in 6c. This defers only human reviewer notifications until all bot reviews pass.
-
-Enter the **poll-handle loop** from the `lifecycle-pull-request` skill (Phase 3–5). See that skill for full details on the poll script, JSON format, and handle/verify logic.
-
-```bash
-.claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}
-```
-
-Use Bash tool with `timeout: 6060000`. Handle CI failures and all review comments (from Copilot and Gemini). Max 3 fix-push rounds.
-
-### 6e. Mark PR Ready for Review
-
-Once CI is green and all bot review comments (Copilot + Gemini) are addressed:
-
-```bash
-gh pr ready {pr_number} --repo {owner}/{repo}
-```
-
-This triggers **human reviewer notifications only** — both bot reviews are already complete.
+The skill handles: commit → create PR → trigger Gemini → poll-handle loop → mark ready.
 
 ### Done
 
-When the loop exits successfully, report to the user:
+When the lifecycle-pull-request skill completes, report to the user:
 
 > **Issue #\{number} resolved:**
 >
@@ -422,13 +371,13 @@ ______________________________________________________________________
 | ----------------------------------------------- | ------------------------------------------------------ |
 | No argument provided                            | Ask user for issue number via `AskUserQuestion`        |
 | Issue not found (404)                           | Report error and **stop**                              |
+| Issue missing template sections                 | Report missing sections and **stop**                   |
 | Issue assigned to someone else                  | Report and **stop** — do not claim another's work      |
 | Issue is already closed                         | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
 | Issue has linked PR already                     | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
-| TDD tests won't pass after reasonable effort    | Escalate to user with what was tried and error details |
-| Pre-commit fails after auto-fix retry           | Escalate to user                                       |
-| `committing-changes` skill fails (HARD GATE)    | Fix reported issues, re-invoke the skill               |
-| `creating-pull-request` skill fails (HARD GATE) | Fix reported issues (title/body/labels), re-invoke     |
+| TDD red phase passes unexpectedly               | Revise tests — they are not testing the right thing    |
+| Tests won't pass after reasonable effort         | Escalate to user with what was tried and error details |
+| `lifecycle-pull-request` skill fails             | Fix reported issues, re-invoke the skill               |
 | Poll-handle loop exceeds 3 rounds               | Escalate to user with failure summary                  |
 
 ______________________________________________________________________

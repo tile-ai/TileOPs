@@ -8,14 +8,18 @@ description: Full PR lifecycle — commit, create PR, monitor CI, handle reviews
 - You want the full lifecycle automated: commit → create PR → wait for CI/review → fix → done.
 - Invoke with: `/lifecycle-pull-request <task description>`
 
+## Arguments
+
+$ARGUMENTS
+
 ## Workflow
 
 ```text
-Phase 1:   /committing-changes      →  BRANCH, COMMIT_MSG
-Phase 2:   /creating-pull-request   →  PR_NUMBER, PR_URL (draft)
-Phase 2b:  Trigger Gemini review    →  comment `/gemini review` on the PR
+Phase 1:   Skill("committing-changes")   →  BRANCH, COMMIT_MSG
+Phase 2:   Skill("creating-pull-request") →  PR_NUMBER, PR_URL (draft)
+Phase 2b:  Trigger Gemini review          →  comment `/gemini review` on the PR
 Phase 3-5: Poll-Handle Loop (CI + Copilot + Gemini reviews, max 3 fix-push rounds)
-Phase 6:   Mark PR ready for review →  triggers human reviewer notifications
+Phase 6:   Mark PR ready for review       →  triggers human reviewer notifications
 ```
 
 ### Draft-first strategy
@@ -27,54 +31,52 @@ PRs are created as **draft** (Phase 2). On draft PRs:
 
 The draft phase handles CI + both bot reviews. Phase 6 marks the PR ready, which triggers **human reviewer notifications only** (both bot reviews are already complete).
 
+### Skill invocation rule
+
+Every phase that references another skill **MUST** invoke it via the `Skill` tool. Do NOT use subagent dispatch or attempt to re-implement the skill logic inline.
+
 ______________________________________________________________________
 
 ## Phase 1: Commit
 
-Dispatch a **general-purpose subagent** (model=sonnet) via the Agent tool to execute the `committing-changes` skill:
+**You MUST use the `Skill` tool** to invoke `committing-changes`:
 
-> **Subagent prompt:**
->
-> You are committing changes for this repository.
->
-> **Background:** {task_context from \$ARGUMENTS}
->
-> **Instructions:** Read and execute `.claude/skills/committing-changes/SKILL.md` step by step. Read `docs/CONTRIBUTING.md` first for conventions.
->
-> **Return format** (report exactly):
->
-> - `BRANCH: <branch-name>`
-> - `COMMIT_MSG: <commit message>`
-> - `FILES_CHANGED: <comma-separated list>`
+```
+Skill(skill="committing-changes", args="<task_context from $ARGUMENTS>")
+```
 
-Parse the result for: `BRANCH`, `COMMIT_MSG`, `FILES_CHANGED`.
+The skill will:
 
-If the subagent fails, report the error to the user and **stop**.
+1. Detect current branch (skip sync-main if already on feature branch)
+1. Stage specific files (never `git add .`)
+1. Run pre-commit validation (HARD GATE)
+1. Commit with proper `[Type] Description` format
+1. Run post-commit validation (HARD GATE)
+1. Push to origin
+
+**Capture the output:** `BRANCH`, `COMMIT_MSG`, `FILES_CHANGED`.
+
+If the skill fails, fix the reported issues and re-invoke. Do NOT proceed until push succeeds.
 
 ______________________________________________________________________
 
 ## Phase 2: Create PR
 
-Dispatch a **general-purpose subagent** (model=sonnet) via the Agent tool to execute the `creating-pull-request` skill:
+**You MUST use the `Skill` tool** to invoke `creating-pull-request`:
 
-> **Subagent prompt:**
->
-> You are creating a PR for this repository.
->
-> **Background:** {task_context from \$ARGUMENTS}
->
-> **Instructions:** Read and execute `.claude/skills/creating-pull-request/SKILL.md` step by step. Read `docs/CONTRIBUTING.md` first for conventions.
->
-> **Return format** (report exactly):
->
-> - `PR_NUMBER: <number>`
-> - `PR_URL: <url>`
-> - `BRANCH: <branch-name>`
-> - `SUMMARY: <one-line summary>`
+```
+Skill(skill="creating-pull-request", args="<task_context from $ARGUMENTS>")
+```
 
-Parse the result for: `PR_NUMBER`, `PR_URL`.
+The skill will:
 
-If the subagent fails, report the error to the user and **stop**.
+1. Create the PR via `gh pr create` (NOT the GitHub MCP tool)
+1. Add required labels
+1. Validate the PR (HARD GATE)
+
+**Capture the output:** `PR_NUMBER`, `PR_URL`.
+
+If the skill fails, fix the reported issues and re-invoke. Do NOT proceed until validation passes.
 
 ______________________________________________________________________
 
@@ -100,6 +102,16 @@ After obtaining `PR_NUMBER`, enter the **poll-handle loop**.
 >
 > **Critical**: Every re-poll must check **both** CI status **and** review comments.
 
+### Context recovery
+
+If context has been compressed (long-running workflow), read the context file to recover issue understanding:
+
+```
+Read("docs/plans/issue-{N}-context.json")
+```
+
+This file contains the issue goal, acceptance criteria, execution route, affected files, and code understanding — everything needed to make informed decisions when handling review feedback.
+
 ### Phase 3: Poll
 
 Run the poll script as a **blocking** Bash call:
@@ -120,7 +132,16 @@ The script returns structured JSON:
     "failed_checks": [{"name": "...", "conclusion": "failure", "url": "..."}]
   },
   "reviews": {
-    "new_inline_comments": [{"id": "...", "author": "...", "body": "...", "path": "...", "line": "..."}],
+    "new_inline_comments": [
+      {
+        "thread_node_id": "PRRT_kwDOABC123",
+        "is_resolved": false,
+        "is_outdated": false,
+        "comments": [
+          {"id": 12345, "author": "copilot[bot]", "body": "...", "path": "...", "line": 42, "created_at": "..."}
+        ]
+      }
+    ],
     "new_review_bodies": [{"id": "...", "author": "...", "body": "...", "state": "..."}],
     "unresolved_count": 3
   }
@@ -149,35 +170,32 @@ If `ci.state == "failure"`:
 1. Reproduce locally when possible.
 1. Fix by severity:
    - **Lint/format** (pre-commit, ruff, codespell, mdformat):
-     Run `pre-commit run --all-files`, fix, commit, push → **re-poll**
+     Fix the issue, commit, push → **re-poll**
    - **Test/build**:
      Analyze failure logs (`gh pr checks {pr_number} --repo {owner}/{repo}`)
      Simple fix → fix, commit, push → **re-poll**
      Complex → report to user with log summary, ask for guidance
-1. Common CI issues:
-   - Non-portable commands in docs (use `"$PWD"` not backticks)
-   - Formatting drift (run `pre-commit run --all-files`)
 
-#### 4c. New reviews → auto handle
+#### 4c. New reviews → auto handle (reply + resolve atomic flow)
 
-If `reviews.new_inline_comments` or `reviews.new_review_bodies` are non-empty:
+If `reviews.new_inline_comments` is non-empty (unresolved threads exist):
 
-**Every comment MUST be replied to individually in its original thread.** Do NOT post a summary comment.
+**Every unresolved thread MUST be handled with an atomic reply+resolve two-step.**
 
-For each comment, classify and handle:
+For each unresolved thread:
 
-- **Simple/format** (typos, naming, imports): fix + reply with commit hash
-- **Logic/architecture**: analyze, accept/decline with specific reason
-- **Invalid/incorrect**: decline with specific technical reason
-
-**How to reply** to a review comment:
+1. Read the **full comment chain** in the thread (all entries in `comments` array) to understand the complete conversation — not just the first comment.
+2. Classify and decide: accept (fix + commit hash), decline (reason), or defer (create issue).
+3. **Step 1 — Reply** to the thread:
 
 ```bash
 gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
   -f body="<reply>"
 ```
 
-**After replying, resolve the thread** via GraphQL:
+Use the `id` from the **last comment** in the thread's `comments` array as `comment_id`.
+
+4. **Step 2 — Resolve** the thread using the `thread_node_id`:
 
 ```bash
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<PRRT_thread_node_id>"}) { thread { isResolved } } }'
@@ -189,12 +207,29 @@ Reply content rules:
 - **Declining (future work)**: `"Declined for this PR — scope is limited to X. Tracked in #{issue}."` (also create a GitHub issue)
 - **Declining (invalid)**: `"Declined. {specific technical reason}."`
 
+For `reviews.new_review_bodies` (PR-level reviews with body text):
+
+- Read and address the feedback
+- Reply via `gh api repos/{owner}/{repo}/issues/{pr_number}/comments -f body="<response>"`
+
+#### 4d. Post-fix verification
+
+After fixing CI or review issues, run local tests before pushing:
+
+```bash
+.claude/skills/lifecycle-issue-fixer/scripts/run-affected-tests.sh docs/plans/issue-{N}-context.json
+```
+
+If the context file is not available (standalone PR lifecycle without issue-fixer), skip this step.
+
+Then commit and push the fixes.
+
 ### Phase 5: Verify done
 
 **All** must be true:
 
 1. `ci.state == "success"` — **not** "pending". If pending, keep polling (no round increment). Print "waiting for CI: \{check_name} still pending..." each cycle.
-1. `reviews.new_inline_comments` is empty (or all replied to **and resolved**)
+1. `reviews.unresolved_count == 0` (all threads resolved via the atomic reply+resolve flow)
 1. `reviews.new_review_bodies` is empty (or all replied to)
 
 If done:
@@ -218,7 +253,7 @@ ______________________________________________________________________
 
 ## Phase 6: Mark PR Ready for Review
 
-After the draft poll-handle loop (Phase 3–5) completes with CI green and both Copilot and Gemini review comments addressed, mark the PR as ready:
+After the draft poll-handle loop (Phase 3–5) completes with CI green and all review threads resolved, mark the PR as ready:
 
 ```bash
 gh pr ready {pr_number} --repo {owner}/{repo}

@@ -117,12 +117,48 @@ fetch_ci_checks() {
   echo "$result"
 }
 
-# Fetch inline review comments (returns merged JSON array)
-# --paginate can produce concatenated arrays ([...][...]); jq -s 'add' merges them.
-fetch_inline_comments() {
-  local raw
-  raw=$(gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" --paginate 2>&1) || { log_error "fetch_inline_comments: $raw"; return 1; }
-  echo "$raw" | jq -s 'add // []'
+# Fetch review threads via GraphQL (returns JSON with thread data including node IDs)
+# This replaces the REST-based fetch_inline_comments to provide:
+# - thread_node_id (PRRT_...) needed for resolveReviewThread mutation
+# - isResolved state for accurate unresolved_count
+# - Full conversation chain per thread (comments first:100)
+fetch_review_threads() {
+  local query='query($owner: String!, $repo: String!, $pr: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            isResolved
+            isOutdated
+            comments(first: 100) {
+              nodes {
+                databaseId
+                author { login }
+                body
+                path
+                line
+                createdAt
+              }
+            }
+          }
+        }
+      }
+    }
+  }'
+
+  local result
+  result=$(gh api graphql -F owner="$OWNER" -F repo="$REPO" -F pr="$PR_NUMBER" -f query="$query" 2>&1) || { log_error "fetch_review_threads: $result"; return 1; }
+
+  # Warn if pagination needed (>100 threads)
+  local has_next
+  has_next=$(echo "$result" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' 2>/dev/null || echo "false")
+  if [[ "$has_next" == "true" ]]; then
+    log_info "WARNING: PR has >100 review threads. Only first 100 are fetched."
+  fi
+
+  echo "$result"
 }
 
 # Fetch PR-level reviews (returns merged JSON array)
@@ -155,21 +191,35 @@ get_failed_checks() {
   echo "$checks_json" | jq -c '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | {name: .name, conclusion: .conclusion, url: .html_url}]' || echo "[]"
 }
 
-# Filter inline comments: exclude PR author, only after PR creation
-filter_inline_comments() {
-  local comments_json="$1"
-  echo "$comments_json" | jq -c --arg author "$PR_AUTHOR" --arg created "$PR_CREATED_AT" '
-    [.[] | select(
-      .user.login != $author and
-      .created_at > $created
-    ) | {
-      id: .id,
-      author: .user.login,
-      body: .body,
-      path: .path,
-      line: .line,
-      created_at: .created_at
-    }]' || echo "[]"
+# Filter review threads from GraphQL response
+# Extracts unresolved threads with their node IDs and full comment chains
+# Excludes threads authored only by PR author
+filter_review_threads() {
+  local graphql_json="$1"
+  echo "$graphql_json" | jq -c --arg author "$PR_AUTHOR" '
+    [.data.repository.pullRequest.reviewThreads.nodes[]
+     | select(.isResolved == false)
+     | {
+         thread_node_id: .id,
+         is_resolved: .isResolved,
+         is_outdated: .isOutdated,
+         comments: [.comments.nodes[] | {
+           id: .databaseId,
+           author: .author.login,
+           body: .body,
+           path: .path,
+           line: .line,
+           created_at: .createdAt
+         }]
+       }
+     | select(.comments | map(.author) | any(. != $author))
+    ]' || echo "[]"
+}
+
+# Count unresolved threads from GraphQL response (based on isResolved field)
+count_unresolved_threads() {
+  local graphql_json="$1"
+  echo "$graphql_json" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' || echo 0
 }
 
 # Filter PR reviews: exclude PR author, only non-empty body, after PR creation
@@ -259,15 +309,13 @@ main() {
       log_error "Failed to fetch CI status, will retry"
     fi
 
-    # Fetch inline comments
-    local raw_inline
-    if raw_inline=$(fetch_inline_comments); then
-      inline_comments=$(filter_inline_comments "$raw_inline")
-      # Simplified: count filtered inline comments as unresolved
-      # (GitHub REST API doesn't expose thread resolution state)
-      unresolved=$(echo "$inline_comments" | jq 'length' || echo 0)
+    # Fetch review threads (GraphQL)
+    local threads_json
+    if threads_json=$(fetch_review_threads); then
+      inline_comments=$(filter_review_threads "$threads_json")
+      unresolved=$(count_unresolved_threads "$threads_json")
     else
-      log_error "Failed to fetch inline comments, will retry"
+      log_error "Failed to fetch review threads, will retry"
     fi
 
     # Fetch PR reviews
