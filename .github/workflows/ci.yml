@@ -57,6 +57,50 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Validate GPU frequency
+        run: |
+          set -euo pipefail
+          TARGET_CLOCK_MHZ=1830
+          RETRIES=5
+          SLEEP_SECONDS=2
+
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error::nvidia-smi is not available on this runner."
+            exit 1
+          fi
+
+          echo "Detected GPUs:"
+          nvidia-smi -L
+
+          attempt=1
+          while [ "$attempt" -le "$RETRIES" ]; do
+            echo "Validation attempt ${attempt}/${RETRIES}"
+            mismatch=0
+            while IFS=',' read -r gpu_index gpu_name gpu_clock; do
+              gpu_index="$(echo "$gpu_index" | xargs)"
+              gpu_name="$(echo "$gpu_name" | xargs)"
+              gpu_clock="$(echo "$gpu_clock" | xargs)"
+              echo "GPU ${gpu_index} (${gpu_name}) clock: ${gpu_clock} MHz"
+              if [ "$gpu_clock" != "$TARGET_CLOCK_MHZ" ]; then
+                mismatch=1
+              fi
+            done < <(nvidia-smi --query-gpu=index,name,clocks.current.graphics --format=csv,noheader,nounits)
+
+            if [ "$mismatch" -eq 0 ]; then
+              echo "All GPUs locked at ${TARGET_CLOCK_MHZ} MHz."
+              break
+            fi
+
+            if [ "$attempt" -eq "$RETRIES" ]; then
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz on all GPUs."
+              exit 1
+            fi
+
+            sleep "$SLEEP_SECONDS"
+            attempt=$((attempt + 1))
+          done
+        shell: bash
+
       - name: Create clean virtual environment
         run: |
           set -euo pipefail
@@ -144,6 +188,50 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Validate GPU frequency
+        run: |
+          set -euo pipefail
+          TARGET_CLOCK_MHZ=1830
+          RETRIES=5
+          SLEEP_SECONDS=2
+
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error::nvidia-smi is not available on this runner."
+            exit 1
+          fi
+
+          echo "Detected GPUs:"
+          nvidia-smi -L
+
+          attempt=1
+          while [ "$attempt" -le "$RETRIES" ]; do
+            echo "Validation attempt ${attempt}/${RETRIES}"
+            mismatch=0
+            while IFS=',' read -r gpu_index gpu_name gpu_clock; do
+              gpu_index="$(echo "$gpu_index" | xargs)"
+              gpu_name="$(echo "$gpu_name" | xargs)"
+              gpu_clock="$(echo "$gpu_clock" | xargs)"
+              echo "GPU ${gpu_index} (${gpu_name}) clock: ${gpu_clock} MHz"
+              if [ "$gpu_clock" != "$TARGET_CLOCK_MHZ" ]; then
+                mismatch=1
+              fi
+            done < <(nvidia-smi --query-gpu=index,name,clocks.current.graphics --format=csv,noheader,nounits)
+
+            if [ "$mismatch" -eq 0 ]; then
+              echo "All GPUs locked at ${TARGET_CLOCK_MHZ} MHz."
+              break
+            fi
+
+            if [ "$attempt" -eq "$RETRIES" ]; then
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz on all GPUs."
+              exit 1
+            fi
+
+            sleep "$SLEEP_SECONDS"
+            attempt=$((attempt + 1))
+          done
+        shell: bash
 
       - name: Ensure persistent venv and install dependencies
         run: |
