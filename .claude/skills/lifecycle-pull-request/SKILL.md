@@ -11,10 +11,21 @@ description: Full PR lifecycle — commit, create PR, monitor CI, handle reviews
 ## Workflow
 
 ```text
-Phase 1: /committing-changes  →  BRANCH, COMMIT_MSG
-Phase 2: /creating-pull-request  →  PR_NUMBER, PR_URL
-Phase 3-5: Poll-Handle Loop (max 3 fix-push rounds)
+Phase 1:   /committing-changes      →  BRANCH, COMMIT_MSG
+Phase 2:   /creating-pull-request   →  PR_NUMBER, PR_URL (draft)
+Phase 2b:  Trigger Gemini review    →  comment `/gemini review` on the PR
+Phase 3-5: Poll-Handle Loop (CI + Copilot + Gemini reviews, max 3 fix-push rounds)
+Phase 6:   Mark PR ready for review →  triggers human reviewer notifications
 ```
+
+### Draft-first strategy
+
+PRs are created as **draft** (Phase 2). On draft PRs:
+
+- **Copilot** reviews automatically (configured via `review_on_push: true`, `review_draft_pull_requests: true`).
+- **Gemini** does **not** review drafts automatically — it must be triggered by commenting `/gemini review` on the PR (Phase 2b).
+
+The draft phase handles CI + both bot reviews. Phase 6 marks the PR ready, which triggers **human reviewer notifications only** (both bot reviews are already complete).
 
 ______________________________________________________________________
 
@@ -64,6 +75,18 @@ Dispatch a **general-purpose subagent** (model=sonnet) via the Agent tool to exe
 Parse the result for: `PR_NUMBER`, `PR_URL`.
 
 If the subagent fails, report the error to the user and **stop**.
+
+______________________________________________________________________
+
+## Phase 2b: Trigger Gemini Review
+
+Gemini does not automatically review draft PRs. Trigger it by commenting on the PR:
+
+```bash
+gh pr comment {pr_number} --repo {owner}/{repo} --body "/gemini review"
+```
+
+This must happen **after** the PR is created (Phase 2) and **before** entering the poll-handle loop (Phase 3).
 
 ______________________________________________________________________
 
@@ -176,16 +199,38 @@ Reply content rules:
 
 If done:
 
-> "PR #\{pr_number} is ready for human review:
+> "PR #\{pr_number} — draft phase complete:
 >
 > - CI: all checks passed
-> - Automated review comments: all addressed and resolved
-> - URL: \{pr_url}"
+> - Copilot review: all comments addressed and resolved
+> - Gemini review: all comments addressed and resolved
+> - Proceeding to Phase 6 (mark ready for review)."
 
-**Exit the loop.**
+**Exit the loop** and continue to Phase 6.
 
 ### Loop constraints
 
 - **Max 3 fix-push rounds.** After 3 cycles still failing → escalate to user.
 - Each "round" = one poll + one fix + one push. Passive waiting (pending CI) does NOT count.
 - Re-poll after fix counts as the next round.
+
+______________________________________________________________________
+
+## Phase 6: Mark PR Ready for Review
+
+After the draft poll-handle loop (Phase 3–5) completes with CI green and both Copilot and Gemini review comments addressed, mark the PR as ready:
+
+```bash
+gh pr ready {pr_number} --repo {owner}/{repo}
+```
+
+This triggers **human reviewer notifications** only — both bot reviews (Copilot and Gemini) were already completed and addressed during the draft phase.
+
+Report to the user:
+
+> "PR #\{pr_number} is ready for human review:
+>
+> - CI: all checks passed
+> - Copilot review: addressed and resolved
+> - Gemini review: addressed and resolved
+> - URL: \{pr_url}"

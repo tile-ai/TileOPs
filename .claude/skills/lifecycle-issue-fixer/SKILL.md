@@ -374,73 +374,35 @@ The skill will:
 
 If the skill fails, fix the reported issues and re-invoke. Do NOT proceed until validation passes.
 
-### 6c. Poll & Handle CI/Reviews (max 3 rounds)
+### 6c. Trigger Gemini Review
 
-After obtaining `PR_NUMBER`, enter the **poll-handle loop**. This logic is inlined from the `lifecycle-pull-request` skill.
+Gemini does not review draft PRs automatically. Trigger it:
 
-> **do** { Poll → Handle → Verify } **while** PR is not done
->
-> Exit: CI green + all reviews handled, OR timeout/error, OR max 3 fix-push rounds.
->
-> **Critical**: Every re-poll must check **both** CI status **and** review comments.
+```bash
+gh pr comment {pr_number} --repo {owner}/{repo} --body "/gemini review"
+```
 
-#### Poll
+### 6d. Draft Poll & Handle (CI + Copilot + Gemini reviews, max 3 rounds)
 
-Run the poll script as a **blocking** Bash call:
+The PR is created as **draft**. Copilot reviews drafts automatically; Gemini was triggered in 6c. This defers only human reviewer notifications until all bot reviews pass.
+
+Enter the **poll-handle loop** from the `lifecycle-pull-request` skill (Phase 3–5). See that skill for full details on the poll script, JSON format, and handle/verify logic.
 
 ```bash
 .claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}
 ```
 
-Use Bash tool with `timeout: 6060000` (covers the script's 100-minute timeout plus buffer).
+Use Bash tool with `timeout: 6060000`. Handle CI failures and all review comments (from Copilot and Gemini). Max 3 fix-push rounds.
 
-The script returns structured JSON:
+### 6e. Mark PR Ready for Review
 
-```json
-{
-  "status": "ready | timeout | error",
-  "ci": {
-    "state": "success | failure | pending",
-    "failed_checks": [{"name": "...", "conclusion": "failure", "url": "..."}]
-  },
-  "reviews": {
-    "new_inline_comments": [{"id": "...", "author": "...", "body": "...", "path": "...", "line": "..."}],
-    "new_review_bodies": [{"id": "...", "author": "...", "body": "...", "state": "..."}],
-    "unresolved_count": 3
-  }
-}
+Once CI is green and all bot review comments (Copilot + Gemini) are addressed:
+
+```bash
+gh pr ready {pr_number} --repo {owner}/{repo}
 ```
 
-#### Handle result
-
-Parse the JSON. Follow this decision tree **in order** (first matching branch wins):
-
-**Timeout / error → STOP:**
-If `status == "error"` or `status == "timeout"`: report to user and **exit the loop**.
-
-**CI failure → auto fix:**
-If `ci.state == "failure"`:
-
-1. Identify failing checks from `ci.failed_checks`.
-1. **Lint/format** failures: run `pre-commit run --all-files`, fix, commit, push → **re-poll**
-1. **Test/build** failures: analyze logs via `gh pr checks {pr_number} --repo {owner}/{repo}`. Simple fix → fix, commit, push → **re-poll**. Complex → escalate to user.
-
-**New reviews → auto handle:**
-If `reviews.new_inline_comments` or `reviews.new_review_bodies` are non-empty:
-
-- **Every comment MUST be replied to individually in its original thread.** Do NOT post a summary comment.
-- Reply via: `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies -f body="<reply>"`
-- Resolve thread via GraphQL: `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread_id>"}) { thread { isResolved } } }'`
-
-#### Verify done
-
-**All** must be true:
-
-1. `ci.state == "success"` — **not** "pending". If pending, keep polling (no round increment).
-1. `reviews.new_inline_comments` is empty (or all replied to and resolved)
-1. `reviews.new_review_bodies` is empty (or all replied to)
-
-**Loop constraints:** Max 3 fix-push rounds. Passive waiting (pending CI) does NOT count as a round.
+This triggers **human reviewer notifications only** — both bot reviews are already complete.
 
 ### Done
 
@@ -449,7 +411,7 @@ When the loop exits successfully, report to the user:
 > **Issue #\{number} resolved:**
 >
 > - PR: \{pr_url}
-> - Status: CI green, reviews addressed
+> - Status: CI green, Copilot and Gemini reviews addressed
 > - The PR will auto-close issue #\{number} on merge.
 
 ______________________________________________________________________
