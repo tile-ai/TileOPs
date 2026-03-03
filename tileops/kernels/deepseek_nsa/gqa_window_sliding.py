@@ -85,7 +85,7 @@ def _gqa_window_sliding_kernel(
                 offset = kv_current_seqlen - q_current_seqlen
 
                 if is_causal:
-                    max_visible_k_idx = offset + (bx + 1) * block_m
+                    max_visible_k_idx = T.max(offset + (bx + 1) * block_m, 0)
                     loop_range = T.min(
                         T.ceildiv(max_visible_k_idx, block_n),
                         T.ceildiv(kv_current_seqlen, block_n))
