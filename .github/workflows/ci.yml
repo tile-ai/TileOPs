@@ -20,6 +20,96 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  select_test_profile:
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    outputs:
+      profile: ${{ steps.pick.outputs.profile }}
+      reason: ${{ steps.pick.outputs.reason }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select pytest profile by changed files
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          profile="core_subset"
+          reason="default-fast-path"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            profile="full"
+            reason="manual-dispatch"
+          else
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              base="${{ github.event.pull_request.base.sha }}"
+              head="${{ github.event.pull_request.head.sha }}"
+            else
+              base="${{ github.event.before }}"
+              head="${{ github.sha }}"
+            fi
+
+            mapfile -t files < <(git diff --name-only "$base" "$head")
+            echo "Changed files:"
+            printf ' - %s\n' "${files[@]}"
+
+            docs_only=1
+            ci_changed=0
+            core_changed=0
+            bench_or_tests_changed=0
+            non_core_impl_changed=0
+
+            for f in "${files[@]}"; do
+              [[ -z "$f" ]] && continue
+
+              is_doc=0
+              [[ "$f" == docs/* ]] && is_doc=1
+              [[ "$f" == *.md ]] && is_doc=1
+              [[ "$f" == LICENSE* ]] && is_doc=1
+              [[ "$f" == NOTICE* ]] && is_doc=1
+
+              if [[ "$is_doc" -eq 0 ]]; then
+                docs_only=0
+              fi
+
+              [[ "$f" == ".github/workflows/ci.yml" ]] && ci_changed=1
+
+              if [[ "$f" == "tileops/kernels/kernel.py" || "$f" == "tileops/ops/op.py" || "$f" == "tileops/utils.py" ]]; then
+                core_changed=1
+              fi
+
+              if [[ "$f" == benchmarks/* || "$f" == tests/* ]]; then
+                bench_or_tests_changed=1
+              fi
+
+              if [[ "$f" == tileops/* && "$f" != "tileops/kernels/kernel.py" && "$f" != "tileops/ops/op.py" && "$f" != "tileops/utils.py" ]]; then
+                non_core_impl_changed=1
+              fi
+            done
+
+            if [[ "$core_changed" -eq 1 ]]; then
+              profile="full"
+              reason="core-file-changed"
+            elif [[ "$bench_or_tests_changed" -eq 1 || "$non_core_impl_changed" -eq 1 ]]; then
+              profile="small"
+              reason="bench-tests-or-noncore-impl-changed"
+            elif [[ "$ci_changed" -eq 1 ]]; then
+              profile="core_subset"
+              reason="ci-workflow-only"
+            elif [[ "$docs_only" -eq 1 ]]; then
+              profile="none"
+              reason="docs-only-change"
+            fi
+          fi
+
+          echo "profile=${profile}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          echo "Selected profile: ${profile} (${reason})"
+
   pre-commit:
     if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
@@ -175,8 +265,8 @@ jobs:
         shell: bash
 
   tileops_test_release:
-    # needs: pre-commit
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
+    needs: [select_test_profile]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && needs.select_test_profile.outputs.profile != 'none' }}
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
@@ -253,8 +343,22 @@ jobs:
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
+          PROFILE="${{ needs.select_test_profile.outputs.profile }}"
+          REASON="${{ needs.select_test_profile.outputs.reason }}"
+          echo "Selected test profile: ${PROFILE} (${REASON})"
+
           set -o pipefail
-          python -m pytest -q tests  | tee tileops_test_release.log
+          if [[ "${PROFILE}" == "full" ]]; then
+            python -m pytest -q tests | tee tileops_test_release.log
+          elif [[ "${PROFILE}" == "small" ]]; then
+            export CI_TEST_PROFILE=small
+            python -m pytest -q tests | tee tileops_test_release.log
+          else
+            # core_subset: fastest core pytest subset
+            export CI_TEST_PROFILE=small
+            python -m pytest -q tests/ops/test_gemm.py tests/ops/test_grouped_gemm.py \
+              | tee tileops_test_release.log
+          fi
         shell: bash
 
       - name: Cleanup venv
