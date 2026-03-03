@@ -52,6 +52,7 @@ PR title rules:
 - **Must** use bracket format: `[Type] Description` or `[Type][Scope] Description`
 - Types: `[Feat]`, `[BugFix]`, `[Fix]`, `[Refactor]`, `[Enhancement]`, `[Doc]`, `[Chore]`, `[Bench]`, `[CI]`, `[Test]`, `[Perf]`
 - Keep under ~80 chars
+- **Do NOT** put issue references in the title (e.g. `(#123)`). Link issues in the PR body with `Closes #123` instead.
 
 PR body section rules:
 
@@ -103,6 +104,14 @@ gh pr edit <PR_NUMBER> --add-label "<label1>" --add-label "<label2>"
 - Missing labels → `gh pr edit <N> --add-label "<label>"`
 
 Re-run the gate until it passes.
+
+## Responding to reviewer feedback
+
+When addressing reviewer comments (from Copilot, Gemini, or humans):
+
+- **Always reply inline** on the specific comment thread. Never post a summary comment on the PR conversation.
+- Use the review API to create inline comments on the exact lines being discussed.
+- For each comment: acknowledge, state what was fixed, and reference the commit SHA.
 
 ## Return format
 
