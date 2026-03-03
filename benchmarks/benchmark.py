@@ -49,7 +49,7 @@ class BenchmarkBase(ABC):
             result["tflops"] = flops / latency * 1e-9
         memory = self.calculate_memory()
         if memory is not None:
-            result["bandwidth_gbs"] = memory / latency * 1e-9
+            result["bandwidth_tbs"] = memory / latency * 1e-9
         return result
 
 
@@ -68,7 +68,7 @@ class BenchmarkReport:
         Args:
             name: Benchmark group name (e.g. "gemm", "mha_fwd")
             params: Parameter dict (typically from locals())
-            result: Dict with latency_ms, tflops, bandwidth_gbs
+            result: Dict with latency_ms, tflops, bandwidth_tbs
             tag: Label to distinguish implementations (e.g. "tileops", "baseline")
         """
         # Filter params to only include serializable benchmark parameters
@@ -97,7 +97,7 @@ class BenchmarkReport:
             "",
         ]
 
-        result_keys = ["latency_ms", "tflops", "bandwidth_gbs"]
+        result_keys = ["latency_ms", "tflops", "bandwidth_tbs"]
 
         for name, entries in BenchmarkReport._records.items():
             if not entries:
