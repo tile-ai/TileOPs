@@ -124,12 +124,14 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                                 # need a pos = T.atomic_add(s_histogram[bin_id32+1], 1)
                                 l_pos = T.atomic_add(
                                     s_histogram[l_bin_id32 + 1], 1, return_prev=True)
-                                index[bx, by * block_m + m_i, g, l_pos] = input_idx
+                                if l_pos < topk:
+                                    index[bx, by * block_m + m_i, g, l_pos] = input_idx
 
                             elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
                                 # pos = s_num_input[0]
                                 l_pos = T.atomic_add(s_num_input[0], 1, return_prev=True)
-                                s_input_idx[0, l_pos] = input_idx
+                                if l_pos < SMEM_INPUT_SIZE:
+                                    s_input_idx[0, l_pos] = input_idx
 
                     # stage 2: tail pass
                     for round in T.serial(4):
@@ -202,7 +204,8 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                                     else:
                                         l_pos = T.atomic_add(
                                             s_num_input[r_idx ^ 1], 1, return_prev=True)
-                                        s_input_idx[r_idx ^ 1,
+                                        if l_pos < SMEM_INPUT_SIZE:
+                                            s_input_idx[r_idx ^ 1,
                                                     l_pos] = s_input_idx[r_idx, s * BLOCK_SIZE + tx]
 
         return _topk_selector_kernel_main
