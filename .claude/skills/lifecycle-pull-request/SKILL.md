@@ -180,12 +180,14 @@ If `ci.state == "failure"`:
 
 If `reviews.new_inline_comments` is non-empty (unresolved threads exist):
 
-**Every unresolved thread MUST be handled with an atomic reply+resolve two-step.**
+**Every unresolved thread MUST be handled with an atomic reply+resolve two-step.** The poll script exposes **all** unresolved threads (including author-started ones) so that `unresolved_count` and the actionable thread list stay consistent.
 
 For each unresolved thread:
 
 1. Read the **full comment chain** in the thread (all entries in `comments` array) to understand the complete conversation — not just the first comment.
-2. Classify and decide: accept (fix + commit hash), decline (reason), or defer (create issue).
+2. Classify the thread:
+   - **Reviewer feedback** (comments from non-PR-author): accept (fix + commit hash), decline (reason), or defer (create issue).
+   - **Author-only thread** (all comments are from PR author): resolve directly without reply — these are self-initiated threads that need no external response.
 3. **Step 1 — Reply** to the thread:
 
 ```bash

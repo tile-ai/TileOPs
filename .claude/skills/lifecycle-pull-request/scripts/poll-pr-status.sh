@@ -192,11 +192,13 @@ get_failed_checks() {
 }
 
 # Filter review threads from GraphQL response
-# Extracts unresolved threads with their node IDs and full comment chains
-# Excludes threads authored only by PR author
+# Extracts all unresolved threads with their node IDs and full comment chains.
+# Does NOT exclude author-only threads — all unresolved threads are exposed so
+# that unresolved_count and actionable thread list stay consistent.
+# The agent (handler) decides which threads need action vs which to auto-resolve.
 filter_review_threads() {
   local graphql_json="$1"
-  echo "$graphql_json" | jq -c --arg author "$PR_AUTHOR" '
+  echo "$graphql_json" | jq -c '
     [.data.repository.pullRequest.reviewThreads.nodes[]
      | select(.isResolved == false)
      | {
@@ -212,7 +214,6 @@ filter_review_threads() {
            created_at: .createdAt
          }]
        }
-     | select(.comments | map(.author) | any(. != $author))
     ]' || echo "[]"
 }
 
@@ -300,11 +301,17 @@ main() {
       exit 0
     fi
 
+    # Per-cycle fetch success tracking
+    local ci_ok=false
+    local threads_ok=false
+    local pr_reviews_ok=false
+
     # Fetch CI status
     local checks_json
     if checks_json=$(fetch_ci_checks); then
       ci_state=$(determine_ci_state "$checks_json")
       failed_checks=$(get_failed_checks "$checks_json")
+      ci_ok=true
     else
       log_error "Failed to fetch CI status, will retry"
     fi
@@ -314,6 +321,7 @@ main() {
     if threads_json=$(fetch_review_threads); then
       inline_comments=$(filter_review_threads "$threads_json")
       unresolved=$(count_unresolved_threads "$threads_json")
+      threads_ok=true
     else
       log_error "Failed to fetch review threads, will retry"
     fi
@@ -322,18 +330,26 @@ main() {
     local raw_reviews
     if raw_reviews=$(fetch_pr_reviews); then
       review_bodies=$(filter_pr_reviews "$raw_reviews")
+      pr_reviews_ok=true
     else
       log_error "Failed to fetch PR reviews, will retry"
     fi
 
-    log_info "Elapsed: ${elapsed}s | CI: ${ci_state} | Inline comments: $(echo "$inline_comments" | jq 'length' || echo '?') | Reviews: $(echo "$review_bodies" | jq 'length' || echo '?')"
+    log_info "Elapsed: ${elapsed}s | CI: ${ci_state} | Inline comments: $(echo "$inline_comments" | jq 'length' || echo '?') | Reviews: $(echo "$review_bodies" | jq 'length' || echo '?') | Fetches OK: ci=$ci_ok threads=$threads_ok reviews=$pr_reviews_ok"
 
     # Termination: CI completed (pass or fail) AND at least one interval has passed
-    # (wait one interval to give review bots time to post)
-    if [[ "$ci_state" != "pending" ]] && [[ $elapsed -ge $INTERVAL ]]; then
-      log_info "CI completed (${ci_state}). Returning results."
+    # AND all three data sources were fetched successfully in THIS cycle.
+    # This prevents false-ready when review fetch fails but CI is complete.
+    if [[ "$ci_state" != "pending" ]] && [[ $elapsed -ge $INTERVAL ]] && \
+       [[ "$ci_ok" == "true" ]] && [[ "$threads_ok" == "true" ]] && [[ "$pr_reviews_ok" == "true" ]]; then
+      log_info "CI completed (${ci_state}) and all fetches succeeded. Returning results."
       output_json "ready" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
       exit 0
+    fi
+
+    # If CI is done but review fetches failed, keep polling (don't return false-ready)
+    if [[ "$ci_state" != "pending" ]] && [[ $elapsed -ge $INTERVAL ]]; then
+      log_info "CI completed but review fetches incomplete (threads=$threads_ok, reviews=$pr_reviews_ok). Retrying..."
     fi
 
     sleep "$INTERVAL"
