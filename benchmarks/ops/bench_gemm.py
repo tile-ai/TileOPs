@@ -15,7 +15,7 @@ class GemmBenchmark(BenchmarkBase):
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test
-        return (t.m * t.k + t.k * t.n + t.m * t.n) * t.dtype.itemsize
+        return (t.m * t.k + t.k * t.n + t.m * t.n) * torch.float32.itemsize
 
 
 @GemmFixture
