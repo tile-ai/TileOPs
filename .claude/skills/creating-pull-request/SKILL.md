@@ -48,7 +48,7 @@ PREOF
 )"
 ```
 
-**Draft-first workflow:** Always create PRs as draft. This defers Copilot code review and human reviewer notifications until CI and Gemini review pass. The `lifecycle-pull-request` skill handles the draft→ready transition.
+**Draft-first workflow:** Always create PRs as draft. Copilot reviews drafts automatically; Gemini must be triggered separately (see `lifecycle-pull-request` Phase 2b). Once CI passes and both bot reviews are addressed, the `lifecycle-pull-request` skill marks the PR ready, triggering human reviewer notifications.
 
 PR title rules:
 

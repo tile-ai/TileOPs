@@ -374,9 +374,17 @@ The skill will:
 
 If the skill fails, fix the reported issues and re-invoke. Do NOT proceed until validation passes.
 
-### 6c. Draft Poll & Handle (CI + Gemini review, max 3 rounds)
+### 6c. Trigger Gemini Review
 
-The PR is created as **draft**. This defers Copilot code review and human reviewer notifications until CI and Gemini review pass.
+Gemini does not review draft PRs automatically. Trigger it:
+
+```bash
+gh pr comment {pr_number} --repo {owner}/{repo} --body "/gemini review"
+```
+
+### 6d. Draft Poll & Handle (CI + Copilot + Gemini reviews, max 3 rounds)
+
+The PR is created as **draft**. Copilot reviews drafts automatically; Gemini was triggered in 6c. This defers only human reviewer notifications until all bot reviews pass.
 
 Enter the **poll-handle loop** from the `lifecycle-pull-request` skill (Phase 3–5). See that skill for full details on the poll script, JSON format, and handle/verify logic.
 
@@ -384,21 +392,17 @@ Enter the **poll-handle loop** from the `lifecycle-pull-request` skill (Phase 3�
 .claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}
 ```
 
-Use Bash tool with `timeout: 6060000`. Handle CI failures and all review comments that appear during the draft phase (expected to be mostly Gemini, but human or other bot comments may also arrive on drafts — handle them all). Max 3 fix-push rounds.
+Use Bash tool with `timeout: 6060000`. Handle CI failures and all review comments (Copilot, Gemini, and any human or other bot comments). Max 3 fix-push rounds.
 
-### 6d. Mark PR Ready for Review
+### 6e. Mark PR Ready for Review
 
-Once CI is green and Gemini comments are addressed:
+Once CI is green and all bot review comments (Copilot + Gemini) are addressed:
 
 ```bash
 gh pr ready {pr_number} --repo {owner}/{repo}
 ```
 
-This triggers Copilot code review and human reviewer notifications.
-
-### 6e. Ready Poll & Handle (Copilot review, max 3 rounds)
-
-Re-enter the same poll-handle loop for Copilot review comments. Same logic, same constraints.
+This triggers **human reviewer notifications only** — both bot reviews are already complete.
 
 ### Done
 
@@ -407,7 +411,7 @@ When the loop exits successfully, report to the user:
 > **Issue #\{number} resolved:**
 >
 > - PR: \{pr_url}
-> - Status: CI green, Gemini and Copilot reviews addressed
+> - Status: CI green, Copilot and Gemini reviews addressed
 > - The PR will auto-close issue #\{number} on merge.
 
 ______________________________________________________________________
