@@ -81,26 +81,16 @@ run_pytest_file() {
   local exit_code=0
   pytest_output=$(PYTHONPATH="$PWD" python -m pytest -v "$file" --tb=short -q 2>&1) || exit_code=$?
 
-  # Parse pytest output for pass/fail/error counts
-  # pytest summary line format: "X passed, Y failed, Z errors" or subsets thereof
-  local passed=0
-  local failed=0
-  local errors=0
-
-  if echo "$pytest_output" | grep -qE '[0-9]+ passed'; then
-    passed=$(echo "$pytest_output" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+')
-  fi
-  if echo "$pytest_output" | grep -qE '[0-9]+ failed'; then
-    failed=$(echo "$pytest_output" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+')
-  fi
-  if echo "$pytest_output" | grep -qE '[0-9]+ error'; then
-    errors=$(echo "$pytest_output" | grep -oE '[0-9]+ error' | tail -1 | grep -oE '[0-9]+')
-  fi
+  # Parse pytest summary counts (e.g., "3 passed, 1 failed, 2 errors")
+  local passed failed errors
+  passed=$(echo "$pytest_output" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+' || echo 0)
+  failed=$(echo "$pytest_output" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
+  errors=$(echo "$pytest_output" | grep -oE '[0-9]+ error' | tail -1 | grep -oE '[0-9]+' || echo 0)
 
   # Extract failure/error names if any
   local failures="[]"
   if [[ $failed -gt 0 ]] || [[ $errors -gt 0 ]]; then
-    failures=$(echo "$pytest_output" | grep -E '^(FAILED |ERROR )' | sed 's/^FAILED //' | sed 's/^ERROR //' | sed 's/ - .*$//' | jq -R -s 'split("\n") | map(select(. != ""))')
+    failures=$(echo "$pytest_output" | grep -E '^(FAILED |ERROR )' | sed -E 's/^(FAILED |ERROR )//; s/ - .*$//' | jq -R -s 'split("\n") | map(select(. != ""))')
   fi
 
   # Determine status: non-zero exit code OR any failed/error count means failure

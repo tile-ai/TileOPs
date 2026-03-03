@@ -374,18 +374,13 @@ main() {
 
     log_info "Elapsed: ${elapsed}s | CI: ${ci_state} | Inline comments: $(echo "$inline_comments" | jq 'length' || echo '?') | Reviews: $(echo "$review_bodies" | jq 'length' || echo '?') | Fetches OK: ci=$ci_ok threads=$threads_ok reviews=$pr_reviews_ok"
 
-    # Termination: CI completed (pass or fail) AND at least one interval has passed
-    # AND all three data sources were fetched successfully in THIS cycle.
-    # This prevents false-ready when review fetch fails but CI is complete.
-    if [[ "$ci_state" != "pending" ]] && [[ $elapsed -ge $INTERVAL ]] && \
-       [[ "$ci_ok" == "true" ]] && [[ "$threads_ok" == "true" ]] && [[ "$pr_reviews_ok" == "true" ]]; then
-      log_info "CI completed (${ci_state}) and all fetches succeeded. Returning results."
-      output_json "ready" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
-      exit 0
-    fi
-
-    # If CI is done but review fetches failed, keep polling (don't return false-ready)
+    # Termination: CI done + at least one interval elapsed + all fetches succeeded this cycle
     if [[ "$ci_state" != "pending" ]] && [[ $elapsed -ge $INTERVAL ]]; then
+      if [[ "$ci_ok" == "true" ]] && [[ "$threads_ok" == "true" ]] && [[ "$pr_reviews_ok" == "true" ]]; then
+        log_info "CI completed (${ci_state}) and all fetches succeeded. Returning results."
+        output_json "ready" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
+        exit 0
+      fi
       log_info "CI completed but review fetches incomplete (threads=$threads_ok, reviews=$pr_reviews_ok). Retrying..."
     fi
 
