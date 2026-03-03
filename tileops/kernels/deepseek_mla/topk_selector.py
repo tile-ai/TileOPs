@@ -293,7 +293,7 @@ class TopkSelectorKernel(Kernel):
         block_m = [32]
         _configs = list(itertools.product(RADIX, BLOCK_SIZE, SMEM_INPUT_SIZE, block_m))
 
-        return [{'RADIX': c[0], 'BLOCK_SIZE': c[1], 'SMEM_INPUT_SIZE': c[2]} for c in _configs]
+        return [{'RADIX': c[0], 'BLOCK_SIZE': c[1], 'SMEM_INPUT_SIZE': c[2], 'block_m': c[3]} for c in _configs]
 
     def forward(self, index_score: torch.Tensor, starts: torch.Tensor,
                 ends: torch.Tensor) -> torch.Tensor:
