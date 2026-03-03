@@ -180,15 +180,21 @@ If `ci.state == "failure"`:
 
 If `reviews.new_inline_comments` is non-empty (unresolved threads exist):
 
-**Every unresolved thread MUST be handled with an atomic reply+resolve two-step.** The poll script exposes **all** unresolved threads (including author-started ones) so that `unresolved_count` and the actionable thread list stay consistent.
+The poll script exposes **all** unresolved threads (including author-started ones) so that `unresolved_count` and the actionable thread list stay consistent. Each thread follows a deterministic handling path based on its type.
 
-For each unresolved thread:
+**For each unresolved thread, execute these steps in order:**
 
-1. Read the **full comment chain** in the thread (all entries in `comments` array) to understand the complete conversation — not just the first comment.
-2. Classify the thread:
-   - **Reviewer feedback** (comments from non-PR-author): accept (fix + commit hash), decline (reason), or defer (create issue).
-   - **Author-only thread** (all comments are from PR author): resolve directly without reply — these are self-initiated threads that need no external response.
-3. **Step 1 — Reply** to the thread:
+**Step 1 — Read** the full comment chain (all entries in `comments` array). Determine the thread type:
+
+- **Type A — Reviewer thread**: at least one comment is from a non-PR-author (e.g., `copilot[bot]`, `gemini[bot]`, a human reviewer)
+- **Type B — Author-only thread**: all comments are from the PR author
+
+**Step 2 — Handle based on type:**
+
+**If Type A (reviewer thread):**
+
+1. Classify the feedback: accept (fix + commit hash), decline (reason), or defer (create issue).
+2. **Reply** to the thread:
 
 ```bash
 gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
@@ -197,25 +203,29 @@ gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
 
 Use the `id` from the **last comment** in the thread's `comments` array as `comment_id`.
 
-4. **Step 2 — Resolve** the thread using the `thread_node_id`:
+Reply content rules:
+- **Accepting**: `"Accepted. Fixed X. See {commit_hash}."`
+- **Declining (future work)**: `"Declined for this PR — scope is limited to X. Tracked in #{issue}."` (also create a GitHub issue)
+- **Declining (invalid)**: `"Declined. {specific technical reason}."`
+
+**If Type B (author-only thread):**
+
+No reply needed. Proceed directly to Step 3.
+
+**Step 3 — Resolve** the thread (both types):
 
 ```bash
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<PRRT_thread_node_id>"}) { thread { isResolved } } }'
 ```
 
-5. **Step 3 — Handle resolve failure**: If the `resolveReviewThread` mutation fails (invalid `thread_node_id`, permissions error, or network issue):
-   - Log the error: "Failed to resolve thread {thread_node_id}: {error_message}"
-   - **Continue processing remaining threads** — do NOT stop the loop on a single resolve failure
-   - The unresolved thread will be picked up on the next poll cycle
-   - If the same thread fails to resolve across multiple rounds, escalate to the user
+**Step 4 — Handle resolve failure**: If the mutation fails:
 
-Reply content rules:
+- Log: "Failed to resolve thread {thread_node_id}: {error_message}"
+- **Continue processing remaining threads** — do NOT stop the loop
+- The unresolved thread will be picked up on the next poll cycle
+- If the same thread fails across multiple rounds, escalate to the user
 
-- **Accepting**: `"Accepted. Fixed X. See {commit_hash}."`
-- **Declining (future work)**: `"Declined for this PR — scope is limited to X. Tracked in #{issue}."` (also create a GitHub issue)
-- **Declining (invalid)**: `"Declined. {specific technical reason}."`
-
-For `reviews.new_review_bodies` (PR-level reviews with body text):
+**For `reviews.new_review_bodies`** (PR-level reviews with body text):
 
 - Read and address the feedback
 - Reply via `gh api repos/{owner}/{repo}/issues/{pr_number}/comments -f body="<response>"`

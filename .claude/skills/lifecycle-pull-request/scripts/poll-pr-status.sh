@@ -151,6 +151,25 @@ fetch_review_threads() {
   local result
   result=$(gh api graphql -F owner="$OWNER" -F repo="$REPO" -F pr="$PR_NUMBER" -f query="$query" 2>&1) || { log_error "fetch_review_threads: $result"; return 1; }
 
+  # Validate GraphQL response structure:
+  # 1. Reject if response contains .errors field (semantic GraphQL error)
+  # 2. Reject if .data.repository.pullRequest.reviewThreads.nodes is missing/non-array
+  local has_errors
+  has_errors=$(echo "$result" | jq -e '.errors' 2>/dev/null && echo "yes" || echo "no")
+  if [[ "$has_errors" == "yes" ]]; then
+    local err_msg
+    err_msg=$(echo "$result" | jq -r '.errors[0].message // "unknown GraphQL error"' 2>/dev/null)
+    log_error "fetch_review_threads: GraphQL returned errors: $err_msg"
+    return 1
+  fi
+
+  local nodes_valid
+  nodes_valid=$(echo "$result" | jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' 2>/dev/null || echo "false")
+  if [[ "$nodes_valid" != "true" ]]; then
+    log_error "fetch_review_threads: GraphQL response missing valid reviewThreads.nodes array"
+    return 1
+  fi
+
   # Warn if pagination needed (>100 threads)
   local has_next
   has_next=$(echo "$result" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' 2>/dev/null || echo "false")
@@ -198,7 +217,8 @@ get_failed_checks() {
 # The agent (handler) decides which threads need action vs which to auto-resolve.
 filter_review_threads() {
   local graphql_json="$1"
-  echo "$graphql_json" | jq -c '
+  local result
+  result=$(echo "$graphql_json" | jq -c '
     [.data.repository.pullRequest.reviewThreads.nodes[]
      | select(.isResolved == false)
      | {
@@ -214,13 +234,17 @@ filter_review_threads() {
            created_at: .createdAt
          }]
        }
-    ]' || echo "[]"
+    ]') || { log_error "filter_review_threads: jq extraction failed"; return 1; }
+  echo "$result"
 }
 
 # Count unresolved threads from GraphQL response (based on isResolved field)
+# Returns non-zero on parse failure so caller treats cycle as unsuccessful.
 count_unresolved_threads() {
   local graphql_json="$1"
-  echo "$graphql_json" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' || echo 0
+  local count
+  count=$(echo "$graphql_json" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length') || { log_error "count_unresolved_threads: jq count failed"; return 1; }
+  echo "$count"
 }
 
 # Filter PR reviews: exclude PR author, only non-empty body, after PR creation
@@ -317,11 +341,21 @@ main() {
     fi
 
     # Fetch review threads (GraphQL)
+    # threads_ok requires ALL three steps to succeed: fetch, filter, count.
+    # If any step fails (including semantic GraphQL errors or jq parse failures),
+    # threads_ok stays false and the cycle cannot return "ready".
     local threads_json
     if threads_json=$(fetch_review_threads); then
-      inline_comments=$(filter_review_threads "$threads_json")
-      unresolved=$(count_unresolved_threads "$threads_json")
-      threads_ok=true
+      local filtered_threads
+      local thread_count
+      if filtered_threads=$(filter_review_threads "$threads_json") && \
+         thread_count=$(count_unresolved_threads "$threads_json"); then
+        inline_comments="$filtered_threads"
+        unresolved="$thread_count"
+        threads_ok=true
+      else
+        log_error "Failed to parse review thread data, will retry"
+      fi
     else
       log_error "Failed to fetch review threads, will retry"
     fi
