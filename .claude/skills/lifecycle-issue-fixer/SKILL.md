@@ -384,7 +384,7 @@ Enter the **poll-handle loop** from the `lifecycle-pull-request` skill (Phase 3â
 .claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}
 ```
 
-Use Bash tool with `timeout: 6060000`. Handle CI failures and Gemini review comments. Max 3 fix-push rounds.
+Use Bash tool with `timeout: 6060000`. Handle CI failures and all review comments that appear during the draft phase (expected to be mostly Gemini, but human or other bot comments may also arrive on drafts â€” handle them all). Max 3 fix-push rounds.
 
 ### 6d. Mark PR Ready for Review
 

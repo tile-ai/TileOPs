@@ -11,10 +11,10 @@ description: Full PR lifecycle — commit, create PR, monitor CI, handle reviews
 ## Workflow
 
 ```text
-Phase 1:   /committing-changes        →  BRANCH, COMMIT_MSG
-Phase 2:   /creating-pull-request      →  PR_NUMBER, PR_URL (draft)
+Phase 1:   /committing-changes      →  BRANCH, COMMIT_MSG
+Phase 2:   /creating-pull-request   →  PR_NUMBER, PR_URL (draft)
 Phase 3-5: Poll-Handle Loop (CI + Gemini review, max 3 fix-push rounds)
-Phase 6:   Mark PR ready for review    →  triggers Copilot review + human notifications
+Phase 6:   Mark PR ready for review →  triggers Copilot review + human notifications
 Phase 7-9: Poll-Handle Loop (Copilot review, max 3 fix-push rounds)
 ```
 
@@ -182,13 +182,13 @@ Reply content rules:
 
 If done:
 
-> "PR #\{pr_number} is ready for human review:
+> "PR #\{pr_number} — draft phase complete:
 >
 > - CI: all checks passed
-> - Automated review comments: all addressed and resolved
-> - URL: \{pr_url}"
+> - Review comments from draft phase: all addressed and resolved
+> - Proceeding to Phase 6 (mark ready for review)."
 
-**Exit the loop.**
+**Exit the loop** and continue to Phase 6.
 
 ### Loop constraints
 
@@ -221,13 +221,13 @@ ______________________________________________________________________
 
 ## Phase 7–9: Poll & Handle (Copilot Review)
 
-Re-enter the same poll-handle loop as Phase 3–5, with the same logic:
+Re-enter a new poll-handle loop modeled on Phase 3–5, with the same logic but its own independent fix-push counter:
 
 - **Phase 7: Poll** — same as Phase 3
 - **Phase 8: Handle** — same as Phase 4 (CI fixes, review comment replies)
 - **Phase 9: Verify done** — same as Phase 5
 
-The same loop constraints apply: max 3 fix-push rounds, passive waiting doesn't count.
+The same loop constraints apply: in this Copilot loop you may perform up to 3 fix-push rounds; passive waiting doesn't count. Do not carry over fix-push rounds spent in Phase 3–5 — reset the counter when starting Phase 7.
 
 When the loop exits successfully:
 
