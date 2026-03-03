@@ -177,7 +177,7 @@ jobs:
   tileops_test_release:
     # needs: pre-commit
     if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
-    runs-on: [self-hosted, tile-ops, venv]
+    runs-on: [self-hosted, tile-ops]
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
