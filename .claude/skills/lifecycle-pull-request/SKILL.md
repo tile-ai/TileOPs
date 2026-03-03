@@ -201,6 +201,12 @@ Use the `id` from the **last comment** in the thread's `comments` array as `comm
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<PRRT_thread_node_id>"}) { thread { isResolved } } }'
 ```
 
+5. **Step 3 — Handle resolve failure**: If the `resolveReviewThread` mutation fails (invalid `thread_node_id`, permissions error, or network issue):
+   - Log the error: "Failed to resolve thread {thread_node_id}: {error_message}"
+   - **Continue processing remaining threads** — do NOT stop the loop on a single resolve failure
+   - The unresolved thread will be picked up on the next poll cycle
+   - If the same thread fails to resolve across multiple rounds, escalate to the user
+
 Reply content rules:
 
 - **Accepting**: `"Accepted. Fixed X. See {commit_hash}."`

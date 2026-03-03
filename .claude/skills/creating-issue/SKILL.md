@@ -3,106 +3,144 @@ name: creating-issue
 description: Create a high-quality issue which conforms to the rules of TileOPs development
 ---
 
-# Creating Issues — Guidelines and Lessons Learned
+## Task
 
-> Best practices for filing GitHub issues in TileOps, based on experience from working with this repository.
+$ARGUMENTS
 
-______________________________________________________________________
+## Reference
 
-## 1. Title Format
+- Title format: `[TYPE][COMPONENT] short description in lowercase`
+- TYPE values: FEAT, BUG, PERF, REFACTOR, DOCS, TEST, META (canonical list in `.claude/conventions/types.sh`)
+- COMPONENT: kernel name or subsystem (e.g., GEMV, GEMM, FLASH_ATTN, CI, TOOLING)
+- Language: **English** only
 
-TileOps uses a `[TYPE][COMPONENT]` tag prefix — **not** Conventional Commits style.
+## Steps
 
-```
-[TYPE][COMPONENT] short description in lowercase
+Execute these steps in order. **Do NOT skip any HARD GATE.**
 
-TYPE values : FEAT, BUG, PERF, REFACTOR, DOCS, TEST, META
-(canonical list in .claude/conventions/types.sh)
-COMPONENT   : kernel name or subsystem — e.g., GEMV, GEMM, FLASH_ATTN, FLASH_DECODE, CI
-```
+### Step 1: Determine repository
 
-**Examples**:
-
-```
-[PERF][GEMV] fix uncoalesced memory access on H200
-[BUG][FLASH_DECODE] incorrect output with paged KV cache
-[FEAT][GROUPED_GEMM] add FP8 support
-[META][TOOLING] standardize issue title format in contribution guidelines
+```bash
+gh repo view --json nameWithOwner -q '.nameWithOwner'
 ```
 
-**Do NOT use**:
+Split into `{owner}` and `{repo}`.
 
-```
-perf(gemv): fix uncoalesced memory access    ← Conventional Commits style, wrong
-fix: gemv stride access                      ← too vague, no TYPE/COMPONENT tags
-```
+### Step 2: Parse arguments
 
-______________________________________________________________________
+Extract structured arguments from `$ARGUMENTS` if present:
 
-## 2. Issue Body Structure (Required Template)
+- `--plan "<type>: <steps>"` — e.g., `--plan "fixed: 1. Change X 2. Update Y"`
+- `--constraints "<text>"` — e.g., `--constraints "Do not modify public API"`
+- `--criteria "<text>"` — e.g., `--criteria "Performance improves by 10%"`
 
-Every issue body **MUST** contain these sections. The `lifecycle-issue-fixer` skill validates their presence before proceeding.
+Everything else in `$ARGUMENTS` (not prefixed with `--`) is the natural language description.
+
+### Step 3: Build title
+
+Format: `[TYPE][COMPONENT] short description in lowercase`
+
+- Extract TYPE and COMPONENT from the description or ask user if ambiguous
+- Keep description concise (under 80 chars total)
+
+**Do NOT use Conventional Commits style** (`feat(scope): ...`).
+
+### Step 4: Build issue body from template
+
+Assemble the body using either parsed arguments or smart defaults:
 
 ```markdown
 ## Description
-Clear description of the observed issue. Include:
-- Which file/function is affected
-- Why it is wrong or suboptimal (root cause if known)
-- Code snippet showing the problematic pattern
+{extracted from natural language description in $ARGUMENTS}
 
 ## Goal
-What needs to be achieved to resolve this issue.
+{extracted from description, or ask user if unclear}
 
 ## Plan
-<!-- type: proposal | fixed -->
-<!-- proposal: agent may explore autonomously (default) -->
-<!-- fixed: agent must follow strictly -->
-- Step 1: ...
-- Step 2: ...
+<!-- type: {proposal | fixed} -->
+{if --plan provided: use that content}
+{if no --plan: default to proposal, infer steps from description}
 
 ## Constraints
-<!-- Empty by default. Add hard constraints if needed. -->
+{if --constraints provided: use that content}
+{if no --constraints: leave section empty}
 
 ## Acceptance Criteria
 - [ ] Modified files pass unit tests
-- [ ] {Additional verifiable criteria}
+{if --criteria provided: add as additional checkboxes}
 ```
 
-### Arguments for structured creation
+**Smart defaults when no arguments are provided:**
 
-When invoking this skill, you can pass structured arguments:
+1. Goal: extracted from description
+2. Plan: `proposal` type, steps inferred from description
+3. Constraints: empty
+4. Acceptance Criteria: `"Modified files pass unit tests"` (always included as default)
 
-- `--plan "fixed: 1. Step one 2. Step two"` — override plan section with explicit steps
-- `--constraints "Do not modify public API"` — add constraints
-- `--criteria "Performance improves by 10%"` — add acceptance criteria
+### Step 5: HARD GATE — Validate template completeness
 
-**Without arguments (smart defaults):**
-
-1. Extract Goal from the natural language description provided by the user
-2. Plan defaults to `proposal`, steps inferred from the description
-3. Constraints defaults to empty
-4. Acceptance Criteria defaults to "Modified files pass unit tests"
-
-### HARD GATE — Validate template completeness
-
-Before creating the issue, verify all required sections are present:
+Before creating, verify ALL required sections are present and non-empty:
 
 - `## Description` — must not be empty
 - `## Goal` — must not be empty
-- `## Plan` — must contain at least one step
-- `## Acceptance Criteria` — must contain at least one checkbox
+- `## Plan` — must contain at least one step (line starting with `- `)
+- `## Acceptance Criteria` — must contain at least one checkbox (`- [ ]`)
 
-**If any section is missing or empty: STOP.** Fix the issue body before creating.
+**If any section is missing or empty: STOP.** Fix the body before proceeding.
+
+### Step 6: Create the issue
+
+```bash
+gh issue create --repo {owner}/{repo} \
+  --title "[TYPE][COMPONENT] description" \
+  --body "$(cat <<'ISSUEEOF'
+<assembled body from Step 4>
+ISSUEEOF
+)"
+```
+
+### Step 7: Add labels
+
+Add the type label matching the issue TYPE:
+
+| Issue TYPE   | Label       |
+| ------------ | ----------- |
+| `FEAT`       | `feature`   |
+| `BUG`        | `fix`       |
+| `PERF`       | `perf`      |
+| `REFACTOR`   | `refactor`  |
+| `DOCS`       | `docs`      |
+| `TEST`       | `test`      |
+| `META`       | `chore`     |
+
+```bash
+gh issue edit {issue_number} --repo {owner}/{repo} --add-label "{label}"
+```
+
+### Step 8: Report
+
+Print:
+
+> **Issue #{number} created:** {url}
+>
+> - Title: {title}
+> - Type: {TYPE} | Component: {COMPONENT}
+> - Plan: {proposal|fixed}
+> - Labels: {labels}
+
+## Return format
+
+Report exactly:
+
+- `ISSUE_NUMBER: <number>`
+- `ISSUE_URL: <url>`
+- `TITLE: <title>`
 
 ______________________________________________________________________
 
-## 3. Language
+## Guidelines (for reference)
 
-All issue titles and bodies must be written in **English**.
-
-______________________________________________________________________
-
-## 4. When to File an Issue Before a PR
+### When to file an issue before a PR
 
 Always file an issue first when:
 
@@ -112,21 +150,7 @@ Always file an issue first when:
 
 For trivial typo fixes or single-line changes, a PR without a prior issue is fine.
 
-______________________________________________________________________
-
-## 5. AI Tooling Note
-
-When asking an AI assistant (e.g., Claude Code) to file an issue, always specify:
-
-1. The exact title format: `[TYPE][COMPONENT] description`
-1. The required language: English
-1. Whether a PR will follow (affects the "Next Steps" section)
-
-Without explicit instructions, AI tools may default to Conventional Commits style titles or mix languages.
-
-______________________________________________________________________
-
-## 6. Case Log
+### Case log
 
 | Date       | Issue                                                                 | Note                                                                                                     |
 | ---------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |

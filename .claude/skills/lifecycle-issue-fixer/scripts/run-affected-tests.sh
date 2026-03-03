@@ -81,10 +81,11 @@ run_pytest_file() {
   local exit_code=0
   pytest_output=$(PYTHONPATH="$PWD" python -m pytest -v "$file" --tb=short -q 2>&1) || exit_code=$?
 
-  # Parse pytest output for pass/fail counts
-  # pytest summary line format: "X passed, Y failed" or "X passed" or "Y failed"
+  # Parse pytest output for pass/fail/error counts
+  # pytest summary line format: "X passed, Y failed, Z errors" or subsets thereof
   local passed=0
   local failed=0
+  local errors=0
 
   if echo "$pytest_output" | grep -qE '[0-9]+ passed'; then
     passed=$(echo "$pytest_output" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+')
@@ -92,37 +93,52 @@ run_pytest_file() {
   if echo "$pytest_output" | grep -qE '[0-9]+ failed'; then
     failed=$(echo "$pytest_output" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+')
   fi
+  if echo "$pytest_output" | grep -qE '[0-9]+ error'; then
+    errors=$(echo "$pytest_output" | grep -oE '[0-9]+ error' | tail -1 | grep -oE '[0-9]+')
+  fi
 
-  # Extract failure names if any
+  # Extract failure/error names if any
   local failures="[]"
-  if [[ $failed -gt 0 ]]; then
-    failures=$(echo "$pytest_output" | grep -E '^FAILED ' | sed 's/^FAILED //' | sed 's/ - .*$//' | jq -R -s 'split("\n") | map(select(. != ""))')
+  if [[ $failed -gt 0 ]] || [[ $errors -gt 0 ]]; then
+    failures=$(echo "$pytest_output" | grep -E '^(FAILED |ERROR )' | sed 's/^FAILED //' | sed 's/^ERROR //' | sed 's/ - .*$//' | jq -R -s 'split("\n") | map(select(. != ""))')
   fi
 
+  # Determine status: non-zero exit code OR any failed/error count means failure
+  # This catches collection errors (e.g., ModuleNotFoundError) where pytest exits
+  # non-zero but reports no "failed" count in the summary line.
   local status="pass"
-  if [[ $failed -gt 0 ]]; then
+  if [[ $exit_code -ne 0 ]] || [[ $failed -gt 0 ]] || [[ $errors -gt 0 ]]; then
     status="fail"
+    # If pytest exited non-zero but no failed/errors were parsed,
+    # this is a collection/import error — count it as 1 error
+    if [[ $failed -eq 0 ]] && [[ $errors -eq 0 ]]; then
+      errors=1
+      failures=$(echo "$pytest_output" | tail -5 | jq -R -s 'split("\n") | map(select(. != ""))')
+    fi
   fi
+
+  # Include errors in failed count for aggregation
+  local total_failed=$((failed + errors))
 
   local result
   result=$(jq -n \
     --arg file "$file" \
     --arg status "$status" \
     --argjson passed "$passed" \
-    --argjson failed "$failed" \
+    --argjson failed "$total_failed" \
     --argjson failures "$failures" \
     '{file: $file, status: $status, passed: $passed, failed: $failed, failures: $failures}')
 
   if [[ "$category" == "test" ]]; then
     TEST_RESULTS=$(echo "$TEST_RESULTS" | jq --argjson r "$result" '. + [$r]')
-    TOTAL_TESTS=$((TOTAL_TESTS + passed + failed))
+    TOTAL_TESTS=$((TOTAL_TESTS + passed + total_failed))
     TOTAL_PASSED=$((TOTAL_PASSED + passed))
-    TOTAL_FAILED=$((TOTAL_FAILED + failed))
+    TOTAL_FAILED=$((TOTAL_FAILED + total_failed))
   else
     BENCH_RESULTS=$(echo "$BENCH_RESULTS" | jq --argjson r "$result" '. + [$r]')
-    TOTAL_BENCH=$((TOTAL_BENCH + passed + failed))
+    TOTAL_BENCH=$((TOTAL_BENCH + passed + total_failed))
     BENCH_PASSED=$((BENCH_PASSED + passed))
-    BENCH_FAILED=$((BENCH_FAILED + failed))
+    BENCH_FAILED=$((BENCH_FAILED + total_failed))
   fi
 }
 
