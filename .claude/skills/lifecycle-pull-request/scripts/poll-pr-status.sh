@@ -152,21 +152,24 @@ fetch_review_threads() {
   result=$(gh api graphql -F owner="$OWNER" -F repo="$REPO" -F pr="$PR_NUMBER" -f query="$query" 2>&1) || { log_error "fetch_review_threads: $result"; return 1; }
 
   # Validate GraphQL response structure:
-  # 1. Reject if response contains .errors field (semantic GraphQL error)
+  # 1. Reject if response contains non-empty .errors array (semantic GraphQL error)
   # 2. Reject if .data.repository.pullRequest.reviewThreads.nodes is missing/non-array
-  local has_errors
-  has_errors=$(echo "$result" | jq -e '.errors' 2>/dev/null && echo "yes" || echo "no")
-  if [[ "$has_errors" == "yes" ]]; then
+  #
+  # Note: GraphQL can return both .errors AND .data (partial success). We reject
+  # any response with .errors present, regardless of whether .data is also valid.
+  local error_count
+  error_count=$(echo "$result" | jq -r '(.errors // []) | length' 2>/dev/null) || error_count="unknown"
+  if [[ "$error_count" != "0" ]]; then
     local err_msg
     err_msg=$(echo "$result" | jq -r '.errors[0].message // "unknown GraphQL error"' 2>/dev/null)
-    log_error "fetch_review_threads: GraphQL returned errors: $err_msg"
+    log_error "fetch_review_threads: GraphQL returned $error_count error(s): $err_msg"
     return 1
   fi
 
-  local nodes_valid
-  nodes_valid=$(echo "$result" | jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' 2>/dev/null || echo "false")
-  if [[ "$nodes_valid" != "true" ]]; then
-    log_error "fetch_review_threads: GraphQL response missing valid reviewThreads.nodes array"
+  local nodes_type
+  nodes_type=$(echo "$result" | jq -r '.data.repository.pullRequest.reviewThreads.nodes | type' 2>/dev/null) || nodes_type="null"
+  if [[ "$nodes_type" != "array" ]]; then
+    log_error "fetch_review_threads: GraphQL response missing valid reviewThreads.nodes (got type: $nodes_type)"
     return 1
   fi
 
