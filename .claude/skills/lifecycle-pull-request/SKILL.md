@@ -231,6 +231,6 @@ Report to the user:
 > "PR #\{pr_number} is ready for human review:
 >
 > - CI: all checks passed
-> - Copilot review: addressed
-> - Gemini review: addressed
+> - Copilot review: addressed and resolved
+> - Gemini review: addressed and resolved
 > - URL: \{pr_url}"
