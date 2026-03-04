@@ -204,3 +204,8 @@ jq -n \
     },
     warnings: $warnings
   }'
+
+# Exit non-zero when tests/benchmarks failed so callers can use exit code as HARD GATE
+if [[ "$OVERALL_STATUS" != "pass" ]]; then
+  exit 1
+fi

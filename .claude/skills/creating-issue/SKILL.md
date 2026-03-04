@@ -108,18 +108,7 @@ ISSUEEOF
 
 ### Step 7: Add labels
 
-Add the type label matching the issue TYPE:
-
-| Issue TYPE  | Label      |
-| ----------- | ---------- |
-| `FEAT`      | `feature`  |
-| `BUG`       | `fix`      |
-| `PERF`      | `perf`     |
-| `REFACTOR`  | `refactor` |
-| `DOCS`      | `docs`     |
-| `TEST`      | `test`     |
-| `META`      | `chore`    |
-| `BENCHMARK` | `bench`    |
+Look up the label for the issue TYPE using the canonical mapping in `.claude/conventions/types.sh` (`ISSUE_TO_COMMIT_TYPE` → `TYPE_TO_LABEL` chain). Do NOT hardcode the mapping — always reference `types.sh` as the single source of truth.
 
 ```bash
 gh issue edit {issue_number} --repo {owner}/{repo} --add-label "{label}"

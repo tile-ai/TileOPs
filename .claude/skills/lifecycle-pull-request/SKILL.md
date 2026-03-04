@@ -98,7 +98,7 @@ After obtaining `PR_NUMBER`, enter the **poll-handle loop**.
 
 > **do** { Phase 3 → Phase 4 → Phase 5 } **while** PR is not done
 >
-> Exit: CI green + all reviews handled, OR timeout/error, OR max 3 fix-push rounds.
+> Exit: CI green + all reviews handled, OR timeout/error.
 >
 > **Critical**: Every re-poll must check **both** CI status **and** review comments.
 
@@ -126,7 +126,7 @@ The script returns structured JSON with one of four statuses:
 
 - **`actionable`** — CI failed or unresolved reviews exist. Handler must process, then re-poll.
 - **`done`** — CI all success + all threads resolved. Handler skips to Phase 6.
-- **`timeout`** — CI still pending, nothing to handle yet. Re-poll in next round.
+- **`timeout`** — Overall poll timeout reached (CI still pending after max wait). Stop and escalate to user.
 - **`error`** — Script-level failure (bad args, auth, etc.). Stop and ask user.
 
 ```json
@@ -161,9 +161,11 @@ Parse the JSON. Follow this decision tree **in order** (first matching branch wi
 
 If `status == "done"`: CI is green and all threads are resolved. **Skip to Phase 6** (mark PR ready).
 
-#### 4b. Timeout / error → re-poll or STOP
+#### 4b. Timeout / error → STOP
 
-If `status == "timeout"`: CI is still pending. **Re-poll** (this does NOT count as a fix-push round).
+If `status == "timeout"`: Overall poll timeout reached (5 hours). CI is still pending.
+
+> "PR #\{pr_number} — poll timed out after 5 hours. CI is still pending."
 
 If `status == "error"`:
 
