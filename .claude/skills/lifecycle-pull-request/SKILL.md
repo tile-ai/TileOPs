@@ -122,11 +122,16 @@ Run the poll script as a **blocking** Bash call:
 
 Use Bash tool with `timeout: 6060000` (covers the script's 100-minute timeout plus buffer).
 
-The script returns structured JSON:
+The script returns structured JSON with one of three statuses:
+
+- **`actionable`** — CI failed or unresolved reviews exist. Handler must process, then re-poll.
+- **`done`** — CI all success + all threads resolved. Handler skips to Phase 6.
+- **`timeout`** — CI still pending, nothing to handle yet. Re-poll in next round.
+- **`error`** — Script-level failure (bad args, auth, etc.). Stop and ask user.
 
 ```json
 {
-  "status": "ready | timeout | error",
+  "status": "actionable | done | timeout | error",
   "ci": {
     "state": "success | failure | pending",
     "failed_checks": [{"name": "...", "conclusion": "failure", "url": "..."}]
@@ -152,19 +157,24 @@ The script returns structured JSON:
 
 Parse the JSON. Follow this decision tree **in order** (first matching branch wins):
 
-#### 4a. Timeout / error → STOP
+#### 4a. `done` → proceed to Phase 6
 
-If `status == "error"` or `status == "timeout"`:
+If `status == "done"`: CI is green and all threads are resolved. **Skip to Phase 6** (mark PR ready).
 
-> "PR #\{pr_number} — poll returned `{status}`: \{message}.
-> You can retry later: `.claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}`
-> Or ask me to continue monitoring."
+#### 4b. Timeout / error → re-poll or STOP
+
+If `status == "timeout"`: CI is still pending. **Re-poll** (this does NOT count as a fix-push round).
+
+If `status == "error"`:
+
+> "PR #\{pr_number} — poll returned error: \{message}.
+> You can retry later: `.claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}`"
 
 **You MUST stop and ask the user.** Do NOT silently fall back to manual polling. **Exit the loop.**
 
-#### 4b. CI failure → auto fix
+#### 4c. `actionable` with CI failure → auto fix
 
-If `ci.state == "failure"`:
+If `status == "actionable"` and `ci.state == "failure"`:
 
 1. Identify failing checks from `ci.failed_checks`.
 1. Reproduce locally when possible.
@@ -176,9 +186,9 @@ If `ci.state == "failure"`:
      Simple fix → fix, commit, push → **re-poll**
      Complex → report to user with log summary, ask for guidance
 
-#### 4c. New reviews → auto handle (reply + resolve atomic flow)
+#### 4d. `actionable` with unresolved reviews → auto handle (reply + resolve atomic flow)
 
-If `reviews.new_inline_comments` is non-empty (unresolved threads exist):
+If `status == "actionable"` and `reviews.new_inline_comments` is non-empty (unresolved threads exist):
 
 The poll script exposes **all** unresolved threads (including author-started ones) so that `unresolved_count` and the actionable thread list stay consistent. Each thread follows a deterministic handling path based on its type.
 
@@ -231,7 +241,7 @@ gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<PRRT
 - Read and address the feedback
 - Reply via `gh api repos/{owner}/{repo}/issues/{pr_number}/comments -f body="<response>"`
 
-#### 4d. Post-fix verification
+#### 4e. Post-fix verification
 
 After fixing CI or review issues, run local tests before pushing:
 
@@ -241,17 +251,17 @@ After fixing CI or review issues, run local tests before pushing:
 
 If the context file is not available (standalone PR lifecycle without issue-fixer), skip this step.
 
-Then commit and push the fixes.
+Then commit and push the fixes, and **re-poll** (go back to Phase 3).
 
 ### Phase 5: Verify done
 
-**All** must be true:
+The poll script handles completion detection. When it returns `status == "done"`:
 
-1. `ci.state == "success"` — **not** "pending". If pending, keep polling (no round increment). Print "waiting for CI: \{check_name} still pending..." each cycle.
-1. `reviews.unresolved_count == 0` (all threads resolved via the atomic reply+resolve flow)
-1. `reviews.new_review_bodies` is empty (or all replied to)
+- CI: all checks passed
+- All review threads resolved
+- No pending review bodies
 
-If done:
+Report:
 
 > "PR #\{pr_number} — draft phase complete:
 >

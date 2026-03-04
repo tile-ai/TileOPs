@@ -374,29 +374,35 @@ main() {
 
     log_info "Elapsed: ${elapsed}s | CI: ${ci_state} | Inline comments: $(echo "$inline_comments" | jq 'length' || echo '?') | Reviews: $(echo "$review_bodies" | jq 'length' || echo '?') | Fetches OK: ci=$ci_ok threads=$threads_ok reviews=$pr_reviews_ok"
 
-    # Termination: return as soon as there is something actionable for the handler.
+    # Termination logic — three distinct outcomes:
+    #   "actionable" — CI failure or unresolved reviews exist, handler must process
+    #   "done"       — CI all success + all threads resolved, handler can skip to Phase 6
+    #   (continue)   — CI still pending + nothing to handle, keep polling
+    #
     # Must have waited at least one interval (give bots time to post) and all
     # fetches must have succeeded in this cycle (no stale data).
     if [[ $elapsed -ge $INTERVAL ]] && \
        [[ "$ci_ok" == "true" ]] && [[ "$threads_ok" == "true" ]] && [[ "$pr_reviews_ok" == "true" ]]; then
 
-      local has_ci_failure=false
-      local has_reviews=false
-      local inline_count
-      local review_count
-
-      [[ "$ci_state" == "failure" ]] && has_ci_failure=true
+      local inline_count review_count
       inline_count=$(echo "$inline_comments" | jq 'length' 2>/dev/null || echo 0)
       review_count=$(echo "$review_bodies" | jq 'length' 2>/dev/null || echo 0)
-      [[ "$inline_count" -gt 0 ]] || [[ "$review_count" -gt 0 ]] && has_reviews=true
 
-      # Return ready when: CI failure (needs fix), or reviews exist (need handling),
-      # or CI fully done (success/failure, not pending) — whichever comes first.
-      if [[ "$has_ci_failure" == "true" ]] || [[ "$has_reviews" == "true" ]] || [[ "$ci_state" != "pending" ]]; then
-        log_info "Actionable state detected (ci=$ci_state, threads=$inline_count, reviews=$review_count). Returning results."
-        output_json "ready" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
+      # Case 1: actionable — CI failed or unresolved reviews/threads exist
+      if [[ "$ci_state" == "failure" ]] || [[ "$unresolved" -gt 0 ]] || [[ "$review_count" -gt 0 ]]; then
+        log_info "Actionable: ci=$ci_state, unresolved=$unresolved, reviews=$review_count. Handler must process."
+        output_json "actionable" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
         exit 0
       fi
+
+      # Case 2: done — CI success + no unresolved threads + no pending reviews
+      if [[ "$ci_state" == "success" ]] && [[ "$unresolved" -eq 0 ]] && [[ "$review_count" -eq 0 ]]; then
+        log_info "Done: CI success, all threads resolved, no pending reviews."
+        output_json "done" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
+        exit 0
+      fi
+
+      # Otherwise CI is still pending with nothing actionable — keep polling
     fi
 
     # If fetches failed, keep polling (don't return with stale data)
