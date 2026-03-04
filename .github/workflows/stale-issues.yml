@@ -16,6 +16,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           CUTOFF=$(date -u -d "28 days ago" +%Y-%m-%dT%H:%M:%SZ)
           echo "Closing issues with no comment activity since: $CUTOFF"
 
