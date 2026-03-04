@@ -89,7 +89,6 @@ START_TIME=$(date +%s)
 PR_CREATED_AT=""
 PR_AUTHOR=""
 HEAD_SHA=""
-HEAD_PUSHED_AT=""
 
 # --- Core functions ---
 
@@ -106,17 +105,6 @@ fetch_pr_info() {
 
   if [[ -z "$PR_CREATED_AT" || -z "$PR_AUTHOR" || -z "$HEAD_SHA" ]]; then
     return 1
-  fi
-
-  # Get the HEAD commit timestamp — used to filter review bodies so only
-  # reviews submitted AFTER the latest push are returned as "new".
-  # This prevents already-handled reviews from previous rounds from
-  # causing infinite actionable loops.
-  local commit_json
-  commit_json=$(gh api "repos/${OWNER}/${REPO}/commits/${HEAD_SHA}" 2>&1) || { log_error "Failed to fetch HEAD commit: $commit_json"; return 1; }
-  HEAD_PUSHED_AT=$(echo "$commit_json" | jq -r '.commit.committer.date') || HEAD_PUSHED_AT="$PR_CREATED_AT"
-  if [[ -z "$HEAD_PUSHED_AT" || "$HEAD_PUSHED_AT" == "null" ]]; then
-    HEAD_PUSHED_AT="$PR_CREATED_AT"
   fi
 
   return 0
@@ -264,24 +252,22 @@ count_unresolved_threads() {
   echo "$count"
 }
 
-# Filter PR reviews: exclude PR author, only non-empty body, only after HEAD push
-# This ensures reviews from previous fix-push rounds (already handled) are not
-# returned again, preventing infinite actionable loops.
+# Filter PR reviews: only CHANGES_REQUESTED with non-empty body, exclude PR author.
+# COMMENTED and APPROVED reviews are informational and do not require handler action.
+# Only CHANGES_REQUESTED is a blocking state that the handler must address.
 filter_pr_reviews() {
   local reviews_json="$1"
-  echo "$reviews_json" | jq -c --arg author "$PR_AUTHOR" --arg since "$HEAD_PUSHED_AT" '
+  echo "$reviews_json" | jq -c --arg author "$PR_AUTHOR" '
     [.[] | select(
       .user.login != $author and
-      .state != "PENDING" and
+      .state == "CHANGES_REQUESTED" and
       .body != null and
-      .body != "" and
-      .submitted_at > $since
+      .body != ""
     ) | {
       id: .id,
       author: .user.login,
       body: .body,
-      state: .state,
-      submitted_at: .submitted_at
+      state: .state
     }]' || echo "[]"
 }
 
@@ -327,7 +313,7 @@ main() {
     exit 1
   fi
 
-  log_info "PR author: ${PR_AUTHOR}, HEAD: ${HEAD_SHA:0:7}, created: ${PR_CREATED_AT}, head_pushed: ${HEAD_PUSHED_AT}"
+  log_info "PR author: ${PR_AUTHOR}, HEAD: ${HEAD_SHA:0:7}, created: ${PR_CREATED_AT}"
 
   local ci_state="pending"
   local failed_checks="[]"
