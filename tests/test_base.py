@@ -25,6 +25,26 @@ def allclose_compare(output: torch.Tensor, output_ref: torch.Tensor, atol: float
         f"not close, max err: {max_err}"
 
 
+def _case_size_score(case):
+    seq = case if isinstance(case, (tuple, list)) else (case,)
+    nums = [x for x in seq if isinstance(x, int) and not isinstance(x, bool) and x > 0]
+    if not nums:
+        return float("inf")
+    score = 1
+    for n in nums:
+        score *= n
+    return score
+
+
+def _reduce_values(values):
+    if not isinstance(values, (list, tuple)) or len(values) <= 1:
+        return values
+    vals = list(values)
+    if all(isinstance(v, (tuple, list)) for v in vals):
+        return [min(vals, key=_case_size_score)]
+    return vals[:1]
+
+
 class FixtureMeta(type):
     """Metaclass that makes Fixture subclasses usable as @decorators.
 
@@ -38,24 +58,6 @@ class FixtureMeta(type):
 
     def __call__(cls, fn):
         profile = os.getenv("CI_TEST_PROFILE", "").strip().lower()
-
-        def _case_size_score(case):
-            seq = case if isinstance(case, (tuple, list)) else (case,)
-            nums = [x for x in seq if isinstance(x, int) and not isinstance(x, bool) and x > 0]
-            if not nums:
-                return float("inf")
-            score = 1
-            for n in nums:
-                score *= n
-            return score
-
-        def _reduce_values(values):
-            if not isinstance(values, (list, tuple)) or len(values) <= 1:
-                return values
-            vals = list(values)
-            if all(isinstance(v, (tuple, list)) for v in vals):
-                return [min(vals, key=_case_size_score)]
-            return vals[:1]
 
         for names, values in reversed(cls.PARAMS):
             if profile == "small":
