@@ -1,0 +1,3 @@
+- Every package directory must have an `__init__.py` with explicit `__all__`, using `from .module import Symbol` to re-export the public API.
+- Relative imports for intra-package references (e.g. `from .op import Op`); absolute `tileops.*` imports for cross-package references.
+- Do not use file-level lint suppressions (`# ruff: noqa`, `# flake8: noqa`). Use targeted inline `# noqa: XXXX` only when genuinely needed.
