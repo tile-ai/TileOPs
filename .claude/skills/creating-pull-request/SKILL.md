@@ -86,7 +86,8 @@ PR body section rules:
 
 Additional labels (stack as needed):
 
-- `all ai powered` — PR fully AI-generated (no user code edits)
+- `all-ai-powered` — PR fully AI-generated (no user code edits)
+- `human-led` — human-led task, AI assists but does not own
 - `help wanted` — needs extra attention
 - `good first issue` — suitable for newcomers
 
