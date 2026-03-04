@@ -2,10 +2,24 @@ from typing import Optional
 
 import pytest
 import torch
-from tests.ops.test_gemv import GemvFixture, GemvTest
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_gemm import GemmTest
+from tests.test_base import FixtureBase
 from tileops.ops import GemmOp
+
+
+class GemvFixture(FixtureBase):
+    PARAMS = [
+        ("n, k, dtype, tune", [
+            (1024, 1024, torch.float16, False),
+            (7168, 16384, torch.float16, True),
+            (18432, 7168, torch.float16, True),
+            (1024, 1024, torch.bfloat16, False),
+            (7168, 16384, torch.bfloat16, True),
+            (18432, 7168, torch.bfloat16, True),
+        ]),
+    ]
 
 
 class GemvBenchmark(BenchmarkBase):
@@ -20,7 +34,7 @@ class GemvBenchmark(BenchmarkBase):
 
 @GemvFixture
 def test_gemv_bench(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
-    test = GemvTest(n, k, dtype)
+    test = GemmTest(1, n, k, dtype, trans_b=True)
     bm = GemvBenchmark(test)
     inputs = test.gen_inputs()
 
