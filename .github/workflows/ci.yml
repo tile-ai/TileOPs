@@ -23,6 +23,7 @@ jobs:
   pre-commit:
     if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
       - name: Checkout code
@@ -48,6 +49,7 @@ jobs:
   packaging:
     if: ${{ (github.repository == 'tile-ai/TileOPs' && github.event_name == 'schedule') || github.event_name == 'workflow_dispatch' }}
     runs-on: [self-hosted, tile-ops, venv]
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -178,6 +180,7 @@ jobs:
     # needs: pre-commit
     if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
     runs-on: [self-hosted, tile-ops, venv]
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@v3

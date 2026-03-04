@@ -17,6 +17,7 @@ concurrency:
 jobs:
   validate-commits:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,6 +52,7 @@ jobs:
 
   validate-pr-title:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     if: github.event.action != 'synchronize'
     steps:
       - uses: actions/checkout@v4
