@@ -1,7 +1,7 @@
-import torch
-from typing import Optional, Any, Callable
+from typing import Any, Callable, Optional
 
 import tilelang
+import torch
 from tilelang import language as T
 
 from tileops.kernels.kernel import Kernel

@@ -1,10 +1,10 @@
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
-from tests.ops.test_gqa_decode import GqaDecodeFixture, GqaDecodeTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_gqa_decode import GqaDecodeFixture, GqaDecodeTest
 from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
 

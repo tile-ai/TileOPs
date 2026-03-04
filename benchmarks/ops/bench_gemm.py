@@ -1,10 +1,10 @@
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
-from tests.ops.test_gemm import GemmFixture, GemmTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_gemm import GemmFixture, GemmTest
 from tileops.ops import GemmOp
 
 

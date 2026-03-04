@@ -5,7 +5,7 @@ import torch
 from einops import einsum, rearrange
 from torch.nn import functional as F
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 
 

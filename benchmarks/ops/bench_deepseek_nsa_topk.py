@@ -3,8 +3,8 @@ from typing import Optional
 import pytest
 import torch
 
-from tests.ops.test_deepseek_nsa_topk import NsaTopkFixture, NsaTopkTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_deepseek_nsa_topk import NsaTopkFixture, NsaTopkTest
 from tileops.ops import NSATopkVarlenOp
 
 

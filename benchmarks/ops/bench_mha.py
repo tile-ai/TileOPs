@@ -3,13 +3,13 @@ from typing import Optional
 import pytest
 import torch
 
-from tests.ops.test_mha import (
-    MhaFwdFixture,
-    MhaBwdFixture,
-    MhaFwdTest,
-    MhaBwdTest,
-)
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_mha import (
+    MhaBwdFixture,
+    MhaBwdTest,
+    MhaFwdFixture,
+    MhaFwdTest,
+)
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 
 

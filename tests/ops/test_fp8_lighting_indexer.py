@@ -1,9 +1,9 @@
 from typing import Optional, Tuple
 
-import torch
 import pytest
+import torch
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import Fp8LightingIndexerOp
 
 

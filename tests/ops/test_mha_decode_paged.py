@@ -7,7 +7,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
 
 

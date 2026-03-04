@@ -1,10 +1,10 @@
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
-from tests.ops.test_fp8_quant import Fp8QuantFixture, Fp8QuantTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_fp8_quant import Fp8QuantFixture, Fp8QuantTest
 from tileops.ops import Fp8QuantOp
 
 
