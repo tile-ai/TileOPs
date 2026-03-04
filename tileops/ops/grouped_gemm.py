@@ -4,7 +4,8 @@ import torch
 
 from tileops.kernels.grouped_gemm import grouped_gemm_kernel
 from tileops.kernels.kernel import Kernel
-from tileops.ops.op import Op
+
+from .op import Op
 
 __all__ = ["GroupedGemmOp"]
 
