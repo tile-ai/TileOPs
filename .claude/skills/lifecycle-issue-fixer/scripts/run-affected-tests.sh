@@ -47,6 +47,10 @@ if ! jq -e 'type == "array"' <<<"$TEST_TARGETS" >/dev/null 2>&1; then
   jq -n '{status: "error", message: "context.json field test_targets must be a JSON array"}' >&1
   exit 1
 fi
+if ! jq -e 'length > 0' <<<"$TEST_TARGETS" >/dev/null 2>&1; then
+  jq -n '{status: "error", message: "context.json field test_targets must contain at least one target"}' >&1
+  exit 1
+fi
 
 # Extract bench_targets (optional, defaults to empty array, must be JSON array)
 BENCH_TARGETS=$(jq -c '.bench_targets // []' "$CONTEXT_FILE")
@@ -105,7 +109,7 @@ run_pytest_file() {
   # Extract failure/error names if any
   local failures="[]"
   if [[ $failed -gt 0 ]] || [[ $errors -gt 0 ]]; then
-    failures=$(echo "$pytest_output" | grep -E '^(FAILED |ERROR )' | sed -E 's/^(FAILED |ERROR )//; s/ - .*$//' | jq -R -s 'split("\n") | map(select(. != ""))')
+    failures=$(echo "$pytest_output" | { grep -E '^(FAILED |ERROR )' || true; } | sed -E 's/^(FAILED |ERROR )//; s/ - .*$//' | jq -R -s 'split("\n") | map(select(. != ""))')
   fi
 
   # Determine status: non-zero exit code OR any failed/error count means failure

@@ -167,7 +167,7 @@ If `status == "timeout"`: CI is still pending. **Re-poll** (this does NOT count 
 
 If `status == "error"`:
 
-> "PR #\{pr_number} — poll returned error: \{message}.
+> "PR #\{pr_number} — poll returned `error`. Check stderr logs for details.
 > You can retry later: `.claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}`"
 
 **You MUST stop and ask the user.** Do NOT silently fall back to manual polling. **Exit the loop.**
