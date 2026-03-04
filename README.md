@@ -28,7 +28,7 @@ The core features of TileOPs include:
 
 <!-- * **torch.autograd Compatibility**: -->
 
-- **Lightweight Dependencies**: TileOPs depends only on TileLang and PyTorch, keeping the software stack minimal and easy to integrate.
+- **Lightweight Dependencies**: TileOPs depends only on TileLang, PyTorch, and einops, keeping the software stack minimal and easy to integrate.
 
 ## Benchmark Summary
 
@@ -57,11 +57,15 @@ TODO
 
 ## 📦 Install with pip
 
-### Requirements
+### Prerequisites
 
-- Python >= 3.8
-- Torch >= 2.1
-- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.7
+- Python >= 3.10
+- PyTorch >= 2.1
+- CUDA Toolkit (required — this is a GPU kernel project)
+- A CUDA-capable NVIDIA GPU
+  - Tested architectures: **Ampere** (SM_80, SM_86) and **Hopper** (SM_90)
+  - Other architectures may work but are not tested
+- [TileLang](https://github.com/tile-ai/tilelang) == 0.1.8
 
 ### Method 1: Install from PyPI
 
@@ -69,12 +73,24 @@ TODO
 pip install tileops
 ```
 
-### Method 2: Install from source (editable mode for development)
+### Method 2: Install from source (for development)
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
-pip install -e '.[dev]' -v # remove -e option if you don't want to install in editable mode, -v for verbose output
+pip install -e '.[dev]' -v
+```
+
+> [!NOTE]
+> If you have CUDA and TileLang already installed system-wide and encounter build issues, try:
+> `PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -v`
+> This disables pip's build isolation so it can find your existing CUDA/TileLang installation.
+
+After installing, set up the pre-commit hooks and verify with a test run:
+
+```bash
+pre-commit install          # enables lint checks before each commit
+python -m pytest tests/ -q  # run the test suite (requires a CUDA GPU)
 ```
 
 ## 🚀 Quick Start
@@ -85,7 +101,7 @@ TODO
 
 ```Python
 import torch
-from top.functions import gqa_decode_with_kvcache
+from tileops.ops import gqa_decode_with_kvcache
 
 # Generate inputs
 B, H, G, S_kv, D = 1, 32, 4, 1024, 128  # batch, heads, groups, seq_len, dim
@@ -94,7 +110,7 @@ q = torch.randn(B, H, D, device='cuda', dtype=dtype)
 k_cache = torch.randn(B, S_kv, G, D, device='cuda', dtype=dtype)
 v_cache = torch.randn(B, S_kv, G, D, device='cuda', dtype=dtype)
 
-# Call function, k_cache and v_cache are updated in-place
+# Call op, k_cache and v_cache are updated in-place
 output = gqa_decode_with_kvcache(q, k_cache, v_cache)
 ``` -->
 
@@ -102,9 +118,7 @@ output = gqa_decode_with_kvcache(q, k_cache, v_cache)
 
 ### Hierarchical APIs
 
-TileOPs is structured around four hierarchical key concepts, each representing a distinct level of abstraction. Higher-level components are composed from, or delegate execution to, the next lower level.
+TileOPs is structured around two hierarchical key concepts, each representing a distinct level of abstraction. Higher-level components are composed from, or delegate execution to, the next lower level.
 
-- **Layer**: A high-level, user-facing abstraction analogous to `torch.nn.Module`. It manages stateful parameters.
-- **Function**: A stateless, functional abstraction analogous to `torch.nn.functional`. Functions are fully compatible with CUDA-Graph capture, `torch.compile`, and `torch.autograd`.
 - **Op**: determines the implementation for a given shape and hardware, dispatching to the correct **Kernel** and providing unit test and benchmark. Ops are fully compatible with CUDA-Graph capture and `torch.compile`.
 - **Kernel**: Tilelang-based kernels with hardware-specific optimizations.

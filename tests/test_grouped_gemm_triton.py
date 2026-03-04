@@ -844,12 +844,10 @@ def test_grouped_gemm_nt(batch_sum: int, batch_count: int, K: int, N: int, dtype
     batch_sizes = inputs[2]
 
     success = check_kernel(grouped_gemm_nt, ref_program_nt, inputs, "grouped_gemm_nt")
+    assert success, "grouped_gemm_nt correctness check failed"
 
-    if success:
-        total_flops = calculate_flops_nt(batch_sizes.tolist(), K, N)
-        profile_kernel(grouped_gemm_nt, inputs, "grouped_gemm_nt", total_flops)
-
-    return success
+    total_flops = calculate_flops_nt(batch_sizes.tolist(), K, N)
+    profile_kernel(grouped_gemm_nt, inputs, "grouped_gemm_nt", total_flops)
 
 
 @pytest.mark.parametrize(
@@ -869,12 +867,10 @@ def test_grouped_gemm_nn(batch_sum: int, batch_count: int, K: int, N: int, dtype
 
     batch_sizes = inputs[2]
     success = check_kernel(grouped_gemm_nn, ref_program_nn, inputs, "grouped_gemm_nn")
+    assert success, "grouped_gemm_nn correctness check failed"
 
-    if success:
-        total_flops = calculate_flops_nn(batch_sizes.tolist(), K, N)
-        profile_kernel(grouped_gemm_nn, inputs, "grouped_gemm_nn", total_flops)
-
-    return success
+    total_flops = calculate_flops_nn(batch_sizes.tolist(), K, N)
+    profile_kernel(grouped_gemm_nn, inputs, "grouped_gemm_nn", total_flops)
 
 
 @pytest.mark.parametrize(
@@ -890,12 +886,10 @@ def test_grouped_gemm_tn(batch_sum: int, batch_count: int, K: int, N: int, dtype
     batch_sizes = inputs[2]
 
     success = check_kernel(grouped_gemm_tn, ref_program_tn, inputs, "grouped_gemm_tn")
+    assert success, "grouped_gemm_tn correctness check failed"
 
-    if success:
-        total_flops = calculate_flops_tn(batch_sizes.tolist(), K, N)
-        profile_kernel(grouped_gemm_tn, inputs, "grouped_gemm_tn", total_flops)
-
-    return success
+    total_flops = calculate_flops_tn(batch_sizes.tolist(), K, N)
+    profile_kernel(grouped_gemm_tn, inputs, "grouped_gemm_tn", total_flops)
 
 
 @pytest.mark.parametrize(
@@ -911,12 +905,10 @@ def test_grouped_gemm_tt(batch_sum: int, batch_count: int, K: int, N: int, dtype
     batch_sizes = inputs[2]
 
     success = check_kernel(grouped_gemm_tt, ref_program_tt, inputs, "grouped_gemm_tt")
+    assert success, "grouped_gemm_tt correctness check failed"
 
-    if success:
-        total_flops = calculate_flops_tt(batch_sizes.tolist(), K, N)
-        profile_kernel(grouped_gemm_tt, inputs, "grouped_gemm_tt", total_flops)
-
-    return success
+    total_flops = calculate_flops_tt(batch_sizes.tolist(), K, N)
+    profile_kernel(grouped_gemm_tt, inputs, "grouped_gemm_tt", total_flops)
 
 
 def main():

@@ -1,3 +1,0 @@
-# Exclude test, benchmark, and third-party directories from source distribution
-prune tests
-prune benchmarks

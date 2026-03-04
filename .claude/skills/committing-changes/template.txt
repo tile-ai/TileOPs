@@ -1,0 +1,53 @@
+<!-- mdformat-disable -->
+
+[\{Type}] {Short description}
+
+# Commit Message Convention (from docs/CONTRIBUTING.md)
+
+#
+
+# Format: [\{Type}] \{Description}
+
+# or: [\{Type}][\{Scope}] \{Description}
+
+#
+
+# Types (canonical list in .claude/conventions/types.sh):
+
+# [Feat] — New features or operators
+
+# [BugFix] — Bug fixes
+
+# [Fix] — Non-bug corrections
+
+# [Refactor] — Code restructuring without behavior change
+
+# [Enhancement] — Improvements to existing features
+
+# [Doc] — Documentation updates
+
+# [Chore] — Build system or workflow changes
+
+# [Bench] — Benchmark updates
+
+# [CI] — CI/CD changes
+
+# [Test] — Test changes
+
+# [Perf] — Performance improvements
+
+#
+
+# Examples:
+
+# [Feat] Add multi-head attention forward op
+
+# [BugFix][MLA] Fix index out of bounds in reduction kernel
+
+# [Refactor] Extract online softmax as shared macro
+
+# [Enhancement][MHA] Improve performance on Hopper
+
+# [Doc] Update README.md
+
+# [Chore][CI] Update CUDA version to 12.9

@@ -18,24 +18,31 @@ We follow a standard **Issue -> Fork -> PR** workflow. **Do not** create branche
 - **Clone**: Clone your fork locally (`git clone ...`).
 - **Branch**: Create a new branch on your fork.
   - **Base**: Sync with upstream `main` before branching.
-  - **Name**: `type/scope/description`, for example:
+  - **Name**: `type/scope/description` (canonical prefixes in `.claude/conventions/types.sh`), for example:
     - `feat/flash-attn/fwd-kernel`
     - `fix/mla/parsing-error`
     - `doc/readme/add-examples`
+    - `test/gemv/add-edge-cases`
+    - `perf/mha/improve-bandwidth`
+    - `bench/gemm/add-triton-baseline`
 
 ### Step 3: Commit (Save Work)
 
 We follow the **TileLang Commit Convention**: `[Type] Description` or `[Type][Scope] Description`.
 
-**Common Types**:
+**Common Types** (canonical list in `.claude/conventions/types.sh`):
 
 - `[Feat]`: New features or operators.
 - `[BugFix]`: Bug fixes.
+- `[Fix]`: Non-bug corrections.
 - `[Refactor]`: Code restructuring without behavior change.
 - `[Enhancement]`: Improvements to existing features.
 - `[Doc]`: Documentation updates.
 - `[Chore]`: Build system or workflow changes.
 - `[Bench]`: Benchmark updates.
+- `[CI]`: CI/CD changes.
+- `[Test]`: Test changes.
+- `[Perf]`: Performance improvements.
 
 **Examples**:
 
