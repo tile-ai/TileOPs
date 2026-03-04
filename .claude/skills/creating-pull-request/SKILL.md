@@ -84,10 +84,9 @@ PR body section rules:
 | `[Perf]`             | `perf`            |
 | Breaking change      | `breaking change` |
 
-Authorship label (**required** on every PR):
+Authorship label (**required**):
 
-- `all-ai-powered` — PR created by AI (always add this when you are the one creating the PR)
-- `human-led` — human-led task, AI assists but does not own
+- `all-ai-powered` — always add this label (you are an AI creating this PR)
 
 Additional labels (stack as needed):
 
