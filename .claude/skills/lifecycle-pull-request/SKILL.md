@@ -180,7 +180,7 @@ If `status == "actionable"` and `ci.state == "failure"`:
 1. Reproduce locally when possible.
 1. Fix by severity:
    - **Lint/format** (pre-commit, ruff, codespell, mdformat):
-     Fix the issue, commit, push → **re-poll**
+     Run `pre-commit run --all-files` to auto-fix, or fix manually. Then commit and push → **re-poll**
    - **Test/build**:
      Analyze failure logs (`gh pr checks {pr_number} --repo {owner}/{repo}`)
      Simple fix → fix, commit, push → **re-poll**

@@ -90,7 +90,7 @@ Before creating, verify ALL required sections are present and non-empty:
 
 - `## Description` — must contain `### Symptom / Motivation` (non-empty)
 - `## Goal` — must not be empty
-- `## Plan` — must contain at least one step (line starting with `- `)
+- `## Plan` — must contain at least one step (line starting with `- ` or `1.`)
 - `## Acceptance Criteria` — must contain at least one checkbox (`- [ ]`)
 
 **If any section is missing or empty: STOP.** Fix the body before proceeding.
@@ -110,15 +110,18 @@ ISSUEEOF
 
 Add the type label matching the issue TYPE:
 
-| Issue TYPE | Label      |
-| ---------- | ---------- |
-| `FEAT`     | `feature`  |
-| `BUG`      | `fix`      |
-| `PERF`     | `perf`     |
-| `REFACTOR` | `refactor` |
-| `DOCS`     | `docs`     |
-| `TEST`     | `test`     |
-| `META`     | `chore`    |
+| Issue TYPE    | Label         |
+| ------------- | ------------- |
+| `FEAT`        | `feature`     |
+| `BUG`         | `fix`         |
+| `PERF`        | `perf`        |
+| `REFACTOR`    | `refactor`    |
+| `DOCS`        | `docs`        |
+| `TEST`        | `test`        |
+| `META`        | `chore`       |
+| `ENHANCEMENT` | `enhancement` |
+| `BENCH`       | `bench`       |
+| `CI`          | `ci`          |
 
 ```bash
 gh issue edit {issue_number} --repo {owner}/{repo} --add-label "{label}"

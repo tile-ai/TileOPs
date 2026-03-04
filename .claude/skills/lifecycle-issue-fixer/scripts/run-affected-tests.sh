@@ -12,14 +12,14 @@ set -euo pipefail
 # --- Argument validation ---
 
 if [[ $# -lt 1 ]]; then
-  echo '{"status":"error","message":"Usage: run-affected-tests.sh <context.json>"}' >&1
+  jq -n '{status: "error", message: "Usage: run-affected-tests.sh <context.json>"}' >&1
   exit 1
 fi
 
 CONTEXT_FILE="$1"
 
 if [[ ! -f "$CONTEXT_FILE" ]]; then
-  echo "{\"status\":\"error\",\"message\":\"Context file not found: ${CONTEXT_FILE}\"}" >&1
+  jq -n --arg file "$CONTEXT_FILE" '{status: "error", message: "Context file not found: \($file)"}' >&1
   exit 1
 fi
 
@@ -37,15 +37,23 @@ if ! jq -e '.' "$CONTEXT_FILE" &>/dev/null; then
   exit 1
 fi
 
-# Extract test_targets (required)
-TEST_TARGETS=$(jq -r '.test_targets // empty' "$CONTEXT_FILE")
+# Extract test_targets (required, must be JSON array)
+TEST_TARGETS=$(jq -c '.test_targets // empty' "$CONTEXT_FILE")
 if [[ -z "$TEST_TARGETS" ]]; then
-  echo '{"status":"error","message":"context.json missing required field: test_targets"}' >&1
+  jq -n '{status: "error", message: "context.json missing required field: test_targets"}' >&1
+  exit 1
+fi
+if ! jq -e 'type == "array"' <<<"$TEST_TARGETS" >/dev/null 2>&1; then
+  jq -n '{status: "error", message: "context.json field test_targets must be a JSON array"}' >&1
   exit 1
 fi
 
-# Extract bench_targets (optional, defaults to empty array)
-BENCH_TARGETS=$(jq -r '.bench_targets // "[]"' "$CONTEXT_FILE")
+# Extract bench_targets (optional, defaults to empty array, must be JSON array)
+BENCH_TARGETS=$(jq -c '.bench_targets // []' "$CONTEXT_FILE")
+if ! jq -e 'type == "array"' <<<"$BENCH_TARGETS" >/dev/null 2>&1; then
+  jq -n '{status: "error", message: "context.json field bench_targets must be a JSON array"}' >&1
+  exit 1
+fi
 
 # Logging (stderr only)
 log_info() {
@@ -68,6 +76,13 @@ run_pytest_file() {
   local file="$1"
   local category="$2"  # "test" or "bench"
 
+  # Reject absolute paths and path traversal attempts
+  if [[ "$file" == /* ]] || [[ "$file" == *../* ]]; then
+    WARNINGS=$(echo "$WARNINGS" | jq --arg w "${file} rejected: absolute or traversal path" '. + [$w]')
+    log_info "WARNING: $file rejected (path security check), skipping"
+    return
+  fi
+
   if [[ ! -f "$file" ]]; then
     WARNINGS=$(echo "$WARNINGS" | jq --arg w "${file} not found, skipped" '. + [$w]')
     log_info "WARNING: $file not found, skipping"
@@ -79,7 +94,7 @@ run_pytest_file() {
   # Run pytest and capture output
   local pytest_output
   local exit_code=0
-  pytest_output=$(PYTHONPATH="$PWD" python -m pytest -v "$file" --tb=short -q 2>&1) || exit_code=$?
+  pytest_output=$(PYTHONPATH="$PWD" python -m pytest -v --tb=short -q -- "$file" 2>&1) || exit_code=$?
 
   # Parse pytest summary counts (e.g., "3 passed, 1 failed, 2 errors")
   local passed failed errors
@@ -132,15 +147,15 @@ run_pytest_file() {
   fi
 }
 
-# Run test targets
+# Run test targets (use while read to handle spaces in paths safely)
 log_info "=== Running test targets ==="
-for file in $(echo "$TEST_TARGETS" | jq -r '.[]'); do
+echo "$TEST_TARGETS" | jq -r '.[]' | while IFS= read -r file; do
   run_pytest_file "$file" "test"
 done
 
 # Run bench targets
 log_info "=== Running benchmark targets ==="
-for file in $(echo "$BENCH_TARGETS" | jq -r '.[]'); do
+echo "$BENCH_TARGETS" | jq -r '.[]' | while IFS= read -r file; do
   run_pytest_file "$file" "bench"
 done
 

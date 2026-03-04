@@ -173,11 +173,12 @@ fetch_review_threads() {
     return 1
   fi
 
-  # Warn if pagination needed (>100 threads)
+  # Treat >100 threads as error to avoid undercounting unresolved threads
   local has_next
   has_next=$(echo "$result" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' 2>/dev/null || echo "false")
   if [[ "$has_next" == "true" ]]; then
-    log_info "WARNING: PR has >100 review threads. Only first 100 are fetched."
+    log_error "fetch_review_threads: PR has >100 review threads; pagination not implemented, aborting to avoid partial data."
+    return 1
   fi
 
   echo "$result"

@@ -75,6 +75,7 @@ The issue body **MUST** contain these sections:
 - `## Description` — problem description
 - `## Goal` — completion objective
 - `## Plan` — execution route (with `proposal` or `fixed` type)
+- `## Constraints` — hard constraints (may be empty)
 - `## Acceptance Criteria` — verifiable conditions
 
 **If any section is missing: STOP.** Report to the user:
@@ -104,7 +105,7 @@ Write `docs/plans/issue-{number}-context.json`:
   "issue": {number},
   "type": "{TYPE}",
   "component": "{COMPONENT}",
-  "plan_type": "proposal | fixed",
+  "plan_type": "proposal",
   "goal": "{goal text}",
   "acceptance_criteria": ["{AC-1}", "{AC-2}"],
   "execution_route": ["{step-1}", "{step-2}"],
