@@ -10,7 +10,7 @@ description: Create a high-quality issue which conforms to the rules of TileOPs 
 ## Reference
 
 - Title format: `[TYPE][COMPONENT] short description in lowercase`
-- TYPE values: FEAT, BUG, PERF, REFACTOR, DOCS, TEST, META (canonical list in `.claude/conventions/types.sh`)
+- TYPE values: FEAT, BUG, PERF, REFACTOR, DOCS, TEST, META, BENCHMARK (canonical list in `.claude/conventions/types.sh`)
 - COMPONENT: kernel name or subsystem (e.g., GEMV, GEMM, FLASH_ATTN, CI, TOOLING)
 - Language: **English** only
 
@@ -110,18 +110,16 @@ ISSUEEOF
 
 Add the type label matching the issue TYPE:
 
-| Issue TYPE    | Label         |
-| ------------- | ------------- |
-| `FEAT`        | `feature`     |
-| `BUG`         | `fix`         |
-| `PERF`        | `perf`        |
-| `REFACTOR`    | `refactor`    |
-| `DOCS`        | `docs`        |
-| `TEST`        | `test`        |
-| `META`        | `chore`       |
-| `ENHANCEMENT` | `enhancement` |
-| `BENCH`       | `bench`       |
-| `CI`          | `ci`          |
+| Issue TYPE  | Label      |
+| ----------- | ---------- |
+| `FEAT`      | `feature`  |
+| `BUG`       | `fix`      |
+| `PERF`      | `perf`     |
+| `REFACTOR`  | `refactor` |
+| `DOCS`      | `docs`     |
+| `TEST`      | `test`     |
+| `META`      | `chore`    |
+| `BENCHMARK` | `bench`    |
 
 ```bash
 gh issue edit {issue_number} --repo {owner}/{repo} --add-label "{label}"

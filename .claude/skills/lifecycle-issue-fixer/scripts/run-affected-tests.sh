@@ -11,6 +11,12 @@ set -euo pipefail
 
 # --- Argument validation ---
 
+# Check jq availability first (before any jq usage)
+if ! command -v jq &>/dev/null; then
+  echo '{"status":"error","message":"jq not found. Install jq or ensure it is on PATH."}' >&1
+  exit 1
+fi
+
 if [[ $# -lt 1 ]]; then
   jq -n '{status: "error", message: "Usage: run-affected-tests.sh <context.json>"}' >&1
   exit 1
@@ -20,12 +26,6 @@ CONTEXT_FILE="$1"
 
 if [[ ! -f "$CONTEXT_FILE" ]]; then
   jq -n --arg file "$CONTEXT_FILE" '{status: "error", message: "Context file not found: \($file)"}' >&1
-  exit 1
-fi
-
-# Verify jq is available
-if ! command -v jq &>/dev/null; then
-  echo '{"status":"error","message":"jq not found. Install jq or ensure it is on PATH."}' >&1
   exit 1
 fi
 
@@ -147,17 +147,17 @@ run_pytest_file() {
   fi
 }
 
-# Run test targets (use while read to handle spaces in paths safely)
+# Run test targets (process substitution avoids subshell — variable updates preserved)
 log_info "=== Running test targets ==="
-echo "$TEST_TARGETS" | jq -r '.[]' | while IFS= read -r file; do
+while IFS= read -r file; do
   run_pytest_file "$file" "test"
-done
+done < <(jq -r '.[]' <<<"$TEST_TARGETS")
 
 # Run bench targets
 log_info "=== Running benchmark targets ==="
-echo "$BENCH_TARGETS" | jq -r '.[]' | while IFS= read -r file; do
+while IFS= read -r file; do
   run_pytest_file "$file" "bench"
-done
+done < <(jq -r '.[]' <<<"$BENCH_TARGETS")
 
 # --- Determine overall status ---
 

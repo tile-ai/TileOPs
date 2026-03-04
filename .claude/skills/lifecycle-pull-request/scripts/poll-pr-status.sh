@@ -320,6 +320,8 @@ main() {
   local inline_comments="[]"
   local review_bodies="[]"
   local unresolved=0
+  local consecutive_fetch_failures=0
+  local MAX_CONSECUTIVE_FAILURES=5
 
   while true; do
     local now=$(date +%s)
@@ -377,6 +379,18 @@ main() {
     fi
 
     log_info "Elapsed: ${elapsed}s | CI: ${ci_state} | Inline comments: $(echo "$inline_comments" | jq 'length' || echo '?') | Reviews: $(echo "$review_bodies" | jq 'length' || echo '?') | Fetches OK: ci=$ci_ok threads=$threads_ok reviews=$pr_reviews_ok"
+
+    # Track consecutive fetch failures — surface persistent errors early instead of waiting for timeout
+    if [[ "$ci_ok" == "true" ]] && [[ "$threads_ok" == "true" ]] && [[ "$pr_reviews_ok" == "true" ]]; then
+      consecutive_fetch_failures=0
+    else
+      consecutive_fetch_failures=$((consecutive_fetch_failures + 1))
+      if [[ $consecutive_fetch_failures -ge $MAX_CONSECUTIVE_FAILURES ]]; then
+        log_error "Fetch failures persisted for $consecutive_fetch_failures consecutive cycles. Returning error."
+        output_json "error" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
+        exit 1
+      fi
+    fi
 
     # Termination logic — three distinct outcomes:
     #   "actionable" — CI failure or unresolved reviews exist, handler must process
