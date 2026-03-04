@@ -18,6 +18,9 @@ class RmsNormBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         t = self.test
         # Read x (M*N) + read weight (N) + write y (M*N)
+        # NOTE: For hidden sizes not aligned to 256, the Op pads x/weight at
+        # runtime (extra copy). Memory here reflects useful bytes only;
+        # real bandwidth for non-aligned shapes will be slightly higher.
         return (t.m * t.n + t.n + t.m * t.n) * t.dtype.itemsize
 
 

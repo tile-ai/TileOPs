@@ -26,6 +26,16 @@ class RmsNormFixture(FixtureBase):
     ]
 
 
+class RmsNormMultiDimFixture(FixtureBase):
+    PARAMS = [
+        ("batch, seq, hidden, dtype, eps", [
+            # 3D input: (B, S, H) -> m=B*S
+            (2, 512, 4096, torch.float16, 1e-6),
+            (2, 512, 4096, torch.bfloat16, 1e-6),
+        ]),
+    ]
+
+
 class RmsNormNonContiguousFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype, eps", [
@@ -67,6 +77,26 @@ def test_rms_norm(m: int, n: int, dtype: torch.dtype, eps: float) -> None:
     else:
         tolerances = {"atol": 1.6e-2, "rtol": 1.6e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
+
+
+@RmsNormMultiDimFixture
+def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype, eps: float) -> None:
+    from tileops.ops import RmsNormOp
+
+    m = batch * seq
+    test = RmsNormTest(m, hidden, dtype, eps)
+    op = RmsNormOp(m, hidden, eps=eps, dtype=dtype)
+    # Feed 3D input directly — Op should flatten/unflatten internally
+    x = torch.randn(batch, seq, hidden, device='cuda', dtype=dtype)
+    weight = torch.randn(hidden, device='cuda', dtype=dtype)
+    ref = test.ref_program(x, weight)
+    result = op(x, weight)
+    assert result.shape == x.shape, f"Shape mismatch: {result.shape} vs {x.shape}"
+    if dtype == torch.float16:
+        tolerances = {"atol": 1e-2, "rtol": 1e-2}
+    else:
+        tolerances = {"atol": 1.6e-2, "rtol": 1.6e-2}
+    torch.testing.assert_close(result, ref, **tolerances)
 
 
 @RmsNormNonContiguousFixture

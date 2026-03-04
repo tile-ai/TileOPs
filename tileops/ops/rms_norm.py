@@ -43,8 +43,14 @@ class RmsNormOp(Op):
         return {"rms_norm_kernel": RmsNormKernel}
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
         x = x.contiguous()
         weight = weight.contiguous()
+
+        # Flatten arbitrary leading dims to 2D (M, N)
+        x = x.reshape(-1, self.N)
+        assert x.shape[0] == self.M, (
+            f"Total number of rows ({x.shape[0]}) does not match M={self.M}")
 
         if self.needs_padding:
             pad_size = self.padded_n - self.N
@@ -56,4 +62,4 @@ class RmsNormOp(Op):
         if self.needs_padding:
             y = y[:, :self.N]
 
-        return y
+        return y.reshape(orig_shape)
