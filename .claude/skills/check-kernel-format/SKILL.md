@@ -11,7 +11,7 @@ allowed-tools: Read, Grep, Glob
 
 First, read `docs/kernel-op-conventions.md` for correct code patterns and rationale.
 
----
+______________________________________________________________________
 
 ## 1. `T.prim_func` Structure (conventions §1)
 

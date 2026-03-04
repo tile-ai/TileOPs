@@ -3,7 +3,7 @@
 Reference for TileOps structural requirements. All kernel and op code must conform to these
 conventions before opening a PR. See `check-kernel-format` skill for the validation workflow.
 
----
+______________________________________________________________________
 
 ## 1. `T.prim_func` Structure
 
@@ -48,6 +48,7 @@ def _kernel_func(block_size: int, threads: int):
             for i in T.Parallel(block_size):
                 y[i] = x[i] * 2
 
+
 # CORRECT — T.Kernel inside @T.macro, called from @T.prim_func:
 @tilelang.jit(out_idx=[2, 3])
 def _kernel_func(block_size: int, threads: int):
@@ -64,7 +65,7 @@ def _kernel_func(block_size: int, threads: int):
 
 Reference implementation: `tileops/kernels/flash_decode/gqa_decode.py`.
 
----
+______________________________________________________________________
 
 ## 2. `Kernel` Class Structure
 
@@ -87,7 +88,7 @@ Requirements:
 - The `@torch.library.custom_op` + `.register_fake` wrapper exists for `torch.compile` /
   autograd compatibility, even if `forward` does not call it directly.
 
----
+______________________________________________________________________
 
 ## 3. `Op` Class Structure
 
@@ -112,25 +113,29 @@ Requirements:
 # WRONG — format conversion inside Kernel.forward:
 class MyKernel(Kernel):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_real = x.real.contiguous()          # ← PyTorch in Kernel!
+        x_real = x.real.contiguous()  # ← PyTorch in Kernel!
         x_imag = x.imag.contiguous()
         y_r, y_i = self.kernel(config)(x_real, x_imag)
-        return torch.complex(y_r, y_i)        # ← PyTorch in Kernel!
+        return torch.complex(y_r, y_i)  # ← PyTorch in Kernel!
+
 
 # CORRECT — Kernel.forward is pure TileLang invocation:
 class MyKernel(Kernel):
     def forward(self, x_real: Tensor, x_imag: Tensor) -> tuple[Tensor, Tensor]:
-        return self.kernel(self.config["block_size"], self.config["threads"])(x_real, x_imag)
+        return self.kernel(self.config["block_size"], self.config["threads"])(
+            x_real, x_imag
+        )
+
 
 class MyOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_real = x.real.contiguous()          # ← format conversion in Op ✓
+        x_real = x.real.contiguous()  # ← format conversion in Op ✓
         x_imag = x.imag.contiguous()
         y_r, y_i = self.kernel(x_real, x_imag)
-        return torch.complex(y_r, y_i)        # ← recombine in Op ✓
+        return torch.complex(y_r, y_i)  # ← recombine in Op ✓
 ```
 
----
+______________________________________________________________________
 
 ## 4. Tuning Requirements
 
@@ -150,7 +155,7 @@ class MyOp(Op):
 - Each optimization iteration is documented: what was tried, results before/after, and why
   optimization stopped.
 
----
+______________________________________________________________________
 
 ## References
 
