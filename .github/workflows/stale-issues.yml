@@ -12,27 +12,43 @@ jobs:
   close-stale-issues:
     runs-on: ubuntu-latest
     steps:
-      - name: Close issues inactive for 4 weeks
+      - name: Close issues with no comments for 4 weeks
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           CUTOFF=$(date -u -d "28 days ago" +%Y-%m-%dT%H:%M:%SZ)
-          echo "Closing issues with no activity since: $CUTOFF"
+          echo "Closing issues with no comment activity since: $CUTOFF"
 
           ISSUES=$(gh issue list \
             --repo "$GITHUB_REPOSITORY" \
             --state open \
-            --json number,title,updatedAt \
-            --jq ".[] | select(.updatedAt < \"$CUTOFF\") | .number")
+            --limit 500 \
+            --json number \
+            --jq '.[].number')
 
           if [ -z "$ISSUES" ]; then
-            echo "No stale issues found."
+            echo "No open issues found."
             exit 0
           fi
 
           for NUMBER in $ISSUES; do
-            echo "Closing #$NUMBER"
-            gh issue close "$NUMBER" \
+            LAST_COMMENT=$(gh issue view "$NUMBER" \
               --repo "$GITHUB_REPOSITORY" \
-              --comment "Closed automatically: no activity for 4 weeks."
+              --json comments \
+              --jq '[.comments[].createdAt] | sort | last // empty')
+
+            if [ -z "$LAST_COMMENT" ]; then
+              # No comments — fall back to issue creation time
+              LAST_COMMENT=$(gh issue view "$NUMBER" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json createdAt \
+                --jq '.createdAt')
+            fi
+
+            if [ "$LAST_COMMENT" '<' "$CUTOFF" ]; then
+              echo "Closing #$NUMBER (last activity: $LAST_COMMENT)"
+              gh issue close "$NUMBER" \
+                --repo "$GITHUB_REPOSITORY" \
+                --comment "Closed automatically: no comment activity for 4 weeks. Reopen if still relevant."
+            fi
           done

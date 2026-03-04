@@ -5,10 +5,10 @@ from .fp8_quant import Fp8QuantKernel
 from .topk_selector import TopkSelectorKernel
 
 __all__ = [
-    "SparseMlaKernel",
-    "mla_decode_kernel",
-    "mla_decode_ws_kernel",
     "Fp8LightingIndexerKernel",
     "Fp8QuantKernel",
+    "SparseMlaKernel",
     "TopkSelectorKernel",
+    "mla_decode_kernel",
+    "mla_decode_ws_kernel",
 ]
