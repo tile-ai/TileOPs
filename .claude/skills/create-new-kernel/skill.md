@@ -14,7 +14,7 @@ Base class: `tileops/kernels/kernel.py`
 | -------- | ------------ |
 | GPU      | H200 (sm90a) |
 | CUDA     | 12.9         |
-| TileLang | 0.1.7.post1  |
+| TileLang | 0.1.8        |
 
 Target architecture is `sm90a`. All kernels are developed and validated on this environment. Do not assume compatibility with older architectures unless explicitly tested.
 
