@@ -1,8 +1,8 @@
 #!/bin/bash
 # Poll GitHub PR status (CI checks + review comments) and return structured JSON
-# Usage: poll-pr-status.sh <owner/repo> <pr_number> [--interval 30] [--timeout 6000]
+# Usage: poll-pr-status.sh <owner/repo> <pr_number> [--interval 30] [--timeout 18000]
 #
-# Designed to run via Claude Code's Bash tool as a blocking call (timeout: 6060000).
+# Designed to run via Claude Code's Bash tool as a blocking call (timeout: 18060000).
 # The agent waits for this script to complete before processing the result.
 
 set -euo pipefail

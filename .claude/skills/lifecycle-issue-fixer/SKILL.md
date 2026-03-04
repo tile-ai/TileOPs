@@ -438,18 +438,18 @@ ______________________________________________________________________
 
 ## Error Handling
 
-| Situation                                | Behavior                                               |
-| ---------------------------------------- | ------------------------------------------------------ |
-| No argument provided                     | Ask user for issue number via `AskUserQuestion`        |
-| Issue not found (404)                    | Report error and **stop**                              |
-| Issue missing template sections          | Report missing sections and **stop**                   |
-| Issue assigned to someone else           | Report and **stop** — do not claim another's work      |
-| Issue is already closed                  | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
-| Issue has linked PR already              | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
-| TDD red phase passes unexpectedly        | Revise tests — they are not testing the right thing    |
-| Tests won't pass after reasonable effort | Escalate to user with what was tried and error details |
-| `lifecycle-pull-request` skill fails     | Fix reported issues, re-invoke the skill               |
-| Poll-handle loop exceeds 3 rounds        | Escalate to user with failure summary                  |
+| Situation                                          | Behavior                                               |
+| -------------------------------------------------- | ------------------------------------------------------ |
+| No argument provided                               | Ask user for issue number via `AskUserQuestion`        |
+| Issue not found (404)                              | Report error and **stop**                              |
+| Issue missing template sections                    | Report missing sections and **stop**                   |
+| Issue assigned to someone else                     | Report and **stop** — do not claim another's work      |
+| Issue is already closed                            | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
+| Issue has linked PR already                        | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
+| TDD red phase passes unexpectedly                  | Revise tests — they are not testing the right thing    |
+| Tests won't pass after reasonable effort           | Escalate to user with what was tried and error details |
+| `lifecycle-pull-request` skill fails               | Fix reported issues, re-invoke the skill               |
+| Poll-handle loop exits (timeout/repeated failures) | Escalate to user with failure summary and next steps   |
 
 ______________________________________________________________________
 

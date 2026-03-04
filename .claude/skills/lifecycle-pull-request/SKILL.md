@@ -18,7 +18,7 @@ description: Full PR lifecycle — commit, create PR, monitor CI, handle reviews
 Phase 1:   Skill("committing-changes")   →  BRANCH, COMMIT_MSG
 Phase 2:   Skill("creating-pull-request") →  PR_NUMBER, PR_URL (draft)
 Phase 2b:  Trigger Gemini review          →  comment `/gemini review` on the PR
-Phase 3-5: Poll-Handle Loop (CI + Copilot + Gemini reviews, max 3 fix-push rounds)
+Phase 3-5: Poll-Handle Loop (CI + Copilot + Gemini reviews)
 Phase 6:   Mark PR ready for review       →  triggers human reviewer notifications
 ```
 
