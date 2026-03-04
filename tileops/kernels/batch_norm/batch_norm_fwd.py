@@ -19,7 +19,6 @@ Performance notes:
     fixing poor occupancy for L values like 3136 = 2^6 * 7^2.
 """
 
-import itertools
 from typing import Callable, Optional
 
 import tilelang

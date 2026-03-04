@@ -7,15 +7,12 @@ Run:
     conda run -n tileops python -m pytest tests/ops/test_batch_norm.py -vvs
 """
 
-import math
-from typing import Tuple
 
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.batch_norm import BatchNormBwdOp, BatchNormFwdOp
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -107,8 +104,6 @@ class BatchNormBwdTest(TestBase):
         grad_out = torch.randn_like(x)
         # Need mean/rstd from a forward pass.
         x32 = x.float()
-        rm = running_mean.clone()
-        rv = running_var.clone()
         # Compute mean and rstd via native batch norm internals.
         C = self.C
         L = x32.numel() // C
@@ -173,7 +168,7 @@ def test_batch_norm_bwd(N, C, spatial, dtype):
         max_err = (got - ref).abs().max()
         assert torch.allclose(got, ref, atol=atol, rtol=rtol), \
             f"bwd {name} mismatch: max_err={max_err:.4e}"
-    print(f"test_batch_norm_bwd passed: grad_x/weight/bias all match")
+    print("test_batch_norm_bwd passed: grad_x/weight/bias all match")
 
 
 if __name__ == "__main__":

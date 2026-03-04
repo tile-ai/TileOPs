@@ -23,7 +23,6 @@ Performance notes:
     [256, 224, 192, 128, 96, 64, 32] for the best valid block_l.
 """
 
-import itertools
 from typing import Callable, Optional
 
 import tilelang

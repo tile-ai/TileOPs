@@ -13,9 +13,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_batch_norm import BatchNormFwdFixture, BatchNormBwdFixture
-from tileops.ops.batch_norm import BatchNormFwdOp, BatchNormBwdOp
-
+from tests.ops.test_batch_norm import BatchNormBwdFixture, BatchNormFwdFixture
+from tileops.ops.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 
 # ---------------------------------------------------------------------------
 # Benchmark classes
