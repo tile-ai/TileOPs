@@ -352,7 +352,7 @@ main() {
     # Fetch review threads (GraphQL)
     # threads_ok requires ALL three steps to succeed: fetch, filter, count.
     # If any step fails (including semantic GraphQL errors or jq parse failures),
-    # threads_ok stays false and the cycle cannot return "ready".
+    # threads_ok stays false and the cycle cannot reach actionable/done status.
     local threads_json
     if threads_json=$(fetch_review_threads); then
       local filtered_threads

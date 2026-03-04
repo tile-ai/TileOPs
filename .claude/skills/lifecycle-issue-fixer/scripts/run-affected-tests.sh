@@ -100,7 +100,7 @@ run_pytest_file() {
   local passed failed errors
   passed=$(echo "$pytest_output" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+' || echo 0)
   failed=$(echo "$pytest_output" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
-  errors=$(echo "$pytest_output" | grep -oE '[0-9]+ error' | tail -1 | grep -oE '[0-9]+' || echo 0)
+  errors=$(echo "$pytest_output" | grep -oE '[0-9]+ errors?' | tail -1 | grep -oE '[0-9]+' || echo 0)
 
   # Extract failure/error names if any
   local failures="[]"

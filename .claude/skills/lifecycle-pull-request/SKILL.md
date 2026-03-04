@@ -122,7 +122,7 @@ Run the poll script as a **blocking** Bash call:
 
 Use Bash tool with `timeout: 6060000` (covers the script's 100-minute timeout plus buffer).
 
-The script returns structured JSON with one of three statuses:
+The script returns structured JSON with one of four statuses:
 
 - **`actionable`** — CI failed or unresolved reviews exist. Handler must process, then re-poll.
 - **`done`** — CI all success + all threads resolved. Handler skips to Phase 6.

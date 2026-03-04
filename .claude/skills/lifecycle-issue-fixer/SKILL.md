@@ -88,7 +88,7 @@ Do NOT proceed until the template is valid.
 
 From the issue title, body, labels, and comments, extract:
 
-- **Type**: Parse `[TYPE]` from title (BUG, FEAT, PERF, REFACTOR, DOCS, TEST) — see Issue Type Mapping below
+- **Type**: Parse `[TYPE]` from title (BUG, FEAT, PERF, REFACTOR, DOCS, TEST, META, BENCHMARK) — see Issue Type Mapping below
 - **Component**: Parse `[COMPONENT]` from title if present
 - **Plan type**: Parse `<!-- type: proposal | fixed -->` comment from Plan section. Default: `proposal`
 - **Goal**: Content of `## Goal` section
