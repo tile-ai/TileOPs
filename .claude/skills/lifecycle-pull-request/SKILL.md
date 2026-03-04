@@ -107,7 +107,7 @@ After obtaining `PR_NUMBER`, enter the **poll-handle loop**.
 If context has been compressed (long-running workflow), read the context file to recover issue understanding:
 
 ```
-Read("docs/plans/issue-{N}-context.json")
+Read("docs/plans/issue-{number}-context.json")
 ```
 
 This file contains the issue goal, acceptance criteria, execution route, affected files, and code understanding — everything needed to make informed decisions when handling review feedback.
@@ -246,7 +246,7 @@ gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<PRRT
 After fixing CI or review issues, run local tests before pushing:
 
 ```bash
-.claude/skills/lifecycle-issue-fixer/scripts/run-affected-tests.sh docs/plans/issue-{N}-context.json
+.claude/skills/lifecycle-issue-fixer/scripts/run-affected-tests.sh docs/plans/issue-{number}-context.json
 ```
 
 If the context file is not available (standalone PR lifecycle without issue-fixer), skip this step.
