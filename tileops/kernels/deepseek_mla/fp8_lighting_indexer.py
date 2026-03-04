@@ -1,14 +1,12 @@
-# ruff: noqa
 import itertools
 from typing import Optional
 
 import tilelang
-from tilelang import language as T
 import torch
+from tilelang import language as T
 from tilelang.autotuner import autotune
 
 from tileops.kernels.kernel import Kernel
-# from utils import generate_random_cu_seqlens, per_custom_dims_cast_to_fp8
 
 __all__ = ["Fp8LightingIndexerKernel"]
 

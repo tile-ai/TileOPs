@@ -9,7 +9,7 @@ from tileops.utils import get_sm_version
 
 from .op import Op
 
-__all__ = ['GemmOp']
+__all__ = ["GemmOp"]
 
 
 class GemmOp(Op):

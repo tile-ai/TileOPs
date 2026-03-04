@@ -1,6 +1,6 @@
-# ruff: noqa
+from typing import Any, Callable, Optional
+
 import torch
-from typing import Optional, Any, Callable
 
 import tilelang
 from tilelang import language as T

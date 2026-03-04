@@ -100,9 +100,9 @@ def _gemv_wrapped_kernel(
 
 
 @_gemv_wrapped_kernel.register_fake
-def _(n: int, k: int,  # noqa: U100
-      dtype: str, block_n: int, reduce_threads: int, num_stages: int,  # noqa: U100
-      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:  # noqa: U100
+def _(n: int, k: int,
+      dtype: str, block_n: int, reduce_threads: int, num_stages: int,
+      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
     return torch.empty((n,), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
