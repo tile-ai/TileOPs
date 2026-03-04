@@ -1,0 +1,38 @@
+name: stale-issues
+
+permissions:
+  issues: write
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"  # Every Monday at 09:00 UTC
+  workflow_dispatch:
+
+jobs:
+  close-stale-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close issues inactive for 4 weeks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CUTOFF=$(date -u -d "28 days ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Closing issues with no activity since: $CUTOFF"
+
+          ISSUES=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --json number,title,updatedAt \
+            --jq ".[] | select(.updatedAt < \"$CUTOFF\") | .number")
+
+          if [ -z "$ISSUES" ]; then
+            echo "No stale issues found."
+            exit 0
+          fi
+
+          for NUMBER in $ISSUES; do
+            echo "Closing #$NUMBER"
+            gh issue close "$NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --comment "Closed automatically: no activity for 4 weeks."
+          done
