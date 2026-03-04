@@ -313,6 +313,8 @@ class FFTC2CLUTKernel(Kernel):
     Note:
         n must be a power of 2.
         The LUT tensors are managed and passed by FFTC2CLUTOp, not this class.
+
+    Optimization notes and benchmark results: https://github.com/tile-ai/TileOPs/issues/310
     """
 
     supported_archs = [75, 80, 86, 89, 90]
