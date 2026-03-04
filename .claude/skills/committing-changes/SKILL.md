@@ -36,8 +36,8 @@ CURRENT_BRANCH=$(git branch --show-current)
 **Decision logic:**
 
 1. **On `main` (or `master`)**: **STOP.** Error exit: "Cannot commit directly to main — create a feature branch first."
-2. **On a feature branch matching `type/scope/description`**: Already on a valid branch. **Skip Steps 1–2**, proceed directly to Step 3.
-3. **On any other branch** (e.g., worktree branch, temporary name): Proceed with Steps 1–2 to sync main and create a proper feature branch.
+1. **On a feature branch matching `type/scope/description`**: Already on a valid branch. **Skip Steps 1–2**, proceed directly to Step 3.
+1. **On any other branch** (e.g., worktree branch, temporary name): Proceed with Steps 1–2 to sync main and create a proper feature branch.
 
 This prevents destroying uncommitted work when called from `lifecycle-issue-fixer` (which already creates a worktree with implementation changes).
 

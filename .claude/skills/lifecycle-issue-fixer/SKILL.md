@@ -79,7 +79,7 @@ The issue body **MUST** contain these sections:
 
 **If any section is missing: STOP.** Report to the user:
 
-> "Issue #{number} is missing required sections: {list}. Please update the issue body with the required template before proceeding."
+> "Issue #\{number} is missing required sections: \{list}. Please update the issue body with the required template before proceeding."
 
 Do NOT proceed until the template is valid.
 
@@ -128,7 +128,7 @@ Print a summary to the user:
 >
 > **Execution route:** \{steps}
 >
-> **Acceptance criteria:** \{AC list}
+> **Acceptance criteria:** {AC list}
 >
 > Proceeding to Phase 2.
 
@@ -437,18 +437,18 @@ ______________________________________________________________________
 
 ## Error Handling
 
-| Situation                                       | Behavior                                               |
-| ----------------------------------------------- | ------------------------------------------------------ |
-| No argument provided                            | Ask user for issue number via `AskUserQuestion`        |
-| Issue not found (404)                           | Report error and **stop**                              |
-| Issue missing template sections                 | Report missing sections and **stop**                   |
-| Issue assigned to someone else                  | Report and **stop** — do not claim another's work      |
-| Issue is already closed                         | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
-| Issue has linked PR already                     | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
-| TDD red phase passes unexpectedly               | Revise tests — they are not testing the right thing    |
-| Tests won't pass after reasonable effort         | Escalate to user with what was tried and error details |
-| `lifecycle-pull-request` skill fails             | Fix reported issues, re-invoke the skill               |
-| Poll-handle loop exceeds 3 rounds               | Escalate to user with failure summary                  |
+| Situation                                | Behavior                                               |
+| ---------------------------------------- | ------------------------------------------------------ |
+| No argument provided                     | Ask user for issue number via `AskUserQuestion`        |
+| Issue not found (404)                    | Report error and **stop**                              |
+| Issue missing template sections          | Report missing sections and **stop**                   |
+| Issue assigned to someone else           | Report and **stop** — do not claim another's work      |
+| Issue is already closed                  | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
+| Issue has linked PR already              | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
+| TDD red phase passes unexpectedly        | Revise tests — they are not testing the right thing    |
+| Tests won't pass after reasonable effort | Escalate to user with what was tried and error details |
+| `lifecycle-pull-request` skill fails     | Fix reported issues, re-invoke the skill               |
+| Poll-handle loop exceeds 3 rounds        | Escalate to user with failure summary                  |
 
 ______________________________________________________________________
 

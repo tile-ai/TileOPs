@@ -5,7 +5,7 @@ description: Create a high-quality issue which conforms to the rules of TileOPs 
 
 ## Task
 
-$ARGUMENTS
+\$ARGUMENTS
 
 ## Reference
 
@@ -80,9 +80,9 @@ Assemble the body using either parsed arguments or smart defaults:
 **Smart defaults when no arguments are provided:**
 
 1. Goal: extracted from description
-2. Plan: `proposal` type, steps inferred from description
-3. Constraints: empty
-4. Acceptance Criteria: `"Modified files pass unit tests"` (always included as default)
+1. Plan: `proposal` type, steps inferred from description
+1. Constraints: empty
+1. Acceptance Criteria: `"Modified files pass unit tests"` (always included as default)
 
 ### Step 5: HARD GATE — Validate template completeness
 
@@ -110,15 +110,15 @@ ISSUEEOF
 
 Add the type label matching the issue TYPE:
 
-| Issue TYPE   | Label       |
-| ------------ | ----------- |
-| `FEAT`       | `feature`   |
-| `BUG`        | `fix`       |
-| `PERF`       | `perf`      |
-| `REFACTOR`   | `refactor`  |
-| `DOCS`       | `docs`      |
-| `TEST`       | `test`      |
-| `META`       | `chore`     |
+| Issue TYPE | Label      |
+| ---------- | ---------- |
+| `FEAT`     | `feature`  |
+| `BUG`      | `fix`      |
+| `PERF`     | `perf`     |
+| `REFACTOR` | `refactor` |
+| `DOCS`     | `docs`     |
+| `TEST`     | `test`     |
+| `META`     | `chore`    |
 
 ```bash
 gh issue edit {issue_number} --repo {owner}/{repo} --add-label "{label}"
@@ -128,12 +128,12 @@ gh issue edit {issue_number} --repo {owner}/{repo} --add-label "{label}"
 
 Print:
 
-> **Issue #{number} created:** {url}
+> **Issue #\{number} created:** \{url}
 >
-> - Title: {title}
-> - Type: {TYPE} | Component: {COMPONENT}
+> - Title: \{title}
+> - Type: \{TYPE} | Component: \{COMPONENT}
 > - Plan: {proposal|fixed}
-> - Labels: {labels}
+> - Labels: \{labels}
 
 ## Return format
 

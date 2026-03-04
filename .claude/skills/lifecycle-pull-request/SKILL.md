@@ -10,7 +10,7 @@ description: Full PR lifecycle — commit, create PR, monitor CI, handle reviews
 
 ## Arguments
 
-$ARGUMENTS
+\$ARGUMENTS
 
 ## Workflow
 
@@ -194,7 +194,7 @@ The poll script exposes **all** unresolved threads (including author-started one
 **If Type A (reviewer thread):**
 
 1. Classify the feedback: accept (fix + commit hash), decline (reason), or defer (create issue).
-2. **Reply** to the thread:
+1. **Reply** to the thread:
 
 ```bash
 gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
@@ -204,6 +204,7 @@ gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
 Use the `id` from the **last comment** in the thread's `comments` array as `comment_id`.
 
 Reply content rules:
+
 - **Accepting**: `"Accepted. Fixed X. See {commit_hash}."`
 - **Declining (future work)**: `"Declined for this PR — scope is limited to X. Tracked in #{issue}."` (also create a GitHub issue)
 - **Declining (invalid)**: `"Declined. {specific technical reason}."`
@@ -220,7 +221,7 @@ gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<PRRT
 
 **Step 4 — Handle resolve failure**: If the mutation fails:
 
-- Log: "Failed to resolve thread {thread_node_id}: {error_message}"
+- Log: "Failed to resolve thread \{thread_node_id}: \{error_message}"
 - **Continue processing remaining threads** — do NOT stop the loop
 - The unresolved thread will be picked up on the next poll cycle
 - If the same thread fails across multiple rounds, escalate to the user
