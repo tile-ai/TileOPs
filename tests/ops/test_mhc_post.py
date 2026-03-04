@@ -2,11 +2,11 @@
 
 from typing import Tuple
 
+import pytest
 import torch
 import torch.nn.functional as F
-import pytest
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import ManifoldConstrainedHyperConnectionPostOp
 
 

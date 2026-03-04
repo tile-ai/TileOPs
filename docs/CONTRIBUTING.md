@@ -113,8 +113,8 @@ Only after **2 Peer Approvals + 1 Mentor Approval + CI Passing** can the code be
 
 **Architecture & Design**
 
-- [ ] **4-Layer Compliance**: Does it cleanly separate `Kernel` -> `Op` -> `Function` -> `Layer`?
-- [ ] **API Design**: Is the L2, L3 and L4 interface Pythonic and standard?
+- [ ] **2-Layer Compliance**: Does it cleanly separate `Kernel` (L1) -> `Op` (L2)?
+- [ ] **API Design**: Is the L2 Op interface Pythonic and standard?
 - [ ] **Compatibility**: Is the L2 Op compatible with `torch.compile` and CUDA Graphs?
 
 **Maintenance**

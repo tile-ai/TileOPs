@@ -1,9 +1,9 @@
 from typing import Optional
 
-import torch
 import pytest
-
+import torch
 from tests.ops.test_gemv import GemvFixture, GemvTest
+
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GemvOp
 

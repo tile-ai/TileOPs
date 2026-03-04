@@ -3,8 +3,8 @@ from typing import Tuple
 import pytest
 import torch
 
-from tests.test_base import TestBase, FixtureBase
 from tests.nsa_utils import prepare_chunk_offsets, prepare_token_indices
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSACmpFwdVarlenOp
 
 

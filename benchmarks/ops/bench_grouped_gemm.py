@@ -3,13 +3,13 @@ from typing import Optional
 import pytest
 import torch
 
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_grouped_gemm import (
-    GroupedGemmFixture,
-    GroupedGemmTest,
     GroupedGemmCompleteFixture,
     GroupedGemmCompleteTest,
+    GroupedGemmFixture,
+    GroupedGemmTest,
 )
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedGemmOp
 
 

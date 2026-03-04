@@ -70,7 +70,7 @@ select = [
     # flake8-simplify
     "SIM",
     # isort
-    # "I",
+    "I",
     # pydocstyle (Google Docstrings)
     # "D",
     # pep8-naming (naming conventions)

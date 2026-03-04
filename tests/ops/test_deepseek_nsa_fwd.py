@@ -6,8 +6,8 @@ import pytest
 import torch
 from einops import rearrange, repeat
 
-from tests.test_base import TestBase, FixtureBase
 from tests.nsa_utils import prepare_token_indices
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSAFwdVarlenOp
 
 

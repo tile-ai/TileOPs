@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
 
 

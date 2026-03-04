@@ -362,7 +362,7 @@ Pass the following as args:
 > PR for issue #\{number}: \{title}.
 > PR title: `{pr_type_prefix} {description}` (see Issue Type Mapping).
 > PR body MUST include: `Closes #{number}`.
-> Labels: add the type label AND `all ai powered` label.
+> Labels: add the type label AND `all-ai-powered` label.
 
 The skill will:
 

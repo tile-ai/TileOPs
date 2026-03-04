@@ -1,13 +1,13 @@
 import math
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_fft_lut import FFTLUTTest
 from tests.test_base import FixtureBase
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import FFTC2COp, FFTC2CLUTOp
+from tileops.ops import FFTC2CLUTOp, FFTC2COp
 
 
 class FFTLUTBenchmarkFixture(FixtureBase):
