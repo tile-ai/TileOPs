@@ -25,7 +25,23 @@ For commit message format, see [template.txt](template.txt).
 
 Execute these steps in order. **Do NOT skip any HARD GATE.**
 
-### Step 1: Sync with main
+### Step 0: HARD GATE — Branch detection
+
+Check the current branch before anything else:
+
+```bash
+CURRENT_BRANCH=$(git branch --show-current)
+```
+
+**Decision logic:**
+
+1. **On `main` (or `master`)**: Proceed with Steps 1–2 to create a feature branch. If you have uncommitted work on `main`, stash or create a branch first.
+1. **On a feature branch matching `type/scope/description`**: Already on a valid branch. **Skip Steps 1–2**, proceed directly to Step 3.
+1. **On any other branch** (e.g., worktree branch, temporary name): Proceed with Steps 1–2 to sync main and create a proper feature branch.
+
+This prevents destroying uncommitted work when called from `lifecycle-issue-fixer` (which already creates a worktree with implementation changes).
+
+### Step 1: Sync with main (skip if already on feature branch)
 
 ```bash
 git fetch origin
@@ -33,7 +49,7 @@ git switch main
 git pull --ff-only
 ```
 
-### Step 2: Create feature branch
+### Step 2: Create feature branch (skip if already on feature branch)
 
 Branch name format: `type/scope/description` (all lowercase, hyphens for separators).
 

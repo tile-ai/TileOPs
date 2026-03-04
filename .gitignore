@@ -62,3 +62,4 @@ secrets.yaml
 secrets.yml
 
 docs/plans/
+.humanize*
