@@ -307,34 +307,104 @@ If code can be improved without changing behavior:
 
 ______________________________________________________________________
 
-## Phase 5: Verify
+## Phase 5: Verify (Independent Verification Subagent)
 
-**Goal:** Confirm the implementation is correct and causes no regressions before creating a PR.
+**Goal:** Confirm the implementation is correct and causes no regressions before creating a PR. Verification is performed by an **independent subagent** — the implementer (main agent) does not judge its own work.
 
-### 5a. Run full test suite from context
+### 5a. Dispatch verification subagent
 
-```bash
-.claude/skills/lifecycle-issue-fixer/scripts/run-affected-tests.sh docs/plans/issue-{number}-context.json
+The main agent **MUST** dispatch a subagent to perform verification. The subagent's sole input is `context.json` — it reads `acceptance_criteria`, `test_targets`, and `bench_targets` from this file and independently verifies each criterion.
+
+```
+Task(
+  subagent_type="general-purpose",
+  prompt="You are an independent verification agent. Your job is to verify that
+  the implementation satisfies ALL acceptance criteria defined in the context file.
+
+  Context file: docs/plans/issue-{number}-context.json
+
+  Read the context file and verify EACH acceptance criterion independently.
+  For each criterion, determine the appropriate verification method and execute it.
+  Report pass/fail with concrete evidence for every criterion.
+
+  See the Verification Examples section below for guidance on common verification patterns."
+)
 ```
 
-Verify ALL tests and benchmarks pass.
+### 5b. Verification examples
 
-### 5b. Check acceptance criteria
+The subagent determines how to verify each AC based on its content. Below are common patterns:
 
-Read `acceptance_criteria` from `docs/plans/issue-{number}-context.json`. For each criterion:
+#### Example: Unit test verification
 
-- Verify it is satisfied
-- Document the evidence
+AC: `"Modified files pass unit tests"`
 
-### 5c. Report
+```bash
+# Run the test targets listed in context.json
+PYTHONPATH="$PWD" python -m pytest -v tests/ops/test_gemv.py --tb=short -q
+```
 
-Print a verification summary:
+Evidence: `"8 passed, 0 failed"`
 
-> **Verification complete:**
+#### Example: Benchmark execution and data collection
+
+AC: `"GEMV kernel benchmark runs successfully and performance data is collected"`
+
+```bash
+# Run the benchmark target listed in context.json
+PYTHONPATH="$PWD" python -m pytest -v benchmarks/ops/bench_gemv.py --tb=short -q 2>&1
+```
+
+To extract performance data from benchmark output, look for lines containing metrics like `TFLOPS`, `GB/s`, `latency`, `ms`, `us`, etc. Format results as a markdown table:
+
+```markdown
+| Shape | Metric | Value |
+|-------|--------|-------|
+| M=4096, N=4096, K=4096 | Throughput | 523.4 TFLOPS |
+| M=8192, N=8192, K=8192 | Throughput | 498.1 TFLOPS |
+```
+
+This table should be included in the verification report so the main agent can embed it in the PR body's `## Benchmark` section.
+
+#### Example: Performance threshold verification
+
+AC: `"GEMV throughput >= 500 TFLOPS on H200"`
+
+Run the benchmark as above, extract the throughput value, and compare against the threshold. Evidence: `"Measured 523.4 TFLOPS >= 500 TFLOPS threshold — PASS"` or `"Measured 480.2 TFLOPS < 500 TFLOPS threshold — FAIL"`.
+
+#### Example: API compatibility verification
+
+AC: `"Public API signature unchanged"`
+
+```bash
+# Check that the function signature matches expected
+python -c "import inspect; from tileops.ops.gemv import gemv; print(inspect.signature(gemv))"
+```
+
+Evidence: `"Signature: (A, B, bias=None) — matches expected"`
+
+#### Other criteria
+
+For criteria not covered by the examples above, the subagent should use its judgment to determine the appropriate verification method — run commands, read files, check outputs, etc. The key requirement is that every criterion must have **concrete evidence** (command output, file content, measured values), not just assertions.
+
+### 5c. HARD GATE — Subagent must pass
+
+The main agent reads the subagent's verification report:
+
+- **ALL criteria pass**: Proceed to Phase 6.
+- **Any criterion fails**: Fix the failing items, update context.json if needed, and re-dispatch the verification subagent. Do NOT proceed until all criteria pass.
+- **Benchmark data collected**: Save the benchmark table for inclusion in the PR body.
+
+### 5d. Report
+
+Print the verification summary from the subagent:
+
+> **Verification complete (independent subagent):**
 >
 > - Tests: \{N} passed, \{M} failed
 > - Benchmarks: \{N} passed, \{M} failed
 > - Acceptance criteria: \{X}/\{Y} met
+> - Benchmark data: {table or "N/A"}
 > - Ready for PR: {yes/no}
 
 If any verification fails, fix the issues before proceeding. If unable to fix after reasonable effort, escalate to the user.
