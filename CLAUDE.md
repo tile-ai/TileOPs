@@ -34,3 +34,4 @@ TileOPs (TOP) is a high-performance LLM operator library built on TileLang. The 
 | `lifecycle-pull-request` | Full PR lifecycle end-to-end: commit, create PR, monitor CI, handle reviews (composes the above two skills)             |
 | `creating-issue`         | Use when filing a GitHub issue: title format, body structure, and TileOPs conventions                                   |
 | `lifecycle-issue-fixer`  | End-to-end issue resolution: read issue, worktree, explore, TDD, verify, and create PR with full lifecycle              |
+| `check-kernel-format`    | Run after kernel+op delivery or tuning to verify all structural requirements before opening a PR                        |
