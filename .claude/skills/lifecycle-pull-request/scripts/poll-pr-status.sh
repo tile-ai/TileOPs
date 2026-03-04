@@ -374,14 +374,35 @@ main() {
 
     log_info "Elapsed: ${elapsed}s | CI: ${ci_state} | Inline comments: $(echo "$inline_comments" | jq 'length' || echo '?') | Reviews: $(echo "$review_bodies" | jq 'length' || echo '?') | Fetches OK: ci=$ci_ok threads=$threads_ok reviews=$pr_reviews_ok"
 
-    # Termination: CI done + at least one interval elapsed + all fetches succeeded this cycle
-    if [[ "$ci_state" != "pending" ]] && [[ $elapsed -ge $INTERVAL ]]; then
-      if [[ "$ci_ok" == "true" ]] && [[ "$threads_ok" == "true" ]] && [[ "$pr_reviews_ok" == "true" ]]; then
-        log_info "CI completed (${ci_state}) and all fetches succeeded. Returning results."
+    # Termination: return as soon as there is something actionable for the handler.
+    # Must have waited at least one interval (give bots time to post) and all
+    # fetches must have succeeded in this cycle (no stale data).
+    if [[ $elapsed -ge $INTERVAL ]] && \
+       [[ "$ci_ok" == "true" ]] && [[ "$threads_ok" == "true" ]] && [[ "$pr_reviews_ok" == "true" ]]; then
+
+      local has_ci_failure=false
+      local has_reviews=false
+      local inline_count
+      local review_count
+
+      [[ "$ci_state" == "failure" ]] && has_ci_failure=true
+      inline_count=$(echo "$inline_comments" | jq 'length' 2>/dev/null || echo 0)
+      review_count=$(echo "$review_bodies" | jq 'length' 2>/dev/null || echo 0)
+      [[ "$inline_count" -gt 0 ]] || [[ "$review_count" -gt 0 ]] && has_reviews=true
+
+      # Return ready when: CI failure (needs fix), or reviews exist (need handling),
+      # or CI fully done (success/failure, not pending) — whichever comes first.
+      if [[ "$has_ci_failure" == "true" ]] || [[ "$has_reviews" == "true" ]] || [[ "$ci_state" != "pending" ]]; then
+        log_info "Actionable state detected (ci=$ci_state, threads=$inline_count, reviews=$review_count). Returning results."
         output_json "ready" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
         exit 0
       fi
-      log_info "CI completed but review fetches incomplete (threads=$threads_ok, reviews=$pr_reviews_ok). Retrying..."
+    fi
+
+    # If fetches failed, keep polling (don't return with stale data)
+    if [[ $elapsed -ge $INTERVAL ]] && \
+       { [[ "$ci_ok" != "true" ]] || [[ "$threads_ok" != "true" ]] || [[ "$pr_reviews_ok" != "true" ]]; }; then
+      log_info "Fetch(es) incomplete (ci=$ci_ok, threads=$threads_ok, reviews=$pr_reviews_ok). Retrying..."
     fi
 
     sleep "$INTERVAL"
