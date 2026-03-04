@@ -51,7 +51,14 @@ Assemble the body using either parsed arguments or smart defaults:
 
 ```markdown
 ## Description
-{extracted from natural language description in $ARGUMENTS}
+### Symptom / Motivation
+{What is observed or what motivates this change}
+
+### Root Cause Analysis
+{Why it happens — file paths, logic errors, missing features, etc. Use "N/A" for feature requests}
+
+### Related Files
+{Key files, functions, or configurations involved}
 
 ## Goal
 {extracted from description, or ask user if unclear}
@@ -81,7 +88,7 @@ Assemble the body using either parsed arguments or smart defaults:
 
 Before creating, verify ALL required sections are present and non-empty:
 
-- `## Description` — must not be empty
+- `## Description` — must contain `### Symptom / Motivation` (non-empty)
 - `## Goal` — must not be empty
 - `## Plan` — must contain at least one step (line starting with `- `)
 - `## Acceptance Criteria` — must contain at least one checkbox (`- [ ]`)
