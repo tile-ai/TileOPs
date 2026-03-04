@@ -1,4 +1,5 @@
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
+from .fft import FFTC2COp, FFTC2CLUTOp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .topk_selector import TopkSelectorOp
 from .fp8_quant import Fp8QuantOp
@@ -40,4 +41,6 @@ __all__ = [
     "GQAWindowSlidingOp",
     "ManifoldConstrainedHyperConnectionPreOp",
     "ManifoldConstrainedHyperConnectionPostOp",
+    "FFTC2COp",
+    "FFTC2CLUTOp",
 ]
