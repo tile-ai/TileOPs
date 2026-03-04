@@ -125,7 +125,7 @@ class RmsNormKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [1, 2, 4, 8]
+        block_m = [1, 2, 4]
         threads = [128, 256]
         _configs = list(itertools.product(block_m, threads))
         return [{"block_m": c[0], "threads": c[1]} for c in _configs]
