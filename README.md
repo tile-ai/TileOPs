@@ -71,12 +71,14 @@ python -m pytest tests/ -q  # run the test suite (requires a CUDA GPU)
 import torch
 from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
-# Instantiate the op
-op = GroupQueryAttentionDecodeWithKVCacheOp()
-
-# Generate inputs
+# Define shapes and data type
 B, H, G, S_kv, D = 1, 32, 4, 1024, 128  # batch, heads, groups, seq_len, dim
 dtype = torch.float16
+
+# Instantiate the op
+op = GroupQueryAttentionDecodeWithKVCacheOp(B, H, G, S_kv, D, dtype=dtype)
+
+# Generate inputs
 q = torch.randn(B, H, D, device="cuda", dtype=dtype)
 k_cache = torch.randn(B, S_kv, G, D, device="cuda", dtype=dtype)
 v_cache = torch.randn(B, S_kv, G, D, device="cuda", dtype=dtype)
