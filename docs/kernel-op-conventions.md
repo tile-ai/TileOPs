@@ -39,28 +39,38 @@ Rules:
 ### Correct vs. incorrect T.macro usage
 
 ```python
+# n is a closure variable captured from _make_kernel(n, ...) — the pattern
+# shown here; n_blocks is derived from it.
+
+
 # WRONG — T.Kernel directly in @T.prim_func:
-@tilelang.jit(out_idx=[2, 3])
-def _kernel_func(block_size: int, threads: int):
-    @T.prim_func
-    def _main(x: T.Tensor, y: T.Tensor):
-        with T.Kernel(n_blocks, threads=threads) as bx:  # ← WRONG
-            for i in T.Parallel(block_size):
-                y[i] = x[i] * 2
+def _make_kernel(n: int):
+    n_blocks = n // block_size  # closure variable
+
+    @tilelang.jit(out_idx=[1])
+    def _kernel_func(block_size: int, threads: int):
+        @T.prim_func
+        def _main(x: T.Tensor, y: T.Tensor):
+            with T.Kernel(n_blocks, threads=threads) as bx:  # ← WRONG
+                for i in T.Parallel(block_size):
+                    y[i] = x[i] * 2
 
 
 # CORRECT — T.Kernel inside @T.macro, called from @T.prim_func:
-@tilelang.jit(out_idx=[2, 3])
-def _kernel_func(block_size: int, threads: int):
-    @T.macro
-    def compute_kernel(x: T.Tensor, y: T.Tensor):
-        with T.Kernel(n_blocks, threads=threads) as bx:  # ← CORRECT
-            for i in T.Parallel(block_size):
-                y[i] = x[i] * 2
+def _make_kernel(n: int):
+    n_blocks = n // block_size  # closure variable
 
-    @T.prim_func
-    def _main(x: T.Tensor, y: T.Tensor):
-        compute_kernel(x, y)  # ← just call the macro
+    @tilelang.jit(out_idx=[1])
+    def _kernel_func(block_size: int, threads: int):
+        @T.macro
+        def compute_kernel(x: T.Tensor, y: T.Tensor):
+            with T.Kernel(n_blocks, threads=threads) as bx:  # ← CORRECT
+                for i in T.Parallel(block_size):
+                    y[i] = x[i] * 2
+
+        @T.prim_func
+        def _main(x: T.Tensor, y: T.Tensor):
+            compute_kernel(x, y)  # ← just call the macro
 ```
 
 Reference implementation: `tileops/kernels/flash_decode/gqa_decode.py`.
