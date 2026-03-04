@@ -98,6 +98,24 @@ jobs:
               AUTHOR_LABEL="human-led"
             fi
 
+            # Ensure authorship labels are mutually exclusive
+            if [ "$AUTHOR_LABEL" = "all-ai-powered" ]; then
+              OTHER_AUTHOR_LABEL="human-led"
+            else
+              OTHER_AUTHOR_LABEL="all-ai-powered"
+            fi
+
+            if echo "$CURRENT_LABELS" | grep -qx "$OTHER_AUTHOR_LABEL"; then
+              gh pr edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$OTHER_AUTHOR_LABEL"
+              echo "Removed authorship label: $OTHER_AUTHOR_LABEL"
+            fi
+
+            # Ensure authorship label exists (create if missing)
+            if ! gh label list --repo "$GITHUB_REPOSITORY" --search "$AUTHOR_LABEL" --json name --jq '.[].name' | grep -qx "$AUTHOR_LABEL"; then
+              gh label create "$AUTHOR_LABEL" --repo "$GITHUB_REPOSITORY" --description "Auto-created by labeler" --force
+              echo "Created authorship label: $AUTHOR_LABEL"
+            fi
+
             if ! echo "$CURRENT_LABELS" | grep -qx "$AUTHOR_LABEL"; then
               gh pr edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$AUTHOR_LABEL"
               echo "Applied authorship label: $AUTHOR_LABEL"
