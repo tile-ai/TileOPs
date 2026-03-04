@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Defaults
 INTERVAL=30
-TIMEOUT=6000
+TIMEOUT=18000
 OWNER_REPO=""
 PR_NUMBER=""
 

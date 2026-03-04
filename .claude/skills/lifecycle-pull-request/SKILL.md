@@ -120,7 +120,7 @@ Run the poll script as a **blocking** Bash call:
 .claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}
 ```
 
-Use Bash tool with `timeout: 6060000` (covers the script's 100-minute timeout plus buffer).
+Use Bash tool with `timeout: 18060000` (covers the script's 5-hour timeout plus buffer).
 
 The script returns structured JSON with one of four statuses:
 
@@ -274,9 +274,19 @@ Report:
 
 ### Loop constraints
 
-- **Max 3 fix-push rounds.** After 3 cycles still failing → escalate to user.
-- Each "round" = one poll + one fix + one push. Passive waiting (pending CI) does NOT count.
-- Re-poll after fix counts as the next round.
+**No fixed round limit.** The loop continues until `done` or an exit condition is met.
+
+**Script-level exit conditions** (handled by `poll-pr-status.sh`):
+
+- `done` — CI success + all threads resolved → proceed to Phase 6
+- `timeout` — 5 hours (18000s) elapsed with CI still pending → report to user
+- `error` — 5 consecutive fetch failures → report to user
+
+**Agent-level exit conditions** (you must track across rounds):
+
+- **Same CI check name fails 3 times** and you cannot fix it (e.g., upstream test failure on main) → report to user with evidence that the failure pre-exists on main
+- **Same review issue reappears 3 times** after you've addressed it → report to user
+- In both cases, explain what was tried and why the issue is beyond this PR's scope
 
 ______________________________________________________________________
 
