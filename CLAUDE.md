@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-TileOPs (TOP) is a high-performance LLM operator library built on TileLang. The goal is to provide efficient, modular, and maintainable AI workload implementations.
+TileOPs is a high-performance LLM operator library built on TileLang. The goal is to provide efficient, modular, and maintainable AI workload implementations.
 
 ## Development Environment
 

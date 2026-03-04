@@ -5,7 +5,7 @@ import torch
 from tests.ops.test_gemv import GemvFixture, GemvTest
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import GemvOp
+from tileops.ops import GemmOp
 
 
 class GemvBenchmark(BenchmarkBase):
@@ -24,7 +24,7 @@ def test_gemv_bench(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
     bm = GemvBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = GemvOp(n, k, dtype=dtype, tune=tune)
+    op = GemmOp(1, n, k, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("gemv", locals(), result, tag="tileops")
 

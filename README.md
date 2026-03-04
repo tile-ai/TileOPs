@@ -1,6 +1,6 @@
 <div align="center">
   <img src="https://raw.githubusercontent.com/tile-ai/TileOPs/main/assets/logo.png" width="350"/>
-  <h1>TileOPs (TOP): Operator Library for LLMs Built on TileLang</h1>
+  <h1>TileOPs: Operator Library for LLMs Built on TileLang</h1>
   <!-- <p>
     <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version" height="20"></a>
   </p> -->
@@ -11,7 +11,7 @@
   </p>
 </div>
 
-**TileOPs (TOP)** is a high-performance operator library for large language models (LLMs) built on **[TileLang](https://github.com/tile-ai/tilelang)**. It offers efficient, modular, and composable implementations for AI workloads, especially for LLMs.
+**TileOPs** is a high-performance operator library for large language models (LLMs) built on **[TileLang](https://github.com/tile-ai/tilelang)**. It offers efficient, modular, and composable implementations for AI workloads, especially for LLMs.
 
 > ⚠️ **Status**: TileOPs is under active and rapid development. APIs and features may change.
 
@@ -25,35 +25,7 @@ The core features of TileOPs include:
 
 - **Auto-Tuning**: Built-in auto-tuning support to explore tile sizes, pipelines, and scheduling parameters, enabling kernels to adapt efficiently to different GPU architectures and workload characteristics with minimal manual effort.
 - **CUDA-Graph and torch.compile Compatibility**: TileOPs APIs are fully compatible with CUDA-Graph capture and PyTorch `torch.compile`, allowing seamless integration into modern training and inference pipelines with reduced launch overhead and improved end-to-end performance.
-
-<!-- * **torch.autograd Compatibility**: -->
-
 - **Lightweight Dependencies**: TileOPs depends only on TileLang, PyTorch, and einops, keeping the software stack minimal and easy to integrate.
-
-## Benchmark Summary
-
-TODO
-
-<!-- DeepSeek Sparse Attention Decode
-
-![DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM](https://raw.githubusercontent.com/tile-ai/TileOPs/main/docs/figures/sparse_mla_perf.png)
-*DeepSeek-V3.2-Exp DeepSeek Sparse Attention (DSA) performance on H800 SXM* -->
-
-## Support Matrix
-
-TODO
-
-<!-- **Legend**: ✔ Optimized in tests / ● Functional support / ✗ Not supported yet / N/A Not Applicable
-
-| **Operator** | **FWD** | **BWD** | **Data Type** | **Tested Platform** |
-|:------------:|:-------:|:-------:|:-------------:|:-------------------:|
-| DeepSeek Sparse Attention (DSA) Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90) |
-| DeepSeek Multi-Head Latent Attention (MLA) Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90) |
-| Multi-Head Attention | ✔ | ● | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
-| Group Query Attention | ✔ | ● | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
-| Multi-Head Attention Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
-| Group Query Attention Decode | ✔ | N/A | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) |
-| MatMul | ✔ | ● | BF16/FP16 | Hopper(SM_90)/Ampere(SM_80/SM_86) | -->
 
 ## 📦 Install with pip
 
@@ -95,24 +67,23 @@ python -m pytest tests/ -q  # run the test suite (requires a CUDA GPU)
 
 ## 🚀 Quick Start
 
-TODO
-
-<!-- ### Example: Group-Query Attention Decode
-
-```Python
+```python
 import torch
-from tileops.ops import gqa_decode_with_kvcache
+from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
+
+# Instantiate the op
+op = GroupQueryAttentionDecodeWithKVCacheOp()
 
 # Generate inputs
 B, H, G, S_kv, D = 1, 32, 4, 1024, 128  # batch, heads, groups, seq_len, dim
 dtype = torch.float16
-q = torch.randn(B, H, D, device='cuda', dtype=dtype)
-k_cache = torch.randn(B, S_kv, G, D, device='cuda', dtype=dtype)
-v_cache = torch.randn(B, S_kv, G, D, device='cuda', dtype=dtype)
+q = torch.randn(B, H, D, device="cuda", dtype=dtype)
+k_cache = torch.randn(B, S_kv, G, D, device="cuda", dtype=dtype)
+v_cache = torch.randn(B, S_kv, G, D, device="cuda", dtype=dtype)
 
-# Call op, k_cache and v_cache are updated in-place
-output = gqa_decode_with_kvcache(q, k_cache, v_cache)
-``` -->
+# Run the operator
+output = op(q, k_cache, v_cache)
+```
 
 ## Documents
 
@@ -121,4 +92,4 @@ output = gqa_decode_with_kvcache(q, k_cache, v_cache)
 TileOPs is structured around two hierarchical key concepts, each representing a distinct level of abstraction. Higher-level components are composed from, or delegate execution to, the next lower level.
 
 - **Op**: determines the implementation for a given shape and hardware, dispatching to the correct **Kernel** and providing unit test and benchmark. Ops are fully compatible with CUDA-Graph capture and `torch.compile`.
-- **Kernel**: Tilelang-based kernels with hardware-specific optimizations.
+- **Kernel**: TileLang-based kernels with hardware-specific optimizations.
