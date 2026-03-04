@@ -1,8 +1,7 @@
 from typing import Any, Callable, Optional
 
-import torch
-
 import tilelang
+import torch
 from tilelang import language as T
 
 from tileops.kernels.kernel import Kernel
