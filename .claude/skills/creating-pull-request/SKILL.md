@@ -88,11 +88,6 @@ Authorship label (**required**):
 
 - `all-ai-powered` — always add this label (you are an AI creating this PR)
 
-Additional labels (stack as needed):
-
-- `help wanted` — needs extra attention
-- `good first issue` — suitable for newcomers
-
 ```bash
 gh pr edit <PR_NUMBER> --add-label "<label1>" --add-label "<label2>"
 ```
