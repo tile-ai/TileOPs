@@ -20,6 +20,66 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  select_docs_only:
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.detect.outputs.docs_only }}
+      reason: ${{ steps.detect.outputs.reason }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect docs-only change
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          docs_only=false
+          reason="code-change-default"
+
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              base="${{ github.event.pull_request.base.sha }}"
+              head="${{ github.event.pull_request.head.sha }}"
+            else
+              base="${{ github.event.before }}"
+              head="${{ github.sha }}"
+            fi
+
+            if [[ -z "$base" || "$base" == "0000000000000000000000000000000000000000" ]]; then
+              reason="missing-base-sha"
+            else
+              mapfile -t files < <(git diff --name-only "$base" "$head")
+              if [[ "${#files[@]}" -gt 0 ]]; then
+                docs_only=true
+                for f in "${files[@]}"; do
+                  [[ -z "$f" ]] && continue
+                  if [[ "$f" == docs/* || "$f" == *.md || "$f" == LICENSE* || "$f" == NOTICE* ]]; then
+                    continue
+                  fi
+                  docs_only=false
+                  break
+                done
+                if [[ "$docs_only" == "true" ]]; then
+                  reason="docs-only-change"
+                else
+                  reason="code-change-detected"
+                fi
+              else
+                reason="no-diff-files"
+              fi
+            fi
+          else
+            reason="manual-dispatch"
+          fi
+
+          echo "docs_only=${docs_only}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          echo "docs_only=${docs_only} (${reason})"
+
   pre-commit:
     if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
@@ -174,9 +234,10 @@ jobs:
           rm -rf "${VENV_PATH}"
         shell: bash
 
-  tileops_test_release:
+  tileops_unit_test:
+    needs: [select_docs_only]
     # needs: pre-commit
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && needs.select_docs_only.outputs.docs_only != 'true' }}
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
@@ -254,7 +315,7 @@ jobs:
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           echo "PYTHONPATH=$PYTHONPATH"
           set -o pipefail
-          python -m pytest -q tests  | tee tileops_test_release.log
+          python -m pytest -q tests  | tee tileops_unit_test.log
         shell: bash
 
       - name: Cleanup venv
@@ -271,6 +332,6 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()  # Equivalent to when: always
         with:
-          name: tileops_test_release.log
-          path: tileops_test_release.log
+          name: tileops_unit_test.log
+          path: tileops_unit_test.log
           retention-days: 7  # Equivalent to expire_in: 1 week
