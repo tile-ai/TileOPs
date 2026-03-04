@@ -1,12 +1,12 @@
 ---
 name: check-kernel-format
-description: Checklist for verifying that a TileOps Kernel and Op conform to all format requirements. Run this after creating a new op AND after tuning.
+description: Checklist for verifying that a TileOps Kernel and Op conform to all format requirements. Run this after completing kernel+op delivery AND after tuning.
 ---
 
 # Kernel Format Checklist
 
-> **When to run**: after `create-new-op` completes **and** again after `tune` completes.
-> This checklist consolidates all structural requirements from `create-new-op`, `tune`, and lessons learned in sessions. If any item fails, fix it before opening a PR.
+> **When to run**: after completing kernel+op delivery via `migrating-new-op` **and** again after `tune` completes.
+> This checklist consolidates all structural requirements from `migrating-new-op`, `tune`, and lessons learned in sessions. If any item fails, fix it before opening a PR.
 
 ______________________________________________________________________
 
@@ -46,12 +46,12 @@ ______________________________________________________________________
 
 ## 4. Tuning Requirements
 
-- [ ] **Iterative optimization protocol followed**: All known optimizations from `.claude/skills/tune/skill.md` §6 have been applied recursively until no further improvements are possible or performance is within 5-10% of reference implementation
-- [ ] If the kernel algorithm contains any matrix-multiplication (GEMV, GEMM, batch matmul, or a dot-product reduction loop), consult `.claude/skills/tune-multiplication/skill.md` for applicable patterns (coalescing, warp reduction, pipeline stages, tile sizes, autotune search space) and document which patterns were applied or ruled out
-- [ ] All serial / sequential computation has been evaluated for restructuring with `T.Parallel`, `T.copy`, or `T.Pipelined`; the decision (apply or rule out with justification) is documented in the op-specific tune skill
-- [ ] Autotune covers all hardware-aligned config values; search space is documented in the op-specific `tune-<op>/skill.md`
-- [ ] Benchmark results (latency, BW/TFLOPs vs baseline) are recorded in the op-specific tune skill
-- [ ] Each optimization iteration is documented: what was tried, benchmark results before/after, why optimization stopped
+- [ ] **Iterative optimization protocol followed**: all known optimizations from `tune/skill.md` have been applied recursively until no further improvements are possible or performance is within 5–10% of the reference implementation
+- [ ] If the kernel contains matrix-multiplication (GEMV, GEMM, batch matmul, or a dot-product reduction loop), consult `tune-multiplication/skill.md` for applicable patterns (coalescing, warp reduction, pipeline stages, tile sizes, autotune search space) and document which were applied or ruled out
+- [ ] All serial / sequential computation has been evaluated for restructuring with `T.Parallel`, `T.copy`, or `T.Pipelined`; the decision (apply or rule out with justification) is recorded in the PR description or a `docs/` file
+- [ ] Autotune covers all hardware-aligned config values; search space is documented in PR description or comments
+- [ ] Benchmark results (latency, BW/TFLOPs vs baseline) are recorded in PR description or a `docs/` file
+- [ ] Each optimization iteration is documented: what was tried, results before/after, and why optimization stopped
 
 ______________________________________________________________________
 
@@ -117,7 +117,7 @@ ______________________________________________________________________
 
 ## References
 
-- `.claude/skills/create-new-op/skill.md` — Op/Kernel architecture and registration
-- `.claude/skills/tune/skill.md` — Benchmarking methodology and pre-benchmark checklist
+- `.claude/skills/migrating-new-op/SKILL.md` — Op/Kernel delivery workflow and checklist
+- `.claude/skills/tune/skill.md` — Benchmarking methodology and nsys analysis
 - `.claude/skills/tune-multiplication/skill.md` — Matmul/GEMV tuning patterns
 - `.claude/skills/kernel-debug/skill.md` — TileLang debugging techniques (T.alloc_var, tile-op restrictions, precision issues)
