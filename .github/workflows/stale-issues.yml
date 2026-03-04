@@ -36,7 +36,7 @@ jobs:
                       nodes {
                         number
                         createdAt
-                        labels(first: 10) { nodes { name } }
+                        labels(first: 100) { nodes { name } }
                         comments(last: 1) { nodes { createdAt } }
                       }
                     }
@@ -51,7 +51,7 @@ jobs:
                       nodes {
                         number
                         createdAt
-                        labels(first: 10) { nodes { name } }
+                        labels(first: 100) { nodes { name } }
                         comments(last: 1) { nodes { createdAt } }
                       }
                     }
