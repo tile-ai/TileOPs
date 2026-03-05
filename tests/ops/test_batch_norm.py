@@ -28,6 +28,8 @@ class BatchNormFwdFixture(FixtureBase):
             (32, 256, (),        torch.bfloat16, True),
             # BatchNorm1d – (N, C, L)
             (16, 64,  (512,),    torch.float16,  True),
+            # Non-persistent path (L > 8192): smallest representative case L=16384.
+            (4,  64,  (64, 64),  torch.float16,  True),
             # BatchNorm2d – (N, C, H, W)
             (8,  64,  (1024, 1024),  torch.float16,  True),
             (8,  64,  (2048, 2048),  torch.float16,  False),
@@ -43,6 +45,8 @@ class BatchNormBwdFixture(FixtureBase):
             (32, 64,  (),       torch.float16),
             (8,  64,  (32, 32), torch.float16),
             (4,  128, (32, 32), torch.bfloat16),
+            # Non-persistent backward path (L=16384 > 8192).
+            (4,  64,  (64, 64), torch.float16),
         ]),
     ]
 
@@ -135,16 +139,30 @@ def test_batch_norm_fwd(N, C, spatial, dtype, training):
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
     x, weight, bias, running_mean, running_var = test.gen_inputs()
 
+    # Clone before op call so reference sees the same initial state.
+    running_mean_ref = running_mean.clone()
+    running_var_ref = running_var.clone()
+
     op = BatchNormFwdOp(N, C, *spatial, dtype=dtype)
     y, mean, rstd = op(x, weight, bias, running_mean, running_var, training=training)
 
-    ref_y, *_ = test.ref_program(x, weight, bias, running_mean, running_var)
+    ref_y, ref_rm, ref_rv = _ref_fwd(x, weight, bias, running_mean_ref, running_var_ref,
+                                      training=training)
 
     # float16 accumulates more error; use loose tolerances.
     atol, rtol = (1e-2, 1e-2) if dtype == torch.float16 else (2e-2, 2e-2)
     max_err = (y.float() - ref_y.float()).abs().max()
     assert torch.allclose(y.float(), ref_y.float(), atol=atol, rtol=rtol), \
         f"fwd mismatch (training={training}): max_err={max_err:.4e}"
+
+    if training:
+        rm_err = (running_mean.float() - ref_rm.float()).abs().max()
+        assert torch.allclose(running_mean.float(), ref_rm.float(), atol=atol, rtol=rtol), \
+            f"running_mean mismatch: max_err={rm_err:.4e}"
+        rv_err = (running_var.float() - ref_rv.float()).abs().max()
+        assert torch.allclose(running_var.float(), ref_rv.float(), atol=atol, rtol=rtol), \
+            f"running_var mismatch: max_err={rv_err:.4e}"
+
     print(f"test_batch_norm_fwd passed [training={training}]: max_err={max_err:.4e}")
 
 

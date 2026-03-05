@@ -64,7 +64,7 @@ def _find_best_block_l(L: int) -> dict:
             if bl >= L:
                 continue
             if L % bl == 0:
-                return {"block_l": bl, "num_stages": 2, "threads": threads}
+                return {"block_l": bl, "num_stages": 1, "threads": threads}
     for bl in [512, 256, 128, 64, 32, 16]:
         if L % bl == 0:
             return {"block_l": bl, "num_stages": 1, "threads": min(256, bl)}

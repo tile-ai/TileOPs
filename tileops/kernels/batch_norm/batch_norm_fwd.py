@@ -65,7 +65,7 @@ def _find_best_block_l(L: int) -> dict:
             if bl >= L:
                 continue
             if L % bl == 0:
-                return {"block_l": bl, "num_stages": 2, "threads": threads}
+                return {"block_l": bl, "num_stages": 1, "threads": threads}
     # Fallback (should rarely be reached).
     for bl in [512, 256, 128, 64, 32, 16]:
         if L % bl == 0:
@@ -156,9 +156,12 @@ def _batch_norm_fwd_train_kernel(
                 rstd_out[bc] = rstd_val
 
                 # Update running statistics.
+                # running_var follows PyTorch convention: updated with unbiased variance
+                # (Bessel's correction: biased_var * L / (L - 1)).
                 mom = T.cast(momentum, accum_dtype)
+                unbiased_var = var_val * T.cast(L, accum_dtype) / (T.cast(L, accum_dtype) - T.cast(1.0, accum_dtype))
                 running_mean[bc] = (T.cast(1.0, accum_dtype) - mom) * running_mean[bc] + mom * mean_val
-                running_var[bc] = (T.cast(1.0, accum_dtype) - mom) * running_var[bc] + mom * var_val
+                running_var[bc] = (T.cast(1.0, accum_dtype) - mom) * running_var[bc] + mom * unbiased_var
 
                 # Pass 2 – normalize.
                 if block_l >= L:
