@@ -247,7 +247,7 @@ ______________________________________________________________________
 - `num_stages=2`: double-buffer (one tile prefetching while current tile is consumed)
 - `num_stages=3`: triple-buffer
 
-**Design decision**: eliminated `num_stages=0` (register-only fallback) entirely. Using 0 as a sentinel for "disable pipeline" is semantically invalid — `T.Pipelined` requires `num_stages >= 1`. The Python `if num_stages > 0:` branch inside `@T.prim_func` caused JIT cache ambiguity and persistent correctness failures. See `.claude/skills/debug/skill.md` Case A for details.
+**Design decision**: eliminated `num_stages=0` (register-only fallback) entirely. Using 0 as a sentinel for "disable pipeline" is semantically invalid — `T.Pipelined` requires `num_stages >= 1`. The Python `if num_stages > 0:` branch inside `@T.prim_func` caused JIT cache ambiguity and persistent correctness failures. See `.claude/skills/kernel-debug/skill.md` Case A for details.
 
 **Autotune space after O3**:
 
