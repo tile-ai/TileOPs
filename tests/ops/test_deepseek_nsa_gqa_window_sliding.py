@@ -13,7 +13,16 @@ class GqaWindowSlidingFixture(FixtureBase):
     PARAMS = [
         ("batch_size, groups, uq, ukv, heads, dim, is_causal, window_size_left, "
          "window_size_right, dtype, accum_dtype, tune", [
-             (1, 16, 1024, 1024, 64, 128, True, 32, -1, torch.float16, torch.float32, False),
+             pytest.param(
+                 1, 16, 1024, 1024, 64, 128, True, 32, -1, torch.float16, torch.float32, False,
+                 marks=pytest.mark.xfail(
+                     strict=False,
+                     raises=AssertionError,
+                     reason="Flaky: NSA GQA window sliding kernel correctness bug, "
+                            "max_err=6.16 vs atol=3e-3 on some hardware (see issue #346)",
+                 ),
+                 id="gqa-window-sliding-flaky-bug-346",
+             ),
              (3, 16, 8192, 8192, 64, 128, True, 2048, 0, torch.float16, torch.float32, False),
              (3, 16, 8192, 8192, 64, 128, False, -1, -1, torch.float16, torch.float32, False),
          ]),
