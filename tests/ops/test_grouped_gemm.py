@@ -179,7 +179,7 @@ class GroupedGemmCompleteFixture(FixtureBase):
     ]
 
 
-class GroupedGemmCompleteTest(TestBase):
+class GroupedGemmCompleteTest:
     """Parameter holder for GroupedGemmCompleteBenchmark (forward NT + backward NN + backward TN).
 
     The benchmark test function profiles each variant (NT/NN/TN) individually
