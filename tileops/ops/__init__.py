@@ -10,6 +10,7 @@ from .deepseek_nsa import (
 from .fft import FFTC2CLUTOp, FFTC2COp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .fp8_quant import Fp8QuantOp
+from .gelu_and_mul import GeluAndMulOp
 from .gemm import GemmOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
@@ -30,6 +31,7 @@ __all__ = [
     "Fp8LightingIndexerOp",
     "Fp8QuantOp",
     "GQAWindowSlidingOp",
+    "GeluAndMulOp",
     "GemmOp",
     "GroupQueryAttentionBwdOp",
     "GroupQueryAttentionDecodePagedWithKVCacheOp",
