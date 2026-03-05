@@ -16,7 +16,9 @@ class SiluAndMulBenchmark(BenchmarkBase):
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test
-        # Read x (M*N) + read gate (M*N) + write y (M*N)
+        # Useful bytes only: read x (M*N) + read gate (M*N) + write y (M*N).
+        # For non-aligned N, kernel operates on padded_n elements but
+        # bandwidth_tbs is reported against useful bytes (actual data moved).
         return (t.m * t.n + t.m * t.n + t.m * t.n) * t.dtype.itemsize
 
 

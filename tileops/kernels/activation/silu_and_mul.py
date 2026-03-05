@@ -97,8 +97,11 @@ class SiluAndMulKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        # 3 shared buffers (x, gate, y) × block_m × N × dtype_size must fit
+        # in SM shared memory. Use block_m=1 for large N to avoid spilling.
+        block_m = 1 if self.N > 4096 else 4
         return {
-            "block_m": 4,
+            "block_m": block_m,
             "threads": 128,
         }
 
