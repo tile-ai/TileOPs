@@ -114,8 +114,9 @@ def test_grouped_gemm_complete_bench(batch_sum: int, batch_count: int, N: int, K
     test = GroupedGemmCompleteTest(batch_sum, batch_count, N, K, dtype)
     bm = GroupedGemmCompleteBenchmark(test)
 
-    # Profile forward (NT) + backward dA (NN) + backward dB (TN)
+    # Profile forward(TT) + forward (NT) + backward dA (NN) + backward dB (TN)
     variants = [
+        (True, True),    # TT
         (False, True),   # NT
         (False, False),  # NN
         (True, False),   # TN
