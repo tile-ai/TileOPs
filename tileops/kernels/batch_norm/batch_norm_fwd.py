@@ -65,11 +65,11 @@ def _find_best_block_l(L: int) -> dict:
             if bl >= L:
                 continue
             if L % bl == 0:
-                return {"block_l": bl, "num_stages": 1, "threads": threads}
+                return {"block_l": bl, "num_stages": 0, "threads": threads}
     # Fallback (should rarely be reached).
     for bl in [512, 256, 128, 64, 32, 16]:
         if L % bl == 0:
-            return {"block_l": bl, "num_stages": 1, "threads": min(256, bl)}
+            return {"block_l": bl, "num_stages": 0, "threads": min(256, bl)}
     raise ValueError(
         f"L={L} is not divisible by any supported block_l. "
         "L must be divisible by at least 16 for the current kernel implementation."
@@ -132,12 +132,22 @@ def _batch_norm_fwd_train_kernel(
                 T.clear(xsq_frag)
 
                 # Pass 1 – accumulate sum(x) and sum(x^2) over all tiles.
-                for l_tile in T.Pipelined(L // block_l, num_stages=num_stages):
-                    T.copy(x[bc, l_tile * block_l:(l_tile + 1) * block_l], x_shared)
-                    for _i, j in T.Parallel(1, block_l):
-                        xval = T.cast(x_shared[j], accum_dtype)
-                        xsum_frag[_i, j] += xval
-                        xsq_frag[_i, j] += xval * xval
+                if block_l >= L:
+                    # Persistent path: T.copy into x_shared, single global read.
+                    for l_tile in T.Pipelined(L // block_l, num_stages=num_stages):
+                        T.copy(x[bc, l_tile * block_l:(l_tile + 1) * block_l], x_shared)
+                        for _i, j in T.Parallel(1, block_l):
+                            xval = T.cast(x_shared[j], accum_dtype)
+                            xsum_frag[_i, j] += xval
+                            xsq_frag[_i, j] += xval * xval
+                else:
+                    # Non-persistent path: direct global memory access avoids async-copy
+                    # data race that occurs when T.copy is used inside T.Pipelined.
+                    for l_tile in T.Pipelined(L // block_l, num_stages=0):
+                        for _i, j in T.Parallel(1, block_l):
+                            xval = T.cast(x[bc, l_tile * block_l + j], accum_dtype)
+                            xsum_frag[_i, j] += xval
+                            xsq_frag[_i, j] += xval * xval
 
                 # Cross-thread reduction along block_l dimension.
                 sum_result = T.alloc_fragment([1], accum_dtype)
@@ -172,11 +182,11 @@ def _batch_norm_fwd_train_kernel(
                         y[bc, j] = T.cast(
                             weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype)
                 else:
-                    # Non-persistent path: re-read from global memory.
-                    for l_tile in T.Pipelined(L // block_l, num_stages=num_stages):
-                        T.copy(x[bc, l_tile * block_l:(l_tile + 1) * block_l], x_shared)
+                    # Non-persistent path: direct global memory access avoids async-copy
+                    # data race that occurs when T.copy is used inside T.Pipelined.
+                    for l_tile in T.Pipelined(L // block_l, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
-                            xval = T.cast(x_shared[j], accum_dtype)
+                            xval = T.cast(x[bc, l_tile * block_l + j], accum_dtype)
                             y[bc, l_tile * block_l + j] = T.cast(
                                 weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype)
 
@@ -245,13 +255,14 @@ class BatchNormFwdTrainKernel(Kernel):
                     _add({"block_l": self.L, "num_stages": 1, "threads": t})
 
         # Non-persistent configs: power-of-2 threads, block_l can be non-power-of-2.
+        # num_stages=0 disables T.Pipelined's async prefetch, which is required for
+        # correctness in multi-tile loops (pipelining causes x_shared data shift).
         for threads in [256, 128, 64, 32]:
             for k in range(512 // threads, 0, -1):
                 bl = threads * k
                 if bl >= self.L or self.L % bl != 0:
                     continue
-                for ns in [2, 3]:
-                    _add({"block_l": bl, "num_stages": ns, "threads": threads})
+                _add({"block_l": bl, "num_stages": 0, "threads": threads})
 
         return configs if configs else [self.default_config]
 
@@ -310,18 +321,17 @@ def _batch_norm_fwd_infer_kernel(
             y: T.Tensor([C, L], dtype),
         ):
             with T.Kernel(C, threads=threads) as (bc):
-                x_shared = T.alloc_shared([block_l], dtype)
-
                 # Fused scale/shift: avoids recomputing per element.
                 scale = weight[bc] / T.sqrt(
                     running_var[bc] + T.cast(eps, accum_dtype))
                 shift = bias[bc] - running_mean[bc] * scale
 
-                for l_tile in T.Pipelined(L // block_l, num_stages=num_stages):
-                    T.copy(x[bc, l_tile * block_l:(l_tile + 1) * block_l], x_shared)
+                # Non-persistent: direct global memory access avoids async-copy
+                # data race that occurs when T.copy is used inside T.Pipelined.
+                for l_tile in T.Pipelined(L // block_l, num_stages=0):
                     for _i, j in T.Parallel(1, block_l):
                         y[bc, l_tile * block_l + j] = T.cast(
-                            T.cast(x_shared[j], accum_dtype) * scale + shift, dtype)
+                            T.cast(x[bc, l_tile * block_l + j], accum_dtype) * scale + shift, dtype)
 
         return _bn_fwd_infer
 
@@ -378,8 +388,7 @@ class BatchNormFwdInferKernel(Kernel):
                 bl = threads * k
                 if self.L % bl != 0:
                     continue
-                for ns in [2, 3]:
-                    _add({"block_l": bl, "num_stages": ns, "threads": threads})
+                _add({"block_l": bl, "num_stages": 0, "threads": threads})
 
         return configs if configs else [self.default_config]
 
