@@ -15,6 +15,7 @@ from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
 from .grouped_gemm import GroupedGemmOp
+from .layer_norm import LayerNormOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
@@ -37,6 +38,7 @@ __all__ = [
     "GroupQueryAttentionDecodeWithKVCacheOp",
     "GroupQueryAttentionFwdOp",
     "GroupedGemmOp",
+    "LayerNormOp",
     "ManifoldConstrainedHyperConnectionPostOp",
     "ManifoldConstrainedHyperConnectionPreOp",
     "MeanPoolingForwardOp",
