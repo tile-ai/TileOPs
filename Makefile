@@ -14,7 +14,7 @@ bench:
 	python -m pytest benchmarks/
 
 clean:
-	rm -rf build/ dist/ *.egg-info
+	rm -rf build/ dist/ tileops.egg-info
 
 help:
 	@echo "Available targets:"

@@ -50,18 +50,17 @@ pip install tileops
 ```bash
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
-pip install -e '.[dev]' -v
+make install                # installs dev dependencies and pre-commit hooks
 ```
 
 > [!NOTE]
 > If you have CUDA and TileLang already installed system-wide and encounter build issues, try:
-> `PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -v`
+> `PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -v && pre-commit install`
 > This disables pip's build isolation so it can find your existing CUDA/TileLang installation.
 
-After installing, set up the pre-commit hooks and verify with a test run:
+After installing, verify with a test run:
 
 ```bash
-pre-commit install          # enables lint checks before each commit
 python -m pytest tests/ -q  # run the test suite (requires a CUDA GPU)
 ```
 
