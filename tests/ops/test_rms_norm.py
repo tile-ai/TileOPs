@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import pytest
 import torch
 
@@ -34,7 +32,7 @@ class RmsNormTest(TestBase):
         self.dtype = dtype
         self.eps = eps
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
         weight = torch.randn(self.n, dtype=self.dtype, device="cuda")
         return x, weight
@@ -73,9 +71,10 @@ def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     op = RmsNormOp(M=m, N=n, dtype=dtype)
 
     # Reference on contiguous copy
+    eps = 1e-6
     x_ref = x.contiguous()
     x_f32 = x_ref.float()
-    rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+    rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + eps)
     y_ref = ((x_f32 / rms) * weight.float()).to(dtype)
 
     y = op(x, weight)
@@ -103,8 +102,9 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
     op = RmsNormOp(M=M, N=hidden, dtype=dtype)
 
     # Reference
+    eps = 1e-6
     x_f32 = x.float()
-    rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+    rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + eps)
     y_ref = ((x_f32 / rms) * weight.float()).to(dtype)
 
     y = op(x, weight)

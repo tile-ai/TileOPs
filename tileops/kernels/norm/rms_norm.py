@@ -8,7 +8,7 @@ for correct mean computation.
 """
 
 import itertools
-from typing import Optional, Tuple
+from typing import Optional
 
 import tilelang
 import tilelang.language as T
