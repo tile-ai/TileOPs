@@ -20,6 +20,7 @@ class GqaWindowSlidingFixture(FixtureBase):
                      reason="NSA GQA window sliding kernel correctness bug: "
                             "max_err=6.16 vs atol=3e-3 (see issue #346)",
                  ),
+                 id="gqa-window-sliding-flaky-bug-346",
              ),
              (3, 16, 8192, 8192, 64, 128, True, 2048, 0, torch.float16, torch.float32, False),
              (3, 16, 8192, 8192, 64, 128, False, -1, -1, torch.float16, torch.float32, False),
