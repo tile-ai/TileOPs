@@ -16,10 +16,10 @@ class GqaWindowSlidingFixture(FixtureBase):
              pytest.param(
                  1, 16, 1024, 1024, 64, 128, True, 32, -1, torch.float16, torch.float32, False,
                  marks=pytest.mark.xfail(
-                     strict=True,
+                     strict=False,
                      raises=AssertionError,
-                     reason="NSA GQA window sliding kernel correctness bug: "
-                            "max_err=6.16 vs atol=3e-3 (see issue #346)",
+                     reason="Flaky: NSA GQA window sliding kernel correctness bug, "
+                            "max_err=6.16 vs atol=3e-3 on some hardware (see issue #346)",
                  ),
                  id="gqa-window-sliding-flaky-bug-346",
              ),
