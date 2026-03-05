@@ -9,6 +9,7 @@ from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
 from .grouped_gemm import GroupedGemmOp
+from .instance_norm import InstanceNormOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
@@ -28,6 +29,7 @@ __all__ = [
     "GroupQueryAttentionDecodeWithKVCacheOp",
     "GroupQueryAttentionDecodePagedWithKVCacheOp",
     "GroupedGemmOp",
+    "InstanceNormOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
     "Fp8LightingIndexerOp",
