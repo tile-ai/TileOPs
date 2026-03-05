@@ -11,6 +11,7 @@ from .fft import FFTC2CLUTOp, FFTC2COp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .fp8_quant import Fp8QuantOp
 from .gemm import GemmOp
+from .layer_norm import LayerNormOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
@@ -36,6 +37,7 @@ __all__ = [
     "GroupQueryAttentionDecodeWithKVCacheOp",
     "GroupQueryAttentionFwdOp",
     "GroupedGemmOp",
+    "LayerNormOp",
     "ManifoldConstrainedHyperConnectionPostOp",
     "ManifoldConstrainedHyperConnectionPreOp",
     "MeanPoolingForwardOp",
