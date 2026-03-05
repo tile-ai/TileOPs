@@ -24,10 +24,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           # Shallow clone to reduce network flakiness on self-hosted runners (see #351)
           fetch-depth: 1
+          # Use local bare mirror on self-hosted runner to reduce checkout latency (see #353)
+          reference: /home/ci-runner/repo-mirror
 
       - name: Set up Python
         uses: actions/setup-python@v5
