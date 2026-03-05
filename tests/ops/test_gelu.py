@@ -16,6 +16,9 @@ class GeluTanhFixture(FixtureBase):
             (1024, 4096, torch.bfloat16),
             (4096, 4096, torch.bfloat16),
             (8192, 8192, torch.bfloat16),
+            # Non-aligned hidden (not divisible by 256) - exercises padding path
+            (1024, 3000, torch.float16),
+            (1024, 3000, torch.bfloat16),
         ]),
     ]
 
@@ -29,6 +32,9 @@ class GeluErfFixture(FixtureBase):
             (1024, 4096, torch.bfloat16),
             (4096, 4096, torch.bfloat16),
             (8192, 8192, torch.bfloat16),
+            # Non-aligned hidden (not divisible by 256) - exercises padding path
+            (1024, 3000, torch.float16),
+            (1024, 3000, torch.bfloat16),
         ]),
     ]
 

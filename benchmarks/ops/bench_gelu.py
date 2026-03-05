@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gelu import GeluTanhFixture, GeluTest
+from tests.ops.test_gelu import GeluErfFixture, GeluTanhFixture, GeluTest
 from tileops.ops import GeluOp
 
 
@@ -35,6 +35,20 @@ def test_gelu_bench(m: int, n: int, dtype: torch.dtype) -> None:
 
     result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record("gelu_tanh", locals(), result_bl, tag="baseline")
+
+
+@GeluErfFixture
+def test_gelu_erf_bench(m: int, n: int, dtype: torch.dtype) -> None:
+    test = GeluTest(m, n, dtype, approximate='none')
+    bm = GeluBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = GeluOp(m, n, dtype=dtype, approximate='none')
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record("gelu_erf", locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record("gelu_erf", locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

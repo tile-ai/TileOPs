@@ -48,8 +48,9 @@ class GeluOp(Op):
 
         # Flatten arbitrary leading dims to 2D (M, N)
         x = x.reshape(-1, self.N)
-        assert x.shape[0] == self.M, (
-            f"Total number of rows ({x.shape[0]}) does not match M={self.M}")
+        if x.shape[0] != self.M:
+            raise ValueError(
+                f"Total number of rows ({x.shape[0]}) does not match M={self.M}")
 
         if self.needs_padding:
             pad_size = self.padded_n - self.N
