@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   pre-commit:
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
 
     steps:
@@ -46,7 +46,7 @@ jobs:
 
   tileops_test_release:
     # needs: pre-commit
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && github.event.pull_request.draft == false }}
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
