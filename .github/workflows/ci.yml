@@ -26,7 +26,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 1
+          fetch-depth: 1  # shallow clone to reduce network flakiness on self-hosted runner
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -51,7 +51,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 1
+          fetch-depth: 1  # shallow clone to reduce network flakiness on self-hosted runner
 
       - name: Set up Python
         uses: actions/setup-python@v5
