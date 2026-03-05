@@ -56,17 +56,38 @@ class RmsNormOp(Op):
         return {"rms_norm": RmsNormKernel}
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if not weight.is_cuda:
+            raise ValueError("weight must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(
+                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+            )
+        if weight.dtype != self.dtype:
+            raise ValueError(
+                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
+            )
+        if weight.ndim != 1:
+            raise ValueError(
+                f"Expected weight to be 1D, got {weight.ndim}D"
+            )
         if x.shape[-1] != self.N:
             raise ValueError(
                 f"Expected hidden dim {self.N}, got {x.shape[-1]}"
             )
-        if weight.shape[-1] != self.N:
+        if weight.shape[0] != self.N:
             raise ValueError(
-                f"Expected weight dim {self.N}, got {weight.shape[-1]}"
+                f"Expected weight dim {self.N}, got {weight.shape[0]}"
             )
 
         orig_shape = x.shape
         x = x.contiguous().reshape(-1, self.N)
+        M_actual = x.shape[0]
+        if M_actual != self.M:
+            raise ValueError(
+                f"Expected M={self.M} (product of leading dims), got {M_actual}"
+            )
 
         # Pad hidden dim to 256-element alignment if needed
         if self.N_padded != self.N:
