@@ -108,7 +108,8 @@ jobs:
               cat profile_run.log
             } >> tileops_benchmarks.log
           else
-            echo "profile_run.log not found" >> tileops_benchmarks.log
+            echo "::error::profile_run.log not found" >> tileops_benchmarks.log
+            exit 1
           fi
         shell: bash
 
