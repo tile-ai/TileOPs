@@ -126,6 +126,14 @@ jobs:
           python -m pytest -q tests  | tee tileops_test_release.log
         shell: bash
 
+      - name: Smoke-test benchmark imports
+        run: |
+          VENV_DIR="tileops_release_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          export PYTHONPATH="$(pwd):$PYTHONPATH"
+          python -m pytest --collect-only benchmarks/
+        shell: bash
+
       - name: Cleanup venv
         if: ${{ always() }}
         run: |
