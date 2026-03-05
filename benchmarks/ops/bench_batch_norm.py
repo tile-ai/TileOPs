@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_batch_norm import BatchNormBwdFixture, BatchNormFwdFixture
+from tests.ops.test_batch_norm import BatchNormBwdTest, BatchNormFwdTest
 from tileops.ops.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ _BWD_BENCH_PARAMS = [
     (32, 64,  (),        torch.float16),
     (8,  64,  (32, 32),  torch.float16),
     (4,  128, (32, 32),  torch.float16),
-    (4,  256, (28, 28),  torch.float16,),
+    (4,  256, (28, 28),  torch.float16),
     (4,  128, (1024, 1024),  torch.float16),
     (4,  256, (1024, 1024),  torch.float16),
 ]
@@ -133,7 +133,6 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
 
     op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, tune=tune)
 
-    from tests.ops.test_batch_norm import BatchNormFwdTest
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
     bm = BatchNormFwdBenchmark(test, N, C, spatial)
 
@@ -151,7 +150,6 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
 
     op = BatchNormBwdOp(N, C, *spatial, dtype=dtype)
 
-    from tests.ops.test_batch_norm import BatchNormBwdTest
     test = BatchNormBwdTest(N, C, spatial, dtype)
     bm = BatchNormBwdBenchmark(test, N, C, spatial)
 

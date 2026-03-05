@@ -1,4 +1,20 @@
 {
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:docs.pytorch.org)",
+      "Read(//home/jieneng.yu/workspace/TileOPs/**)",
+      "Bash(conda run -n tileops python -m pytest tests/ops/test_batch_norm.py -vvs -x)",
+      "Bash(conda run -n tileops python -m pytest tests/ops/test_batch_norm.py -vvs)",
+      "Bash(conda run -n tileops python -m pytest benchmarks/ops/bench_batch_norm.py -vvs)",
+      "Bash(pytest tests/ops/test_batch_norm.py -vvs)",
+      "Bash(conda run -n tileops python -c \":*)",
+      "Bash(conda run -n tileops python -m pytest benchmarks/ops/bench_batch_norm.py -vvs --timeout=120)",
+      "Bash(conda run -n tileops python -m pytest \"benchmarks/ops/bench_batch_norm.py::test_batch_norm_fwd_bench[8-64-spatial1-dtype1-True-False]\" -vvs)",
+      "Bash(conda run -n tileops python -m pytest benchmarks/ops/bench_batch_norm.py -vvs 2)",
+      "Bash(1 echo \"Exit code: $?\" cat /tmp/bench_out.txt)"
+    ]
+  },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true
   }

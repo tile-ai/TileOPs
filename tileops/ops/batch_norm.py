@@ -5,9 +5,9 @@ in a standard TileOPs Op interface.
 
 User-facing API mirrors torch.nn.functional.batch_norm:
 
-    fwd_op = BatchNormFwdOp(N, C, *spatial, dtype=dtype)
+    fwd_op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, momentum=0.1, eps=1e-5)
     y, mean, rstd = fwd_op(x, weight, bias, running_mean, running_var,
-                           training=True, momentum=0.1, eps=1e-5)
+                           training=True)
 
     bwd_op = BatchNormBwdOp(N, C, *spatial, dtype=dtype)
     grad_x, grad_weight, grad_bias = bwd_op(grad_out, x, weight, mean, rstd)
@@ -113,8 +113,6 @@ class BatchNormFwdOp(Op):
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
         training: bool = True,
-        momentum: Optional[float] = None,
-        eps: Optional[float] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Run forward pass.
 

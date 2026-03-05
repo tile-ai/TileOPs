@@ -68,7 +68,10 @@ def _find_best_block_l(L: int) -> dict:
     for bl in [512, 256, 128, 64, 32, 16]:
         if L % bl == 0:
             return {"block_l": bl, "num_stages": 1, "threads": min(256, bl)}
-    return {"block_l": 16, "num_stages": 1, "threads": 16}
+    raise ValueError(
+        f"L={L} is not divisible by any supported block_l. "
+        "L must be divisible by at least 16 for the current kernel implementation."
+    )
 
 
 def _batch_norm_bwd_kernel(
