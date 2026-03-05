@@ -21,6 +21,7 @@ from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
 from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
 from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
 from .op import Op
+from .silu_and_mul import SiluAndMulOp
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
@@ -48,5 +49,6 @@ __all__ = [
     "NSAFwdVarlenOp",
     "NSATopkVarlenOp",
     "Op",
+    "SiluAndMulOp",
     "TopkSelectorOp",
 ]
