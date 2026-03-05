@@ -21,6 +21,9 @@ class GeluAndMulTanhFixture(FixtureBase):
             (1024, 3000, torch.bfloat16),
             (2048, 5120, torch.float16),
             (2048, 5120, torch.bfloat16),
+            # Tail-M: M not divisible by block_m, tests ceildiv boundary
+            (1025, 4096, torch.float16),
+            (1025, 4096, torch.bfloat16),
         ]),
     ]
 
@@ -39,6 +42,9 @@ class GeluAndMulErfFixture(FixtureBase):
             (1024, 3000, torch.bfloat16),
             (2048, 5120, torch.float16),
             (2048, 5120, torch.bfloat16),
+            # Tail-M: M not divisible by block_m, tests ceildiv boundary
+            (1025, 4096, torch.float16),
+            (1025, 4096, torch.bfloat16),
         ]),
     ]
 

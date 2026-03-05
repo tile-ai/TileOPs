@@ -10,24 +10,39 @@ from tests.ops.test_gelu_and_mul import (
 from tileops.ops import GeluAndMulOp
 
 
-class GeluAndMulBenchmark(BenchmarkBase):
+class GeluAndMulTanhBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        # gelu_tanh: ~16 flops + mul_gate(1) = ~17
-        # gelu_erf: ~12 flops + mul_gate(1) = ~13
-        # Use ~15 as average
-        return 15.0 * self.test.m * self.test.n
+        # gelu_tanh per element: x^3(2 mul) + coeff_mul(1) + add(1) +
+        # sqrt_mul(1) + tanh(~8) + add_1(1) + mul_half(1) + mul_x(1) +
+        # mul_gate(1) = ~17 flops
+        return 17.0 * self.test.m * self.test.n
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test
-        # Read x (M*N) + read gate (M*N) + write y (M*N)
+        # Useful bytes only: read x (M*N) + read gate (M*N) + write y (M*N).
+        # For non-aligned N, kernel operates on padded_n elements but
+        # bandwidth_tbs is reported against useful bytes (actual data moved).
+        return (t.m * t.n + t.m * t.n + t.m * t.n) * t.dtype.itemsize
+
+
+class GeluAndMulErfBenchmark(BenchmarkBase):
+
+    def calculate_flops(self) -> Optional[float]:
+        # gelu_erf per element: div_sqrt2(1) + erf(~8) + add_1(1) +
+        # mul_half(1) + mul_x(1) + mul_gate(1) = ~13 flops
+        return 13.0 * self.test.m * self.test.n
+
+    def calculate_memory(self) -> Optional[float]:
+        t = self.test
+        # Useful bytes only (see GeluAndMulTanhBenchmark comment).
         return (t.m * t.n + t.m * t.n + t.m * t.n) * t.dtype.itemsize
 
 
 @GeluAndMulTanhFixture
 def test_gelu_and_mul_tanh_bench(m: int, n: int, dtype: torch.dtype) -> None:
     test = GeluAndMulTest(m, n, dtype, approximate='tanh')
-    bm = GeluAndMulBenchmark(test)
+    bm = GeluAndMulTanhBenchmark(test)
     inputs = test.gen_inputs()
 
     op = GeluAndMulOp(m, n, dtype=dtype, approximate='tanh')
@@ -41,7 +56,7 @@ def test_gelu_and_mul_tanh_bench(m: int, n: int, dtype: torch.dtype) -> None:
 @GeluAndMulErfFixture
 def test_gelu_and_mul_erf_bench(m: int, n: int, dtype: torch.dtype) -> None:
     test = GeluAndMulTest(m, n, dtype, approximate='none')
-    bm = GeluAndMulBenchmark(test)
+    bm = GeluAndMulErfBenchmark(test)
     inputs = test.gen_inputs()
 
     op = GeluAndMulOp(m, n, dtype=dtype, approximate='none')

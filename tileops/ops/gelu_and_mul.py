@@ -21,10 +21,11 @@ def _align_up(n: int, alignment: int) -> int:
 class GeluAndMulOp(Op):
     """Fused gelu(x) * gate operator.
 
-    Padding to 256-byte alignment is required by TileLang shared memory copy
-    instructions. For non-aligned hidden sizes, padded elements are zero and
-    trimmed from the output, so correctness is unaffected. The extra copy
-    overhead is small relative to the fused kernel benefit.
+    Padding to 256-element alignment (512 bytes for fp16/bf16) is required by
+    TileLang shared memory copy instructions. For non-aligned hidden sizes,
+    padded elements are zero and trimmed from the output, so correctness is
+    unaffected. The extra copy overhead is small relative to the fused kernel
+    benefit.
     """
 
     def __init__(self,
