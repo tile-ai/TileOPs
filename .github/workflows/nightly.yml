@@ -129,7 +129,6 @@ jobs:
           name: tileops_benchmark_${{ github.run_id }}
           path: |
             tileops_benchmarks.log
-            profile_run.log
           if-no-files-found: warn
           retention-days: 14
 
