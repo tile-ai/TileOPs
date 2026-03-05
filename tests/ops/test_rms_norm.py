@@ -20,6 +20,9 @@ class RmsNormFixture(FixtureBase):
             (1024, 3000, torch.bfloat16, False),
             (2048, 5120, torch.float16, False),
             (2048, 5120, torch.bfloat16, False),
+            # Tail-M: M not divisible by block_m (proves T.copy partial block safety)
+            (1025, 4096, torch.float16, False),
+            (1025, 4096, torch.bfloat16, False),
         ]),
     ]
 
