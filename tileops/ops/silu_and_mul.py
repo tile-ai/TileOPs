@@ -19,6 +19,13 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 class SiluAndMulOp(Op):
+    """Fused silu(x) * gate operator.
+
+    Padding to 256-byte alignment is required by TileLang shared memory copy
+    instructions. For non-aligned hidden sizes, padded elements are zero and
+    trimmed from the output, so correctness is unaffected. The extra copy
+    overhead is small relative to the fused kernel benefit.
+    """
 
     def __init__(self,
                  m: int,
@@ -42,6 +49,11 @@ class SiluAndMulOp(Op):
 
     def forward(self, x: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
+
+        if gate.shape != x.shape:
+            raise ValueError(
+                f"gate shape {gate.shape} does not match x shape {x.shape}")
+
         x = x.contiguous()
         gate = gate.contiguous()
 
@@ -52,9 +64,6 @@ class SiluAndMulOp(Op):
         if x.shape[0] != self.M:
             raise ValueError(
                 f"Total number of rows ({x.shape[0]}) does not match M={self.M}")
-        if gate.shape != x.shape:
-            raise ValueError(
-                f"gate shape {gate.shape} does not match x shape {x.shape}")
 
         if self.needs_padding:
             pad_size = self.padded_n - self.N
