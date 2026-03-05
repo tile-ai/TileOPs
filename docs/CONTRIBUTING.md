@@ -16,6 +16,7 @@ We follow a standard **Issue -> Fork -> PR** workflow. **Do not** create branche
 
 - **Fork**: Fork the repository to your GitHub account.
 - **Clone**: Clone your fork locally (`git clone ...`).
+- **Setup**: Run `make install` to install dev dependencies and pre-commit hooks in one step.
 - **Branch**: Create a new branch on your fork.
   - **Base**: Sync with upstream `main` before branching.
   - **Name**: `type/scope/description` (canonical prefixes in `.claude/conventions/types.sh`), for example:
