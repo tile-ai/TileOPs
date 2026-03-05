@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.instance_norm import InstanceNormKernel
+from tileops.kernels.norm import InstanceNormKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
