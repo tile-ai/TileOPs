@@ -18,8 +18,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ci-gate:
+    # Lightweight gate: on ready_for_review, check if CI already passed for this
+    # head SHA. If so, skip heavy jobs to avoid redundant runs. (#379)
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Check existing CI results for this SHA
+        id: check
+        run: |
+          if [[ "${{ github.event.action }}" != "ready_for_review" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "Checking existing CI results for SHA $HEAD_SHA..."
+          CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" \
+            --jq '[.check_runs[] | select(.name == "pre-commit" or .name == "tileops_test_release") | .conclusion]')
+          echo "Found check conclusions: $CHECKS"
+          ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
+          COUNT=$(echo "$CHECKS" | jq 'length')
+          if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 2 ]]; then
+            echo "CI already passed for SHA $HEAD_SHA — skipping redundant run"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "CI has not fully passed yet — running normally"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   pre-commit:
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && github.event.pull_request.draft == false }}
+    needs: ci-gate
+    if: ${{ needs.ci-gate.outputs.skip != 'true' && github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -45,8 +77,8 @@ jobs:
           extra_args: --all-files --show-diff-on-failure
 
   tileops_test_release:
-    # needs: pre-commit
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && github.event.pull_request.draft == false }}
+    needs: ci-gate
+    if: ${{ needs.ci-gate.outputs.skip != 'true' && github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' }}
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
