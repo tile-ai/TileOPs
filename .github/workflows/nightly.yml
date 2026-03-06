@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Use local bare mirror on self-hosted runner to reduce checkout latency (see #353)
+          # Use local bare mirror on self-hosted runner to reduce checkout latency
           reference: /home/ci-runner/repo-mirror
 
       - name: Set up Python
@@ -145,7 +145,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # Use local bare mirror on self-hosted runner to reduce checkout latency (see #353)
+          # Use local bare mirror on self-hosted runner to reduce checkout latency
           reference: /home/ci-runner/repo-mirror
 
       - name: Set up Python

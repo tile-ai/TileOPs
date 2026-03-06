@@ -54,7 +54,7 @@ jobs:
         with:
           # Shallow clone to reduce network flakiness on self-hosted runners (see #351)
           fetch-depth: 1
-          # Use local bare mirror on self-hosted runner to reduce checkout latency (see #353)
+          # Use local bare mirror on self-hosted runner to reduce checkout latency
           reference: /home/ci-runner/repo-mirror
 
       - name: Set up Python
