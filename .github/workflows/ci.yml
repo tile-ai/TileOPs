@@ -52,7 +52,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          # Shallow clone to reduce network flakiness on self-hosted runners (see #351)
+          # Shallow clone to reduce network flakiness on self-hosted runners
           fetch-depth: 1
 
       - name: Set up Python
