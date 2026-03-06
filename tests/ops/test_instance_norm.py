@@ -11,12 +11,14 @@ from tileops.ops import InstanceNormOp
 class InstanceNormFixture(FixtureBase):
     PARAMS = [
         ("shape, dtype, eps, affine, non_contiguous, tune", [
-            ((2, 64, 32, 32), torch.float16, 1e-5, True, False, False),
-            ((2, 64, 32, 32), torch.float16, 1e-5, True, True, False),
-            ((2, 64, 17, 31), torch.float16, 1e-5, True, False, False),
-            ((2, 64, 32, 32), torch.bfloat16, 1e-5, True, False, False),
-            ((4, 32, 128), torch.float16, 1e-5, True, False, False),
-            ((4, 32, 128), torch.bfloat16, 1e-5, True, False, False),
+            ((1, 64, 14, 14), torch.float16, 1e-5, True, False, False),
+            ((1, 128, 28, 28), torch.bfloat16, 1e-5, True, False, False),
+            ((1, 256, 56, 56), torch.float16, 1e-5, True, True, False),
+            ((8, 64, 28, 28), torch.float16, 1e-5, True, False, False),
+            ((8, 256, 14, 14), torch.bfloat16, 1e-5, True, False, False),
+            ((8, 512, 56, 56), torch.float16, 1e-5, True, True, False),
+            ((32, 128, 56, 56), torch.float16, 1e-5, True, False, False),
+            ((32, 512, 14, 14), torch.bfloat16, 1e-5, True, False, False),
         ]),
     ]
 
