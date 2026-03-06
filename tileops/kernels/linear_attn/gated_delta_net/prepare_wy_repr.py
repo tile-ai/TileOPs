@@ -10,9 +10,8 @@ from tileops.kernels.kernel import Kernel
 __all__ = ["PrepareWYReprKernel"]
 
 
-def _prepare_wy_repr_kernel(batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dtype: str = 'bfloat16'):
+def _prepare_wy_repr_kernel(batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dtype: str = 'float32'):
 
-    dtype = "float32"
     accum_dtype = "float32"
 
     @tilelang.jit(
@@ -84,7 +83,7 @@ def _prepare_wy_repr_kernel(batch: int, head: int, seq_len: int, chunk_size: int
                 gram_g_shared = T.alloc_shared([block_C, block_C], accum_dtype)
                 for i, j in T.Parallel(block_C, block_C):
                     gram_g_shared[i, j] = gram_frag[i, j] * T.exp2(
-                        (g_shared[i] - g_shared[j]) * 1.442695040889
+                        (g_shared[i] - g_shared[j]) * 1.4426950408889634
                     )
                 for i, j in T.Parallel(block_C, block_C):
                     L_shared[i, j] = T.if_then_else(
@@ -124,7 +123,7 @@ def _prepare_wy_repr_kernel(batch: int, head: int, seq_len: int, chunk_size: int
     return _prepare_wy_repr_func
 
 
-@torch.library.custom_op("top::prepare_wy_repr_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("tileops::prepare_wy_repr_wrapped_kernel", mutates_args=())
 def _prepare_wy_repr_wrapped_kernel(
     batch: int,
     head: int,

@@ -89,8 +89,8 @@ class GatedDeltaNetBwdBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         B, H, S, DK, DV = self.batch, self.heads, self.seq_len, self.dim_k, self.dim_v
         elem = self.dtype.itemsize
-        # do, q, k: B*H*S*DK; v: B*H*S*DV; g, beta: B*H*S; outputs: dq,dk,dv,dg,dbeta
-        return B * H * S * (3 * DK + 2 * DV + 2 + 2 * DK + DV + 2) * elem
+        # Inputs: q,k (2*DK), v,do (2*DV), g,beta (2); Outputs: dq,dk (2*DK), dv (DV), dg,dbeta (2)
+        return B * H * S * (4 * DK + 3 * DV + 4) * elem
 
 
 @GatedDeltaNetBwdFixture
