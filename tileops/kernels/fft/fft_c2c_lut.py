@@ -234,6 +234,12 @@ def _fft_c2c_lut_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         y_real[l_idx] = T.cast(u_r - t_r, real_dtype)
                         y_imag[l_idx] = T.cast(u_i - t_i, real_dtype)
 
+        def _butterfly(u_r, u_i, v_r, v_i, tw_r, tw_i):
+            """Radix-2 butterfly: returns (u+t, u-t) where t = v * tw."""
+            t_r = v_r * tw_r - v_i * tw_i
+            t_i = v_r * tw_i + v_i * tw_r
+            return u_r + t_r, u_i + t_i, u_r - t_r, u_i - t_i
+
         @T.macro
         def lut_butterfly_radix4(
             y_real: T.Tensor((n,), real_dtype),
@@ -284,19 +290,8 @@ def _fft_c2c_lut_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         w2_i = T.cast(lut_imag[lut_base_hi + k], accum_dtype)
 
                         # Stage_lo: butterflies (a,b) and (c,d) with w1
-                        tb_r = b_r * w1_r - b_i * w1_i
-                        tb_i = b_r * w1_i + b_i * w1_r
-                        td_r = d_r * w1_r - d_i * w1_i
-                        td_i = d_r * w1_i + d_i * w1_r
-
-                        ap_r = a_r + tb_r
-                        ap_i = a_i + tb_i
-                        bp_r = a_r - tb_r
-                        bp_i = a_i - tb_i
-                        cp_r = c_r + td_r
-                        cp_i = c_i + td_i
-                        dp_r = c_r - td_r
-                        dp_i = c_i - td_i
+                        ap_r, ap_i, bp_r, bp_i = _butterfly(a_r, a_i, b_r, b_i, w1_r, w1_i)
+                        cp_r, cp_i, dp_r, dp_i = _butterfly(c_r, c_i, d_r, d_i, w1_r, w1_i)
 
                         # Stage_lo+1: (a',c') with w2, (b',d') with w2*(-i)
                         tc_r = cp_r * w2_r - cp_i * w2_i
@@ -373,115 +368,55 @@ def _fft_c2c_lut_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         w1_r = T.cast(lut_real[lut1 + k], accum_dtype)
                         w1_i = T.cast(lut_imag[lut1 + k], accum_dtype)
 
-                        # (x0, x1) -> (a0, a1)
-                        t_r = x1_r * w1_r - x1_i * w1_i
-                        t_i = x1_r * w1_i + x1_i * w1_r
-                        a0_r = x0_r + t_r
-                        a0_i = x0_i + t_i
-                        a1_r = x0_r - t_r
-                        a1_i = x0_i - t_i
-
-                        # (x2, x3) -> (a2, a3)
-                        t_r = x3_r * w1_r - x3_i * w1_i
-                        t_i = x3_r * w1_i + x3_i * w1_r
-                        a2_r = x2_r + t_r
-                        a2_i = x2_i + t_i
-                        a3_r = x2_r - t_r
-                        a3_i = x2_i - t_i
-
-                        # (x4, x5) -> (a4, a5)
-                        t_r = x5_r * w1_r - x5_i * w1_i
-                        t_i = x5_r * w1_i + x5_i * w1_r
-                        a4_r = x4_r + t_r
-                        a4_i = x4_i + t_i
-                        a5_r = x4_r - t_r
-                        a5_i = x4_i - t_i
-
-                        # (x6, x7) -> (a6, a7)
-                        t_r = x7_r * w1_r - x7_i * w1_i
-                        t_i = x7_r * w1_i + x7_i * w1_r
-                        a6_r = x6_r + t_r
-                        a6_i = x6_i + t_i
-                        a7_r = x6_r - t_r
-                        a7_i = x6_i - t_i
+                        # ---- Stage s (stride q): 4 butterfly pairs with w1 ----
+                        a0_r, a0_i, a1_r, a1_i = _butterfly(x0_r, x0_i, x1_r, x1_i, w1_r, w1_i)
+                        a2_r, a2_i, a3_r, a3_i = _butterfly(x2_r, x2_i, x3_r, x3_i, w1_r, w1_i)
+                        a4_r, a4_i, a5_r, a5_i = _butterfly(x4_r, x4_i, x5_r, x5_i, w1_r, w1_i)
+                        a6_r, a6_i, a7_r, a7_i = _butterfly(x6_r, x6_i, x7_r, x7_i, w1_r, w1_i)
 
                         # ---- Stage s+1 (stride 2q): pairs at distance 2q ----
-                        # (a0, a2) with w2a = LUT[lut2 + k]
                         w2a_r = T.cast(lut_real[lut2 + k], accum_dtype)
                         w2a_i = T.cast(lut_imag[lut2 + k], accum_dtype)
-                        t_r = a2_r * w2a_r - a2_i * w2a_i
-                        t_i = a2_r * w2a_i + a2_i * w2a_r
-                        b0_r = a0_r + t_r
-                        b0_i = a0_i + t_i
-                        b2_r = a0_r - t_r
-                        b2_i = a0_i - t_i
-
-                        # (a1, a3) with w2b = LUT[lut2 + k + q]
                         w2b_r = T.cast(lut_real[lut2 + k + q], accum_dtype)
                         w2b_i = T.cast(lut_imag[lut2 + k + q], accum_dtype)
-                        t_r = a3_r * w2b_r - a3_i * w2b_i
-                        t_i = a3_r * w2b_i + a3_i * w2b_r
-                        b1_r = a1_r + t_r
-                        b1_i = a1_i + t_i
-                        b3_r = a1_r - t_r
-                        b3_i = a1_i - t_i
 
-                        # (a4, a6) with w2a
-                        t_r = a6_r * w2a_r - a6_i * w2a_i
-                        t_i = a6_r * w2a_i + a6_i * w2a_r
-                        b4_r = a4_r + t_r
-                        b4_i = a4_i + t_i
-                        b6_r = a4_r - t_r
-                        b6_i = a4_i - t_i
-
-                        # (a5, a7) with w2b
-                        t_r = a7_r * w2b_r - a7_i * w2b_i
-                        t_i = a7_r * w2b_i + a7_i * w2b_r
-                        b5_r = a5_r + t_r
-                        b5_i = a5_i + t_i
-                        b7_r = a5_r - t_r
-                        b7_i = a5_i - t_i
+                        b0_r, b0_i, b2_r, b2_i = _butterfly(a0_r, a0_i, a2_r, a2_i, w2a_r, w2a_i)
+                        b1_r, b1_i, b3_r, b3_i = _butterfly(a1_r, a1_i, a3_r, a3_i, w2b_r, w2b_i)
+                        b4_r, b4_i, b6_r, b6_i = _butterfly(a4_r, a4_i, a6_r, a6_i, w2a_r, w2a_i)
+                        b5_r, b5_i, b7_r, b7_i = _butterfly(a5_r, a5_i, a7_r, a7_i, w2b_r, w2b_i)
 
                         # ---- Stage s+2 (stride 4q): pairs at distance 4q ----
-                        # (b0, b4) with w3a = LUT[lut3 + k]
                         w3a_r = T.cast(lut_real[lut3 + k], accum_dtype)
                         w3a_i = T.cast(lut_imag[lut3 + k], accum_dtype)
-                        t_r = b4_r * w3a_r - b4_i * w3a_i
-                        t_i = b4_r * w3a_i + b4_i * w3a_r
-                        y_real[base] = T.cast(b0_r + t_r, real_dtype)
-                        y_imag[base] = T.cast(b0_i + t_i, real_dtype)
-                        y_real[base + 4 * q] = T.cast(b0_r - t_r, real_dtype)
-                        y_imag[base + 4 * q] = T.cast(b0_i - t_i, real_dtype)
-
-                        # (b1, b5) with w3b = LUT[lut3 + k + q]
                         w3b_r = T.cast(lut_real[lut3 + k + q], accum_dtype)
                         w3b_i = T.cast(lut_imag[lut3 + k + q], accum_dtype)
-                        t_r = b5_r * w3b_r - b5_i * w3b_i
-                        t_i = b5_r * w3b_i + b5_i * w3b_r
-                        y_real[base + q] = T.cast(b1_r + t_r, real_dtype)
-                        y_imag[base + q] = T.cast(b1_i + t_i, real_dtype)
-                        y_real[base + 5 * q] = T.cast(b1_r - t_r, real_dtype)
-                        y_imag[base + 5 * q] = T.cast(b1_i - t_i, real_dtype)
-
-                        # (b2, b6) with w3c = LUT[lut3 + k + 2*q]
                         w3c_r = T.cast(lut_real[lut3 + k + 2 * q], accum_dtype)
                         w3c_i = T.cast(lut_imag[lut3 + k + 2 * q], accum_dtype)
-                        t_r = b6_r * w3c_r - b6_i * w3c_i
-                        t_i = b6_r * w3c_i + b6_i * w3c_r
-                        y_real[base + 2 * q] = T.cast(b2_r + t_r, real_dtype)
-                        y_imag[base + 2 * q] = T.cast(b2_i + t_i, real_dtype)
-                        y_real[base + 6 * q] = T.cast(b2_r - t_r, real_dtype)
-                        y_imag[base + 6 * q] = T.cast(b2_i - t_i, real_dtype)
-
-                        # (b3, b7) with w3d = LUT[lut3 + k + 3*q]
                         w3d_r = T.cast(lut_real[lut3 + k + 3 * q], accum_dtype)
                         w3d_i = T.cast(lut_imag[lut3 + k + 3 * q], accum_dtype)
-                        t_r = b7_r * w3d_r - b7_i * w3d_i
-                        t_i = b7_r * w3d_i + b7_i * w3d_r
-                        y_real[base + 3 * q] = T.cast(b3_r + t_r, real_dtype)
-                        y_imag[base + 3 * q] = T.cast(b3_i + t_i, real_dtype)
-                        y_real[base + 7 * q] = T.cast(b3_r - t_r, real_dtype)
-                        y_imag[base + 7 * q] = T.cast(b3_i - t_i, real_dtype)
+
+                        c0_r, c0_i, c4_r, c4_i = _butterfly(b0_r, b0_i, b4_r, b4_i, w3a_r, w3a_i)
+                        c1_r, c1_i, c5_r, c5_i = _butterfly(b1_r, b1_i, b5_r, b5_i, w3b_r, w3b_i)
+                        c2_r, c2_i, c6_r, c6_i = _butterfly(b2_r, b2_i, b6_r, b6_i, w3c_r, w3c_i)
+                        c3_r, c3_i, c7_r, c7_i = _butterfly(b3_r, b3_i, b7_r, b7_i, w3d_r, w3d_i)
+
+                        # Store 8 results
+                        y_real[base] = T.cast(c0_r, real_dtype)
+                        y_imag[base] = T.cast(c0_i, real_dtype)
+                        y_real[base + q] = T.cast(c1_r, real_dtype)
+                        y_imag[base + q] = T.cast(c1_i, real_dtype)
+                        y_real[base + 2 * q] = T.cast(c2_r, real_dtype)
+                        y_imag[base + 2 * q] = T.cast(c2_i, real_dtype)
+                        y_real[base + 3 * q] = T.cast(c3_r, real_dtype)
+                        y_imag[base + 3 * q] = T.cast(c3_i, real_dtype)
+                        y_real[base + 4 * q] = T.cast(c4_r, real_dtype)
+                        y_imag[base + 4 * q] = T.cast(c4_i, real_dtype)
+                        y_real[base + 5 * q] = T.cast(c5_r, real_dtype)
+                        y_imag[base + 5 * q] = T.cast(c5_i, real_dtype)
+                        y_real[base + 6 * q] = T.cast(c6_r, real_dtype)
+                        y_imag[base + 6 * q] = T.cast(c6_i, real_dtype)
+                        y_real[base + 7 * q] = T.cast(c7_r, real_dtype)
+                        y_imag[base + 7 * q] = T.cast(c7_i, real_dtype)
 
         @T.prim_func
         def _fft_lut_main(
