@@ -1,3 +1,4 @@
+from .batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_nsa import (
@@ -51,4 +52,6 @@ __all__ = [
     "Op",
     "RmsNormOp",
     "TopkSelectorOp",
+    "BatchNormBwdOp",
+    "BatchNormFwdOp",
 ]
