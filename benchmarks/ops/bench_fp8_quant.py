@@ -12,11 +12,12 @@ class Fp8QuantBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.test
-        return 2 * t.seq_len_kv * t.index_dim + t.seq_len_kv + 4 * t.seq_len_kv * t.index_dim
+        return (2 * t.batch * t.seq_len_kv * t.kv_group * t.index_dim +
+                t.batch * t.seq_len_kv * t.kv_group + 4 * t.seq_len_kv * t.kv_group * t.index_dim)
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test
-        return t.seq_len_kv * t.index_dim * t.in_dtype.itemsize
+        return t.batch * t.seq_len_kv * t.kv_group * t.index_dim * t.in_dtype.itemsize
 
 
 @Fp8QuantFixture

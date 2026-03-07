@@ -9,20 +9,29 @@ from tileops.ops import Fp8LightingIndexerOp
 
 class Fp8LightingIndexerFixture(FixtureBase):
     PARAMS = [
-        ("seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune", [
-            (4096, 32, 64, 8192, True, None, False),
+        ("batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune", [
+            (1, 4096, 32, 64, 8192, 1, True, None, False),
         ]),
     ]
 
 
 class Fp8LightingIndexerTest(TestBase):
 
-    def __init__(self, seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
-                 clean_logits: bool = True, config: Optional[dict] = None):
+    def __init__(self,
+                 batch: int,
+                 seq_len: int,
+                 heads: int,
+                 index_dim: int,
+                 seq_len_kv: int,
+                 kv_group: int,
+                 clean_logits: bool = True,
+                 config: Optional[dict] = None):
+        self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
         self.index_dim = index_dim
         self.seq_len_kv = seq_len_kv
+        self.kv_group = kv_group
         self.clean_logits = clean_logits
         self.config = config
         self.dtype = torch.float8_e4m3fn
@@ -147,31 +156,59 @@ class Fp8LightingIndexerTest(TestBase):
         assert len(ks) == len(ke) == self.seq_len
         return ks, ke
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-                                  torch.Tensor, torch.Tensor]:
+    def gen_inputs(
+            self,
+            params=None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         IndexQ = torch.randn(
-            self.seq_len, self.heads, self.index_dim, device='cuda', dtype=torch.bfloat16)
-        IndexK = torch.randn(self.seq_len_kv, self.index_dim, device='cuda', dtype=torch.bfloat16)
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.index_dim,
+            device='cuda',
+            dtype=torch.bfloat16)
+        IndexK = torch.randn(
+            self.batch,
+            self.seq_len_kv,
+            self.kv_group,
+            self.index_dim,
+            device='cuda',
+            dtype=torch.bfloat16)
         Weights = torch.randn(self.seq_len, self.heads, device='cuda', dtype=self.accum_dtype)
+        CuSeqLenKS = torch.zeros(self.seq_len, device='cuda', dtype=self.index_dtype)
+        CuSeqLenKE = torch.full((self.seq_len,),
+                                fill_value=self.seq_len_kv - 1,
+                                device='cuda',
+                                dtype=self.index_dtype)
         CuSeqLenKS, CuSeqLenKE = self.generate_random_cu_seqlens(
             cp_size=4, cp_rank=3, kv_stride=1, average_q_len=2048)
         return IndexQ, IndexK, Weights, CuSeqLenKS, CuSeqLenKE
 
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
-                    cu_seqlen_ks: torch.Tensor,
-                    cu_seqlen_ke: torch.Tensor) -> Tuple[torch.Tensor]:
+                    cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> Tuple[torch.Tensor]:
         k = kv
         q = q.float()
         k = k.float()
+        batch, seq_len, heads, index_dim = q.shape
+        seq_len_kv = self.seq_len_kv
+        kv_group = self.kv_group
+        heads_per_group = heads // kv_group
 
-        seq_len_kv = kv.shape[0]
+        k = k.view(batch, seq_len_kv, kv_group, index_dim)
+        q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
+
         mask_lo = torch.arange(0, seq_len_kv, device="cuda")[None, :] >= cu_seqlen_ks[:, None]
         mask_hi = torch.arange(0, seq_len_kv, device="cuda")[None, :] < cu_seqlen_ke[:, None]
         mask = mask_lo & mask_hi
 
-        score = torch.einsum("mhd,nd->hmn", q, k)
-        logits = (score.relu() * weights.unsqueeze(-1).transpose(0, 1)).sum(dim=0)
-        logits = logits.masked_fill(~mask, float("-inf"))
+        score = torch.einsum("bsghd,bngd->bghsn", q, k)
+        weights = weights.view(seq_len, kv_group, heads_per_group)
+        weights = weights.permute(1, 2, 0).unsqueeze(0).unsqueeze(-1)
+        score = score.relu() * weights
+        logits = score.sum(dim=2)
+        logits = logits.permute(0, 2, 3, 1)
+        mask_expanded = mask.unsqueeze(0).unsqueeze(-1)
+        logits = logits.masked_fill(~mask_expanded, float("-inf"))
         return (logits,)
 
     @staticmethod
@@ -181,7 +218,9 @@ class Fp8LightingIndexerTest(TestBase):
         return 2 * (a * b).sum() / norm_sum
 
     @staticmethod
-    def _validate_tensor_match(output: torch.Tensor, output_ref: torch.Tensor, tolerance: float = 1e-3) -> None:
+    def _validate_tensor_match(output: torch.Tensor,
+                               output_ref: torch.Tensor,
+                               tolerance: float = 1e-3) -> None:
         if isinstance(output, tuple):
             output = output[0]
         if isinstance(output_ref, tuple):
@@ -206,11 +245,20 @@ class Fp8LightingIndexerTest(TestBase):
 
 
 @Fp8LightingIndexerFixture
-def test_indexer(seq_len: int, heads: int, index_dim: int, seq_len_kv: int, clean_logits: bool,
-                 config: Optional[dict], tune: bool) -> None:
-    test = Fp8LightingIndexerTest(seq_len, heads, index_dim, seq_len_kv, clean_logits, config)
+def test_indexer(batch: int, seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
+                 kv_group: int, clean_logits: bool, config: Optional[dict], tune: bool) -> None:
+    test = Fp8LightingIndexerTest(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+                                  clean_logits, config)
     op = Fp8LightingIndexerOp(
-        seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune=tune)
+        batch=batch,
+        seq_len=seq_len,
+        heads=heads,
+        index_dim=index_dim,
+        seq_len_kv=seq_len_kv,
+        kv_group=kv_group,
+        clean_logits=clean_logits,
+        config=config,
+        tune=tune)
     test.check(op, *test.gen_inputs(), compare=Fp8LightingIndexerTest._validate_tensor_match)
 
 

@@ -20,10 +20,10 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
         accum_dtype = torch.float32
         index_dtype = torch.int32
 
-        index_q_memory = t.seq_len * t.heads * t.index_dim * dtype.itemsize
-        index_k_memory = t.seq_len_kv * t.index_dim * dtype.itemsize
-        index_k_scale_memory = t.seq_len_kv * accum_dtype.itemsize
-        logits_memory = t.seq_len * t.seq_len_kv * accum_dtype.itemsize
+        index_q_memory = t.batch * t.seq_len * t.heads * t.index_dim * dtype.itemsize
+        index_k_memory = t.batch * t.seq_len_kv * t.index_dim * t.kv_group * dtype.itemsize
+        index_k_scale_memory = t.batch * t.seq_len_kv * t.kv_group * accum_dtype.itemsize
+        logits_memory = t.batch * t.seq_len * t.seq_len_kv * t.kv_group * accum_dtype.itemsize
         weights_memory = t.seq_len * t.heads * accum_dtype.itemsize
         cu_seqlens_ks_memory = t.seq_len * index_dtype.itemsize
         cu_seqlens_ke_memory = t.seq_len * index_dtype.itemsize
