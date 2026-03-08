@@ -1,3 +1,4 @@
+import subprocess
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Optional, Tuple
@@ -6,6 +7,32 @@ import torch
 from tilelang.profiler import do_bench
 
 from tests.test_base import TestBase
+
+
+def _get_env_metadata() -> list[str]:
+    """Collect GPU model, driver version, CUDA version, and torch version."""
+    lines = []
+    lines.append(f"- **Torch version**: {torch.__version__}")
+    lines.append(f"- **CUDA version (torch)**: {torch.version.cuda or 'N/A'}")
+
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        lines.append(f"- **GPU model**: {gpu_name}")
+    else:
+        lines.append("- **GPU model**: N/A (no CUDA device)")
+
+    # Try to get NVIDIA driver version from nvidia-smi
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        driver = result.stdout.strip().split("\n")[0] if result.returncode == 0 else "N/A"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        driver = "N/A"
+    lines.append(f"- **Driver version**: {driver}")
+
+    return lines
 
 
 class BenchmarkBase(ABC):
@@ -95,7 +122,11 @@ class BenchmarkReport:
             "# TileOPs Benchmark Report",
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             "",
+            "## Environment",
+            "",
         ]
+        lines.extend(_get_env_metadata())
+        lines.append("")
 
         result_keys = ["latency_ms", "tflops", "bandwidth_tbs"]
 

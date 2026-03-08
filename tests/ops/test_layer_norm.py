@@ -142,5 +142,60 @@ def test_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) ->
         f"3D test failed, max err: {(y - y_ref).abs().max()}"
 
 
+class LayerNormLargeOffsetFixture(FixtureBase):
+    PARAMS = [
+        ("m, n, dtype", [
+            (4, 4096, torch.float32),
+            (1024, 4096, torch.float32),
+            (4, 4096, torch.float16),
+            (4, 4096, torch.bfloat16),
+        ]),
+    ]
+
+
+@LayerNormLargeOffsetFixture
+def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
+    """Regression: large-mean, low-variance inputs stress the variance formula.
+
+    E[x^2] - mean^2 would suffer catastrophic cancellation here (max_err > 1.0);
+    the centered two-pass approach keeps error within a few percent.
+
+    Note: fp32 reduction order differences between TileLang's T.reduce_sum and
+    PyTorch's fused CUDA layer_norm cause inherent ~1-2% relative disagreement
+    on adversarial large-offset inputs (var ~ 1e-4, mean ~ 10000).  We use
+    a relative tolerance of 5% which is tight enough to catch the original
+    catastrophic cancellation bug (which produced >100x error) while allowing
+    the inherent fp32 parallel reduction precision limits.
+    """
+    x = (10000.0 + 0.01 * torch.randn(m, n, device="cuda")).to(dtype)
+    weight = torch.ones(n, dtype=dtype, device="cuda")
+    bias = torch.zeros(n, dtype=dtype, device="cuda")
+
+    op = LayerNormOp(M=m, N=n, dtype=dtype)
+
+    y_ref = F.layer_norm(
+        x.float(), (n,),
+        weight=weight.float(), bias=bias.float(), eps=1e-5,
+    ).to(dtype)
+
+    y = op(x, weight, bias)
+
+    # For large-offset inputs, use a relative tolerance that catches
+    # catastrophic cancellation (>100x error) but allows inherent
+    # fp32 reduction precision differences (~1-2% relative error).
+    if dtype == torch.float32:
+        atol, rtol = 1e-1, 5e-2
+    else:
+        atol, rtol = _get_tolerances(dtype)
+
+    max_err = (y - y_ref).abs().max().item()
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"Large-offset test failed, max err: {max_err}"
+    # Verify that catastrophic cancellation is NOT happening:
+    # with the unstable formula, errors would be > 1.0
+    assert max_err < 1.0, \
+        f"Catastrophic cancellation detected, max err: {max_err}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
