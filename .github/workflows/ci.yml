@@ -2,6 +2,7 @@ name: CI
 
 permissions:
   contents: write
+  checks: read
 
 on:
   push:
@@ -18,8 +19,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ci-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Check existing CI results for this SHA
+        id: check
+        run: |
+          if [[ "${{ github.event.action }}" != "ready_for_review" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" \
+            --jq '[.check_runs[] | select(.name == "pre-commit" or .name == "tileops_test_release") | .conclusion]')
+          ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
+          COUNT=$(echo "$CHECKS" | jq 'length')
+          if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 2 ]]; then
+            echo "CI already passed for SHA $HEAD_SHA — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   pre-commit:
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && github.event.pull_request.draft == false }}
+    needs: ci-gate
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -45,8 +73,9 @@ jobs:
           extra_args: --all-files --show-diff-on-failure
 
   tileops_test_release:
+    needs: ci-gate
     # needs: pre-commit
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && github.event.pull_request.draft == false }}
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
