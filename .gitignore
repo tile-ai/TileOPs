@@ -63,3 +63,4 @@ secrets.yml
 
 docs/plans/
 .humanize*
+.foundry/runs/
