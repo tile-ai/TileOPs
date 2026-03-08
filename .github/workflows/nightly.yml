@@ -93,7 +93,7 @@ jobs:
           set -euo pipefail
           VENV_DIR="tileops_benchmark_venv"
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
-          export PYTHONPATH="$(pwd):$PYTHONPATH"
+          export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           set -o pipefail
           python -m pytest -q benchmarks/ops | tee tileops_benchmarks.log

@@ -124,7 +124,7 @@ jobs:
         run: |
           VENV_DIR="tileops_release_venv"
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
-          export PYTHONPATH="$(pwd):$PYTHONPATH"
+          export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           set -o pipefail
           python -m pytest -q tests  | tee tileops_test_release.log
