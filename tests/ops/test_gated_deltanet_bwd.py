@@ -3,7 +3,7 @@ from typing import List, Tuple
 import pytest
 import torch
 
-from tests.test_base import FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GatedDeltaNetBwdOp
 
 # =============================================================================
@@ -300,12 +300,67 @@ def _gated_deltanet_bwd_torch_ref(
 # =============================================================================
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
+    # Tolerances are looser than DEVELOPMENT.md defaults (fp16: 1e-3, bf16: 1.6e-2)
+    # because the backward pass chains multiple sequential chunk recurrences
+    # (forward state, reverse dh propagation, compute_w_u_bwd), compounding fp32
+    # rounding errors across every chunk boundary. See test_gated_deltanet_fwd.py
+    # for additional rationale.
     if dtype == torch.float32:
         return {"atol": 1e-2, "rtol": 1e-2}
     elif dtype == torch.float16:
         return {"atol": 5e-2, "rtol": 5e-2}
     else:  # bfloat16
         return {"atol": 1e-1, "rtol": 1e-1}
+
+
+class GatedDeltaNetBwdTest(TestBase):
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim_k: int,
+        dim_v: int,
+        chunk_size: int,
+        dtype: torch.dtype,
+    ) -> None:
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.chunk_size = chunk_size
+        self.dtype = dtype
+
+    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
+        B, H, S, DK, DV = self.batch, self.heads, self.seq_len, self.dim_k, self.dim_v
+        torch.manual_seed(42)
+        q = torch.randn(B, H, S, DK, device="cuda", dtype=self.dtype) * 0.1
+        k = torch.randn(B, H, S, DK, device="cuda", dtype=self.dtype) * 0.1
+        v = torch.randn(B, H, S, DV, device="cuda", dtype=self.dtype) * 0.1
+        g = -torch.rand(B, H, S, device="cuda", dtype=self.dtype)
+        beta = torch.rand(B, H, S, device="cuda", dtype=self.dtype) * 0.5
+        Aw, Au = _prepare_wy_repr_torch_ref(k, g, beta, self.chunk_size)
+        w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, self.chunk_size)
+        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device="cuda")
+        _S, o = _kernel2_torch_ref(q, k, g, w, u, S_0, self.chunk_size)
+        do = torch.randn_like(o) * 0.1
+        return do, q, k, v, g, beta
+
+    def ref_program(
+        self,
+        do: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> Tuple[torch.Tensor, ...]:
+        BC = self.chunk_size
+        Aw, Au = _prepare_wy_repr_torch_ref(k, g, beta, BC)
+        dq, dk, dv, dg, dbeta = _gated_deltanet_bwd_torch_ref(do, q, k, v, g, beta, Aw, Au, BC)
+        return dq.to(self.dtype), dk.to(self.dtype), dv.to(self.dtype), dg.to(self.dtype), dbeta.to(self.dtype)
 
 
 class GatedDeltaNetBwdFixture(FixtureBase):

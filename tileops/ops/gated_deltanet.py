@@ -62,14 +62,16 @@ class GatedDeltaNetFwdOp(Op):
         wy_kernel_cls = self.kernel_map["PrepareWYReprKernel"]
         fwd_kernel_cls = self.kernel_map["GatedDeltaNetFwdKernel"]
 
+        # Kernels always run in float32; inputs are cast in forward().
+        kernel_dtype = Kernel.dtype_to_str(torch.float32)
         self.wy_kernel = wy_kernel_cls(
             batch, heads, seq_len, chunk_size, dim_k,
-            dtype=Kernel.dtype_to_str(dtype),
+            dtype=kernel_dtype,
             tune=tune,
         )
         self.kernel = fwd_kernel_cls(
             batch, heads, seq_len, chunk_size, dim_k, dim_v,
-            dtype=Kernel.dtype_to_str(dtype),
+            dtype=kernel_dtype,
             tune=tune,
         )
 
@@ -152,14 +154,16 @@ class GatedDeltaNetBwdOp(Op):
         wy_kernel_cls = self.kernel_map["PrepareWYReprKernel"]
         bwd_kernel_cls = self.kernel_map["GatedDeltaNetBwdKernel"]
 
+        # Kernels always run in float32; inputs are cast in forward().
+        kernel_dtype = Kernel.dtype_to_str(torch.float32)
         self.wy_kernel = wy_kernel_cls(
             batch, heads, seq_len, chunk_size, dim_k,
-            dtype=Kernel.dtype_to_str(dtype),
+            dtype=kernel_dtype,
             tune=tune,
         )
         self.kernel = bwd_kernel_cls(
             batch, heads, seq_len, chunk_size, dim_k, dim_v,
-            dtype=Kernel.dtype_to_str(dtype),
+            dtype=kernel_dtype,
             tune=tune,
         )
 

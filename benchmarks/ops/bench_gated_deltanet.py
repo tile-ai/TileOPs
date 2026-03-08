@@ -1,9 +1,10 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_gated_deltanet_bwd import GatedDeltaNetBwdTest
 from tests.ops.test_gated_deltanet_fwd import GatedDeltaNetFwdFixture, GatedDeltaNetFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp
@@ -71,24 +72,16 @@ class GatedDeltaNetBwdFixture(FixtureBase):
 
 class GatedDeltaNetBwdBenchmark(BenchmarkBase):
 
-    def __init__(self, batch: int, heads: int, seq_len: int, dim_k: int, dim_v: int,
-                 chunk_size: int, dtype: torch.dtype) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.chunk_size = chunk_size
-        self.dtype = dtype
-
     def calculate_flops(self) -> Optional[float]:
-        B, H, S, DK, DV = self.batch, self.heads, self.seq_len, self.dim_k, self.dim_v
+        t = self.test
+        B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         flops = 4.0 * B * H * S * DK * DV
         return flops
 
     def calculate_memory(self) -> Optional[float]:
-        B, H, S, DK, DV = self.batch, self.heads, self.seq_len, self.dim_k, self.dim_v
-        elem = self.dtype.itemsize
+        t = self.test
+        B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
+        elem = t.dtype.itemsize
         # Inputs: q,k (2*DK), v,do (2*DV), g,beta (2); Outputs: dq,dk (2*DK), dv (DV), dg,dbeta (2)
         return B * H * S * (4 * DK + 3 * DV + 4) * elem
 
@@ -104,18 +97,12 @@ def test_gated_deltanet_bwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
-    op = GatedDeltaNetBwdOp(B, H, S, DK, DV, BC, dtype, tune=tune)
+    test = GatedDeltaNetBwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    bm = GatedDeltaNetBwdBenchmark(test)
+    inputs = test.gen_inputs()
 
-    q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(B, H, S, device="cuda", dtype=dtype)
-    beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
-
-    bm = GatedDeltaNetBwdBenchmark(B, H, S, DK, DV, BC, dtype)
-    result = bm.profile(op.forward, do, q, k, v, g, beta)
+    op = GatedDeltaNetBwdOp(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune=tune)
+    result = bm.profile(op.forward, *inputs)
     BenchmarkReport.record("gated_deltanet_bwd", locals(), result, tag="tileops")
 
 

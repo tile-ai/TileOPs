@@ -17,7 +17,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.linear_attn.gated_deltanet_fwd import _LOG2E
+from .gated_deltanet_fwd import _LOG2E
 
 __all__ = [
     "GatedDeltaNetBwdKernel",
