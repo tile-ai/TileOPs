@@ -5,7 +5,6 @@ import torch
 
 from tileops.kernels.deepseek_nsa import (
     GqaSlidingWindowFwdKernel,
-    GqaSlidingWindowFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel import Kernel
 from tileops.ops.op import Op

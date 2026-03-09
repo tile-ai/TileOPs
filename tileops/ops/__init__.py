@@ -15,8 +15,8 @@ from .gated_deltanet import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp
 from .gemm import GemmOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
-from .gqa_sliding_window_fwd import GqaSlidingWindowFwdOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
+from .gqa_sliding_window_fwd import GqaSlidingWindowFwdOp
 from .grouped_gemm import GroupedGemmOp
 from .layer_norm import LayerNormOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
