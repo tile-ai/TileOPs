@@ -175,11 +175,6 @@ class Fp8LightingIndexerTest(TestBase):
             device='cuda',
             dtype=torch.bfloat16)
         Weights = torch.randn(self.seq_len, self.heads, device='cuda', dtype=self.accum_dtype)
-        CuSeqLenKS = torch.zeros(self.seq_len, device='cuda', dtype=self.index_dtype)
-        CuSeqLenKE = torch.full((self.seq_len,),
-                                fill_value=self.seq_len_kv - 1,
-                                device='cuda',
-                                dtype=self.index_dtype)
         CuSeqLenKS, CuSeqLenKE = self.generate_random_cu_seqlens(
             cp_size=4, cp_rank=3, kv_stride=1, average_q_len=2048)
         return IndexQ, IndexK, Weights, CuSeqLenKS, CuSeqLenKE

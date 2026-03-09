@@ -280,7 +280,7 @@ class Fp8LightingIndexerKernel(Kernel):
         self.q = q
         self.kv = kv
         batch, seq_len, heads, index_dim = q.shape
-        seq_len_kv = kv.shape[0]
+        seq_len_kv = kv.shape[1]
         IndexQ = torch.randn(
             batch, seq_len * heads, index_dim, device='cuda', dtype=torch.float8_e4m3fn)
         IndexK = torch.randn(
