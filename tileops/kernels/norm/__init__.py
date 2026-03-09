@@ -2,7 +2,7 @@ from .batch_norm import BatchNormBwdKernel, BatchNormFwdInferKernel, BatchNormFw
 from .layer_norm import LayerNormKernel
 from .rms_norm import RmsNormKernel
 
-__all__ = [
+__all__: list[str] = [
     "BatchNormBwdKernel",
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
