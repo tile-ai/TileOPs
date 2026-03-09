@@ -5,7 +5,7 @@ import torch
 flash_attn = pytest.importorskip("flash_attn",
                                   reason="flash_attn (FA3) not installed")
 
-from tileops.kernels.deepseek_nsa import GqaSlidingWindowFwdKernel
+from tileops.kernels.deepseek_nsa import GqaSlidingWindowFwdKernel, GqaSlidingWindowFwdWgmmaPipelinedKernel
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA required")
@@ -38,6 +38,26 @@ def test_gqa_sliding_window_fwd_simple(batch, seq, heads, heads_kv, dim, causal,
     v = torch.randn(batch, seq, heads_kv, dim, dtype=dtype, device=device) * 0.1
 
     kernel = GqaSlidingWindowFwdKernel(
+        batch=batch, heads=heads, heads_kv=heads_kv, seq_len=seq, dim=dim,
+        is_causal=causal, window_size_left=wl, window_size_right=wr,
+        dtype=dtype)
+
+    o_ref = fa3_ref(q, k, v, causal, wl, wr)
+    o_out, _ = kernel.forward(q, k, v)
+
+    torch.testing.assert_close(o_out, o_ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.parametrize("batch,seq,heads,heads_kv,dim,causal,wl,wr", CONFIGS)
+def test_gqa_sliding_window_fwd_wgmma(batch, seq, heads, heads_kv, dim, causal, wl, wr):
+    dtype = torch.float16
+    device = "cuda"
+
+    q = torch.randn(batch, seq, heads,    dim, dtype=dtype, device=device) * 0.1
+    k = torch.randn(batch, seq, heads_kv, dim, dtype=dtype, device=device) * 0.1
+    v = torch.randn(batch, seq, heads_kv, dim, dtype=dtype, device=device) * 0.1
+
+    kernel = GqaSlidingWindowFwdWgmmaPipelinedKernel(
         batch=batch, heads=heads, heads_kv=heads_kv, seq_len=seq, dim=dim,
         is_causal=causal, window_size_left=wl, window_size_right=wr,
         dtype=dtype)
