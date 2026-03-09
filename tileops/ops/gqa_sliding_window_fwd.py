@@ -5,9 +5,11 @@ import torch
 
 from tileops.kernels.deepseek_nsa import (
     GqaSlidingWindowFwdKernel,
+    GqaSlidingWindowFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel import Kernel
 from tileops.ops.op import Op
+from tileops.utils import is_hopper
 
 
 class GqaSlidingWindowFwdOp(Op):
@@ -75,7 +77,8 @@ class GqaSlidingWindowFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_sliding_window_fwd": GqaSlidingWindowFwdKernel}
+        kernel = GqaSlidingWindowFwdWgmmaPipelinedKernel if is_hopper() else GqaSlidingWindowFwdKernel
+        return {"gqa_sliding_window_fwd": kernel}
 
     def forward(
         self,
