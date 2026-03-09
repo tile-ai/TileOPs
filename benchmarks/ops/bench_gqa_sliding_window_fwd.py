@@ -17,22 +17,20 @@ class GqaSlidingWindowFwdBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
         """Approximate FLOPs for QK^T and PV GEMMs."""
         t = self.test
-        if t.is_causal:
-            eff_kv = t.seq // 2
-        elif t.wl >= 0 or t.wr >= 0:
-            wl = t.wl if t.wl >= 0 else t.seq
-            wr = t.wr if t.wr >= 0 else t.seq
-            eff_kv = min(t.seq, wl + wr + 1)
-        else:
-            eff_kv = t.seq
-        return 4 * t.batch * t.heads * t.seq * eff_kv * t.dim
+        S = t.seq
+        wl, wr = t.wl, t.wr
+        total_attended = 0
+        for q in range(S):
+            hi = q if t.is_causal else (min(S - 1, q + wr) if wr >= 0 else S - 1)
+            lo = max(0, q - wl) if wl >= 0 else 0
+            total_attended += hi - lo + 1
+        return 4 * t.batch * t.heads * total_attended * t.dim
 
     def calculate_memory(self) -> Optional[float]:
         """Approximate bytes accessed: read Q/K/V, write O."""
         t = self.test
         elem = torch.tensor([], dtype=t.dtype).element_size()
-        return (3 * t.batch * t.seq * t.heads_kv * t.dim +
-                t.batch * t.seq * t.heads * t.dim) * elem
+        return 2 * t.batch * t.seq * (t.heads + t.heads_kv) * t.dim * elem
 
 
 def _fa3_baseline(q, k, v, is_causal, wl, wr):

@@ -122,19 +122,18 @@ class GqaSlidingWindowFwdOp(Op):
     @property
     def total_flops(self) -> int:
         """Approximate FLOPs for QK^T and PV GEMMs."""
-        if self.is_causal:
-            eff_kv = self.seq_len // 2
-        elif self.window_size_left >= 0 or self.window_size_right >= 0:
-            wl = self.window_size_left if self.window_size_left >= 0 else self.seq_len
-            wr = self.window_size_right if self.window_size_right >= 0 else self.seq_len
-            eff_kv = min(self.seq_len, wl + wr + 1)
-        else:
-            eff_kv = self.seq_len
-        return 4 * self.batch * self.heads * self.seq_len * eff_kv * self.dim
+        S = self.seq_len
+        wl = self.window_size_left
+        wr = self.window_size_right
+        total_attended = 0
+        for q in range(S):
+            hi = q if self.is_causal else (min(S - 1, q + wr) if wr >= 0 else S - 1)
+            lo = max(0, q - wl) if wl >= 0 else 0
+            total_attended += hi - lo + 1
+        return 4 * self.batch * self.heads * total_attended * self.dim
 
     @property
     def total_memory(self) -> int:
         """Approximate bytes accessed: read Q/K/V, write O."""
         elem = torch.tensor([], dtype=self.dtype).element_size()
-        return (3 * self.batch * self.seq_len * self.heads_kv * self.dim +
-                self.batch * self.seq_len * self.heads * self.dim) * elem
+        return 2 * self.batch * self.seq_len * (self.heads + self.heads_kv) * self.dim * elem
