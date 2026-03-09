@@ -11,11 +11,27 @@ from tileops.ops import GqaSlidingWindowFwdOp
 class GqaSlidingWindowFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune", [
+            # ── Basic correctness ─────────────────────────────────────────────
             (2, 512,  8, 2,  64, True,  -1,  -1, torch.float16, False),  # causal full
             (2, 512,  8, 2,  64, True,  128, -1, torch.float16, False),  # causal + left window
             (2, 512,  8, 2,  64, False, -1,  -1, torch.float16, False),  # bidirectional full
             (2, 512,  8, 2,  64, False, 64,  64, torch.float16, False),  # bidirectional window
             (2, 128,  8, 1, 128, True,   1,  -1, torch.float16, False),  # tiny left window
+            # ── dtype ─────────────────────────────────────────────────────────
+            (2, 512,  8, 2,  64, True,  -1,  -1, torch.bfloat16, False),  # bfloat16 causal
+            (2, 512,  8, 2,  64, False, 64,  64, torch.bfloat16, False),  # bfloat16 window
+            # ── GQA ratio ─────────────────────────────────────────────────────
+            (2, 512,  8, 8,  64, True,  -1,  -1, torch.float16, False),  # MHA (ratio 1:1)
+            (2, 512, 16, 1,  64, True,  -1,  -1, torch.float16, False),  # ratio 16:1
+            # ── Non-power-of-2 sequence lengths ───────────────────────────────
+            (2, 384,  8, 2,  64, True,  -1,  -1, torch.float16, False),  # seq=384
+            (2, 768,  8, 2,  64, False, 256, -1, torch.float16, False),  # seq=768 + left window
+            # ── Large sequence ─────────────────────────────────────────────────
+            (1, 2048, 8, 2,  64, True,  512, -1, torch.float16, False),  # long causal + window
+            # ── Right window only ──────────────────────────────────────────────
+            (2, 512,  8, 2,  64, False, -1,  64, torch.float16, False),  # right window only
+            # ── wl=0 boundary: only current-position left context ─────────────
+            (2, 256,  8, 2,  64, True,   0,  -1, torch.float16, False),  # causal + wl=0
         ]),
     ]
 
