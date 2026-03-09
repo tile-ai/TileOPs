@@ -83,6 +83,7 @@ def benchmark_single(gemm, a, b, batch_sizes, num_iter=100):
     return (time.time() - start_time) / num_iter
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize(
     "batch_sum, batch_count, k, n, dtype",
     [

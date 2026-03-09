@@ -23,17 +23,17 @@ class BatchNormFwdFixture(FixtureBase):
     PARAMS = [
         ("N, C, spatial, dtype, training", [
             # BatchNorm1d – (N, C)
-            (32, 64,  (),        torch.float16,  True),
-            (32, 64,  (),        torch.float16,  False),
-            (32, 256, (),        torch.bfloat16, True),
+            pytest.param(32, 64, (), torch.float16, True, marks=pytest.mark.smoke),
+            pytest.param(32, 64, (), torch.float16, False, marks=pytest.mark.full),
+            pytest.param(32, 256, (), torch.bfloat16, True, marks=pytest.mark.full),
             # BatchNorm1d – (N, C, L)
-            (16, 64,  (512,),    torch.float16,  True),
+            pytest.param(16, 64, (512,), torch.float16, True, marks=pytest.mark.full),
             # Non-persistent path (L > 8192): smallest representative case L=16384.
-            (4,  64,  (64, 64),  torch.float16,  True),
+            pytest.param(4, 64, (64, 64), torch.float16, True, marks=pytest.mark.full),
             # BatchNorm2d – (N, C, H, W)
-            (8,  64,  (1024, 1024),  torch.float16,  True),
-            (8,  64,  (2048, 2048),  torch.float16,  False),
-            (4,  128, (32, 32),  torch.bfloat16, True),
+            pytest.param(8, 64, (1024, 1024), torch.float16, True, marks=pytest.mark.full),
+            pytest.param(8, 64, (2048, 2048), torch.float16, False, marks=pytest.mark.full),
+            pytest.param(4, 128, (32, 32), torch.bfloat16, True, marks=pytest.mark.full),
         ]),
     ]
 
@@ -42,11 +42,11 @@ class BatchNormBwdFixture(FixtureBase):
     """(N, C, *spatial, dtype)"""
     PARAMS = [
         ("N, C, spatial, dtype", [
-            (32, 64,  (),       torch.float16),
-            (8,  64,  (32, 32), torch.float16),
-            (4,  128, (32, 32), torch.bfloat16),
+            pytest.param(32, 64, (), torch.float16, marks=pytest.mark.smoke),
+            pytest.param(8, 64, (32, 32), torch.float16, marks=pytest.mark.full),
+            pytest.param(4, 128, (32, 32), torch.bfloat16, marks=pytest.mark.full),
             # Non-persistent backward path (L=16384 > 8192).
-            (4,  64,  (64, 64), torch.float16),
+            pytest.param(4, 64, (64, 64), torch.float16, marks=pytest.mark.full),
         ]),
     ]
 

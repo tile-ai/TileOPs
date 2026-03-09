@@ -156,7 +156,12 @@ jobs:
           export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           set -o pipefail
-          python -m pytest -q tests  | tee tileops_test_release.log
+          TEST_MARK_EXPR="smoke or full"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TEST_MARK_EXPR="smoke"
+          fi
+          echo "Running pytest -m \"${TEST_MARK_EXPR}\""
+          python -m pytest -q tests -m "${TEST_MARK_EXPR}" | tee tileops_test_release.log
         shell: bash
 
       - name: Cleanup venv

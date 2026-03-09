@@ -12,8 +12,10 @@ class NsaCmpFwdFixture(FixtureBase):
     PARAMS = [
         ("seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, bk, bv, "
          "dtype, accum_dtype, tune", [
-             (9, 8192, 32, 128, 128, 16, 128**-0.5, 32, 32, 128, 128, torch.float16,
-              torch.float32, False),
+             pytest.param(
+                 9, 8192, 32, 128, 128, 16, 128**-0.5, 32, 32, 128, 128, torch.float16,
+                 torch.float32, False, marks=pytest.mark.smoke,
+             ),
          ]),
     ]
 

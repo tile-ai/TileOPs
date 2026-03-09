@@ -14,10 +14,22 @@ from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
 class MhaDecodePagedFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype, tune", [
-            (1, 16, 1, 512, 128, 128, False, torch.float16, False),
-            (1, 8, 1, 1024, 64, 256, False, torch.float16, False),
-            (2, 8, 1, 1024, 64, 256, False, torch.float16, False),
-            (1, 8, 1, 512, 64, 256, False, torch.float16, False),
+            pytest.param(
+                1, 16, 1, 512, 128, 128, False, torch.float16, False,
+                marks=pytest.mark.smoke,
+            ),
+            pytest.param(
+                1, 8, 1, 1024, 64, 256, False, torch.float16, False,
+                marks=pytest.mark.full,
+            ),
+            pytest.param(
+                2, 8, 1, 1024, 64, 256, False, torch.float16, False,
+                marks=pytest.mark.full,
+            ),
+            pytest.param(
+                1, 8, 1, 512, 64, 256, False, torch.float16, False,
+                marks=pytest.mark.full,
+            ),
         ]),
     ]
 

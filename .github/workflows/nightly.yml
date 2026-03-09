@@ -96,7 +96,7 @@ jobs:
           export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           set -o pipefail
-          python -m pytest -q benchmarks/ops | tee tileops_benchmarks.log
+          python -m pytest -q benchmarks/ops -m "smoke or full or nightly" | tee tileops_benchmarks.log
         shell: bash
 
       - name: Merge benchmark profile summary
@@ -228,7 +228,7 @@ jobs:
           ls -lh dist/*.whl
         shell: bash
 
-      - name: Run unit tests against built wheel
+      - name: Run nightly tests against built wheel
         run: |
           set -euo pipefail
           VENV_DIR="tileops_wheel_ci_venv"
@@ -241,7 +241,7 @@ jobs:
           unset PYTHONPATH || true
 
           cd "${TMP_TEST_DIR}"
-          python -m pytest -q tests
+          python -m pytest -q tests -m "smoke or full or nightly"
         shell: bash
 
       - name: Upload wheel artifact
