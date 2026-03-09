@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.batch_norm import BatchNormBwdOp, BatchNormFwdOp
+from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 
 # ---------------------------------------------------------------------------
 # Fixtures

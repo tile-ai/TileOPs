@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_rms_norm import RmsNormFixture, RmsNormTest
-from tileops.ops.rms_norm import RmsNormOp
+from tileops.ops.norm.rms_norm import RmsNormOp
 
 
 class RmsNormBenchmark(BenchmarkBase):

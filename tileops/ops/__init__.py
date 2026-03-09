@@ -1,4 +1,3 @@
-from .batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_nsa import (
@@ -17,14 +16,13 @@ from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
 from .grouped_gemm import GroupedGemmOp
-from .layer_norm import LayerNormOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
 from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
 from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
+from .norm import BatchNormBwdOp, BatchNormFwdOp, LayerNormOp, RmsNormOp
 from .op import Op
-from .rms_norm import RmsNormOp
 from .topk_selector import TopkSelectorOp
 
 __all__ = [

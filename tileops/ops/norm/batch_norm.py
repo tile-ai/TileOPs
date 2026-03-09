@@ -22,14 +22,14 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.batch_norm import (
+from tileops.kernels.kernel import Kernel
+from tileops.kernels.norm.batch_norm import (
     BatchNormBwdKernel,
     BatchNormFwdInferKernel,
     BatchNormFwdTrainKernel,
 )
-from tileops.kernels.kernel import Kernel
 
-from .op import Op
+from ..op import Op
 
 __all__ = ["BatchNormFwdOp", "BatchNormBwdOp"]
 

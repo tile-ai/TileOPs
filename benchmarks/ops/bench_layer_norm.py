@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_layer_norm import LayerNormFixture, LayerNormTest
-from tileops.ops.layer_norm import LayerNormOp
+from tileops.ops.norm.layer_norm import LayerNormOp
 
 
 class LayerNormBenchmark(BenchmarkBase):
