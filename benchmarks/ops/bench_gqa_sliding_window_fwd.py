@@ -66,6 +66,10 @@ def test_gqa_sliding_window_fwd_bench(
         is_causal=is_causal, window_size_left=wl, window_size_right=wr,
         dtype=dtype, tune=tune)
 
+    # Warmup: trigger JIT compilation before timed profiling
+    op(*inputs)
+    torch.cuda.synchronize()
+
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("gqa_sliding_window_fwd", locals(), result, tag="tileops")
 
