@@ -163,5 +163,45 @@ class TestGqaSlidingWindowFwdOpMetrics:
         assert op.total_memory == expected, f"got {op.total_memory}, expected {expected}"
 
 
+class TestGqaSlidingWindowFwdOpValidation:
+    """Early-error validation: __init__ and forward guard-clauses."""
+
+    # ── window_size validation (caught in __init__, no GPU kernel needed) ─────
+
+    def test_invalid_window_size_left_raises(self):
+        with pytest.raises(ValueError, match="window_size_left"):
+            GqaSlidingWindowFwdOp(
+                batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
+                is_causal=True, window_size_left=-2)
+
+    def test_invalid_window_size_right_raises(self):
+        with pytest.raises(ValueError, match="window_size_right"):
+            GqaSlidingWindowFwdOp(
+                batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
+                is_causal=True, window_size_right=-3)
+
+    # ── dtype / device validation (caught in forward) ─────────────────────────
+
+    @pytest.fixture(scope="class")
+    def float16_op(self):
+        return GqaSlidingWindowFwdOp(
+            batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
+            is_causal=True, dtype=torch.float16)
+
+    def test_dtype_mismatch_raises(self, float16_op):
+        q = torch.randn(1, 64, 4, 64, dtype=torch.bfloat16, device="cuda")
+        k = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device="cuda")
+        v = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device="cuda")
+        with pytest.raises(ValueError, match="dtype"):
+            float16_op.forward(q, k, v)
+
+    def test_cpu_tensor_raises(self, float16_op):
+        q = torch.randn(1, 64, 4, 64, dtype=torch.float16)   # CPU
+        k = torch.randn(1, 64, 2, 64, dtype=torch.float16)
+        v = torch.randn(1, 64, 2, 64, dtype=torch.float16)
+        with pytest.raises(ValueError, match="cuda"):
+            float16_op.forward(q, k, v)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

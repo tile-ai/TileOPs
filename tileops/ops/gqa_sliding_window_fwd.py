@@ -51,6 +51,12 @@ class GqaSlidingWindowFwdOp(Op):
         tune: bool = False,
     ) -> None:
         assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+        if window_size_left != -1 and window_size_left < 0:
+            raise ValueError(
+                f"window_size_left must be -1 (unlimited) or >= 0, got {window_size_left}")
+        if window_size_right != -1 and window_size_right < 0:
+            raise ValueError(
+                f"window_size_right must be -1 (unlimited) or >= 0, got {window_size_right}")
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -96,6 +102,13 @@ class GqaSlidingWindowFwdOp(Op):
         Returns:
             Output tensor, shape [batch, seq_len, heads, dim].
         """
+        for t, name in [(q, 'q'), (k, 'k'), (v, 'v')]:
+            if t.device.type != 'cuda':
+                raise ValueError(
+                    f"{name} must be on a cuda device, got {t.device}")
+            if t.dtype != self.dtype:
+                raise ValueError(
+                    f"{name} dtype {t.dtype} does not match op dtype {self.dtype}")
         if not q.is_contiguous():
             q = q.contiguous()
         if not k.is_contiguous():
