@@ -62,14 +62,6 @@ def _find_best_block_l(L: int) -> dict:
     )
 
 
-def _find_best_threads(L: int) -> int:
-    """Largest power-of-2 threads in [256, 128, 64, 32] that divides L."""
-    for t in [256, 128, 64, 32]:
-        if L % t == 0:
-            return t
-    return 32
-
-
 # ---------------------------------------------------------------------------
 # Row-wise path: entire row fits in shared memory
 # ---------------------------------------------------------------------------
@@ -312,8 +304,8 @@ class GroupNormKernel(Kernel):
     def default_config(self) -> dict:
         if self.use_rowwise:
             smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-            # 3 buffers: x, weight, bias each block_m * N_padded
-            max_block_m = (48 * 1024) // (3 * smem_per_row)
+            # Single shared_buf reused for x, weight, bias loads: block_m * N_padded
+            max_block_m = (48 * 1024) // smem_per_row
             block_m = 1
             for bm in [1, 2, 4, 8, 16]:
                 if bm <= max_block_m:
@@ -326,7 +318,7 @@ class GroupNormKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         if self.use_rowwise:
             smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-            max_block_m = (48 * 1024) // (3 * smem_per_row)
+            max_block_m = (48 * 1024) // smem_per_row
             block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]
             threads_list = [128, 256]
             configs = list(itertools.product(block_ms, threads_list))
