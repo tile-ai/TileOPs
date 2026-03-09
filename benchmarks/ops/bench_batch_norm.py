@@ -14,7 +14,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_batch_norm import BatchNormBwdTest, BatchNormFwdTest
-from tileops.ops.batch_norm import BatchNormBwdOp, BatchNormFwdOp
+from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 
 # ---------------------------------------------------------------------------
 # Benchmark classes

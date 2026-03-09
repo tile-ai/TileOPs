@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.norm import LayerNormKernel
 
-from .op import Op
+from ..op import Op
 
 __all__ = ["LayerNormOp"]
 

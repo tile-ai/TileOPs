@@ -34,7 +34,7 @@ from tileops.kernels.kernel import Kernel
 __all__ = ["BatchNormBwdKernel"]
 
 # ---------------------------------------------------------------------------
-# Config helpers (mirrors batch_norm_fwd.py)
+# Config helpers (mirrors fwd.py)
 # ---------------------------------------------------------------------------
 
 _PERSISTENT_THRESHOLD = 8192

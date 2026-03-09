@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.rms_norm import RmsNormOp
+from tileops.ops.norm.rms_norm import RmsNormOp
 
 
 class RmsNormFixture(FixtureBase):

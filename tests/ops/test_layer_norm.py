@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.layer_norm import LayerNormOp
+from tileops.ops.norm.layer_norm import LayerNormOp
 
 
 class LayerNormFixture(FixtureBase):
