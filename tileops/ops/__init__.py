@@ -24,6 +24,8 @@ from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
 from .norm import (
     BatchNormBwdOp,
     BatchNormFwdOp,
+    FusedAddLayerNormOp,
+    FusedAddRmsNormOp,
     GroupNormOp,
     InstanceNormOp,
     LayerNormOp,
@@ -40,6 +42,8 @@ __all__ = [
     "FFTC2COp",
     "Fp8LightingIndexerOp",
     "Fp8QuantOp",
+    "FusedAddLayerNormOp",
+    "FusedAddRmsNormOp",
     "GQAWindowSlidingOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetFwdOp",
