@@ -250,16 +250,10 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype):
                 T.copy(x_local, shared_x)
                 T.copy(shared_x, pre_norm[pid_m * block_m, 0])
 
-                # Compute h^2 in fp32 for sum of squares
+                # Save h values in x_local (original dtype) for output computation,
+                # then compute h^2 in h_f32 for sum-of-squares reduction
                 for i, j in T.Parallel(block_m, N_padded):
-                    r_local[i, j] = h_f32[i, j] * h_f32[i, j]
-
-                # Cast r_local to float32 for reduce_sum
-                # Actually r_local is dtype, we need a float32 buffer for reduction
-                # Reuse h_f32 after saving h values
-                # Save h_f32 into x_local first, then compute squares in h_f32
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_local[i, j] = h_f32[i, j]  # save h in x_local (original dtype)
+                    x_local[i, j] = h_f32[i, j]
 
                 for i, j in T.Parallel(block_m, N_padded):
                     h_f32[i, j] = h_f32[i, j] * h_f32[i, j]
