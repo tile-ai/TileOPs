@@ -228,7 +228,7 @@ jobs:
           ls -lh dist/*.whl
         shell: bash
 
-      - name: Run nightly tests against built wheel
+      - name: Run unit tests against built wheel
         run: |
           set -euo pipefail
           VENV_DIR="tileops_wheel_ci_venv"
