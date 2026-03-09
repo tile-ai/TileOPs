@@ -61,6 +61,8 @@ class InstanceNormOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
+        # Required by Op ABC. Not used directly -- delegation to GroupNormOp
+        # handles kernel dispatch internally.
         return {"group_norm": GroupNormKernel}
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:

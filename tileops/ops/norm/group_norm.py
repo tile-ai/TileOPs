@@ -95,31 +95,26 @@ class GroupNormOp(Op):
         x = x.reshape(self.M, self.N_row)
         return x
 
+    def _expand_param(self, param: torch.Tensor) -> torch.Tensor:
+        """Expand a per-channel parameter (C,) to kernel row layout (M, N_row).
+
+        Reshapes (C,) -> (G, C/G) -> repeat spatial -> (N*G, N_row).
+        """
+        t = param.reshape(self.G, self.channels_per_group)
+        if self.spatial_size > 1:
+            t = t.unsqueeze(-1).expand(self.G, self.channels_per_group, self.spatial_size)
+            t = t.reshape(self.G, self.N_row)
+        t = t.unsqueeze(0).expand(self.N, self.G, self.N_row).reshape(self.M, self.N_row)
+        return t.contiguous()
+
     def _expand_weight_bias(
         self, weight: torch.Tensor, bias: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Expand per-channel weight/bias to match kernel row layout.
 
-        weight, bias: (C,) -> (M, N_row) or (M, N_padded)
-        For rowwise path, also pads to N_padded.
+        weight, bias: (C,) -> (M, N_row)
         """
-        # weight/bias are (C,) = (G * channels_per_group,)
-        # Reshape to (G, channels_per_group)
-        w = weight.reshape(self.G, self.channels_per_group)
-        b = bias.reshape(self.G, self.channels_per_group)
-
-        # Repeat spatial_size times: (G, channels_per_group * spatial_size) = (G, N_row)
-        if self.spatial_size > 1:
-            w = w.unsqueeze(-1).expand(self.G, self.channels_per_group, self.spatial_size)
-            w = w.reshape(self.G, self.N_row)
-            b = b.unsqueeze(-1).expand(self.G, self.channels_per_group, self.spatial_size)
-            b = b.reshape(self.G, self.N_row)
-
-        # Expand across batch: (N*G, N_row)
-        w = w.unsqueeze(0).expand(self.N, self.G, self.N_row).reshape(self.M, self.N_row)
-        b = b.unsqueeze(0).expand(self.N, self.G, self.N_row).reshape(self.M, self.N_row)
-
-        return w.contiguous(), b.contiguous()
+        return self._expand_param(weight), self._expand_param(bias)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
