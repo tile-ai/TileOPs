@@ -10,7 +10,7 @@ from tileops.ops import Fp8LightingIndexerOp
 class Fp8LightingIndexerFixture(FixtureBase):
     PARAMS = [
         ("seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune", [
-            (4096, 32, 64, 8192, True, None, False),
+            pytest.param(4096, 32, 64, 8192, True, None, False, marks=pytest.mark.smoke),
         ]),
     ]
 

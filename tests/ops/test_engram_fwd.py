@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -50,10 +51,10 @@ def ref_engram_gate_conv_fwd(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
 class EngramGateConvFwdFixture(FixtureBase):
     PARAMS = [
         ("M, seq_len, d, dtype, tune", [
-            (1, 32, 256, torch.float16, False),
-            (2, 64, 512, torch.float16, False),
-            (1, 128, 256, torch.bfloat16, False),
-            (2, 16, 256, torch.bfloat16, False),
+            pytest.param(1, 32, 256, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(2, 64, 512, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1, 128, 256, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(2, 16, 256, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 

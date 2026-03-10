@@ -10,21 +10,21 @@ class FusedAddLayerNormFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype, tune", [
             # Standard aligned shapes -- fp32
-            (1024, 4096, torch.float32, False),
-            (4096, 4096, torch.float32, False),
+            pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.smoke),
+            pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
             # Standard aligned shapes -- fp16
-            (1024, 4096, torch.float16, False),
-            (4096, 4096, torch.float16, False),
+            pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
             # Standard aligned shapes -- bf16
-            (1024, 4096, torch.bfloat16, False),
-            (4096, 4096, torch.bfloat16, False),
+            pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
             # Non-power-of-two hidden dims
-            (1024, 3000, torch.float32, False),
-            (1024, 3000, torch.float16, False),
-            (1024, 3000, torch.bfloat16, False),
+            pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
+            pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
             # Tail-M: M not divisible by block_m
-            (1025, 4096, torch.float16, False),
-            (1025, 4096, torch.bfloat16, False),
+            pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -82,9 +82,9 @@ def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool)
 class FusedAddLayerNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
-            (1024, 4096, torch.float32),
-            (1024, 4096, torch.float16),
-            (1024, 4096, torch.bfloat16),
+            pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.full),
+            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 
@@ -116,9 +116,9 @@ def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype)
 class FusedAddLayerNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
-            (2, 512, 4096, torch.float32),
-            (2, 512, 4096, torch.float16),
-            (2, 512, 4096, torch.bfloat16),
+            pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.full),
+            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 

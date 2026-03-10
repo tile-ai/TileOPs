@@ -10,13 +10,13 @@ from tileops.ops import FFTC2COp
 class FFTFixture(FixtureBase):
     PARAMS = [
         ("n, dtype, tune", [
-            (64, torch.complex64, False),
-            (128, torch.complex64, False),
-            (256, torch.complex64, False),
-            (512, torch.complex64, False),
-            (1024, torch.complex64, False),
-            (64, torch.complex128, False),
-            (128, torch.complex128, False),
+            pytest.param(64, torch.complex64, False, marks=pytest.mark.smoke),
+            pytest.param(128, torch.complex64, False, marks=pytest.mark.full),
+            pytest.param(256, torch.complex64, False, marks=pytest.mark.full),
+            pytest.param(512, torch.complex64, False, marks=pytest.mark.full),
+            pytest.param(1024, torch.complex64, False, marks=pytest.mark.full),
+            pytest.param(64, torch.complex128, False, marks=pytest.mark.full),
+            pytest.param(128, torch.complex128, False, marks=pytest.mark.full),
         ]),
     ]
 

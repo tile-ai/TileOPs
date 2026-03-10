@@ -241,7 +241,7 @@ jobs:
           unset PYTHONPATH || true
 
           cd "${TMP_TEST_DIR}"
-          python -m pytest -q tests
+          python -m pytest -q tests -m "smoke or full or nightly"
         shell: bash
 
       - name: Upload wheel artifact

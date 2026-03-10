@@ -108,3 +108,8 @@ known-first-party = ["tileops"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py", "bench_*.py"]
+markers = [
+    "smoke: fast PR critical-path tests",
+    "full: standard correctness coverage",
+    "nightly: exhaustive or long-running coverage",
+]

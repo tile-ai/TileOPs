@@ -10,18 +10,18 @@ class InstanceNormFixture(FixtureBase):
     PARAMS = [
         ("n, c, spatial, dtype, tune", [
             # Small CI-friendly shapes -- fp32
-            (2, 16, (8, 8), torch.float32, False),
-            (4, 8, (4, 4), torch.float32, False),
+            pytest.param(2, 16, (8, 8), torch.float32, False, marks=pytest.mark.smoke),
+            pytest.param(4, 8, (4, 4), torch.float32, False, marks=pytest.mark.full),
             # Small CI-friendly shapes -- fp16
-            (2, 16, (8, 8), torch.float16, False),
-            (4, 8, (4, 4), torch.float16, False),
+            pytest.param(2, 16, (8, 8), torch.float16, False, marks=pytest.mark.full),
+            pytest.param(4, 8, (4, 4), torch.float16, False, marks=pytest.mark.full),
             # Small CI-friendly shapes -- bf16
-            (2, 16, (8, 8), torch.bfloat16, False),
-            (4, 8, (4, 4), torch.bfloat16, False),
+            pytest.param(2, 16, (8, 8), torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(4, 8, (4, 4), torch.bfloat16, False, marks=pytest.mark.full),
             # 1D spatial
-            (2, 16, (16,), torch.float16, False),
+            pytest.param(2, 16, (16,), torch.float16, False, marks=pytest.mark.full),
             # 3D spatial
-            (2, 8, (4, 4, 4), torch.float16, False),
+            pytest.param(2, 8, (4, 4, 4), torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -74,8 +74,8 @@ def test_instance_norm_op(n: int, c: int, spatial: tuple,
 class InstanceNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("n, c, spatial, dtype", [
-            (2, 16, (8, 8), torch.float16),
-            (2, 16, (8, 8), torch.bfloat16),
+            pytest.param(2, 16, (8, 8), torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 16, (8, 8), torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 

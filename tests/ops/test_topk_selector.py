@@ -11,10 +11,10 @@ from tileops.utils import str2dtype
 class TopkSelectorFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, topk, in_dtype_str, out_dtype_str, tune", [
-            (64, 32 * 1024, 1024, "float32", "int32", False),
-            (64, 32 * 1024, 2048, "float32", "int32", False),
-            (128, 64 * 1024, 1024, "float32", "int32", False),
-            (128, 64 * 1024, 2048, "float32", "int32", False),
+            pytest.param(64, 32 * 1024, 1024, "float32", "int32", False, marks=pytest.mark.smoke),
+            pytest.param(64, 32 * 1024, 2048, "float32", "int32", False, marks=pytest.mark.full),
+            pytest.param(128, 64 * 1024, 1024, "float32", "int32", False, marks=pytest.mark.full),
+            pytest.param(128, 64 * 1024, 2048, "float32", "int32", False, marks=pytest.mark.full),
         ]),
     ]
 

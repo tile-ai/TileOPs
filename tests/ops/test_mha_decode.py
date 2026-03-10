@@ -12,9 +12,9 @@ from tileops.ops import MultiHeadAttentionDecodeWithKVCacheOp
 class MhaDecodeFixture(FixtureBase):
     PARAMS = [
         ("b, h, s_q, s_kv, d, dtype, tune", [
-            (1, 32, 128, 8192, 128, torch.float16, False),
-            (1, 32, 128, 8192, 128, torch.bfloat16, False),
-            (1, 32, 128, 5, 128, torch.float16, False),
+            pytest.param(1, 32, 128, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1, 32, 128, 8192, 128, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(1, 32, 128, 5, 128, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 

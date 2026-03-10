@@ -12,8 +12,14 @@ class NsaTopkFixture(FixtureBase):
     PARAMS = [
         ("seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs, bk, "
          "dtype, accum_dtype, tune", [
-             (5, 1024, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False),
-             (3, 512, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False),
+             pytest.param(
+                 5, 1024, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False,
+                 marks=pytest.mark.smoke,
+             ),
+             pytest.param(
+                 3, 512, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False,
+                 marks=pytest.mark.full,
+             ),
          ]),
     ]
 

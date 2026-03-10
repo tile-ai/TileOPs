@@ -11,10 +11,10 @@ from tileops.ops import Fp8QuantOp
 class Fp8QuantFixture(FixtureBase):
     PARAMS = [
         ("seq_len_kv, index_dim, in_dtype, tune", [
-            (8192, 64, torch.float16, False),
-            (8192, 64, torch.bfloat16, False),
-            (4096, 128, torch.float32, False),
-            (16384, 32, torch.float32, False),
+            pytest.param(8192, 64, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(8192, 64, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(4096, 128, torch.float32, False, marks=pytest.mark.full),
+            pytest.param(16384, 32, torch.float32, False, marks=pytest.mark.full),
         ]),
     ]
 
