@@ -35,6 +35,30 @@ from .norm import (
     RmsNormOp,
 )
 from .op import Op
+
+# --- Reduction ops (uncomment as sub-category PRs land) ---
+# from .reduction import (
+#     AllOp,
+#     AnyOp,
+#     ArgmaxOp,
+#     ArgminOp,
+#     CountNonzeroOp,
+#     CummaxOp,
+#     CumminOp,
+#     CumprodOp,
+#     CumsumOp,
+#     InfNormOp,
+#     L1NormOp,
+#     L2NormOp,
+#     LogSoftmaxOp,
+#     LogSumExpOp,
+#     ReduceMaxOp,
+#     ReduceMeanOp,
+#     ReduceMinOp,
+#     ReduceProdOp,
+#     ReduceSumOp,
+#     SoftmaxOp,
+# )
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
@@ -76,4 +100,25 @@ __all__ = [
     "Op",
     "RmsNormOp",
     "TopkSelectorOp",
+    # --- Reduction ops (uncomment as sub-category PRs land) ---
+    # "AllOp",
+    # "AnyOp",
+    # "ArgmaxOp",
+    # "ArgminOp",
+    # "CountNonzeroOp",
+    # "CummaxOp",
+    # "CumminOp",
+    # "CumprodOp",
+    # "CumsumOp",
+    # "InfNormOp",
+    # "L1NormOp",
+    # "L2NormOp",
+    # "LogSoftmaxOp",
+    # "LogSumExpOp",
+    # "ReduceMaxOp",
+    # "ReduceMeanOp",
+    # "ReduceMinOp",
+    # "ReduceProdOp",
+    # "ReduceSumOp",
+    # "SoftmaxOp",
 ]
