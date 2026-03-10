@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 
 import pytest
@@ -13,7 +14,6 @@ class GroupNormBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.test
-        import math
         spatial_size = math.prod(t.spatial)
         total_elems = t.n * t.c * spatial_size
         # Per element: subtract mean, square for var, normalize, scale, bias => ~5 flops
@@ -22,7 +22,6 @@ class GroupNormBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         """Useful bytes only. Read x + read weight + read bias + write y."""
         t = self.test
-        import math
         spatial_size = math.prod(t.spatial)
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         total_elems = t.n * t.c * spatial_size
