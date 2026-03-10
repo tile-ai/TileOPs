@@ -8,6 +8,7 @@ Validates that:
 """
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -228,23 +229,46 @@ class TestRuffLinting:
 
 
 class TestImportability:
-    """Tests that the init files are importable without errors."""
+    """Tests that the init files are importable without errors.
+
+    Uses subprocess to avoid eagerly loading CUDA ops in the test process,
+    which can cause side-effect failures in unrelated tests (e.g. fp8).
+    """
 
     def test_kernel_reduction_importable(self):
-        # Should be importable (even if nothing is exported yet)
-        import importlib
-
-        mod = importlib.import_module("tileops.kernels.reduction")
-        assert hasattr(mod, "__all__")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import tileops.kernels.reduction as m; assert hasattr(m, '__all__')",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"Failed to import tileops.kernels.reduction:\n{result.stderr}"
+        )
 
     def test_ops_reduction_importable(self):
-        import importlib
-
-        mod = importlib.import_module("tileops.ops.reduction")
-        assert hasattr(mod, "__all__")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import tileops.ops.reduction as m; assert hasattr(m, '__all__')",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Failed to import tileops.ops.reduction:\n{result.stderr}"
 
     def test_ops_init_importable(self):
-        import importlib
-
-        mod = importlib.import_module("tileops.ops")
-        assert hasattr(mod, "__all__")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import tileops.ops as m; assert hasattr(m, '__all__')",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Failed to import tileops.ops:\n{result.stderr}"
