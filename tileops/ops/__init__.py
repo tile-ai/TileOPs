@@ -24,6 +24,8 @@ from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
 from .norm import (
     BatchNormBwdOp,
     BatchNormFwdOp,
+    FusedAddLayerNormOp,
+    FusedAddRmsNormOp,
     GroupNormOp,
     InstanceNormOp,
     LayerNormOp,
@@ -33,11 +35,15 @@ from .op import Op
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
+    "BatchNormBwdOp",
+    "BatchNormFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
     "FFTC2CLUTOp",
     "FFTC2COp",
     "Fp8LightingIndexerOp",
     "Fp8QuantOp",
+    "FusedAddLayerNormOp",
+    "FusedAddRmsNormOp",
     "GQAWindowSlidingOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetFwdOp",
@@ -64,6 +70,4 @@ __all__ = [
     "Op",
     "RmsNormOp",
     "TopkSelectorOp",
-    "BatchNormBwdOp",
-    "BatchNormFwdOp",
 ]
