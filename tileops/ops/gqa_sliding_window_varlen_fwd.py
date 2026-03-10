@@ -142,6 +142,21 @@ class GqaSlidingWindowVarlenFwdOp(Op):
             raise ValueError(
                 f"cu_seqlens_k.shape[0] ({cu_seqlens_k.shape[0]}) must equal "
                 f"batch+1 ({self.batch + 1})")
+        for cu, name in [(cu_seqlens_q, 'cu_seqlens_q'),
+                         (cu_seqlens_k, 'cu_seqlens_k')]:
+            if cu.device.type != 'cuda':
+                raise ValueError(
+                    f"{name} must be on a cuda device, got {cu.device}")
+            if cu.dtype != torch.int32:
+                raise ValueError(
+                    f"{name} must have dtype int32, got {cu.dtype}")
+            if not cu.is_contiguous():
+                raise ValueError(f"{name} must be contiguous")
+        actual_max_q = int((cu_seqlens_q[1:] - cu_seqlens_q[:-1]).max().item())
+        if max_seqlen_q < actual_max_q:
+            raise ValueError(
+                f"max_seqlen_q ({max_seqlen_q}) must be >= actual max Q "
+                f"sequence length ({actual_max_q})")
 
         output, _ = self.kernel.forward(
             q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q)

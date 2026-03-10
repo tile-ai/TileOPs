@@ -18,12 +18,88 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.online_softmax import make_log2e_scale
+from tileops.kernels.online_softmax import (
+    make_log2e_scale,
+    make_online_softmax_with_mask_guard,
+    make_rescale,
+)
 
 __all__ = [
     'GqaSlidingWindowVarlenFwdKernel',
     'GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel',
 ]
+
+
+def _make_apply_mask(is_causal, has_window, window_size_left, window_size_right,
+                     accum_dtype, block_m, block_n):
+    """Create a masked attention score initialization macro.
+
+    All parameters are compile-time constants baked into the macro via closure.
+    The macro writes 0 or ``-infinity`` into ``acc_s`` depending on the mask
+    conditions, using four compile-time paths:
+
+    - causal + window (left only)
+    - causal only
+    - window only (left and/or right)
+    - no masking (OOB guard only)
+
+    Args:
+        is_causal: Whether causal masking is applied.
+        has_window: Whether any window constraint is active.
+        window_size_left: Left window size (-1 = unlimited).
+        window_size_right: Right window size (-1 = unlimited).
+        accum_dtype: Accumulator data type string (e.g. "float").
+        block_m: Tile size along the Q dimension.
+        block_n: Tile size along the KV dimension.
+
+    Returns:
+        apply_mask: A ``T.macro`` that fills ``acc_s`` with mask values.
+    """
+
+    @T.macro
+    def apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset):
+        if is_causal and has_window:
+            for i, j in T.Parallel(block_m, block_n):
+                causal_mask = (
+                    k_idx * block_n + j > bx * block_m + i + offset)
+                left_mask = (window_size_left >= 0) and (
+                    k_idx * block_n + j <
+                    bx * block_m + i + offset - window_size_left)
+                q_oob = bx * block_m + i >= q_len
+                k_oob = k_idx * block_n + j >= kv_len
+                acc_s[i, j] = T.if_then_else(
+                    causal_mask or left_mask or q_oob or k_oob,
+                    -T.infinity(accum_dtype), 0)
+        elif is_causal:
+            for i, j in T.Parallel(block_m, block_n):
+                causal_mask = (
+                    k_idx * block_n + j > bx * block_m + i + offset)
+                q_oob = bx * block_m + i >= q_len
+                k_oob = k_idx * block_n + j >= kv_len
+                acc_s[i, j] = T.if_then_else(
+                    causal_mask or q_oob or k_oob,
+                    -T.infinity(accum_dtype), 0)
+        elif has_window:
+            for i, j in T.Parallel(block_m, block_n):
+                left_mask = (window_size_left >= 0) and (
+                    k_idx * block_n + j <
+                    bx * block_m + i + offset - window_size_left)
+                right_mask = (window_size_right >= 0) and (
+                    k_idx * block_n + j >
+                    bx * block_m + i + offset + window_size_right)
+                q_oob = bx * block_m + i >= q_len
+                k_oob = k_idx * block_n + j >= kv_len
+                acc_s[i, j] = T.if_then_else(
+                    left_mask or right_mask or q_oob or k_oob,
+                    -T.infinity(accum_dtype), 0)
+        else:
+            for i, j in T.Parallel(block_m, block_n):
+                q_oob = bx * block_m + i >= q_len
+                k_oob = k_idx * block_n + j >= kv_len
+                acc_s[i, j] = T.if_then_else(
+                    q_oob or k_oob, -T.infinity(accum_dtype), 0)
+
+    return apply_mask
 
 
 @functools.lru_cache(maxsize=None)
@@ -53,6 +129,12 @@ def _gqa_sw_fwd_varlen_kernel(
                                 threads: int) -> Callable:
         q_shape = (total_q, heads, dim)
         kv_shape = (total_k, heads_kv, dim)
+        apply_mask = _make_apply_mask(
+            is_causal, has_window, window_size_left, window_size_right,
+            accum_dtype, block_m, block_n)
+        online_softmax = make_online_softmax_with_mask_guard(
+            scale, accum_dtype, block_m, block_n)
+        rescale = make_rescale(block_m, dim)
 
         @T.prim_func
         def _gqa_sw_fwd_varlen_main(
@@ -126,81 +208,16 @@ def _gqa_sw_fwd_varlen_kernel(
                     T.copy(k[kv_start + k_idx * block_n:
                                kv_start + (k_idx + 1) * block_n,
                               by // groups, :], k_shared)
-
-                    # Four compile-time mask paths.
-                    # q_oob / k_oob guard against the last partial block:
-                    #   q_oob: Q row i is beyond this sample's q_len
-                    #   k_oob: K col j is beyond this sample's kv_len
-                    if is_causal and has_window:
-                        for i, j in T.Parallel(block_m, block_n):
-                            causal_mask = (
-                                k_idx * block_n + j > bx * block_m + i + offset)
-                            left_mask = (window_size_left >= 0) and (
-                                k_idx * block_n + j <
-                                bx * block_m + i + offset - window_size_left)
-                            q_oob = bx * block_m + i >= q_len
-                            k_oob = k_idx * block_n + j >= kv_len
-                            acc_s[i, j] = T.if_then_else(
-                                causal_mask or left_mask or q_oob or k_oob,
-                                -T.infinity(accum_dtype), 0)
-                    elif is_causal:
-                        for i, j in T.Parallel(block_m, block_n):
-                            causal_mask = (
-                                k_idx * block_n + j > bx * block_m + i + offset)
-                            q_oob = bx * block_m + i >= q_len
-                            k_oob = k_idx * block_n + j >= kv_len
-                            acc_s[i, j] = T.if_then_else(
-                                causal_mask or q_oob or k_oob,
-                                -T.infinity(accum_dtype), 0)
-                    elif has_window:
-                        for i, j in T.Parallel(block_m, block_n):
-                            left_mask = (window_size_left >= 0) and (
-                                k_idx * block_n + j <
-                                bx * block_m + i + offset - window_size_left)
-                            right_mask = (window_size_right >= 0) and (
-                                k_idx * block_n + j >
-                                bx * block_m + i + offset + window_size_right)
-                            q_oob = bx * block_m + i >= q_len
-                            k_oob = k_idx * block_n + j >= kv_len
-                            acc_s[i, j] = T.if_then_else(
-                                left_mask or right_mask or q_oob or k_oob,
-                                -T.infinity(accum_dtype), 0)
-                    else:
-                        for i, j in T.Parallel(block_m, block_n):
-                            q_oob = bx * block_m + i >= q_len
-                            k_oob = k_idx * block_n + j >= kv_len
-                            acc_s[i, j] = T.if_then_else(
-                                q_oob or k_oob, -T.infinity(accum_dtype), 0)
-
+                    apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset)
                     T.gemm(q_shared, k_shared, acc_s,
                            transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                     T.copy(v[kv_start + k_idx * block_n:
                                kv_start + (k_idx + 1) * block_n,
                               by // groups, :], v_shared)
-
-                    # Online softmax with NaN guard (inherited from fixed-length).
-                    # Clamp scores_max to -1e38 so exp2(-inf - (-inf)) never
-                    # produces NaN for fully-masked blocks.
-                    T.copy(scores_max, scores_max_prev)
-                    T.fill(scores_max, -T.infinity(accum_dtype))
-                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                    for i in T.Parallel(block_m):
-                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
-                    for i in T.Parallel(block_m):
-                        scores_max[i] = T.max(scores_max[i],
-                                              T.cast(-1e38, accum_dtype))
-                    for i in T.Parallel(block_m):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale -
-                                                 scores_max[i] * scale)
-                    for i, j in T.Parallel(block_m, block_n):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale -
-                                             scores_max[i] * scale)
-                    T.reduce_sum(acc_s, scores_sum, dim=1)
-                    for i in T.Parallel(block_m):
-                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+                    online_softmax(acc_s, scores_max, scores_max_prev,
+                                   scores_scale, scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
-                    for i, j in T.Parallel(block_m, dim):
-                        acc_o[i, j] *= scores_scale[i]
+                    rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, v_shared, acc_o,
                            policy=T.GemmWarpPolicy.FullRow)
 
@@ -374,6 +391,12 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                                                  threads):
         q_shape = (total_q, heads, dim)
         kv_shape = (total_k, heads_kv, dim)
+        apply_mask = _make_apply_mask(
+            is_causal, has_window, window_size_left, window_size_right,
+            accum_dtype, block_m, block_n)
+        online_softmax = make_online_softmax_with_mask_guard(
+            scale, accum_dtype, block_m, block_n)
+        rescale = make_rescale(block_m, dim)
 
         @T.macro
         def mma0(
@@ -392,46 +415,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
             T.copy(k[kv_start + k_idx * block_n:
                        kv_start + (k_idx + 1) * block_n,
                       by // groups, :], k_shared)
-            if is_causal and has_window:
-                for i, j in T.Parallel(block_m, block_n):
-                    causal_mask = (
-                        k_idx * block_n + j > bx * block_m + i + offset)
-                    left_mask = (window_size_left >= 0) and (
-                        k_idx * block_n + j <
-                        bx * block_m + i + offset - window_size_left)
-                    q_oob = bx * block_m + i >= q_len
-                    k_oob = k_idx * block_n + j >= kv_len
-                    acc_s[i, j] = T.if_then_else(
-                        causal_mask or left_mask or q_oob or k_oob,
-                        -T.infinity(accum_dtype), 0)
-            elif is_causal:
-                for i, j in T.Parallel(block_m, block_n):
-                    causal_mask = (
-                        k_idx * block_n + j > bx * block_m + i + offset)
-                    q_oob = bx * block_m + i >= q_len
-                    k_oob = k_idx * block_n + j >= kv_len
-                    acc_s[i, j] = T.if_then_else(
-                        causal_mask or q_oob or k_oob,
-                        -T.infinity(accum_dtype), 0)
-            elif has_window:
-                for i, j in T.Parallel(block_m, block_n):
-                    left_mask = (window_size_left >= 0) and (
-                        k_idx * block_n + j <
-                        bx * block_m + i + offset - window_size_left)
-                    right_mask = (window_size_right >= 0) and (
-                        k_idx * block_n + j >
-                        bx * block_m + i + offset + window_size_right)
-                    q_oob = bx * block_m + i >= q_len
-                    k_oob = k_idx * block_n + j >= kv_len
-                    acc_s[i, j] = T.if_then_else(
-                        left_mask or right_mask or q_oob or k_oob,
-                        -T.infinity(accum_dtype), 0)
-            else:
-                for i, j in T.Parallel(block_m, block_n):
-                    q_oob = bx * block_m + i >= q_len
-                    k_oob = k_idx * block_n + j >= kv_len
-                    acc_s[i, j] = T.if_then_else(
-                        q_oob or k_oob, -T.infinity(accum_dtype), 0)
+            apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset)
             T.gemm(q_shared, k_shared, acc_s,
                    transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
@@ -516,26 +500,10 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                     k_idx = k_start + k_offset
                     mma0(k, q_shared, k_shared, acc_s, k_idx, bx, by,
                          kv_start, q_len, kv_len, offset)
-                    T.copy(scores_max, scores_max_prev)
-                    T.fill(scores_max, -T.infinity(accum_dtype))
-                    T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                    for i in T.Parallel(block_m):
-                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
-                    for i in T.Parallel(block_m):
-                        scores_max[i] = T.max(scores_max[i],
-                                              T.cast(-1e38, accum_dtype))
-                    for i in T.Parallel(block_m):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale -
-                                                 scores_max[i] * scale)
-                    for i, j in T.Parallel(block_m, block_n):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale -
-                                             scores_max[i] * scale)
-                    T.reduce_sum(acc_s, scores_sum, dim=1)
-                    for i in T.Parallel(block_m):
-                        logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+                    online_softmax(acc_s, scores_max, scores_max_prev,
+                                   scores_scale, scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
-                    for i, j in T.Parallel(block_m, dim):
-                        acc_o[i, j] *= scores_scale[i]
+                    rescale(acc_o, scores_scale)
                     mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, kv_start)
 
                 for i, j in T.Parallel(block_m, dim):

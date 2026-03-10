@@ -77,7 +77,7 @@ class GqaSlidingWindowVarlenFwdBenchmark(BenchmarkBase):
         """Approximate FLOPs for QK^T and PV GEMMs, summed over all samples."""
         t = self.test
         total = 0.0
-        for sq, sk in zip(t.seqlens_q, t.seqlens_k, strict=False):
+        for sq, sk in zip(t.seqlens_q, t.seqlens_k, strict=True):
             offset = sk - sq
             seq_attended = 0
             for q_pos in range(sq):
