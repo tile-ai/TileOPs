@@ -22,6 +22,8 @@ from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
 from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
 from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
 from .norm import (
+    AdaLayerNormOp,
+    AdaLayerNormZeroOp,
     BatchNormBwdOp,
     BatchNormFwdOp,
     FusedAddLayerNormOp,
@@ -35,6 +37,8 @@ from .op import Op
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
+    "AdaLayerNormOp",
+    "AdaLayerNormZeroOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
