@@ -55,7 +55,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
 
     # Baseline: PyTorch composite F.layer_norm + arithmetic
     def baseline_fn(x, scale, shift):
-        normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=1e-5)
+        normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return scale * normed + shift
 
     result_bl = bm.profile(baseline_fn, *inputs)
@@ -74,7 +74,7 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
 
     # Baseline: PyTorch composite F.layer_norm + arithmetic + gate
     def baseline_fn(x, scale, shift, gate):
-        normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=1e-5)
+        normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return gate * (scale * normed + shift)
 
     result_bl = bm.profile(baseline_fn, *inputs)

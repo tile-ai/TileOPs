@@ -48,6 +48,9 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False):
                 x: T.Tensor[(M, N_padded), dtype],
                 scale: T.Tensor[(M, N_padded), dtype],
                 shift: T.Tensor[(M, N_padded), dtype],
+                # _dummy keeps the output tensor at index 4 so that out_idx=[4]
+                # is consistent between the non-gated (4 inputs) and gated (5
+                # inputs) variants, matching the tilelang.jit contract.
                 _dummy: T.Tensor[(1,), dtype],
                 y: T.Tensor[(M, N_padded), dtype],
             ):

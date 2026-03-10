@@ -94,8 +94,9 @@ def test_ada_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype
     op = AdaLayerNormOp(M=M, N=hidden, dtype=dtype)
 
     # Reference: scale * LayerNorm(x) + shift
+    eps = 1e-5
     normed = F.layer_norm(
-        x.float(), (hidden,), weight=None, bias=None, eps=1e-5,
+        x.float(), (hidden,), weight=None, bias=None, eps=eps,
     )
     y_ref = (scale.float() * normed + shift.float()).to(dtype)
 
