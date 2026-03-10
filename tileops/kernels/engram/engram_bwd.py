@@ -93,12 +93,12 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                     for j in T.Parallel(d_padded):
                         raw_val = T.if_then_else(
                             src_t >= 0,
-                            T.cast(vhat[bid, T.max(src_t, 0), j], accum_dtype),
+                            T.cast(vhat[bid, src_t, j], accum_dtype),
                             0.0,
                         )
                         src_rrms = T.if_then_else(
                             src_t >= 0,
-                            rrms_v[bid, T.max(src_t, 0)],
+                            rrms_v[bid, src_t],
                             0.0,
                         )
                         normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
@@ -116,12 +116,12 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                     for j in T.Parallel(d_padded):
                         raw_val = T.if_then_else(
                             src_t >= 0,
-                            T.cast(vhat[bid, T.max(src_t, 0), j], accum_dtype),
+                            T.cast(vhat[bid, src_t, j], accum_dtype),
                             0.0,
                         )
                         src_rrms = T.if_then_else(
                             src_t >= 0,
-                            rrms_v[bid, T.max(src_t, 0)],
+                            rrms_v[bid, src_t],
                             0.0,
                         )
                         normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
@@ -155,7 +155,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                     for j in T.Parallel(d_padded):
                         d_si = T.if_then_else(
                             (dst_t >= 0) * (dst_t < seq_len),
-                            dvhat_buf[bid, T.clamp(dst_t, 0, seq_len - 1), j],
+                            dvhat_buf[bid, dst_t, j],
                             0.0,
                         )
                         d_vnorm[j] += T.cast(conv_w[p, j], accum_dtype) * d_si

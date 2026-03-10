@@ -106,14 +106,11 @@ class EngramDecodeOp(Op):
         h_t = h_t.contiguous()
         conv_state = conv_state.contiguous()
 
-        # Track real conv history length before padding
-        real_conv_len = conv_state.shape[1]
-
         # Left-pad conv_state to max_conv_len if needed
-        if real_conv_len < self.max_conv_len:
+        if conv_state.shape[1] < self.max_conv_len:
             conv_state = F.pad(
                 conv_state,
-                (0, 0, self.max_conv_len - real_conv_len, 0),
+                (0, 0, self.max_conv_len - conv_state.shape[1], 0),
                 mode='constant', value=0,
             )
 
@@ -129,7 +126,6 @@ class EngramDecodeOp(Op):
 
         results = self.kernel(
             e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
-            real_conv_len,
         )
 
         if self.d_padded != self.d:

@@ -104,13 +104,13 @@ class EngramGateConvBwdTest(TestBase):
         _, rrms_v = _rmsnorm(v_hat.to(self.dtype), rms_w_v)
 
         vhat = v_hat.to(self.dtype)
-        alpha_sq = alpha.squeeze(-1).float()
+        alpha_squeezed = alpha.squeeze(-1).float()
         rrms_h = rrms_h.float()
         rrms_k = rrms_k.float()
         rrms_v = rrms_v.float()
 
         return (dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-                vhat, alpha_sq, rrms_h, rrms_k, rrms_v)
+                vhat, alpha_squeezed, rrms_h, rrms_k, rrms_v)
 
     def ref_program(self, dY, H, k, v, rms_w_h, rms_w_v, conv_w,
                     vhat, alpha, rrms_h, rrms_k, rrms_v):

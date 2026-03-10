@@ -26,7 +26,6 @@ Inputs:
     rms_w_h:    (d,)                    — RMSNorm weight for h and k
     rms_w_v:    (d,)                    — RMSNorm weight for v_hat
     conv_w:     (w, d)                  — depthwise conv weights (model parameter, w=kernel size)
-    real_conv_len: int32                — valid history entries in conv_state (runtime)
 
 Outputs:
     y_t:            (B, d)              — output to add as residual to h_t
@@ -34,10 +33,8 @@ Outputs:
 
 Grid: (B,) — one thread block per batch element.
 
-Like MHA decode uses (max_seqlen_kv, real_seqlen_kv) for the KV cache dimension,
-this kernel uses (max_conv_len, real_conv_len) for the conv state dimension.
-The kernel is compiled once with max_conv_len; real_conv_len varies at runtime
-without recompilation.
+The conv_state is padded to max_conv_len by the op before calling this kernel,
+so the kernel is compiled once with max_conv_len.
 """
 
 from typing import Optional
@@ -74,7 +71,7 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
     w = conv_kernel_size
 
     @tilelang.jit(
-        out_idx=[9, 10],
+        out_idx=[8, 9],
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads):
@@ -89,7 +86,6 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
             rms_w_h: T.Tensor((d_padded,), dtype),
             rms_w_v: T.Tensor((d_padded,), dtype),
             conv_w: T.Tensor((w, d_padded), dtype),
-            real_conv_len: T.int32,
             y_t: T.Tensor((batch, d_padded), dtype),
             new_conv_state: T.Tensor((batch, max_conv_len, d_padded), dtype),
         ):
@@ -223,14 +219,13 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
             rms_w_h: T.Tensor((d_padded,), dtype),
             rms_w_v: T.Tensor((d_padded,), dtype),
             conv_w: T.Tensor((w, d_padded), dtype),
-            real_conv_len: T.int32,
             y_t: T.Tensor((batch, d_padded), dtype),
             new_conv_state: T.Tensor((batch, max_conv_len, d_padded), dtype),
         ):
             _decode_fused(
                 e_t, h_t, conv_state,
                 W_K, W_V, rms_w_h, rms_w_v, conv_w,
-                real_conv_len, y_t, new_conv_state,
+                y_t, new_conv_state,
             )
 
         return main
@@ -249,7 +244,6 @@ def _engram_decode_wrapped(
     eps: float,
     dtype_str: str,
     threads: int,
-    real_conv_len: int,
     e_t: torch.Tensor,
     h_t: torch.Tensor,
     conv_state: torch.Tensor,
@@ -261,13 +255,13 @@ def _engram_decode_wrapped(
 ) -> list[torch.Tensor]:
     results = _engram_decode_kernel(
         batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, eps, dtype_str,
-    )(threads)(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w, real_conv_len)
+    )(threads)(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
     return list(results)
 
 
 @_engram_decode_wrapped.register_fake
 def _(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation,
-      eps, dtype_str, threads, real_conv_len,
+      eps, dtype_str, threads,
       e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
     d_padded = _align_up(d, ALIGNMENT)
     device = e_t.device
@@ -284,8 +278,7 @@ class EngramDecodeKernel(Kernel):
     Fuses GEMV projection, RMSNorm gating, dilated causal conv with state
     update, and SiLU activation into a single kernel launch.
 
-    Like MHA decode uses (max_seqlen_kv, real_seqlen_kv), this kernel uses
-    (max_conv_len, real_conv_len) for the conv state dimension.
+    The conv_state is padded to max_conv_len by the op before calling this kernel.
 
     Args:
         batch: batch size.
@@ -355,11 +348,10 @@ class EngramDecodeKernel(Kernel):
         rms_w_h: torch.Tensor,
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
-        real_conv_len: int,
     ) -> list[torch.Tensor]:
         return _engram_decode_wrapped(
             self.batch, self.d_mem, self.d, self.max_conv_len,
             self.conv_kernel_size, self.dilation, self.eps,
-            self.dtype_str, self.config["threads"], real_conv_len,
+            self.dtype_str, self.config["threads"],
             e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
         )
