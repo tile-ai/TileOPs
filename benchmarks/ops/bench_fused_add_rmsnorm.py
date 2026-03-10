@@ -37,8 +37,8 @@ def test_fused_add_rmsnorm_bench(m: int, n: int, dtype: torch.dtype, tune: bool)
 
     # Baseline: add + manual rmsnorm (separate ops)
     def baseline_fn(x, residual, weight):
-        add_result = x + residual
-        rms = torch.sqrt(add_result.float().pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+        add_result = (x.float() + residual.float()).to(x.dtype)
+        rms = torch.sqrt(add_result.float().pow(2).mean(dim=-1, keepdim=True) + test.eps)
         y = ((add_result.float() / rms) * weight.float()).to(x.dtype)
         return y, add_result
 

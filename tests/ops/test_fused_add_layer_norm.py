@@ -102,13 +102,8 @@ def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype)
     op = FusedAddLayerNormOp(M=m, N=n, dtype=dtype)
 
     # Reference on contiguous copies
-    x_ref = x.contiguous()
-    r_ref = residual.contiguous()
-    add_ref = (x_ref.float() + r_ref.float()).to(dtype)
-    y_ref = F.layer_norm(
-        add_ref.float(), (n,),
-        weight=weight.float(), bias=bias.float(), eps=1e-5,
-    ).to(dtype)
+    test = FusedAddLayerNormTest(m, n, dtype)
+    y_ref, add_ref = test.ref_program(x.contiguous(), residual.contiguous(), weight, bias)
 
     y, residual_out = op(x, residual, weight, bias)
     atol, rtol = _get_tolerances(dtype)
@@ -139,11 +134,8 @@ def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch
     M = batch * seq
     op = FusedAddLayerNormOp(M=M, N=hidden, dtype=dtype)
 
-    add_ref = (x.float() + residual.float()).to(dtype)
-    y_ref = F.layer_norm(
-        add_ref.float(), (hidden,),
-        weight=weight.float(), bias=bias.float(), eps=1e-5,
-    ).to(dtype)
+    test = FusedAddLayerNormTest(M, hidden, dtype)
+    y_ref, add_ref = test.ref_program(x, residual, weight, bias)
 
     y, residual_out = op(x, residual, weight, bias)
     atol, rtol = _get_tolerances(dtype)

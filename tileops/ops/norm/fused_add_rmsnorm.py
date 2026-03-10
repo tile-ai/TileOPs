@@ -64,24 +64,13 @@ class FusedAddRmsNormOp(Op):
         residual: torch.Tensor,
         weight: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if not residual.is_cuda:
-            raise ValueError("residual must be a CUDA tensor")
-        if not weight.is_cuda:
-            raise ValueError("weight must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
-            )
-        if residual.dtype != self.dtype:
-            raise ValueError(
-                f"Expected residual.dtype {self.dtype}, got {residual.dtype}"
-            )
-        if weight.dtype != self.dtype:
-            raise ValueError(
-                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
-            )
+        for name, tensor in [("x", x), ("residual", residual), ("weight", weight)]:
+            if not tensor.is_cuda:
+                raise ValueError(f"{name} must be a CUDA tensor")
+            if tensor.dtype != self.dtype:
+                raise ValueError(
+                    f"Expected {name}.dtype {self.dtype}, got {tensor.dtype}"
+                )
         if weight.ndim != 1:
             raise ValueError(
                 f"Expected weight to be 1D, got {weight.ndim}D"

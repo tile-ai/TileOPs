@@ -38,8 +38,8 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
 
     # Baseline: add + F.layer_norm (separate ops)
     def baseline_fn(x, residual, weight, bias):
-        add_result = x + residual
-        return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=1e-5), add_result
+        add_result = (x.float() + residual.float()).to(x.dtype)
+        return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=test.eps), add_result
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record("fused_add_layer_norm", locals(), result_bl, tag="baseline")

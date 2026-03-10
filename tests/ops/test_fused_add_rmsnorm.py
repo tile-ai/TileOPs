@@ -89,13 +89,8 @@ def test_fused_add_rmsnorm_non_contiguous(m: int, n: int, dtype: torch.dtype) ->
     op = FusedAddRmsNormOp(M=m, N=n, dtype=dtype)
 
     # Reference on contiguous copies
-    eps = 1e-6
-    x_ref = x.contiguous()
-    r_ref = residual.contiguous()
-    add_ref = (x_ref.float() + r_ref.float()).to(dtype)
-    add_f32 = add_ref.float()
-    rms = torch.sqrt(add_f32.pow(2).mean(dim=-1, keepdim=True) + eps)
-    y_ref = ((add_f32 / rms) * weight.float()).to(dtype)
+    test = FusedAddRmsNormTest(m, n, dtype)
+    y_ref, add_ref = test.ref_program(x.contiguous(), residual.contiguous(), weight)
 
     y, residual_out = op(x, residual, weight)
     atol, rtol = _get_tolerances(dtype)
@@ -124,11 +119,8 @@ def test_fused_add_rmsnorm_3d(batch: int, seq: int, hidden: int, dtype: torch.dt
     M = batch * seq
     op = FusedAddRmsNormOp(M=M, N=hidden, dtype=dtype)
 
-    eps = 1e-6
-    add_ref = (x.float() + residual.float()).to(dtype)
-    add_f32 = add_ref.float()
-    rms = torch.sqrt(add_f32.pow(2).mean(dim=-1, keepdim=True) + eps)
-    y_ref = ((add_f32 / rms) * weight.float()).to(dtype)
+    test = FusedAddRmsNormTest(M, hidden, dtype)
+    y_ref, add_ref = test.ref_program(x, residual, weight)
 
     y, residual_out = op(x, residual, weight)
     atol, rtol = _get_tolerances(dtype)
