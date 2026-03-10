@@ -207,7 +207,7 @@ From Phase 1's extracted information, identify:
 - File paths mentioned in the issue
 - Function/class names mentioned
 - Error messages or stack traces
-- Component name (e.g., GEMV → search `tileops/kernels/gemv/`, `tileops/ops/gemv.py`)
+- Component name (e.g., GEMV → search `tileops/kernels/gemm/gemv.py`, `tileops/ops/gemm.py`)
 
 ### 3b. Directed search (fast)
 
@@ -379,7 +379,7 @@ AC: `"Public API signature unchanged"`
 
 ```bash
 # Check that the function signature matches expected
-python -c "import inspect; from tileops.ops.gemv import gemv; print(inspect.signature(gemv))"
+python -c "import inspect; from tileops.ops import GemmOp; print(inspect.signature(GemmOp.forward))"
 ```
 
 Evidence: `"Signature: (A, B, bias=None) — matches expected"`
