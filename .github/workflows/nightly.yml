@@ -96,7 +96,7 @@ jobs:
           export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           set -o pipefail
-          python -m pytest -q benchmarks/ops -m "smoke or full or nightly" | tee tileops_benchmarks.log
+          python -m pytest -q benchmarks/ops | tee tileops_benchmarks.log
         shell: bash
 
       - name: Merge benchmark profile summary
