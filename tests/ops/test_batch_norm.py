@@ -34,6 +34,9 @@ class BatchNormFwdFixture(FixtureBase):
             pytest.param(8, 64, (1024, 1024), torch.float16, True, marks=pytest.mark.full),
             pytest.param(8, 64, (2048, 2048), torch.float16, False, marks=pytest.mark.full),
             pytest.param(4, 128, (32, 32), torch.bfloat16, True, marks=pytest.mark.full),
+            # Non-aligned spatial: H*W=900, exercises partial-tile path
+            pytest.param(8, 64, (30, 30), torch.float16, True, marks=pytest.mark.full),
+            pytest.param(8, 64, (30, 30), torch.bfloat16, True, marks=pytest.mark.full),
         ]),
     ]
 
@@ -47,6 +50,9 @@ class BatchNormBwdFixture(FixtureBase):
             pytest.param(4, 128, (32, 32), torch.bfloat16, marks=pytest.mark.full),
             # Non-persistent backward path (L=16384 > 8192).
             pytest.param(4, 64, (64, 64), torch.float16, marks=pytest.mark.full),
+            # Non-aligned spatial: H*W=900, exercises partial-tile path
+            pytest.param(8, 64, (30, 30), torch.float16, marks=pytest.mark.full),
+            pytest.param(8, 64, (30, 30), torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 

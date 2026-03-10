@@ -28,6 +28,9 @@ class GroupNormFixture(FixtureBase):
             pytest.param(2, 16, (4, 4, 4), 4, torch.float16, False, marks=pytest.mark.full),
             # Non-power-of-two channels per group
             pytest.param(2, 30, (4, 4), 5, torch.float16, False, marks=pytest.mark.full),
+            # Non-aligned spatial: exercises partial-tile path
+            pytest.param(2, 32, (7, 7), 8, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 32, (7, 7), 8, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
