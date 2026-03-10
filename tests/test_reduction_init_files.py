@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.smoke
+
 ROOT = Path(__file__).resolve().parent.parent
 
 KERNEL_INIT = ROOT / "tileops" / "kernels" / "reduction" / "__init__.py"
