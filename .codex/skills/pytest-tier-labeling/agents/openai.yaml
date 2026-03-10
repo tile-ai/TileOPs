@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pytest Tier Labeling"
+  short_description: "Add smoke/full/nightly markers to tests"
+  default_prompt: "Use $pytest-tier-labeling to add or repair smoke/full/nightly markers for tests under tests/."
