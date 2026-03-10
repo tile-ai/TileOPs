@@ -124,14 +124,12 @@ class InstanceNormOp(Op):
         x_2d = x.reshape(self.M, self.D)
 
         # Unit weight and zero bias for the kernel (affine applied after)
-        unit_weight = torch.ones(self.D, dtype=self.dtype, device=x.device)
-        zero_bias = torch.zeros(self.D, dtype=self.dtype, device=x.device)
+        unit_weight = torch.ones(self.D_padded, dtype=self.dtype, device=x.device)
+        zero_bias = torch.zeros(self.D_padded, dtype=self.dtype, device=x.device)
 
         # Pad to alignment
         if self.D_padded != self.D:
             x_2d = F.pad(x_2d, (0, self.D_padded - self.D))
-            unit_weight = F.pad(unit_weight, (0, self.D_padded - self.D))
-            zero_bias = F.pad(zero_bias, (0, self.D_padded - self.D))
 
         # Run kernel: produces (x - mean) / sqrt(var + eps)
         y_2d = self.kernel(x_2d, unit_weight, zero_bias)
