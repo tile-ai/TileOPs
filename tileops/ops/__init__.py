@@ -21,7 +21,7 @@ from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
 from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
 from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
-from .norm import BatchNormBwdOp, BatchNormFwdOp, LayerNormOp, RmsNormOp
+from .norm import BatchNormBwdOp, BatchNormFwdOp, GroupNormOp, InstanceNormOp, LayerNormOp, RmsNormOp
 from .op import Op
 from .topk_selector import TopkSelectorOp
 
@@ -39,7 +39,9 @@ __all__ = [
     "GroupQueryAttentionDecodePagedWithKVCacheOp",
     "GroupQueryAttentionDecodeWithKVCacheOp",
     "GroupQueryAttentionFwdOp",
+    "GroupNormOp",
     "GroupedGemmOp",
+    "InstanceNormOp",
     "LayerNormOp",
     "ManifoldConstrainedHyperConnectionPostOp",
     "ManifoldConstrainedHyperConnectionPreOp",
