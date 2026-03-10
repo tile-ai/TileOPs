@@ -8,7 +8,6 @@ Validates that:
 """
 
 import subprocess
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -76,9 +75,7 @@ class TestKernelReductionInit:
                 if cls in line and line.lstrip().startswith("#"):
                     found_commented = True
                     break
-            assert found_commented, (
-                f"Kernel class {cls!r} should be in a commented-out import"
-            )
+            assert found_commented, f"Kernel class {cls!r} should be in a commented-out import"
 
     def test_has_all_dunder_all(self):
         content = KERNEL_INIT.read_text()
@@ -121,9 +118,7 @@ class TestOpsReductionInit:
     def test_has_all_op_classes_commented(self):
         content = OPS_REDUCTION_INIT.read_text()
         for cls in OP_CLASSES:
-            assert cls in content, (
-                f"Op class {cls!r} not found in {OPS_REDUCTION_INIT}"
-            )
+            assert cls in content, f"Op class {cls!r} not found in {OPS_REDUCTION_INIT}"
 
     def test_imports_are_commented_out(self):
         content = OPS_REDUCTION_INIT.read_text()
@@ -133,9 +128,7 @@ class TestOpsReductionInit:
                 if cls in line and line.lstrip().startswith("#"):
                     found_commented = True
                     break
-            assert found_commented, (
-                f"Op class {cls!r} should be in a commented-out import"
-            )
+            assert found_commented, f"Op class {cls!r} should be in a commented-out import"
 
     def test_has_all_dunder_all(self):
         content = OPS_REDUCTION_INIT.read_text()
@@ -161,8 +154,7 @@ class TestOpsReductionInit:
             if line.lstrip().startswith("#") and '"' in line and "Op" in line
         ]
         assert len(commented_all) >= len(OP_CLASSES), (
-            f"Expected at least {len(OP_CLASSES)} commented op entries, "
-            f"found {len(commented_all)}"
+            f"Expected at least {len(OP_CLASSES)} commented op entries, found {len(commented_all)}"
         )
 
 
@@ -182,9 +174,7 @@ class TestOpsMainInit:
     def test_has_all_op_classes_in_all(self):
         content = OPS_INIT.read_text()
         for cls in OP_CLASSES:
-            assert cls in content, (
-                f"Op class {cls!r} not found in ops/__init__.py __all__"
-            )
+            assert cls in content, f"Op class {cls!r} not found in ops/__init__.py __all__"
 
     def test_all_op_entries_are_commented(self):
         content = OPS_INIT.read_text()
@@ -233,8 +223,7 @@ class TestRuffLinting:
             text=True,
         )
         assert result.returncode == 0, (
-            f"ruff format --check failed for {filepath}:\n"
-            f"{result.stdout}\n{result.stderr}"
+            f"ruff format --check failed for {filepath}:\n{result.stdout}\n{result.stderr}"
         )
 
 
