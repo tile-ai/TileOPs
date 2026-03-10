@@ -9,19 +9,19 @@ class FusedAddRmsNormFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype, tune", [
             # Standard aligned shapes -- fp16
-            (1024, 4096, torch.float16, False),
-            (4096, 4096, torch.float16, False),
+            pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
             # Standard aligned shapes -- bf16
-            (1024, 4096, torch.bfloat16, False),
-            (4096, 4096, torch.bfloat16, False),
+            pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
             # Non-aligned N
-            (1024, 3000, torch.float16, False),
-            (1024, 3000, torch.bfloat16, False),
-            (2048, 5120, torch.float16, False),
-            (2048, 5120, torch.bfloat16, False),
+            pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(2048, 5120, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2048, 5120, torch.bfloat16, False, marks=pytest.mark.full),
             # Tail-M: M not divisible by block_m
-            (1025, 4096, torch.float16, False),
-            (1025, 4096, torch.bfloat16, False),
+            pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -71,8 +71,8 @@ def test_fused_add_rmsnorm_op(m: int, n: int, dtype: torch.dtype, tune: bool) ->
 class FusedAddRmsNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
-            (1024, 4096, torch.float16),
-            (1024, 4096, torch.bfloat16),
+            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 
@@ -103,8 +103,8 @@ def test_fused_add_rmsnorm_non_contiguous(m: int, n: int, dtype: torch.dtype) ->
 class FusedAddRmsNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
-            (2, 512, 4096, torch.float16),
-            (2, 512, 4096, torch.bfloat16),
+            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 
