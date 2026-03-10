@@ -1,3 +1,7 @@
+from .gqa_sliding_window_fwd import (
+    GqaSlidingWindowFwdKernel,
+    GqaSlidingWindowFwdWgmmaPipelinedKernel,
+)
 from .gqa_window_sliding import GQAWindowSlidingKernel
 from .mean_pooling_fwd import MeanPoolingFwdKernel
 from .nsa_cmp_fwd import NSACmpFwdVarlenKernel
@@ -10,4 +14,6 @@ __all__ = [
     "NSATopkVarlenKernel",
     "NSACmpFwdVarlenKernel",
     "GQAWindowSlidingKernel",
+    "GqaSlidingWindowFwdKernel",
+    "GqaSlidingWindowFwdWgmmaPipelinedKernel",
 ]

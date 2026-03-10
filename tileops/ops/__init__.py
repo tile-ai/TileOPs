@@ -15,6 +15,7 @@ from .gemm import GemmOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
+from .gqa_sliding_window_fwd import GqaSlidingWindowFwdOp
 from .grouped_gemm import GroupedGemmOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
@@ -52,6 +53,7 @@ __all__ = [
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetFwdOp",
     "GemmOp",
+    "GqaSlidingWindowFwdOp",
     "GroupQueryAttentionBwdOp",
     "GroupQueryAttentionDecodePagedWithKVCacheOp",
     "GroupQueryAttentionDecodeWithKVCacheOp",
