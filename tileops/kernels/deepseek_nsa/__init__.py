@@ -2,7 +2,10 @@ from .gqa_sliding_window_fwd import (
     GqaSlidingWindowFwdKernel,
     GqaSlidingWindowFwdWgmmaPipelinedKernel,
 )
-from .gqa_window_sliding import GQAWindowSlidingKernel
+from .gqa_sliding_window_varlen_fwd import (
+    GqaSlidingWindowVarlenFwdKernel,
+    GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel,
+)
 from .mean_pooling_fwd import MeanPoolingFwdKernel
 from .nsa_cmp_fwd import NSACmpFwdVarlenKernel
 from .nsa_fwd import NSAFwdVarlenKernel
@@ -13,7 +16,8 @@ __all__ = [
     "NSAFwdVarlenKernel",
     "NSATopkVarlenKernel",
     "NSACmpFwdVarlenKernel",
-    "GQAWindowSlidingKernel",
     "GqaSlidingWindowFwdKernel",
     "GqaSlidingWindowFwdWgmmaPipelinedKernel",
+    "GqaSlidingWindowVarlenFwdKernel",
+    "GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel",
 ]

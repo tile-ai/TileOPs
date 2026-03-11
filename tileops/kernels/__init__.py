@@ -7,7 +7,10 @@ from .deepseek_mla import (
     mla_decode_ws_kernel,
 )
 from .deepseek_nsa import (
-    GQAWindowSlidingKernel,
+    GqaSlidingWindowFwdKernel,
+    GqaSlidingWindowFwdWgmmaPipelinedKernel,
+    GqaSlidingWindowVarlenFwdKernel,
+    GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel,
     MeanPoolingFwdKernel,
     NSACmpFwdVarlenKernel,
     NSAFwdVarlenKernel,
@@ -66,7 +69,10 @@ __all__ = [
     "FlashAttnBwdPreprocessKernel",
     "Fp8LightingIndexerKernel",
     "Fp8QuantKernel",
-    "GQAWindowSlidingKernel",
+    "GqaSlidingWindowFwdKernel",
+    "GqaSlidingWindowFwdWgmmaPipelinedKernel",
+    "GqaSlidingWindowVarlenFwdKernel",
+    "GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel",
     "GatedDeltaNetBwdKernel",
     "GatedDeltaNetFwdKernel",
     "GemmKernel",

@@ -3,7 +3,6 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from tileops.kernels.deepseek_nsa import (
-    GQAWindowSlidingKernel,
     MeanPoolingFwdKernel,
     NSACmpFwdVarlenKernel,
     NSAFwdVarlenKernel,
@@ -18,7 +17,6 @@ __all__ = [
     "NSAFwdVarlenOp",
     "NSATopkVarlenOp",
     "NSACmpFwdVarlenOp",
-    "GQAWindowSlidingOp",
 ]
 
 
@@ -183,80 +181,3 @@ class NSACmpFwdVarlenOp(Op):
                 offsets: torch.Tensor, chunk_offsets: torch.Tensor,
                 token_indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.kernel(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
-
-
-class GQAWindowSlidingOp(Op):
-
-    def __init__(
-        self,
-        batch_size: int,
-        groups: int,
-        uq: int,
-        ukv: int,
-        heads: int,
-        dim: int,
-        is_causal: bool,
-        window_size_left: int,
-        window_size_right: int,
-        dtype: torch.dtype,
-        accum_dtype: torch.dtype,
-        tune: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-    ) -> None:
-        params = {k: v for k, v in locals().items() if k not in ('self', 'kernel_map')}
-        for key, value in params.items():
-            setattr(self, key, value)
-
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_window_sliding_kernel"](**params)
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_window_sliding_kernel": GQAWindowSlidingKernel}
-
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens_q: torch.Tensor,
-                cu_seqlens_k: torch.Tensor, max_seqlen_q: int) -> torch.Tensor:
-        # Security validation: prevent OOB writes by validating input tensors
-        # Using explicit if statements instead of assert to ensure validation
-        # is always performed, even with Python -O optimization flag
-
-        # 1. Check tensor shapes
-        if cu_seqlens_q.shape[0] != self.batch_size + 1:
-            raise ValueError(
-                f"cu_seqlens_q.shape[0] ({cu_seqlens_q.shape[0]}) must equal batch_size + 1 ({self.batch_size + 1})"
-            )
-        if cu_seqlens_k.shape[0] != self.batch_size + 1:
-            raise ValueError(
-                f"cu_seqlens_k.shape[0] ({cu_seqlens_k.shape[0]}) must equal batch_size + 1 ({self.batch_size + 1})"
-            )
-
-        # 2. Check that values are non-decreasing
-        cu_seqlens_q_diff = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
-        if not torch.all(cu_seqlens_q_diff >= 0):
-            raise ValueError("cu_seqlens_q must be non-decreasing")
-        cu_seqlens_k_diff = cu_seqlens_k[1:] - cu_seqlens_k[:-1]
-        if not torch.all(cu_seqlens_k_diff >= 0):
-            raise ValueError("cu_seqlens_k must be non-decreasing")
-
-        # 3. Check that maximum values don't exceed tensor dimensions
-        max_q_idx = cu_seqlens_q[-1].item()
-        if max_q_idx > self.uq:
-            raise ValueError(f"cu_seqlens_q[-1] ({max_q_idx}) must not exceed uq ({self.uq})")
-        max_kv_idx = cu_seqlens_k[-1].item()
-        if max_kv_idx > self.ukv:
-            raise ValueError(f"cu_seqlens_k[-1] ({max_kv_idx}) must not exceed ukv ({self.ukv})")
-
-        # 4. Check that max_seqlen_q is consistent with actual maximum sequence length
-        actual_max_seqlen_q = cu_seqlens_q_diff.max().item()
-        if max_seqlen_q < actual_max_seqlen_q:
-            raise ValueError(
-                f"max_seqlen_q ({max_seqlen_q}) must be >= actual max sequence length ({actual_max_seqlen_q})"
-            )
-
-        # 5. Additional safety: ensure cu_seqlens_q starts at 0
-        if cu_seqlens_q[0].item() != 0:
-            raise ValueError(f"cu_seqlens_q[0] must be 0, got {cu_seqlens_q[0].item()}")
-        if cu_seqlens_k[0].item() != 0:
-            raise ValueError(f"cu_seqlens_k[0] must be 0, got {cu_seqlens_k[0].item()}")
-
-        return self.kernel(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q)
