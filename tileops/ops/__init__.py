@@ -6,6 +6,7 @@ from .deepseek_nsa import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
+from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2CLUTOp, FFTC2COp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .fp8_quant import Fp8QuantOp
@@ -62,6 +63,7 @@ from .reduction import (
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
+    "BinaryOp",
     "AdaLayerNormOp",
     "AdaLayerNormZeroOp",
     "BatchNormBwdOp",
@@ -73,6 +75,7 @@ __all__ = [
     "Fp8QuantOp",
     "FusedAddLayerNormOp",
     "FusedAddRmsNormOp",
+    "FusedGatedOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetFwdOp",
     "GemmOp",
@@ -99,6 +102,7 @@ __all__ = [
     "NSATopkVarlenOp",
     "Op",
     "RmsNormOp",
+    "UnaryOp",
     "TopkSelectorOp",
     # --- Reduction ops (uncomment as sub-category PRs land) ---
     # "AllOp",

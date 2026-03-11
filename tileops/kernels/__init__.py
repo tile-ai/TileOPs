@@ -16,6 +16,7 @@ from .deepseek_nsa import (
     NSAFwdVarlenKernel,
     NSATopkVarlenKernel,
 )
+from .elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
 from .engram import EngramDecodeKernel, EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from .fft import FFTC2CKernel, FFTC2CLUTKernel
 from .flash_attn import (
@@ -57,6 +58,7 @@ from .norm import (
 )
 
 __all__ = [
+    "BinaryKernel",
     "BatchNormBwdKernel",
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
@@ -65,6 +67,7 @@ __all__ = [
     "EngramGateConvFwdKernel",
     "FFTC2CKernel",
     "FFTC2CLUTKernel",
+    "FusedGatedKernel",
     "FlashAttnBwdPostprocessKernel",
     "FlashAttnBwdPreprocessKernel",
     "Fp8LightingIndexerKernel",
@@ -96,6 +99,7 @@ __all__ = [
     "RmsNormKernel",
     "SparseMlaKernel",
     "TopkSelectorKernel",
+    "UnaryKernel",
     "compute_w_u_bwd_tl",
     "compute_w_u_tl",
     "gqa_decode_kernel",
