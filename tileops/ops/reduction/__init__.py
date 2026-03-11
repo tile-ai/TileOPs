@@ -10,15 +10,19 @@ kernels are implemented.
 # Each sub-category PR uncomments its own lines.
 
 # --- ReduceKernel ops ---
-# from .reduce_sum import ReduceSumOp
-# from .reduce_mean import ReduceMeanOp
-# from .reduce_max import ReduceMaxOp
-# from .reduce_min import ReduceMinOp
-# from .reduce_prod import ReduceProdOp
-
 # --- SoftmaxKernel ops ---
 from .log_softmax import LogSoftmaxOp
 from .logsumexp import LogSumExpOp
+from .reduce import (
+    AmaxOp,  # ReduceMaxOp
+    AminOp,  # ReduceMinOp
+    MeanOp,  # ReduceMeanOp
+    ProdOp,  # ReduceProdOp
+    StdOp,
+    SumOp,  # ReduceSumOp
+    VarMeanOp,
+    VarOp,
+)
 from .softmax import SoftmaxOp
 
 # --- ArgreduceKernel ops ---
@@ -43,11 +47,19 @@ from .softmax import SoftmaxOp
 
 __all__: list[str] = [
     # --- ReduceKernel ops ---
-    # "ReduceSumOp",
-    # "ReduceMeanOp",
+    "AmaxOp",
+    "AminOp",
+    "MeanOp",
+    "ProdOp",
+    "StdOp",
+    "SumOp",
+    "VarMeanOp",
+    "VarOp",
     # "ReduceMaxOp",
+    # "ReduceMeanOp",
     # "ReduceMinOp",
     # "ReduceProdOp",
+    # "ReduceSumOp",
     # --- SoftmaxKernel ops ---
     "SoftmaxOp",
     "LogSoftmaxOp",

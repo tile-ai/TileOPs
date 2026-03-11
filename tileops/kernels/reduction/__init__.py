@@ -19,7 +19,7 @@ from ._primitives import (
 # from .argreduce import ArgreduceKernel
 # from .cumulative import CumulativeKernel
 # from .logical_reduce import LogicalReduceKernel
-# from .reduce import ReduceKernel
+from .reduce import ReduceKernel
 from .softmax import LogSumExpKernel, SoftmaxKernel
 
 # from .vector_norm import VectorNormKernel
@@ -34,7 +34,7 @@ __all__: list[str] = [
     # "ArgreduceKernel",
     # "CumulativeKernel",
     # "LogicalReduceKernel",
-    # "ReduceKernel",
+    "ReduceKernel",
     "LogSumExpKernel",
     "SoftmaxKernel",
     # "VectorNormKernel",
