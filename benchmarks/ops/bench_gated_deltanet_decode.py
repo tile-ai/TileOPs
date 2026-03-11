@@ -22,7 +22,7 @@ class GatedDeltaNetDecodeBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         t = self.test
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
-        elem = 4  # float32
+        elem = t.dtype.itemsize
         # Read: q(DK) + k(DK) + v(DV) + g(1) + beta(1) + state(DK*DV)
         # Write: o(DV) + new_state(DK*DV)
         return B * H * (2 * DK + DV + 2 + 2 * DK * DV + DV) * elem

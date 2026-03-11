@@ -70,7 +70,9 @@ def _gated_deltanet_decode_torch_ref(
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
-        return {"atol": 1e-4, "rtol": 1e-4}
+        # T.gemm uses tensor cores (TF32) which truncate fp32 mantissa to
+        # 10 bits, giving ~1e-4 error per op; 5e-4 accommodates accumulation.
+        return {"atol": 5e-4, "rtol": 5e-4}
     elif dtype == torch.float16:
         return {"atol": 1e-2, "rtol": 1e-2}
     else:  # bfloat16

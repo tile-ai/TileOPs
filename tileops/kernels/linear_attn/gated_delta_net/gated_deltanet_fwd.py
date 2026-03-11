@@ -243,6 +243,19 @@ class GatedDeltaNetFwdKernel(Kernel):
         self.dim_v = dim_v
         self.dtype = dtype
         self.init_config(config, tune)
+        # Cache JIT-compiled kernels to avoid re-creation overhead
+        self._fused_fn = fused_prepare_compute_w_u_tl(
+            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
+        )(self.config["fused_num_stages"], self.config["fused_threads"])
+        self._k2_fn = _gated_deltanet_kernel2_tl(
+            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
+        )(self.config["k2_num_stages"], self.config["k2_threads"])
+        self._S_0 = torch.zeros(
+            batch, head, dim_k, dim_v,
+            dtype={"float32": torch.float32, "float16": torch.float16,
+                   "bfloat16": torch.bfloat16}[self.dtype_str],
+            device="cuda",
+        )
 
     @property
     def default_config(self) -> dict:
@@ -261,10 +274,6 @@ class GatedDeltaNetFwdKernel(Kernel):
         g: torch.Tensor,
         beta: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _gated_deltanet_fwd_wrapped_kernel(
-            self.batch, self.head, self.seq_len, self.chunk_size,
-            self.dim_k, self.dim_v, self.dtype_str,
-            self.config["fused_num_stages"], self.config["fused_threads"],
-            self.config["k2_num_stages"], self.config["k2_threads"],
-            q, k, v, g, beta,
-        )
+        Aw, Au, w, u = self._fused_fn(k, v, g, beta)
+        S_buf, o = self._k2_fn(q, k, g, w, u, self._S_0)
+        return o, S_buf, Aw, Au

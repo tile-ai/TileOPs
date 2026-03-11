@@ -360,6 +360,21 @@ class GatedDeltaNetBwdKernel(Kernel):
         self.dim_v = dim_v
         self.dtype = dtype
         self.init_config(config, tune)
+        # Cache JIT-compiled kernels to avoid re-creation overhead
+        from .compute_w_u_bwd import compute_w_u_bwd_tl
+        from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
+
+        ns = self.config.get("num_stages", 2)
+        thr = self.config.get("threads", 128)
+        self._fused_fn = fused_prepare_compute_w_u_tl(
+            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
+        )(ns, thr)
+        self._k2_bwd_fn = _gated_deltanet_kernel2_bwd_tl(
+            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
+        )(ns, thr)
+        self._wu_bwd_fn = compute_w_u_bwd_tl(
+            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
+        )(ns, thr)
 
     @property
     def default_config(self) -> dict:
@@ -375,8 +390,8 @@ class GatedDeltaNetBwdKernel(Kernel):
         beta: torch.Tensor,
         S: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _gated_deltanet_bwd_wrapped_kernel(
-            self.batch, self.head, self.seq_len, self.chunk_size,
-            self.dim_k, self.dim_v,
-            do, q, k, v, g, beta, S,
-        )
+        Aw, Au, w, u = self._fused_fn(k, v, g, beta)
+        dq, dk, dg, dw, du = self._k2_bwd_fn(do, q, k, g, w, u, S)
+        _dAw, _dAu, dk_wu, dv, dbeta = self._wu_bwd_fn(dw, du, Aw, Au, k, v, beta)
+        dk = dk + dk_wu
+        return dq, dk, dv, dg, dbeta

@@ -18,15 +18,7 @@ class GatedDeltaNetDecodeOp(Op):
         o_t = S_t q_t
 
     Layout: BHD (batch, head, dim).
-
-    Args:
-        batch: Batch size.
-        heads: Number of attention heads.
-        dim_k: Key/query dimension.
-        dim_v: Value dimension.
-        dtype: Data type for computation.
-        kernel_map: Optional kernel overrides.
-        tune: Whether to autotune kernels.
+    Supports float32, float16, and bfloat16 with fp32 accumulation.
     """
 
     def __init__(
@@ -48,7 +40,7 @@ class GatedDeltaNetDecodeOp(Op):
         self.dispatch_kernel(kernel_map)
 
         kernel_cls = self.kernel_map["GatedDeltaNetDecodeKernel"]
-        kernel_dtype = Kernel.dtype_to_str(torch.float32)
+        kernel_dtype = Kernel.dtype_to_str(dtype)
         self.kernel = kernel_cls(
             batch, heads, dim_k, dim_v,
             dtype=kernel_dtype,
@@ -70,24 +62,4 @@ class GatedDeltaNetDecodeOp(Op):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run gated deltanet single-step decode.
-
-        Args:
-            q: Query tensor [B, H, DK].
-            k: Key tensor [B, H, DK].
-            v: Value tensor [B, H, DV].
-            g: Gate tensor [B, H] (log-space, alpha = exp(g)).
-            beta: Beta tensor [B, H] (writing strength).
-            state: Hidden state [B, H, DK, DV] (S_{t-1}).
-
-        Returns:
-            Tuple of (o, new_state):
-                o: Output tensor [B, H, DV].
-                new_state: Updated hidden state [B, H, DK, DV].
-        """
-        input_dtype = q.dtype
-        q, k, v = q.float(), k.float(), v.float()
-        g, beta = g.float(), beta.float()
-        state = state.float()
-        o, new_state = self.kernel(q, k, v, g, beta, state)
-        return o.to(input_dtype), new_state.to(input_dtype)
+        return self.kernel(q, k, v, g, beta, state)

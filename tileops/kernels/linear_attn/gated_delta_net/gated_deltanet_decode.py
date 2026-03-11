@@ -1,22 +1,20 @@
 """
 Gated DeltaNet decode (single-step recurrence).
 
-Given the previous hidden state S_{t-1} and a single token's (q, k, v, g, beta),
-compute the output o_t and the updated state S_t:
-
-    S_t = alpha * S_{t-1} * (I - beta * k k^T) + beta * v k^T
-        = alpha * S_{t-1} - alpha * beta * (S_{t-1} @ k) k^T + beta * v k^T
-    o_t = S_t @ q
-
-where alpha = exp(g).
-
-Equivalently (matching the chunked forward when chunk_size=1):
     old_val  = S @ k                     # matvec
     v_new    = beta * v - alpha * beta * old_val
     o_inter  = alpha * (S @ q)           # matvec
     o_intra  = (q . k) * v_new           # dot product + scale
     o        = o_inter + o_intra
     S_new    = alpha * S + outer(k, v_new)
+
+where alpha = exp(g).
+
+Optimization:
+  - T.Pipelined + T.copy: async prefetch state tiles from HBM
+  - T.gemm: fused matvec via [padded_qk; ...] @ S_tile, using tensor cores
+  - Native dtype: bf16/fp16 halve state bandwidth vs fp32
+  - K-tiling: small shared memory footprint → high occupancy
 """
 from typing import Optional, Tuple
 
@@ -29,6 +27,9 @@ from tileops.kernels.kernel import Kernel
 __all__ = ["GatedDeltaNetDecodeKernel"]
 
 _LOG2E = 1.4426950408889634
+_DEFAULT_K_TILE = 16
+# T.gemm requires M divisible by 16; we use rows 0 (k) and 1 (q)
+_GEMM_M = 16
 
 
 def _gated_deltanet_decode_tl(
@@ -36,13 +37,11 @@ def _gated_deltanet_decode_tl(
     head: int,
     dim_k: int,
     dim_v: int,
+    k_tile: int = _DEFAULT_K_TILE,
     dtype: str = "float32",
 ):
-    """TileLang kernel for single-step Gated DeltaNet decode.
-
-    (q, k, v, g, beta, state) -> (o, new_state)
-    """
     accum_dtype = "float32"
+    assert dim_k % k_tile == 0, f"dim_k={dim_k} must be divisible by k_tile={k_tile}"
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -64,60 +63,76 @@ def _gated_deltanet_decode_tl(
             new_state: T.Tensor([batch, head, dim_k, dim_v], dtype),
         ):
             with T.Kernel(batch, head, threads=threads) as (bid, hid):
-                q_s = T.alloc_shared([dim_k], accum_dtype)
-                k_s = T.alloc_shared([dim_k], accum_dtype)
-                v_s = T.alloc_shared([dim_v], accum_dtype)
-                h_s = T.alloc_shared([dim_k, dim_v], accum_dtype)
-                old_val = T.alloc_shared([dim_v], accum_dtype)
+                # State tile for T.Pipelined + T.copy async prefetch
+                h_tile = T.alloc_shared([k_tile, dim_v], dtype)
+                # Padded [_GEMM_M, k_tile] for T.gemm (rows 0=k, 1=q, rest=0)
+                qk_tile = T.alloc_shared([_GEMM_M, k_tile], dtype)
+                # Gemm accumulator (registers): row 0 = S@k, row 1 = S@q
+                acc = T.alloc_fragment([_GEMM_M, dim_v], accum_dtype)
+                # Shared buffer to extract gemm result from fragment
+                acc_shared = T.alloc_shared([2, dim_v], accum_dtype)
+                # Shared buffer for intermediate results
                 v_new = T.alloc_shared([dim_v], accum_dtype)
-                o_s = T.alloc_shared([dim_v], accum_dtype)
-                qk_dot = T.alloc_shared([1], accum_dtype)
+                # Local (register) dot product — avoids shared-memory race
+                qk_dot = T.alloc_local([1], accum_dtype)
 
-                # Load inputs
-                for i in T.Parallel(dim_k):
-                    q_s[i] = q[bid, hid, i]
-                for i in T.Parallel(dim_k):
-                    k_s[i] = k[bid, hid, i]
-                for i in T.Parallel(dim_v):
-                    v_s[i] = v[bid, hid, i]
-                for i, j in T.Parallel(dim_k, dim_v):
-                    h_s[i, j] = state[bid, hid, i, j]
-
-                g_val = g[bid, hid]
-                beta_val = beta[bid, hid]
-                alpha = T.exp2(g_val * _LOG2E)  # exp(g)
+                # Scalars
+                g_val = T.cast(g[bid, hid], accum_dtype)
+                beta_val = T.cast(beta[bid, hid], accum_dtype)
+                alpha = T.exp2(g_val * _LOG2E)
                 alpha_beta = alpha * beta_val
 
-                # q . k dot product (scalar reduction, all threads redundantly)
+                # Zero-init padding rows of qk_tile (rows 2..15)
+                for i, j in T.Parallel(_GEMM_M, k_tile):
+                    qk_tile[i, j] = T.cast(T.float32(0.0), dtype)
+
+                # === Pass 1: Tiled pipelined gemm for fused matvec ===
+                T.clear(acc)
+                for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    # Fill rows 0 (k) and 1 (q) for this tile
+                    for i in T.Parallel(k_tile):
+                        qk_tile[0, i] = k[bid, hid, kt * k_tile + i]
+                        qk_tile[1, i] = q[bid, hid, kt * k_tile + i]
+                    T.gemm(qk_tile, h_tile, acc, policy=T.GemmWarpPolicy.FullRow)
+
+                # Copy gemm result from fragment to shared (rows 0-1 only)
+                T.copy(acc[:2, :], acc_shared)
+
+                # q . k dot product (must be AFTER T.gemm to avoid
+                # corrupting fragment state)
                 qk_dot[0] = T.float32(0.0)
                 for kk in T.Serial(dim_k):
-                    qk_dot[0] += q_s[kk] * k_s[kk]
+                    qk_dot[0] += (
+                        T.cast(q[bid, hid, kk], accum_dtype)
+                        * T.cast(k[bid, hid, kk], accum_dtype)
+                    )
 
-                # Fused Steps 1+3a: single pass over h_s computes
-                #   old_val = S @ k, o_s = S @ q
+                # v_new = beta * v - alpha_beta * (S @ k)
                 for j in T.Parallel(dim_v):
-                    old_val[j] = T.float32(0.0)
-                    o_s[j] = T.float32(0.0)
-                for kk in T.Serial(dim_k):
-                    for j in T.Parallel(dim_v):
-                        old_val[j] += h_s[kk, j] * k_s[kk]
-                        o_s[j] += h_s[kk, j] * q_s[kk]
+                    v_new[j] = (
+                        beta_val * T.cast(v[bid, hid, j], accum_dtype)
+                        - alpha_beta * acc_shared[0, j]
+                    )
 
-                # Step 2: v_new = beta * v - alpha * beta * old_val
+                # o = alpha * (S @ q) + (q . k) * v_new
                 for j in T.Parallel(dim_v):
-                    v_new[j] = beta_val * v_s[j] - alpha_beta * old_val[j]
+                    o[bid, hid, j] = T.cast(
+                        alpha * acc_shared[1, j] + qk_dot[0] * v_new[j], dtype
+                    )
 
-                # Step 3: o = alpha * o_inter + qk_dot * v_new
-                for j in T.Parallel(dim_v):
-                    o_s[j] = alpha * o_s[j] + qk_dot[0] * v_new[j]
-
-                # Write output
-                for j in T.Parallel(dim_v):
-                    o[bid, hid, j] = o_s[j]
-
-                # Step 4: new_state = alpha * S + outer(k, v_new)
-                for i, j in T.Parallel(dim_k, dim_v):
-                    new_state[bid, hid, i, j] = alpha * h_s[i, j] + k_s[i] * v_new[j]
+                # === Pass 2: State update with async prefetch ===
+                # new_state = alpha * S + outer(k, v_new)
+                # Reuses h_tile for pipelined state prefetch.
+                for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    for kk, j in T.Parallel(k_tile, dim_v):
+                        new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
+                            alpha * T.cast(h_tile[kk, j], accum_dtype)
+                            + T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype)
+                            * v_new[j],
+                            dtype,
+                        )
 
         @T.prim_func
         def gated_deltanet_decode(
@@ -143,6 +158,7 @@ def _gated_deltanet_decode_wrapped_kernel(
     head: int,
     dim_k: int,
     dim_v: int,
+    k_tile: int,
     dtype: str,
     num_stages: int,
     threads: int,
@@ -153,9 +169,9 @@ def _gated_deltanet_decode_wrapped_kernel(
     beta: torch.Tensor,
     state: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    kernel_fn = _gated_deltanet_decode_tl(batch, head, dim_k, dim_v, dtype)(
-        num_stages, threads
-    )
+    kernel_fn = _gated_deltanet_decode_tl(
+        batch, head, dim_k, dim_v, k_tile, dtype
+    )(num_stages, threads)
     return kernel_fn(q, k, v, g, beta, state)
 
 
@@ -165,6 +181,7 @@ def _gated_deltanet_decode_wrapped_kernel_fake(
     head: int,
     dim_k: int,
     dim_v: int,
+    k_tile: int,
     dtype: str,
     num_stages: int,
     threads: int,
@@ -183,9 +200,8 @@ def _gated_deltanet_decode_wrapped_kernel_fake(
 class GatedDeltaNetDecodeKernel(Kernel):
     """Gated DeltaNet single-step decode kernel.
 
-    Computes one step of the gated delta rule recurrence:
-        S_t = alpha_t * S_{t-1} * (I - beta_t * k_t k_t^T) + beta_t * v_t k_t^T
-        o_t = S_t @ q_t
+    Uses T.Pipelined + T.copy for async state prefetch and T.gemm for
+    the fused matvec. Supports float32, float16, and bfloat16.
     """
 
     supported_archs: list[int] = [80, 89, 90]
@@ -206,11 +222,69 @@ class GatedDeltaNetDecodeKernel(Kernel):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.init_config(config, tune)
+
+        # k_tile is baked into the JIT function; handle autotune manually
+        # if tune is requested, otherwise use default/provided k_tile.
+        if tune:
+            self._autotune_with_k_tile()
+        else:
+            self.init_config(config, tune=False)
+
+        # Cache the JIT-compiled kernel to avoid re-creation overhead
+        # on every forward call (_gated_deltanet_decode_wrapped_kernel
+        # is kept for torch.compile compatibility).
+        self._kernel_fn = _gated_deltanet_decode_tl(
+            batch, head, dim_k, dim_v,
+            self.config["k_tile"], self.dtype_str,
+        )(self.config["num_stages"], self.config["threads"])
+
+    def _autotune_with_k_tile(self) -> None:
+        """Autotune across k_tile, num_stages, and threads."""
+        from tilelang.profiler import do_bench
+
+        best_time = float("inf")
+        best_config = self.default_config
+
+        # Generate dummy inputs for profiling
+        B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
+        torch_dtype = {"float32": torch.float32, "float16": torch.float16,
+                       "bfloat16": torch.bfloat16}[self.dtype_str]
+        q = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
+        k = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
+        v = torch.randn(B, H, DV, device="cuda", dtype=torch_dtype)
+        g = -torch.rand(B, H, device="cuda", dtype=torch_dtype)
+        beta = torch.rand(B, H, device="cuda", dtype=torch_dtype)
+        state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
+
+        print(f"Start autotuning {self.__class__.__name__}...")
+        for k_tile in [16, 32, 64]:
+            if DK % k_tile != 0:
+                continue
+            for num_stages in [1, 2, 3]:
+                for threads in [128, 256]:
+                    try:
+                        fn = _gated_deltanet_decode_tl(
+                            B, H, DK, DV, k_tile, self.dtype_str,
+                        )(num_stages, threads)
+                        t = do_bench(lambda _fn=fn: _fn(q, k, v, g, beta, state),
+                                     warmup=10, rep=20)
+                        if t < best_time:
+                            best_time = t
+                            best_config = {"num_stages": num_stages,
+                                           "threads": threads, "k_tile": k_tile}
+                    except Exception:
+                        continue
+
+        self.config = best_config
+        print(f"{self.__class__.__name__} initialized with config: {self.config}")
 
     @property
     def default_config(self) -> dict:
-        return {"num_stages": 2, "threads": 128}
+        return {
+            "num_stages": 2,
+            "threads": 128,
+            "k_tile": _DEFAULT_K_TILE,
+        }
 
     def forward(
         self,
@@ -221,13 +295,4 @@ class GatedDeltaNetDecodeKernel(Kernel):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _gated_deltanet_decode_wrapped_kernel(
-            self.batch,
-            self.head,
-            self.dim_k,
-            self.dim_v,
-            self.dtype_str,
-            self.config["num_stages"],
-            self.config["threads"],
-            q, k, v, g, beta, state,
-        )
+        return self._kernel_fn(q, k, v, g, beta, state)
