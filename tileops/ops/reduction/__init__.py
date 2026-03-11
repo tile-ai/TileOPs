@@ -1,4 +1,11 @@
 # Copyright (c) Tile-AI. All rights reserved.
+"""Reduction op layer (L2) package.
+
+This package will host stateless dispatchers for reduction operators
+(sum, max, softmax, variance, prefix-scan, etc.) once their corresponding
+kernels are implemented.
+"""
+
 # Placeholder imports for reduction ops.
 # Each sub-category PR uncomments its own lines.
 
