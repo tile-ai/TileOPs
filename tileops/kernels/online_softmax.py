@@ -19,7 +19,7 @@ def make_log2e_scale(dim):
 
     Returns (1/sqrt(dim)) * log2(e) for use with exp2-based softmax.
     """
-    return (1.0 / dim)**0.5 * LOG2E
+    return (1.0 / dim) ** 0.5 * LOG2E
 
 
 def make_online_softmax(scale, accum_dtype, block_rows, block_cols):

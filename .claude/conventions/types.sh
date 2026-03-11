@@ -12,7 +12,7 @@
 # Commit / PR types
 # ---------------------------------------------------------------------------
 
-COMMIT_PR_TYPES="Feat|BugFix|Fix|Refactor|Enhancement|Doc|Chore|Bench|CI|Test|Perf"
+COMMIT_PR_TYPES="Feat|BugFix|Fix|Refactor|Enhancement|Doc|Chore|Bench|CI|Test|Perf|Style"
 
 # Full commit message / PR title regex
 #   [Type] description   or   [Type][Scope] description
@@ -41,10 +41,11 @@ declare -A TYPE_TO_LABEL=(
   [CI]=ci
   [Test]=test
   [Perf]=perf
+  [Style]=style
 )
 
 # All type-related labels (used for stale-label cleanup)
-ALL_TYPE_LABELS="feature fix bug refactor enhancement docs chore bench ci test perf"
+ALL_TYPE_LABELS="feature fix bug refactor enhancement docs chore bench ci test perf style"
 
 # Extra labels (not derived from types)
 EXTRA_LABELS="all-ai-powered|human-led|breaking change|help wanted|good first issue"

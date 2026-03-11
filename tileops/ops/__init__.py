@@ -6,6 +6,7 @@ from .deepseek_nsa import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
+from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2CLUTOp, FFTC2COp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .fp8_quant import Fp8QuantOp
@@ -37,31 +38,35 @@ from .norm import (
 from .op import Op
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
-# from .reduction import (
-#     AllOp,
-#     AnyOp,
-#     ArgmaxOp,
-#     ArgminOp,
-#     CountNonzeroOp,
-#     CummaxOp,
-#     CumminOp,
-#     CumprodOp,
-#     CumsumOp,
-#     InfNormOp,
-#     L1NormOp,
-#     L2NormOp,
-#     LogSoftmaxOp,
-#     LogSumExpOp,
-#     ReduceMaxOp,
-#     ReduceMeanOp,
-#     ReduceMinOp,
-#     ReduceProdOp,
-#     ReduceSumOp,
-#     SoftmaxOp,
-# )
+from .reduction import (
+    # AllOp,
+    AmaxOp,  # ReduceMaxOp
+    AminOp,  # ReduceMinOp
+    # AnyOp,
+    # ArgmaxOp,
+    # ArgminOp,
+    # CountNonzeroOp,
+    # CummaxOp,
+    # CumminOp,
+    # CumprodOp,
+    # CumsumOp,
+    # InfNormOp,
+    # L1NormOp,
+    # L2NormOp,
+    LogSoftmaxOp,
+    LogSumExpOp,
+    MeanOp,  # ReduceMeanOp
+    ProdOp,  # ReduceProdOp
+    SoftmaxOp,
+    StdOp,
+    SumOp,  # ReduceSumOp
+    VarMeanOp,
+    VarOp,
+)
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
+    "BinaryOp",
     "AdaLayerNormOp",
     "AdaLayerNormZeroOp",
     "BatchNormBwdOp",
@@ -73,6 +78,7 @@ __all__ = [
     "Fp8QuantOp",
     "FusedAddLayerNormOp",
     "FusedAddRmsNormOp",
+    "FusedGatedOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetFwdOp",
     "GemmOp",
@@ -99,9 +105,12 @@ __all__ = [
     "NSATopkVarlenOp",
     "Op",
     "RmsNormOp",
+    "UnaryOp",
     "TopkSelectorOp",
     # --- Reduction ops (uncomment as sub-category PRs land) ---
     # "AllOp",
+    "AmaxOp",
+    "AminOp",
     # "AnyOp",
     # "ArgmaxOp",
     # "ArgminOp",
@@ -113,12 +122,18 @@ __all__ = [
     # "InfNormOp",
     # "L1NormOp",
     # "L2NormOp",
-    # "LogSoftmaxOp",
-    # "LogSumExpOp",
+    "LogSoftmaxOp",
+    "LogSumExpOp",
+    "MeanOp",
+    "ProdOp",
     # "ReduceMaxOp",
     # "ReduceMeanOp",
     # "ReduceMinOp",
     # "ReduceProdOp",
     # "ReduceSumOp",
-    # "SoftmaxOp",
+    "SoftmaxOp",
+    "StdOp",
+    "SumOp",
+    "VarMeanOp",
+    "VarOp",
 ]
