@@ -122,15 +122,15 @@ class GqaSlidingWindowVarlenFwdOp(Op):
             if not t.is_contiguous():
                 raise ValueError(f"{name} must be contiguous")
 
-        if q.shape != (q.shape[0], self.heads, self.dim):
+        if q.ndim != 3 or q.shape[1] != self.heads or q.shape[2] != self.dim:
             raise ValueError(
                 f"q shape {q.shape} incompatible with heads={self.heads}, "
                 f"dim={self.dim}")
-        if k.shape != (k.shape[0], self.heads_kv, self.dim):
+        if k.ndim != 3 or k.shape[1] != self.heads_kv or k.shape[2] != self.dim:
             raise ValueError(
                 f"k shape {k.shape} incompatible with heads_kv={self.heads_kv}"
                 f", dim={self.dim}")
-        if v.shape != (v.shape[0], self.heads_kv, self.dim):
+        if v.ndim != 3 or v.shape[1] != self.heads_kv or v.shape[2] != self.dim:
             raise ValueError(
                 f"v shape {v.shape} incompatible with heads_kv={self.heads_kv}"
                 f", dim={self.dim}")
@@ -152,6 +152,24 @@ class GqaSlidingWindowVarlenFwdOp(Op):
                     f"{name} must have dtype int32, got {cu.dtype}")
             if not cu.is_contiguous():
                 raise ValueError(f"{name} must be contiguous")
+        if cu_seqlens_q[0].item() != 0:
+            raise ValueError(
+                f"cu_seqlens_q[0] must be 0, got {cu_seqlens_q[0].item()}")
+        if cu_seqlens_k[0].item() != 0:
+            raise ValueError(
+                f"cu_seqlens_k[0] must be 0, got {cu_seqlens_k[0].item()}")
+        if not torch.all(cu_seqlens_q[1:] >= cu_seqlens_q[:-1]):
+            raise ValueError("cu_seqlens_q must be non-decreasing")
+        if not torch.all(cu_seqlens_k[1:] >= cu_seqlens_k[:-1]):
+            raise ValueError("cu_seqlens_k must be non-decreasing")
+        if cu_seqlens_q[-1].item() > q.shape[0]:
+            raise ValueError(
+                f"cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()}) exceeds "
+                f"q.shape[0] ({q.shape[0]})")
+        if cu_seqlens_k[-1].item() > k.shape[0]:
+            raise ValueError(
+                f"cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()}) exceeds "
+                f"k.shape[0] ({k.shape[0]})")
         actual_max_q = int((cu_seqlens_q[1:] - cu_seqlens_q[:-1]).max().item())
         if max_seqlen_q < actual_max_q:
             raise ValueError(

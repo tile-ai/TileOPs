@@ -147,7 +147,7 @@ class GqaSlidingWindowVarlenFwdTest(TestBase):
                 mask = mask | (k_pos > q_pos + offset + self.wr)
 
             scores = scores.masked_fill(mask.unsqueeze(0), float('-inf'))
-            probs = torch.softmax(scores, dim=-1)
+            probs = torch.softmax(scores, dim=-1).nan_to_num()
             out_i = torch.matmul(probs, v_exp.transpose(0, 1))  # [H, sq, D]
             outputs.append(out_i.transpose(0, 1).to(q.dtype))   # [sq, H, D]
 
