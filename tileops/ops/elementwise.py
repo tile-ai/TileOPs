@@ -121,7 +121,7 @@ class UnaryOp(Op):
     @property
     def total_memory(self) -> float:
         """Read x + write y."""
-        elem = torch.tensor([], dtype=self.dtype).element_size()
+        elem = self.dtype.itemsize
         return 2 * self.N_total * elem
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -182,7 +182,7 @@ class BinaryOp(Op):
     @property
     def total_memory(self) -> float:
         """Read a + read b + write y."""
-        elem = torch.tensor([], dtype=self.dtype).element_size()
+        elem = self.dtype.itemsize
         return (self.a_numel + self.b_numel + self.N_total) * elem
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -233,7 +233,7 @@ class FusedGatedOp(Op):
     @property
     def total_memory(self) -> float:
         """Read x (M*2N) + write y (M*N)."""
-        elem = torch.tensor([], dtype=self.dtype).element_size()
+        elem = self.dtype.itemsize
         return (self.M * 2 * self.N + self.M * self.N) * elem
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -24,7 +24,7 @@ class ReluBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         """Read x + write y."""
         t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
+        elem_bytes = t.dtype.itemsize
         return 2 * t.n_total * elem_bytes
 
 

@@ -24,7 +24,7 @@ class AddBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         """Read a + read b + write y."""
         t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
+        elem_bytes = t.dtype.itemsize
         return 3 * t.n_total * elem_bytes
 
 
