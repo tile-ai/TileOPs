@@ -121,22 +121,26 @@ def make_welford_update(block_m: int, N_padded: int):
         T.reduce_sum(x, row_sum, dim=1)
 
         # Phase 2: per-row combination (no j dimension, no race).
+        batch_mean = T.alloc_fragment((block_m,), "float32")
         new_count = T.alloc_fragment((block_m,), "float32")
         new_mean = T.alloc_fragment((block_m,), "float32")
         for i in T.Parallel(block_m):
+            batch_mean[i] = row_sum[i] / float(N_padded)
             new_count[i] = count[i] + float(N_padded)
             new_mean[i] = (mean[i] * count[i] + row_sum[i]) / new_count[i]
 
-        # Compute sum of squared deviations from new_mean in parallel.
+        # Compute M2_b = sum((x[j] - batch_mean)^2) -- deviations from
+        # the *batch's own mean*, not the combined mean.  The parallel
+        # Welford merge formula requires this to be correct.
         for i, j in T.Parallel(block_m, N_padded):
-            sq_diff[i, j] = (x[i, j] - new_mean[i]) * (x[i, j] - new_mean[i])
+            sq_diff[i, j] = (x[i, j] - batch_mean[i]) * (x[i, j] - batch_mean[i])
         T.reduce_sum(sq_diff, row_sq_sum, dim=1)
 
         # Combine with existing M2 using parallel Welford merge formula:
         #   M2_combined = M2_a + M2_b + delta^2 * (n_a * n_b / n_combined)
-        # Here M2_b = row_sq_sum and delta = new_mean - mean (old).
+        # Here M2_b = row_sq_sum and delta = batch_mean - mean (old).
         for i in T.Parallel(block_m):
-            delta = new_mean[i] - mean[i]
+            delta = batch_mean[i] - mean[i]
             m2[i] = (
                 m2[i] + row_sq_sum[i] + delta * delta * (count[i] * float(N_padded) / new_count[i])
             )
