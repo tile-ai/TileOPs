@@ -4,7 +4,7 @@ Gated DeltaNet forward: (q, k, v, g, beta) -> output o.
   w, u: from compute_w_u (Aw, Au, k, v, beta) -> (w, u)
   Kernel 2: (q, k, g, w, u, S_0) -> (S, o); v_new and S updated iteratively inside.
 """
-from typing import Optional
+from typing import Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -15,6 +15,7 @@ from tileops.kernels.kernel import Kernel
 from .compute_w_u import (
     compute_w_u_tl as _gated_deltanet_kernel1_tl,
 )
+from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
 __all__ = ["GatedDeltaNetFwdKernel"]
 
@@ -55,38 +56,33 @@ def _gated_deltanet_kernel2_tl(
             o: T.Tensor([batch, head, seq_len, dim_v], dtype),
         ):
             with T.Kernel(batch, head, threads=threads) as (bid, hid):
-                q_c = T.alloc_shared([block_C, dim_k], accum_dtype)
-                k_c = T.alloc_shared([block_C, dim_k], accum_dtype)
-                g_c = T.alloc_shared([block_C], accum_dtype)
-                h_c = T.alloc_shared([dim_k, dim_v], accum_dtype)
-                v_new_c = T.alloc_shared([block_C, dim_v], accum_dtype)
-                attn = T.alloc_shared([block_C, block_C], accum_dtype)
-                h_next = T.alloc_shared([dim_k, dim_v], accum_dtype)
-                u_shared = T.alloc_shared([block_C, dim_v], accum_dtype)
-                w_c = T.alloc_shared([block_C, dim_k], accum_dtype)
-                k_scaled_s = T.alloc_shared([block_C, dim_k], accum_dtype)
-                # Fragments for T.gemm outputs
+                # Shared buffers in native dtype for tensor-core gemm (half×half→fp32)
+                q_c = T.alloc_shared([block_C, dim_k], dtype)
+                k_c = T.alloc_shared([block_C, dim_k], dtype)
+                g_c = T.alloc_shared([block_C], dtype)
+                h_c = T.alloc_shared([dim_k, dim_v], dtype)
+                v_new_c = T.alloc_shared([block_C, dim_v], dtype)
+                attn = T.alloc_shared([block_C, block_C], dtype)
+                u_shared = T.alloc_shared([block_C, dim_v], dtype)
+                w_c = T.alloc_shared([block_C, dim_k], dtype)
+                k_scaled_s = T.alloc_shared([block_C, dim_k], dtype)
+                # Fragments for T.gemm outputs (fp32 accumulation)
                 ws_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
                 o_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
                 attn_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 h_next_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
 
+                # Initialize h_c from S_0 (avoid global read inside loop)
+                T.copy(S_0[bid, hid, :, :], h_c, disable_tma=True)
                 for i, j in T.Parallel(dim_k, dim_v):
-                    S[bid, hid, 0, i, j] = S_0[bid, hid, i, j]
+                    S[bid, hid, 0, i, j] = h_c[i, j]
 
-                for t in T.Serial(num_chunks):
-                    for i, j in T.Parallel(block_C, dim_k):
-                        q_c[i, j] = q[bid, hid, t * block_C + i, j]
-                    for i, j in T.Parallel(block_C, dim_k):
-                        k_c[i, j] = k[bid, hid, t * block_C + i, j]
-                    for i, j in T.Parallel(block_C, dim_k):
-                        w_c[i, j] = w[bid, hid, t * block_C + i, j]
-                    for i in T.Parallel(block_C):
-                        g_c[i] = g[bid, hid, t * block_C + i]
-                    for i, j in T.Parallel(block_C, dim_v):
-                        u_shared[i, j] = u[bid, hid, t * block_C + i, j]
-                    for i, j in T.Parallel(dim_k, dim_v):
-                        h_c[i, j] = S[bid, hid, t, i, j]
+                for t in T.Pipelined(num_chunks, num_stages=num_stages):
+                    T.copy(q[bid, hid, t * block_C : (t + 1) * block_C, :], q_c, disable_tma=True)
+                    T.copy(k[bid, hid, t * block_C : (t + 1) * block_C, :], k_c, disable_tma=True)
+                    T.copy(w[bid, hid, t * block_C : (t + 1) * block_C, :], w_c, disable_tma=True)
+                    T.copy(g[bid, hid, t * block_C : (t + 1) * block_C], g_c, disable_tma=True)
+                    T.copy(u[bid, hid, t * block_C : (t + 1) * block_C, :], u_shared, disable_tma=True)
 
                     # v_new_c = u_c - (w_c @ h_c) * exp(g_c)
                     T.clear(ws_frag)
@@ -117,9 +113,10 @@ def _gated_deltanet_kernel2_tl(
                     for i, j in T.Parallel(dim_k, dim_v):
                         h_next_frag[i, j] = h_c[i, j] * T.exp2(g_last * _LOG2E)
                     T.gemm(k_scaled_s, v_new_c, h_next_frag, transpose_A=True)
-                    T.copy(h_next_frag, h_next)
+                    # Write h_next to S for backward, then reuse as h_c for next iteration
+                    T.copy(h_next_frag, h_c)
                     for i, j in T.Parallel(dim_k, dim_v):
-                        S[bid, hid, t + 1, i, j] = h_next[i, j]
+                        S[bid, hid, t + 1, i, j] = h_c[i, j]
 
         @T.prim_func
         def gated_deltanet_kernel2(
@@ -154,13 +151,39 @@ def _gated_deltanet_fwd_from_aw_au(
     """Full forward pipeline using TileLang: Kernel1 (compute_w_u) -> Kernel2 -> o."""
     B, H, S, DK = k.shape
     _, _, _, DV = v.shape
+    dtype_str = str(q.dtype).split('.')[-1]
 
-    S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-    k1 = _gated_deltanet_kernel1_tl(B, H, S, chunk_size, DK, DV, "float32")(num_stages, threads)
-    k2 = _gated_deltanet_kernel2_tl(B, H, S, chunk_size, DK, DV, "float32")(num_stages, threads)
-    w, u = k1(Aw, Au, k.float(), v.float(), beta.float())
-    _S_buf, o = k2(q.float(), k.float(), g.float(), w, u, S_0)
-    return o.to(v.dtype)
+    S_0 = torch.zeros(B, H, DK, DV, dtype=q.dtype, device=q.device)
+    k1 = _gated_deltanet_kernel1_tl(B, H, S, chunk_size, DK, DV, dtype_str)(num_stages, threads)
+    k2 = _gated_deltanet_kernel2_tl(B, H, S, chunk_size, DK, DV, dtype_str)(num_stages, threads)
+    w, u = k1(Aw, Au, k, v, beta)
+    S_buf, o = k2(q, k, g, w, u, S_0)
+    return o, S_buf
+
+
+def _gated_deltanet_fwd_fused(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    chunk_size: int,
+    fused_num_stages: int = 2,
+    fused_threads: int = 128,
+    k2_num_stages: int = 4,
+    k2_threads: int = 256,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Fused forward: prepare_wy + compute_w_u + kernel2, returns (o, S, Aw, Au)."""
+    B, H, S, DK = k.shape
+    _, _, _, DV = v.shape
+    dtype_str = str(q.dtype).split('.')[-1]
+
+    S_0 = torch.zeros(B, H, DK, DV, dtype=q.dtype, device=q.device)
+    fused_k = fused_prepare_compute_w_u_tl(B, H, S, chunk_size, DK, DV, dtype_str)(fused_num_stages, fused_threads)
+    k2 = _gated_deltanet_kernel2_tl(B, H, S, chunk_size, DK, DV, dtype_str)(k2_num_stages, k2_threads)
+    Aw, Au, w, u = fused_k(k, v, g, beta)
+    S_buf, o = k2(q, k, g, w, u, S_0)
+    return o, S_buf, Aw, Au
 
 
 # ---- Custom op and Kernel class ----
@@ -168,24 +191,32 @@ def _gated_deltanet_fwd_from_aw_au(
 @torch.library.custom_op("tileops::gated_deltanet_fwd_kernel", mutates_args=())
 def _gated_deltanet_fwd_wrapped_kernel(
     batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dim_v: int,
-    dtype: str, num_stages: int, threads: int,
-    Aw: torch.Tensor, Au: torch.Tensor,
+    dtype: str,
+    fused_num_stages: int, fused_threads: int,
+    k2_num_stages: int, k2_threads: int,
     q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, beta: torch.Tensor,
-) -> torch.Tensor:
-    return _gated_deltanet_fwd_from_aw_au(
-        q, k, v, g, beta, Aw, Au, chunk_size,
-        num_stages=num_stages, threads=threads,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    return _gated_deltanet_fwd_fused(
+        q, k, v, g, beta, chunk_size,
+        fused_num_stages=fused_num_stages, fused_threads=fused_threads,
+        k2_num_stages=k2_num_stages, k2_threads=k2_threads,
     )
 
 
 @_gated_deltanet_fwd_wrapped_kernel.register_fake
 def _gated_deltanet_fwd_wrapped_kernel_fake(
     batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dim_v: int,
-    dtype: str, num_stages: int, threads: int,
-    Aw: torch.Tensor, Au: torch.Tensor,
+    dtype: str,
+    fused_num_stages: int, fused_threads: int,
+    k2_num_stages: int, k2_threads: int,
     q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, beta: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    num_chunks = seq_len // chunk_size
+    o = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
+    S = torch.empty(batch, head, num_chunks + 1, dim_k, dim_v, dtype=q.dtype, device=q.device)
+    Aw = torch.empty(batch, head, seq_len, chunk_size, dtype=q.dtype, device=q.device)
+    Au = torch.empty_like(Aw)
+    return o, S, Aw, Au
 
 
 class GatedDeltaNetFwdKernel(Kernel):
@@ -215,7 +246,12 @@ class GatedDeltaNetFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"num_stages": 2, "threads": 128}
+        return {
+            "fused_num_stages": 2,
+            "fused_threads": 128,
+            "k2_num_stages": 4,
+            "k2_threads": 256,
+        }
 
     def forward(
         self,
@@ -224,12 +260,11 @@ class GatedDeltaNetFwdKernel(Kernel):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
-        Aw: torch.Tensor,
-        Au: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return _gated_deltanet_fwd_wrapped_kernel(
             self.batch, self.head, self.seq_len, self.chunk_size,
             self.dim_k, self.dim_v, self.dtype_str,
-            self.config["num_stages"], self.config["threads"],
-            Aw, Au, q, k, v, g, beta,
+            self.config["fused_num_stages"], self.config["fused_threads"],
+            self.config["k2_num_stages"], self.config["k2_threads"],
+            q, k, v, g, beta,
         )

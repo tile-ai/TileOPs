@@ -12,7 +12,10 @@ __all__ = ["PrepareWYReprKernel"]
 
 def _prepare_wy_repr_kernel(batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dtype: str = 'float32'):
 
+    import math
     accum_dtype = "float32"
+    _LOG2E = 1.4426950408889634
+    num_rounds = int(math.ceil(math.log2(chunk_size))) if chunk_size > 1 else 0
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -35,78 +38,76 @@ def _prepare_wy_repr_kernel(batch: int, head: int, seq_len: int, chunk_size: int
                 k_shared = T.alloc_shared([block_C, dim_k], dtype)
                 g_shared = T.alloc_shared([block_C], dtype)
                 beta_shared = T.alloc_shared([block_C], dtype)
+                k_beta_shared = T.alloc_shared([block_C, dim_k], dtype)
+                S_shared = T.alloc_shared([block_C, block_C], dtype)
+                P_shared = T.alloc_shared([block_C, block_C], dtype)
+                gram_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
+                temp_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
 
+                # Load inputs
                 T.copy(g[bid, hid, by * block_C: (by + 1) * block_C], g_shared, disable_tma=True)
                 T.copy(beta[bid, hid, by * block_C: (by + 1) * block_C], beta_shared, disable_tma=True)
-                for i, j in T.Parallel(block_C, dim_k):
-                    k_shared[i, j] = k[bid, hid, by * block_C + i, j]
+                T.copy(k[bid, hid, by * block_C: (by + 1) * block_C, :], k_shared, disable_tma=True)
 
-                k_beta_shared = T.alloc_shared([block_C, dim_k], accum_dtype)
+                # k_beta = k * beta
                 for i_s, i_k in T.Parallel(block_C, dim_k):
                     k_beta_shared[i_s, i_k] = k_shared[i_s, i_k] * beta_shared[i_s]
 
-                gram_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
+                # Gram = k_beta @ k_beta^T (single gemm)
                 T.clear(gram_frag)
-                for m in T.Serial(dim_k):
-                    for j, kk in T.Parallel(block_C, block_C):
-                        gram_frag[j, kk] += k_beta_shared[j, m] * k_beta_shared[kk, m]
+                T.gemm(k_beta_shared, k_beta_shared, gram_frag, transpose_B=True)
 
-                L_shared = T.alloc_shared([block_C, block_C], accum_dtype)
-                A_inv = T.alloc_fragment([block_C, block_C], accum_dtype)
-                acc_inv = T.alloc_fragment([block_C], accum_dtype)
+                # --- Compute Aw = (I - tril(Gram,-1))^{-1} ---
+                # Neumann series: L^{-1} = I + N + N^2 + ... + N^{C-1}
+                # where N = tril(Gram, -1) (strictly lower triangular)
+                # Computed via repeated squaring in log2(C) rounds.
 
+                # P = N = tril(Gram, -1)
                 for i, j in T.Parallel(block_C, block_C):
-                    L_shared[i, j] = T.if_then_else(
-                        i < j,
-                        T.float32(0.0),
-                        T.if_then_else(i == j, T.float32(1.0), -gram_frag[i, j]),
-                    )
+                    P_shared[i, j] = T.if_then_else(
+                        i > j, gram_frag[i, j], T.float32(0.0))
+                # S = I
+                for i, j in T.Parallel(block_C, block_C):
+                    S_shared[i, j] = T.if_then_else(
+                        i == j, T.float32(1.0), T.float32(0.0))
 
-                for i, j in T.Parallel(block_C, block_C):
-                    A_inv[i, j] = 0
-                    if i == j:
-                        A_inv[i, j] = 1.0
+                for _r in T.Serial(num_rounds):
+                    # S = S + P @ S
+                    T.clear(temp_frag)
+                    T.gemm(P_shared, S_shared, temp_frag)
+                    for i, j in T.Parallel(block_C, block_C):
+                        S_shared[i, j] = S_shared[i, j] + temp_frag[i, j]
+                    # P = P @ P
+                    T.clear(temp_frag)
+                    T.gemm(P_shared, P_shared, temp_frag)
+                    T.copy(temp_frag, P_shared)
 
-                for i in T.serial(block_C):
-                    for j in T.Serial(block_C):
-                        if i > j:
-                            acc_inv[j] = 0
-                            for kk in T.serial(block_C):
-                                acc_inv[j] += T.if_then_else(
-                                    kk > i - 1,
-                                    T.float32(0.0),
-                                    L_shared[i, kk] * A_inv[kk, j],
-                                )
-                            A_inv[i, j] = -acc_inv[j]
-                T.copy(A_inv, Aw[bid, hid, by * block_C: (by + 1) * block_C, :], disable_tma=True)
+                T.copy(S_shared, temp_frag)
+                T.copy(temp_frag, Aw[bid, hid, by * block_C: (by + 1) * block_C, :], disable_tma=True)
 
-                gram_g_shared = T.alloc_shared([block_C, block_C], accum_dtype)
+                # --- Compute Au = (I - tril(Gram_g,-1))^{-1} ---
+                # N_g = tril(Gram * exp(g_i - g_j), -1)
                 for i, j in T.Parallel(block_C, block_C):
-                    gram_g_shared[i, j] = gram_frag[i, j] * T.exp2(
-                        (g_shared[i] - g_shared[j]) * 1.4426950408889634
-                    )
+                    P_shared[i, j] = T.if_then_else(
+                        i > j,
+                        gram_frag[i, j] * T.exp2((g_shared[i] - g_shared[j]) * _LOG2E),
+                        T.float32(0.0))
+                # S = I
                 for i, j in T.Parallel(block_C, block_C):
-                    L_shared[i, j] = T.if_then_else(
-                        i < j,
-                        T.float32(0.0),
-                        T.if_then_else(i == j, T.float32(1.0), -gram_g_shared[i, j]),
-                    )
-                for i, j in T.Parallel(block_C, block_C):
-                    A_inv[i, j] = 0
-                    if i == j:
-                        A_inv[i, j] = 1.0
-                for i in T.serial(block_C):
-                    for j in T.Serial(block_C):
-                        if i > j:
-                            acc_inv[j] = 0
-                            for kk in T.serial(block_C):
-                                acc_inv[j] += T.if_then_else(
-                                    kk > i - 1,
-                                    T.float32(0.0),
-                                    L_shared[i, kk] * A_inv[kk, j],
-                                )
-                            A_inv[i, j] = -acc_inv[j]
-                T.copy(A_inv, Au[bid, hid, by * block_C: (by + 1) * block_C, :], disable_tma=True)
+                    S_shared[i, j] = T.if_then_else(
+                        i == j, T.float32(1.0), T.float32(0.0))
+
+                for _r in T.Serial(num_rounds):
+                    T.clear(temp_frag)
+                    T.gemm(P_shared, S_shared, temp_frag)
+                    for i, j in T.Parallel(block_C, block_C):
+                        S_shared[i, j] = S_shared[i, j] + temp_frag[i, j]
+                    T.clear(temp_frag)
+                    T.gemm(P_shared, P_shared, temp_frag)
+                    T.copy(temp_frag, P_shared)
+
+                T.copy(S_shared, temp_frag)
+                T.copy(temp_frag, Au[bid, hid, by * block_C: (by + 1) * block_C, :], disable_tma=True)
 
         @T.prim_func
         def prepare_wy_repr(

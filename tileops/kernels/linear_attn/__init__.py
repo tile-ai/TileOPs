@@ -1,5 +1,6 @@
 from .gated_delta_net import (
     GatedDeltaNetBwdKernel,
+    GatedDeltaNetDecodeKernel,
     GatedDeltaNetFwdKernel,
     PrepareWYReprKernel,
     compute_w_u_bwd_tl,
@@ -8,6 +9,7 @@ from .gated_delta_net import (
 
 __all__ = [
     "GatedDeltaNetBwdKernel",
+    "GatedDeltaNetDecodeKernel",
     "GatedDeltaNetFwdKernel",
     "PrepareWYReprKernel",
     "compute_w_u_bwd_tl",

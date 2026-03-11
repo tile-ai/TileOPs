@@ -6,7 +6,6 @@ from tileops.kernels.kernel import Kernel
 from tileops.kernels.linear_attn import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
-    PrepareWYReprKernel,
 )
 
 from .op import Op
@@ -59,16 +58,9 @@ class GatedDeltaNetFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
 
-        wy_kernel_cls = self.kernel_map["PrepareWYReprKernel"]
         fwd_kernel_cls = self.kernel_map["GatedDeltaNetFwdKernel"]
 
-        # Kernels always run in float32; inputs are cast in forward().
-        kernel_dtype = Kernel.dtype_to_str(torch.float32)
-        self.wy_kernel = wy_kernel_cls(
-            batch, heads, seq_len, chunk_size, dim_k,
-            dtype=kernel_dtype,
-            tune=tune,
-        )
+        kernel_dtype = Kernel.dtype_to_str(dtype)
         self.kernel = fwd_kernel_cls(
             batch, heads, seq_len, chunk_size, dim_k, dim_v,
             dtype=kernel_dtype,
@@ -78,7 +70,6 @@ class GatedDeltaNetFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "PrepareWYReprKernel": PrepareWYReprKernel,
             "GatedDeltaNetFwdKernel": GatedDeltaNetFwdKernel,
         }
 
@@ -100,14 +91,10 @@ class GatedDeltaNetFwdOp(Op):
             beta: Beta tensor [B, H, S].
 
         Returns:
-            Output tensor [B, H, S, DV].
+            Tuple of (o, S, Aw, Au).
         """
-        input_dtype = q.dtype
-        q, k, v = q.float(), k.float(), v.float()
-        g, beta = g.float(), beta.float()
-        Aw, Au = self.wy_kernel(k, g, beta)
-        o = self.kernel(q, k, v, g, beta, Aw, Au)
-        return o.to(input_dtype)
+        o, S, Aw, Au = self.kernel(q, k, v, g, beta)
+        return o, S, Aw, Au
 
 
 class GatedDeltaNetBwdOp(Op):
@@ -151,16 +138,9 @@ class GatedDeltaNetBwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
 
-        wy_kernel_cls = self.kernel_map["PrepareWYReprKernel"]
         bwd_kernel_cls = self.kernel_map["GatedDeltaNetBwdKernel"]
 
-        # Kernels always run in float32; inputs are cast in forward().
-        kernel_dtype = Kernel.dtype_to_str(torch.float32)
-        self.wy_kernel = wy_kernel_cls(
-            batch, heads, seq_len, chunk_size, dim_k,
-            dtype=kernel_dtype,
-            tune=tune,
-        )
+        kernel_dtype = Kernel.dtype_to_str(dtype)
         self.kernel = bwd_kernel_cls(
             batch, heads, seq_len, chunk_size, dim_k, dim_v,
             dtype=kernel_dtype,
@@ -170,7 +150,6 @@ class GatedDeltaNetBwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "PrepareWYReprKernel": PrepareWYReprKernel,
             "GatedDeltaNetBwdKernel": GatedDeltaNetBwdKernel,
         }
 
@@ -182,6 +161,7 @@ class GatedDeltaNetBwdOp(Op):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
+        S: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run gated deltanet backward.
 
@@ -192,13 +172,10 @@ class GatedDeltaNetBwdOp(Op):
             v: Value tensor [B, H, S, DV].
             g: Gate tensor [B, H, S].
             beta: Beta tensor [B, H, S].
+            S: Per-chunk boundary states from forward [B, H, NC+1, DK, DV].
 
         Returns:
             Tuple of (dq, dk, dv, dg, dbeta).
         """
-        input_dtype = q.dtype
-        do, q, k, v = do.float(), q.float(), k.float(), v.float()
-        g, beta = g.float(), beta.float()
-        Aw, Au = self.wy_kernel(k, g, beta)
-        dq, dk, dv, dg, dbeta = self.kernel(do, q, k, v, g, beta, Aw, Au)
-        return dq.to(input_dtype), dk.to(input_dtype), dv.to(input_dtype), dg.to(input_dtype), dbeta.to(input_dtype)
+        dq, dk, dv, dg, dbeta = self.kernel(do, q, k, v, g, beta, S)
+        return dq, dk, dv, dg, dbeta
