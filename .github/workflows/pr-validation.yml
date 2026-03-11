@@ -37,6 +37,10 @@ jobs:
           STATUS=0
           while IFS= read -r COMMIT_SHA; do
             SUBJECT="$(git log -1 --format=%s "$COMMIT_SHA")"
+            if [[ "$SUBJECT" =~ ^Merge\  ]]; then
+              echo "SKIP (merge): $SUBJECT"
+              continue
+            fi
             if [[ ! "$SUBJECT" =~ $PATTERN ]]; then
               echo "::error::Commit $COMMIT_SHA does not follow TileOPs format."
               echo "  Expected: [Type] description  or  [Type][Scope] description"
