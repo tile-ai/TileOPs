@@ -204,7 +204,10 @@ def test_gated_deltanet_fwd(
     test = GatedDeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     op = GatedDeltaNetFwdOp(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune=tune)
     tols = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), **tols)
+    inputs = test.gen_inputs()
+    ref_o = test.ref_program(*inputs)
+    op_o, _S, _Aw, _Au = op(*inputs)
+    torch.testing.assert_close(op_o, ref_o, **tols)
 
 
 if __name__ == "__main__":

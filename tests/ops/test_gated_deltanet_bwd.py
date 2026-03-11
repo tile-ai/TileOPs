@@ -341,12 +341,12 @@ class GatedDeltaNetBwdTest(TestBase):
         v = torch.randn(B, H, S, DV, device="cuda", dtype=self.dtype) * 0.1
         g = -torch.rand(B, H, S, device="cuda", dtype=self.dtype)
         beta = torch.rand(B, H, S, device="cuda", dtype=self.dtype) * 0.5
-        Aw, Au = _prepare_wy_repr_torch_ref(k, g, beta, self.chunk_size)
-        w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, self.chunk_size)
-        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device="cuda")
-        _S, o = _kernel2_torch_ref(q, k, g, w, u, S_0, self.chunk_size)
-        do = torch.randn_like(o) * 0.1
-        return do, q, k, v, g, beta
+        # Run forward op to get S for backward
+        from tileops.ops import GatedDeltaNetFwdOp
+        fwd_op = GatedDeltaNetFwdOp(B, H, S, DK, DV, self.chunk_size, self.dtype)
+        _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
+        do = torch.randn(B, H, S, DV, device="cuda", dtype=self.dtype) * 0.1
+        return do, q, k, v, g, beta, S_fwd
 
     def ref_program(
         self,
@@ -356,6 +356,7 @@ class GatedDeltaNetBwdTest(TestBase):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
+        S: torch.Tensor,
     ) -> Tuple[torch.Tensor, ...]:
         BC = self.chunk_size
         Aw, Au = _prepare_wy_repr_torch_ref(k, g, beta, BC)
@@ -395,16 +396,17 @@ def test_gated_deltanet_bwd(
     g = -torch.rand(B, H, S, device="cuda", dtype=dtype)
     beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
 
-    Aw, Au = _prepare_wy_repr_torch_ref(k, g, beta, BC)
-    w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, BC)
-    S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device="cuda")
-    _S, o = _kernel2_torch_ref(q, k, g, w, u, S_0, BC)
-    do = torch.randn_like(o) * 0.1
+    # Run forward to get S for backward
+    from tileops.ops import GatedDeltaNetFwdOp
+    fwd_op = GatedDeltaNetFwdOp(B, H, S, DK, DV, BC, dtype)
+    _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
+    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
+    Aw, Au = _prepare_wy_repr_torch_ref(k, g, beta, BC)
     ref_outputs = _gated_deltanet_bwd_torch_ref(do, q, k, v, g, beta, Aw, Au, BC)
 
     op = GatedDeltaNetBwdOp(B, H, S, DK, DV, BC, dtype, tune=tune)
-    op_outputs = op.forward(do, q, k, v, g, beta)
+    op_outputs = op.forward(do, q, k, v, g, beta, S_fwd)
 
     tols = _get_tolerances(dtype)
     for ref_out, op_out in zip(ref_outputs, op_outputs, strict=True):

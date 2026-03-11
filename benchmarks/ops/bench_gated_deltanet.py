@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gated_deltanet_bwd import GatedDeltaNetBwdTest
-from tests.ops.test_gated_deltanet_fwd import GatedDeltaNetFwdFixture, GatedDeltaNetFwdTest
+from tests.ops.test_gated_deltanet_fwd import GatedDeltaNetFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp
 
@@ -30,7 +30,23 @@ class GatedDeltaNetFwdBenchmark(BenchmarkBase):
         return B * H * S * (2 * DK + 2 * DV + 2) * elem
 
 
-@GatedDeltaNetFwdFixture
+class GatedDeltaNetFwdBenchFixture(FixtureBase):
+    PARAMS = [
+        ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
+            (2, 1024, 4, 64, 64, 32, torch.float32, False),
+            (2, 2048, 4, 64, 64, 32, torch.float32, False),
+            (2, 4096, 4, 64, 64, 32, torch.float32, False),
+            (2, 1024, 4, 64, 64, 32, torch.float16, False),
+            (2, 2048, 4, 64, 64, 32, torch.float16, False),
+            (2, 4096, 4, 64, 64, 32, torch.float16, False),
+            (2, 1024, 4, 64, 64, 32, torch.bfloat16, False),
+            (2, 2048, 4, 64, 64, 32, torch.bfloat16, False),
+            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
+        ]),
+    ]
+
+
+@GatedDeltaNetFwdBenchFixture
 def test_gated_deltanet_fwd_bench(
     batch: int,
     seq_len: int,
@@ -60,12 +76,15 @@ def test_gated_deltanet_fwd_bench(
 class GatedDeltaNetBwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            (2, 64, 2, 64, 64, 32, torch.float32, False),
-            (1, 128, 4, 64, 64, 32, torch.float32, False),
-            (2, 64, 2, 64, 64, 32, torch.float16, False),
-            (1, 128, 4, 64, 64, 32, torch.float16, False),
-            (2, 64, 2, 64, 64, 32, torch.bfloat16, False),
-            (1, 128, 4, 64, 64, 32, torch.bfloat16, False),
+            (2, 1024, 4, 64, 64, 32, torch.float32, False),
+            (2, 2048, 4, 64, 64, 32, torch.float32, False),
+            (2, 4096, 4, 64, 64, 32, torch.float32, False),
+            (2, 1024, 4, 64, 64, 32, torch.float16, False),
+            (2, 2048, 4, 64, 64, 32, torch.float16, False),
+            (2, 4096, 4, 64, 64, 32, torch.float16, False),
+            (2, 1024, 4, 64, 64, 32, torch.bfloat16, False),
+            (2, 2048, 4, 64, 64, 32, torch.bfloat16, False),
+            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
         ]),
     ]
 
