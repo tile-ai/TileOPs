@@ -35,6 +35,7 @@ from .norm import (
     RmsNormOp,
 )
 from .op import Op
+from .ssd_chunk_scan import SsdChunkScanOp
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
@@ -75,5 +76,6 @@ __all__ = [
     "NSATopkVarlenOp",
     "Op",
     "RmsNormOp",
+    "SsdChunkScanOp",
     "TopkSelectorOp",
 ]
