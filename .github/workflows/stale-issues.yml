@@ -1,0 +1,95 @@
+name: stale-issues
+
+permissions:
+  issues: write
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"  # Every Monday at 09:00 UTC
+  workflow_dispatch:
+
+jobs:
+  close-stale-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close issues with no comments for 4 weeks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          CUTOFF=$(date -u -d "28 days ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Closing issues with no comment activity since: $CUTOFF"
+
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+
+          # Batch-fetch open issues with last comment time via GraphQL
+          ISSUES_TO_CLOSE=()
+          CURSOR=null
+
+          while :; do
+            if [ "$CURSOR" = "null" ]; then
+              PAGE=$(gh api graphql -f owner="$OWNER" -f name="$REPO" -f query='
+                query($owner: String!, $name: String!) {
+                  repository(owner: $owner, name: $name) {
+                    issues(first: 100, states: OPEN, orderBy: {field: UPDATED_AT, direction: ASC}) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        number
+                        createdAt
+                        labels(first: 100) { nodes { name } }
+                        comments(last: 1) { nodes { createdAt } }
+                      }
+                    }
+                  }
+                }')
+            else
+              PAGE=$(gh api graphql -f owner="$OWNER" -f name="$REPO" -f cursor="$CURSOR" -f query='
+                query($owner: String!, $name: String!, $cursor: String!) {
+                  repository(owner: $owner, name: $name) {
+                    issues(first: 100, states: OPEN, orderBy: {field: UPDATED_AT, direction: ASC}, after: $cursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        number
+                        createdAt
+                        labels(first: 100) { nodes { name } }
+                        comments(last: 1) { nodes { createdAt } }
+                      }
+                    }
+                  }
+                }')
+            fi
+
+            HAS_NEXT=$(echo "$PAGE" | jq -r '.data.repository.issues.pageInfo.hasNextPage')
+            CURSOR=$(echo "$PAGE" | jq -r '.data.repository.issues.pageInfo.endCursor // "null"')
+
+            while IFS=" " read -r NUMBER LAST_ACTIVITY; do
+              [ -z "$NUMBER" ] && continue
+              ISSUES_TO_CLOSE+=("$NUMBER:$LAST_ACTIVITY")
+            done < <(
+              echo "$PAGE" | jq -r --arg cutoff "$CUTOFF" '
+                .data.repository.issues.nodes[]
+                | select([.labels.nodes[].name] | index("never-stale") | not)
+                | .number as $n
+                | (.comments.nodes[0].createdAt // .createdAt) as $last
+                | select($last < $cutoff)
+                | "\($n) \($last)"
+              '
+            )
+
+            [ "$HAS_NEXT" = "true" ] || break
+          done
+
+          if [ "${#ISSUES_TO_CLOSE[@]}" -eq 0 ]; then
+            echo "No stale issues found."
+            exit 0
+          fi
+
+          for ENTRY in "${ISSUES_TO_CLOSE[@]}"; do
+            NUMBER="${ENTRY%%:*}"
+            LAST_ACTIVITY="${ENTRY#*:}"
+            echo "Closing #$NUMBER (last activity: $LAST_ACTIVITY)"
+            gh issue close "$NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --comment "Closed automatically: no comment activity for 4 weeks. Reopen if still relevant."
+          done

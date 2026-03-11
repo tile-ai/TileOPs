@@ -40,12 +40,15 @@ Use `gh pr create`. **Do NOT use the GitHub MCP tool** — `gh` CLI avoids the `
 
 ```bash
 gh pr create --base main --head "$(git branch --show-current)" \
+  --draft \
   --title "[Type] Description" \
   --body "$(cat <<'PREOF'
 <fill in from template.md>
 PREOF
 )"
 ```
+
+**Draft-first workflow:** Always create PRs as draft. Copilot reviews drafts automatically; Gemini must be triggered separately (see `lifecycle-pull-request` Phase 2b). Once CI passes and both bot reviews are addressed, the `lifecycle-pull-request` skill marks the PR ready, triggering human reviewer notifications.
 
 PR title rules:
 
@@ -81,11 +84,9 @@ PR body section rules:
 | `[Perf]`             | `perf`            |
 | Breaking change      | `breaking change` |
 
-Additional labels (stack as needed):
+Authorship label (**required**):
 
-- `all ai powered` — PR fully AI-generated (no user code edits)
-- `help wanted` — needs extra attention
-- `good first issue` — suitable for newcomers
+- `all-ai-powered` — always add this label (you are an AI creating this PR)
 
 ```bash
 gh pr edit <PR_NUMBER> --add-label "<label1>" --add-label "<label2>"

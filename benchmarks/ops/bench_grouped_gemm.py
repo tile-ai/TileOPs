@@ -3,13 +3,13 @@ from typing import Optional
 import pytest
 import torch
 
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_grouped_gemm import (
-    GroupedGemmFixture,
-    GroupedGemmTest,
     GroupedGemmCompleteFixture,
     GroupedGemmCompleteTest,
+    GroupedGemmFixture,
+    GroupedGemmTest,
 )
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedGemmOp
 
 
@@ -114,8 +114,9 @@ def test_grouped_gemm_complete_bench(batch_sum: int, batch_count: int, N: int, K
     test = GroupedGemmCompleteTest(batch_sum, batch_count, N, K, dtype)
     bm = GroupedGemmCompleteBenchmark(test)
 
-    # Profile forward (NT) + backward dA (NN) + backward dB (TN)
+    # Profile forward(TT) + forward (NT) + backward dA (NN) + backward dB (TN)
     variants = [
+        (True, True),    # TT
         (False, True),   # NT
         (False, False),  # NN
         (True, False),   # TN

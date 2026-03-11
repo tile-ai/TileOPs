@@ -2,14 +2,13 @@
 
 ## Project Overview
 
-TileOPs (TOP) is a high-performance LLM operator library built on TileLang. The goal is to provide efficient, modular, and maintainable AI workload implementations.
+TileOPs is a high-performance LLM operator library built on TileLang. The goal is to provide efficient, modular, and maintainable AI workload implementations.
 
 ## Development Environment
 
 1. Clone repository: `git clone https://github.com/tile-ai/TileOPs && cd TileOPs`
 1. Create and activate a virtual environment (venv, conda, etc.)
-1. Install dependencies: `pip install -e '.[dev]' -v`
-1. Install pre-commit hooks: `pre-commit install`
+1. Install dependencies and pre-commit hooks: `make install`
 
 ## Key References
 
@@ -34,3 +33,4 @@ TileOPs (TOP) is a high-performance LLM operator library built on TileLang. The 
 | `lifecycle-pull-request` | Full PR lifecycle end-to-end: commit, create PR, monitor CI, handle reviews (composes the above two skills)             |
 | `creating-issue`         | Use when filing a GitHub issue: title format, body structure, and TileOPs conventions                                   |
 | `lifecycle-issue-fixer`  | End-to-end issue resolution: read issue, worktree, explore, TDD, verify, and create PR with full lifecycle              |
+| `check-kernel-format`    | Run after kernel+op delivery or tuning to verify all structural requirements before opening a PR                        |

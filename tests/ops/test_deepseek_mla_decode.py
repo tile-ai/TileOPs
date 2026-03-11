@@ -5,14 +5,14 @@ import torch
 from einops import einsum, rearrange
 from torch.nn import functional as F
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 
 
 class MlaDecodeFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune", [
-            (32, 128, 1, 8192, 512, 64, torch.float16, False),
+            pytest.param(32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.smoke),
         ]),
     ]
 

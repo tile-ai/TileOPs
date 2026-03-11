@@ -1,15 +1,15 @@
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
-from tests.ops.test_gqa import (
-    GqaFwdFixture,
-    GqaBwdFixture,
-    GqaFwdTest,
-    GqaBwdTest,
-)
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_gqa import (
+    GqaBwdFixture,
+    GqaBwdTest,
+    GqaFwdFixture,
+    GqaFwdTest,
+)
 from tileops.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 
 

@@ -1,21 +1,21 @@
 from typing import Tuple
 
+import pytest
 import torch
 import torch.nn.functional as F
-import pytest
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import Fp8QuantOp
 
 
 class Fp8QuantFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len_kv, kv_group, index_dim, in_dtype, tune", [
-            (1, 8192, 1, 64, torch.float16, False),
-            (1, 8192, 1, 64, torch.bfloat16, False),
-            (1, 4096, 1, 128, torch.float32, False),
-            (1, 16384, 1, 32, torch.float32, False),
-            (1, 1024, 4, 64, torch.float16, False),
+            pytest.param(1, 8192, 1, 64, torch.float16, False),
+            pytest.param(1, 8192, 1, 64, torch.bfloat16, False),
+            pytest.param(1, 4096, 1, 128, torch.float32, False),
+            pytest.param(1, 16384, 1, 32, torch.float32, False),
+            pytest.param(1, 1024, 4, 64, torch.float16, False),
         ]),
     ]
 

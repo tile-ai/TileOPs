@@ -5,7 +5,7 @@ description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
-    "torch>=2.1.0",
+    "torch>=2.1.0,<2.10.0",
     "tilelang==0.1.8",
     "einops",
 ]
@@ -70,7 +70,7 @@ select = [
     # flake8-simplify
     "SIM",
     # isort
-    # "I",
+    "I",
     # pydocstyle (Google Docstrings)
     # "D",
     # pep8-naming (naming conventions)
@@ -108,3 +108,8 @@ known-first-party = ["tileops"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py", "bench_*.py"]
+markers = [
+    "smoke: fast PR critical-path tests",
+    "full: standard correctness coverage",
+    "nightly: exhaustive or long-running coverage",
+]

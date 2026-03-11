@@ -47,7 +47,7 @@ declare -A TYPE_TO_LABEL=(
 ALL_TYPE_LABELS="feature fix bug refactor enhancement docs chore bench ci test perf"
 
 # Extra labels (not derived from types)
-EXTRA_LABELS="all ai powered|breaking change|help wanted|good first issue"
+EXTRA_LABELS="all-ai-powered|human-led|breaking change|help wanted|good first issue"
 
 # ---------------------------------------------------------------------------
 # Issue types (ALL CAPS, used in issue titles)

@@ -1,16 +1,16 @@
 from typing import Optional, Tuple
 
-import torch
 import pytest
+import torch
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import Fp8LightingIndexerOp
 
 
 class Fp8LightingIndexerFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune", [
-            (1, 4096, 32, 64, 8192, 1, True, None, False),
+             pytest.param(1, 4096, 32, 64, 8192, 1, True, None, False),
         ]),
     ]
 

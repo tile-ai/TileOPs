@@ -1,5 +1,4 @@
 import argparse
-
 import math
 import time
 
@@ -831,6 +830,7 @@ def calculate_flops_tt(batch_sizes, K, N):
     return 2.0 * sum(size * N * K for size in batch_sizes)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize(
     "batch_sum, batch_count, K, N, dtype",
     [
@@ -850,6 +850,7 @@ def test_grouped_gemm_nt(batch_sum: int, batch_count: int, K: int, N: int, dtype
     profile_kernel(grouped_gemm_nt, inputs, "grouped_gemm_nt", total_flops)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize(
     "batch_sum, batch_count, K, N, dtype",
     [
@@ -873,6 +874,7 @@ def test_grouped_gemm_nn(batch_sum: int, batch_count: int, K: int, N: int, dtype
     profile_kernel(grouped_gemm_nn, inputs, "grouped_gemm_nn", total_flops)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize(
     "batch_sum, batch_count, K, N, dtype",
     [
@@ -892,6 +894,7 @@ def test_grouped_gemm_tn(batch_sum: int, batch_count: int, K: int, N: int, dtype
     profile_kernel(grouped_gemm_tn, inputs, "grouped_gemm_tn", total_flops)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize(
     "batch_sum, batch_count, K, N, dtype",
     [

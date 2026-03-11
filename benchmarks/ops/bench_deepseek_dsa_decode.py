@@ -1,10 +1,10 @@
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
-from tests.ops.test_deepseek_dsa_decode import DsaDecodeFixture, DsaDecodeTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_deepseek_dsa_decode import DsaDecodeFixture, DsaDecodeTest
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 
 

@@ -1,9 +1,9 @@
 from typing import Tuple
 
-import torch
 import pytest
+import torch
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import TopkSelectorOp
 from tileops.utils import str2dtype
 
@@ -11,10 +11,10 @@ from tileops.utils import str2dtype
 class TopkSelectorFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, seq_len_kv, kv_group, topk, in_dtype_str, out_dtype_str, tune", [
-            (4, 256, 1024, 1, 32, "float32", "int32", False),
-            (8, 512, 2048, 1, 64, "float32", "int32", False),
-            (1, 32 * 1024, 64 * 1024, 1, 1024, "float32", "int32", False),
-            (1, 32 * 1024, 64 * 2048, 1, 2048, "float32", "int32", False),
+            pytest.param(4, 256, 1024, 1, 32, "float32", "int32", False),
+            pytest.param(8, 512, 2048, 1, 64, "float32", "int32", False),
+            pytest.param(1, 32 * 1024, 64 * 1024, 1, 1024, "float32", "int32", False),
+            pytest.param(1, 32 * 1024, 64 * 2048, 1, 2048, "float32", "int32", False),
         ]),
     ]
 

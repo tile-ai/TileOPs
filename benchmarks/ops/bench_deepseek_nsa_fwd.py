@@ -3,8 +3,8 @@ from typing import Optional
 import pytest
 import torch
 
-from tests.ops.test_deepseek_nsa_fwd import NsaFwdFixture, NsaFwdTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_deepseek_nsa_fwd import NsaFwdFixture, NsaFwdTest
 from tileops.ops import NSAFwdVarlenOp
 
 

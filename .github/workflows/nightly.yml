@@ -1,0 +1,270 @@
+name: Nightly
+
+permissions: read-all
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 18 * * *"
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    timeout-minutes: 45
+    runs-on: [self-hosted, tile-ops, venv]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use local bare mirror on self-hosted runner to reduce checkout latency
+          reference: /home/ci-runner/repo-mirror
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate GPU frequency
+        run: |
+          set -euo pipefail
+          TARGET_CLOCK_MHZ=1830
+          RETRIES=5
+          SLEEP_SECONDS=2
+
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error::nvidia-smi is not available on this runner."
+            exit 1
+          fi
+
+          echo "Detected GPUs:"
+          nvidia-smi -L
+
+          attempt=1
+          while [ "$attempt" -le "$RETRIES" ]; do
+            echo "Validation attempt ${attempt}/${RETRIES}"
+            mismatch=0
+            while IFS=',' read -r gpu_index gpu_name gpu_clock; do
+              gpu_index="$(echo "$gpu_index" | xargs)"
+              gpu_name="$(echo "$gpu_name" | xargs)"
+              gpu_clock="$(echo "$gpu_clock" | xargs)"
+              echo "GPU ${gpu_index} (${gpu_name}) clock: ${gpu_clock} MHz"
+              if [ "$gpu_clock" != "$TARGET_CLOCK_MHZ" ]; then
+                mismatch=1
+              fi
+            done < <(nvidia-smi --query-gpu=index,name,clocks.current.graphics --format=csv,noheader,nounits)
+
+            if [ "$mismatch" -eq 0 ]; then
+              echo "All GPUs locked at ${TARGET_CLOCK_MHZ} MHz."
+              break
+            fi
+
+            if [ "$attempt" -eq "$RETRIES" ]; then
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz on all GPUs."
+              exit 1
+            fi
+
+            sleep "$SLEEP_SECONDS"
+            attempt=$((attempt + 1))
+          done
+        shell: bash
+
+      - name: Ensure persistent venv and install dependencies
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_benchmark_venv"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+
+          echo "Creating fresh venv at ${VENV_PATH}"
+          rm -rf "${VENV_PATH}"
+          python -m venv "${VENV_PATH}"
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          python -m pip install --upgrade pip setuptools wheel --no-user
+          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
+        shell: bash
+
+      - name: Run benchmark ops
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_benchmark_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
+          echo "PYTHONPATH=$PYTHONPATH"
+          set -o pipefail
+          python -m pytest -q benchmarks/ops | tee tileops_benchmarks.log
+        shell: bash
+
+      - name: Merge benchmark profile summary
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if [ -f profile_run.log ]; then
+            {
+              echo
+              echo "===== profile_run.log summary ====="
+              cat profile_run.log
+            } >> tileops_benchmarks.log
+          else
+            echo "::error::profile_run.log not found" >> tileops_benchmarks.log
+            exit 1
+          fi
+        shell: bash
+
+      - name: Cleanup venv
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_benchmark_venv"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          echo "Removing venv at: ${VENV_PATH}"
+          rm -rf "${VENV_PATH}"
+        shell: bash
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: tileops_benchmark_${{ github.run_id }}
+          path: |
+            tileops_benchmarks.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  packaging:
+    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    needs: [benchmark]
+    permissions:
+      contents: write
+    runs-on: [self-hosted, tile-ops, venv]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Use local bare mirror on self-hosted runner to reduce checkout latency
+          reference: /home/ci-runner/repo-mirror
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate GPU frequency
+        run: |
+          set -euo pipefail
+          TARGET_CLOCK_MHZ=1830
+          RETRIES=5
+          SLEEP_SECONDS=2
+
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error::nvidia-smi is not available on this runner."
+            exit 1
+          fi
+
+          echo "Detected GPUs:"
+          nvidia-smi -L
+
+          attempt=1
+          while [ "$attempt" -le "$RETRIES" ]; do
+            echo "Validation attempt ${attempt}/${RETRIES}"
+            mismatch=0
+            while IFS=',' read -r gpu_index gpu_name gpu_clock; do
+              gpu_index="$(echo "$gpu_index" | xargs)"
+              gpu_name="$(echo "$gpu_name" | xargs)"
+              gpu_clock="$(echo "$gpu_clock" | xargs)"
+              echo "GPU ${gpu_index} (${gpu_name}) clock: ${gpu_clock} MHz"
+              if [ "$gpu_clock" != "$TARGET_CLOCK_MHZ" ]; then
+                mismatch=1
+              fi
+            done < <(nvidia-smi --query-gpu=index,name,clocks.current.graphics --format=csv,noheader,nounits)
+
+            if [ "$mismatch" -eq 0 ]; then
+              echo "All GPUs locked at ${TARGET_CLOCK_MHZ} MHz."
+              break
+            fi
+
+            if [ "$attempt" -eq "$RETRIES" ]; then
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz on all GPUs."
+              exit 1
+            fi
+
+            sleep "$SLEEP_SECONDS"
+            attempt=$((attempt + 1))
+          done
+        shell: bash
+
+      - name: Create clean virtual environment
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          echo "Preparing clean venv at ${VENV_PATH}"
+          rm -rf "${VENV_PATH}"
+          python -m venv "${VENV_PATH}"
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          python -m pip install --upgrade pip setuptools wheel
+        shell: bash
+
+      - name: Install required dependencies
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          pip install build pytest
+        shell: bash
+
+      - name: Build wheel package
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          python -m build --wheel
+          echo "Build artifacts:"
+          ls -lh dist/*.whl
+        shell: bash
+
+      - name: Run unit tests against built wheel
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          pip install --force-reinstall dist/*.whl
+
+          TMP_TEST_DIR="$(mktemp -d)"
+          trap 'rm -rf "${TMP_TEST_DIR}"' EXIT
+          cp -r tests "${TMP_TEST_DIR}/tests"
+          unset PYTHONPATH || true
+
+          cd "${TMP_TEST_DIR}"
+          python -m pytest -q tests -m "smoke or full or nightly"
+        shell: bash
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tileops-wheel-${{ github.sha }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish wheel to GitHub Release (tag only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
+          fail_on_unmatched_files: true
+
+      - name: Cleanup wheel venv
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_wheel_ci_venv"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          echo "Removing venv at: ${VENV_PATH}"
+          rm -rf "${VENV_PATH}"
+        shell: bash

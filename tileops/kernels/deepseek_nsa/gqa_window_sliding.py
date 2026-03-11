@@ -1,7 +1,8 @@
-import torch
-from typing import Optional, Any, Callable
 import itertools
+from typing import Any, Callable, Optional
+
 import tilelang
+import torch
 from tilelang import language as T
 
 from tileops.kernels.kernel import Kernel
@@ -84,15 +85,28 @@ def _gqa_window_sliding_kernel(
 
                 offset = kv_current_seqlen - q_current_seqlen
 
+                # Compute loop end (causal upper bound)
                 if is_causal:
-                    max_visible_k_idx = offset + (bx + 1) * block_m
-                    loop_range = T.min(
+                    max_visible_k_idx = T.max(offset + (bx + 1) * block_m, 0)
+                    loop_end = T.min(
                         T.ceildiv(max_visible_k_idx, block_n),
                         T.ceildiv(kv_current_seqlen, block_n))
                 else:
-                    loop_range = T.ceildiv(kv_current_seqlen, block_n)
+                    loop_end = T.ceildiv(kv_current_seqlen, block_n)
 
-                for k in T.Pipelined(loop_range, num_stages=num_stages):
+                # Compute loop start (window lower bound) to skip
+                # KV blocks entirely outside the sliding window.
+                if has_window and window_size_left >= 0:
+                    min_visible_kv = T.max(
+                        offset + bx * block_m - window_size_left, 0)
+                    loop_start = min_visible_kv // block_n
+                else:
+                    loop_start = 0
+
+                loop_count = T.max(loop_end - loop_start, 0)
+
+                for k_offset in T.Pipelined(loop_count, num_stages=num_stages):
+                    k = k_offset + loop_start
                     T.copy(
                         k_unpad[kv_start_idx + k * block_n:kv_start_idx + (k + 1) * block_n,
                                 kv_head_idx, :], k_shared)

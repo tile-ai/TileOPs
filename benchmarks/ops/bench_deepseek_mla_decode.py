@@ -1,10 +1,10 @@
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
-from tests.ops.test_deepseek_mla_decode import MlaDecodeFixture, MlaDecodeTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_deepseek_mla_decode import MlaDecodeFixture, MlaDecodeTest
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 
 

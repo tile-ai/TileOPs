@@ -23,12 +23,12 @@ ______________________________________________________________________
 
 ## Workflow Overview
 
-- **Phase 1: Read Issue** — fetch and understand the issue
+- **Phase 1: Read Issue** — fetch, validate template, create context.json
 - **Phase 2: Worktree** — smart detection, create worktree if needed
-- **Phase 3: Explore Code** — understand affected code paths
-- **Phase 4: TDD Implementation** — `Skill("superpowers:test-driven-development")`
-- **Phase 5: Verify** — `Skill("superpowers:verification-before-completion")` + test suite + pre-commit
-- **Phase 6: Commit, Create PR & Lifecycle** — `Skill("committing-changes")` → `Skill("creating-pull-request")` → poll CI/reviews
+- **Phase 3: Explore Code** — understand affected code paths, update context.json
+- **Phase 4: TDD Implementation** — red-green-refactor with HARD GATE enforcement
+- **Phase 5: Verify** — run tests + check acceptance criteria
+- **Phase 6: PR Lifecycle** — `Skill("lifecycle-pull-request")`
 
 ### Skill invocation rule
 
@@ -38,7 +38,7 @@ ______________________________________________________________________
 
 ## Phase 1: Read & Understand Issue
 
-**Goal:** Parse the issue reference, fetch full issue data, and summarize understanding before proceeding.
+**Goal:** Parse the issue reference, fetch full issue data, validate the template, and create the context file.
 
 ### 1a. Parse issue reference
 
@@ -68,33 +68,72 @@ issue_read(method="get_comments", owner={owner}, repo={repo}, issue_number={numb
 issue_read(method="get_labels", owner={owner}, repo={repo}, issue_number={number})
 ```
 
-### 1d. Extract key information
+### 1d. HARD GATE — Validate issue template
+
+The issue body **MUST** contain these sections:
+
+- `## Description` — problem description
+- `## Goal` — completion objective
+- `## Plan` — execution route (with `proposal` or `fixed` type)
+- `## Constraints` — hard constraints (may be empty)
+- `## Acceptance Criteria` — verifiable conditions
+
+**If any section is missing: STOP.** Report to the user:
+
+> "Issue #\{number} is missing required sections: \{list}. Please update the issue body with the required template before proceeding."
+
+Do NOT proceed until the template is valid.
+
+### 1e. Extract key information
 
 From the issue title, body, labels, and comments, extract:
 
-- **Type**: Parse `[TYPE]` from title (BUG, FEAT, PERF, REFACTOR, DOCS, TEST) — see Issue Type Mapping below
+- **Type**: Parse `[TYPE]` from title (BUG, FEAT, PERF, REFACTOR, DOCS, TEST, META, BENCHMARK) — see Issue Type Mapping below
 - **Component**: Parse `[COMPONENT]` from title if present
-- **What**: The bug description or feature request
-- **Where**: Any mentioned file paths, function names, error messages, or stack traces
-- **Acceptance criteria**: Any checkboxes, expected behavior, or test cases described
+- **Plan type**: Parse `<!-- type: proposal | fixed -->` comment from Plan section. Default: `proposal`
+- **Goal**: Content of `## Goal` section
+- **Execution route**: Steps listed in `## Plan` section
+- **Constraints**: Content of `## Constraints` section (may be empty)
+- **Acceptance criteria**: Checkboxes from `## Acceptance Criteria` section
 
-### 1e. Summarize and confirm
+### 1f. Create context file
+
+Write `docs/plans/issue-{number}-context.json`:
+
+```json
+{
+  "issue": {number},
+  "type": "{TYPE}",
+  "component": "{COMPONENT}",
+  "plan_type": "proposal",
+  "goal": "{goal text}",
+  "acceptance_criteria": ["{AC-1}", "{AC-2}"],
+  "execution_route": ["{step-1}", "{step-2}"],
+  "constraints": ["{constraint-1}"],
+  "affected_files": [],
+  "test_targets": [],
+  "bench_targets": [],
+  "code_understanding": ""
+}
+```
+
+### 1g. Summarize and confirm
 
 Print a summary to the user:
 
 > **Issue #\{number}: \{title}**
 >
-> **Type:** \{type} | **Component:** \{component}
+> **Type:** \{type} | **Component:** \{component} | **Plan:** \{plan_type}
 >
-> **Understanding:**
+> **Goal:** \{goal}
 >
-> - {what needs to be done}
-> - {which code areas are affected}
-> - {acceptance criteria}
+> **Execution route:** \{steps}
+>
+> **Acceptance criteria:** {AC list}
 >
 > Proceeding to Phase 2.
 
-### 1f. Claim the issue
+### 1h. Claim the issue
 
 Before any work begins, check the issue's assignees:
 
@@ -106,7 +145,7 @@ gh issue view {number} --repo {owner}/{repo} --json assignees --jq '.assignees[]
 - **Assigned to current user:** Already claimed, proceed.
 - **Assigned to someone else:** **STOP.** Report to the user: "Issue #\{number} is assigned to @\{assignee}. Will not claim — another contributor is working on it." Do NOT proceed unless the user explicitly overrides.
 
-### 1g. Guard rails
+### 1i. Guard rails
 
 - If the issue is **not found** (404): report error and **stop**.
 - If the issue is **closed**: warn the user and ask "This issue is already closed. Do you still want to proceed?"
@@ -155,8 +194,6 @@ Report to the user:
 
 > Working in worktree: `.claude/worktrees/issue-{number}`
 
-**Note:** The `committing-changes` skill (Phase 6a) will create a proper `{type}/scope/description` branch from main. The worktree branch is just a temporary working name.
-
 ______________________________________________________________________
 
 ## Phase 3: Explore Relevant Code
@@ -170,7 +207,7 @@ From Phase 1's extracted information, identify:
 - File paths mentioned in the issue
 - Function/class names mentioned
 - Error messages or stack traces
-- Component name (e.g., GEMV → search `tileops/kernels/gemv/`, `tileops/ops/gemv.py`)
+- Component name (e.g., GEMV → search `tileops/kernels/gemm/gemv.py`, `tileops/ops/gemm.py`)
 
 ### 3b. Directed search (fast)
 
@@ -199,7 +236,14 @@ Agent(
 )
 ```
 
-### 3d. Summarize findings
+### 3d. Update context file
+
+Update `docs/plans/issue-{number}-context.json` with:
+
+- `affected_files`: list of files that need to be modified
+- `code_understanding`: summary of key findings (root cause, insertion points, edge cases)
+
+### 3e. Summarize findings
 
 Before proceeding to implementation, summarize:
 
@@ -214,260 +258,198 @@ ______________________________________________________________________
 
 **Goal:** Implement the fix/feature using strict test-driven development.
 
-### Invoke the TDD skill via Skill tool
+### Plan enforcement
 
-**You MUST use the `Skill` tool** to invoke `superpowers:test-driven-development`:
+Read `plan_type` from context.json:
 
+- **`fixed`**: Follow `execution_route` steps **strictly and in order**. Do not deviate.
+- **`proposal`**: Use `execution_route` as guidance but explore autonomously. The TDD cycle below is still mandatory.
+
+### HARD GATE — TDD red-green-refactor cycle
+
+Implementation **MUST** follow this sequence. Skipping any step is not permitted.
+
+**1. Write or update tests first**
+
+- Create/modify test files for the affected functionality
+- Update context.json `test_targets` with the test file paths
+- If benchmarks are affected (kernel changes), update `bench_targets` too
+
+**2. Confirm FAIL (red)**
+
+```bash
+.claude/skills/lifecycle-issue-fixer/scripts/run-affected-tests.sh docs/plans/issue-{number}-context.json
 ```
-Skill(skill="superpowers:test-driven-development")
-```
 
-Before invoking, print the context so the TDD skill has it in the conversation:
+The new/modified tests **MUST fail**. If they pass without any implementation changes, the tests are not testing the right thing — revise them.
 
-> **Issue:** #\{number} — \{title}
->
-> **Problem:** {summary from Phase 1}
->
-> **Affected code:** {findings from Phase 3}
->
-> **Files to modify:** {list from Phase 3}
->
-> **Test files:** {existing test files from Phase 3}
-
-The TDD skill will enforce the red-green-refactor cycle:
-
-1. Write a failing test that captures the expected behavior
-1. Run it to confirm it fails
-1. Write the minimal implementation to make it pass
-1. Run tests to confirm they pass
-1. Refactor if needed
-
-**Do NOT commit in this phase** — committing is handled in Phase 6.
-
-### Implementation guidelines
+**3. Write the minimal implementation**
 
 - Follow the project's 2-layer architecture: `kernel` → `op` (see `docs/DEVELOPMENT.md`)
 - Keep dependency direction strict: `op -> kernel`, never the reverse
 - Prefer minimal, targeted changes — do not refactor unrelated code
-- Use the test command pattern: `PYTHONPATH="$PWD" python -m pytest -v {test_file}`
+
+**4. Confirm PASS (green)**
+
+```bash
+.claude/skills/lifecycle-issue-fixer/scripts/run-affected-tests.sh docs/plans/issue-{number}-context.json
+```
+
+All tests and benchmarks in context.json **MUST pass**.
+
+**5. Refactor if needed**
+
+If code can be improved without changing behavior:
+
+- Refactor
+- Run tests again to confirm still PASS
+
+**Do NOT commit in this phase** — committing is handled in Phase 6.
 
 ______________________________________________________________________
 
-## Phase 5: Verify
+## Phase 5: Verify (Independent Verification Subagent)
 
-**Goal:** Confirm the implementation is correct and causes no regressions before creating a PR.
+**Goal:** Confirm the implementation is correct and causes no regressions before creating a PR. Verification is performed by an **independent subagent** — the implementer (main agent) does not judge its own work.
 
-### Invoke verification skill via Skill tool
+### 5a. Dispatch verification subagent
 
-**You MUST use the `Skill` tool** to invoke `superpowers:verification-before-completion`:
+The main agent **MUST** dispatch a subagent to perform verification. The subagent's sole input is `context.json` — it reads `acceptance_criteria`, `test_targets`, and `bench_targets` from this file and independently verifies each criterion.
 
 ```
-Skill(skill="superpowers:verification-before-completion")
+Task(
+  subagent_type="general-purpose",
+  prompt="You are an independent verification agent. Your job is to verify that
+  the implementation satisfies ALL acceptance criteria defined in the context file.
+
+  Context file: docs/plans/issue-{number}-context.json
+
+  Read the context file and verify EACH acceptance criterion independently.
+  For each criterion, determine the appropriate verification method and execute it.
+  Report pass/fail with concrete evidence for every criterion.
+
+  See the Verification Examples section below for guidance on common verification patterns."
+)
 ```
 
-This ensures all claims are backed by evidence — run the checks below as part of that skill.
+### 5b. Verification examples
 
-### 5a. Run the full relevant test suite
+The subagent determines how to verify each AC based on its content. Below are common patterns:
 
-Not just the new tests — run the entire test file and any related test files:
+#### Example: Unit test verification
+
+AC: `"Modified files pass unit tests"`
 
 ```bash
-PYTHONPATH="$PWD" python -m pytest -v tests/ops/test_{component}.py
+# Run the test targets listed in context.json
+PYTHONPATH="$PWD" python -m pytest -v tests/ops/test_gemv.py --tb=short -q
 ```
 
-If there are kernel-level tests, run those too:
+Evidence: `"8 passed, 0 failed"`
+
+#### Example: Benchmark execution and data collection
+
+AC: `"GEMV kernel benchmark runs successfully and performance data is collected"`
 
 ```bash
-PYTHONPATH="$PWD" python -m pytest -v tests/kernels/test_{component}.py
+# Run the benchmark target listed in context.json
+PYTHONPATH="$PWD" python -m pytest -v benchmarks/ops/bench_gemv.py --tb=short -q 2>&1
 ```
 
-### 5b. Run pre-commit
+To extract performance data from benchmark output, look for lines containing metrics like `TFLOPS`, `GB/s`, `latency`, `ms`, `us`, etc. Format results as a markdown table:
+
+```markdown
+| Shape | Metric | Value |
+|-------|--------|-------|
+| M=4096, N=4096, K=4096 | Throughput | 523.4 TFLOPS |
+| M=8192, N=8192, K=8192 | Throughput | 498.1 TFLOPS |
+```
+
+This table should be included in the verification report so the main agent can embed it in the PR body's `## Benchmark` section.
+
+#### Example: Performance threshold verification
+
+AC: `"GEMV throughput >= 500 TFLOPS on H200"`
+
+Run the benchmark as above, extract the throughput value, and compare against the threshold. Evidence: `"Measured 523.4 TFLOPS >= 500 TFLOPS threshold — PASS"` or `"Measured 480.2 TFLOPS < 500 TFLOPS threshold — FAIL"`.
+
+#### Example: API compatibility verification
+
+AC: `"Public API signature unchanged"`
 
 ```bash
-pre-commit run --all-files
+# Check that the function signature matches expected
+python -c "import inspect; from tileops.ops import GemmOp; print(inspect.signature(GemmOp.forward))"
 ```
 
-If pre-commit fails:
+Evidence: `"Signature: (A, B, bias=None) — matches expected"`
 
-- Auto-fix formatting issues (ruff, black, isort are typically auto-fixable)
-- Re-run `pre-commit run --all-files` to confirm
-- If it fails again on non-auto-fixable issues, fix manually
+#### Other criteria
 
-### 5c. Confirm no regressions
+For criteria not covered by the examples above, the subagent should use its judgment to determine the appropriate verification method — run commands, read files, check outputs, etc. The key requirement is that every criterion must have **concrete evidence** (command output, file content, measured values), not just assertions.
 
-Verify:
+### 5c. HARD GATE — Subagent must pass
 
-- [ ] All pre-existing tests still pass
-- [ ] New tests pass
-- [ ] `pre-commit run --all-files` passes
-- [ ] No untracked files that should be committed are left behind
+The main agent reads the subagent's verification report:
+
+- **ALL criteria pass**: Proceed to Phase 6.
+- **Any criterion fails**: Fix the failing items, update context.json if needed, and re-dispatch the verification subagent. Do NOT proceed until all criteria pass.
+- **Benchmark data collected**: Save the benchmark table for inclusion in the PR body.
 
 ### 5d. Report
 
-Print a verification summary:
+Print the verification summary from the subagent:
 
-> **Verification complete:**
+> **Verification complete (independent subagent):**
 >
 > - Tests: \{N} passed, \{M} failed
-> - Pre-commit: {pass/fail}
+> - Benchmarks: \{N} passed, \{M} failed
+> - Acceptance criteria: \{X}/\{Y} met
+> - Benchmark data: {table or "N/A"}
 > - Ready for PR: {yes/no}
 
 If any verification fails, fix the issues before proceeding. If unable to fix after reasonable effort, escalate to the user.
 
 ______________________________________________________________________
 
-## Phase 6: Commit, Create PR & Lifecycle
+## Phase 6: PR Lifecycle
 
 **Goal:** Commit changes, create a high-quality PR that closes the issue, then monitor CI and handle reviews.
 
-This phase directly invokes the project's `committing-changes` and `creating-pull-request` skills, then runs the poll-handle loop from `lifecycle-pull-request`.
-
-### 6a. Commit & Push — invoke `committing-changes` skill
-
-**You MUST use the `Skill` tool** to invoke `committing-changes`:
+Invoke the `lifecycle-pull-request` skill:
 
 ```
-Skill(skill="committing-changes", args="<context>")
+Skill(skill="lifecycle-pull-request", args="Issue #{number}: {goal}. Context: docs/plans/issue-{number}-context.json")
 ```
 
-Pass the following as args:
-
-> Committing fix for issue #\{number}: \{title}.
-> Branch type: `{branch_prefix}` (see Issue Type Mapping).
-> Commit tag: `{pr_type_prefix}` (see Issue Type Mapping).
-
-The skill will:
-
-1. Sync with main, create a feature branch following `type/scope/description` convention
-1. Stage specific files (never `git add .`)
-1. Run pre-commit validation (HARD GATE)
-1. Commit with proper `[Type] Description` format
-1. Run post-commit validation (HARD GATE)
-1. Push to origin
-
-**Capture the output:** `BRANCH`, `COMMIT_MSG`, `FILES_CHANGED`.
-
-If the skill fails, fix the reported issues and re-invoke. Do NOT proceed until push succeeds.
-
-### 6b. Create PR — invoke `creating-pull-request` skill
-
-**You MUST use the `Skill` tool** to invoke `creating-pull-request`:
-
-```
-Skill(skill="creating-pull-request", args="<context>")
-```
-
-Pass the following as args:
-
-> PR for issue #\{number}: \{title}.
-> PR title: `{pr_type_prefix} {description}` (see Issue Type Mapping).
-> PR body MUST include: `Closes #{number}`.
-> Labels: add the type label AND `all ai powered` label.
-
-The skill will:
-
-1. Create the PR via `gh pr create` (NOT the GitHub MCP tool)
-1. Add required labels
-1. Validate the PR (HARD GATE)
-
-**Capture the output:** `PR_NUMBER`, `PR_URL`, `BRANCH`.
-
-If the skill fails, fix the reported issues and re-invoke. Do NOT proceed until validation passes.
-
-### 6c. Poll & Handle CI/Reviews (max 3 rounds)
-
-After obtaining `PR_NUMBER`, enter the **poll-handle loop**. This logic is inlined from the `lifecycle-pull-request` skill.
-
-> **do** { Poll → Handle → Verify } **while** PR is not done
->
-> Exit: CI green + all reviews handled, OR timeout/error, OR max 3 fix-push rounds.
->
-> **Critical**: Every re-poll must check **both** CI status **and** review comments.
-
-#### Poll
-
-Run the poll script as a **blocking** Bash call:
-
-```bash
-.claude/skills/lifecycle-pull-request/scripts/poll-pr-status.sh {owner}/{repo} {pr_number}
-```
-
-Use Bash tool with `timeout: 6060000` (covers the script's 100-minute timeout plus buffer).
-
-The script returns structured JSON:
-
-```json
-{
-  "status": "ready | timeout | error",
-  "ci": {
-    "state": "success | failure | pending",
-    "failed_checks": [{"name": "...", "conclusion": "failure", "url": "..."}]
-  },
-  "reviews": {
-    "new_inline_comments": [{"id": "...", "author": "...", "body": "...", "path": "...", "line": "..."}],
-    "new_review_bodies": [{"id": "...", "author": "...", "body": "...", "state": "..."}],
-    "unresolved_count": 3
-  }
-}
-```
-
-#### Handle result
-
-Parse the JSON. Follow this decision tree **in order** (first matching branch wins):
-
-**Timeout / error → STOP:**
-If `status == "error"` or `status == "timeout"`: report to user and **exit the loop**.
-
-**CI failure → auto fix:**
-If `ci.state == "failure"`:
-
-1. Identify failing checks from `ci.failed_checks`.
-1. **Lint/format** failures: run `pre-commit run --all-files`, fix, commit, push → **re-poll**
-1. **Test/build** failures: analyze logs via `gh pr checks {pr_number} --repo {owner}/{repo}`. Simple fix → fix, commit, push → **re-poll**. Complex → escalate to user.
-
-**New reviews → auto handle:**
-If `reviews.new_inline_comments` or `reviews.new_review_bodies` are non-empty:
-
-- **Every comment MUST be replied to individually in its original thread.** Do NOT post a summary comment.
-- Reply via: `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies -f body="<reply>"`
-- Resolve thread via GraphQL: `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread_id>"}) { thread { isResolved } } }'`
-
-#### Verify done
-
-**All** must be true:
-
-1. `ci.state == "success"` — **not** "pending". If pending, keep polling (no round increment).
-1. `reviews.new_inline_comments` is empty (or all replied to and resolved)
-1. `reviews.new_review_bodies` is empty (or all replied to)
-
-**Loop constraints:** Max 3 fix-push rounds. Passive waiting (pending CI) does NOT count as a round.
+The skill handles: commit → create PR → trigger Gemini → poll-handle loop → mark ready.
 
 ### Done
 
-When the loop exits successfully, report to the user:
+When the lifecycle-pull-request skill completes, report to the user:
 
 > **Issue #\{number} resolved:**
 >
 > - PR: \{pr_url}
-> - Status: CI green, reviews addressed
+> - Status: CI green, Copilot and Gemini reviews addressed
 > - The PR will auto-close issue #\{number} on merge.
 
 ______________________________________________________________________
 
 ## Error Handling
 
-| Situation                                       | Behavior                                               |
-| ----------------------------------------------- | ------------------------------------------------------ |
-| No argument provided                            | Ask user for issue number via `AskUserQuestion`        |
-| Issue not found (404)                           | Report error and **stop**                              |
-| Issue assigned to someone else                  | Report and **stop** — do not claim another's work      |
-| Issue is already closed                         | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
-| Issue has linked PR already                     | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
-| TDD tests won't pass after reasonable effort    | Escalate to user with what was tried and error details |
-| Pre-commit fails after auto-fix retry           | Escalate to user                                       |
-| `committing-changes` skill fails (HARD GATE)    | Fix reported issues, re-invoke the skill               |
-| `creating-pull-request` skill fails (HARD GATE) | Fix reported issues (title/body/labels), re-invoke     |
-| Poll-handle loop exceeds 3 rounds               | Escalate to user with failure summary                  |
+| Situation                                          | Behavior                                               |
+| -------------------------------------------------- | ------------------------------------------------------ |
+| No argument provided                               | Ask user for issue number via `AskUserQuestion`        |
+| Issue not found (404)                              | Report error and **stop**                              |
+| Issue missing template sections                    | Report missing sections and **stop**                   |
+| Issue assigned to someone else                     | Report and **stop** — do not claim another's work      |
+| Issue is already closed                            | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
+| Issue has linked PR already                        | Warn user, ask "Proceed anyway?" via `AskUserQuestion` |
+| TDD red phase passes unexpectedly                  | Revise tests — they are not testing the right thing    |
+| Tests won't pass after reasonable effort           | Escalate to user with what was tried and error details |
+| `lifecycle-pull-request` skill fails               | Fix reported issues, re-invoke the skill               |
+| Poll-handle loop exits (timeout/repeated failures) | Escalate to user with failure summary and next steps   |
 
 ______________________________________________________________________
 

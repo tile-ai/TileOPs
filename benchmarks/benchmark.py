@@ -1,3 +1,4 @@
+import subprocess
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Optional, Tuple
@@ -6,6 +7,32 @@ import torch
 from tilelang.profiler import do_bench
 
 from tests.test_base import TestBase
+
+
+def _get_env_metadata() -> list[str]:
+    """Collect GPU model, driver version, CUDA version, and torch version."""
+    lines = []
+    lines.append(f"- **Torch version**: {torch.__version__}")
+    lines.append(f"- **CUDA version (torch)**: {torch.version.cuda or 'N/A'}")
+
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        lines.append(f"- **GPU model**: {gpu_name}")
+    else:
+        lines.append("- **GPU model**: N/A (no CUDA device)")
+
+    # Try to get NVIDIA driver version from nvidia-smi
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        driver = result.stdout.strip().split("\n")[0] if result.returncode == 0 else "N/A"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        driver = "N/A"
+    lines.append(f"- **Driver version**: {driver}")
+
+    return lines
 
 
 class BenchmarkBase(ABC):
@@ -49,7 +76,7 @@ class BenchmarkBase(ABC):
             result["tflops"] = flops / latency * 1e-9
         memory = self.calculate_memory()
         if memory is not None:
-            result["bandwidth_gbs"] = memory / latency * 1e-9
+            result["bandwidth_tbs"] = memory / latency * 1e-9
         return result
 
 
@@ -68,7 +95,7 @@ class BenchmarkReport:
         Args:
             name: Benchmark group name (e.g. "gemm", "mha_fwd")
             params: Parameter dict (typically from locals())
-            result: Dict with latency_ms, tflops, bandwidth_gbs
+            result: Dict with latency_ms, tflops, bandwidth_tbs
             tag: Label to distinguish implementations (e.g. "tileops", "baseline")
         """
         # Filter params to only include serializable benchmark parameters
@@ -95,9 +122,13 @@ class BenchmarkReport:
             "# TileOPs Benchmark Report",
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             "",
+            "## Environment",
+            "",
         ]
+        lines.extend(_get_env_metadata())
+        lines.append("")
 
-        result_keys = ["latency_ms", "tflops", "bandwidth_gbs"]
+        result_keys = ["latency_ms", "tflops", "bandwidth_tbs"]
 
         for name, entries in BenchmarkReport._records.items():
             if not entries:

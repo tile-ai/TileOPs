@@ -1,28 +1,95 @@
 from typing import Tuple
 
-import torch
 import pytest
+import torch
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GemmOp
 
 
 class GemmFixture(FixtureBase):
     PARAMS = [
         ("m, n, k, dtype, trans_a, trans_b, tune", [
-            (1024, 1024, 1024, torch.float16, False, False, False),
-            (1, 1024, 1024, torch.float16, False, True, False),
-            (1, 7168, 16384, torch.float16, False, True, True),
-            (1, 18432, 7168, torch.float16, False, True, True),
-            (1024, 1, 1024, torch.float16, False, False, False),
-            (7168, 1, 16384, torch.float16, False, False, True),
-            (18432, 1, 7168, torch.float16, False, False, True),
-            (1, 1024, 1024, torch.bfloat16, False, True, False),
-            (1, 7168, 16384, torch.bfloat16, False, True, True),
-            (1, 18432, 7168, torch.bfloat16, False, True, True),
-            (1024, 1, 1024, torch.bfloat16, False, False, False),
-            (7168, 1, 16384, torch.bfloat16, False, False, True),
-            (18432, 1, 7168, torch.bfloat16, False, False, True),
+            pytest.param(
+                1024, 1024, 1024, torch.float16, False, False, False,
+                marks=pytest.mark.smoke,
+                id="smoke-fp16-square",
+            ),
+            pytest.param(
+                1, 1024, 1024, torch.float16, False, True, False,
+                marks=pytest.mark.full,
+                id="full-fp16-trans-b-small-m",
+            ),
+            pytest.param(
+                1, 7168, 16384, torch.float16, False, True, True,
+                marks=pytest.mark.full,
+                id="full-fp16-tuned-wide",
+            ),
+            pytest.param(
+                1, 18432, 7168, torch.float16, False, True, True,
+                marks=pytest.mark.nightly,
+                id="nightly-fp16-tuned-wide-alt",
+            ),
+            pytest.param(
+                1024, 1, 1024, torch.float16, False, False, False,
+                marks=pytest.mark.full,
+                id="full-fp16-thin-n",
+            ),
+            pytest.param(
+                7168, 1, 16384, torch.float16, False, False, True,
+                marks=pytest.mark.nightly,
+                id="nightly-fp16-tuned-thin-n",
+            ),
+            pytest.param(
+                18432, 1, 7168, torch.float16, False, False, True,
+                marks=pytest.mark.nightly,
+                id="nightly-fp16-tuned-thin-n-alt",
+            ),
+            pytest.param(
+                1, 1024, 1024, torch.bfloat16, False, True, False,
+                marks=pytest.mark.full,
+                id="full-bf16-trans-b-small-m",
+            ),
+            pytest.param(
+                1, 7168, 16384, torch.bfloat16, False, True, True,
+                marks=pytest.mark.nightly,
+                id="nightly-bf16-tuned-wide",
+            ),
+            pytest.param(
+                1, 18432, 7168, torch.bfloat16, False, True, True,
+                marks=pytest.mark.nightly,
+                id="nightly-bf16-tuned-wide-alt",
+            ),
+            pytest.param(
+                1024, 1, 1024, torch.bfloat16, False, False, False,
+                marks=pytest.mark.full,
+                id="full-bf16-thin-n",
+            ),
+            pytest.param(
+                7168, 1, 16384, torch.bfloat16, False, False, True,
+                marks=pytest.mark.nightly,
+                id="nightly-bf16-tuned-thin-n",
+            ),
+            pytest.param(
+                18432, 1, 7168, torch.bfloat16, False, False, True,
+                marks=pytest.mark.nightly,
+                id="nightly-bf16-tuned-thin-n-alt",
+            ),
+        ]),
+    ]
+
+
+class GemvBoundaryFixture(FixtureBase):
+    """GEMV cases with non-aligned n/k to exercise partial-tile paths."""
+    PARAMS = [
+        ("n, k, dtype, tune", [
+            # lhs_row: m=1, trans_b=True — non-aligned n
+            pytest.param(3000, 1024, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(3000, 1024, torch.bfloat16, False, marks=pytest.mark.full),
+            # lhs_row: non-aligned k
+            pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+            # rhs_col: n=1 — non-aligned m (mapped to gemv n param)
+            pytest.param(3000, 1024, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -62,6 +129,25 @@ def test_gemm(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b
         tolerances = {"atol": 1e-3, "rtol": 1e-3}
     else:
         tolerances = {"atol": 1.6e-2, "rtol": 1.6e-2}
+    test.check(op, *test.gen_inputs(), **tolerances)
+
+
+@GemvBoundaryFixture
+def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
+    """GEMV lhs_row path (m=1, trans_b=True) with non-aligned n or k."""
+    test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
+    op = GemmOp(1, n, k, trans_a=False, trans_b=True, dtype=dtype, tune=tune)
+    tolerances = {"atol": 1e-2, "rtol": 1e-2}
+    test.check(op, *test.gen_inputs(), **tolerances)
+
+
+@GemvBoundaryFixture
+def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
+    """GEMV rhs_col path (n=1, no transpose) with non-aligned m or k."""
+    m = n  # reuse fixture's n as the non-aligned m dimension
+    test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
+    op = GemmOp(m, 1, k, trans_a=False, trans_b=False, dtype=dtype, tune=tune)
+    tolerances = {"atol": 1e-2, "rtol": 1e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
 
 

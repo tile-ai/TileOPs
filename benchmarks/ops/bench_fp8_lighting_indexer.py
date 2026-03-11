@@ -1,10 +1,10 @@
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
-from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerFixture, Fp8LightingIndexerTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerFixture, Fp8LightingIndexerTest
 from tileops.ops import Fp8LightingIndexerOp
 
 

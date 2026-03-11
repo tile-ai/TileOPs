@@ -1,10 +1,10 @@
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
-from tests.ops.test_mha_decode import MhaDecodeFixture, MhaDecodeTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_mha_decode import MhaDecodeFixture, MhaDecodeTest
 from tileops.ops import MultiHeadAttentionDecodeWithKVCacheOp
 
 

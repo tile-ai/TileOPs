@@ -2,13 +2,16 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.deepseek_nsa.mean_pooling_fwd import MeanPoolingFwdKernel
-from tileops.kernels.deepseek_nsa.nsa_fwd import NSAFwdVarlenKernel
-from tileops.kernels.deepseek_nsa.nsa_topk import NSATopkVarlenKernel
-from tileops.kernels.deepseek_nsa.nsa_cmp_fwd import NSACmpFwdVarlenKernel
-from tileops.kernels.deepseek_nsa.gqa_window_sliding import GQAWindowSlidingKernel
+from tileops.kernels.deepseek_nsa import (
+    GQAWindowSlidingKernel,
+    MeanPoolingFwdKernel,
+    NSACmpFwdVarlenKernel,
+    NSAFwdVarlenKernel,
+    NSATopkVarlenKernel,
+)
 from tileops.kernels.kernel import Kernel
-from tileops.ops.op import Op
+
+from .op import Op
 
 __all__ = [
     "MeanPoolingForwardOp",

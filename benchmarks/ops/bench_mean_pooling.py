@@ -3,9 +3,9 @@ from typing import Optional
 import pytest
 import torch
 
-from tests.ops.test_mean_pooling_ops import MeanPoolingFixture, MeanPoolingTest
-from tests.nsa_utils import prepare_chunk_indices
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.nsa_utils import prepare_chunk_indices
+from tests.ops.test_mean_pooling_ops import MeanPoolingFixture, MeanPoolingTest
 from tileops.ops import MeanPoolingForwardOp
 
 

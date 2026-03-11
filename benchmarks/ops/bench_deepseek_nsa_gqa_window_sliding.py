@@ -3,11 +3,11 @@ from typing import Optional
 import pytest
 import torch
 
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_deepseek_nsa_gqa_window_sliding import (
     GqaWindowSlidingFixture,
     GqaWindowSlidingTest,
 )
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GQAWindowSlidingOp
 
 

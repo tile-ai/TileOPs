@@ -1,15 +1,15 @@
 #!/bin/bash
 # Poll GitHub PR status (CI checks + review comments) and return structured JSON
-# Usage: poll-pr-status.sh <owner/repo> <pr_number> [--interval 30] [--timeout 6000]
+# Usage: poll-pr-status.sh <owner/repo> <pr_number> [--interval 30] [--timeout 18000]
 #
-# Designed to run via Claude Code's Bash tool as a blocking call (timeout: 6060000).
+# Designed to run via Claude Code's Bash tool as a blocking call (timeout: 18060000).
 # The agent waits for this script to complete before processing the result.
 
 set -euo pipefail
 
 # Defaults
 INTERVAL=30
-TIMEOUT=6000
+TIMEOUT=18000
 OWNER_REPO=""
 PR_NUMBER=""
 
@@ -106,6 +106,7 @@ fetch_pr_info() {
   if [[ -z "$PR_CREATED_AT" || -z "$PR_AUTHOR" || -z "$HEAD_SHA" ]]; then
     return 1
   fi
+
   return 0
 }
 
@@ -117,12 +118,71 @@ fetch_ci_checks() {
   echo "$result"
 }
 
-# Fetch inline review comments (returns merged JSON array)
-# --paginate can produce concatenated arrays ([...][...]); jq -s 'add' merges them.
-fetch_inline_comments() {
-  local raw
-  raw=$(gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" --paginate 2>&1) || { log_error "fetch_inline_comments: $raw"; return 1; }
-  echo "$raw" | jq -s 'add // []'
+# Fetch review threads via GraphQL (returns JSON with thread data including node IDs)
+# This replaces the REST-based fetch_inline_comments to provide:
+# - thread_node_id (PRRT_...) needed for resolveReviewThread mutation
+# - isResolved state for accurate unresolved_count
+# - Full conversation chain per thread (comments first:100)
+fetch_review_threads() {
+  local query='query($owner: String!, $repo: String!, $pr: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            isResolved
+            isOutdated
+            comments(first: 100) {
+              nodes {
+                databaseId
+                author { login }
+                body
+                path
+                line
+                createdAt
+              }
+            }
+          }
+        }
+      }
+    }
+  }'
+
+  local result
+  result=$(gh api graphql -F owner="$OWNER" -F repo="$REPO" -F pr="$PR_NUMBER" -f query="$query" 2>&1) || { log_error "fetch_review_threads: $result"; return 1; }
+
+  # Validate GraphQL response structure:
+  # 1. Reject if response contains non-empty .errors array (semantic GraphQL error)
+  # 2. Reject if .data.repository.pullRequest.reviewThreads.nodes is missing/non-array
+  #
+  # Note: GraphQL can return both .errors AND .data (partial success). We reject
+  # any response with .errors present, regardless of whether .data is also valid.
+  local error_count
+  error_count=$(echo "$result" | jq -r '(.errors // []) | length' 2>/dev/null) || error_count="unknown"
+  if [[ "$error_count" != "0" ]]; then
+    local err_msg
+    err_msg=$(echo "$result" | jq -r '.errors[0].message // "unknown GraphQL error"' 2>/dev/null)
+    log_error "fetch_review_threads: GraphQL returned $error_count error(s): $err_msg"
+    return 1
+  fi
+
+  local nodes_type
+  nodes_type=$(echo "$result" | jq -r '.data.repository.pullRequest.reviewThreads.nodes | type' 2>/dev/null) || nodes_type="null"
+  if [[ "$nodes_type" != "array" ]]; then
+    log_error "fetch_review_threads: GraphQL response missing valid reviewThreads.nodes (got type: $nodes_type)"
+    return 1
+  fi
+
+  # Treat >100 threads as error to avoid undercounting unresolved threads
+  local has_next
+  has_next=$(echo "$result" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' 2>/dev/null || echo "false")
+  if [[ "$has_next" == "true" ]]; then
+    log_error "fetch_review_threads: PR has >100 review threads; pagination not implemented, aborting to avoid partial data."
+    return 1
+  fi
+
+  echo "$result"
 }
 
 # Fetch PR-level reviews (returns merged JSON array)
@@ -155,30 +215,52 @@ get_failed_checks() {
   echo "$checks_json" | jq -c '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | {name: .name, conclusion: .conclusion, url: .html_url}]' || echo "[]"
 }
 
-# Filter inline comments: exclude PR author, only after PR creation
-filter_inline_comments() {
-  local comments_json="$1"
-  echo "$comments_json" | jq -c --arg author "$PR_AUTHOR" --arg created "$PR_CREATED_AT" '
-    [.[] | select(
-      .user.login != $author and
-      .created_at > $created
-    ) | {
-      id: .id,
-      author: .user.login,
-      body: .body,
-      path: .path,
-      line: .line,
-      created_at: .created_at
-    }]' || echo "[]"
+# Filter review threads from GraphQL response
+# Extracts all unresolved threads with their node IDs and full comment chains.
+# Does NOT exclude author-only threads — all unresolved threads are exposed so
+# that unresolved_count and actionable thread list stay consistent.
+# The agent (handler) decides which threads need action vs which to auto-resolve.
+filter_review_threads() {
+  local graphql_json="$1"
+  local result
+  result=$(echo "$graphql_json" | jq -c '
+    [.data.repository.pullRequest.reviewThreads.nodes[]
+     | select(.isResolved == false)
+     | {
+         thread_node_id: .id,
+         is_resolved: .isResolved,
+         is_outdated: .isOutdated,
+         comments: [.comments.nodes[] | {
+           id: .databaseId,
+           author: .author.login,
+           body: .body,
+           path: .path,
+           line: .line,
+           created_at: .createdAt
+         }]
+       }
+    ]') || { log_error "filter_review_threads: jq extraction failed"; return 1; }
+  echo "$result"
 }
 
-# Filter PR reviews: exclude PR author, only non-empty body, after PR creation
+# Count unresolved threads from GraphQL response (based on isResolved field)
+# Returns non-zero on parse failure so caller treats cycle as unsuccessful.
+count_unresolved_threads() {
+  local graphql_json="$1"
+  local count
+  count=$(echo "$graphql_json" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length') || { log_error "count_unresolved_threads: jq count failed"; return 1; }
+  echo "$count"
+}
+
+# Filter PR reviews: only CHANGES_REQUESTED with non-empty body, exclude PR author.
+# COMMENTED and APPROVED reviews are informational and do not require handler action.
+# Only CHANGES_REQUESTED is a blocking state that the handler must address.
 filter_pr_reviews() {
   local reviews_json="$1"
   echo "$reviews_json" | jq -c --arg author "$PR_AUTHOR" '
     [.[] | select(
       .user.login != $author and
-      .state != "PENDING" and
+      .state == "CHANGES_REQUESTED" and
       .body != null and
       .body != ""
     ) | {
@@ -238,6 +320,8 @@ main() {
   local inline_comments="[]"
   local review_bodies="[]"
   local unresolved=0
+  local consecutive_fetch_failures=0
+  local MAX_CONSECUTIVE_FAILURES=5
 
   while true; do
     local now=$(date +%s)
@@ -250,42 +334,99 @@ main() {
       exit 0
     fi
 
+    # Per-cycle fetch success tracking
+    local ci_ok=false
+    local threads_ok=false
+    local pr_reviews_ok=false
+
     # Fetch CI status
     local checks_json
     if checks_json=$(fetch_ci_checks); then
       ci_state=$(determine_ci_state "$checks_json")
       failed_checks=$(get_failed_checks "$checks_json")
+      ci_ok=true
     else
       log_error "Failed to fetch CI status, will retry"
     fi
 
-    # Fetch inline comments
-    local raw_inline
-    if raw_inline=$(fetch_inline_comments); then
-      inline_comments=$(filter_inline_comments "$raw_inline")
-      # Simplified: count filtered inline comments as unresolved
-      # (GitHub REST API doesn't expose thread resolution state)
-      unresolved=$(echo "$inline_comments" | jq 'length' || echo 0)
+    # Fetch review threads (GraphQL)
+    # threads_ok requires ALL three steps to succeed: fetch, filter, count.
+    # If any step fails (including semantic GraphQL errors or jq parse failures),
+    # threads_ok stays false and the cycle cannot reach actionable/done status.
+    local threads_json
+    if threads_json=$(fetch_review_threads); then
+      local filtered_threads
+      local thread_count
+      if filtered_threads=$(filter_review_threads "$threads_json") && \
+         thread_count=$(count_unresolved_threads "$threads_json"); then
+        inline_comments="$filtered_threads"
+        unresolved="$thread_count"
+        threads_ok=true
+      else
+        log_error "Failed to parse review thread data, will retry"
+      fi
     else
-      log_error "Failed to fetch inline comments, will retry"
+      log_error "Failed to fetch review threads, will retry"
     fi
 
     # Fetch PR reviews
     local raw_reviews
     if raw_reviews=$(fetch_pr_reviews); then
       review_bodies=$(filter_pr_reviews "$raw_reviews")
+      pr_reviews_ok=true
     else
       log_error "Failed to fetch PR reviews, will retry"
     fi
 
-    log_info "Elapsed: ${elapsed}s | CI: ${ci_state} | Inline comments: $(echo "$inline_comments" | jq 'length' || echo '?') | Reviews: $(echo "$review_bodies" | jq 'length' || echo '?')"
+    log_info "Elapsed: ${elapsed}s | CI: ${ci_state} | Inline comments: $(echo "$inline_comments" | jq 'length' || echo '?') | Reviews: $(echo "$review_bodies" | jq 'length' || echo '?') | Fetches OK: ci=$ci_ok threads=$threads_ok reviews=$pr_reviews_ok"
 
-    # Termination: CI completed (pass or fail) AND at least one interval has passed
-    # (wait one interval to give review bots time to post)
-    if [[ "$ci_state" != "pending" ]] && [[ $elapsed -ge $INTERVAL ]]; then
-      log_info "CI completed (${ci_state}). Returning results."
-      output_json "ready" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
-      exit 0
+    # Track consecutive fetch failures — surface persistent errors early instead of waiting for timeout
+    if [[ "$ci_ok" == "true" ]] && [[ "$threads_ok" == "true" ]] && [[ "$pr_reviews_ok" == "true" ]]; then
+      consecutive_fetch_failures=0
+    else
+      consecutive_fetch_failures=$((consecutive_fetch_failures + 1))
+      if [[ $consecutive_fetch_failures -ge $MAX_CONSECUTIVE_FAILURES ]]; then
+        log_error "Fetch failures persisted for $consecutive_fetch_failures consecutive cycles. Returning error."
+        output_json "error" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
+        exit 1
+      fi
+    fi
+
+    # Termination logic — three distinct outcomes:
+    #   "actionable" — CI failure or unresolved reviews exist, handler must process
+    #   "done"       — CI all success + all threads resolved, handler can skip to Phase 6
+    #   (continue)   — CI still pending + nothing to handle, keep polling
+    #
+    # Must have waited at least one interval (give bots time to post) and all
+    # fetches must have succeeded in this cycle (no stale data).
+    if [[ $elapsed -ge $INTERVAL ]] && \
+       [[ "$ci_ok" == "true" ]] && [[ "$threads_ok" == "true" ]] && [[ "$pr_reviews_ok" == "true" ]]; then
+
+      local inline_count review_count
+      inline_count=$(echo "$inline_comments" | jq 'length' 2>/dev/null || echo 0)
+      review_count=$(echo "$review_bodies" | jq 'length' 2>/dev/null || echo 0)
+
+      # Case 1: actionable — CI failed or unresolved reviews/threads exist
+      if [[ "$ci_state" == "failure" ]] || [[ "$unresolved" -gt 0 ]] || [[ "$review_count" -gt 0 ]]; then
+        log_info "Actionable: ci=$ci_state, unresolved=$unresolved, reviews=$review_count. Handler must process."
+        output_json "actionable" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
+        exit 0
+      fi
+
+      # Case 2: done — CI success + no unresolved threads + no pending reviews
+      if [[ "$ci_state" == "success" ]] && [[ "$unresolved" -eq 0 ]] && [[ "$review_count" -eq 0 ]]; then
+        log_info "Done: CI success, all threads resolved, no pending reviews."
+        output_json "done" "$ci_state" "$failed_checks" "$inline_comments" "$review_bodies" "$unresolved"
+        exit 0
+      fi
+
+      # Otherwise CI is still pending with nothing actionable — keep polling
+    fi
+
+    # If fetches failed, keep polling (don't return with stale data)
+    if [[ $elapsed -ge $INTERVAL ]] && \
+       { [[ "$ci_ok" != "true" ]] || [[ "$threads_ok" != "true" ]] || [[ "$pr_reviews_ok" != "true" ]]; }; then
+      log_info "Fetch(es) incomplete (ci=$ci_ok, threads=$threads_ok, reviews=$pr_reviews_ok). Retrying..."
     fi
 
     sleep "$INTERVAL"

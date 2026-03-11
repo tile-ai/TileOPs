@@ -3,8 +3,8 @@ from typing import Optional
 import pytest
 import torch
 
-from tests.ops.test_mha_decode_paged import MhaDecodePagedFixture, MhaDecodePagedTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_mha_decode_paged import MhaDecodePagedFixture, MhaDecodePagedTest
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
 
 

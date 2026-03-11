@@ -3,8 +3,8 @@ from typing import Optional
 import pytest
 import torch
 
-from tests.ops.test_topk_selector import TopkSelectorFixture, TopkSelectorTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_topk_selector import TopkSelectorFixture, TopkSelectorTest
 from tileops.ops import TopkSelectorOp
 from tileops.utils import str2dtype
 
