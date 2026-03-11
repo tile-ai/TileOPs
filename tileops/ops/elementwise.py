@@ -45,6 +45,12 @@ def coalesce_broadcast_dims(a_shape, b_shape):
         Tuple of (out_shape, coalesced_shape, a_strides, b_strides) where
         strides use 0 for broadcast dimensions.
     """
+    # Normalise scalar (0-dim) inputs to 1-dim with size 1
+    if len(a_shape) == 0:
+        a_shape = (1,)
+    if len(b_shape) == 0:
+        b_shape = (1,)
+
     out_shape = torch.broadcast_shapes(a_shape, b_shape)
     ndim = len(out_shape)
     a_pad = (1,) * (ndim - len(a_shape)) + tuple(a_shape)
@@ -54,7 +60,11 @@ def coalesce_broadcast_dims(a_shape, b_shape):
         strides = [1] * ndim
         for i in range(ndim - 2, -1, -1):
             strides[i] = strides[i + 1] * padded_shape[i + 1]
-        return [0 if padded_shape[i] == 1 else strides[i] for i in range(ndim)]
+        # Only zero strides for genuinely broadcast dims (size-1 expanded to >1)
+        return [
+            0 if padded_shape[i] == 1 and out_shape[i] > 1 else strides[i]
+            for i in range(ndim)
+        ]
 
     a_raw = _make_strides(a_pad)
     b_raw = _make_strides(b_pad)
@@ -127,6 +137,10 @@ class UnaryOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.numel() != self.N_total:
+            raise ValueError(
+                f"Expected {self.N_total} elements, got {x.numel()}"
+            )
         orig_shape = x.shape
         x = x.contiguous().reshape(-1)
         return self.kernel(x).reshape(orig_shape)
@@ -188,6 +202,14 @@ class BinaryOp(Op):
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if not a.is_cuda or not b.is_cuda:
             raise ValueError("Inputs must be CUDA tensors")
+        if a.numel() != self.a_numel:
+            raise ValueError(
+                f"Expected a to have {self.a_numel} elements, got {a.numel()}"
+            )
+        if b.numel() != self.b_numel:
+            raise ValueError(
+                f"Expected b to have {self.b_numel} elements, got {b.numel()}"
+            )
         return self.kernel(
             a.contiguous().view(-1), b.contiguous().view(-1),
         ).reshape(self.out_shape)
@@ -239,6 +261,10 @@ class FusedGatedOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.shape != (self.M, 2 * self.N):
+            raise ValueError(
+                f"Expected shape ({self.M}, {2 * self.N}), got {tuple(x.shape)}"
+            )
         x = x.contiguous()
         return self.kernel(x)
 

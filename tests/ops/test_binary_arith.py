@@ -29,6 +29,10 @@ class CoalesceFixture(FixtureBase):
             pytest.param((4, 1, 8), (1, 8, 1), 3, marks=pytest.mark.full),
             # outer product: (M,1) + (1,N) -> 2 groups
             pytest.param((64, 1), (1, 128), 2, marks=pytest.mark.full),
+            # non-broadcast size-1: (2,1,3) + (2,1,3) -> 1 (all contiguous)
+            pytest.param((2, 1, 3), (2, 1, 3), 1, marks=pytest.mark.full),
+            # scalar (0-dim) input: () + (4,) -> 1
+            pytest.param((), (4,), 1, marks=pytest.mark.full),
         ]),
     ]
 
