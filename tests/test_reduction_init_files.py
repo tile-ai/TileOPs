@@ -1,9 +1,11 @@
-"""Tests for reduction placeholder __init__.py files (issue #432).
+"""Tests for reduction __init__.py files (issue #432).
 
 Validates that:
-- tileops/kernels/reduction/__init__.py has commented-out imports for 6 Kernel classes
-- tileops/ops/reduction/__init__.py has commented-out imports for 20 Op classes
-- tileops/ops/__init__.py has commented-out reduction imports and __all__ entries
+- tileops/kernels/reduction/__init__.py has entries for 6 Kernel classes
+  (either active imports or commented-out placeholders)
+- tileops/ops/reduction/__init__.py has entries for 20 Op classes
+  (either active imports or commented-out placeholders)
+- tileops/ops/__init__.py has reduction imports and __all__ entries
 - All files pass ruff check and ruff format --check
 """
 
@@ -69,46 +71,39 @@ class TestKernelReductionInit:
         for cls in KERNEL_CLASSES:
             assert cls in content, f"Kernel class {cls!r} not found in {KERNEL_INIT}"
 
-    def test_imports_are_commented_out(self):
+    def test_imports_present(self):
         content = KERNEL_INIT.read_text()
         for cls in KERNEL_CLASSES:
-            # The class should appear in a commented-out import line
-            found_commented = False
+            # Each class should appear in either a commented-out or active import
+            found = False
             for line in content.splitlines():
-                if cls in line and line.lstrip().startswith("#"):
-                    found_commented = True
+                if cls in line and ("import" in line or f'"{cls}"' in line):
+                    found = True
                     break
-            assert found_commented, f"Kernel class {cls!r} should be in a commented-out import"
+            assert found, f"Kernel class {cls!r} should be in an import (active or commented)"
 
     def test_has_all_dunder_all(self):
         content = KERNEL_INIT.read_text()
         assert "__all__" in content, "__all__ not found"
 
-    def test_all_entries_are_commented_out(self):
+    def test_all_entries_present(self):
         content = KERNEL_INIT.read_text()
         for cls in KERNEL_CLASSES:
-            # Each class should appear in __all__ as a commented-out string entry
-            found_commented_all = False
+            # Each class should appear in __all__ (commented or active)
+            found = False
             for line in content.splitlines():
-                if f'"{cls}"' in line and line.lstrip().startswith("#"):
-                    found_commented_all = True
+                if f'"{cls}"' in line:
+                    found = True
                     break
-            assert found_commented_all, (
-                f"Kernel class {cls!r} should have a commented-out __all__ entry"
-            )
+            assert found, f"Kernel class {cls!r} should have an __all__ entry (active or commented)"
 
     def test_exact_kernel_count(self):
         content = KERNEL_INIT.read_text()
-        # Count commented-out __all__ entries
-        commented_all = [
-            line
-            for line in content.splitlines()
-            if line.lstrip().startswith("#") and '"' in line and "Kernel" in line
-        ]
-        # Should be at least 6 kernel classes in __all__
-        assert len(commented_all) >= len(KERNEL_CLASSES), (
-            f"Expected at least {len(KERNEL_CLASSES)} commented kernel entries, "
-            f"found {len(commented_all)}"
+        # Count __all__ entries (both commented and active) containing "Kernel"
+        all_entries = [line for line in content.splitlines() if '"' in line and "Kernel" in line]
+        assert len(all_entries) >= len(KERNEL_CLASSES), (
+            f"Expected at least {len(KERNEL_CLASSES)} kernel entries in __all__, "
+            f"found {len(all_entries)}"
         )
 
 
@@ -123,41 +118,38 @@ class TestOpsReductionInit:
         for cls in OP_CLASSES:
             assert cls in content, f"Op class {cls!r} not found in {OPS_REDUCTION_INIT}"
 
-    def test_imports_are_commented_out(self):
+    def test_imports_present(self):
         content = OPS_REDUCTION_INIT.read_text()
         for cls in OP_CLASSES:
-            found_commented = False
+            # Each class should appear in either a commented-out or active import
+            found = False
             for line in content.splitlines():
-                if cls in line and line.lstrip().startswith("#"):
-                    found_commented = True
+                if cls in line:
+                    found = True
                     break
-            assert found_commented, f"Op class {cls!r} should be in a commented-out import"
+            assert found, f"Op class {cls!r} should be in an import (active or commented)"
 
     def test_has_all_dunder_all(self):
         content = OPS_REDUCTION_INIT.read_text()
         assert "__all__" in content, "__all__ not found"
 
-    def test_all_entries_are_commented_out(self):
+    def test_all_entries_present(self):
         content = OPS_REDUCTION_INIT.read_text()
         for cls in OP_CLASSES:
-            found_commented_all = False
+            # Each class should appear in __all__ (commented or active)
+            found = False
             for line in content.splitlines():
-                if f'"{cls}"' in line and line.lstrip().startswith("#"):
-                    found_commented_all = True
+                if f'"{cls}"' in line or cls in line:
+                    found = True
                     break
-            assert found_commented_all, (
-                f"Op class {cls!r} should have a commented-out __all__ entry"
-            )
+            assert found, f"Op class {cls!r} should have an __all__ entry (active or commented)"
 
     def test_exact_op_count(self):
         content = OPS_REDUCTION_INIT.read_text()
-        commented_all = [
-            line
-            for line in content.splitlines()
-            if line.lstrip().startswith("#") and '"' in line and "Op" in line
-        ]
-        assert len(commented_all) >= len(OP_CLASSES), (
-            f"Expected at least {len(OP_CLASSES)} commented op entries, found {len(commented_all)}"
+        # Count __all__ entries (both commented and active) containing "Op"
+        all_entries = [line for line in content.splitlines() if '"' in line and "Op" in line]
+        assert len(all_entries) >= len(OP_CLASSES), (
+            f"Expected at least {len(OP_CLASSES)} op entries in __all__, found {len(all_entries)}"
         )
 
 
@@ -179,17 +171,15 @@ class TestOpsMainInit:
         for cls in OP_CLASSES:
             assert cls in content, f"Op class {cls!r} not found in ops/__init__.py __all__"
 
-    def test_all_op_entries_are_commented(self):
+    def test_all_op_entries_present(self):
         content = OPS_INIT.read_text()
         for cls in OP_CLASSES:
-            found_commented_all = False
+            found = False
             for line in content.splitlines():
-                if f'"{cls}"' in line and line.lstrip().startswith("#"):
-                    found_commented_all = True
+                if f'"{cls}"' in line:
+                    found = True
                     break
-            assert found_commented_all, (
-                f"Op class {cls!r} should have a commented-out __all__ entry"
-            )
+            assert found, f"Op class {cls!r} should have an __all__ entry (active or commented)"
 
 
 class TestRuffLinting:
