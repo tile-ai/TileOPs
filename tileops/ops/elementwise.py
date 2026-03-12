@@ -15,31 +15,61 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.elementwise import (
+    AbsKernel,
     AddKernel,
     BitwiseAndKernel,
+    BitwiseNotKernel,
     BitwiseOrKernel,
     BitwiseXorKernel,
+    CeilKernel,
+    CosKernel,
     DivKernel,
     EqKernel,
+    ErfKernel,
+    ExpKernel,
+    Expm1Kernel,
     FloorDivideKernel,
+    FloorKernel,
     GeKernel,
     GeluAndMulKernel,
+    GeluKernel,
     GeluTanhAndMulKernel,
     GtKernel,
+    HardsigmoidKernel,
+    HardswishKernel,
+    IsfiniteKernel,
+    IsinfKernel,
+    IsnanKernel,
     LeKernel,
     LerpKernel,
+    Log1pKernel,
     LogicalAndKernel,
+    LogicalNotKernel,
     LogicalOrKernel,
+    LogKernel,
     LtKernel,
     MaximumKernel,
     MinimumKernel,
+    MishKernel,
     MulKernel,
+    NegKernel,
     NeKernel,
     PowKernel,
+    ReciprocalKernel,
     ReluKernel,
     RemainderKernel,
+    RoundKernel,
+    RsqrtKernel,
+    SeluKernel,
+    SigmoidKernel,
+    SignKernel,
     SiluAndMulKernel,
+    SiluKernel,
+    SinKernel,
+    SqrtKernel,
     SubKernel,
+    TanhKernel,
+    TruncKernel,
 )
 from tileops.kernels.kernel import Kernel
 
@@ -81,6 +111,41 @@ __all__ = [
     "SiluAndMulOp",
     "GeluAndMulOp",
     "GeluTanhAndMulOp",
+    # --- math (17) ---
+    "AbsOp",
+    "CeilOp",
+    "CosOp",
+    "ErfOp",
+    "ExpOp",
+    "Expm1Op",
+    "FloorOp",
+    "Log1pOp",
+    "LogOp",
+    "NegOp",
+    "ReciprocalOp",
+    "RoundOp",
+    "RsqrtOp",
+    "SignOp",
+    "SinOp",
+    "SqrtOp",
+    "TruncOp",
+    # --- activations (8) ---
+    "GeluOp",
+    "HardsigmoidOp",
+    "HardswishOp",
+    "MishOp",
+    "SeluOp",
+    "SigmoidOp",
+    "SiluOp",
+    "TanhOp",
+    # --- logical (1) ---
+    "LogicalNotOp",
+    # --- bitwise (1) ---
+    "BitwiseNotOp",
+    # --- special predicates (3) ---
+    "IsfiniteOp",
+    "IsinfOp",
+    "IsnanOp",
 ]
 
 
@@ -177,6 +242,7 @@ class UnaryOp(Op):
         self.kernel = self.kernel_map[self._op_name](
             N_total, dtype, strategy=strategy, tune=tune,
         )
+        self.output_dtype = getattr(self.kernel, "output_dtype", dtype)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -185,12 +251,13 @@ class UnaryOp(Op):
     @property
     def total_memory(self) -> float:
         """Read x + write y."""
-        elem = self.dtype.itemsize
-        return 2 * self.N_total * elem
+        return self.N_total * (self.dtype.itemsize + self.output_dtype.itemsize)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         if x.numel() != self.N_total:
             raise ValueError(
                 f"Expected {self.N_total} elements, got {x.numel()}"
@@ -573,3 +640,238 @@ class GeluTanhAndMulOp(FusedGatedOp):
 
     _op_name = "gelu_tanh_and_mul"
     kernel_cls = GeluTanhAndMulKernel
+
+
+# ---------------------------------------------------------------------------
+# Unary math ops (17)
+# ---------------------------------------------------------------------------
+
+
+class ExpOp(UnaryOp):
+    """Element-wise exp(x)."""
+
+    _op_name = "exp"
+    kernel_cls = ExpKernel
+
+
+class LogOp(UnaryOp):
+    """Element-wise log(x)."""
+
+    _op_name = "log"
+    kernel_cls = LogKernel
+
+
+class SqrtOp(UnaryOp):
+    """Element-wise sqrt(x)."""
+
+    _op_name = "sqrt"
+    kernel_cls = SqrtKernel
+
+
+class RsqrtOp(UnaryOp):
+    """Element-wise 1/sqrt(x)."""
+
+    _op_name = "rsqrt"
+    kernel_cls = RsqrtKernel
+
+
+class AbsOp(UnaryOp):
+    """Element-wise |x|."""
+
+    _op_name = "abs"
+    kernel_cls = AbsKernel
+
+
+class NegOp(UnaryOp):
+    """Element-wise -x."""
+
+    _op_name = "neg"
+    kernel_cls = NegKernel
+
+
+class ReciprocalOp(UnaryOp):
+    """Element-wise 1/x."""
+
+    _op_name = "reciprocal"
+    kernel_cls = ReciprocalKernel
+
+
+class SignOp(UnaryOp):
+    """Element-wise sign(x): -1, 0, or +1."""
+
+    _op_name = "sign"
+    kernel_cls = SignKernel
+
+
+class SinOp(UnaryOp):
+    """Element-wise sin(x)."""
+
+    _op_name = "sin"
+    kernel_cls = SinKernel
+
+
+class CosOp(UnaryOp):
+    """Element-wise cos(x)."""
+
+    _op_name = "cos"
+    kernel_cls = CosKernel
+
+
+class FloorOp(UnaryOp):
+    """Element-wise floor(x)."""
+
+    _op_name = "floor"
+    kernel_cls = FloorKernel
+
+
+class CeilOp(UnaryOp):
+    """Element-wise ceil(x)."""
+
+    _op_name = "ceil"
+    kernel_cls = CeilKernel
+
+
+class RoundOp(UnaryOp):
+    """Element-wise round(x)."""
+
+    _op_name = "round"
+    kernel_cls = RoundKernel
+
+
+class TruncOp(UnaryOp):
+    """Element-wise trunc(x)."""
+
+    _op_name = "trunc"
+    kernel_cls = TruncKernel
+
+
+class ErfOp(UnaryOp):
+    """Element-wise erf(x)."""
+
+    _op_name = "erf"
+    kernel_cls = ErfKernel
+
+
+class Log1pOp(UnaryOp):
+    """Element-wise log(1 + x)."""
+
+    _op_name = "log1p"
+    kernel_cls = Log1pKernel
+
+
+class Expm1Op(UnaryOp):
+    """Element-wise exp(x) - 1."""
+
+    _op_name = "expm1"
+    kernel_cls = Expm1Kernel
+
+
+# ---------------------------------------------------------------------------
+# Activation ops (8)
+# ---------------------------------------------------------------------------
+
+
+class GeluOp(UnaryOp):
+    """Element-wise GELU using the standard erf formulation."""
+
+    _op_name = "gelu"
+    kernel_cls = GeluKernel
+
+
+class SiluOp(UnaryOp):
+    """Element-wise SiLU (Swish): x * sigmoid(x)."""
+
+    _op_name = "silu"
+    kernel_cls = SiluKernel
+
+
+class SigmoidOp(UnaryOp):
+    """Element-wise sigmoid(x)."""
+
+    _op_name = "sigmoid"
+    kernel_cls = SigmoidKernel
+
+
+class TanhOp(UnaryOp):
+    """Element-wise tanh(x)."""
+
+    _op_name = "tanh"
+    kernel_cls = TanhKernel
+
+
+class HardswishOp(UnaryOp):
+    """Element-wise HardSwish: x * clamp(x + 3, 0, 6) / 6."""
+
+    _op_name = "hardswish"
+    kernel_cls = HardswishKernel
+
+
+class HardsigmoidOp(UnaryOp):
+    """Element-wise HardSigmoid: clamp(x + 3, 0, 6) / 6."""
+
+    _op_name = "hardsigmoid"
+    kernel_cls = HardsigmoidKernel
+
+
+class MishOp(UnaryOp):
+    """Element-wise Mish: x * tanh(softplus(x))."""
+
+    _op_name = "mish"
+    kernel_cls = MishKernel
+
+
+class SeluOp(UnaryOp):
+    """Element-wise SELU."""
+
+    _op_name = "selu"
+    kernel_cls = SeluKernel
+
+
+# ---------------------------------------------------------------------------
+# Logical op (1)
+# ---------------------------------------------------------------------------
+
+
+class LogicalNotOp(UnaryOp):
+    """Element-wise logical NOT with bool output."""
+
+    _op_name = "logical_not"
+    kernel_cls = LogicalNotKernel
+
+
+# ---------------------------------------------------------------------------
+# Bitwise op (1)
+# ---------------------------------------------------------------------------
+
+
+class BitwiseNotOp(UnaryOp):
+    """Element-wise bitwise NOT (~x) for bool/integer inputs."""
+
+    _op_name = "bitwise_not"
+    kernel_cls = BitwiseNotKernel
+
+
+# ---------------------------------------------------------------------------
+# Special predicate ops (3)
+# ---------------------------------------------------------------------------
+
+
+class IsnanOp(UnaryOp):
+    """Element-wise isnan with bool output."""
+
+    _op_name = "isnan"
+    kernel_cls = IsnanKernel
+
+
+class IsinfOp(UnaryOp):
+    """Element-wise isinf with bool output."""
+
+    _op_name = "isinf"
+    kernel_cls = IsinfKernel
+
+
+class IsfiniteOp(UnaryOp):
+    """Element-wise isfinite with bool output."""
+
+    _op_name = "isfinite"
+    kernel_cls = IsfiniteKernel

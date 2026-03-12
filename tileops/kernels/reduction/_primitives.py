@@ -13,6 +13,7 @@ import tilelang.language as T
 __all__ = [
     "align_up",
     "DEFAULT_ALIGNMENT",
+    "SHARED_MEMORY_BUDGET_BYTES",
     "make_reduce_epilogue",
     "make_welford_update",
     "make_softmax_epilogue",
@@ -22,6 +23,10 @@ __all__ = [
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
 # shared memory instructions.  Sub-categories may override this default.
 DEFAULT_ALIGNMENT: int = 256
+
+# Default shared memory budget per SM (48 KiB) used to compute the maximum
+# block_m that fits within a single thread block's shared memory allocation.
+SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
 
 
 def align_up(n: int, alignment: int) -> int:

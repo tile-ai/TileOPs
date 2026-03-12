@@ -27,6 +27,8 @@ OPS_INIT = ROOT / "tileops" / "ops" / "__init__.py"
 # --- Implemented kernel classes (active imports) ---
 
 IMPLEMENTED_KERNEL_CLASSES = [
+    "ArgreduceKernel",
+    "CumulativeKernel",
     "LogSumExpKernel",
     "ReduceKernel",
     "SoftmaxKernel",
@@ -35,8 +37,6 @@ IMPLEMENTED_KERNEL_CLASSES = [
 # --- Placeholder kernel classes (still commented out) ---
 
 PLACEHOLDER_KERNEL_CLASSES = [
-    "ArgreduceKernel",
-    "CumulativeKernel",
     "LogicalReduceKernel",
     "VectorNormKernel",
 ]
@@ -48,6 +48,10 @@ ALL_KERNEL_CLASSES = IMPLEMENTED_KERNEL_CLASSES + PLACEHOLDER_KERNEL_CLASSES
 IMPLEMENTED_OP_CLASSES = [
     "AmaxOp",
     "AminOp",
+    "ArgmaxOp",
+    "ArgminOp",
+    "CumprodOp",
+    "CumsumOp",
     "LogSoftmaxOp",
     "LogSumExpOp",
     "MeanOp",
@@ -64,13 +68,9 @@ IMPLEMENTED_OP_CLASSES = [
 PLACEHOLDER_OP_CLASSES = [
     "AllOp",
     "AnyOp",
-    "ArgmaxOp",
-    "ArgminOp",
     "CountNonzeroOp",
     "CummaxOp",
     "CumminOp",
-    "CumprodOp",
-    "CumsumOp",
     "InfNormOp",
     "L1NormOp",
     "L2NormOp",

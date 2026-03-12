@@ -111,6 +111,8 @@ Requirements:
   imag split and recombine), dtype casting, padding, batching loops, and reshaping.
 - `Op.forward` delegates the core GPU computation entirely to `self.kernel(...)` (which
   calls `Kernel.__call__` → `Kernel.forward`).
+- Each op defines an explicit dtype contract: supported input dtypes, output dtype, and
+  rejection behavior for unsupported dtypes are stated in code, tests, and PR description.
 - `accum_dtype` is **not** stored on the `Op` class and is **not** a parameter of
   `Op.__init__`.
 - `kernel_map: Optional[Dict[str, Kernel]] = None` is the **last** `__init__` parameter,
@@ -162,6 +164,12 @@ ______________________________________________________________________
 - Autotune covers all hardware-aligned config values; the search space is documented in
   the PR description or inline comments.
 - Benchmark results (latency, BW/TFLOPs vs. baseline) are recorded in the PR description.
+- GPU-dependent tests and benchmarks are validated on a real machine with host-visible CUDA devices before results are recorded in the PR description.
+- Benchmark tables cover representative small, medium, and large shapes unless the tracking issue defines a different matrix.
+- Benchmark reporting is truthful and complete: do not omit representative regressions to make the table look better.
+- PR descriptions for new ops include a dtype support matrix and an acceptance checklist
+  (`AC-1`, `AC-2`, ...) tied to concrete test and benchmark evidence.
+- Commit messages stay concise; detailed test logs and benchmark tables belong in the PR description or issue, not in the commit body.
 - Each optimization iteration is documented: what was tried, results before/after, and why
   optimization stopped.
 
