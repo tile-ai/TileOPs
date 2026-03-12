@@ -1,7 +1,7 @@
 """Benchmarks for representative unary elementwise ops added in issue #437.
 
 Profiles TileOPs vs PyTorch baselines for each new elementwise category using
-the default op configuration.
+small, medium, and large 1D shapes with the default op configuration.
 """
 
 from typing import Callable, Optional
@@ -19,6 +19,8 @@ from tileops.ops.elementwise import (
     IsnanOp,
     LogicalNotOp,
 )
+
+_SHAPES = (262_144, 1_048_576, 4_000_000)
 
 
 class UnaryElementwiseBenchCase:
@@ -81,31 +83,87 @@ class UnaryElementwiseBenchFixture(FixtureBase):
     PARAMS = [
         ("op_name, n_total, dtype, output_dtype, op_cls, baseline_fn, gen_inputs", [
             pytest.param(
-                "exp", 4_000_000, torch.float16, torch.float16,
+                "exp", _SHAPES[0], torch.float16, torch.float16,
                 ExpOp, torch.exp, _randn, marks=pytest.mark.smoke,
             ),
             pytest.param(
-                "exp", 4_000_000, torch.bfloat16, torch.bfloat16,
+                "exp", _SHAPES[1], torch.float16, torch.float16,
                 ExpOp, torch.exp, _randn, marks=pytest.mark.full,
             ),
             pytest.param(
-                "gelu", 4_000_000, torch.float16, torch.float16,
+                "exp", _SHAPES[2], torch.float16, torch.float16,
+                ExpOp, torch.exp, _randn, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "exp", _SHAPES[0], torch.bfloat16, torch.bfloat16,
+                ExpOp, torch.exp, _randn, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "exp", _SHAPES[1], torch.bfloat16, torch.bfloat16,
+                ExpOp, torch.exp, _randn, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "exp", _SHAPES[2], torch.bfloat16, torch.bfloat16,
+                ExpOp, torch.exp, _randn, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "gelu", _SHAPES[0], torch.float16, torch.float16,
                 GeluOp, F.gelu, _randn, marks=pytest.mark.full,
             ),
             pytest.param(
-                "gelu", 4_000_000, torch.bfloat16, torch.bfloat16,
+                "gelu", _SHAPES[1], torch.float16, torch.float16,
                 GeluOp, F.gelu, _randn, marks=pytest.mark.full,
             ),
             pytest.param(
-                "logical_not", 4_000_000, torch.float16, torch.bool,
+                "gelu", _SHAPES[2], torch.float16, torch.float16,
+                GeluOp, F.gelu, _randn, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "gelu", _SHAPES[0], torch.bfloat16, torch.bfloat16,
+                GeluOp, F.gelu, _randn, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "gelu", _SHAPES[1], torch.bfloat16, torch.bfloat16,
+                GeluOp, F.gelu, _randn, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "gelu", _SHAPES[2], torch.bfloat16, torch.bfloat16,
+                GeluOp, F.gelu, _randn, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "logical_not", _SHAPES[0], torch.float16, torch.bool,
                 LogicalNotOp, torch.logical_not, _logical_inputs, marks=pytest.mark.full,
             ),
             pytest.param(
-                "bitwise_not", 4_000_000, torch.int32, torch.int32,
+                "logical_not", _SHAPES[1], torch.float16, torch.bool,
+                LogicalNotOp, torch.logical_not, _logical_inputs, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "logical_not", _SHAPES[2], torch.float16, torch.bool,
+                LogicalNotOp, torch.logical_not, _logical_inputs, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "bitwise_not", _SHAPES[0], torch.int32, torch.int32,
                 BitwiseNotOp, torch.bitwise_not, _bitwise_inputs, marks=pytest.mark.full,
             ),
             pytest.param(
-                "isnan", 4_000_000, torch.float16, torch.bool,
+                "bitwise_not", _SHAPES[1], torch.int32, torch.int32,
+                BitwiseNotOp, torch.bitwise_not, _bitwise_inputs, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "bitwise_not", _SHAPES[2], torch.int32, torch.int32,
+                BitwiseNotOp, torch.bitwise_not, _bitwise_inputs, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "isnan", _SHAPES[0], torch.float16, torch.bool,
+                IsnanOp, torch.isnan, _special_inputs, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "isnan", _SHAPES[1], torch.float16, torch.bool,
+                IsnanOp, torch.isnan, _special_inputs, marks=pytest.mark.full,
+            ),
+            pytest.param(
+                "isnan", _SHAPES[2], torch.float16, torch.bool,
                 IsnanOp, torch.isnan, _special_inputs, marks=pytest.mark.full,
             ),
         ]),
