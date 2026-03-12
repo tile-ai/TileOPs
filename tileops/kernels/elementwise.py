@@ -24,12 +24,48 @@ import torch
 from tileops.kernels.kernel import Kernel
 
 __all__ = [
-    "UnaryKernel",
+    # --- base classes ---
     "BinaryKernel",
     "FusedGatedKernel",
-    "ReluKernel",
+    "UnaryKernel",
+    # --- concrete: existing ---
     "AddKernel",
+    "ReluKernel",
     "SiluAndMulKernel",
+    # --- concrete: unary math (17) ---
+    "AbsKernel",
+    "CeilKernel",
+    "CosKernel",
+    "ErfKernel",
+    "ExpKernel",
+    "Expm1Kernel",
+    "FloorKernel",
+    "Log1pKernel",
+    "LogKernel",
+    "NegKernel",
+    "ReciprocalKernel",
+    "RoundKernel",
+    "RsqrtKernel",
+    "SignKernel",
+    "SinKernel",
+    "SqrtKernel",
+    "TruncKernel",
+    # --- concrete: activations (8) ---
+    "GeluKernel",
+    "HardsigmoidKernel",
+    "HardswishKernel",
+    "MishKernel",
+    "SeluKernel",
+    "SigmoidKernel",
+    "SiluKernel",
+    "TanhKernel",
+    # --- concrete: logical / bitwise (2) ---
+    "BitwiseNotKernel",
+    "LogicalNotKernel",
+    # --- concrete: special predicates (3) ---
+    "IsfiniteKernel",
+    "IsinfKernel",
+    "IsnanKernel",
 ]
 
 # ---------------------------------------------------------------------------
@@ -432,3 +468,328 @@ class SiluAndMulKernel(FusedGatedKernel):
     @staticmethod
     def activation_func(x):
         return x * T.sigmoid(x)
+
+
+# ---------------------------------------------------------------------------
+# Concrete unary kernel subclasses -- math (17)
+# ---------------------------------------------------------------------------
+
+
+class ExpKernel(UnaryKernel):
+    """Element-wise exp(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.exp(x)
+
+
+class LogKernel(UnaryKernel):
+    """Element-wise log(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.log(x)
+
+
+class SqrtKernel(UnaryKernel):
+    """Element-wise sqrt(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.sqrt(x)
+
+
+class RsqrtKernel(UnaryKernel):
+    """Element-wise 1/sqrt(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.rsqrt(x)
+
+
+class AbsKernel(UnaryKernel):
+    """Element-wise |x|."""
+
+    @staticmethod
+    def op_func(x):
+        return T.abs(x)
+
+
+class NegKernel(UnaryKernel):
+    """Element-wise -x."""
+
+    @staticmethod
+    def op_func(x):
+        return -x
+
+
+class ReciprocalKernel(UnaryKernel):
+    """Element-wise 1/x."""
+
+    @staticmethod
+    def op_func(x):
+        return T.cast(1.0, "float32") / x
+
+
+class SignKernel(UnaryKernel):
+    """Element-wise sign(x): -1, 0, or +1."""
+
+    @staticmethod
+    def op_func(x):
+        return T.if_then_else(
+            x > T.cast(0.0, "float32"),
+            T.cast(1.0, "float32"),
+            T.if_then_else(x < T.cast(0.0, "float32"),
+                           T.cast(-1.0, "float32"),
+                           T.cast(0.0, "float32")),
+        )
+
+
+class SinKernel(UnaryKernel):
+    """Element-wise sin(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.sin(x)
+
+
+class CosKernel(UnaryKernel):
+    """Element-wise cos(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.cos(x)
+
+
+class FloorKernel(UnaryKernel):
+    """Element-wise floor(x).
+
+    Casts to fp32 before calling ``T.floor`` because ``hfloor`` is not
+    available for ``cutlass::half_t`` in CUDA.
+    """
+
+    @staticmethod
+    def op_func(x):
+        return T.floor(T.cast(x, "float32"))
+
+
+class CeilKernel(UnaryKernel):
+    """Element-wise ceil(x).
+
+    Casts to fp32 before calling ``T.ceil`` because ``hceil`` is not
+    available for ``cutlass::half_t`` in CUDA.
+    """
+
+    @staticmethod
+    def op_func(x):
+        return T.ceil(T.cast(x, "float32"))
+
+
+class RoundKernel(UnaryKernel):
+    """Element-wise round(x) with banker's rounding (round-to-nearest-even).
+
+    Uses ``T.nearbyint`` (maps to ``nearbyintf`` in CUDA) to match
+    PyTorch's ``torch.round`` semantics. Casts to fp32 because
+    ``hnearbyint`` is not available for ``cutlass::half_t``.
+    """
+
+    @staticmethod
+    def op_func(x):
+        return T.nearbyint(T.cast(x, "float32"))
+
+
+class TruncKernel(UnaryKernel):
+    """Element-wise trunc(x) -- integer part toward zero.
+
+    Casts to fp32 before calling ``T.trunc`` because ``htrunc`` is not
+    available for ``cutlass::half_t`` in CUDA.
+    """
+
+    @staticmethod
+    def op_func(x):
+        return T.trunc(T.cast(x, "float32"))
+
+
+class ErfKernel(UnaryKernel):
+    """Element-wise erf(x).
+
+    Casts to fp32 before calling ``T.erf`` because the half-precision
+    intrinsic ``herf`` is not a valid CUDA built-in.
+    """
+
+    @staticmethod
+    def op_func(x):
+        return T.erf(T.cast(x, "float32"))
+
+
+class Log1pKernel(UnaryKernel):
+    """Element-wise log(1 + x).
+
+    Uses composite ``log(1 + x)`` because ``T.log1p`` is not lowered
+    by the TileLang compiler.
+    """
+
+    @staticmethod
+    def op_func(x):
+        return T.log(T.cast(1.0, "float32") + x)
+
+
+class Expm1Kernel(UnaryKernel):
+    """Element-wise exp(x) - 1."""
+
+    @staticmethod
+    def op_func(x):
+        return T.exp(x) - T.cast(1.0, "float32")
+
+
+# ---------------------------------------------------------------------------
+# Concrete unary kernel subclasses -- activations (8)
+# ---------------------------------------------------------------------------
+
+
+class GeluKernel(UnaryKernel):
+    """Element-wise GELU (tanh approximation).
+
+    gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    """
+
+    @staticmethod
+    def op_func(x):
+        sqrt_2_over_pi = T.cast(0.7978845608, "float32")
+        coeff = T.cast(0.044715, "float32")
+        half = T.cast(0.5, "float32")
+        one = T.cast(1.0, "float32")
+        return half * x * (one + T.tanh(sqrt_2_over_pi * (x + coeff * x * x * x)))
+
+
+class SiluKernel(UnaryKernel):
+    """Element-wise SiLU (Swish): x * sigmoid(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return x * T.sigmoid(x)
+
+
+class SigmoidKernel(UnaryKernel):
+    """Element-wise sigmoid(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.sigmoid(x)
+
+
+class TanhKernel(UnaryKernel):
+    """Element-wise tanh(x)."""
+
+    @staticmethod
+    def op_func(x):
+        return T.tanh(x)
+
+
+class HardswishKernel(UnaryKernel):
+    """Element-wise HardSwish: x * clamp(x + 3, 0, 6) / 6."""
+
+    @staticmethod
+    def op_func(x):
+        three = T.cast(3.0, "float32")
+        six = T.cast(6.0, "float32")
+        zero = T.cast(0.0, "float32")
+        clamped = T.min(T.max(x + three, zero), six)
+        return x * clamped / six
+
+
+class HardsigmoidKernel(UnaryKernel):
+    """Element-wise HardSigmoid: clamp(x + 3, 0, 6) / 6."""
+
+    @staticmethod
+    def op_func(x):
+        three = T.cast(3.0, "float32")
+        six = T.cast(6.0, "float32")
+        zero = T.cast(0.0, "float32")
+        return T.min(T.max(x + three, zero), six) / six
+
+
+class MishKernel(UnaryKernel):
+    """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
+
+    @staticmethod
+    def op_func(x):
+        one = T.cast(1.0, "float32")
+        return x * T.tanh(T.log(one + T.exp(x)))
+
+
+class SeluKernel(UnaryKernel):
+    """Element-wise SELU: scale * (max(0,x) + min(0, alpha*(exp(x)-1))).
+
+    alpha = 1.6732632423543772, scale = 1.0507009873554805
+    """
+
+    @staticmethod
+    def op_func(x):
+        alpha = T.cast(1.6732632423543772, "float32")
+        scale = T.cast(1.0507009873554805, "float32")
+        one = T.cast(1.0, "float32")
+        zero = T.cast(0.0, "float32")
+        return scale * T.if_then_else(x > zero, x, alpha * (T.exp(x) - one))
+
+
+# ---------------------------------------------------------------------------
+# Concrete unary kernel subclasses -- logical / bitwise (2)
+# ---------------------------------------------------------------------------
+
+
+class LogicalNotKernel(UnaryKernel):
+    """Element-wise logical NOT: returns 1.0 where x == 0, else 0.0."""
+
+    @staticmethod
+    def op_func(x):
+        zero = T.cast(0.0, "float32")
+        one = T.cast(1.0, "float32")
+        return T.if_then_else(x == zero, one, zero)
+
+
+class BitwiseNotKernel(UnaryKernel):
+    """Element-wise bitwise NOT (~x) for integer types.
+
+    Uses XOR with ``-1`` (all-ones) because ``T.bitwise_not`` fails on
+    vectorized ``int4`` CUDA types.
+    """
+
+    @staticmethod
+    def op_func(x):
+        return T.bitwise_xor(x, T.cast(-1, "int32"))
+
+
+# ---------------------------------------------------------------------------
+# Concrete unary kernel subclasses -- special predicates (3)
+# ---------------------------------------------------------------------------
+
+
+class IsnanKernel(UnaryKernel):
+    """Element-wise isnan: returns 1.0 for NaN, 0.0 otherwise."""
+
+    @staticmethod
+    def op_func(x):
+        return T.if_then_else(
+            T.isnan(x), T.cast(1.0, "float32"), T.cast(0.0, "float32"),
+        )
+
+
+class IsinfKernel(UnaryKernel):
+    """Element-wise isinf: returns 1.0 for +/-inf, 0.0 otherwise."""
+
+    @staticmethod
+    def op_func(x):
+        return T.if_then_else(
+            T.isinf(x), T.cast(1.0, "float32"), T.cast(0.0, "float32"),
+        )
+
+
+class IsfiniteKernel(UnaryKernel):
+    """Element-wise isfinite: returns 1.0 for finite values, 0.0 otherwise."""
+
+    @staticmethod
+    def op_func(x):
+        return T.if_then_else(
+            T.isfinite(x), T.cast(1.0, "float32"), T.cast(0.0, "float32"),
+        )
