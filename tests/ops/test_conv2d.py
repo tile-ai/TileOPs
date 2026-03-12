@@ -5,6 +5,8 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.conv2d import Conv2dIm2ColKernel, PointwiseConvKernel
+from tileops.kernels.gemm import GemmKernel
 from tileops.ops import Conv2dOp
 
 
@@ -35,6 +37,11 @@ class Conv2dFixture(FixtureBase):
                 1, 512, 56, 56, 64, (1, 1), (1, 1), (0, 0), False, torch.bfloat16, True,
                 marks=pytest.mark.full,
                 id="full-bf16-512in-64out-1x1-s1-56-no-bias-tuned",
+            ),
+            pytest.param(
+                1, 32, 28, 28, 64, (1, 1), (2, 2), (1, 1), True, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-fp16-32in-64out-1x1-s2-pad1-bias",
             ),
             pytest.param(
                 1, 3, 224, 224, 64, (5, 5), (1, 1), (2, 2), True, torch.float16, False,
@@ -122,6 +129,59 @@ def test_conv2d(
         "rtol": 1.6e-2,
     }
     test.check(op, *test.gen_inputs(), **tolerances)
+
+
+@pytest.mark.smoke
+def test_conv2d_1x1_dispatches_to_pointwise_kernel() -> None:
+    op = Conv2dOp(
+        1,
+        64,
+        56,
+        56,
+        128,
+        1,
+        stride=2,
+        padding=1,
+        dtype=torch.float16,
+    )
+    assert op.is_pointwise is True
+    assert op.use_pointwise_gemm is False
+    assert isinstance(op.kernel, PointwiseConvKernel)
+
+
+@pytest.mark.smoke
+def test_conv2d_1x1_s1_p0_dispatches_to_gemm_kernel() -> None:
+    op = Conv2dOp(
+        1,
+        64,
+        56,
+        56,
+        128,
+        1,
+        stride=1,
+        padding=0,
+        dtype=torch.float16,
+    )
+    assert op.is_pointwise is True
+    assert op.use_pointwise_gemm is True
+    assert isinstance(op.kernel, GemmKernel)
+
+
+@pytest.mark.smoke
+def test_conv2d_non_1x1_dispatches_to_im2col_kernel() -> None:
+    op = Conv2dOp(
+        1,
+        64,
+        56,
+        56,
+        128,
+        3,
+        stride=1,
+        padding=1,
+        dtype=torch.float16,
+    )
+    assert op.is_pointwise is False
+    assert isinstance(op.kernel, Conv2dIm2ColKernel)
 
 
 if __name__ == "__main__":

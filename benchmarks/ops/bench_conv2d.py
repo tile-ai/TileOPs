@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Tuple
 
 import pytest
@@ -7,19 +8,46 @@ from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_conv2d import Conv2dTest
 from tileops.ops import Conv2dOp
 
+ENABLE_TUNE = os.environ.get("CONV2D_BENCH_TUNE", "0") == "1"
+
 
 class Conv2dBenchmarkFixture:
     PARAMS = [
         ("n, c_in, h, w, c_out, kernel_size, stride, padding, bias, dtype", [
+            pytest.param(
+                1, 32, 28, 28, 64, (1, 1), (2, 2), (1, 1), True, torch.float16,
+                marks=pytest.mark.full,
+                id="bench-fp16-32in-64out-1x1-s2-pad1-28-bias",
+            ),
+            pytest.param(
+                1, 64, 56, 56, 256, 1, 1, 0, False, torch.float16,
+                marks=pytest.mark.full,
+                id="bench-fp16-64in-256out-1x1-s1-56",
+            ),
+            pytest.param(
+                1, 64, 56, 56, 256, 1, 2, 0, False, torch.float16,
+                marks=pytest.mark.full,
+                id="bench-fp16-64in-256out-1x1-s2-56",
+            ),
+            pytest.param(
+                1, 256, 56, 56, 512, 1, 1, 0, True, torch.float16,
+                marks=pytest.mark.full,
+                id="bench-fp16-256in-512out-1x1-s1-56-bias",
+            ),
+            pytest.param(
+                1, 128, 112, 112, 512, 1, 1, 0, False, torch.bfloat16,
+                marks=pytest.mark.full,
+                id="bench-bf16-128in-512out-1x1-s1-112",
+            ),
             pytest.param(
                 1, 64, 56, 56, 64, 3, 1, 1, False, torch.float16,
                 marks=pytest.mark.full,
                 id="bench-fp16-64in-64out-3x3-s1-56",
             ),
             pytest.param(
-                1, 64, 56, 56, 256, 1, 1, 0, False, torch.float16,
+                1, 512, 56, 56, 512, 3, 1, 1, False, torch.bfloat16,
                 marks=pytest.mark.full,
-                id="bench-fp16-64in-256out-1x1-s1-56",
+                id="bench-bf16-512in-512out-3x3-s1-56",
             ),
             pytest.param(
                 1, 128, 112, 112, 256, 3, 2, 1, False, torch.bfloat16,
@@ -30,11 +58,6 @@ class Conv2dBenchmarkFixture:
                 1, 64, 224, 224, 128, 5, 2, 2, False, torch.float16,
                 marks=pytest.mark.full,
                 id="bench-fp16-64in-128out-5x5-s2-224",
-            ),
-            pytest.param(
-                1, 512, 56, 56, 512, 3, 1, 1, False, torch.bfloat16,
-                marks=pytest.mark.full,
-                id="bench-bf16-512in-512out-3x3-s1-56",
             ),
         ]),
     ]
@@ -105,9 +128,12 @@ def test_conv2d_bench(
         stride=stride,
         padding=padding,
         dtype=dtype,
-        tune=True,
+        tune=ENABLE_TUNE,
     )
     result = bm.profile(op, *inputs)
+    kernel_size = str(kernel_size) if isinstance(kernel_size, tuple) else kernel_size
+    stride = str(stride) if isinstance(stride, tuple) else stride
+    padding = str(padding) if isinstance(padding, tuple) else padding
     BenchmarkReport.record("conv2d", locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)

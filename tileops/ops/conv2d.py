@@ -2,7 +2,7 @@ from typing import Dict, Optional, Sequence, Tuple
 
 import torch
 
-from tileops.kernels.conv2d import Conv2dIm2ColKernel
+from tileops.kernels.conv2d import Conv2dIm2ColKernel, PointwiseConvKernel
 from tileops.kernels.gemm import GemmKernel
 from tileops.kernels.kernel import Kernel
 
@@ -20,7 +20,7 @@ def _pair(value: int | Sequence[int]) -> Tuple[int, int]:
 
 
 class Conv2dOp(Op):
-    """Dense forward Conv2d implemented as TileLang im2col + TileLang GEMM."""
+    """Dense forward Conv2d with a dedicated 1x1 implicit-GEMM path."""
 
     def __init__(
         self,
@@ -61,38 +61,75 @@ class Conv2dOp(Op):
 
         self.m = self.n * self.out_h * self.out_w
         self.k = self.c_in * self.kernel_h * self.kernel_w
+        self.is_pointwise = self.kernel_h == 1 and self.kernel_w == 1
+        self.use_pointwise_gemm = (
+            self.is_pointwise
+            and self.stride_h == 1
+            and self.stride_w == 1
+            and self.pad_h == 0
+            and self.pad_w == 0
+        )
         self.dispatch_kernel(kernel_map)
 
-        self.im2col_kernel = self.kernel_map["im2col_kernel"](
-            self.n,
-            self.c_in,
-            self.h,
-            self.w,
-            self.kernel_h,
-            self.kernel_w,
-            self.out_h,
-            self.out_w,
-            self.stride_h,
-            self.stride_w,
-            self.pad_h,
-            self.pad_w,
-            self.dtype,
-            tune=tune,
-        )
-        self.gemm_kernel = self.kernel_map["gemm_kernel"](
-            self.m,
-            self.c_out,
-            self.k,
-            self.dtype,
-            tune=tune,
-        )
-        self.kernel = self.im2col_kernel
+        if self.is_pointwise:
+            if self.use_pointwise_gemm:
+                self.gemm_kernel = self.kernel_map["gemm_kernel"](
+                    self.m,
+                    self.c_out,
+                    self.c_in,
+                    self.dtype,
+                    tune=tune,
+                )
+                self.kernel = self.gemm_kernel
+            else:
+                self.pointwise_kernel = self.kernel_map["pointwise_kernel"](
+                    self.n,
+                    self.c_in,
+                    self.h,
+                    self.w,
+                    self.c_out,
+                    self.out_h,
+                    self.out_w,
+                    self.stride_h,
+                    self.stride_w,
+                    self.pad_h,
+                    self.pad_w,
+                    self.dtype,
+                    tune=tune,
+                )
+                self.kernel = self.pointwise_kernel
+        else:
+            self.im2col_kernel = self.kernel_map["im2col_kernel"](
+                self.n,
+                self.c_in,
+                self.h,
+                self.w,
+                self.kernel_h,
+                self.kernel_w,
+                self.out_h,
+                self.out_w,
+                self.stride_h,
+                self.stride_w,
+                self.pad_h,
+                self.pad_w,
+                self.dtype,
+                tune=tune,
+            )
+            self.gemm_kernel = self.kernel_map["gemm_kernel"](
+                self.m,
+                self.c_out,
+                self.k,
+                self.dtype,
+                tune=tune,
+            )
+            self.kernel = self.im2col_kernel
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "im2col_kernel": Conv2dIm2ColKernel,
             "gemm_kernel": GemmKernel,
+            "pointwise_kernel": PointwiseConvKernel,
         }
 
     def forward(
@@ -126,6 +163,25 @@ class Conv2dOp(Op):
                 raise ValueError(f"Expected bias.dtype {self.dtype}, got {bias.dtype}")
             if bias.shape != (self.c_out,):
                 raise ValueError(f"Expected bias shape {(self.c_out,)}, got {tuple(bias.shape)}")
+
+        if self.is_pointwise:
+            if self.use_pointwise_gemm:
+                x_2d = x.contiguous().permute(0, 2, 3, 1).contiguous().reshape(self.m, self.c_in)
+                weight_2d = weight.contiguous().reshape(self.c_out, self.c_in).transpose(0, 1).contiguous()
+                out_2d = self.gemm_kernel(x_2d, weight_2d)
+                if bias is not None:
+                    out_2d = out_2d + bias.reshape(1, self.c_out)
+                return out_2d.reshape(self.n, self.out_h, self.out_w, self.c_out).permute(
+                    0, 3, 1, 2
+                ).contiguous()
+
+            out = self.pointwise_kernel(
+                x.contiguous(),
+                weight.contiguous().reshape(self.c_out, self.c_in).transpose(0, 1).contiguous(),
+            )
+            if bias is not None:
+                out = out + bias.reshape(1, self.c_out, 1, 1)
+            return out.contiguous()
 
         cols = self.im2col_kernel(x.contiguous())
         weight_2d = weight.contiguous().reshape(self.c_out, self.k).transpose(0, 1).contiguous()

@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -16,4 +19,6 @@ def pytest_sessionstart(session):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    BenchmarkReport.dump("profile_run.log")
+    report_path = Path(os.environ.get("BENCHMARK_REPORT_PATH", "profile_run.log"))
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    BenchmarkReport.dump(str(report_path))
