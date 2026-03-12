@@ -64,6 +64,10 @@ check_commit_message() {
     fail "No commits found on current branch"
     return
   fi
+  if [[ "$msg" =~ ^Merge\  ]]; then
+    pass "Merge commit — skipped format check"
+    return
+  fi
   if [[ "$msg" =~ $COMMIT_MSG_PATTERN ]]; then
     pass "Commit message '${msg}' follows [Type] Description"
   else
