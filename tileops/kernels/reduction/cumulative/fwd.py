@@ -1,10 +1,12 @@
 """Cumulative scan kernels (cumsum, cumprod) using TileLang.
 
 Implements an inclusive prefix scan along the last dimension.  Each row
-is processed independently (``T.Parallel`` over rows) with a sequential
-inner loop (``T.Serial`` over columns) that maintains a per-row running
-accumulator -- matching the ``T.Parallel``-outer / ``T.Serial``-inner
-nesting pattern used by ``mhc_pre.py``.
+is processed independently (``T.Parallel`` over rows) with a tiled
+sequential inner loop that processes the N dimension in chunks of
+``block_n`` elements.  Within each tile, a ``T.Serial`` loop maintains
+a per-row running accumulator.  The tiled approach reduces shared memory
+usage (``block_m * block_n`` instead of ``block_m * N_padded``) and
+improves memory access patterns for better GPU utilization.
 
 Both operate on 2D (M, N_padded) tensors; the Op layer handles reshape.
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
@@ -27,14 +29,19 @@ from tileops.kernels.reduction._primitives import (
 
 __all__ = ["CumulativeKernel"]
 
+# Tile size along the N dimension for the prefix scan.
+# Must be a multiple of DEFAULT_ALIGNMENT for T.copy shared memory alignment.
+_DEFAULT_BLOCK_N: int = 128
+
 
 def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build a TileLang inclusive prefix scan kernel.
 
-    Uses ``T.Parallel(block_m)`` as the outer loop and ``T.Serial(N_padded)``
-    as the inner loop, with a 1-D accumulator ``acc[i]`` updated on each
-    serial step.  This nesting order is required by TileLang (``T.Serial``
-    must be nested inside ``T.Parallel``, not the other way around).
+    Uses a tiled approach: the N dimension is divided into tiles of
+    ``block_n`` elements. Each tile is loaded via shared memory, scanned
+    sequentially with the running accumulator, and written back.  This
+    reduces register pressure and shared memory usage compared to loading
+    the full row, enabling larger ``block_m`` values and better occupancy.
 
     Args:
         M: Number of rows (product of all leading dimensions).
@@ -43,75 +50,95 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
         dtype: TileLang dtype string (e.g. "float16", "bfloat16", "float32").
 
     Returns:
-        A TileLang JIT-compiled kernel factory accepting (block_m, threads).
+        A TileLang JIT-compiled kernel factory accepting (block_m, block_n, threads).
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
 
     if op_kind == "sum":
 
         @tilelang.jit(out_idx=[1])
-        def _func(block_m, threads):
+        def _func(block_m, block_n, threads):
+            n_tiles = N_padded // block_n
+
             @T.prim_func
             def main(
                 x: T.Tensor[(M, N_padded), dtype],
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                    x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
-                    out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                    shared_in = T.alloc_shared((block_m, block_n), dtype)
+                    shared_out = T.alloc_shared((block_m, block_n), dtype)
+                    tile_f32 = T.alloc_fragment((block_m, block_n), "float32")
+                    out_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     acc = T.alloc_fragment((block_m,), "float32")
 
-                    # Load input via shared memory and cast to fp32
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
-                    # Inclusive prefix sum: T.Parallel outer, T.Serial inner
+                    # Initialize accumulator
                     for i in T.Parallel(block_m):
                         acc[i] = T.float32(0)
-                        for j in T.Serial(N_padded):
-                            acc[i] = acc[i] + x_f32[i, j]
-                            out_f32[i, j] = acc[i]
 
-                    # Cast back to original dtype and write via shared memory
-                    for i, j in T.Parallel(block_m, N_padded):
-                        shared_buf[i, j] = T.cast(out_f32[i, j], dtype)
-                    T.copy(shared_buf, y[pid_m * block_m, 0])
+                    # Process N dimension in tiles
+                    for tile_idx in T.Serial(n_tiles):
+                        # Load tile via shared memory
+                        T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
+
+                        # Cast to fp32
+                        for i, j in T.Parallel(block_m, block_n):
+                            tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
+
+                        # Inclusive prefix sum within tile
+                        for i in T.Parallel(block_m):
+                            for j in T.Serial(block_n):
+                                acc[i] = acc[i] + tile_f32[i, j]
+                                out_f32[i, j] = acc[i]
+
+                        # Cast back and write tile via shared memory
+                        for i, j in T.Parallel(block_m, block_n):
+                            shared_out[i, j] = T.cast(out_f32[i, j], dtype)
+                        T.copy(shared_out, y[pid_m * block_m, tile_idx * block_n])
 
             return main
 
     else:  # prod
 
         @tilelang.jit(out_idx=[1])
-        def _func(block_m, threads):
+        def _func(block_m, block_n, threads):
+            n_tiles = N_padded // block_n
+
             @T.prim_func
             def main(
                 x: T.Tensor[(M, N_padded), dtype],
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                    x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
-                    out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                    shared_in = T.alloc_shared((block_m, block_n), dtype)
+                    shared_out = T.alloc_shared((block_m, block_n), dtype)
+                    tile_f32 = T.alloc_fragment((block_m, block_n), "float32")
+                    out_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     acc = T.alloc_fragment((block_m,), "float32")
 
-                    # Load input via shared memory and cast to fp32
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
-                    # Inclusive prefix product: T.Parallel outer, T.Serial inner
+                    # Initialize accumulator (1.0 for product)
                     for i in T.Parallel(block_m):
                         acc[i] = T.float32(1)
-                        for j in T.Serial(N_padded):
-                            acc[i] = acc[i] * x_f32[i, j]
-                            out_f32[i, j] = acc[i]
 
-                    # Cast back to original dtype and write via shared memory
-                    for i, j in T.Parallel(block_m, N_padded):
-                        shared_buf[i, j] = T.cast(out_f32[i, j], dtype)
-                    T.copy(shared_buf, y[pid_m * block_m, 0])
+                    # Process N dimension in tiles
+                    for tile_idx in T.Serial(n_tiles):
+                        # Load tile via shared memory
+                        T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
+
+                        # Cast to fp32
+                        for i, j in T.Parallel(block_m, block_n):
+                            tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
+
+                        # Inclusive prefix product within tile
+                        for i in T.Parallel(block_m):
+                            for j in T.Serial(block_n):
+                                acc[i] = acc[i] * tile_f32[i, j]
+                                out_f32[i, j] = acc[i]
+
+                        # Cast back and write tile via shared memory
+                        for i, j in T.Parallel(block_m, block_n):
+                            shared_out[i, j] = T.cast(out_f32[i, j], dtype)
+                        T.copy(shared_out, y[pid_m * block_m, tile_idx * block_n])
 
             return main
 
@@ -130,14 +157,15 @@ def _cumulative_fwd_wrapped(
     op_kind: str,
     dtype_str: str,
     block_m: int,
+    block_n: int,
     threads: int,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    return _cumulative_kernel(M, N, op_kind, dtype_str)(block_m, threads)(x)
+    return _cumulative_kernel(M, N, op_kind, dtype_str)(block_m, block_n, threads)(x)
 
 
 @_cumulative_fwd_wrapped.register_fake
-def _(M, N, op_kind, dtype_str, block_m, threads, x):
+def _(M, N, op_kind, dtype_str, block_m, block_n, threads, x):
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
 
@@ -151,7 +179,9 @@ class CumulativeKernel(Kernel):
     """Inclusive prefix scan kernel (cumsum / cumprod).
 
     Supports SM80+ architectures. Uses 256-element alignment for shared
-    memory copies. Uses a sequential scan loop along the last dimension.
+    memory copies. Uses a tiled sequential scan loop along the last
+    dimension: the N dimension is divided into tiles of ``block_n``
+    elements, reducing shared memory usage and improving occupancy.
 
     Args:
         M: Number of rows (product of all dims except last).
@@ -191,23 +221,37 @@ class CumulativeKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        """Select default block_m based on shared memory budget."""
-        smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
+        """Select default config based on shared memory budget.
+
+        Uses tiled scan with block_n tiles along N.  Shared memory usage
+        is ``block_m * block_n * element_size`` (two buffers: in + out).
+        """
+        block_n = _DEFAULT_BLOCK_N
+        elem_size = torch.tensor([], dtype=self.dtype).element_size()
+        # Two shared buffers: shared_in + shared_out, each block_m * block_n
+        smem_per_row = 2 * block_n * elem_size
         max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
         block_m = 1
-        for bm in [1, 2, 4, 8]:
+        for bm in [1, 2, 4, 8, 16]:
             if bm <= max_block_m:
                 block_m = bm
-        return {"block_m": block_m, "threads": 128}
+        return {"block_m": block_m, "block_n": block_n, "threads": 128}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
-        block_ms = [bm for bm in [1, 2, 4, 8] if bm <= max_block_m]
-        threads_list = [128, 256]
-        configs = list(itertools.product(block_ms, threads_list))
-        return [{"block_m": bm, "threads": t} for bm, t in configs]
+        elem_size = torch.tensor([], dtype=self.dtype).element_size()
+        configs = []
+        for block_n in [128, 256]:
+            # block_n must evenly divide N_padded
+            if self.N_padded % block_n != 0:
+                continue
+            smem_per_row = 2 * block_n * elem_size
+            max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
+            block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]
+            threads_list = [128, 256]
+            for bm, t in itertools.product(block_ms, threads_list):
+                configs.append({"block_m": bm, "block_n": block_n, "threads": t})
+        return configs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the cumulative scan kernel.
@@ -224,6 +268,7 @@ class CumulativeKernel(Kernel):
             self.op_kind,
             self.dtype_str,
             self.config["block_m"],
+            self.config["block_n"],
             self.config["threads"],
             x,
         )
