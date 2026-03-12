@@ -11,6 +11,9 @@ kernels are implemented.
 
 # --- ReduceKernel ops ---
 # --- SoftmaxKernel ops ---
+# --- ArgreduceKernel ops ---
+from .argmax import ArgmaxOp
+from .argmin import ArgminOp
 from .log_softmax import LogSoftmaxOp
 from .logsumexp import LogSumExpOp
 from .reduce import (
@@ -24,10 +27,6 @@ from .reduce import (
     VarOp,
 )
 from .softmax import SoftmaxOp
-
-# --- ArgreduceKernel ops ---
-# from .argmax import ArgmaxOp
-# from .argmin import ArgminOp
 
 # --- CumulativeKernel ops ---
 # from .cumsum import CumsumOp
@@ -65,8 +64,8 @@ __all__: list[str] = [
     "LogSoftmaxOp",
     "LogSumExpOp",
     # --- ArgreduceKernel ops ---
-    # "ArgmaxOp",
-    # "ArgminOp",
+    "ArgmaxOp",
+    "ArgminOp",
     # --- CumulativeKernel ops ---
     # "CumsumOp",
     # "CumprodOp",
