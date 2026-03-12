@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_batch_norm import BatchNormBwdTest, BatchNormFwdTest
+from benchmarks.ops.cases.case_batch_norm import BatchNormBwdTest, BatchNormFwdTest
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 
 # ---------------------------------------------------------------------------

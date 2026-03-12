@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deepseek_dsa_decode import DsaDecodeFixture, DsaDecodeTest
+from benchmarks.ops.cases.case_deepseek_dsa_decode import DsaDecodeFixture, DsaDecodeTest
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
 
 

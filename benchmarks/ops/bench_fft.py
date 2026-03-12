@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fft import FFTTest
+from benchmarks.ops.cases.case_fft import FFTTest
 from tests.test_base import FixtureBase
 from tileops.ops import FFTC2COp
 

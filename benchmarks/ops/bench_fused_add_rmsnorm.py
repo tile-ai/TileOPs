@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fused_add_rmsnorm import FusedAddRmsNormFixture, FusedAddRmsNormTest
+from benchmarks.ops.cases.case_fused_add_rmsnorm import FusedAddRmsNormTest
 from tileops.ops.norm.fused_add_rmsnorm import FusedAddRmsNormOp
 
 
@@ -25,7 +25,15 @@ class FusedAddRmsNormBenchmark(BenchmarkBase):
         return (4 * t.m * t.n + t.n) * elem_bytes
 
 
-@FusedAddRmsNormFixture
+_FUSED_ADD_RMSNORM_BENCH_PARAMS = [
+    pytest.param(4096, 4096, torch.float16, True, marks=pytest.mark.full, id="bench-fp16-square"),
+    pytest.param(4096, 4096, torch.bfloat16, True, marks=pytest.mark.full, id="bench-bf16-square"),
+    pytest.param(2048, 5120, torch.float16, True, marks=pytest.mark.nightly, id="bench-fp16-wide"),
+    pytest.param(1025, 4096, torch.bfloat16, True, marks=pytest.mark.nightly, id="bench-bf16-tail-m"),
+]
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _FUSED_ADD_RMSNORM_BENCH_PARAMS)
 def test_fused_add_rmsnorm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddRmsNormTest(m, n, dtype)
     bm = FusedAddRmsNormBenchmark(test)

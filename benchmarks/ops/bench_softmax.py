@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_softmax import (
+from benchmarks.ops.cases.case_softmax import (
     LogSoftmaxFixture,
     LogSoftmaxTest,
     LogSumExpFixture,

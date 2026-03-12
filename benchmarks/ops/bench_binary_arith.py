@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_binary_arith import AddSameShapeFixture, AddSameShapeTest
+from benchmarks.ops.cases.case_binary_arith import AddSameShapeFixture, AddSameShapeTest
 from tests.test_base import FixtureBase
 from tileops.ops.elementwise import AddOp
 

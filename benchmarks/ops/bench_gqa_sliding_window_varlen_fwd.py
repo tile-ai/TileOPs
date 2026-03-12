@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdTest
+from benchmarks.ops.cases.case_gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import GqaSlidingWindowVarlenFwdOp
 

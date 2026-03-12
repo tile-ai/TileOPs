@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_engram_decode import (
+from benchmarks.ops.cases.case_engram_decode import (
     EngramDecodeFixture,
     EngramDecodeTest,
     _ref_engram_decode_step,

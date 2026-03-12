@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fft_lut import FFTLUTTest
+from benchmarks.ops.cases.case_fft_lut import FFTLUTTest
 from tests.test_base import FixtureBase
 from tileops.ops import FFTC2CLUTOp, FFTC2COp
 

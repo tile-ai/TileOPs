@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_engram_bwd import (
+from benchmarks.ops.cases.case_engram_bwd import (
     EngramGateConvBwdFixture,
     EngramGateConvBwdTest,
 )

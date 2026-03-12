@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_topk_selector import TopkSelectorFixture, TopkSelectorTest
+from benchmarks.ops.cases.case_topk_selector import TopkSelectorTest
 from tileops.ops import TopkSelectorOp
 from tileops.utils import str2dtype
 
@@ -23,9 +23,19 @@ class TopkSelectorBenchmark(BenchmarkBase):
         return index_score_memory + index_memory + starts_memory + ends_memory
 
 
-@TopkSelectorFixture
+_TOPK_SELECTOR_BENCH_PARAMS = [
+    pytest.param(64, 32 * 1024, 2048, "float32", "int32", False, marks=pytest.mark.full, id="bench-mid-topk"),
+    pytest.param(128, 64 * 1024, 1024, "float32", "int32", False, marks=pytest.mark.full, id="bench-long-seq"),
+    pytest.param(128, 64 * 1024, 2048, "float32", "int32", False, marks=pytest.mark.nightly, id="bench-long-seq-high-topk"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, topk, in_dtype_str, out_dtype_str, tune",
+    _TOPK_SELECTOR_BENCH_PARAMS,
+)
 def test_topk_selector_bench(batch: int, seq_len: int, topk: int, in_dtype_str: str,
-                              out_dtype_str: str, tune: bool) -> None:
+                             out_dtype_str: str, tune: bool) -> None:
     in_dtype = str2dtype[in_dtype_str]
     out_dtype = str2dtype[out_dtype_str]
     test = TopkSelectorTest(batch, seq_len, topk, in_dtype, out_dtype)

@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deepseek_mla_decode import MlaDecodeFixture, MlaDecodeTest
+from benchmarks.ops.cases.case_deepseek_mla_decode import MlaDecodeFixture, MlaDecodeTest
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 
 

@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_layer_norm import LayerNormFixture, LayerNormTest
+from benchmarks.ops.cases.case_layer_norm import LayerNormTest
 from tileops.ops.norm.layer_norm import LayerNormOp
 
 
@@ -25,7 +25,15 @@ class LayerNormBenchmark(BenchmarkBase):
         return (2 * t.m * t.n + 2 * t.n) * elem_bytes
 
 
-@LayerNormFixture
+_LAYER_NORM_BENCH_PARAMS = [
+    pytest.param(4096, 4096, torch.float16, True, marks=pytest.mark.full, id="bench-fp16-square"),
+    pytest.param(8192, 8192, torch.float16, True, marks=pytest.mark.nightly, id="bench-fp16-large"),
+    pytest.param(2048, 5120, torch.bfloat16, True, marks=pytest.mark.nightly, id="bench-bf16-wide"),
+    pytest.param(1025, 4096, torch.bfloat16, True, marks=pytest.mark.full, id="bench-bf16-tail-m"),
+]
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _LAYER_NORM_BENCH_PARAMS)
 def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
     bm = LayerNormBenchmark(test)

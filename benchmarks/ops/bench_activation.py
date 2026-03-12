@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_activation import ReluFixture, ReluTest
+from benchmarks.ops.cases.case_activation import ReluFixture, ReluTest
 from tests.test_base import FixtureBase
 from tileops.ops.elementwise import ReluOp
 

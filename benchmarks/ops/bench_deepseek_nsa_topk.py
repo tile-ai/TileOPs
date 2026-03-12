@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deepseek_nsa_topk import NsaTopkFixture, NsaTopkTest
+from benchmarks.ops.cases.case_deepseek_nsa_topk import NsaTopkFixture, NsaTopkTest
 from tileops.ops import NSATopkVarlenOp
 
 

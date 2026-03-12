@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gated_deltanet_decode import GatedDeltaNetDecodeTest
+from benchmarks.ops.cases.case_gated_deltanet_decode import GatedDeltaNetDecodeTest
 from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetDecodeOp
 

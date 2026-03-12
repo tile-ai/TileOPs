@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gated_deltanet_bwd import GatedDeltaNetBwdTest
-from tests.ops.test_gated_deltanet_fwd import GatedDeltaNetFwdTest
+from benchmarks.ops.cases.case_gated_deltanet_bwd import GatedDeltaNetBwdTest
+from benchmarks.ops.cases.case_gated_deltanet_fwd import GatedDeltaNetFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp
 

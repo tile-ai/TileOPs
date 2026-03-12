@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerFixture, Fp8LightingIndexerTest
+from benchmarks.ops.cases.case_fp8_lighting_indexer import Fp8LightingIndexerTest
 from tileops.ops import Fp8LightingIndexerOp
 
 
@@ -32,7 +32,16 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
                 weights_memory + cu_seqlens_ks_memory + cu_seqlens_ke_memory)
 
 
-@Fp8LightingIndexerFixture
+_FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
+    pytest.param(4096, 32, 64, 8192, True, None, False, marks=pytest.mark.full, id="bench-base"),
+    pytest.param(4096, 32, 128, 8192, True, None, False, marks=pytest.mark.nightly, id="bench-wide-index"),
+]
+
+
+@pytest.mark.parametrize(
+    "seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune",
+    _FP8_LIGHTING_INDEXER_BENCH_PARAMS,
+)
 def test_fp8_lighting_indexer_bench(seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
                                     clean_logits: bool, config: Optional[dict],
                                     tune: bool) -> None:
@@ -40,8 +49,8 @@ def test_fp8_lighting_indexer_bench(seq_len: int, heads: int, index_dim: int, se
     bm = Fp8LightingIndexerBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = Fp8LightingIndexerOp(seq_len, heads, index_dim, seq_len_kv, clean_logits, config,
-                               tune=tune)
+    op = Fp8LightingIndexerOp(
+        seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("fp8_lighting_indexer", locals(), result, tag="tileops")
 
