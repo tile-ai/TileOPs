@@ -129,6 +129,13 @@ def _tol(dtype: torch.dtype) -> dict:
     return {"atol": 1e-2, "rtol": 1e-2}
 
 
+def _cumprod_tol(dtype: torch.dtype) -> dict:
+    """Tolerances for cumprod tests (more numerically sensitive)."""
+    if dtype == torch.float32:
+        return {"atol": 1e-3, "rtol": 1e-3}
+    return {"atol": 5e-2, "rtol": 5e-2}
+
+
 # ---------------------------------------------------------------------------
 # CumsumOp tests
 # ---------------------------------------------------------------------------
@@ -205,9 +212,7 @@ def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = CumulativeTest(m, n, dtype, "cumprod", use_small_range=True)
     op = CumprodOp(M=m, N=n, dtype=dtype)
-    # cumprod is more numerically sensitive
-    tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
-    test.check(op, *test.gen_inputs(), **tol)
+    test.check(op, *test.gen_inputs(), **_cumprod_tol(dtype))
 
 
 @CumulativeNonContigFixture
@@ -219,7 +224,7 @@ def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     op = CumprodOp(M=m, N=n, dtype=dtype)
     ref = x.contiguous().float().cumprod(dim=-1).to(dtype)
     y = op(x)
-    tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
+    tol = _cumprod_tol(dtype)
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
@@ -232,7 +237,7 @@ def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> No
     op = CumprodOp(M=M, N=hidden, dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
-    tol = {"atol": 5e-2, "rtol": 5e-2}
+    tol = _cumprod_tol(dtype)
     assert torch.allclose(y, ref, **tol), f"3D cumprod max err: {(y - ref).abs().max()}"
 
 
@@ -245,7 +250,7 @@ def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> No
     op = CumprodOp(M=M, N=n, dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
-    tol = {"atol": 5e-2, "rtol": 5e-2}
+    tol = _cumprod_tol(dtype)
     assert torch.allclose(y, ref, **tol), f"4D cumprod max err: {(y - ref).abs().max()}"
 
 
@@ -257,7 +262,7 @@ def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
     op = CumprodOp(M=1, N=n, dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
-    tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
+    tol = _cumprod_tol(dtype)
     assert torch.allclose(y, ref, **tol), f"1D cumprod max err: {(y - ref).abs().max()}"
 
 

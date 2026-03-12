@@ -16,7 +16,12 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up, make_cumulative_scan
+from tileops.kernels.reduction._primitives import (
+    DEFAULT_ALIGNMENT,
+    SHARED_MEMORY_BUDGET_BYTES,
+    align_up,
+    make_cumulative_scan,
+)
 
 __all__ = ["CumulativeKernel"]
 
@@ -149,7 +154,7 @@ class CumulativeKernel(Kernel):
     def default_config(self) -> dict:
         """Select default block_m based on shared memory budget."""
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
+        max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
         block_m = 1
         for bm in [1, 2, 4, 8]:
             if bm <= max_block_m:
@@ -159,7 +164,7 @@ class CumulativeKernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
+        max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
         block_ms = [bm for bm in [1, 2, 4, 8] if bm <= max_block_m]
         threads_list = [128, 256]
         configs = list(itertools.product(block_ms, threads_list))

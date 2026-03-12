@@ -7,6 +7,7 @@ and utility functions) used by all reduction sub-category kernels.
 
 from ._primitives import (
     DEFAULT_ALIGNMENT,
+    SHARED_MEMORY_BUDGET_BYTES,
     align_up,
     make_cumulative_scan,
     make_reduce_epilogue,
@@ -26,6 +27,7 @@ from .softmax import LogSumExpKernel, SoftmaxKernel
 __all__: list[str] = [
     "align_up",
     "DEFAULT_ALIGNMENT",
+    "SHARED_MEMORY_BUDGET_BYTES",
     "make_reduce_epilogue",
     "make_welford_update",
     "make_softmax_epilogue",
