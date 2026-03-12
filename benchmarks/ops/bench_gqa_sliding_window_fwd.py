@@ -5,10 +5,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gqa_sliding_window_fwd import (
-    GqaSlidingWindowFwdFixture,
-    GqaSlidingWindowFwdTest,
-)
+from tests.ops.test_gqa_sliding_window_fwd import GqaSlidingWindowFwdTest
 from tileops.ops import GqaSlidingWindowFwdOp
 
 
@@ -42,7 +39,34 @@ def _fa3_baseline(q, k, v, is_causal, wl, wr):
         return None
 
 
-@GqaSlidingWindowFwdFixture
+_GQA_SLIDING_WINDOW_FWD_BENCH_PARAMS = [
+    pytest.param(
+        2, 512, 8, 2, 64, True, -1, -1, torch.float16, True,
+        marks=pytest.mark.full,
+        id="bench-fp16-causal-global",
+    ),
+    pytest.param(
+        1, 2048, 8, 2, 64, True, 512, -1, torch.float16, True,
+        marks=pytest.mark.nightly,
+        id="bench-fp16-long-causal-window",
+    ),
+    pytest.param(
+        2, 768, 8, 2, 64, False, 256, -1, torch.float16, True,
+        marks=pytest.mark.nightly,
+        id="bench-fp16-long-left-window",
+    ),
+    pytest.param(
+        2, 512, 8, 2, 64, False, 64, 64, torch.bfloat16, True,
+        marks=pytest.mark.full,
+        id="bench-bf16-symmetric-window",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune",
+    _GQA_SLIDING_WINDOW_FWD_BENCH_PARAMS,
+)
 def test_gqa_sliding_window_fwd_bench(
     batch: int,
     seq: int,

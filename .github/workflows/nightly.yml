@@ -14,7 +14,9 @@ concurrency:
 jobs:
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    timeout-minutes: 45
+    # Measured runtime for `pytest benchmarks/ops -m "not smoke"` on 2026-03-12
+    # was ~58m56s on a self-hosted H200. Keep 2x headroom for nightly variability.
+    timeout-minutes: 120
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
@@ -96,7 +98,7 @@ jobs:
           export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           set -o pipefail
-          python -m pytest -q benchmarks/ops | tee tileops_benchmarks.log
+          python -m pytest -q benchmarks/ops -m "not smoke" | tee tileops_benchmarks.log
         shell: bash
 
       - name: Merge benchmark profile summary

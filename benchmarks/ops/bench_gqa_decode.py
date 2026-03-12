@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gqa_decode import GqaDecodeFixture, GqaDecodeTest
+from tests.ops.test_gqa_decode import GqaDecodeTest
 from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
 
@@ -25,7 +25,29 @@ class GqaDecodeBenchmark(BenchmarkBase):
             t.heads + t.heads_kv * t.seq_len_kv)
 
 
-@GqaDecodeFixture
+_GQA_DECODE_BENCH_PARAMS = [
+    pytest.param(
+        4, 32, 4, 4096, 128, torch.bfloat16, False,
+        marks=pytest.mark.full,
+        id="bench-bf16-mid-kv",
+    ),
+    pytest.param(
+        8, 64, 16, 8192, 128, torch.float16, False,
+        marks=pytest.mark.nightly,
+        id="bench-fp16-long-kv",
+    ),
+    pytest.param(
+        8, 64, 8, 16384, 128, torch.float16, False,
+        marks=pytest.mark.nightly,
+        id="bench-fp16-very-long-kv",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, heads, heads_kv, seq_len_kv, dim, dtype, tune",
+    _GQA_DECODE_BENCH_PARAMS,
+)
 def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                           dtype: torch.dtype, tune: bool) -> None:
     test = GqaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dtype)

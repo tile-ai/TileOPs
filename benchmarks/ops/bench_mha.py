@@ -5,9 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_mha import (
-    MhaBwdFixture,
     MhaBwdTest,
-    MhaFwdFixture,
     MhaFwdTest,
 )
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
@@ -74,7 +72,37 @@ def _baseline_mha_bwd(test: MhaBwdTest):
     return baseline_fn
 
 
-@MhaFwdFixture
+_MHA_FWD_BENCH_PARAMS = [
+    pytest.param(
+        16, 2048, 16, 128, False, torch.float16, True,
+        marks=pytest.mark.full,
+        id="bench-fwd-fp16-throughput",
+    ),
+    pytest.param(
+        4, 4096, 16, 128, False, torch.bfloat16, True,
+        marks=pytest.mark.nightly,
+        id="bench-fwd-bf16-long-seq",
+    ),
+]
+
+_MHA_BWD_BENCH_PARAMS = [
+    pytest.param(
+        16, 2048, 16, 128, False, torch.float16, True,
+        marks=pytest.mark.full,
+        id="bench-bwd-fp16-throughput",
+    ),
+    pytest.param(
+        4, 4096, 16, 128, False, torch.bfloat16, True,
+        marks=pytest.mark.nightly,
+        id="bench-bwd-bf16-long-seq",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, dim, causal, dtype, tune",
+    _MHA_FWD_BENCH_PARAMS,
+)
 def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
                        dtype: torch.dtype, tune: bool) -> None:
     test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
@@ -91,7 +119,10 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
         BenchmarkReport.record("mha_fwd", locals(), result_bl, tag="FA3")
 
 
-@MhaBwdFixture
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, dim, causal, dtype, tune",
+    _MHA_BWD_BENCH_PARAMS,
+)
 def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
                        dtype: torch.dtype, tune: bool) -> None:
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)

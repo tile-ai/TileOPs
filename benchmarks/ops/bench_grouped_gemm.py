@@ -5,9 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_grouped_gemm import (
-    GroupedGemmCompleteFixture,
     GroupedGemmCompleteTest,
-    GroupedGemmFixture,
     GroupedGemmTest,
 )
 from tileops.ops import GroupedGemmOp
@@ -86,7 +84,42 @@ def _run_variant_bench(name: str, batch_sum: int, batch_count: int, N: int, K: i
 # Test functions
 # ---------------------------------------------------------------------------
 
-@GroupedGemmFixture
+_GROUPED_GEMM_BENCH_PARAMS = [
+    pytest.param(
+        16384, 4, 4864, 4096, torch.float16, False, True, True,
+        marks=pytest.mark.full,
+        id="bench-nt-fp16",
+    ),
+    pytest.param(
+        16384, 4, 4864, 4096, torch.float16, False, False, True,
+        marks=pytest.mark.full,
+        id="bench-nn-fp16",
+    ),
+    pytest.param(
+        16384, 4, 4864, 4096, torch.float16, True, False, True,
+        marks=pytest.mark.nightly,
+        id="bench-tn-fp16",
+    ),
+    pytest.param(
+        16384, 4, 4864, 4096, torch.float16, True, True, True,
+        marks=pytest.mark.nightly,
+        id="bench-tt-fp16",
+    ),
+]
+
+_GROUPED_GEMM_COMPLETE_BENCH_PARAMS = [
+    pytest.param(
+        16384, 4, 4864, 4096, torch.float16, True,
+        marks=pytest.mark.nightly,
+        id="bench-complete-fp16",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b, tune",
+    _GROUPED_GEMM_BENCH_PARAMS,
+)
 def test_grouped_gemm_bench(batch_sum: int, batch_count: int, N: int, K: int,
                             dtype: torch.dtype, transpose_a: bool, transpose_b: bool,
                             tune: bool) -> None:
@@ -108,7 +141,10 @@ def _combine_results(bm: GroupedGemmCompleteBenchmark, *results: dict) -> dict:
     return combined
 
 
-@GroupedGemmCompleteFixture
+@pytest.mark.parametrize(
+    "batch_sum, batch_count, N, K, dtype, tune",
+    _GROUPED_GEMM_COMPLETE_BENCH_PARAMS,
+)
 def test_grouped_gemm_complete_bench(batch_sum: int, batch_count: int, N: int, K: int,
                                      dtype: torch.dtype, tune: bool) -> None:
     test = GroupedGemmCompleteTest(batch_sum, batch_count, N, K, dtype)

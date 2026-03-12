@@ -27,8 +27,8 @@ class GemmFixture(FixtureBase):
             ),
             pytest.param(
                 1, 18432, 7168, torch.float16, False, True, True,
-                marks=pytest.mark.nightly,
-                id="nightly-fp16-tuned-wide-alt",
+                marks=pytest.mark.full,
+                id="full-fp16-tuned-wide-alt",
             ),
             pytest.param(
                 1024, 1, 1024, torch.float16, False, False, False,
@@ -37,13 +37,13 @@ class GemmFixture(FixtureBase):
             ),
             pytest.param(
                 7168, 1, 16384, torch.float16, False, False, True,
-                marks=pytest.mark.nightly,
-                id="nightly-fp16-tuned-thin-n",
+                marks=pytest.mark.full,
+                id="full-fp16-tuned-thin-n",
             ),
             pytest.param(
                 18432, 1, 7168, torch.float16, False, False, True,
-                marks=pytest.mark.nightly,
-                id="nightly-fp16-tuned-thin-n-alt",
+                marks=pytest.mark.full,
+                id="full-fp16-tuned-thin-n-alt",
             ),
             pytest.param(
                 1, 1024, 1024, torch.bfloat16, False, True, False,
@@ -52,13 +52,13 @@ class GemmFixture(FixtureBase):
             ),
             pytest.param(
                 1, 7168, 16384, torch.bfloat16, False, True, True,
-                marks=pytest.mark.nightly,
-                id="nightly-bf16-tuned-wide",
+                marks=pytest.mark.full,
+                id="full-bf16-tuned-wide",
             ),
             pytest.param(
                 1, 18432, 7168, torch.bfloat16, False, True, True,
-                marks=pytest.mark.nightly,
-                id="nightly-bf16-tuned-wide-alt",
+                marks=pytest.mark.full,
+                id="full-bf16-tuned-wide-alt",
             ),
             pytest.param(
                 1024, 1, 1024, torch.bfloat16, False, False, False,
@@ -67,13 +67,13 @@ class GemmFixture(FixtureBase):
             ),
             pytest.param(
                 7168, 1, 16384, torch.bfloat16, False, False, True,
-                marks=pytest.mark.nightly,
-                id="nightly-bf16-tuned-thin-n",
+                marks=pytest.mark.full,
+                id="full-bf16-tuned-thin-n",
             ),
             pytest.param(
                 18432, 1, 7168, torch.bfloat16, False, False, True,
-                marks=pytest.mark.nightly,
-                id="nightly-bf16-tuned-thin-n-alt",
+                marks=pytest.mark.full,
+                id="full-bf16-tuned-thin-n-alt",
             ),
         ]),
     ]

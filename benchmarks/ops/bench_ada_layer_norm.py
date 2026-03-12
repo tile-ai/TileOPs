@@ -5,8 +5,8 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_ada_layer_norm import AdaLayerNormFixture, AdaLayerNormTest
-from tests.ops.test_ada_layer_norm_zero import AdaLayerNormZeroFixture, AdaLayerNormZeroTest
+from tests.ops.test_ada_layer_norm import AdaLayerNormTest
+from tests.ops.test_ada_layer_norm_zero import AdaLayerNormZeroTest
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroOp
 
@@ -43,13 +43,28 @@ class AdaLayerNormZeroBenchmark(BenchmarkBase):
         return 5 * t.m * t.n * elem_bytes
 
 
-@AdaLayerNormFixture
-def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
+_ADA_LAYER_NORM_BENCH_PARAMS = [
+    pytest.param(4096, 4096, torch.float16, True, marks=pytest.mark.full, id="bench-fp16-square"),
+    pytest.param(4096, 4096, torch.bfloat16, True, marks=pytest.mark.full, id="bench-bf16-square"),
+    pytest.param(1024, 3000, torch.bfloat16, True, marks=pytest.mark.nightly, id="bench-bf16-nonpow2"),
+    pytest.param(1025, 4096, torch.float16, True, marks=pytest.mark.nightly, id="bench-fp16-tail-m"),
+]
+
+_ADA_LAYER_NORM_ZERO_BENCH_PARAMS = [
+    pytest.param(4096, 4096, torch.float16, True, marks=pytest.mark.full, id="bench-zero-fp16-square"),
+    pytest.param(4096, 4096, torch.bfloat16, True, marks=pytest.mark.full, id="bench-zero-bf16-square"),
+    pytest.param(1024, 3000, torch.bfloat16, True, marks=pytest.mark.nightly, id="bench-zero-bf16-nonpow2"),
+    pytest.param(1025, 4096, torch.float16, True, marks=pytest.mark.nightly, id="bench-zero-fp16-tail-m"),
+]
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _ADA_LAYER_NORM_BENCH_PARAMS)
+def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = AdaLayerNormTest(m, n, dtype)
     bm = AdaLayerNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = AdaLayerNormOp(M=m, N=n, dtype=dtype)
+    op = AdaLayerNormOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("ada_layer_norm", locals(), result, tag="tileops")
 
@@ -62,13 +77,13 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
     BenchmarkReport.record("ada_layer_norm", locals(), result_bl, tag="baseline")
 
 
-@AdaLayerNormZeroFixture
-def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize("m, n, dtype, tune", _ADA_LAYER_NORM_ZERO_BENCH_PARAMS)
+def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = AdaLayerNormZeroTest(m, n, dtype)
     bm = AdaLayerNormZeroBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = AdaLayerNormZeroOp(M=m, N=n, dtype=dtype)
+    op = AdaLayerNormZeroOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("ada_layer_norm_zero", locals(), result, tag="tileops")
 

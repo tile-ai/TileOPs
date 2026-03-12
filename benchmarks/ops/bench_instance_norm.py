@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_instance_norm import InstanceNormFixture, InstanceNormTest
+from tests.ops.test_instance_norm import InstanceNormTest
 from tileops.ops.norm.instance_norm import InstanceNormOp
 
 
@@ -29,7 +29,14 @@ class InstanceNormBenchmark(BenchmarkBase):
         return (2 * total_elems + 2 * t.c) * elem_bytes
 
 
-@InstanceNormFixture
+_INSTANCE_NORM_BENCH_PARAMS = [
+    pytest.param(2, 16, (8, 8), torch.float16, True, marks=pytest.mark.full, id="bench-fp16-2d"),
+    pytest.param(2, 8, (4, 4, 4), torch.float16, True, marks=pytest.mark.full, id="bench-fp16-3d"),
+    pytest.param(2, 16, (8, 8), torch.bfloat16, True, marks=pytest.mark.nightly, id="bench-bf16-2d"),
+]
+
+
+@pytest.mark.parametrize("n, c, spatial, dtype, tune", _INSTANCE_NORM_BENCH_PARAMS)
 def test_instance_norm_bench(n: int, c: int, spatial: tuple,
                              dtype: torch.dtype, tune: bool) -> None:
     test = InstanceNormTest(n, c, spatial, dtype)

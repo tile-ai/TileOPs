@@ -5,9 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gqa import (
-    GqaBwdFixture,
     GqaBwdTest,
-    GqaFwdFixture,
     GqaFwdTest,
 )
 from tileops.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
@@ -77,7 +75,37 @@ def _baseline_gqa_bwd(test: GqaBwdTest):
     return baseline_fn
 
 
-@GqaFwdFixture
+_GQA_FWD_BENCH_PARAMS = [
+    pytest.param(
+        4, 2048, 64, 4, 128, False, torch.float16, True,
+        marks=pytest.mark.full,
+        id="bench-fwd-fp16-throughput",
+    ),
+    pytest.param(
+        4, 2048, 64, 4, 128, False, torch.bfloat16, True,
+        marks=pytest.mark.nightly,
+        id="bench-fwd-bf16-throughput",
+    ),
+]
+
+_GQA_BWD_BENCH_PARAMS = [
+    pytest.param(
+        4, 2048, 64, 4, 128, False, torch.float16, True,
+        marks=pytest.mark.full,
+        id="bench-bwd-fp16-throughput",
+    ),
+    pytest.param(
+        4, 2048, 64, 4, 128, False, torch.bfloat16, True,
+        marks=pytest.mark.nightly,
+        id="bench-bwd-bf16-throughput",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, heads_kv, dim, causal, dtype, tune",
+    _GQA_FWD_BENCH_PARAMS,
+)
 def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int,
                        causal: bool, dtype: torch.dtype, tune: bool) -> None:
     test = GqaFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
@@ -94,7 +122,10 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
         BenchmarkReport.record("gqa_fwd", locals(), result_bl, tag="FA3")
 
 
-@GqaBwdFixture
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, heads_kv, dim, causal, dtype, tune",
+    _GQA_BWD_BENCH_PARAMS,
+)
 def test_gqa_bwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int,
                        causal: bool, dtype: torch.dtype, tune: bool) -> None:
     test = GqaBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)

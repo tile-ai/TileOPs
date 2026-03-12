@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fused_add_layer_norm import FusedAddLayerNormFixture, FusedAddLayerNormTest
+from tests.ops.test_fused_add_layer_norm import FusedAddLayerNormTest
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormOp
 
 
@@ -26,7 +26,15 @@ class FusedAddLayerNormBenchmark(BenchmarkBase):
         return (4 * t.m * t.n + 2 * t.n) * elem_bytes
 
 
-@FusedAddLayerNormFixture
+_FUSED_ADD_LAYER_NORM_BENCH_PARAMS = [
+    pytest.param(4096, 4096, torch.float16, True, marks=pytest.mark.full, id="bench-fp16-square"),
+    pytest.param(4096, 4096, torch.bfloat16, True, marks=pytest.mark.full, id="bench-bf16-square"),
+    pytest.param(1024, 3000, torch.bfloat16, True, marks=pytest.mark.nightly, id="bench-bf16-nonpow2"),
+    pytest.param(1025, 4096, torch.float16, True, marks=pytest.mark.nightly, id="bench-fp16-tail-m"),
+]
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _FUSED_ADD_LAYER_NORM_BENCH_PARAMS)
 def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddLayerNormTest(m, n, dtype)
     bm = FusedAddLayerNormBenchmark(test)
