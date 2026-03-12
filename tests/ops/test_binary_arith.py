@@ -450,12 +450,20 @@ class LerpTest(TestBase):
 
 @LerpFixture
 def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
-    weight = 0.5
-    test = LerpTest(n_total, dtype, weight=weight)
-    shape = (n_total,)
-    op = LerpOp(a_shape=shape, b_shape=shape, dtype=dtype, weight=weight)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    """Validate lerp across multiple construction-time weight values."""
+    # Lerp computes a + w*(b-a) in native dtype; the intermediate multiply
+    # adds rounding error proportional to weight magnitude in fp16.
+    if dtype == torch.float32:
+        atol, rtol = 1e-5, 1e-5
+    elif dtype == torch.float16:
+        atol, rtol = 5e-3, 5e-3
+    else:  # bfloat16
+        atol, rtol = 1.6e-2, 1.6e-2
+    for weight in [0.0, 0.3, 0.5, 0.7, 1.0]:
+        test = LerpTest(n_total, dtype, weight=weight)
+        shape = (n_total,)
+        op = LerpOp(a_shape=shape, b_shape=shape, dtype=dtype, weight=weight)
+        test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
 # ---------------------------------------------------------------------------

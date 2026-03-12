@@ -399,7 +399,8 @@ class BinaryKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel"]
     DEFAULT_STRATEGY = "explicit_parallel"
-    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., "bool")
+    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., "int8")
+    SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
     @staticmethod
     def op_func(a, b):
@@ -411,6 +412,11 @@ class BinaryKernel(Kernel):
         a_numel, b_numel, strategy=None, config=None, tune=False,
     ):
         super().__init__()
+        if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         self.coalesced_shape = coalesced_shape
@@ -679,13 +685,14 @@ class MinimumKernel(BinaryKernel):
 
 
 # ---------------------------------------------------------------------------
-# Comparison kernel subclasses (output bool)
+# Comparison kernel subclasses (output int8: 1/0 flags, cast to bool in Op layer)
 # ---------------------------------------------------------------------------
 
 
 class EqKernel(BinaryKernel):
     """Element-wise equality: y = (a == b), stored as int8 (1/0)."""
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
     OUTPUT_DTYPE = "int8"
 
     @staticmethod
@@ -698,6 +705,7 @@ class EqKernel(BinaryKernel):
 class NeKernel(BinaryKernel):
     """Element-wise not-equal: y = (a != b), stored as int8 (1/0)."""
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
     OUTPUT_DTYPE = "int8"
 
     @staticmethod
@@ -710,6 +718,7 @@ class NeKernel(BinaryKernel):
 class GtKernel(BinaryKernel):
     """Element-wise greater-than: y = (a > b), stored as int8 (1/0)."""
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
     OUTPUT_DTYPE = "int8"
 
     @staticmethod
@@ -722,6 +731,7 @@ class GtKernel(BinaryKernel):
 class LtKernel(BinaryKernel):
     """Element-wise less-than: y = (a < b), stored as int8 (1/0)."""
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
     OUTPUT_DTYPE = "int8"
 
     @staticmethod
@@ -734,6 +744,7 @@ class LtKernel(BinaryKernel):
 class GeKernel(BinaryKernel):
     """Element-wise greater-equal: y = (a >= b), stored as int8 (1/0)."""
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
     OUTPUT_DTYPE = "int8"
 
     @staticmethod
@@ -746,6 +757,7 @@ class GeKernel(BinaryKernel):
 class LeKernel(BinaryKernel):
     """Element-wise less-equal: y = (a <= b), stored as int8 (1/0)."""
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
     OUTPUT_DTYPE = "int8"
 
     @staticmethod
@@ -756,13 +768,14 @@ class LeKernel(BinaryKernel):
 
 
 # ---------------------------------------------------------------------------
-# Logical kernel subclasses (output bool)
+# Logical kernel subclasses (output int8: 1/0-encoded logical values)
 # ---------------------------------------------------------------------------
 
 
 class LogicalAndKernel(BinaryKernel):
     """Element-wise logical AND: y = a && b (non-zero = True), stored as int8."""
 
+    SUPPORTED_DTYPES = _LOGICAL_DTYPES
     OUTPUT_DTYPE = "int8"
 
     @staticmethod
@@ -778,6 +791,7 @@ class LogicalAndKernel(BinaryKernel):
 class LogicalOrKernel(BinaryKernel):
     """Element-wise logical OR: y = a || b (non-zero = True), stored as int8."""
 
+    SUPPORTED_DTYPES = _LOGICAL_DTYPES
     OUTPUT_DTYPE = "int8"
 
     @staticmethod
@@ -798,6 +812,8 @@ class LogicalOrKernel(BinaryKernel):
 class BitwiseAndKernel(BinaryKernel):
     """Element-wise bitwise AND: y = a & b (integer inputs)."""
 
+    SUPPORTED_DTYPES = _BITWISE_DTYPES
+
     @staticmethod
     def op_func(a, b):
         return a & b
@@ -806,6 +822,8 @@ class BitwiseAndKernel(BinaryKernel):
 class BitwiseOrKernel(BinaryKernel):
     """Element-wise bitwise OR: y = a | b (integer inputs)."""
 
+    SUPPORTED_DTYPES = _BITWISE_DTYPES
+
     @staticmethod
     def op_func(a, b):
         return a | b
@@ -813,6 +831,8 @@ class BitwiseOrKernel(BinaryKernel):
 
 class BitwiseXorKernel(BinaryKernel):
     """Element-wise bitwise XOR: y = a ^ b (integer inputs)."""
+
+    SUPPORTED_DTYPES = _BITWISE_DTYPES
 
     @staticmethod
     def op_func(a, b):

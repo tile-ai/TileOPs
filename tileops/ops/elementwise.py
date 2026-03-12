@@ -293,6 +293,13 @@ class BinaryOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        supported = self.kernel_cls.SUPPORTED_DTYPES
+        if supported is not None and dtype not in supported:
+            names = ", ".join(str(dt) for dt in supported)
+            raise ValueError(
+                f"{self._op_name} does not support dtype {dtype}. "
+                f"Supported: [{names}]"
+            )
         self.dtype = dtype
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
@@ -454,13 +461,16 @@ class FloorDivideOp(BinaryOp):
 class LerpOp(BinaryOp):
     """Element-wise lerp with broadcast: y = a + weight * (b - a).
 
-    PyTorch lerp is ternary; weight is a compile-time scalar here.
+    Unlike ``torch.lerp(a, b, weight)`` where weight is a runtime parameter,
+    here weight is a **construction-time constant** baked into the compiled
+    kernel. This enables compile-time folding but means a new Op instance is
+    needed for each distinct weight value.
 
     Args:
         a_shape: Shape of input a.
         b_shape: Shape of input b.
         dtype: Torch dtype.
-        weight: Scalar interpolation weight (default 0.5).
+        weight: Scalar interpolation weight, fixed at construction (default 0.5).
         strategy: Kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.

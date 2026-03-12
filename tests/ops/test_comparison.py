@@ -49,6 +49,7 @@ class EqFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -71,6 +72,7 @@ class NeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -93,6 +95,7 @@ class GtFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -115,6 +118,7 @@ class LtFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -137,6 +141,7 @@ class GeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -159,6 +164,7 @@ class LeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -199,6 +205,33 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
         out = op(a, b)
     assert out.dtype == torch.bool
     assert torch.equal(out, ref)
+
+
+# ---------------------------------------------------------------------------
+# Dtype rejection tests
+# ---------------------------------------------------------------------------
+
+
+class ComparisonRejectFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, dtype", [
+            pytest.param(EqOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(NeOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(GtOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(LtOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(GeOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(LeOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(EqOp, torch.int64, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@ComparisonRejectFixture
+def test_comparison_rejects_integer_dtype(op_cls, dtype: torch.dtype) -> None:
+    """Comparison ops only support float dtypes; integers must be rejected."""
+    shape = (16,)
+    with pytest.raises(ValueError, match="does not support dtype"):
+        op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
 
 
 if __name__ == "__main__":

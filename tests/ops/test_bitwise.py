@@ -165,5 +165,30 @@ def test_bitwise_not_rejects_float_dtype(dtype: torch.dtype) -> None:
         BitwiseNotKernel(N_total=16, dtype=dtype)
 
 
+# ---------------------------------------------------------------------------
+# Dtype rejection tests for binary bitwise ops
+# ---------------------------------------------------------------------------
+
+
+class BitwiseBinaryRejectFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, dtype", [
+            pytest.param(BitwiseAndOp, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(BitwiseOrOp, torch.float16, marks=pytest.mark.full),
+            pytest.param(BitwiseXorOp, torch.float16, marks=pytest.mark.full),
+            pytest.param(BitwiseAndOp, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(BitwiseAndOp, torch.float32, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@BitwiseBinaryRejectFixture
+def test_bitwise_binary_rejects_float_dtype(op_cls, dtype: torch.dtype) -> None:
+    """Binary bitwise ops only support integer dtypes; floats must be rejected."""
+    shape = (16,)
+    with pytest.raises(ValueError, match="does not support dtype"):
+        op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
