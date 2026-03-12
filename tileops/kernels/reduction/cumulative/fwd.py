@@ -1,7 +1,8 @@
 """Cumulative scan kernels (cumsum, cumprod) using TileLang.
 
 Implements an inclusive prefix scan along the last dimension using a
-sequential loop (T.Serial) to maintain the correct data dependency chain.
+sequential loop (T.Serial) with a 1-D running accumulator to maintain the
+correct data dependency chain without conflicting index patterns.
 
 Both operate on 2D (M, N_padded) tensors; the Op layer handles reshape.
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
@@ -20,17 +21,22 @@ from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     SHARED_MEMORY_BUDGET_BYTES,
     align_up,
-    make_cumulative_scan,
 )
 
 __all__ = ["CumulativeKernel"]
+
+# Identity elements for supported scan operations.
+_SCAN_IDENTITY = {"sum": 0.0, "prod": 1.0}
 
 
 def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build a TileLang inclusive prefix scan kernel.
 
-    Uses the make_cumulative_scan macro to perform a sequential scan along
-    the last dimension.
+    Uses a 1-D accumulator fragment ``(block_m,)`` that is updated
+    sequentially across columns via ``T.Serial``.  This avoids
+    accessing the same 2-D output buffer with two different index
+    patterns (``[i, j-1]`` vs ``[i, j]``), which TileLang's
+    structural-equality checker rejects.
 
     Args:
         M: Number of rows (product of all leading dimensions).
@@ -42,39 +48,85 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
         A TileLang JIT-compiled kernel factory accepting (block_m, threads).
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    scan = make_cumulative_scan(op_kind)
+    identity = _SCAN_IDENTITY[op_kind]
 
-    @tilelang.jit(out_idx=[1])
-    def _func(block_m, threads):
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M, N_padded), dtype],
-            y: T.Tensor[(M, N_padded), dtype],
-        ):
-            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                x_local = T.alloc_fragment((block_m, N_padded), dtype)
-                x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
-                out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+    if op_kind == "sum":
 
-                # Load input via shared memory
-                T.copy(x[pid_m * block_m, 0], shared_buf)
-                T.copy(shared_buf, x_local)
+        @tilelang.jit(out_idx=[1])
+        def _func(block_m, threads):
+            @T.prim_func
+            def main(
+                x: T.Tensor[(M, N_padded), dtype],
+                y: T.Tensor[(M, N_padded), dtype],
+            ):
+                with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                    shared_buf = T.alloc_shared((block_m, N_padded), dtype)
+                    x_local = T.alloc_fragment((block_m, N_padded), dtype)
+                    x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                    out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                    acc = T.alloc_fragment((block_m,), "float32")
 
-                # Cast to fp32 for numerical stability
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                    # Load input via shared memory
+                    T.copy(x[pid_m * block_m, 0], shared_buf)
+                    T.copy(shared_buf, x_local)
 
-                # Inclusive prefix scan
-                scan(x_f32, block_m, N_padded, out_f32)
+                    # Cast to fp32 for numerical stability
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
-                # Cast back to original dtype and write via shared memory
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_local[i, j] = T.cast(out_f32[i, j], dtype)
-                T.copy(x_local, shared_buf)
-                T.copy(shared_buf, y[pid_m * block_m, 0])
+                    # Inclusive prefix sum using a 1-D accumulator.
+                    T.fill(acc, identity)
+                    for j in T.Serial(N_padded):
+                        for i in T.Parallel(block_m):
+                            acc[i] = acc[i] + x_f32[i, j]
+                            out_f32[i, j] = acc[i]
 
-        return main
+                    # Cast back to original dtype and write via shared memory
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_local[i, j] = T.cast(out_f32[i, j], dtype)
+                    T.copy(x_local, shared_buf)
+                    T.copy(shared_buf, y[pid_m * block_m, 0])
+
+            return main
+
+    else:  # prod
+
+        @tilelang.jit(out_idx=[1])
+        def _func(block_m, threads):
+            @T.prim_func
+            def main(
+                x: T.Tensor[(M, N_padded), dtype],
+                y: T.Tensor[(M, N_padded), dtype],
+            ):
+                with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                    shared_buf = T.alloc_shared((block_m, N_padded), dtype)
+                    x_local = T.alloc_fragment((block_m, N_padded), dtype)
+                    x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                    out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                    acc = T.alloc_fragment((block_m,), "float32")
+
+                    # Load input via shared memory
+                    T.copy(x[pid_m * block_m, 0], shared_buf)
+                    T.copy(shared_buf, x_local)
+
+                    # Cast to fp32 for numerical stability
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
+
+                    # Inclusive prefix product using a 1-D accumulator.
+                    T.fill(acc, identity)
+                    for j in T.Serial(N_padded):
+                        for i in T.Parallel(block_m):
+                            acc[i] = acc[i] * x_f32[i, j]
+                            out_f32[i, j] = acc[i]
+
+                    # Cast back to original dtype and write via shared memory
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_local[i, j] = T.cast(out_f32[i, j], dtype)
+                    T.copy(x_local, shared_buf)
+                    T.copy(shared_buf, y[pid_m * block_m, 0])
+
+            return main
 
     return _func
 
