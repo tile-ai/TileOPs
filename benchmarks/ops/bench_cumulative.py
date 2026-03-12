@@ -61,7 +61,7 @@ class CumulativeBenchmark(BenchmarkBase):
         return 2 * t.m * t.n * elem_bytes
 
 
-def _make_op(m, n, dtype, op_kind):
+def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.cumprod import CumprodOp
     from tileops.ops.reduction.cumsum import CumsumOp
