@@ -155,7 +155,9 @@ def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
   - Tests must cover `FP16` and `BF16` data types.
   - Tests must parameterize over common shapes (Batch size, Heads, Sequence length).
   - Tests must encode the dtype contract explicitly: supported dtypes are covered, unsupported dtypes are rejected, and output dtypes are asserted.
+  - Changes to shared test infrastructure such as `tests/test_base.py`, common fixtures, or shared comparators must preserve existing default semantics unless the migration plan updates all affected tests in the same PR.
   - Before claiming the implementation is ready, run the full targeted test files for the affected op family on a real GPU machine, not just reject-path or smoke subsets.
+  - If a PR touches shared test infrastructure, also run a broader real-machine `pytest -m smoke` pass before merge to catch regressions outside the target op family.
 
 ### Benchmarks
 

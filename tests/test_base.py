@@ -19,6 +19,7 @@ def _to_tuple(outputs):
 
 def allclose_compare(output: torch.Tensor, output_ref: torch.Tensor, atol: float = 1e-8, rtol: float = 1e-5) -> None:
     """Default comparison using torch.allclose."""
+    output, output_ref = torch.broadcast_tensors(output, output_ref)
     torch.testing.assert_close(
         output,
         output_ref,

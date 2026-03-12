@@ -108,8 +108,10 @@ Only after **2 Peer Approvals + 1 Mentor Approval + CI Passing** can the code be
 
 - [ ] **Logic**: Is the algorithm correct? Are there any obvious bugs?
 - [ ] **Unit Tests**: Are there tests in `tests/` matching the code? Do they pass?
+- [ ] **Shared Harness**: If the PR changes shared test infrastructure such as `tests/test_base.py` or common fixtures, does it preserve existing default semantics or update all affected tests in the same PR?
 - [ ] **Edge Cases**: Are empty inputs or boundary shapes handled?
 - [ ] **Error Handling**: Are inputs validated with informative error messages?
+- [ ] **Smoke Scope**: If shared test infrastructure changed, was a broader real-machine `pytest -m smoke` run completed in addition to targeted suites?
 
 **Benchmark**
 
