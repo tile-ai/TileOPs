@@ -27,9 +27,37 @@ __all__ = [
     "UnaryKernel",
     "BinaryKernel",
     "FusedGatedKernel",
+    # Unary
     "ReluKernel",
+    # Binary arithmetic
     "AddKernel",
+    "SubKernel",
+    "MulKernel",
+    "DivKernel",
+    "RemainderKernel",
+    "PowKernel",
+    "FloorDivideKernel",
+    "LerpKernel",
+    "MaximumKernel",
+    "MinimumKernel",
+    # Comparison (OUTPUT_DTYPE = "int8", cast to bool by Op layer)
+    "EqKernel",
+    "NeKernel",
+    "GtKernel",
+    "LtKernel",
+    "GeKernel",
+    "LeKernel",
+    # Logical (OUTPUT_DTYPE = "int8", cast to bool by Op layer)
+    "LogicalAndKernel",
+    "LogicalOrKernel",
+    # Bitwise
+    "BitwiseAndKernel",
+    "BitwiseOrKernel",
+    "BitwiseXorKernel",
+    # Fused gated
     "SiluAndMulKernel",
+    "GeluAndMulKernel",
+    "GeluTanhAndMulKernel",
 ]
 
 # ---------------------------------------------------------------------------
@@ -426,9 +454,306 @@ class AddKernel(BinaryKernel):
         return a + b
 
 
+class SubKernel(BinaryKernel):
+    """Element-wise subtraction: y = a - b."""
+
+    @staticmethod
+    def op_func(a, b):
+        return a - b
+
+
+class MulKernel(BinaryKernel):
+    """Element-wise multiplication: y = a * b."""
+
+    @staticmethod
+    def op_func(a, b):
+        return a * b
+
+
+class DivKernel(BinaryKernel):
+    """Element-wise division: y = a / b."""
+
+    @staticmethod
+    def op_func(a, b):
+        return a / b
+
+
+class RemainderKernel(BinaryKernel):
+    """Element-wise remainder: y = a - floor(a / b) * b.
+
+    Matches PyTorch remainder semantics for floating-point inputs.
+    Uses floor-based formula since T.FloorMod requires integer types.
+    """
+
+    @staticmethod
+    def op_func(a, b):
+        return a - T.floor(a / b) * b
+
+
+class PowKernel(BinaryKernel):
+    """Element-wise power: y = a ** b."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.pow(a, b)
+
+
+class FloorDivideKernel(BinaryKernel):
+    """Element-wise floor division: y = floor(a / b)."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.floor(a / b)
+
+
+class LerpKernel(BinaryKernel):
+    """Element-wise lerp: y = a + weight * (b - a).
+
+    PyTorch lerp is ternary (a, b, weight). Here weight is a compile-time
+    constant passed at kernel construction, keeping the binary kernel template.
+
+    Args:
+        weight: Scalar interpolation weight (default 0.5).
+    """
+
+    @staticmethod
+    def op_func(a, b):
+        raise NotImplementedError("Use _make_lerp_op_func(weight) instead")
+
+    def __init__(
+        self, N_total, dtype, coalesced_shape, a_strides, b_strides,
+        a_numel, b_numel, strategy=None, config=None, tune=False, weight=0.5,
+    ):
+        self._weight = weight
+        super().__init__(
+            N_total, dtype, coalesced_shape, a_strides, b_strides,
+            a_numel, b_numel, strategy=strategy, config=config, tune=tune,
+        )
+
+    def _build_kernel(self, strategy):
+        """Override to inject compile-time weight into op_func."""
+        w = self._weight
+
+        def lerp_func(a, b):
+            return a + T.cast(w, a.dtype) * (b - a)
+
+        cfg = self.default_config
+        if strategy == "direct":
+            return _make_binary_direct(
+                self.N_total, self.dtype_str, lerp_func,
+                self.coalesced_shape, self.a_strides, self.b_strides,
+                self.a_numel, self.b_numel,
+                output_dtype=self.OUTPUT_DTYPE, threads=cfg["threads"],
+            )
+        elif strategy == "explicit_parallel":
+            return _make_binary_explicit(
+                self.N_total, self.dtype_str, lerp_func,
+                self.coalesced_shape, self.a_strides, self.b_strides,
+                self.a_numel, self.b_numel,
+                output_dtype=self.OUTPUT_DTYPE,
+                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+            )
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+
+
+class MaximumKernel(BinaryKernel):
+    """Element-wise maximum: y = max(a, b)."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.if_then_else(a > b, a, b)
+
+
+class MinimumKernel(BinaryKernel):
+    """Element-wise minimum: y = min(a, b)."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.if_then_else(a < b, a, b)
+
+
+# ---------------------------------------------------------------------------
+# Comparison kernel subclasses (output bool)
+# ---------------------------------------------------------------------------
+
+
+class EqKernel(BinaryKernel):
+    """Element-wise equality: y = (a == b), stored as int8 (1/0)."""
+
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a == b, one, zero)
+
+
+class NeKernel(BinaryKernel):
+    """Element-wise not-equal: y = (a != b), stored as int8 (1/0)."""
+
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a != b, one, zero)
+
+
+class GtKernel(BinaryKernel):
+    """Element-wise greater-than: y = (a > b), stored as int8 (1/0)."""
+
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a > b, one, zero)
+
+
+class LtKernel(BinaryKernel):
+    """Element-wise less-than: y = (a < b), stored as int8 (1/0)."""
+
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a < b, one, zero)
+
+
+class GeKernel(BinaryKernel):
+    """Element-wise greater-equal: y = (a >= b), stored as int8 (1/0)."""
+
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a >= b, one, zero)
+
+
+class LeKernel(BinaryKernel):
+    """Element-wise less-equal: y = (a <= b), stored as int8 (1/0)."""
+
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a <= b, one, zero)
+
+
+# ---------------------------------------------------------------------------
+# Logical kernel subclasses (output bool)
+# ---------------------------------------------------------------------------
+
+
+class LogicalAndKernel(BinaryKernel):
+    """Element-wise logical AND: y = a && b (non-zero = True), stored as int8."""
+
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        a_nonzero = a != T.cast(0, a.dtype)
+        b_nonzero = b != T.cast(0, b.dtype)
+        # AND: both must be non-zero
+        return T.if_then_else(a_nonzero, T.if_then_else(b_nonzero, one, zero), zero)
+
+
+class LogicalOrKernel(BinaryKernel):
+    """Element-wise logical OR: y = a || b (non-zero = True), stored as int8."""
+
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        a_nonzero = a != T.cast(0, a.dtype)
+        b_nonzero = b != T.cast(0, b.dtype)
+        # OR: at least one must be non-zero
+        return T.if_then_else(a_nonzero, one, T.if_then_else(b_nonzero, one, zero))
+
+
+# ---------------------------------------------------------------------------
+# Bitwise kernel subclasses
+# ---------------------------------------------------------------------------
+
+
+class BitwiseAndKernel(BinaryKernel):
+    """Element-wise bitwise AND: y = a & b (integer inputs)."""
+
+    @staticmethod
+    def op_func(a, b):
+        return a & b
+
+
+class BitwiseOrKernel(BinaryKernel):
+    """Element-wise bitwise OR: y = a | b (integer inputs)."""
+
+    @staticmethod
+    def op_func(a, b):
+        return a | b
+
+
+class BitwiseXorKernel(BinaryKernel):
+    """Element-wise bitwise XOR: y = a ^ b (integer inputs)."""
+
+    @staticmethod
+    def op_func(a, b):
+        return a ^ b
+
+
+# ---------------------------------------------------------------------------
+# Fused gated kernel subclasses
+# ---------------------------------------------------------------------------
+
+
 class SiluAndMulKernel(FusedGatedKernel):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
 
     @staticmethod
     def activation_func(x):
         return x * T.sigmoid(x)
+
+
+class GeluAndMulKernel(FusedGatedKernel):
+    """GELU-and-Mul: y = gelu(gate) * value.
+
+    Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
+    erf is computed in float32 to avoid missing half-precision intrinsic.
+    """
+
+    @staticmethod
+    def activation_func(x):
+        inv_sqrt2 = T.cast(0.7071067811865476, "float32")
+        half = T.cast(0.5, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        x_f32 = T.Cast("float32", x)
+        erf_val = T.Cast(x.dtype, T.erf(x_f32 * inv_sqrt2))
+        return x * half * (one + erf_val)
+
+
+class GeluTanhAndMulKernel(FusedGatedKernel):
+    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value.
+
+    Uses tanh approximation: gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
+    """
+
+    @staticmethod
+    def activation_func(x):
+        sqrt_2_over_pi = T.cast(0.7978845608028654, x.dtype)
+        coeff = T.cast(0.044715, x.dtype)
+        half = T.cast(0.5, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        return half * x * (one + T.tanh(sqrt_2_over_pi * (x + coeff * x * x * x)))
