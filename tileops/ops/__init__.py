@@ -44,8 +44,8 @@ from .reduction import (
     AmaxOp,  # ReduceMaxOp
     AminOp,  # ReduceMinOp
     # AnyOp,
-    # ArgmaxOp,
-    # ArgminOp,
+    ArgmaxOp,
+    ArgminOp,
     # CountNonzeroOp,
     # CummaxOp,
     # CumminOp,
@@ -114,8 +114,8 @@ __all__ = [
     "AmaxOp",
     "AminOp",
     # "AnyOp",
-    # "ArgmaxOp",
-    # "ArgminOp",
+    "ArgmaxOp",
+    "ArgminOp",
     # "CountNonzeroOp",
     # "CummaxOp",
     # "CumminOp",
