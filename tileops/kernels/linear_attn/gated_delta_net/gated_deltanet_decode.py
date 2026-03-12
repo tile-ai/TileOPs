@@ -316,8 +316,10 @@ def _gated_deltanet_decode_fp32_tl(
     compounds through the recurrent state.  This kernel avoids T.gemm
     entirely, computing S@k and S@q via scalar accumulation in full fp32.
 
-    Pass 1 (matvec) uses T.Serial + T.copy because the accumulation into
-    shared buffers creates a cross-iteration dependency.
+    Pass 1 (matvec) uses T.Serial with fragment accumulators and direct
+    global memory reads.  The serial k-dimension loop is intentional:
+    it ensures scalar multiply-accumulate (no TF32 tensor cores) at the
+    cost of lower throughput — acceptable for single-step decode latency.
     Pass 2 (state update) uses T.Pipelined since each tile writes to
     independent global memory.
     """
@@ -363,8 +365,9 @@ def _gated_deltanet_decode_fp32_tl(
                 T.fill(sq_frag, 0.0)
 
                 # === Pass 1: Element-wise matvec (full fp32 precision) ===
-                # Read state directly from global memory to avoid shared
-                # memory race conditions during accumulation.
+                # T.Serial over dim_k is intentional: scalar multiply-accumulate
+                # avoids TF32 tensor cores, trading throughput for precision.
+                # Reads state from global memory to avoid shared memory races.
                 for kk in T.Serial(dim_k):
                     k_val = k[bid, hid, kk]
                     q_val = q[bid, hid, kk]
@@ -421,11 +424,11 @@ class GatedDeltaNetDecodeFP32Kernel(Kernel):
         tune: bool = False,
     ):
         super().__init__()
+        assert dtype == "float32", f"{self.__class__.__name__} only supports float32"
         self.batch = batch
         self.head = head
         self.dim_k = dim_k
         self.dim_v = dim_v
-        self.dtype = dtype
 
         if tune:
             self._autotune_with_k_tile()
