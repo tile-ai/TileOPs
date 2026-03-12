@@ -40,6 +40,7 @@ from .flash_decode import (
 )
 from .gemm import GemmKernel, GemvKernel
 from .grouped_gemm import grouped_gemm_kernel
+from .moe import moe_align_kernel
 from .kernel import Kernel
 from .linear_attn import (
     GatedDeltaNetBwdKernel,
@@ -113,6 +114,7 @@ __all__ = [
     "gqa_decode_kernel",
     "gqa_decode_paged_kernel",
     "grouped_gemm_kernel",
+    "moe_align_kernel",
     "mha_decode_kernel",
     "mha_decode_paged_kernel",
     "mhc_post_kernel",
