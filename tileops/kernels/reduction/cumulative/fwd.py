@@ -1,8 +1,10 @@
 """Cumulative scan kernels (cumsum, cumprod) using TileLang.
 
-Implements an inclusive prefix scan along the last dimension using a
-sequential loop (T.Serial) with a 1-D running accumulator to maintain the
-correct data dependency chain without conflicting index patterns.
+Implements an inclusive prefix scan along the last dimension.  Each row
+is processed independently (``T.Parallel`` over rows) with a sequential
+inner loop (``T.Serial`` over columns) that maintains a per-row running
+accumulator -- matching the ``T.Parallel``-outer / ``T.Serial``-inner
+nesting pattern used by ``mhc_pre.py``.
 
 Both operate on 2D (M, N_padded) tensors; the Op layer handles reshape.
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
@@ -25,18 +27,14 @@ from tileops.kernels.reduction._primitives import (
 
 __all__ = ["CumulativeKernel"]
 
-# Identity elements for supported scan operations.
-_SCAN_IDENTITY = {"sum": 0.0, "prod": 1.0}
-
 
 def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build a TileLang inclusive prefix scan kernel.
 
-    Uses a 1-D accumulator fragment ``(block_m,)`` that is updated
-    sequentially across columns via ``T.Serial``.  This avoids
-    accessing the same 2-D output buffer with two different index
-    patterns (``[i, j-1]`` vs ``[i, j]``), which TileLang's
-    structural-equality checker rejects.
+    Uses ``T.Parallel(block_m)`` as the outer loop and ``T.Serial(N_padded)``
+    as the inner loop, with a 1-D accumulator ``acc[i]`` updated on each
+    serial step.  This nesting order is required by TileLang (``T.Serial``
+    must be nested inside ``T.Parallel``, not the other way around).
 
     Args:
         M: Number of rows (product of all leading dimensions).
@@ -48,7 +46,6 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
         A TileLang JIT-compiled kernel factory accepting (block_m, threads).
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    identity = _SCAN_IDENTITY[op_kind]
 
     if op_kind == "sum":
 
@@ -61,30 +58,25 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                    x_local = T.alloc_fragment((block_m, N_padded), dtype)
                     x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                     out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                     acc = T.alloc_fragment((block_m,), "float32")
 
-                    # Load input via shared memory
+                    # Load input via shared memory and cast to fp32
                     T.copy(x[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, x_local)
-
-                    # Cast to fp32 for numerical stability
                     for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
-                    # Inclusive prefix sum using a 1-D accumulator.
-                    T.fill(acc, identity)
-                    for j in T.Serial(N_padded):
-                        for i in T.Parallel(block_m):
+                    # Inclusive prefix sum: T.Parallel outer, T.Serial inner
+                    for i in T.Parallel(block_m):
+                        acc[i] = T.float32(0)
+                        for j in T.Serial(N_padded):
                             acc[i] = acc[i] + x_f32[i, j]
                             out_f32[i, j] = acc[i]
 
                     # Cast back to original dtype and write via shared memory
                     for i, j in T.Parallel(block_m, N_padded):
-                        x_local[i, j] = T.cast(out_f32[i, j], dtype)
-                    T.copy(x_local, shared_buf)
+                        shared_buf[i, j] = T.cast(out_f32[i, j], dtype)
                     T.copy(shared_buf, y[pid_m * block_m, 0])
 
             return main
@@ -100,30 +92,25 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                    x_local = T.alloc_fragment((block_m, N_padded), dtype)
                     x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                     out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                     acc = T.alloc_fragment((block_m,), "float32")
 
-                    # Load input via shared memory
+                    # Load input via shared memory and cast to fp32
                     T.copy(x[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, x_local)
-
-                    # Cast to fp32 for numerical stability
                     for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
-                    # Inclusive prefix product using a 1-D accumulator.
-                    T.fill(acc, identity)
-                    for j in T.Serial(N_padded):
-                        for i in T.Parallel(block_m):
+                    # Inclusive prefix product: T.Parallel outer, T.Serial inner
+                    for i in T.Parallel(block_m):
+                        acc[i] = T.float32(1)
+                        for j in T.Serial(N_padded):
                             acc[i] = acc[i] * x_f32[i, j]
                             out_f32[i, j] = acc[i]
 
                     # Cast back to original dtype and write via shared memory
                     for i, j in T.Parallel(block_m, N_padded):
-                        x_local[i, j] = T.cast(out_f32[i, j], dtype)
-                    T.copy(x_local, shared_buf)
+                        shared_buf[i, j] = T.cast(out_f32[i, j], dtype)
                     T.copy(shared_buf, y[pid_m * block_m, 0])
 
             return main
