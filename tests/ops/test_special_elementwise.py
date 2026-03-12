@@ -6,7 +6,7 @@ Covers L1 smoke correctness (fp16, 1M) and L4 edge cases (fp32, 4K).
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, exact_compare
 from tileops.ops.elementwise import IsfiniteOp, IsinfOp, IsnanOp
 
 
@@ -16,7 +16,8 @@ class SpecialFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -51,14 +52,13 @@ class SpecialTest(TestBase):
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return self._ref_fn(x).to(x.dtype)
+        return self._ref_fn(x)
 
 
 def _make_special_test(n_total, dtype, op_cls, ref_fn, gen_fn=None) -> None:
     test = SpecialTest(n_total, dtype, ref_fn=ref_fn, gen_fn=gen_fn)
     op = op_cls(N_total=n_total, dtype=dtype)
-    tol = {"atol": 1e-3, "rtol": 1e-3} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
-    test.check(op, *test.gen_inputs(), **tol)
+    test.check(op, *test.gen_inputs(), compare=exact_compare)
 
 
 @SpecialFixture
@@ -103,11 +103,19 @@ def test_isinf_edge(n_total: int, dtype: torch.dtype) -> None:
 
 @SpecialEdgeFixture
 def test_isfinite_edge(n_total: int, dtype: torch.dtype) -> None:
-    """Edge: all finite input -- should return all 1.0."""
+    """Edge: all finite input."""
     def _all_finite(n, dtype):
         return torch.randn(n, device="cuda", dtype=dtype)
 
     _make_special_test(n_total, dtype, IsfiniteOp, torch.isfinite, gen_fn=_all_finite)
+
+
+@pytest.mark.smoke
+def test_special_predicates_reject_non_float_dtype() -> None:
+    from tileops.kernels.elementwise import IsnanKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        IsnanKernel(N_total=16, dtype=torch.int32)
 
 
 if __name__ == "__main__":

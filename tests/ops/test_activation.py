@@ -85,7 +85,8 @@ class ActivationFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -125,7 +126,12 @@ def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls):
     """Build test, instantiate op, and run check."""
     test = UnaryActivationTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
     op = op_cls(N_total=n_total, dtype=dtype)
-    tol = {"atol": 1e-3, "rtol": 1e-3} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
+    if dtype == torch.float16:
+        tol = {"atol": 1e-3, "rtol": 1e-3}
+    elif dtype == torch.bfloat16:
+        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
+    else:
+        tol = {"atol": 1e-5, "rtol": 1e-5}
     test.check(op, *test.gen_inputs(), **tol)
 
 
@@ -133,7 +139,7 @@ def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls):
 def test_gelu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import GeluOp
     _make_activation_test(n_total, dtype, _randn,
-                          lambda x: F.gelu(x, approximate="tanh"), GeluOp)
+                          F.gelu, GeluOp)
 
 
 @ActivationFixture
@@ -176,6 +182,14 @@ def test_mish(n_total: int, dtype: torch.dtype) -> None:
 def test_selu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SeluOp
     _make_activation_test(n_total, dtype, _randn, F.selu, SeluOp)
+
+
+@pytest.mark.smoke
+def test_activation_rejects_non_float_dtype() -> None:
+    from tileops.kernels.elementwise import GeluKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        GeluKernel(N_total=16, dtype=torch.int32)
 
 
 # ---------------------------------------------------------------------------

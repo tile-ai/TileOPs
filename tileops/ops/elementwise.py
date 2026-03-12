@@ -192,6 +192,7 @@ class UnaryOp(Op):
         self.kernel = self.kernel_map[self._op_name](
             N_total, dtype, strategy=strategy, tune=tune,
         )
+        self.output_dtype = getattr(self.kernel, "output_dtype", dtype)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -200,12 +201,13 @@ class UnaryOp(Op):
     @property
     def total_memory(self) -> float:
         """Read x + write y."""
-        elem = self.dtype.itemsize
-        return 2 * self.N_total * elem
+        return self.N_total * (self.dtype.itemsize + self.output_dtype.itemsize)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         if x.numel() != self.N_total:
             raise ValueError(
                 f"Expected {self.N_total} elements, got {x.numel()}"
@@ -494,7 +496,7 @@ class Expm1Op(UnaryOp):
 
 
 class GeluOp(UnaryOp):
-    """Element-wise GELU (tanh approximation)."""
+    """Element-wise GELU using the standard erf formulation."""
 
     _op_name = "gelu"
     kernel_cls = GeluKernel
@@ -555,7 +557,7 @@ class SeluOp(UnaryOp):
 
 
 class LogicalNotOp(UnaryOp):
-    """Element-wise logical NOT: 1.0 where x == 0, else 0.0."""
+    """Element-wise logical NOT with bool output."""
 
     _op_name = "logical_not"
     kernel_cls = LogicalNotKernel
@@ -567,7 +569,7 @@ class LogicalNotOp(UnaryOp):
 
 
 class BitwiseNotOp(UnaryOp):
-    """Element-wise bitwise NOT (~x) for integer types."""
+    """Element-wise bitwise NOT (~x) for bool/integer inputs."""
 
     _op_name = "bitwise_not"
     kernel_cls = BitwiseNotKernel
@@ -579,21 +581,21 @@ class BitwiseNotOp(UnaryOp):
 
 
 class IsnanOp(UnaryOp):
-    """Element-wise isnan: 1.0 for NaN, 0.0 otherwise."""
+    """Element-wise isnan with bool output."""
 
     _op_name = "isnan"
     kernel_cls = IsnanKernel
 
 
 class IsinfOp(UnaryOp):
-    """Element-wise isinf: 1.0 for +/-inf, 0.0 otherwise."""
+    """Element-wise isinf with bool output."""
 
     _op_name = "isinf"
     kernel_cls = IsinfKernel
 
 
 class IsfiniteOp(UnaryOp):
-    """Element-wise isfinite: 1.0 for finite values, 0.0 otherwise."""
+    """Element-wise isfinite with bool output."""
 
     _op_name = "isfinite"
     kernel_cls = IsfiniteKernel

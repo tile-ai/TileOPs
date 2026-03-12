@@ -38,11 +38,14 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
   - Wrap the kernel in a Python function.
   - **Docstrings**: Google Style (Args, Returns, Example).
   - **Unit Test**: Compare output against a pure PyTorch reference implementation (required).
+  - **Dtype Contract**: Explicitly define supported input dtypes, output dtype, and rejected dtypes.
   - **Benchmark**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
 - **Standards**:
-  - Use `torch.testing.assert_close` for verification.
+  - Use `torch.testing.assert_close` for floating-point verification.
     - **FP16**: `rtol=1e-3`, `atol=1e-3`
     - **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
+  - Use exact comparison (`torch.equal`) for non-floating outputs such as `bool`, masks, and index tensors.
+  - Tests must assert the output dtype when it differs from the input dtype.
   - Benchmark results must be reproducible.
 - **Definition of Done**: The op is verified in unit tests, and benchmarks run correctly.
 
@@ -52,6 +55,22 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
 - **Goal**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
 - **Execution**: `pytest benchmarks/` auto-generates `profile_run.log`.
 - **Definition of Done**: Benchmark the op and put the results in the issue.
+
+### Step 4: PR Acceptance Package
+
+Every PR that adds a new op, expands dtype coverage, or changes semantic behavior must include the following in the PR description:
+
+1. A dtype support matrix that states the actual supported input dtypes, output dtype, and PyTorch or documented baseline semantics.
+2. A concrete acceptance checklist (`AC-1`, `AC-2`, ...) covering implementation, correctness tests, dtype contract checks, and benchmark deliverables.
+3. A benchmark comparison table with real measured data and environment metadata.
+
+Use the following benchmark table shape in the PR body:
+
+| Shape / Params | dtype | Op | TileOPs (ms) | Baseline (ms) | Ratio | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| example | fp16 | example_op | ... | ... | ... | ... |
+
+If the implementation is correctness-first and performance follow-up is deferred, state that explicitly in the PR body and link the follow-up issue. Do not leave the benchmark section implicit.
 
 ______________________________________________________________________
 
@@ -130,6 +149,7 @@ def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
   - Each op defines a `TestBase` subclass in `tests/ops/` with `gen_inputs()` and `ref_program()`.
   - Tests must cover `FP16` and `BF16` data types.
   - Tests must parameterize over common shapes (Batch size, Heads, Sequence length).
+  - Tests must encode the dtype contract explicitly: supported dtypes are covered, unsupported dtypes are rejected, and output dtypes are asserted.
 
 ### Benchmarks
 

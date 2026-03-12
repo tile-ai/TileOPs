@@ -1,6 +1,7 @@
 """Tests for unary math elementwise ops (17 ops).
 
-Covers L1 smoke correctness (fp16, 1M) and L4 edge cases (fp32, 4K).
+Covers L1 correctness across supported float dtypes and the issue #437
+L4 edge cases for numerically sensitive ops.
 """
 
 import pytest
@@ -29,12 +30,13 @@ from tileops.ops.elementwise import (
 
 
 class MathFixture(FixtureBase):
-    """Parametrize over shapes / dtypes for math ops."""
+    """Parametrize over supported float dtypes for unary math ops."""
 
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -67,6 +69,14 @@ class UnaryMathTest(TestBase):
         return self._ref_fn(x)
 
 
+def _get_tolerances(dtype: torch.dtype) -> dict[str, float]:
+    if dtype == torch.float16:
+        return {"atol": 1e-3, "rtol": 1e-3}
+    if dtype == torch.bfloat16:
+        return {"atol": 1.6e-2, "rtol": 1.6e-2}
+    return {"atol": 1e-5, "rtol": 1e-5}
+
+
 def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
     return torch.randn(n, device="cuda", dtype=dtype)
 
@@ -80,16 +90,21 @@ def _nonzero(n: int, dtype: torch.dtype) -> torch.Tensor:
     return x + torch.sign(x) * 0.01
 
 
+def _repeat_values(values: list[float], n: int, dtype: torch.dtype) -> torch.Tensor:
+    base = torch.tensor(values, device="cuda", dtype=dtype)
+    repeats = (n + len(values) - 1) // len(values)
+    return base.repeat(repeats)[:n]
+
+
 def _make_math_test(n_total, dtype, gen_fn, ref_fn, op_cls):
     """Build test, instantiate op, and run check."""
     test = UnaryMathTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
     op = op_cls(N_total=n_total, dtype=dtype)
-    tol = {"atol": 1e-3, "rtol": 1e-3} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
-    test.check(op, *test.gen_inputs(), **tol)
+    test.check(op, *test.gen_inputs(), **_get_tolerances(dtype))
 
 
 # ---------------------------------------------------------------------------
-# L1 tests (17 ops, fp16, 1M)
+# L1 tests (17 ops)
 # ---------------------------------------------------------------------------
 
 
@@ -145,30 +160,46 @@ def test_cos(n_total: int, dtype: torch.dtype) -> None:
 
 @MathFixture
 def test_floor(n_total: int, dtype: torch.dtype) -> None:
-    # Kernel casts to fp32 before floor; reference must match
-    _make_math_test(n_total, dtype, _randn,
-                    lambda x: torch.floor(x.float()).to(x.dtype), FloorOp)
+    _make_math_test(
+        n_total,
+        dtype,
+        _randn,
+        lambda x: torch.floor(x.float()).to(x.dtype),
+        FloorOp,
+    )
 
 
 @MathFixture
 def test_ceil(n_total: int, dtype: torch.dtype) -> None:
-    # Kernel casts to fp32 before ceil; reference must match
-    _make_math_test(n_total, dtype, _randn,
-                    lambda x: torch.ceil(x.float()).to(x.dtype), CeilOp)
+    _make_math_test(
+        n_total,
+        dtype,
+        _randn,
+        lambda x: torch.ceil(x.float()).to(x.dtype),
+        CeilOp,
+    )
 
 
 @MathFixture
 def test_round(n_total: int, dtype: torch.dtype) -> None:
-    # Kernel uses nearbyint(fp32(x)) for banker's rounding; reference must match
-    _make_math_test(n_total, dtype, _randn,
-                    lambda x: torch.round(x.float()).to(x.dtype), RoundOp)
+    _make_math_test(
+        n_total,
+        dtype,
+        _randn,
+        lambda x: torch.round(x.float()).to(x.dtype),
+        RoundOp,
+    )
 
 
 @MathFixture
 def test_trunc(n_total: int, dtype: torch.dtype) -> None:
-    # Kernel casts to fp32 before trunc; reference must match
-    _make_math_test(n_total, dtype, _randn,
-                    lambda x: torch.trunc(x.float()).to(x.dtype), TruncOp)
+    _make_math_test(
+        n_total,
+        dtype,
+        _randn,
+        lambda x: torch.trunc(x.float()).to(x.dtype),
+        TruncOp,
+    )
 
 
 @MathFixture
@@ -178,8 +209,8 @@ def test_erf(n_total: int, dtype: torch.dtype) -> None:
 
 @MathFixture
 def test_log1p(n_total: int, dtype: torch.dtype) -> None:
-    def _gen(n, dtype):
-        return torch.rand(n, device="cuda", dtype=dtype).clamp(min=0.01)
+    def _gen(n, gen_dtype):
+        return torch.rand(n, device="cuda", dtype=gen_dtype).clamp(min=0.01)
 
     _make_math_test(n_total, dtype, _gen, torch.log1p, Log1pOp)
 
@@ -189,58 +220,116 @@ def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(n_total, dtype, _randn, torch.expm1, Expm1Op)
 
 
+@pytest.mark.smoke
+def test_math_ops_reject_non_float_dtype() -> None:
+    from tileops.kernels.elementwise import ExpKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        ExpKernel(N_total=16, dtype=torch.int32)
+
+
 # ---------------------------------------------------------------------------
-# L4 edge-case tests (fp32, 4K)
+# L4 edge-case tests from issue #437 (fp32, 4K)
 # ---------------------------------------------------------------------------
 
 
 @MathEdgeFixture
-def test_exp_edge(n_total: int, dtype: torch.dtype) -> None:
-    """Edge: exp of zeros should give all ones."""
-    def _zeros(n, dtype):
-        return torch.zeros(n, device="cuda", dtype=dtype)
+def test_sqrt_edge(n_total: int, dtype: torch.dtype) -> None:
+    _make_math_test(
+        n_total,
+        dtype,
+        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
+        torch.sqrt,
+        SqrtOp,
+    )
 
-    _make_math_test(n_total, dtype, _zeros, torch.exp, ExpOp)
+
+@MathEdgeFixture
+def test_rsqrt_edge(n_total: int, dtype: torch.dtype) -> None:
+    _make_math_test(
+        n_total,
+        dtype,
+        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
+        torch.rsqrt,
+        RsqrtOp,
+    )
 
 
 @MathEdgeFixture
 def test_log_edge(n_total: int, dtype: torch.dtype) -> None:
-    """Edge: log of ones should give all zeros."""
-    def _ones(n, dtype):
-        return torch.ones(n, device="cuda", dtype=dtype)
-
-    _make_math_test(n_total, dtype, _ones, torch.log, LogOp)
+    _make_math_test(
+        n_total,
+        dtype,
+        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
+        torch.log,
+        LogOp,
+    )
 
 
 @MathEdgeFixture
-def test_abs_edge(n_total: int, dtype: torch.dtype) -> None:
-    """Edge: abs of negative inputs."""
-    def _neg(n, dtype):
-        return -torch.rand(n, device="cuda", dtype=dtype).clamp(min=0.01)
+def test_log1p_edge(n_total: int, dtype: torch.dtype) -> None:
+    _make_math_test(
+        n_total,
+        dtype,
+        lambda n, d: _repeat_values([-2.0, -1.0, 0.0, 1e-7], n, d),
+        torch.log1p,
+        Log1pOp,
+    )
 
-    _make_math_test(n_total, dtype, _neg, torch.abs, AbsOp)
+
+@MathEdgeFixture
+def test_exp_edge(n_total: int, dtype: torch.dtype) -> None:
+    _make_math_test(
+        n_total,
+        dtype,
+        lambda n, d: _repeat_values([0.0, 88.8, -88.8, 200.0], n, d),
+        torch.exp,
+        ExpOp,
+    )
+
+
+@MathEdgeFixture
+def test_expm1_edge(n_total: int, dtype: torch.dtype) -> None:
+    _make_math_test(
+        n_total,
+        dtype,
+        lambda n, d: _repeat_values([0.0, 88.8, -88.8, 1e-7], n, d),
+        torch.expm1,
+        Expm1Op,
+    )
+
+
+@MathEdgeFixture
+def test_erf_edge(n_total: int, dtype: torch.dtype) -> None:
+    _make_math_test(
+        n_total,
+        dtype,
+        lambda n, d: _repeat_values([0.0, 3.0, -3.0, 100.0], n, d),
+        torch.erf,
+        ErfOp,
+    )
+
+
+@MathEdgeFixture
+def test_reciprocal_edge(n_total: int, dtype: torch.dtype) -> None:
+    _make_math_test(
+        n_total,
+        dtype,
+        lambda n, d: _repeat_values([0.0, 1.0, -1.0, 1e-38], n, d),
+        torch.reciprocal,
+        ReciprocalOp,
+    )
 
 
 @MathEdgeFixture
 def test_sign_edge(n_total: int, dtype: torch.dtype) -> None:
-    """Edge: sign with mix of -inf, 0, +inf."""
-    def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
-        x[:n // 3] = float("-inf")
-        x[n // 3: 2 * n // 3] = 0.0
-        x[2 * n // 3:] = float("inf")
-        return x
-
-    _make_math_test(n_total, dtype, _extreme, torch.sign, SignOp)
-
-
-@MathEdgeFixture
-def test_neg_edge(n_total: int, dtype: torch.dtype) -> None:
-    """Edge: neg of zeros should give zeros."""
-    def _zeros(n, dtype):
-        return torch.zeros(n, device="cuda", dtype=dtype)
-
-    _make_math_test(n_total, dtype, _zeros, torch.neg, NegOp)
+    _make_math_test(
+        n_total,
+        dtype,
+        lambda n, d: _repeat_values([-5.0, 0.0, 3.0, float("nan")], n, d),
+        torch.sign,
+        SignOp,
+    )
 
 
 if __name__ == "__main__":

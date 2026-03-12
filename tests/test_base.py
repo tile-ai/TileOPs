@@ -19,9 +19,18 @@ def _to_tuple(outputs):
 
 def allclose_compare(output: torch.Tensor, output_ref: torch.Tensor, atol: float = 1e-8, rtol: float = 1e-5) -> None:
     """Default comparison using torch.allclose."""
-    max_err = (output - output_ref).abs().max()
-    assert torch.allclose(output, output_ref, atol=atol, rtol=rtol), \
-        f"not close, max err: {max_err}"
+    torch.testing.assert_close(
+        output,
+        output_ref,
+        atol=atol,
+        rtol=rtol,
+        equal_nan=True,
+    )
+
+
+def exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
+    """Exact comparison for bool/int outputs."""
+    assert torch.equal(output, output_ref), "output does not exactly match reference"
 
 
 class FixtureMeta(type):

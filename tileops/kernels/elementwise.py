@@ -68,18 +68,36 @@ __all__ = [
     "IsnanKernel",
 ]
 
+_BITWISE_DTYPES = (
+    torch.bool,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+)
+
+_FLOAT_DTYPES = (
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
+)
+
+_LOGICAL_DTYPES = _BITWISE_DTYPES + _FLOAT_DTYPES
+
 # ---------------------------------------------------------------------------
 # Strategy factory: Unary
 # ---------------------------------------------------------------------------
 
 
-def _make_unary_direct(N, dtype, op_func, threads=256):
+def _make_unary_direct(N, dtype, op_func, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
+    out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg):
         @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
             with T.Kernel(T.ceildiv(N, threads_arg), threads=threads_arg) as bx:
                 for i in T.Parallel(threads_arg):
                     idx = bx * threads_arg + i
@@ -90,14 +108,15 @@ def _make_unary_direct(N, dtype, op_func, threads=256):
     return kernel
 
 
-def _make_unary_explicit(N, dtype, op_func, threads=256, num_per_thread=8):
+def _make_unary_explicit(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 2: N elements per thread via T.Parallel(threads, npt)."""
     block_size = threads * num_per_thread
+    out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
@@ -108,17 +127,18 @@ def _make_unary_explicit(N, dtype, op_func, threads=256, num_per_thread=8):
     return kernel
 
 
-def _make_unary_regcopy(N, dtype, op_func, threads=256, num_per_thread=8):
+def _make_unary_regcopy(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 3: fragment load → compute → fragment store."""
     block_size = threads * num_per_thread
+    out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 x_reg = T.alloc_fragment((block_size,), dtype)
-                y_reg = T.alloc_fragment((block_size,), dtype)
+                y_reg = T.alloc_fragment((block_size,), out_dtype)
                 T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     y_reg[i * npt_arg + j] = op_func(x_reg[i * npt_arg + j])
@@ -256,7 +276,7 @@ class UnaryKernel(Kernel):
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype for input/output.
+        dtype: Torch dtype for input.
         strategy: One of "direct", "explicit_parallel", "register_copy".
         config: Optional dict with "threads" and "num_per_thread".
         tune: Whether to autotune.
@@ -266,6 +286,8 @@ class UnaryKernel(Kernel):
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     # Benchmark (H200, 4M fp16): register_copy 2.40 TB/s > direct 1.04 > explicit 0.86
     DEFAULT_STRATEGY = "register_copy"
+    OUTPUT_DTYPE = None
+    SUPPORTED_DTYPES = None
 
     @staticmethod
     def op_func(x):
@@ -274,8 +296,14 @@ class UnaryKernel(Kernel):
 
     def __init__(self, N_total, dtype, strategy=None, config=None, tune=False):
         super().__init__()
+        if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
+        self.output_dtype = self.OUTPUT_DTYPE or dtype
         self.strategy = strategy or self.DEFAULT_STRATEGY
         assert self.strategy in self.STRATEGIES, (
             f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
@@ -287,20 +315,27 @@ class UnaryKernel(Kernel):
         cfg = self.default_config
         if strategy == "direct":
             return _make_unary_direct(
-                self.N_total, self.dtype_str, self.op_func, cfg["threads"],
+                self.N_total, self.dtype_str, self.op_func,
+                output_dtype=self.output_dtype_str, threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
             return _make_unary_explicit(
                 self.N_total, self.dtype_str, self.op_func,
-                cfg["threads"], cfg["num_per_thread"],
+                output_dtype=self.output_dtype_str,
+                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
             )
         elif strategy == "register_copy":
             return _make_unary_regcopy(
                 self.N_total, self.dtype_str, self.op_func,
-                cfg["threads"], cfg["num_per_thread"],
+                output_dtype=self.output_dtype_str,
+                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
+
+    @property
+    def output_dtype_str(self) -> str:
+        return self.dtype_to_str(self.output_dtype)
 
     @property
     def default_config(self) -> dict:
@@ -446,7 +481,26 @@ class FusedGatedKernel(Kernel):
 # ---------------------------------------------------------------------------
 
 
-class ReluKernel(UnaryKernel):
+class FloatUnaryKernel(UnaryKernel):
+    """Unary kernel base for float-only elementwise ops."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+
+class FloatPredicateKernel(FloatUnaryKernel):
+    """Unary kernel base for float predicates with bool output."""
+
+    OUTPUT_DTYPE = torch.bool
+
+
+class LogicalUnaryKernel(UnaryKernel):
+    """Unary kernel base for logical predicates with bool output."""
+
+    SUPPORTED_DTYPES = _LOGICAL_DTYPES
+    OUTPUT_DTYPE = torch.bool
+
+
+class ReluKernel(FloatUnaryKernel):
     """ReLU: y = max(x, 0)."""
 
     @staticmethod
@@ -475,7 +529,7 @@ class SiluAndMulKernel(FusedGatedKernel):
 # ---------------------------------------------------------------------------
 
 
-class ExpKernel(UnaryKernel):
+class ExpKernel(FloatUnaryKernel):
     """Element-wise exp(x)."""
 
     @staticmethod
@@ -483,7 +537,7 @@ class ExpKernel(UnaryKernel):
         return T.exp(x)
 
 
-class LogKernel(UnaryKernel):
+class LogKernel(FloatUnaryKernel):
     """Element-wise log(x)."""
 
     @staticmethod
@@ -491,7 +545,7 @@ class LogKernel(UnaryKernel):
         return T.log(x)
 
 
-class SqrtKernel(UnaryKernel):
+class SqrtKernel(FloatUnaryKernel):
     """Element-wise sqrt(x)."""
 
     @staticmethod
@@ -499,7 +553,7 @@ class SqrtKernel(UnaryKernel):
         return T.sqrt(x)
 
 
-class RsqrtKernel(UnaryKernel):
+class RsqrtKernel(FloatUnaryKernel):
     """Element-wise 1/sqrt(x)."""
 
     @staticmethod
@@ -507,7 +561,7 @@ class RsqrtKernel(UnaryKernel):
         return T.rsqrt(x)
 
 
-class AbsKernel(UnaryKernel):
+class AbsKernel(FloatUnaryKernel):
     """Element-wise |x|."""
 
     @staticmethod
@@ -515,7 +569,7 @@ class AbsKernel(UnaryKernel):
         return T.abs(x)
 
 
-class NegKernel(UnaryKernel):
+class NegKernel(FloatUnaryKernel):
     """Element-wise -x."""
 
     @staticmethod
@@ -523,7 +577,7 @@ class NegKernel(UnaryKernel):
         return -x
 
 
-class ReciprocalKernel(UnaryKernel):
+class ReciprocalKernel(FloatUnaryKernel):
     """Element-wise 1/x."""
 
     @staticmethod
@@ -531,7 +585,7 @@ class ReciprocalKernel(UnaryKernel):
         return T.cast(1.0, "float32") / x
 
 
-class SignKernel(UnaryKernel):
+class SignKernel(FloatUnaryKernel):
     """Element-wise sign(x): -1, 0, or +1."""
 
     @staticmethod
@@ -546,7 +600,7 @@ class SignKernel(UnaryKernel):
         )
 
 
-class SinKernel(UnaryKernel):
+class SinKernel(FloatUnaryKernel):
     """Element-wise sin(x)."""
 
     @staticmethod
@@ -554,7 +608,7 @@ class SinKernel(UnaryKernel):
         return T.sin(x)
 
 
-class CosKernel(UnaryKernel):
+class CosKernel(FloatUnaryKernel):
     """Element-wise cos(x)."""
 
     @staticmethod
@@ -562,7 +616,7 @@ class CosKernel(UnaryKernel):
         return T.cos(x)
 
 
-class FloorKernel(UnaryKernel):
+class FloorKernel(FloatUnaryKernel):
     """Element-wise floor(x).
 
     Casts to fp32 before calling ``T.floor`` because ``hfloor`` is not
@@ -574,7 +628,7 @@ class FloorKernel(UnaryKernel):
         return T.floor(T.cast(x, "float32"))
 
 
-class CeilKernel(UnaryKernel):
+class CeilKernel(FloatUnaryKernel):
     """Element-wise ceil(x).
 
     Casts to fp32 before calling ``T.ceil`` because ``hceil`` is not
@@ -586,7 +640,7 @@ class CeilKernel(UnaryKernel):
         return T.ceil(T.cast(x, "float32"))
 
 
-class RoundKernel(UnaryKernel):
+class RoundKernel(FloatUnaryKernel):
     """Element-wise round(x) with banker's rounding (round-to-nearest-even).
 
     Uses ``T.nearbyint`` (maps to ``nearbyintf`` in CUDA) to match
@@ -599,7 +653,7 @@ class RoundKernel(UnaryKernel):
         return T.nearbyint(T.cast(x, "float32"))
 
 
-class TruncKernel(UnaryKernel):
+class TruncKernel(FloatUnaryKernel):
     """Element-wise trunc(x) -- integer part toward zero.
 
     Casts to fp32 before calling ``T.trunc`` because ``htrunc`` is not
@@ -611,7 +665,7 @@ class TruncKernel(UnaryKernel):
         return T.trunc(T.cast(x, "float32"))
 
 
-class ErfKernel(UnaryKernel):
+class ErfKernel(FloatUnaryKernel):
     """Element-wise erf(x).
 
     Casts to fp32 before calling ``T.erf`` because the half-precision
@@ -623,7 +677,7 @@ class ErfKernel(UnaryKernel):
         return T.erf(T.cast(x, "float32"))
 
 
-class Log1pKernel(UnaryKernel):
+class Log1pKernel(FloatUnaryKernel):
     """Element-wise log(1 + x).
 
     Uses composite ``log(1 + x)`` because ``T.log1p`` is not lowered
@@ -635,7 +689,7 @@ class Log1pKernel(UnaryKernel):
         return T.log(T.cast(1.0, "float32") + x)
 
 
-class Expm1Kernel(UnaryKernel):
+class Expm1Kernel(FloatUnaryKernel):
     """Element-wise exp(x) - 1."""
 
     @staticmethod
@@ -648,22 +702,18 @@ class Expm1Kernel(UnaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class GeluKernel(UnaryKernel):
-    """Element-wise GELU (tanh approximation).
-
-    gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-    """
+class GeluKernel(FloatUnaryKernel):
+    """Element-wise GELU using the standard erf formulation."""
 
     @staticmethod
     def op_func(x):
-        sqrt_2_over_pi = T.cast(0.7978845608, "float32")
-        coeff = T.cast(0.044715, "float32")
+        inv_sqrt_2 = T.cast(0.7071067811865476, "float32")
         half = T.cast(0.5, "float32")
         one = T.cast(1.0, "float32")
-        return half * x * (one + T.tanh(sqrt_2_over_pi * (x + coeff * x * x * x)))
+        return half * x * (one + T.erf(T.cast(x, "float32") * inv_sqrt_2))
 
 
-class SiluKernel(UnaryKernel):
+class SiluKernel(FloatUnaryKernel):
     """Element-wise SiLU (Swish): x * sigmoid(x)."""
 
     @staticmethod
@@ -671,7 +721,7 @@ class SiluKernel(UnaryKernel):
         return x * T.sigmoid(x)
 
 
-class SigmoidKernel(UnaryKernel):
+class SigmoidKernel(FloatUnaryKernel):
     """Element-wise sigmoid(x)."""
 
     @staticmethod
@@ -679,7 +729,7 @@ class SigmoidKernel(UnaryKernel):
         return T.sigmoid(x)
 
 
-class TanhKernel(UnaryKernel):
+class TanhKernel(FloatUnaryKernel):
     """Element-wise tanh(x)."""
 
     @staticmethod
@@ -687,7 +737,7 @@ class TanhKernel(UnaryKernel):
         return T.tanh(x)
 
 
-class HardswishKernel(UnaryKernel):
+class HardswishKernel(FloatUnaryKernel):
     """Element-wise HardSwish: x * clamp(x + 3, 0, 6) / 6."""
 
     @staticmethod
@@ -699,7 +749,7 @@ class HardswishKernel(UnaryKernel):
         return x * clamped / six
 
 
-class HardsigmoidKernel(UnaryKernel):
+class HardsigmoidKernel(FloatUnaryKernel):
     """Element-wise HardSigmoid: clamp(x + 3, 0, 6) / 6."""
 
     @staticmethod
@@ -710,7 +760,7 @@ class HardsigmoidKernel(UnaryKernel):
         return T.min(T.max(x + three, zero), six) / six
 
 
-class MishKernel(UnaryKernel):
+class MishKernel(FloatUnaryKernel):
     """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
 
     @staticmethod
@@ -719,7 +769,7 @@ class MishKernel(UnaryKernel):
         return x * T.tanh(T.log(one + T.exp(x)))
 
 
-class SeluKernel(UnaryKernel):
+class SeluKernel(FloatUnaryKernel):
     """Element-wise SELU: scale * (max(0,x) + min(0, alpha*(exp(x)-1))).
 
     alpha = 1.6732632423543772, scale = 1.0507009873554805
@@ -739,26 +789,26 @@ class SeluKernel(UnaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class LogicalNotKernel(UnaryKernel):
-    """Element-wise logical NOT: returns 1.0 where x == 0, else 0.0."""
+class LogicalNotKernel(LogicalUnaryKernel):
+    """Element-wise logical NOT with torch-style bool output."""
 
     @staticmethod
     def op_func(x):
-        zero = T.cast(0.0, x.dtype)
-        one = T.cast(1.0, x.dtype)
-        return T.if_then_else(x == zero, one, zero)
+        return x == T.cast(0, x.dtype)
 
 
 class BitwiseNotKernel(UnaryKernel):
-    """Element-wise bitwise NOT (~x) for integer types.
+    """Element-wise bitwise NOT (~x) for bool/integer inputs.
 
     Uses XOR with ``-1`` (all-ones) because ``T.bitwise_not`` fails on
     vectorized ``int4`` CUDA types.
     """
 
+    SUPPORTED_DTYPES = _BITWISE_DTYPES
+
     @staticmethod
     def op_func(x):
-        return T.bitwise_xor(x, T.cast(-1, "int32"))
+        return T.bitwise_xor(x, T.cast(-1, x.dtype))
 
 
 # ---------------------------------------------------------------------------
@@ -766,31 +816,25 @@ class BitwiseNotKernel(UnaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class IsnanKernel(UnaryKernel):
-    """Element-wise isnan: returns 1.0 for NaN, 0.0 otherwise."""
+class IsnanKernel(FloatPredicateKernel):
+    """Element-wise isnan with torch-style bool output."""
 
     @staticmethod
     def op_func(x):
-        zero = T.cast(0.0, x.dtype)
-        one = T.cast(1.0, x.dtype)
-        return T.if_then_else(T.isnan(x), one, zero)
+        return T.isnan(x)
 
 
-class IsinfKernel(UnaryKernel):
-    """Element-wise isinf: returns 1.0 for +/-inf, 0.0 otherwise."""
+class IsinfKernel(FloatPredicateKernel):
+    """Element-wise isinf with torch-style bool output."""
 
     @staticmethod
     def op_func(x):
-        zero = T.cast(0.0, x.dtype)
-        one = T.cast(1.0, x.dtype)
-        return T.if_then_else(T.isinf(x), one, zero)
+        return T.isinf(x)
 
 
-class IsfiniteKernel(UnaryKernel):
-    """Element-wise isfinite: returns 1.0 for finite values, 0.0 otherwise."""
+class IsfiniteKernel(FloatPredicateKernel):
+    """Element-wise isfinite with torch-style bool output."""
 
     @staticmethod
     def op_func(x):
-        zero = T.cast(0.0, x.dtype)
-        one = T.cast(1.0, x.dtype)
-        return T.if_then_else(T.isfinite(x), one, zero)
+        return T.isfinite(x)
