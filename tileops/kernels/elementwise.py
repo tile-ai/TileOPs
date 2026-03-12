@@ -490,12 +490,14 @@ class FloatUnaryKernel(UnaryKernel):
 class FloatPredicateKernel(FloatUnaryKernel):
     """Unary kernel base for float predicates with bool output."""
 
+    DEFAULT_STRATEGY = "direct"
     OUTPUT_DTYPE = torch.bool
 
 
 class LogicalUnaryKernel(UnaryKernel):
     """Unary kernel base for logical predicates with bool output."""
 
+    DEFAULT_STRATEGY = "direct"
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
@@ -534,7 +536,7 @@ class ExpKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.exp(x)
+        return T.exp(T.cast(x, "float32"))
 
 
 class LogKernel(FloatUnaryKernel):
@@ -542,7 +544,7 @@ class LogKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.log(x)
+        return T.log(T.cast(x, "float32"))
 
 
 class SqrtKernel(FloatUnaryKernel):
@@ -550,7 +552,7 @@ class SqrtKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.sqrt(x)
+        return T.sqrt(T.cast(x, "float32"))
 
 
 class RsqrtKernel(FloatUnaryKernel):
@@ -558,7 +560,7 @@ class RsqrtKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.rsqrt(x)
+        return T.rsqrt(T.cast(x, "float32"))
 
 
 class AbsKernel(FloatUnaryKernel):
@@ -605,7 +607,7 @@ class SinKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.sin(x)
+        return T.sin(T.cast(x, "float32"))
 
 
 class CosKernel(FloatUnaryKernel):
@@ -613,7 +615,7 @@ class CosKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.cos(x)
+        return T.cos(T.cast(x, "float32"))
 
 
 class FloorKernel(FloatUnaryKernel):
@@ -694,7 +696,7 @@ class Expm1Kernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.exp(x) - T.cast(1.0, "float32")
+        return T.exp(T.cast(x, "float32")) - T.cast(1.0, "float32")
 
 
 # ---------------------------------------------------------------------------
@@ -734,7 +736,7 @@ class TanhKernel(FloatUnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.tanh(x)
+        return T.tanh(T.cast(x, "float32"))
 
 
 class HardswishKernel(FloatUnaryKernel):
@@ -781,7 +783,8 @@ class SeluKernel(FloatUnaryKernel):
         scale = T.cast(1.0507009873554805, "float32")
         one = T.cast(1.0, "float32")
         zero = T.cast(0.0, "float32")
-        return scale * T.if_then_else(x > zero, x, alpha * (T.exp(x) - one))
+        x32 = T.cast(x, "float32")
+        return scale * T.if_then_else(x32 > zero, x32, alpha * (T.exp(x32) - one))
 
 
 # ---------------------------------------------------------------------------
@@ -804,10 +807,15 @@ class BitwiseNotKernel(UnaryKernel):
     vectorized ``int4`` CUDA types.
     """
 
+    DEFAULT_STRATEGY = "direct"
     SUPPORTED_DTYPES = _BITWISE_DTYPES
 
     @staticmethod
     def op_func(x):
+        if x.dtype == "bool":
+            return x == T.cast(0, "bool")
+        if x.dtype == "uint8":
+            return T.bitwise_xor(x, T.cast(255, "uint8"))
         return T.bitwise_xor(x, T.cast(-1, x.dtype))
 
 
@@ -821,7 +829,7 @@ class IsnanKernel(FloatPredicateKernel):
 
     @staticmethod
     def op_func(x):
-        return T.isnan(x)
+        return T.isnan(T.cast(x, "float32"))
 
 
 class IsinfKernel(FloatPredicateKernel):
@@ -829,7 +837,7 @@ class IsinfKernel(FloatPredicateKernel):
 
     @staticmethod
     def op_func(x):
-        return T.isinf(x)
+        return T.isinf(T.cast(x, "float32"))
 
 
 class IsfiniteKernel(FloatPredicateKernel):
@@ -837,4 +845,4 @@ class IsfiniteKernel(FloatPredicateKernel):
 
     @staticmethod
     def op_func(x):
-        return T.isfinite(x)
+        return T.isfinite(T.cast(x, "float32"))
