@@ -51,7 +51,7 @@ class CumulativeBenchTest(TestBase):
 class CumulativeBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
         t = self.test
-        # One operation per element for prefix scan
+        # Approximate: inclusive scan performs N-1 ops per row, rounded up to M*N
         return t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
