@@ -56,12 +56,18 @@ We follow the **TileLang Commit Convention**: `[Type] Description` or `[Type][Sc
 - `[Bench][MHA] Add Triton baseline for multi-head attention forward op`
 
 > **Tip**: Run `pre-commit run --all-files` and fix any issues before pushing!
+>
+> **Commit scope rule**: Keep commit messages concise. Do not put long verification sections,
+> benchmark tables, or command transcripts into commit bodies; those belong in the PR description
+> and tracking issue.
 
 ### Step 4: Pull Request (Submit Code)
 
 - **Title**: Matches your commit, e.g., `[Feat] Add multi-head attention forward op`.
 - **Template**: Fill out the PR template checklist fully.
 - **Description**: Provide a detailed description of the changes, including any relevant context or background information. You can leverage `gemini-code-assist`'s summary for the PR description.
+- **Benchmark Reporting**: For new ops or semantic/performance-sensitive changes, report real measured data from a host-visible CUDA machine. Include representative small, medium, and large shapes.
+- **Verification Order**: Run the targeted correctness suite on the same machine before publishing benchmark numbers.
 - **CI**: Ensure all GitHub Actions (Lint/Test/Build) pass.
 
 ## 2. The "2+1" Review Policy
@@ -102,13 +108,18 @@ Only after **2 Peer Approvals + 1 Mentor Approval + CI Passing** can the code be
 
 - [ ] **Logic**: Is the algorithm correct? Are there any obvious bugs?
 - [ ] **Unit Tests**: Are there tests in `tests/` matching the code? Do they pass?
+- [ ] **Shared Harness**: If the PR changes shared test infrastructure such as `tests/test_base.py` or common fixtures, does it preserve existing default semantics or update all affected tests in the same PR?
 - [ ] **Edge Cases**: Are empty inputs or boundary shapes handled?
 - [ ] **Error Handling**: Are inputs validated with informative error messages?
+- [ ] **Smoke Scope**: If shared test infrastructure changed, was a broader real-machine `pytest -m smoke` run completed in addition to targeted suites?
 
 **Benchmark**
 
 - [ ] **Benchmark**: Are benchmark scripts provided in `benchmarks/`?
-- [ ] **Results**: Are TFLOPS/Bandwidth numbers included in the issue and PR description?
+- [ ] **Results**: Are latency / TFLOPS / bandwidth numbers included in the issue and PR description?
+- [ ] **Runtime**: Were GPU-dependent tests and benchmarks run on a real CUDA-visible machine rather than a sandbox-only environment?
+- [ ] **Coverage**: Does the benchmark table include representative small, medium, and large shapes?
+- [ ] **Honesty**: Does the benchmark table report representative regressions as-is instead of omitting them?
 
 ### For Mentors (Mentor Review)
 

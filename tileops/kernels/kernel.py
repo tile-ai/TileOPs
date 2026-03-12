@@ -16,6 +16,14 @@ class Kernel(ABC):
         self.config = {}
 
     def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:
+        if tune and self.autotune_configs is None:
+            import warnings
+
+            warnings.warn(  # noqa: B028
+                f"{self.__class__.__name__} does not define autotune_configs; "
+                "falling back to the provided config or default_config.")
+            tune = False
+
         if tune:
             if config is not None:
                 import warnings
