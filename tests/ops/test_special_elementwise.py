@@ -31,93 +31,49 @@ class SpecialEdgeFixture(FixtureBase):
     ]
 
 
-class IsnanTest(TestBase):
-    """Test harness for isnan."""
+class SpecialTest(TestBase):
+    """Generic test harness for special predicate ops."""
 
-    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None):
+    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn, gen_fn=None):
         self.n_total = n_total
         self.dtype = dtype
+        self._ref_fn = ref_fn
         self._gen_fn = gen_fn
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self._gen_fn is not None:
             return (self._gen_fn(self.n_total, self.dtype),)
         x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
-        # Inject ~10% NaNs
-        mask = torch.rand(self.n_total, device="cuda") < 0.1
-        x[mask] = float("nan")
+        quarter = self.n_total // 4
+        x[:quarter] = float("nan")
+        x[quarter:2 * quarter] = float("inf")
+        x[2 * quarter:3 * quarter] = float("-inf")
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.where(torch.isnan(x), torch.ones_like(x), torch.zeros_like(x))
+        return self._ref_fn(x).to(x.dtype)
 
 
-class IsinfTest(TestBase):
-    """Test harness for isinf."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None):
-        self.n_total = n_total
-        self.dtype = dtype
-        self._gen_fn = gen_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self._gen_fn is not None:
-            return (self._gen_fn(self.n_total, self.dtype),)
-        x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
-        # Inject ~10% infs
-        mask = torch.rand(self.n_total, device="cuda") < 0.1
-        x[mask] = float("inf")
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.where(torch.isinf(x), torch.ones_like(x), torch.zeros_like(x))
-
-
-class IsfiniteTest(TestBase):
-    """Test harness for isfinite."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None):
-        self.n_total = n_total
-        self.dtype = dtype
-        self._gen_fn = gen_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self._gen_fn is not None:
-            return (self._gen_fn(self.n_total, self.dtype),)
-        x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
-        # Inject some NaN and inf
-        mask_nan = torch.rand(self.n_total, device="cuda") < 0.05
-        mask_inf = torch.rand(self.n_total, device="cuda") < 0.05
-        x[mask_nan] = float("nan")
-        x[mask_inf] = float("inf")
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.where(torch.isfinite(x), torch.ones_like(x), torch.zeros_like(x))
+def _make_special_test(n_total, dtype, op_cls, ref_fn, gen_fn=None) -> None:
+    test = SpecialTest(n_total, dtype, ref_fn=ref_fn, gen_fn=gen_fn)
+    op = op_cls(N_total=n_total, dtype=dtype)
+    tol = {"atol": 1e-3, "rtol": 1e-3} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
+    test.check(op, *test.gen_inputs(), **tol)
 
 
 @SpecialFixture
 def test_isnan(n_total: int, dtype: torch.dtype) -> None:
-    test = IsnanTest(n_total, dtype)
-    op = IsnanOp(N_total=n_total, dtype=dtype)
-    tol = {"atol": 1e-3, "rtol": 1e-3} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
-    test.check(op, *test.gen_inputs(), **tol)
+    _make_special_test(n_total, dtype, IsnanOp, torch.isnan)
 
 
 @SpecialFixture
 def test_isinf(n_total: int, dtype: torch.dtype) -> None:
-    test = IsinfTest(n_total, dtype)
-    op = IsinfOp(N_total=n_total, dtype=dtype)
-    tol = {"atol": 1e-3, "rtol": 1e-3} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
-    test.check(op, *test.gen_inputs(), **tol)
+    _make_special_test(n_total, dtype, IsinfOp, torch.isinf)
 
 
 @SpecialFixture
 def test_isfinite(n_total: int, dtype: torch.dtype) -> None:
-    test = IsfiniteTest(n_total, dtype)
-    op = IsfiniteOp(N_total=n_total, dtype=dtype)
-    tol = {"atol": 1e-3, "rtol": 1e-3} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
-    test.check(op, *test.gen_inputs(), **tol)
+    _make_special_test(n_total, dtype, IsfiniteOp, torch.isfinite)
 
 
 # ---------------------------------------------------------------------------
@@ -131,9 +87,7 @@ def test_isnan_edge(n_total: int, dtype: torch.dtype) -> None:
     def _all_nan(n, dtype):
         return torch.full((n,), float("nan"), device="cuda", dtype=dtype)
 
-    test = IsnanTest(n_total, dtype, gen_fn=_all_nan)
-    op = IsnanOp(N_total=n_total, dtype=dtype)
-    test.check(op, *test.gen_inputs(), atol=1e-5, rtol=1e-5)
+    _make_special_test(n_total, dtype, IsnanOp, torch.isnan, gen_fn=_all_nan)
 
 
 @SpecialEdgeFixture
@@ -144,9 +98,7 @@ def test_isinf_edge(n_total: int, dtype: torch.dtype) -> None:
         x[:n // 2] = float("-inf")
         return x
 
-    test = IsinfTest(n_total, dtype, gen_fn=_all_inf)
-    op = IsinfOp(N_total=n_total, dtype=dtype)
-    test.check(op, *test.gen_inputs(), atol=1e-5, rtol=1e-5)
+    _make_special_test(n_total, dtype, IsinfOp, torch.isinf, gen_fn=_all_inf)
 
 
 @SpecialEdgeFixture
@@ -155,9 +107,7 @@ def test_isfinite_edge(n_total: int, dtype: torch.dtype) -> None:
     def _all_finite(n, dtype):
         return torch.randn(n, device="cuda", dtype=dtype)
 
-    test = IsfiniteTest(n_total, dtype, gen_fn=_all_finite)
-    op = IsfiniteOp(N_total=n_total, dtype=dtype)
-    test.check(op, *test.gen_inputs(), atol=1e-5, rtol=1e-5)
+    _make_special_test(n_total, dtype, IsfiniteOp, torch.isfinite, gen_fn=_all_finite)
 
 
 if __name__ == "__main__":
