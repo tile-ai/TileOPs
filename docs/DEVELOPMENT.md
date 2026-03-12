@@ -46,6 +46,7 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
     - **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
   - Use exact comparison (`torch.equal`) for non-floating outputs such as `bool`, masks, and index tensors.
   - Tests must assert the output dtype when it differs from the input dtype.
+  - GPU-dependent unit tests must be run on a real machine with host-visible CUDA devices. Do not treat sandbox-only results as final correctness evidence.
   - Benchmark results must be reproducible.
 - **Definition of Done**: The op is verified in unit tests, and benchmarks run correctly.
 
@@ -54,6 +55,8 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
 - **Location**: `benchmarks/ops/bench_{operator_name}.py`
 - **Goal**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
 - **Execution**: `pytest benchmarks/` auto-generates `profile_run.log`.
+- **Required Order**: Run the targeted correctness suite on the same real GPU machine before reporting benchmark numbers.
+- **Required Shapes**: Benchmark tables must include representative small, medium, and large shapes unless the issue explicitly defines a different benchmark matrix.
 - **Definition of Done**: Benchmark the op and put the results in the issue.
 
 ### Step 4: PR Acceptance Package
@@ -69,6 +72,8 @@ Use the following benchmark table shape in the PR body:
 | Shape / Params | dtype | Op         | TileOPs (ms) | Baseline (ms) | Ratio | Notes |
 | -------------- | ----- | ---------- | ------------ | ------------- | ----- | ----- |
 | example        | fp16  | example_op | ...          | ...           | ...   | ...   |
+
+The PR body should stay concise: keep the summary, dtype matrix, acceptance checklist, and benchmark table. Do not paste long verification command transcripts into the PR description unless the reviewer explicitly asks for them.
 
 If the implementation is correctness-first and performance follow-up is deferred, state that explicitly in the PR body and link the follow-up issue. Do not leave the benchmark section implicit.
 
@@ -150,6 +155,7 @@ def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
   - Tests must cover `FP16` and `BF16` data types.
   - Tests must parameterize over common shapes (Batch size, Heads, Sequence length).
   - Tests must encode the dtype contract explicitly: supported dtypes are covered, unsupported dtypes are rejected, and output dtypes are asserted.
+  - Before claiming the implementation is ready, run the full targeted test files for the affected op family on a real GPU machine, not just reject-path or smoke subsets.
 
 ### Benchmarks
 
@@ -160,6 +166,10 @@ def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
   - Latency (ms)
   - TFLOPS (Terra Floating-point Operations Per Second)
   - DRAM Bandwidth (GB/s)
+- **Reporting Rules**:
+  - Benchmark numbers reported in PRs and issues must come from a real GPU machine, not a sandbox without direct CUDA visibility.
+  - Report small, medium, and large representative shapes.
+  - Do not cherry-pick only favorable shapes; if a representative large-shape result regresses versus baseline, report it as-is.
 
 ______________________________________________________________________
 

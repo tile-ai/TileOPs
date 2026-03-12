@@ -33,10 +33,13 @@ assignees: ''
   - [ ] BF16 (close: 1.6e-2)
   - [ ] Output dtype matches the declared contract
   - [ ] Non-floating exact outputs (`bool`, indices, masks) use exact comparison (`torch.equal`)
+  - [ ] Targeted correctness suite passes on a real CUDA-visible machine
 - [ ] **Benchmarks**: Implement `benchmarks/benchmark_<op_name>.py`
   - [ ] Latency
   - [ ] TFLOPS
   - [ ] DRAM Bandwidth
+  - [ ] Small / medium / large representative shapes
+  - [ ] Run on a real CUDA-visible machine
 
 ## Acceptance Criteria
 
@@ -50,9 +53,11 @@ assignees: ''
 
 **Configuration**: <!-- GPU, CUDA, torch -->
 
-| Shape / Params     | dtype | Op         | TileOPs (ms) | Baseline (ms) | Ratio | TFLOPS / BW | Notes |
-| ------------------ | ----- | ---------- | ------------ | ------------- | ----- | ----------- | ----- |
-| (B=1, S=1024, ...) | fp16  | \<op_name> | ...          | ...           | ...   | ...         | ...   |
+| Shape tier | Shape / Params     | dtype | Op         | TileOPs (ms) | Baseline (ms) | Ratio | TFLOPS / BW | Notes |
+| ---------- | ------------------ | ----- | ---------- | ------------ | ------------- | ----- | ----------- | ----- |
+| small      | (B=1, S=1024, ...) | fp16  | \<op_name> | ...          | ...           | ...   | ...         | ...   |
+| medium     | (B=1, S=1024, ...) | fp16  | \<op_name> | ...          | ...           | ...   | ...         | ...   |
+| large      | (B=1, S=1024, ...) | fp16  | \<op_name> | ...          | ...           | ...   | ...         | ...   |
 
 ## Reference
 

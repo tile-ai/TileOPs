@@ -20,13 +20,17 @@
 
 ## Benchmark
 
-<!-- Required for new ops and performance-sensitive semantic changes. Use real measured data and compare against a baseline. -->
+<!-- Required for new ops and performance-sensitive semantic changes. Use real measured data from a host-visible CUDA machine and compare against a baseline. -->
 
 **Configuration**: <!-- GPU, CUDA, torch -->
 
-| Shape / Params | dtype | Op         | TileOPs (ms) | Baseline (ms) | Ratio | Notes |
-| -------------- | ----- | ---------- | ------------ | ------------- | ----- | ----- |
-| example        | fp16  | example_op | ...          | ...           | ...   | ...   |
+| Shape tier | Shape / Params | dtype | Op         | TileOPs (ms) | Baseline (ms) | Ratio | Notes |
+| ---------- | -------------- | ----- | ---------- | ------------ | ------------- | ----- | ----- |
+| small      | example        | fp16  | example_op | ...          | ...           | ...   | ...   |
+| medium     | example        | fp16  | example_op | ...          | ...           | ...   | ...   |
+| large      | example        | fp16  | example_op | ...          | ...           | ...   | ...   |
+
+<!-- Do not cherry-pick only favorable shapes. If a representative large-shape result regresses, report it as-is. -->
 
 <!-- If the implementation is correctness-first or a benchmark is intentionally deferred, say so explicitly and link the follow-up issue. -->
 
@@ -41,8 +45,9 @@
 ## Checklist
 
 - [ ] I have run `pre-commit run --all-files` and fixed all linting issues.
-- [ ] I have verified that my changes pass local unit tests.
+- [ ] I have verified that my changes pass the relevant local unit tests.
 - [ ] **(For new ops)** I have documented the supported input dtypes, output dtype, and baseline semantic reference in the PR body.
 - [ ] **(For new ops)** I have listed concrete acceptance criteria in the PR body and verified each one.
 - [ ] **(For new ops)** I have added the corresponding `Benchmark` class in `benchmarks/`.
-- [ ] **(For new ops)** I have reported measured benchmark results with a baseline comparison table in the PR body and tracking issue.
+- [ ] **(For new ops)** I have run GPU-dependent tests and benchmarks on a real CUDA-visible machine.
+- [ ] **(For new ops)** I have reported measured benchmark results for small, medium, and large representative shapes in the PR body and tracking issue.
