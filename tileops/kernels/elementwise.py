@@ -536,12 +536,13 @@ class SignKernel(UnaryKernel):
 
     @staticmethod
     def op_func(x):
+        zero = T.cast(0.0, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        neg_one = T.cast(-1.0, x.dtype)
         return T.if_then_else(
-            x > T.cast(0.0, "float32"),
-            T.cast(1.0, "float32"),
-            T.if_then_else(x < T.cast(0.0, "float32"),
-                           T.cast(-1.0, "float32"),
-                           T.cast(0.0, "float32")),
+            x > zero,
+            one,
+            T.if_then_else(x < zero, neg_one, zero),
         )
 
 
@@ -743,8 +744,8 @@ class LogicalNotKernel(UnaryKernel):
 
     @staticmethod
     def op_func(x):
-        zero = T.cast(0.0, "float32")
-        one = T.cast(1.0, "float32")
+        zero = T.cast(0.0, x.dtype)
+        one = T.cast(1.0, x.dtype)
         return T.if_then_else(x == zero, one, zero)
 
 
@@ -770,9 +771,9 @@ class IsnanKernel(UnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.if_then_else(
-            T.isnan(x), T.cast(1.0, "float32"), T.cast(0.0, "float32"),
-        )
+        zero = T.cast(0.0, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        return T.if_then_else(T.isnan(x), one, zero)
 
 
 class IsinfKernel(UnaryKernel):
@@ -780,9 +781,9 @@ class IsinfKernel(UnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.if_then_else(
-            T.isinf(x), T.cast(1.0, "float32"), T.cast(0.0, "float32"),
-        )
+        zero = T.cast(0.0, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        return T.if_then_else(T.isinf(x), one, zero)
 
 
 class IsfiniteKernel(UnaryKernel):
@@ -790,6 +791,6 @@ class IsfiniteKernel(UnaryKernel):
 
     @staticmethod
     def op_func(x):
-        return T.if_then_else(
-            T.isfinite(x), T.cast(1.0, "float32"), T.cast(0.0, "float32"),
-        )
+        zero = T.cast(0.0, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        return T.if_then_else(T.isfinite(x), one, zero)
