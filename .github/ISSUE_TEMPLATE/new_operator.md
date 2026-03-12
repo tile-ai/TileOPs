@@ -14,9 +14,9 @@ assignees: ''
 
 <!-- List only the dtypes this operator will actually support in the first PR. -->
 
-| Op / API | Input dtypes | Output dtype | PyTorch / reference semantic baseline |
-| --- | --- | --- | --- |
-| <op_name> | fp16, bf16, fp32 | same as input | torch.<op_name> |
+| Op / API   | Input dtypes     | Output dtype  | PyTorch / reference semantic baseline |
+| ---------- | ---------------- | ------------- | ------------------------------------- |
+| \<op_name> | fp16, bf16, fp32 | same as input | torch.\<op_name>                      |
 
 ## Implementation Plan
 
@@ -50,9 +50,9 @@ assignees: ''
 
 **Configuration**: <!-- GPU, CUDA, torch -->
 
-| Shape / Params | dtype | Op | TileOPs (ms) | Baseline (ms) | Ratio | TFLOPS / BW | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| (B=1, S=1024, ...) | fp16 | <op_name> | ... | ... | ... | ... | ... |
+| Shape / Params     | dtype | Op         | TileOPs (ms) | Baseline (ms) | Ratio | TFLOPS / BW | Notes |
+| ------------------ | ----- | ---------- | ------------ | ------------- | ----- | ----------- | ----- |
+| (B=1, S=1024, ...) | fp16  | \<op_name> | ...          | ...           | ...   | ...         | ...   |
 
 ## Reference
 

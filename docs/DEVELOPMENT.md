@@ -61,14 +61,14 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
 Every PR that adds a new op, expands dtype coverage, or changes semantic behavior must include the following in the PR description:
 
 1. A dtype support matrix that states the actual supported input dtypes, output dtype, and PyTorch or documented baseline semantics.
-2. A concrete acceptance checklist (`AC-1`, `AC-2`, ...) covering implementation, correctness tests, dtype contract checks, and benchmark deliverables.
-3. A benchmark comparison table with real measured data and environment metadata.
+1. A concrete acceptance checklist (`AC-1`, `AC-2`, ...) covering implementation, correctness tests, dtype contract checks, and benchmark deliverables.
+1. A benchmark comparison table with real measured data and environment metadata.
 
 Use the following benchmark table shape in the PR body:
 
-| Shape / Params | dtype | Op | TileOPs (ms) | Baseline (ms) | Ratio | Notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| example | fp16 | example_op | ... | ... | ... | ... |
+| Shape / Params | dtype | Op         | TileOPs (ms) | Baseline (ms) | Ratio | Notes |
+| -------------- | ----- | ---------- | ------------ | ------------- | ----- | ----- |
+| example        | fp16  | example_op | ...          | ...           | ...   | ...   |
 
 If the implementation is correctness-first and performance follow-up is deferred, state that explicitly in the PR body and link the follow-up issue. Do not leave the benchmark section implicit.
 

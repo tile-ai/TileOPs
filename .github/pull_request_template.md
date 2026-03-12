@@ -6,9 +6,9 @@
 
 <!-- Required for new ops or dtype-contract changes. State the actual supported set, not the aspirational set. -->
 
-| Op / API | Input dtypes | Output dtype | Reference baseline |
-| --- | --- | --- | --- |
-| example_op | fp16, bf16, fp32 | same as input | torch.example_op |
+| Op / API   | Input dtypes     | Output dtype  | Reference baseline |
+| ---------- | ---------------- | ------------- | ------------------ |
+| example_op | fp16, bf16, fp32 | same as input | torch.example_op   |
 
 ## Test Plan
 
@@ -24,9 +24,9 @@
 
 **Configuration**: <!-- GPU, CUDA, torch -->
 
-| Shape / Params | dtype | Op | TileOPs (ms) | Baseline (ms) | Ratio | Notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| example | fp16 | example_op | ... | ... | ... | ... |
+| Shape / Params | dtype | Op         | TileOPs (ms) | Baseline (ms) | Ratio | Notes |
+| -------------- | ----- | ---------- | ------------ | ------------- | ----- | ----- |
+| example        | fp16  | example_op | ...          | ...           | ...   | ...   |
 
 <!-- If the implementation is correctness-first or a benchmark is intentionally deferred, say so explicitly and link the follow-up issue. -->
 
