@@ -14,12 +14,12 @@ from ._primitives import (
     make_welford_update,
 )
 from .argreduce import ArgreduceKernel
+from .cumulative import CumulativeKernel
 from .reduce import ReduceKernel
 from .softmax import LogSumExpKernel, SoftmaxKernel
 
 # Placeholder imports for reduction kernels.
 # Each sub-category PR uncomments its own lines.
-# from .cumulative import CumulativeKernel
 # from .logical_reduce import LogicalReduceKernel
 # from .vector_norm import VectorNormKernel
 
@@ -31,7 +31,7 @@ __all__: list[str] = [
     "make_softmax_epilogue",
     "make_cumulative_scan",
     "ArgreduceKernel",
-    # "CumulativeKernel",
+    "CumulativeKernel",
     # "LogicalReduceKernel",
     "ReduceKernel",
     "LogSumExpKernel",
