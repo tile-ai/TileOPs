@@ -11,7 +11,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import GeluAndMulOp, GeluTanhAndMulOp, SiluAndMulOp
 
 # ---------------------------------------------------------------------------
-# SiluAndMul (preserved from #436)
+# SiluAndMul
 # ---------------------------------------------------------------------------
 
 

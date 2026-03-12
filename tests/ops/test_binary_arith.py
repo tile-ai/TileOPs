@@ -24,7 +24,7 @@ from tileops.ops.elementwise import (
 )
 
 # ---------------------------------------------------------------------------
-# coalesce_broadcast_dims unit tests (preserved from #436)
+# coalesce_broadcast_dims unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -84,7 +84,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 
 
 # ---------------------------------------------------------------------------
-# Add op correctness tests (preserved from #436)
+# Add op correctness tests
 # ---------------------------------------------------------------------------
 
 
