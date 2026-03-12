@@ -558,19 +558,33 @@ class LerpKernel(BinaryKernel):
 
 
 class MaximumKernel(BinaryKernel):
-    """Element-wise maximum: y = max(a, b)."""
+    """Element-wise maximum: y = max(a, b) with NaN propagation.
+
+    Matches torch.maximum: if either operand is NaN, the result is NaN.
+    """
 
     @staticmethod
     def op_func(a, b):
-        return T.if_then_else(a > b, a, b)
+        # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
+        # otherwise return the larger value.
+        ordered_max = T.if_then_else(a > b, a, b)
+        nan_result = T.if_then_else(T.isnan(a), a, T.if_then_else(T.isnan(b), b, ordered_max))
+        return nan_result
 
 
 class MinimumKernel(BinaryKernel):
-    """Element-wise minimum: y = min(a, b)."""
+    """Element-wise minimum: y = min(a, b) with NaN propagation.
+
+    Matches torch.minimum: if either operand is NaN, the result is NaN.
+    """
 
     @staticmethod
     def op_func(a, b):
-        return T.if_then_else(a < b, a, b)
+        # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
+        # otherwise return the smaller value.
+        ordered_min = T.if_then_else(a < b, a, b)
+        nan_result = T.if_then_else(T.isnan(a), a, T.if_then_else(T.isnan(b), b, ordered_min))
+        return nan_result
 
 
 # ---------------------------------------------------------------------------

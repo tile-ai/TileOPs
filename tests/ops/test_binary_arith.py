@@ -505,6 +505,64 @@ def test_minimum_op(n_total: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Maximum/Minimum NaN propagation tests
+# ---------------------------------------------------------------------------
+
+
+class MaxMinNanFixture(FixtureBase):
+    PARAMS = [
+        ("dtype", [
+            pytest.param(torch.float32, marks=pytest.mark.smoke),
+            pytest.param(torch.float16, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@MaxMinNanFixture
+def test_maximum_nan_propagation(dtype: torch.dtype) -> None:
+    """Verify maximum propagates NaN when either operand is NaN."""
+    nan = float("nan")
+    a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device="cuda")
+    b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device="cuda")
+    shape = (4,)
+    op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.maximum(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    # NaN positions must match: both output and ref should be NaN at same indices
+    assert torch.equal(torch.isnan(out), torch.isnan(ref)), (
+        f"NaN positions differ: out={out}, ref={ref}"
+    )
+    # Non-NaN values must match exactly
+    mask = ~torch.isnan(ref)
+    assert torch.equal(out[mask], ref[mask]), (
+        f"Non-NaN values differ: out={out[mask]}, ref={ref[mask]}"
+    )
+
+
+@MaxMinNanFixture
+def test_minimum_nan_propagation(dtype: torch.dtype) -> None:
+    """Verify minimum propagates NaN when either operand is NaN."""
+    nan = float("nan")
+    a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device="cuda")
+    b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device="cuda")
+    shape = (4,)
+    op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.minimum(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    # NaN positions must match
+    assert torch.equal(torch.isnan(out), torch.isnan(ref)), (
+        f"NaN positions differ: out={out}, ref={ref}"
+    )
+    # Non-NaN values must match exactly
+    mask = ~torch.isnan(ref)
+    assert torch.equal(out[mask], ref[mask]), (
+        f"Non-NaN values differ: out={out[mask]}, ref={ref[mask]}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # L4 edge case tests (fp32, 4K)
 # ---------------------------------------------------------------------------
 
