@@ -45,9 +45,6 @@ from .linear_attn import (
     GatedDeltaNetFwdKernel,
     GLABwdKernel,
     GLAFwdKernel,
-    PrepareWYReprKernel,
-    compute_w_u_bwd_tl,
-    compute_w_u_tl,
 )
 from .mhc import mhc_post_kernel, mhc_pre_kernel
 from .norm import (
@@ -99,13 +96,10 @@ __all__ = [
     "NSACmpFwdVarlenKernel",
     "NSAFwdVarlenKernel",
     "NSATopkVarlenKernel",
-    "PrepareWYReprKernel",
     "RmsNormKernel",
     "SparseMlaKernel",
     "TopkSelectorKernel",
     "UnaryKernel",
-    "compute_w_u_bwd_tl",
-    "compute_w_u_tl",
     "gqa_decode_kernel",
     "gqa_decode_paged_kernel",
     "grouped_gemm_kernel",
