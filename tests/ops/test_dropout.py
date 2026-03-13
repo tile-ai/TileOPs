@@ -254,7 +254,7 @@ def test_dropout_custom_config_correctness(
     is_scaled = torch.isclose(
         y.float(),
         torch.full_like(y, scale, dtype=torch.float32),
-        atol=1e-3, rtol=1e-3,
+        atol=1e-6, rtol=0,
     )
     assert (is_zero | is_scaled).all(), (
         "Found elements that are neither zero nor correctly scaled"
