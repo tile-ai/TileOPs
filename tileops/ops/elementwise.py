@@ -6,9 +6,10 @@ Three Op template base classes:
 - FusedGatedOp: wraps FusedGatedKernel with (M, 2N) layout
 
 torch.compile support:
-- All 66 ops are registered via @torch.library.custom_op at module load time
-- Three factory functions handle the 55 template ops
-- 11 independent ops (comparison, logical, bitwise, predicates) have custom registration
+- All 55 concrete ops are registered via @torch.library.custom_op at module load time
+- Three factory functions (_register_unary_custom_op, _register_binary_custom_op,
+  _register_fused_gated_custom_op) register every op; instances are looked up at
+  runtime via _OP_REGISTRY keyed by id(instance)
 
 Utility:
 - coalesce_broadcast_dims: reduces N-dim broadcast to minimal effective dims
@@ -427,6 +428,7 @@ class BinaryOp(Op):
             a_shape, b_shape,
         )
         self.out_shape = out_shape
+        self._out_shape_list = list(out_shape)  # cached for custom_op hot path
         self.N_total = prod(out_shape)
         self.a_numel = prod(a_shape)
         self.b_numel = prod(b_shape)
@@ -472,7 +474,7 @@ class BinaryOp(Op):
             )
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(a, b, list(self.out_shape), self._instance_key)
+            return wrapped(a, b, self._out_shape_list, self._instance_key)
         return self._eager_forward(a, b)
 
 
@@ -660,6 +662,7 @@ class LerpOp(BinaryOp):
             a_shape, b_shape,
         )
         self.out_shape = out_shape
+        self._out_shape_list = list(out_shape)  # cached for custom_op hot path
         self.N_total = prod(out_shape)
         self.a_numel = prod(a_shape)
         self.b_numel = prod(b_shape)
@@ -699,21 +702,16 @@ class MinimumOp(BinaryOp):
 class _BoolOutputBinaryOp(BinaryOp):
     """Mixin that casts kernel int8 output to torch.bool.
 
-    When _wrapped is available (torch.compile path), the register_fake already
-    returns torch.bool, and _eager_forward handles the cast.
+    _eager_forward casts the int8 kernel output to bool.  In the torch.compile
+    path, register_fake already declares torch.bool as the output dtype, and
+    the actual execution goes through _eager_forward which handles the cast.
+    No forward override is needed because BinaryOp.forward delegates to
+    _eager_forward (eager) or _wrapped (compile, where register_fake is correct).
     """
 
     def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         result = super()._eager_forward(a, b)
         return result.to(torch.bool)
-
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        result = super().forward(a, b)
-        # When using _wrapped path, result is already bool from register_fake;
-        # the actual execution in _eager_forward handles the cast.
-        if result.dtype != torch.bool:
-            return result.to(torch.bool)
-        return result
 
 
 class EqOp(_BoolOutputBinaryOp):
@@ -1065,10 +1063,10 @@ class IsfiniteOp(UnaryOp):
 
 
 # ---------------------------------------------------------------------------
-# torch.compile registration for all 66 ops
+# torch.compile registration for all 55 concrete ops
 # ---------------------------------------------------------------------------
 
-# --- Unary ops: float-preserving output (30 + 1 = 31 ops) ---
+# --- Unary ops: float-preserving output (1 + 17 + 8 + 1 = 27 ops) ---
 for _cls in [
     ReluOp,
     # math (17)
@@ -1085,7 +1083,7 @@ for _cls in [
 for _cls in [LogicalNotOp, IsnanOp, IsinfOp, IsfiniteOp]:
     _register_unary_custom_op(_cls, output_dtype_override=torch.bool)
 
-# --- Binary ops: same-dtype output (10 + 3 + 1 = 14 ops) ---
+# --- Binary ops: same-dtype output (10 + 3 = 13 ops) ---
 for _cls in [
     # arithmetic (10)
     AddOp, SubOp, MulOp, DivOp, RemainderOp, PowOp, FloorDivideOp,

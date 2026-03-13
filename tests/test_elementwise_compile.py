@@ -1,7 +1,8 @@
 """Tests for torch.compile compatibility of elementwise ops.
 
-Covers 6 representative cases: relu (unary), add (binary), eq (comparison/bool output),
-silu_and_mul (fused gated), abs (clamp-like), sign (where-like).
+Covers 6 representative cases: relu (unary), add (binary with broadcast),
+eq (comparison with bool output), silu_and_mul (fused gated), abs (math unary),
+sign (branching unary).
 Validates that torch.compile(op, fullgraph=True) produces correct output.
 """
 
@@ -9,6 +10,14 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, exact_compare
+from tileops.ops.elementwise import (
+    AbsOp,
+    AddOp,
+    EqOp,
+    ReluOp,
+    SignOp,
+    SiluAndMulOp,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -47,8 +56,6 @@ class ReluCompileTest(TestBase):
 
 @ReluCompileFixture
 def test_relu_compile(n_total, dtype):
-    from tileops.ops.elementwise import ReluOp
-
     test = ReluCompileTest(n_total, dtype)
     op = ReluOp(N_total=n_total, dtype=dtype)
     compiled_op = torch.compile(op, fullgraph=True)
@@ -87,8 +94,6 @@ class AddCompileTest(TestBase):
 
 @AddCompileFixture
 def test_add_compile(a_shape, b_shape, dtype):
-    from tileops.ops.elementwise import AddOp
-
     test = AddCompileTest(a_shape, b_shape, dtype)
     op = AddOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
     compiled_op = torch.compile(op, fullgraph=True)
@@ -128,8 +133,6 @@ class EqCompileTest(TestBase):
 
 @EqCompileFixture
 def test_eq_compile(a_shape, b_shape, dtype):
-    from tileops.ops.elementwise import EqOp
-
     test = EqCompileTest(a_shape, b_shape, dtype)
     op = EqOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
     compiled_op = torch.compile(op, fullgraph=True)
@@ -168,8 +171,6 @@ class SiluAndMulCompileTest(TestBase):
 
 @SiluAndMulCompileFixture
 def test_silu_and_mul_compile(M, N, dtype):
-    from tileops.ops.elementwise import SiluAndMulOp
-
     test = SiluAndMulCompileTest(M, N, dtype)
     op = SiluAndMulOp(M=M, N=N, dtype=dtype)
     compiled_op = torch.compile(op, fullgraph=True)
@@ -204,8 +205,6 @@ class AbsCompileTest(TestBase):
 
 @AbsCompileFixture
 def test_abs_compile(n_total, dtype):
-    from tileops.ops.elementwise import AbsOp
-
     test = AbsCompileTest(n_total, dtype)
     op = AbsOp(N_total=n_total, dtype=dtype)
     compiled_op = torch.compile(op, fullgraph=True)
@@ -235,8 +234,6 @@ class SignCompileTest(TestBase):
 
 @SignCompileFixture
 def test_sign_compile(n_total, dtype):
-    from tileops.ops.elementwise import SignOp
-
     test = SignCompileTest(n_total, dtype)
     op = SignOp(N_total=n_total, dtype=dtype)
     compiled_op = torch.compile(op, fullgraph=True)
@@ -260,8 +257,6 @@ class FakeUnaryFixture(FixtureBase):
 @FakeUnaryFixture
 def test_register_fake_unary_shape_dtype(n_total, dtype):
     """Verify register_fake returns correct shape and dtype for unary ops."""
-    from tileops.ops.elementwise import ReluOp
-
     op = ReluOp(N_total=n_total, dtype=dtype)
     x = torch.randn(n_total, dtype=dtype, device="cuda")
     compiled_op = torch.compile(op, fullgraph=True)
@@ -281,8 +276,6 @@ class FakeComparisonFixture(FixtureBase):
 @FakeComparisonFixture
 def test_register_fake_comparison_bool_dtype(shape, dtype):
     """Verify register_fake returns torch.bool for comparison ops."""
-    from tileops.ops.elementwise import EqOp
-
     op = EqOp(a_shape=shape, b_shape=shape, dtype=dtype)
     a = torch.randn(shape, dtype=dtype, device="cuda")
     b = torch.randn(shape, dtype=dtype, device="cuda")
@@ -302,8 +295,6 @@ class FakeFusedGatedFixture(FixtureBase):
 @FakeFusedGatedFixture
 def test_register_fake_fused_gated_shape(M, N, dtype):
     """Verify register_fake returns correct shape for fused gated ops."""
-    from tileops.ops.elementwise import SiluAndMulOp
-
     op = SiluAndMulOp(M=M, N=N, dtype=dtype)
     x = torch.randn(M, 2 * N, dtype=dtype, device="cuda")
     compiled_op = torch.compile(op, fullgraph=True)
