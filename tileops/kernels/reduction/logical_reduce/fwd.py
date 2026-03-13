@@ -64,8 +64,8 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
-        @T.prim_func
-        def main(
+        @T.macro
+        def compute(
             x: T.Tensor[(M, N_padded), dtype],
             out: T.Tensor[(M,), "int8"],  # noqa: F821
         ):
@@ -102,6 +102,13 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
 
                 # Write output
                 T.copy(out_local, out[pid_m * block_m])
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N_padded), dtype],
+            out: T.Tensor[(M,), "int8"],  # noqa: F821
+        ):
+            compute(x, out)
 
         return main
 
