@@ -370,40 +370,45 @@ _DTYPE = torch.float16
 
 # --- Remaining unary ops (not covered by detailed tests above) ---
 
+def _positive_input(n, dtype):
+    """Generate strictly positive inputs for log/sqrt/rsqrt/log1p domains."""
+    return torch.rand(n, dtype=dtype, device="cuda").clamp(min=0.01) * 10.0
+
+
 _UNARY_FLOAT_OPS = [
-    pytest.param(ExpOp, torch.exp, "exp", marks=pytest.mark.smoke),
-    pytest.param(LogOp, lambda x: torch.log(x.abs().clamp(min=1e-4).float()).to(x.dtype), "log", marks=pytest.mark.smoke),
-    pytest.param(SqrtOp, lambda x: torch.sqrt(x.abs().float()).to(x.dtype), "sqrt", marks=pytest.mark.smoke),
-    pytest.param(RsqrtOp, lambda x: torch.rsqrt(x.abs().clamp(min=1e-4).float()).to(x.dtype), "rsqrt", marks=pytest.mark.smoke),
-    pytest.param(NegOp, torch.neg, "neg", marks=pytest.mark.smoke),
-    pytest.param(ReciprocalOp, lambda x: torch.reciprocal(x.float()).to(x.dtype), "reciprocal", marks=pytest.mark.smoke),
-    pytest.param(SinOp, lambda x: torch.sin(x.float()).to(x.dtype), "sin", marks=pytest.mark.smoke),
-    pytest.param(CosOp, lambda x: torch.cos(x.float()).to(x.dtype), "cos", marks=pytest.mark.smoke),
-    pytest.param(FloorOp, lambda x: torch.floor(x.float()).to(x.dtype), "floor", marks=pytest.mark.smoke),
-    pytest.param(CeilOp, lambda x: torch.ceil(x.float()).to(x.dtype), "ceil", marks=pytest.mark.smoke),
-    pytest.param(RoundOp, lambda x: torch.round(x.float()).to(x.dtype), "round", marks=pytest.mark.smoke),
-    pytest.param(TruncOp, lambda x: torch.trunc(x.float()).to(x.dtype), "trunc", marks=pytest.mark.smoke),
-    pytest.param(ErfOp, lambda x: torch.erf(x.float()).to(x.dtype), "erf", marks=pytest.mark.smoke),
-    pytest.param(Log1pOp, lambda x: torch.log1p(x.abs().float()).to(x.dtype), "log1p", marks=pytest.mark.smoke),
-    pytest.param(Expm1Op, lambda x: torch.expm1(x.float()).to(x.dtype), "expm1", marks=pytest.mark.smoke),
-    pytest.param(GeluOp, lambda x: torch.nn.functional.gelu(x.float()).to(x.dtype), "gelu", marks=pytest.mark.smoke),
-    pytest.param(SiluOp, lambda x: torch.nn.functional.silu(x.float()).to(x.dtype), "silu", marks=pytest.mark.smoke),
-    pytest.param(SigmoidOp, lambda x: torch.sigmoid(x.float()).to(x.dtype), "sigmoid", marks=pytest.mark.smoke),
-    pytest.param(TanhOp, lambda x: torch.tanh(x.float()).to(x.dtype), "tanh", marks=pytest.mark.smoke),
-    pytest.param(HardswishOp, lambda x: torch.nn.functional.hardswish(x.float()).to(x.dtype), "hardswish", marks=pytest.mark.smoke),
-    pytest.param(HardsigmoidOp, lambda x: torch.nn.functional.hardsigmoid(x.float()).to(x.dtype), "hardsigmoid", marks=pytest.mark.smoke),
-    pytest.param(MishOp, lambda x: torch.nn.functional.mish(x.float()).to(x.dtype), "mish", marks=pytest.mark.smoke),
-    pytest.param(SeluOp, lambda x: torch.nn.functional.selu(x.float()).to(x.dtype), "selu", marks=pytest.mark.smoke),
+    pytest.param(ExpOp, torch.exp, None, "exp", marks=pytest.mark.smoke),
+    pytest.param(LogOp, lambda x: torch.log(x.float()).to(x.dtype), _positive_input, "log", marks=pytest.mark.smoke),
+    pytest.param(SqrtOp, lambda x: torch.sqrt(x.float()).to(x.dtype), _positive_input, "sqrt", marks=pytest.mark.smoke),
+    pytest.param(RsqrtOp, lambda x: torch.rsqrt(x.float()).to(x.dtype), _positive_input, "rsqrt", marks=pytest.mark.smoke),
+    pytest.param(NegOp, torch.neg, None, "neg", marks=pytest.mark.smoke),
+    pytest.param(ReciprocalOp, lambda x: torch.reciprocal(x.float()).to(x.dtype), None, "reciprocal", marks=pytest.mark.smoke),
+    pytest.param(SinOp, lambda x: torch.sin(x.float()).to(x.dtype), None, "sin", marks=pytest.mark.smoke),
+    pytest.param(CosOp, lambda x: torch.cos(x.float()).to(x.dtype), None, "cos", marks=pytest.mark.smoke),
+    pytest.param(FloorOp, lambda x: torch.floor(x.float()).to(x.dtype), None, "floor", marks=pytest.mark.smoke),
+    pytest.param(CeilOp, lambda x: torch.ceil(x.float()).to(x.dtype), None, "ceil", marks=pytest.mark.smoke),
+    pytest.param(RoundOp, lambda x: torch.round(x.float()).to(x.dtype), None, "round", marks=pytest.mark.smoke),
+    pytest.param(TruncOp, lambda x: torch.trunc(x.float()).to(x.dtype), None, "trunc", marks=pytest.mark.smoke),
+    pytest.param(ErfOp, lambda x: torch.erf(x.float()).to(x.dtype), None, "erf", marks=pytest.mark.smoke),
+    pytest.param(Log1pOp, lambda x: torch.log1p(x.float()).to(x.dtype), _positive_input, "log1p", marks=pytest.mark.smoke),
+    pytest.param(Expm1Op, lambda x: torch.expm1(x.float()).to(x.dtype), None, "expm1", marks=pytest.mark.smoke),
+    pytest.param(GeluOp, lambda x: torch.nn.functional.gelu(x.float()).to(x.dtype), None, "gelu", marks=pytest.mark.smoke),
+    pytest.param(SiluOp, lambda x: torch.nn.functional.silu(x.float()).to(x.dtype), None, "silu", marks=pytest.mark.smoke),
+    pytest.param(SigmoidOp, lambda x: torch.sigmoid(x.float()).to(x.dtype), None, "sigmoid", marks=pytest.mark.smoke),
+    pytest.param(TanhOp, lambda x: torch.tanh(x.float()).to(x.dtype), None, "tanh", marks=pytest.mark.smoke),
+    pytest.param(HardswishOp, lambda x: torch.nn.functional.hardswish(x.float()).to(x.dtype), None, "hardswish", marks=pytest.mark.smoke),
+    pytest.param(HardsigmoidOp, lambda x: torch.nn.functional.hardsigmoid(x.float()).to(x.dtype), None, "hardsigmoid", marks=pytest.mark.smoke),
+    pytest.param(MishOp, lambda x: torch.nn.functional.mish(x.float()).to(x.dtype), None, "mish", marks=pytest.mark.smoke),
+    pytest.param(SeluOp, lambda x: torch.nn.functional.selu(x.float()).to(x.dtype), None, "selu", marks=pytest.mark.smoke),
 ]
 
 
-@pytest.mark.parametrize("op_cls, ref_fn, name", _UNARY_FLOAT_OPS)
-def test_unary_float_compile(op_cls, ref_fn, name):
+@pytest.mark.parametrize("op_cls, ref_fn, input_fn, name", _UNARY_FLOAT_OPS)
+def test_unary_float_compile(op_cls, ref_fn, input_fn, name):
     """Compile-smoke for remaining float unary ops."""
     n = _N
     op = op_cls(N_total=n, dtype=_DTYPE)
     compiled_op = torch.compile(op, fullgraph=True)
-    x = torch.randn(n, dtype=_DTYPE, device="cuda")
+    x = input_fn(n, _DTYPE) if input_fn is not None else torch.randn(n, dtype=_DTYPE, device="cuda")
     out = compiled_op(x)
     ref = ref_fn(x)
     torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
@@ -453,7 +458,6 @@ _BINARY_ARITH_OPS = [
     pytest.param(MulOp, lambda a, b: (a.float() * b.float()).half(), "mul", marks=pytest.mark.smoke),
     pytest.param(DivOp, lambda a, b: (a.float() / b.float()).half(), "div", marks=pytest.mark.smoke),
     pytest.param(RemainderOp, lambda a, b: torch.remainder(a.float(), b.float()).half(), "remainder", marks=pytest.mark.smoke),
-    pytest.param(PowOp, lambda a, b: torch.pow(a.float().abs(), b.float().abs()).half(), "pow", marks=pytest.mark.smoke),
     pytest.param(FloorDivideOp, lambda a, b: torch.floor_divide(a.float(), b.float()).half(), "floor_divide", marks=pytest.mark.smoke),
     pytest.param(MaximumOp, lambda a, b: torch.maximum(a.float(), b.float()).half(), "maximum", marks=pytest.mark.smoke),
     pytest.param(MinimumOp, lambda a, b: torch.minimum(a.float(), b.float()).half(), "minimum", marks=pytest.mark.smoke),
@@ -470,6 +474,20 @@ def test_binary_arith_compile(op_cls, ref_fn, name):
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(a, b)
     ref = ref_fn(a, b)
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_pow_compile():
+    """Compile-smoke for PowOp with positive inputs to avoid NaN domain issues."""
+    shape = _SMALL
+    # Use positive base and small positive exponent to stay in valid domain
+    a = torch.rand(shape, dtype=_DTYPE, device="cuda").clamp(min=0.1) * 5.0
+    b = torch.rand(shape, dtype=_DTYPE, device="cuda") * 2.0
+    op = PowOp(a_shape=shape, b_shape=shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b)
+    ref = torch.pow(a.float(), b.float()).half()
     torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
 
 
