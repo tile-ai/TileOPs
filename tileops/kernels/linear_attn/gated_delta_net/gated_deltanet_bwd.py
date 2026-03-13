@@ -362,6 +362,71 @@ def _dh_recurrence_bwd_tl(
     return _func
 
 
+@torch.library.custom_op("tileops::gated_deltanet_bwd_kernel", mutates_args=())
+def _gated_deltanet_bwd_wrapped_kernel(
+    batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dim_v: int,
+    dtype: str,
+    num_stages: int, threads: int,
+    parallel_threads: int, recurrence_threads: int,
+    do: torch.Tensor, q: torch.Tensor, k: torch.Tensor,
+    v: torch.Tensor, g: torch.Tensor, beta: torch.Tensor,
+    S: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    from .compute_w_u_bwd import compute_w_u_bwd_tl
+    from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
+    from .gated_deltanet_fwd import _chunk_local_cumsum
+
+    g_cum = _chunk_local_cumsum(g.float(), chunk_size).to(g.dtype)
+
+    fused_fn = fused_prepare_compute_w_u_tl(
+        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+    )(num_stages, threads)
+    bwd_parallel_fn = _bwd_parallel_tl(
+        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+    )(parallel_threads)
+    dh_recurrence_bwd_fn = _dh_recurrence_bwd_tl(
+        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+    )(num_stages, recurrence_threads)
+    wu_bwd_fn = compute_w_u_bwd_tl(
+        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+    )(num_stages, threads)
+
+    Aw, Au, w, u = fused_fn(k, v, g_cum, beta)
+    dq, dk_partial, dg_partial, dw, du_partial, v_new, dh_local = \
+        bwd_parallel_fn(do, q, k, g_cum, w, u, S)
+    dk_corr, du_corr, dg_corr = \
+        dh_recurrence_bwd_fn(g_cum, k, v_new, S, dh_local)
+
+    du = du_partial + du_corr
+    _dAw, _dAu, dk_wu, dv, dbeta = wu_bwd_fn(dw, du, Aw, Au, k, v, beta)
+
+    dk = dk_partial + dk_corr + dk_wu
+    dg_cum = dg_partial + dg_corr
+
+    B, H, SL = g.shape
+    dg = dg_cum.float().reshape(B, H, SL // chunk_size, chunk_size)
+    dg = dg.flip(-1).cumsum(-1).flip(-1).reshape(B, H, SL).to(g.dtype)
+    return dq, dk, dv, dg, dbeta
+
+
+@_gated_deltanet_bwd_wrapped_kernel.register_fake
+def _gated_deltanet_bwd_wrapped_kernel_fake(
+    batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dim_v: int,
+    dtype: str,
+    num_stages: int, threads: int,
+    parallel_threads: int, recurrence_threads: int,
+    do: torch.Tensor, q: torch.Tensor, k: torch.Tensor,
+    v: torch.Tensor, g: torch.Tensor, beta: torch.Tensor,
+    S: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    dq = torch.empty(batch, head, seq_len, dim_k, dtype=q.dtype, device=q.device)
+    dk = torch.empty_like(dq)
+    dv = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
+    dg = torch.empty(batch, head, seq_len, dtype=q.dtype, device=q.device)
+    dbeta = torch.empty_like(dg)
+    return dq, dk, dv, dg, dbeta
+
+
 class GatedDeltaNetBwdKernel(Kernel):
     """Gated DeltaNet backward kernel.
 
@@ -398,27 +463,6 @@ class GatedDeltaNetBwdKernel(Kernel):
         self.dim_v = dim_v
         self.dtype = dtype
         self.init_config(config, tune)
-        # Cache JIT-compiled kernels
-        from .compute_w_u_bwd import compute_w_u_bwd_tl
-        from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
-
-        ns = self.config.get("num_stages", 2)
-        thr = self.config.get("threads", 256)
-        par_thr = self.config.get("parallel_threads", 256)
-        rec_thr = self.config.get("recurrence_threads", 256)
-
-        self._fused_fn = fused_prepare_compute_w_u_tl(
-            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
-        )(ns, thr)
-        self._bwd_parallel_fn = _bwd_parallel_tl(
-            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
-        )(par_thr)
-        self._dh_recurrence_bwd_fn = _dh_recurrence_bwd_tl(
-            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
-        )(ns, rec_thr)
-        self._wu_bwd_fn = compute_w_u_bwd_tl(
-            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
-        )(ns, thr)
 
     @property
     def default_config(self) -> dict:
@@ -440,30 +484,11 @@ class GatedDeltaNetBwdKernel(Kernel):
         beta: torch.Tensor,
         S: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        from .gated_deltanet_fwd import _chunk_local_cumsum
-        g_cum = _chunk_local_cumsum(g.float(), self.chunk_size).to(g.dtype)
-
-        # Step 1: Recompute w, u from forward
-        Aw, Au, w, u = self._fused_fn(k, v, g_cum, beta)
-
-        # Step 2: Parallel per-chunk gradients
-        dq, dk_partial, dg_partial, dw, du_partial, v_new, dh_local = \
-            self._bwd_parallel_fn(do, q, k, g_cum, w, u, S)
-
-        # Step 3: Sequential dh recurrence + corrections
-        dk_corr, du_corr, dg_corr = \
-            self._dh_recurrence_bwd_fn(g_cum, k, v_new, S, dh_local)
-
-        # Step 4: compute_w_u backward
-        du = du_partial + du_corr
-        _dAw, _dAu, dk_wu, dv, dbeta = self._wu_bwd_fn(dw, du, Aw, Au, k, v, beta)
-
-        # Step 5: Merge
-        dk = dk_partial + dk_corr + dk_wu
-        dg_cum = dg_partial + dg_corr
-
-        # Reverse cumsum: convert dg w.r.t. g_cum back to dg w.r.t. raw g
-        B, H, SL = g.shape
-        dg = dg_cum.float().reshape(B, H, SL // self.chunk_size, self.chunk_size)
-        dg = dg.flip(-1).cumsum(-1).flip(-1).reshape(B, H, SL).to(g.dtype)
-        return dq, dk, dv, dg, dbeta
+        return _gated_deltanet_bwd_wrapped_kernel(
+            self.batch, self.head, self.seq_len, self.chunk_size,
+            self.dim_k, self.dim_v, self.dtype_str,
+            self.config.get("num_stages", 2), self.config.get("threads", 256),
+            self.config.get("parallel_threads", 256),
+            self.config.get("recurrence_threads", 256),
+            do, q, k, v, g, beta, S,
+        )

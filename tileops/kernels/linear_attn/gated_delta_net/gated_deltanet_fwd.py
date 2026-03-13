@@ -225,6 +225,52 @@ def _chunk_local_cumsum(g: torch.Tensor, chunk_size: int) -> torch.Tensor:
     return g.reshape(B, H, S // chunk_size, chunk_size).cumsum(-1).reshape(B, H, S)
 
 
+@torch.library.custom_op("tileops::gated_deltanet_fwd_kernel", mutates_args=())
+def _gated_deltanet_fwd_wrapped_kernel(
+    batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dim_v: int,
+    dtype: str,
+    fused_num_stages: int, fused_threads: int,
+    h_num_stages: int, h_threads: int, h_block_v: int,
+    o_threads: int,
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    g: torch.Tensor, beta: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    g_cum = _chunk_local_cumsum(g.float(), chunk_size).to(g.dtype)
+    fused_fn = fused_prepare_compute_w_u_tl(
+        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+    )(fused_num_stages, fused_threads)
+    h_fn = _h_recurrence_tl(
+        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+        block_v=h_block_v,
+    )(h_num_stages, h_threads)
+    o_fn = _output_o_tl(
+        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
+    )(o_threads)
+    S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
+    Aw, Au, w, u = fused_fn(k, v, g_cum, beta)
+    S_buf, v_new = h_fn(k, g_cum, w, u, S_0)
+    o = o_fn(q, k, g_cum, S_buf, v_new)
+    return o, S_buf, Aw, Au
+
+
+@_gated_deltanet_fwd_wrapped_kernel.register_fake
+def _gated_deltanet_fwd_wrapped_kernel_fake(
+    batch: int, head: int, seq_len: int, chunk_size: int, dim_k: int, dim_v: int,
+    dtype: str,
+    fused_num_stages: int, fused_threads: int,
+    h_num_stages: int, h_threads: int, h_block_v: int,
+    o_threads: int,
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    g: torch.Tensor, beta: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    num_chunks = seq_len // chunk_size
+    o = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
+    S = torch.empty(batch, head, num_chunks + 1, dim_k, dim_v, dtype=q.dtype, device=q.device)
+    Aw = torch.empty(batch, head, seq_len, chunk_size, dtype=q.dtype, device=q.device)
+    Au = torch.empty_like(Aw)
+    return o, S, Aw, Au
+
+
 class GatedDeltaNetFwdKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
@@ -347,8 +393,12 @@ class GatedDeltaNetFwdKernel(Kernel):
         g: torch.Tensor,
         beta: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        g_cum = _chunk_local_cumsum(g.float(), self.chunk_size).to(g.dtype)
-        Aw, Au, w, u = self._fused_fn(k, v, g_cum, beta)
-        S_buf, v_new = self._h_recurrence_fn(k, g_cum, w, u, self._S_0)
-        o = self._output_o_fn(q, k, g_cum, S_buf, v_new)
-        return o, S_buf, Aw, Au
+        return _gated_deltanet_fwd_wrapped_kernel(
+            self.batch, self.head, self.seq_len, self.chunk_size,
+            self.dim_k, self.dim_v, self.dtype_str,
+            self.config["fused_num_stages"], self.config["fused_threads"],
+            self.config["h_num_stages"], self.config["h_threads"],
+            self.config.get("h_block_v", 0),
+            self.config["o_threads"],
+            q, k, v, g, beta,
+        )
