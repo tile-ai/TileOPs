@@ -94,9 +94,10 @@ class DropoutOp(Op):
                 f"Expected {self.N_total} elements, got {x.numel()}"
             )
 
-        # Edge cases: identity pass-through
+        # Edge cases: identity pass-through (return input directly to
+        # preserve aliasing, matching torch.nn.functional.dropout semantics)
         if self._skip:
-            return x.clone()
+            return x
 
         # Edge case: p=1 means all zeros
         if self.p == 1.0:

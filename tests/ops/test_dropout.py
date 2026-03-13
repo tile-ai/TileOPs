@@ -144,13 +144,16 @@ def test_dropout_different_seeds(n_total: int, dtype: torch.dtype, p: float) -> 
 
 @DropoutEdgeCaseFixture
 def test_dropout_p0_identity(n_total: int, dtype: torch.dtype) -> None:
-    """p=0 means no dropout: output equals input."""
+    """p=0 means no dropout: output is the same tensor (aliased)."""
     from tileops.ops.dropout import DropoutOp
 
     x = torch.randn(n_total, dtype=dtype, device="cuda")
     op = DropoutOp(N_total=n_total, dtype=dtype, p=0.0, seed=42)
     y = op(x)
     torch.testing.assert_close(y, x)
+    assert y.data_ptr() == x.data_ptr(), (
+        "p=0 skip path must preserve aliasing (same data_ptr)"
+    )
 
 
 @DropoutEdgeCaseFixture
@@ -166,13 +169,16 @@ def test_dropout_p1_all_zeros(n_total: int, dtype: torch.dtype) -> None:
 
 @DropoutEdgeCaseFixture
 def test_dropout_training_false(n_total: int, dtype: torch.dtype) -> None:
-    """training=False means identity pass-through regardless of p."""
+    """training=False means identity pass-through (aliased) regardless of p."""
     from tileops.ops.dropout import DropoutOp
 
     x = torch.randn(n_total, dtype=dtype, device="cuda")
     op = DropoutOp(N_total=n_total, dtype=dtype, p=0.5, seed=42, training=False)
     y = op(x)
     torch.testing.assert_close(y, x)
+    assert y.data_ptr() == x.data_ptr(), (
+        "training=False skip path must preserve aliasing (same data_ptr)"
+    )
 
 
 @DropoutEdgeCaseFixture
