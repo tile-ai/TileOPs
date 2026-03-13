@@ -95,14 +95,43 @@ jobs:
           done
         shell: bash
 
+      - name: Resolve persistent venv
+        run: |
+          set -euo pipefail
+
+          VENV_PREFIX="tileops_benchmark_venv"
+          HASH_INPUT="$(
+            {
+              echo "python=3.11"
+              echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
+              sha256sum pyproject.toml
+            } | sha256sum | cut -c1-16
+          )"
+          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+
+          echo "Resolved venv path: ${VENV_PATH}"
+          echo "VENV_DIR=${VENV_DIR}" >> "$GITHUB_ENV"
+          echo "VENV_PATH=${VENV_PATH}" >> "$GITHUB_ENV"
+
+          if [ -x "${VENV_PATH}/bin/python" ]; then
+            echo "Reusing existing venv: ${VENV_PATH}"
+            echo "VENV_REUSED=true" >> "$GITHUB_ENV"
+          else
+            echo "No matching venv found. Will create: ${VENV_PATH}"
+            echo "VENV_REUSED=false" >> "$GITHUB_ENV"
+          fi
+        shell: bash
+
       - name: Ensure persistent venv and install dependencies
         run: |
           set -euo pipefail
-          VENV_DIR="tileops_benchmark_venv"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          if [ "${VENV_REUSED}" = "true" ]; then
+            echo "Using cached venv at ${VENV_PATH}"
+            exit 0
+          fi
 
           echo "Creating fresh venv at ${VENV_PATH}"
-          rm -rf "${VENV_PATH}"
           python -m venv "${VENV_PATH}"
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
@@ -113,8 +142,7 @@ jobs:
       - name: Run benchmark ops
         run: |
           set -euo pipefail
-          VENV_DIR="tileops_benchmark_venv"
-          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          source "${VENV_PATH}/bin/activate"
           export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           python - <<'PY'
@@ -142,16 +170,6 @@ jobs:
             echo "::error::profile_run.log not found" >> tileops_benchmarks.log
             exit 1
           fi
-        shell: bash
-
-      - name: Cleanup venv
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          VENV_DIR="tileops_benchmark_venv"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-          echo "Removing venv at: ${VENV_PATH}"
-          rm -rf "${VENV_PATH}"
         shell: bash
 
       - name: Upload benchmark artifacts
@@ -248,13 +266,43 @@ jobs:
           done
         shell: bash
 
+      - name: Resolve persistent venv
+        run: |
+          set -euo pipefail
+
+          VENV_PREFIX="tileops_wheel_ci_venv"
+          HASH_INPUT="$(
+            {
+              echo "python=3.11"
+              echo "install=pip install build pytest"
+              sha256sum pyproject.toml
+            } | sha256sum | cut -c1-16
+          )"
+          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+
+          echo "Resolved venv path: ${VENV_PATH}"
+          echo "VENV_DIR=${VENV_DIR}" >> "$GITHUB_ENV"
+          echo "VENV_PATH=${VENV_PATH}" >> "$GITHUB_ENV"
+
+          if [ -x "${VENV_PATH}/bin/python" ]; then
+            echo "Reusing existing venv: ${VENV_PATH}"
+            echo "VENV_REUSED=true" >> "$GITHUB_ENV"
+          else
+            echo "No matching venv found. Will create: ${VENV_PATH}"
+            echo "VENV_REUSED=false" >> "$GITHUB_ENV"
+          fi
+        shell: bash
+
       - name: Create clean virtual environment
         run: |
           set -euo pipefail
-          VENV_DIR="tileops_wheel_ci_venv"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          if [ "${VENV_REUSED}" = "true" ]; then
+            echo "Using cached venv at ${VENV_PATH}"
+            exit 0
+          fi
+
           echo "Preparing clean venv at ${VENV_PATH}"
-          rm -rf "${VENV_PATH}"
           python -m venv "${VENV_PATH}"
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
@@ -264,16 +312,18 @@ jobs:
       - name: Install required dependencies
         run: |
           set -euo pipefail
-          VENV_DIR="tileops_wheel_ci_venv"
-          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          source "${VENV_PATH}/bin/activate"
+          if [ "${VENV_REUSED}" = "true" ]; then
+            echo "Cached packaging venv already prepared at ${VENV_PATH}"
+            exit 0
+          fi
           pip install build pytest
         shell: bash
 
       - name: Build wheel package
         run: |
           set -euo pipefail
-          VENV_DIR="tileops_wheel_ci_venv"
-          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          source "${VENV_PATH}/bin/activate"
           python -m build --wheel
           echo "Build artifacts:"
           ls -lh dist/*.whl
@@ -282,8 +332,7 @@ jobs:
       - name: Run unit tests against built wheel
         run: |
           set -euo pipefail
-          VENV_DIR="tileops_wheel_ci_venv"
-          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          source "${VENV_PATH}/bin/activate"
           pip install --force-reinstall dist/*.whl
 
           TMP_TEST_DIR="$(mktemp -d)"
@@ -316,13 +365,3 @@ jobs:
         with:
           files: dist/*.whl
           fail_on_unmatched_files: true
-
-      - name: Cleanup wheel venv
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          VENV_DIR="tileops_wheel_ci_venv"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-          echo "Removing venv at: ${VENV_PATH}"
-          rm -rf "${VENV_PATH}"
-        shell: bash

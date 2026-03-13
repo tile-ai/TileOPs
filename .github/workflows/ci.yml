@@ -261,16 +261,46 @@ jobs:
           done
         shell: bash
 
+      - name: Resolve persistent venv
+        run: |
+          set -euo pipefail
+
+          VENV_PREFIX="tileops_release_venv"
+          HASH_INPUT="$(
+            {
+              echo "python=3.11"
+              echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
+              sha256sum pyproject.toml
+            } | sha256sum | cut -c1-16
+          )"
+          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+
+          echo "Resolved venv path: ${VENV_PATH}"
+          echo "VENV_DIR=${VENV_DIR}" >> "$GITHUB_ENV"
+          echo "VENV_PATH=${VENV_PATH}" >> "$GITHUB_ENV"
+
+          if [ -x "${VENV_PATH}/bin/python" ]; then
+            echo "Reusing existing venv: ${VENV_PATH}"
+            echo "VENV_REUSED=true" >> "$GITHUB_ENV"
+          else
+            echo "No matching venv found. Will create: ${VENV_PATH}"
+            echo "VENV_REUSED=false" >> "$GITHUB_ENV"
+          fi
+        shell: bash
+
       - name: Ensure persistent venv and install dependencies
         run: |
-          set -e
-          VENV_DIR="tileops_release_venv"
+          set -euo pipefail
+          if [ "${VENV_REUSED}" = "true" ]; then
+            echo "Using cached venv at ${VENV_PATH}"
+            exit 0
+          fi
 
-          echo "Creating fresh venv at ${{ runner.tool_cache }}/${VENV_DIR}"
-          rm -rf "${{ runner.tool_cache }}/${VENV_DIR}"
-          python -m venv "${{ runner.tool_cache }}/${VENV_DIR}"
+          echo "Creating fresh venv at ${VENV_PATH}"
+          python -m venv "${VENV_PATH}"
           # shellcheck source=/dev/null
-          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          source "${VENV_PATH}/bin/activate"
           python -m pip install --upgrade pip setuptools wheel --no-user
           PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
         shell: bash
@@ -278,8 +308,7 @@ jobs:
       - name: Run tests
         run: |
           set -euo pipefail
-          VENV_DIR="tileops_release_venv"
-          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          source "${VENV_PATH}/bin/activate"
           export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           python - <<'PY'
@@ -303,16 +332,6 @@ jobs:
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
           python -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" | tee tileops_test_release.log
-        shell: bash
-
-      - name: Cleanup venv
-        if: ${{ always() }}
-        run: |
-          set -e
-          VENV_DIR="tileops_release_venv"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-          echo "Removing venv at: ${VENV_PATH}"
-          rm -rf "${VENV_PATH}"
         shell: bash
 
       - name: Upload artifacts
