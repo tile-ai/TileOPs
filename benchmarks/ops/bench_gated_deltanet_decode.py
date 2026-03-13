@@ -31,7 +31,6 @@ class GatedDeltaNetDecodeBenchmark(BenchmarkBase):
 class GatedDeltaNetDecodeBenchFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, dim_k, dim_v, dtype", [
-            # Typical MiMo-like configs
             (1, 32, 128, 128, torch.float32),
             (1, 32, 128, 128, torch.bfloat16),
             (8, 32, 128, 128, torch.float32),
@@ -40,11 +39,9 @@ class GatedDeltaNetDecodeBenchFixture(FixtureBase):
             (16, 32, 128, 128, torch.bfloat16),
             (32, 32, 128, 128, torch.float32),
             (32, 32, 128, 128, torch.bfloat16),
-            # Smaller head dim
             (1, 32, 64, 64, torch.float32),
             (8, 32, 64, 64, torch.float32),
             (32, 32, 64, 64, torch.float32),
-            # Larger batch (continuous batching scenario)
             (64, 32, 128, 128, torch.float32),
             (64, 32, 128, 128, torch.bfloat16),
         ]),

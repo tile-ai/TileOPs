@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerFixture, Fp8LightingIndexerTest
+from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerTest
 from tileops.ops import Fp8LightingIndexerOp
 
 
@@ -32,7 +32,16 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
                 weights_memory + cu_seqlens_ks_memory + cu_seqlens_ke_memory)
 
 
-@Fp8LightingIndexerFixture
+_FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
+    pytest.param(4096, 32, 64, 8192, True, None, False, id="default-config"),
+    pytest.param(2048, 16, 64, 4096, True, None, False, id="mid-shape"),
+]
+
+
+@pytest.mark.parametrize(
+    "seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune",
+    _FP8_LIGHTING_INDEXER_BENCH_PARAMS,
+)
 def test_fp8_lighting_indexer_bench(seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
                                     clean_logits: bool, config: Optional[dict],
                                     tune: bool) -> None:

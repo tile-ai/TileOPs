@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_rms_norm import RmsNormFixture, RmsNormTest
+from tests.ops.test_rms_norm import RmsNormTest
 from tileops.ops.norm.rms_norm import RmsNormOp
 
 
@@ -24,7 +24,15 @@ class RmsNormBenchmark(BenchmarkBase):
         return (2 * t.m * t.n + t.n) * elem_bytes
 
 
-@RmsNormFixture
+_RMS_NORM_BENCH_PARAMS = [
+    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
+    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
+    pytest.param(2048, 5120, torch.float16, True, id="non-power-of-two"),
+    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
+]
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _RMS_NORM_BENCH_PARAMS)
 def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = RmsNormTest(m, n, dtype)
     bm = RmsNormBenchmark(test)

@@ -14,12 +14,12 @@ class ArgreduceBenchFixture(FixtureBase):
         (
             "m, n, dtype, op_kind",
             [
-                pytest.param(1024, 4096, torch.float16, "argmax", marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, "argmax", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "argmax", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float16, "argmin", marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, "argmin", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "argmin", marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float16, "argmax"),
+                pytest.param(1024, 4096, torch.bfloat16, "argmax"),
+                pytest.param(4096, 4096, torch.float16, "argmax"),
+                pytest.param(1024, 4096, torch.float16, "argmin"),
+                pytest.param(1024, 4096, torch.bfloat16, "argmin"),
+                pytest.param(4096, 4096, torch.float16, "argmin"),
             ],
         ),
     ]

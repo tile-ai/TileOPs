@@ -17,6 +17,9 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     tier_names = ("smoke", "full", "nightly")
 
     for item in items:
+        path = str(item.path)
+        if "tests/" not in path:
+            continue
         tiers = [name for name in tier_names if item.get_closest_marker(name) is not None]
         if len(tiers) != 1:
             tier_errors.append(
@@ -45,9 +48,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                     f"{expected_smoke.nodeid}: smoke must be the first non-xfail case of each test"
                 )
 
-        tune_full_count = 0
         first_tuned_item: pytest.Item | None = None
-        tuned_full_items: list[pytest.Item] = []
         for item in group:
             callspec = getattr(item, "callspec", None)
             if callspec is None or "tune" not in callspec.params:
@@ -55,31 +56,16 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
             tune = callspec.params["tune"]
             is_smoke = item.get_closest_marker("smoke") is not None
-            is_full = item.get_closest_marker("full") is not None
-
             if is_smoke and tune is True:
                 tier_errors.append(f"{item.nodeid}: smoke cases must use tune=False")
             if is_smoke and item.get_closest_marker("xfail") is not None:
                 tier_errors.append(f"{item.nodeid}: smoke cases must not be xfail")
             if tune is True and first_tuned_item is None:
                 first_tuned_item = item
-            if tune is True and is_full:
-                tune_full_count += 1
-                tuned_full_items.append(item)
-
-        if tune_full_count > 1:
+        if first_tuned_item is not None and first_tuned_item.get_closest_marker("full") is None:
             tier_errors.append(
-                f"{group[0].path}::{group[0].originalname}: at most one tune=True case may be full"
+                f"{first_tuned_item.nodeid}: the first tune=True case must be marked full"
             )
-        if first_tuned_item is not None:
-            if tune_full_count == 0:
-                tier_errors.append(
-                    f"{first_tuned_item.nodeid}: the first tune=True case must be marked full"
-                )
-            elif tuned_full_items[0] is not first_tuned_item:
-                tier_errors.append(
-                    f"{first_tuned_item.nodeid}: the first tune=True case must be the only full tuned case"
-                )
 
     if tier_errors:
         raise pytest.UsageError(

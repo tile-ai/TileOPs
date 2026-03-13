@@ -6,7 +6,6 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdTest
-from tests.test_base import FixtureBase
 from tileops.ops import GqaSlidingWindowVarlenFwdOp
 
 
@@ -33,42 +32,13 @@ def warmup_cupti():
     torch.cuda.synchronize()
 
 
-class GqaSlidingWindowVarlenFwdBenchFixture(FixtureBase):
-    """Long-sequence configs for throughput benchmarking."""
-    PARAMS = [
-        ("batch, seqlens_q, seqlens_k, heads, heads_kv, dim,"
-         " is_causal, wl, wr, dtype, tune", [
-             # ── batch=1: single sequence ──────────────────────────────────────
-             (1, [3000],                [3000],                32, 8, 128, True,  -1,   -1, torch.float16, False),
-             (1, [6001],                [6001],                32, 8, 128, True,  3000, -1, torch.float16, False),
-             (1, [5999],                [5999],                32, 8, 128, False, 1500, 1500, torch.float16, False),
-             # ── batch=2: mixed non-power-of-2 lengths ────────────────────────
-             (2, [1537, 3073],          [1537, 3073],          32, 8, 128, True,  -1,   -1, torch.float16, False),
-             (2, [1537, 3073],          [1537, 3073],          32, 8, 128, True,  2000, -1, torch.float16, False),
-             (2, [1537, 3073],          [1537, 3073],          32, 8, 128, False, 1000, 1000, torch.float16, False),
-             # ── batch=4: moderate parallelism ─────────────────────────────────
-             (4, [1500, 2000, 3000, 3500], [1500, 2000, 3000, 3500], 32, 8, 128, True,  -1,   -1, torch.float16, False),
-             (4, [1500, 2000, 3000, 3500], [1500, 2000, 3000, 3500], 32, 8, 128, True,  2000, -1, torch.float16, False),
-             (4, [1500, 2000, 3000, 3500], [1500, 2000, 3000, 3500], 32, 8, 128, False, 1500, 1500, torch.float16, False),
-             # ── batch=8: high parallelism ─────────────────────────────────────
-             (8, [999, 1200, 1537, 1800, 2100, 2500, 3001, 3500],
-                 [999, 1200, 1537, 1800, 2100, 2500, 3001, 3500],
-                 32, 8, 128, True,  -1,   -1, torch.float16, False),
-             (8, [999, 1200, 1537, 1800, 2100, 2500, 3001, 3500],
-                 [999, 1200, 1537, 1800, 2100, 2500, 3001, 3500],
-                 32, 8, 128, False, 1500, 1500, torch.float16, False),
-             # ── KV-cache decode: seqlen_q=1 (memory-bound) ───────────────────
-             (2, [1, 1],       [4096, 8192], 32, 8, 128, True,  -1,   -1, torch.float16, False),
-             # ── KV-cache prefill+cache (memory-bound) ─────────────────────────
-             (2, [512, 1024],  [4096, 8192], 32, 8, 128, True,  -1,   -1, torch.float16, False),
-             (2, [512, 1024],  [4096, 8192], 32, 8, 128, True,  2000, -1, torch.float16, False),
-             (4, [513, 700, 1025, 1200], [3001, 4000, 6001, 7000],
-                 32, 8, 128, True, 2000, -1, torch.float16, False),
-             # ── Long sequence stress: non-power-of-2 ─────────────────────────
-             (2, [5001, 8193],          [5001, 8193],          32, 8, 128, True,  -1,   -1, torch.float16, False),
-             (2, [5001, 8193],          [5001, 8193],          32, 8, 128, False, 3000, 3000, torch.float16, False),
-         ]),
-    ]
+_GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = [
+    pytest.param(1, [3000], [3000], 32, 8, 128, True, -1, -1, torch.float16, False, id="single-seq-causal"),
+    pytest.param(2, [1537, 3073], [1537, 3073], 32, 8, 128, True, 2000, -1, torch.float16, False, id="mixed-length-left-window"),
+    pytest.param(4, [1500, 2000, 3000, 3500], [1500, 2000, 3000, 3500], 32, 8, 128, False, 1500, 1500, torch.float16, False, id="moderate-batch-window"),
+    pytest.param(2, [512, 1024], [4096, 8192], 32, 8, 128, True, -1, -1, torch.float16, False, id="prefill-cache"),
+    pytest.param(2, [5001, 8193], [5001, 8193], 32, 8, 128, True, -1, -1, torch.float16, False, id="long-sequence-stress"),
+]
 
 
 class GqaSlidingWindowVarlenFwdBenchmark(BenchmarkBase):
@@ -117,7 +87,10 @@ def _fa3_varlen_baseline(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q,
         return None
 
 
-@GqaSlidingWindowVarlenFwdBenchFixture
+@pytest.mark.parametrize(
+    "batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune",
+    _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS,
+)
 def test_gqa_sliding_window_varlen_fwd_bench(
     batch: int,
     seqlens_q,

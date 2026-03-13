@@ -14,12 +14,12 @@ class CumulativeBenchFixture(FixtureBase):
         (
             "m, n, dtype, op_kind",
             [
-                pytest.param(1024, 4096, torch.float16, "cumsum", marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, "cumsum", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "cumsum", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float16, "cumprod", marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, "cumprod", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "cumprod", marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float16, "cumsum"),
+                pytest.param(1024, 4096, torch.bfloat16, "cumsum"),
+                pytest.param(4096, 4096, torch.float16, "cumsum"),
+                pytest.param(1024, 4096, torch.float16, "cumprod"),
+                pytest.param(1024, 4096, torch.bfloat16, "cumprod"),
+                pytest.param(4096, 4096, torch.float16, "cumprod"),
             ],
         ),
     ]

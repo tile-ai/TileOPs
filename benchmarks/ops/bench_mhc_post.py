@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_mhc_post import MhcPostFixture, MhcPostTest
+from tests.ops.test_mhc_post import MhcPostTest
 from tileops.ops import ManifoldConstrainedHyperConnectionPostOp
 
 
@@ -21,7 +21,14 @@ class MhcPostBenchmark(BenchmarkBase):
         return (t.n_expand * 2 + 1) * t.c_x
 
 
-@MhcPostFixture
+_MHC_POST_BENCH_PARAMS = [
+    pytest.param(1, 4, 1280, torch.bfloat16, True, id="small"),
+    pytest.param(2, 4, 1920, torch.bfloat16, True, id="medium"),
+    pytest.param(4, 4, 2560, torch.bfloat16, True, id="large"),
+]
+
+
+@pytest.mark.parametrize("batch, n_expand, c_x, dtype, tune", _MHC_POST_BENCH_PARAMS)
 def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                          tune: bool) -> None:
     test = MhcPostTest(batch, n_expand, c_x, dtype)
