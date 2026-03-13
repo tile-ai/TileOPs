@@ -457,8 +457,8 @@ _BINARY_ARITH_OPS = [
     pytest.param(SubOp, lambda a, b: (a.float() - b.float()).half(), "sub", marks=pytest.mark.smoke),
     pytest.param(MulOp, lambda a, b: (a.float() * b.float()).half(), "mul", marks=pytest.mark.smoke),
     pytest.param(DivOp, lambda a, b: (a.float() / b.float()).half(), "div", marks=pytest.mark.smoke),
-    pytest.param(RemainderOp, lambda a, b: torch.remainder(a.float(), b.float()).half(), "remainder", marks=pytest.mark.smoke),
-    pytest.param(FloorDivideOp, lambda a, b: torch.floor_divide(a.float(), b.float()).half(), "floor_divide", marks=pytest.mark.smoke),
+    pytest.param(RemainderOp, lambda a, b: a - torch.floor(a.float() / b.float()).half() * b, "remainder", marks=pytest.mark.smoke),
+    pytest.param(FloorDivideOp, lambda a, b: torch.floor(a.float() / b.float()).half(), "floor_divide", marks=pytest.mark.smoke),
     pytest.param(MaximumOp, lambda a, b: torch.maximum(a.float(), b.float()).half(), "maximum", marks=pytest.mark.smoke),
     pytest.param(MinimumOp, lambda a, b: torch.minimum(a.float(), b.float()).half(), "minimum", marks=pytest.mark.smoke),
 ]
