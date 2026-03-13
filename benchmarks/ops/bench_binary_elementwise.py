@@ -374,5 +374,106 @@ def test_fused_gated_bench(
     BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
 
 
+# ---------------------------------------------------------------------------
+# Broadcast benchmark (bias-add pattern)
+# ---------------------------------------------------------------------------
+
+# DNN bias-add: (tokens, hidden_dim) + (1, hidden_dim)
+_BROADCAST_SHAPES = [
+    ((1024, 4096), (1, 4096)),
+    ((1024, 10240), (1, 10240)),
+    ((1024, 20480), (1, 20480)),
+]
+
+
+class BroadcastBenchCase:
+    """Test harness for broadcast binary ops with asymmetric shapes."""
+
+    def __init__(
+        self,
+        a_shape: tuple,
+        b_shape: tuple,
+        dtype: torch.dtype,
+        output_dtype: torch.dtype,
+        gen_inputs: Callable,
+    ):
+        self.a_shape = a_shape
+        self.b_shape = b_shape
+        self.n_total = prod(a_shape)  # output size = broadcast result
+        self.dtype = dtype
+        self.output_dtype = output_dtype
+        self._gen_inputs = gen_inputs
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._gen_inputs(self.a_shape, self.b_shape, self.dtype)
+
+
+class BroadcastBenchmark(BenchmarkBase):
+    """Bandwidth-oriented benchmark for broadcast binary ops."""
+
+    def calculate_flops(self) -> Optional[float]:
+        return self.test.n_total
+
+    def calculate_memory(self) -> Optional[float]:
+        t = self.test
+        elem = t.dtype.itemsize
+        out_elem = t.output_dtype.itemsize
+        # Read a + read b (smaller, broadcast) + write output
+        return (prod(t.a_shape) + prod(t.b_shape)) * elem + t.n_total * out_elem
+
+
+def _randn_broadcast_pair(a_shape, b_shape, dtype):
+    a = torch.randn(*a_shape, device="cuda", dtype=dtype)
+    b = torch.randn(*b_shape, device="cuda", dtype=dtype)
+    return a, b
+
+
+def _positive_broadcast_pair(a_shape, b_shape, dtype):
+    a = torch.rand(*a_shape, device="cuda", dtype=dtype) + 0.1
+    b = torch.rand(*b_shape, device="cuda", dtype=dtype) + 0.1
+    return a, b
+
+
+class BroadcastBenchFixture(FixtureBase):
+    PARAMS = [
+        ("op_name, a_shape, b_shape, dtype, op_cls, baseline_fn, gen_inputs", [
+            # sub — bias-add pattern
+            pytest.param("sub", *_BROADCAST_SHAPES[0], torch.float16, SubOp, torch.sub, _randn_broadcast_pair, marks=pytest.mark.smoke),
+            pytest.param("sub", *_BROADCAST_SHAPES[1], torch.float16, SubOp, torch.sub, _randn_broadcast_pair, marks=pytest.mark.full),
+            pytest.param("sub", *_BROADCAST_SHAPES[2], torch.float16, SubOp, torch.sub, _randn_broadcast_pair, marks=pytest.mark.full),
+            # mul — bias-add pattern
+            pytest.param("mul", *_BROADCAST_SHAPES[0], torch.float16, MulOp, torch.mul, _randn_broadcast_pair, marks=pytest.mark.full),
+            pytest.param("mul", *_BROADCAST_SHAPES[1], torch.float16, MulOp, torch.mul, _randn_broadcast_pair, marks=pytest.mark.full),
+            pytest.param("mul", *_BROADCAST_SHAPES[2], torch.float16, MulOp, torch.mul, _randn_broadcast_pair, marks=pytest.mark.full),
+            # div — bias-add pattern
+            pytest.param("div", *_BROADCAST_SHAPES[0], torch.float16, DivOp, torch.div, _positive_broadcast_pair, marks=pytest.mark.full),
+            pytest.param("div", *_BROADCAST_SHAPES[1], torch.float16, DivOp, torch.div, _positive_broadcast_pair, marks=pytest.mark.full),
+            pytest.param("div", *_BROADCAST_SHAPES[2], torch.float16, DivOp, torch.div, _positive_broadcast_pair, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@BroadcastBenchFixture
+def test_broadcast_bench(
+    op_name: str,
+    a_shape: tuple,
+    b_shape: tuple,
+    dtype: torch.dtype,
+    op_cls,
+    baseline_fn,
+    gen_inputs,
+) -> None:
+    test = BroadcastBenchCase(a_shape, b_shape, dtype, dtype, gen_inputs)
+    bm = BroadcastBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(f"{op_name}_bcast", locals(), result, tag="tileops")
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(f"{op_name}_bcast", locals(), result_bl, tag="baseline")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
