@@ -596,8 +596,9 @@ class RemainderKernel(BinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        quotient_f32 = T.cast(a, "float32") / T.cast(b, "float32")
-        floored = T.Cast(a.dtype, T.floor(quotient_f32))
+        # Division in native dtype to match PyTorch semantics, then promote
+        # to fp32 only for floor (hfloor unavailable for cutlass::half_t).
+        floored = T.Cast(a.dtype, T.floor(T.cast(a / b, "float32")))
         return a - floored * b
 
 
@@ -616,16 +617,16 @@ class PowKernel(BinaryKernel):
 class FloorDivideKernel(BinaryKernel):
     """Element-wise floor division: y = floor(a / b).
 
-    Casts to fp32 before ``T.floor`` because ``hfloor`` is not available
-    for ``cutlass::half_t`` in CUDA.
+    Division in native dtype to match PyTorch semantics, then promote to
+    fp32 only for ``T.floor`` because ``hfloor`` is not available for
+    ``cutlass::half_t`` in CUDA.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        quotient_f32 = T.cast(a, "float32") / T.cast(b, "float32")
-        return T.Cast(a.dtype, T.floor(quotient_f32))
+        return T.Cast(a.dtype, T.floor(T.cast(a / b, "float32")))
 
 
 class LerpKernel(BinaryKernel):
