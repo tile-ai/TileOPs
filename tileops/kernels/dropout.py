@@ -94,11 +94,14 @@ class DropoutKernel(Kernel):
         self.dtype = dtype
         self.p = p
         self.seed = seed
-        self.kernel = self._build_kernel()
+        # Resolve config BEFORE building the kernel so that codegen block_size
+        # (threads * num_per_thread baked into grid dim) matches the runtime
+        # launch parameters passed in forward().
         self.init_config(config, tune)
+        self.kernel = self._build_kernel()
 
     def _build_kernel(self):
-        cfg = self.default_config
+        cfg = self.config
         return _make_dropout_kernel(
             self.N_total, self.dtype_str, self.p, self.seed,
             threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],

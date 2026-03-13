@@ -186,3 +186,70 @@ def test_dropout_preserves_shape(n_total: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.shape == x.shape, f"Shape mismatch: {y.shape} vs {x.shape}"
     assert y.dtype == x.dtype, f"Dtype mismatch: {y.dtype} vs {x.dtype}"
+
+
+# ---------------------------------------------------------------------------
+# Regression: non-default kernel config
+# ---------------------------------------------------------------------------
+
+
+class DropoutCustomConfigFixture(FixtureBase):
+    PARAMS = [
+        ("n_total, dtype, threads, num_per_thread", [
+            pytest.param(8192, torch.float16, 128, 4, marks=pytest.mark.smoke),
+            pytest.param(8192, torch.float32, 128, 1, marks=pytest.mark.full),
+            pytest.param(65536, torch.float16, 64, 16, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@DropoutCustomConfigFixture
+def test_dropout_custom_config_p0_identity(
+    n_total: int, dtype: torch.dtype, threads: int, num_per_thread: int,
+) -> None:
+    """Non-default kernel config with p=0 must act as identity.
+
+    Regression test: codegen block_size must match the runtime launch config.
+    If the kernel is built with default config but launched with a different
+    config, the grid dimensions will be wrong and elements will be missed.
+    """
+    from tileops.kernels.dropout import DropoutKernel
+
+    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    kernel = DropoutKernel(
+        n_total, dtype, p=0.0, seed=0,
+        config={"threads": threads, "num_per_thread": num_per_thread},
+    )
+    y = kernel(x)
+    torch.testing.assert_close(y, x)
+
+
+@DropoutCustomConfigFixture
+def test_dropout_custom_config_correctness(
+    n_total: int, dtype: torch.dtype, threads: int, num_per_thread: int,
+) -> None:
+    """Non-default kernel config with p=0.5 must still produce valid dropout.
+
+    All output elements must be either 0 (dropped) or x * scale (kept).
+    """
+    from tileops.kernels.dropout import DropoutKernel
+
+    p = 0.5
+    scale = 1.0 / (1.0 - p)
+    x = torch.ones(n_total, dtype=dtype, device="cuda")
+    kernel = DropoutKernel(
+        n_total, dtype, p=p, seed=42,
+        config={"threads": threads, "num_per_thread": num_per_thread},
+    )
+    y = kernel(x)
+
+    # Every element must be either 0 or scale
+    is_zero = y == 0
+    is_scaled = torch.isclose(
+        y.float(),
+        torch.full_like(y, scale, dtype=torch.float32),
+        atol=1e-3, rtol=1e-3,
+    )
+    assert (is_zero | is_scaled).all(), (
+        "Found elements that are neither zero nor correctly scaled"
+    )
