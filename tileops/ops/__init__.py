@@ -6,6 +6,7 @@ from .deepseek_nsa import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
+from .dropout import DropoutOp
 from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2CLUTOp, FFTC2COp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
@@ -73,6 +74,7 @@ __all__ = [
     "BatchNormBwdOp",
     "BatchNormFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
+    "DropoutOp",
     "FFTC2CLUTOp",
     "FFTC2COp",
     "Fp8LightingIndexerOp",
