@@ -97,12 +97,7 @@ def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 # ===================================================================
 
 
-_LOG_SOFTMAX_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
-    pytest.param(1024, 3000, torch.float16, True, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
-]
+_LOG_SOFTMAX_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
 
 
 @pytest.mark.parametrize("m, n, dtype, tune", _LOG_SOFTMAX_BENCH_PARAMS)
@@ -127,12 +122,7 @@ def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> No
 # ===================================================================
 
 
-_LOGSUMEXP_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
-    pytest.param(1024, 3000, torch.float16, True, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
-]
+_LOGSUMEXP_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
 
 
 @pytest.mark.parametrize("m, n, dtype, tune", _LOGSUMEXP_BENCH_PARAMS)

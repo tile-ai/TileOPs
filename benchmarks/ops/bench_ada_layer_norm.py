@@ -70,12 +70,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
     BenchmarkReport.record("ada_layer_norm", locals(), result_bl, tag="baseline")
 
 
-_ADA_LAYER_NORM_ZERO_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, id="throughput-bf16"),
-    pytest.param(1024, 3000, torch.float16, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, id="tail-m"),
-]
+_ADA_LAYER_NORM_ZERO_BENCH_PARAMS = _ADA_LAYER_NORM_BENCH_PARAMS
 
 
 @pytest.mark.parametrize("m, n, dtype", _ADA_LAYER_NORM_ZERO_BENCH_PARAMS)

@@ -49,6 +49,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                 )
 
         first_tuned_item: pytest.Item | None = None
+        full_tuned_items: list[pytest.Item] = []
         for item in group:
             callspec = getattr(item, "callspec", None)
             if callspec is None or "tune" not in callspec.params:
@@ -60,12 +61,24 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                 tier_errors.append(f"{item.nodeid}: smoke cases must use tune=False")
             if is_smoke and item.get_closest_marker("xfail") is not None:
                 tier_errors.append(f"{item.nodeid}: smoke cases must not be xfail")
-            if tune is True and first_tuned_item is None:
-                first_tuned_item = item
-        if first_tuned_item is not None and first_tuned_item.get_closest_marker("full") is None:
-            tier_errors.append(
-                f"{first_tuned_item.nodeid}: the first tune=True case must be marked full"
-            )
+            if tune is True:
+                if first_tuned_item is None:
+                    first_tuned_item = item
+                if item.get_closest_marker("full") is not None:
+                    full_tuned_items.append(item)
+        if first_tuned_item is not None:
+            if not full_tuned_items:
+                tier_errors.append(
+                    f"{first_tuned_item.nodeid}: the first tune=True case must be marked full"
+                )
+            elif len(full_tuned_items) > 1:
+                tier_errors.append(
+                    f"{group[0].path}::{group[0].originalname}: at most one tune=True case may be full"
+                )
+            elif full_tuned_items[0] is not first_tuned_item:
+                tier_errors.append(
+                    f"{first_tuned_item.nodeid}: the first tune=True case must be the only full tuned case"
+                )
 
     if tier_errors:
         raise pytest.UsageError(

@@ -96,11 +96,7 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
         BenchmarkReport.record("mha_fwd", locals(), result_bl, tag="FA3")
 
 
-_MHA_BWD_BENCH_PARAMS = [
-    pytest.param(1, 1024, 8, 64, False, torch.float16, True, id="prefill-fp16"),
-    pytest.param(16, 2048, 16, 128, False, torch.float16, True, id="throughput-fp16"),
-    pytest.param(4, 4096, 16, 128, False, torch.bfloat16, True, id="long-seq-bf16"),
-]
+_MHA_BWD_BENCH_PARAMS = _MHA_FWD_BENCH_PARAMS
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_BWD_BENCH_PARAMS)

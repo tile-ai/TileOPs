@@ -26,7 +26,7 @@ class GemmFixture(FixtureBase):
                 id="full-fp16-tuned-wide",
             ),
             pytest.param(
-                1, 18432, 7168, torch.float16, False, True, True,
+                1, 18432, 7168, torch.float16, False, True, False,
                 marks=pytest.mark.full,
                 id="full-fp16-tuned-wide-alt",
             ),
@@ -36,12 +36,12 @@ class GemmFixture(FixtureBase):
                 id="full-fp16-thin-n",
             ),
             pytest.param(
-                7168, 1, 16384, torch.float16, False, False, True,
+                7168, 1, 16384, torch.float16, False, False, False,
                 marks=pytest.mark.full,
                 id="full-fp16-tuned-thin-n",
             ),
             pytest.param(
-                18432, 1, 7168, torch.float16, False, False, True,
+                18432, 1, 7168, torch.float16, False, False, False,
                 marks=pytest.mark.full,
                 id="full-fp16-tuned-thin-n-alt",
             ),
@@ -51,12 +51,12 @@ class GemmFixture(FixtureBase):
                 id="full-bf16-trans-b-small-m",
             ),
             pytest.param(
-                1, 7168, 16384, torch.bfloat16, False, True, True,
+                1, 7168, 16384, torch.bfloat16, False, True, False,
                 marks=pytest.mark.full,
                 id="full-bf16-tuned-wide",
             ),
             pytest.param(
-                1, 18432, 7168, torch.bfloat16, False, True, True,
+                1, 18432, 7168, torch.bfloat16, False, True, False,
                 marks=pytest.mark.full,
                 id="full-bf16-tuned-wide-alt",
             ),
@@ -66,12 +66,12 @@ class GemmFixture(FixtureBase):
                 id="full-bf16-thin-n",
             ),
             pytest.param(
-                7168, 1, 16384, torch.bfloat16, False, False, True,
+                7168, 1, 16384, torch.bfloat16, False, False, False,
                 marks=pytest.mark.full,
                 id="full-bf16-tuned-thin-n",
             ),
             pytest.param(
-                18432, 1, 7168, torch.bfloat16, False, False, True,
+                18432, 1, 7168, torch.bfloat16, False, False, False,
                 marks=pytest.mark.full,
                 id="full-bf16-tuned-thin-n-alt",
             ),

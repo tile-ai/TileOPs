@@ -102,11 +102,7 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
         BenchmarkReport.record("gqa_fwd", locals(), result_bl, tag="FA3")
 
 
-_GQA_BWD_BENCH_PARAMS = [
-    pytest.param(1, 1024, 8, 4, 64, False, torch.float16, True, id="prefill-fp16"),
-    pytest.param(4, 2048, 64, 4, 128, False, torch.float16, True, id="throughput-fp16"),
-    pytest.param(4, 2048, 64, 4, 128, False, torch.bfloat16, True, id="throughput-bf16"),
-]
+_GQA_BWD_BENCH_PARAMS = _GQA_FWD_BENCH_PARAMS
 
 
 @pytest.mark.parametrize(
