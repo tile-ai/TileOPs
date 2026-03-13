@@ -1,7 +1,8 @@
 """Rotary Position Embedding (RoPE) ops — 5 variants x 2 layouts.
 
-Each Op computes variant-specific frequency tables (cos, sin) at construction
-time and delegates the actual rotation to the corresponding kernel.
+Each Op computes variant-specific frequency tables (cos, sin) lazily at
+forward time (on the same device as the input tensor) and delegates the
+actual rotation to the corresponding kernel.
 
 Variants and frequency computation:
 - **RopeNeoxOp**: standard theta = 10000^(-2k/d) frequencies
@@ -13,9 +14,16 @@ Variants and frequency computation:
 Layouts:
 - ``"1d"``: input shape ``(seq_len, head_dim)``
 - ``"2d"``: input shape ``(batch, seq_len, num_heads, head_dim)``
+
+torch.compile support:
+- All 5 concrete ops are registered via @torch.library.custom_op at module
+  load time.  A factory function (_register_rope_custom_op) registers every
+  op; instances are looked up at runtime via _OP_REGISTRY keyed by
+  id(instance).
 """
 
 import math
+import weakref
 from typing import Dict, Optional
 
 import torch
@@ -30,6 +38,38 @@ from tileops.kernels.rope import (
 )
 
 from .op import Op
+
+# ---------------------------------------------------------------------------
+# torch.compile registration factory
+#
+# Creates a @torch.library.custom_op + register_fake pair for each RoPE op.
+# Instances register themselves in _OP_REGISTRY keyed by integer id.
+# The custom_op receives this key and looks up the instance to call the
+# pre-built tilelang kernel.
+# ---------------------------------------------------------------------------
+
+_OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+
+
+def _register_rope_custom_op(op_cls):
+    """Register a RoPE op for torch.compile.
+
+    Args:
+        op_cls: The Op subclass to register (must have ``_op_name``).
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::rope_{op_name}", mutates_args=())
+    def _wrapped(x: torch.Tensor, instance_key: int) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(x)
+
+    @_wrapped.register_fake
+    def _(x: torch.Tensor, instance_key: int) -> torch.Tensor:
+        return torch.empty_like(x)
+
+    op_cls._wrapped = _wrapped
+
 
 __all__ = [
     "RopeNeoxOp",
@@ -271,10 +311,12 @@ class _RopeOpBase(Op):
     """Base class for all RoPE ops.
 
     Subclass must set ``kernel_cls``, ``_op_name``, and implement
-    ``_compute_cos_sin()`` to generate variant-specific frequency tables.
+    ``_compute_cos_sin(device)`` to generate variant-specific frequency tables.
+    Subclass should also set ``_wrapped`` via ``_register_rope_custom_op``
+    to enable torch.compile support.
 
-    At construction time, cos/sin tables are computed from variant parameters
-    and cached. The ``forward()`` method accepts only the input tensor ``x``.
+    Cos/sin tables are computed lazily at forward time on the same device as
+    the input tensor, avoiding device-mismatch issues in multi-GPU settings.
 
     Args:
         seq_len: Sequence length.
@@ -289,6 +331,7 @@ class _RopeOpBase(Op):
 
     kernel_cls: type
     _op_name: str
+    _wrapped = None  # Set by _register_rope_custom_op at class definition
 
     def __init__(
         self,
@@ -308,8 +351,10 @@ class _RopeOpBase(Op):
         self.batch = batch
         self.num_heads = num_heads
 
-        # Compute variant-specific cos/sin tables from stored parameters
-        self._cos, self._sin = self._compute_cos_sin()
+        # Lazy cos/sin cache: computed on first forward call per device
+        self._cos_cache: Optional[torch.Tensor] = None
+        self._sin_cache: Optional[torch.Tensor] = None
+        self._cache_device: Optional[torch.device] = None
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map[self._op_name](
@@ -317,17 +362,31 @@ class _RopeOpBase(Op):
             layout=layout, batch=batch, num_heads=num_heads, tune=tune,
         )
 
-    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+        # Register in global registry for torch.compile dispatch
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    def _get_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return cached cos/sin tables, recomputing if device changed."""
+        if self._cos_cache is None or self._cache_device != device:
+            self._cos_cache, self._sin_cache = self._compute_cos_sin(device=device)
+            self._cache_device = device
+        return self._cos_cache, self._sin_cache
+
+    def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute variant-specific cos/sin frequency tables.
 
         Must be overridden by each concrete subclass to use its stored
         variant parameters.
 
+        Args:
+            device: Torch device to create tensors on.
+
         Returns:
             (cos, sin) each of shape (seq_len, head_dim // 2).
         """
         raise NotImplementedError(
-            "Subclass must implement _compute_cos_sin()"
+            "Subclass must implement _compute_cos_sin(device)"
         )
 
     @property
@@ -346,6 +405,11 @@ class _RopeOpBase(Op):
             x_elems = self.batch * self.seq_len * self.num_heads * self.head_dim
         return (2 * x_elems + cos_sin_elems) * elem
 
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Direct kernel call for use inside custom_op implementation."""
+        cos, sin = self._get_cos_sin(x.device)
+        return self.kernel(x, cos, sin)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply RoPE rotation using internally computed cos/sin tables.
 
@@ -361,7 +425,10 @@ class _RopeOpBase(Op):
             raise ValueError("Input must be a CUDA tensor")
         if x.dtype != self.dtype:
             raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        return self.kernel(x, self._cos, self._sin)
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self._instance_key)
+        return self._eager_forward(x)
 
 
 # ---------------------------------------------------------------------------
@@ -400,9 +467,9 @@ class RopeNeoxOp(_RopeOpBase):
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
 
-    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _base_freqs(self.head_dim, self.seq_len, base=self.base,
-                           dtype=self.dtype)
+                           dtype=self.dtype, device=device)
 
 
 class RopeNonNeoxOp(_RopeOpBase):
@@ -436,9 +503,9 @@ class RopeNonNeoxOp(_RopeOpBase):
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
 
-    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _base_freqs(self.head_dim, self.seq_len, base=self.base,
-                           dtype=self.dtype)
+                           dtype=self.dtype, device=device)
 
 
 class RopeLlama31Op(_RopeOpBase):
@@ -483,14 +550,14 @@ class RopeLlama31Op(_RopeOpBase):
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
 
-    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _llama31_freqs(
             self.head_dim, self.seq_len, base=self.base,
             scale_factor=self.scale_factor,
             low_freq_factor=self.low_freq_factor,
             high_freq_factor=self.high_freq_factor,
             original_max_position=self.original_max_position,
-            dtype=self.dtype,
+            dtype=self.dtype, device=device,
         )
 
 
@@ -539,12 +606,12 @@ class RopeYarnOp(_RopeOpBase):
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
 
-    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _yarn_freqs(
             self.head_dim, self.seq_len, base=self.base,
             scale=self.scale, original_max_position=self.original_max_position,
             beta_fast=self.beta_fast, beta_slow=self.beta_slow,
-            attn_factor=self.attn_factor, dtype=self.dtype,
+            attn_factor=self.attn_factor, dtype=self.dtype, device=device,
         )
 
 
@@ -593,11 +660,22 @@ class RopeLongRopeOp(_RopeOpBase):
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
 
-    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _longrope_freqs(
             self.head_dim, self.seq_len, base=self.base,
             rescale_factors=self.rescale_factors,
             max_position_embeddings=self.max_position_embeddings,
             original_max_position_embeddings=self.original_max_position_embeddings,
-            dtype=self.dtype,
+            dtype=self.dtype, device=device,
         )
+
+
+# ---------------------------------------------------------------------------
+# torch.compile registration for all 5 RoPE ops
+# ---------------------------------------------------------------------------
+
+for _cls in [RopeNeoxOp, RopeNonNeoxOp, RopeLlama31Op, RopeYarnOp, RopeLongRopeOp]:
+    _register_rope_custom_op(_cls)
+
+# Clean up loop variable
+del _cls
