@@ -588,13 +588,23 @@ class RemainderKernel(BinaryKernel):
 
     Matches PyTorch remainder semantics for floating-point inputs.
     Uses floor-based formula since T.FloorMod requires integer types.
+
+    Division and floor are computed in fp32 to avoid two sources of error:
+    (1) ``hfloor`` is not available for ``cutlass::half_t`` in CUDA, and
+    (2) fp16 division rounds the quotient before floor sees it (e.g.
+    2.999... rounds to 3.0 in fp16).  The floored quotient is then cast
+    back to native dtype so the final ``a - floored * b`` matches PyTorch
+    semantics for the multiply-subtract step.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        return a - T.floor(a / b) * b
+        a_f32 = T.cast(a, "float32")
+        b_f32 = T.cast(b, "float32")
+        floored = T.Cast(a.dtype, T.floor(a_f32 / b_f32))
+        return a - floored * b
 
 
 class PowKernel(BinaryKernel):
@@ -610,13 +620,21 @@ class PowKernel(BinaryKernel):
 
 
 class FloorDivideKernel(BinaryKernel):
-    """Element-wise floor division: y = floor(a / b)."""
+    """Element-wise floor division: y = floor(a / b).
+
+    Division and floor are computed in fp32 to avoid two sources of error:
+    (1) ``hfloor`` is not available for ``cutlass::half_t`` in CUDA, and
+    (2) fp16 division rounds the quotient before floor sees it (e.g.
+    2.999... rounds to 3.0 in fp16, giving floor=3 instead of 2).
+    """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        return T.floor(a / b)
+        a_f32 = T.cast(a, "float32")
+        b_f32 = T.cast(b, "float32")
+        return T.Cast(a.dtype, T.floor(a_f32 / b_f32))
 
 
 class LerpKernel(BinaryKernel):

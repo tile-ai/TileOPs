@@ -5,12 +5,19 @@ Three Op template base classes:
 - BinaryOp: wraps BinaryKernel with broadcast coalescing
 - FusedGatedOp: wraps FusedGatedKernel with (M, 2N) layout
 
+torch.compile support:
+- All 55 concrete ops are registered via @torch.library.custom_op at module load time
+- Three factory functions (_register_unary_custom_op, _register_binary_custom_op,
+  _register_fused_gated_custom_op) register every op; instances are looked up at
+  runtime via _OP_REGISTRY keyed by id(instance)
+
 Utility:
 - coalesce_broadcast_dims: reduces N-dim broadcast to minimal effective dims
 """
 
+import weakref
 from math import prod
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 
@@ -74,6 +81,103 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
+
+# ---------------------------------------------------------------------------
+# torch.compile registration factories
+#
+# Each factory creates a @torch.library.custom_op + register_fake pair.
+# Instances register themselves in _OP_REGISTRY keyed by integer id.
+# The custom_op receives this key and looks up the instance to call the
+# pre-built tilelang kernel.  The key is a plain int so dynamo can trace
+# through forward() without hitting unsupported Python side-effects.
+# ---------------------------------------------------------------------------
+
+_OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+
+
+def _register_unary_custom_op(op_cls, output_dtype_override=None):
+    """Register a unary elementwise op for torch.compile.
+
+    Args:
+        op_cls: The Op subclass to register (must have ``_op_name``).
+        output_dtype_override: If set, the output dtype (e.g. torch.bool for predicates).
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_unary_{op_name}", mutates_args=())
+    def _wrapped(x: torch.Tensor, instance_key: int) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(x)
+
+    @_wrapped.register_fake
+    def _(x: torch.Tensor, instance_key: int) -> torch.Tensor:
+        out_dtype = output_dtype_override if output_dtype_override is not None else x.dtype
+        return torch.empty_like(x, dtype=out_dtype)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_binary_custom_op(op_cls, output_bool: bool = False):
+    """Register a binary elementwise op for torch.compile.
+
+    Args:
+        op_cls: The Op subclass to register.
+        output_bool: If True, output dtype is torch.bool (for comparison/logical ops).
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_binary_{op_name}", mutates_args=())
+    def _wrapped(
+        a: torch.Tensor,
+        b: torch.Tensor,
+        out_shape: List[int],
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(a, b)
+
+    @_wrapped.register_fake
+    def _(
+        a: torch.Tensor,
+        b: torch.Tensor,
+        out_shape: List[int],
+        instance_key: int,
+    ) -> torch.Tensor:
+        out_dtype = torch.bool if output_bool else a.dtype
+        return a.new_empty(out_shape, dtype=out_dtype)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_fused_gated_custom_op(op_cls):
+    """Register a fused gated elementwise op for torch.compile.
+
+    Args:
+        op_cls: The Op subclass to register.
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_fused_gated_{op_name}", mutates_args=())
+    def _wrapped(
+        x: torch.Tensor,
+        M: int,
+        N: int,
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(x)
+
+    @_wrapped.register_fake
+    def _(
+        x: torch.Tensor,
+        M: int,
+        N: int,
+        instance_key: int,
+    ) -> torch.Tensor:
+        return x.new_empty((M, N), dtype=x.dtype)
+
+    op_cls._wrapped = _wrapped
+
 
 __all__ = [
     "coalesce_broadcast_dims",
@@ -215,6 +319,8 @@ class UnaryOp(Op):
     """Template base class for unary elementwise ops.
 
     Subclass must set ``kernel_cls`` and ``_op_name``.
+    Subclass should also set ``_wrapped`` via ``_register_unary_custom_op``
+    to enable torch.compile support.
 
     Args:
         N_total: Total number of elements (flattened).
@@ -226,6 +332,7 @@ class UnaryOp(Op):
 
     kernel_cls: type
     _op_name: str
+    _wrapped = None  # Set by _register_unary_custom_op at class definition
 
     def __init__(
         self,
@@ -243,6 +350,9 @@ class UnaryOp(Op):
             N_total, dtype, strategy=strategy, tune=tune,
         )
         self.output_dtype = getattr(self.kernel, "output_dtype", dtype)
+        # Register in global registry for torch.compile dispatch
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -253,6 +363,12 @@ class UnaryOp(Op):
         """Read x + write y."""
         return self.N_total * (self.dtype.itemsize + self.output_dtype.itemsize)
 
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Direct kernel call for use inside custom_op implementation."""
+        orig_shape = x.shape
+        x = x.contiguous().reshape(-1)
+        return self.kernel(x).reshape(orig_shape)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
@@ -262,15 +378,18 @@ class UnaryOp(Op):
             raise ValueError(
                 f"Expected {self.N_total} elements, got {x.numel()}"
             )
-        orig_shape = x.shape
-        x = x.contiguous().reshape(-1)
-        return self.kernel(x).reshape(orig_shape)
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self._instance_key)
+        return self._eager_forward(x)
 
 
 class BinaryOp(Op):
     """Template base class for binary elementwise ops with broadcast.
 
     Subclass must set ``kernel_cls`` and ``_op_name``.
+    Subclass should also set ``_wrapped`` via ``_register_binary_custom_op``
+    to enable torch.compile support.
 
     Args:
         a_shape: Shape of input a.
@@ -283,6 +402,7 @@ class BinaryOp(Op):
 
     kernel_cls: type
     _op_name: str
+    _wrapped = None  # Set by _register_binary_custom_op at class definition
 
     def __init__(
         self,
@@ -308,6 +428,7 @@ class BinaryOp(Op):
             a_shape, b_shape,
         )
         self.out_shape = out_shape
+        self._out_shape_list = list(out_shape)  # cached for custom_op hot path
         self.N_total = prod(out_shape)
         self.a_numel = prod(a_shape)
         self.b_numel = prod(b_shape)
@@ -316,6 +437,9 @@ class BinaryOp(Op):
             self.N_total, dtype, coalesced_shape, a_strides, b_strides,
             self.a_numel, self.b_numel, strategy=strategy, tune=tune,
         )
+        # Register in global registry for torch.compile dispatch
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -326,6 +450,12 @@ class BinaryOp(Op):
         """Read a + read b + write y."""
         elem = self.dtype.itemsize
         return (self.a_numel + self.b_numel + self.N_total) * elem
+
+    def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Direct kernel call for use inside custom_op implementation."""
+        return self.kernel(
+            a.contiguous().view(-1), b.contiguous().view(-1),
+        ).reshape(self.out_shape)
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if not a.is_cuda or not b.is_cuda:
@@ -342,9 +472,10 @@ class BinaryOp(Op):
             raise ValueError(
                 f"Expected b to have {self.b_numel} elements, got {b.numel()}"
             )
-        return self.kernel(
-            a.contiguous().view(-1), b.contiguous().view(-1),
-        ).reshape(self.out_shape)
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(a, b, self._out_shape_list, self._instance_key)
+        return self._eager_forward(a, b)
 
 
 class FusedGatedOp(Op):
@@ -354,6 +485,8 @@ class FusedGatedOp(Op):
     Output: y = activation(gate) * value, shape (M, N).
 
     Subclass must set ``kernel_cls`` and ``_op_name``.
+    Subclass should also set ``_wrapped`` via ``_register_fused_gated_custom_op``
+    to enable torch.compile support.
 
     Args:
         M: Number of rows.
@@ -365,6 +498,7 @@ class FusedGatedOp(Op):
 
     kernel_cls: type
     _op_name: str
+    _wrapped = None  # Set by _register_fused_gated_custom_op at class definition
 
     def __init__(
         self,
@@ -386,6 +520,9 @@ class FusedGatedOp(Op):
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map[self._op_name](M, N, dtype, tune=tune)
+        # Register in global registry for torch.compile dispatch
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -397,6 +534,11 @@ class FusedGatedOp(Op):
         elem = self.dtype.itemsize
         return (self.M * 2 * self.N + self.M * self.N) * elem
 
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Direct kernel call for use inside custom_op implementation."""
+        x = x.contiguous()
+        return self.kernel(x)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
@@ -406,8 +548,10 @@ class FusedGatedOp(Op):
             raise ValueError(
                 f"Expected shape ({self.M}, {2 * self.N}), got {tuple(x.shape)}"
             )
-        x = x.contiguous()
-        return self.kernel(x)
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self.M, self.N, self._instance_key)
+        return self._eager_forward(x)
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +662,7 @@ class LerpOp(BinaryOp):
             a_shape, b_shape,
         )
         self.out_shape = out_shape
+        self._out_shape_list = list(out_shape)  # cached for custom_op hot path
         self.N_total = prod(out_shape)
         self.a_numel = prod(a_shape)
         self.b_numel = prod(b_shape)
@@ -527,6 +672,9 @@ class LerpOp(BinaryOp):
             self.a_numel, self.b_numel, strategy=strategy, tune=tune,
             weight=weight,
         )
+        # Register in global registry for torch.compile dispatch
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
 
 
 class MaximumOp(BinaryOp):
@@ -552,10 +700,17 @@ class MinimumOp(BinaryOp):
 
 
 class _BoolOutputBinaryOp(BinaryOp):
-    """Mixin that casts kernel int8 output to torch.bool."""
+    """Mixin that casts kernel int8 output to torch.bool.
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        result = super().forward(a, b)
+    _eager_forward casts the int8 kernel output to bool.  In the torch.compile
+    path, register_fake already declares torch.bool as the output dtype, and
+    the actual execution goes through _eager_forward which handles the cast.
+    No forward override is needed because BinaryOp.forward delegates to
+    _eager_forward (eager) or _wrapped (compile, where register_fake is correct).
+    """
+
+    def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        result = super()._eager_forward(a, b)
         return result.to(torch.bool)
 
 
@@ -905,3 +1060,49 @@ class IsfiniteOp(UnaryOp):
 
     _op_name = "isfinite"
     kernel_cls = IsfiniteKernel
+
+
+# ---------------------------------------------------------------------------
+# torch.compile registration for all 55 concrete ops
+# ---------------------------------------------------------------------------
+
+# --- Unary ops: float-preserving output (1 + 17 + 8 + 1 = 27 ops) ---
+for _cls in [
+    ReluOp,
+    # math (17)
+    ExpOp, LogOp, SqrtOp, RsqrtOp, AbsOp, NegOp, ReciprocalOp, SignOp,
+    SinOp, CosOp, FloorOp, CeilOp, RoundOp, TruncOp, ErfOp, Log1pOp, Expm1Op,
+    # activations (8)
+    GeluOp, SiluOp, SigmoidOp, TanhOp, HardswishOp, HardsigmoidOp, MishOp, SeluOp,
+    # bitwise (1) -- output same dtype as input
+    BitwiseNotOp,
+]:
+    _register_unary_custom_op(_cls)
+
+# --- Unary ops: bool output (4 ops) ---
+for _cls in [LogicalNotOp, IsnanOp, IsinfOp, IsfiniteOp]:
+    _register_unary_custom_op(_cls, output_dtype_override=torch.bool)
+
+# --- Binary ops: same-dtype output (10 + 3 = 13 ops) ---
+for _cls in [
+    # arithmetic (10)
+    AddOp, SubOp, MulOp, DivOp, RemainderOp, PowOp, FloorDivideOp,
+    LerpOp, MaximumOp, MinimumOp,
+    # bitwise (3)
+    BitwiseAndOp, BitwiseOrOp, BitwiseXorOp,
+]:
+    _register_binary_custom_op(_cls)
+
+# --- Binary ops: bool output (comparison 6 + logical 2 = 8 ops) ---
+for _cls in [
+    EqOp, NeOp, GtOp, LtOp, GeOp, LeOp,
+    LogicalAndOp, LogicalOrOp,
+]:
+    _register_binary_custom_op(_cls, output_bool=True)
+
+# --- Fused gated ops (3 ops) ---
+for _cls in [SiluAndMulOp, GeluAndMulOp, GeluTanhAndMulOp]:
+    _register_fused_gated_custom_op(_cls)
+
+# Clean up loop variable
+del _cls

@@ -196,13 +196,15 @@ _ARITH_BROADCAST_OPS = [
     ("div", DivOp, lambda a, b: (a.float() / b.float()).to(a.dtype),
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
-    ("remainder", RemainderOp, lambda a, b: a - torch.floor(a / b) * b,
+    ("remainder", RemainderOp,
+     lambda a, b: a - torch.floor(a.float() / b.float()).to(a.dtype) * b,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
     ("pow", PowOp, lambda a, b: torch.pow(a.float(), b.float()).to(a.dtype),
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.5,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") * 2.0),
-    ("floor_divide", FloorDivideOp, lambda a, b: torch.floor(a / b),
+    ("floor_divide", FloorDivideOp,
+     lambda a, b: torch.floor(a.float() / b.float()).to(a.dtype),
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
     ("lerp", LerpOp, lambda a, b: torch.lerp(a.float(), b.float(), 0.5).to(a.dtype),
@@ -392,7 +394,7 @@ class RemainderFixture(FixtureBase):
 
 
 class RemainderTest(TestBase):
-    """Remainder is computed in native dtype; reference must match."""
+    """Remainder reference matches the kernel: fp32 division+floor, native multiply-subtract."""
 
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
@@ -404,8 +406,9 @@ class RemainderTest(TestBase):
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # Compute reference in same dtype as the kernel
-        return a - torch.floor(a / b) * b
+        # fp32 division+floor, cast back, native multiply-subtract
+        floored = torch.floor(a.float() / b.float()).to(a.dtype)
+        return a - floored * b
 
 
 @RemainderFixture
@@ -473,7 +476,7 @@ class FloorDivideFixture(FixtureBase):
 
 
 class FloorDivideTest(TestBase):
-    """Floor divide is computed in native dtype; allow +-1 rounding differences."""
+    """Floor divide reference matches the kernel: fp32 division+floor, cast back."""
 
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
@@ -485,8 +488,8 @@ class FloorDivideTest(TestBase):
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # Compute reference in the same dtype as the kernel to match floor behaviour
-        return torch.floor(a / b)
+        # fp32 division+floor, cast back to native dtype
+        return torch.floor(a.float() / b.float()).to(a.dtype)
 
 
 @FloorDivideFixture
