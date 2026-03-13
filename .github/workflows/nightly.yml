@@ -14,7 +14,7 @@ concurrency:
 jobs:
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
@@ -138,7 +138,7 @@ jobs:
   op_test:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [benchmark]
-    timeout-minutes: 120
+    timeout-minutes: 180
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
