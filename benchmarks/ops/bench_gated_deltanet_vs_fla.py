@@ -14,24 +14,13 @@ from typing import Optional
 import pytest
 import torch
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-from tilelang.profiler import do_bench as _do_bench
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gated_deltanet_fwd import GatedDeltaNetFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 
-
-def _to_fla_layout(q, k, v, g, beta):
-    """Convert TileOPs BHSD tensors to FLA BTHK layout."""
-    return (
-        q.permute(0, 2, 1, 3).contiguous(),      # [B,H,S,DK] -> [B,S,H,DK]
-        k.permute(0, 2, 1, 3).contiguous(),
-        v.permute(0, 2, 1, 3).contiguous(),
-        g.permute(0, 2, 1).contiguous(),           # [B,H,S]    -> [B,S,H]
-        beta.permute(0, 2, 1).contiguous(),
-    )
-
+from .bench_gated_deltanet_fla_validation import _profile_manual, _to_fla_layout
 
 # =============================================================================
 # Forward benchmark
@@ -184,16 +173,7 @@ def test_gated_deltanet_vs_fla_bwd(
         o.backward(do_fla, retain_graph=True)
         return q_fla.grad, k_fla.grad, v_fla.grad
 
-    latency = _do_bench(fla_bwd, warmup=100, rep=100, backend='cupti')
-    if latency <= 0:
-        latency = _do_bench(fla_bwd, warmup=100, rep=100, backend='event')
-    result_fla = {"latency_ms": latency}
-    flops = bm.calculate_flops()
-    if flops is not None:
-        result_fla["tflops"] = flops / latency * 1e-9
-    memory = bm.calculate_memory()
-    if memory is not None:
-        result_fla["bandwidth_tbs"] = memory / latency * 1e-9
+    result_fla = _profile_manual(fla_bwd, bm)
     BenchmarkReport.record("gated_deltanet_bwd", locals(), result_fla, tag="fla")
 
 
@@ -264,16 +244,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
         o.backward(do, retain_graph=True)
         return q.grad, k.grad, v.grad
 
-    latency = _do_bench(tileops_fwdbwd, warmup=50, rep=100, backend='cupti')
-    if latency <= 0:
-        latency = _do_bench(tileops_fwdbwd, warmup=50, rep=100, backend='event')
-    result = {"latency_ms": latency}
-    flops = bm.calculate_flops()
-    if flops is not None:
-        result["tflops"] = flops / latency * 1e-9
-    memory = bm.calculate_memory()
-    if memory is not None:
-        result["bandwidth_tbs"] = memory / latency * 1e-9
+    result = _profile_manual(tileops_fwdbwd, bm, warmup=50)
     BenchmarkReport.record("gated_deltanet_fwdbwd", locals(), result, tag="tileops")
 
     # --- FLA: fwd+bwd via autograd ---
@@ -291,14 +262,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
         o.backward(do_fla, retain_graph=True)
         return q_fla.grad, k_fla.grad, v_fla.grad
 
-    latency_fla = _do_bench(fla_fwdbwd, warmup=50, rep=100, backend='cupti')
-    if latency_fla <= 0:
-        latency_fla = _do_bench(fla_fwdbwd, warmup=50, rep=100, backend='event')
-    result_fla = {"latency_ms": latency_fla}
-    if flops is not None:
-        result_fla["tflops"] = flops / latency_fla * 1e-9
-    if memory is not None:
-        result_fla["bandwidth_tbs"] = memory / latency_fla * 1e-9
+    result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
     BenchmarkReport.record("gated_deltanet_fwdbwd", locals(), result_fla, tag="fla")
 
 
