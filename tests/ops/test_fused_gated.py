@@ -146,5 +146,21 @@ def test_gelu_tanh_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
+@pytest.mark.smoke
+def test_fused_gated_rejects_integer_dtype() -> None:
+    """Fused gated ops are float-only and must reject integer dtypes early."""
+    with pytest.raises(ValueError, match="does not support dtype"):
+        GeluAndMulOp(M=16, N=16, dtype=torch.int32)
+
+
+@pytest.mark.smoke
+def test_fused_gated_rejects_runtime_dtype_mismatch() -> None:
+    """Runtime inputs should match the construction-time dtype contract."""
+    op = SiluAndMulOp(M=16, N=8, dtype=torch.float16)
+    x = torch.randn(16, 16, device="cuda", dtype=torch.float32)
+    with pytest.raises(ValueError, match="Expected x.dtype"):
+        op(x)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

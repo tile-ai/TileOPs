@@ -330,6 +330,10 @@ class BinaryOp(Op):
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if not a.is_cuda or not b.is_cuda:
             raise ValueError("Inputs must be CUDA tensors")
+        if a.dtype != self.dtype:
+            raise ValueError(f"Expected a.dtype {self.dtype}, got {a.dtype}")
+        if b.dtype != self.dtype:
+            raise ValueError(f"Expected b.dtype {self.dtype}, got {b.dtype}")
         if a.numel() != self.a_numel:
             raise ValueError(
                 f"Expected a to have {self.a_numel} elements, got {a.numel()}"
@@ -370,6 +374,13 @@ class FusedGatedOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        supported = self.kernel_cls.SUPPORTED_DTYPES
+        if supported is not None and dtype not in supported:
+            names = ", ".join(str(dt) for dt in supported)
+            raise ValueError(
+                f"{self._op_name} does not support dtype {dtype}. "
+                f"Supported: [{names}]"
+            )
         self.M = M
         self.N = N
         self.dtype = dtype
@@ -389,6 +400,8 @@ class FusedGatedOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         if x.shape != (self.M, 2 * self.N):
             raise ValueError(
                 f"Expected shape ({self.M}, {2 * self.N}), got {tuple(x.shape)}"
@@ -489,6 +502,13 @@ class LerpOp(BinaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        supported = self.kernel_cls.SUPPORTED_DTYPES
+        if supported is not None and dtype not in supported:
+            names = ", ".join(str(dt) for dt in supported)
+            raise ValueError(
+                f"{self._op_name} does not support dtype {dtype}. "
+                f"Supported: [{names}]"
+            )
         self.dtype = dtype
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
@@ -587,14 +607,14 @@ class LeOp(_BoolOutputBinaryOp):
 
 
 class LogicalAndOp(_BoolOutputBinaryOp):
-    """Element-wise logical AND with broadcast: y = a && b."""
+    """Element-wise logical AND with broadcast using non-zero truthiness."""
 
     _op_name = "logical_and"
     kernel_cls = LogicalAndKernel
 
 
 class LogicalOrOp(_BoolOutputBinaryOp):
-    """Element-wise logical OR with broadcast: y = a || b."""
+    """Element-wise logical OR with broadcast using non-zero truthiness."""
 
     _op_name = "logical_or"
     kernel_cls = LogicalOrKernel

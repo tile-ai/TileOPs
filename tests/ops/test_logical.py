@@ -1,8 +1,8 @@
 """Tests for logical elementwise ops (logical_and, logical_or, logical_not).
 
-Logical ops take boolean inputs and produce boolean outputs.
-Covers L1 smoke correctness for binary logical ops, and all supported
-dtypes for logical_not.
+Logical ops under test accept numeric tensors, interpret non-zero values
+as True, and produce boolean outputs. Covers L1 smoke correctness for
+binary logical ops, and all supported dtypes for logical_not.
 """
 
 import pytest
@@ -33,10 +33,8 @@ class LogicalTest(TestBase):
         self.ref_fn = ref_fn
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # Comparison ops produce bool inputs for logical ops
         a = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
         b = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
-        # Cast to the input dtype (bool stored as float for kernel compatibility)
         a = a.to(self.dtype)
         b = b.to(self.dtype)
         return a, b

@@ -313,6 +313,7 @@ class SubFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -336,6 +337,7 @@ class MulFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -359,6 +361,7 @@ class DivFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -382,6 +385,7 @@ class RemainderFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -422,6 +426,7 @@ class PowFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -461,6 +466,7 @@ class FloorDivideFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -502,6 +508,7 @@ class LerpFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -550,6 +557,7 @@ class MaximumFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -573,6 +581,7 @@ class MinimumFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -719,6 +728,43 @@ def test_binary_arith_edge_cases(op_cls, ref_fn, gen_fn) -> None:
     with torch.no_grad():
         out = op(a, b)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Dtype contract tests
+# ---------------------------------------------------------------------------
+
+
+class FloatOnlyBinaryRejectFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, dtype", [
+            pytest.param(DivOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(RemainderOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(PowOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(FloorDivideOp, torch.int64, marks=pytest.mark.full),
+            pytest.param(LerpOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(MaximumOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(MinimumOp, torch.int64, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@FloatOnlyBinaryRejectFixture
+def test_float_only_binary_ops_reject_integer_dtype(op_cls, dtype: torch.dtype) -> None:
+    """Float-only binary ops must reject integer dtypes at construction time."""
+    shape = (16,)
+    with pytest.raises(ValueError, match="does not support dtype"):
+        op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
+
+
+@pytest.mark.smoke
+def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
+    """Runtime inputs should fail fast instead of reaching backend lowering."""
+    op = SubOp(a_shape=(16,), b_shape=(16,), dtype=torch.float16)
+    a = torch.randn(16, device="cuda", dtype=torch.float32)
+    b = torch.randn(16, device="cuda", dtype=torch.float16)
+    with pytest.raises(ValueError, match="Expected a.dtype"):
+        op(a, b)
 
 
 if __name__ == "__main__":
