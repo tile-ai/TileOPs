@@ -381,25 +381,37 @@ def test_fused_gated_bench(
 
 
 class FusedGatedStrategyBenchFixture(FixtureBase):
+    """3 ops x 2 strategies x {fp16, fp32} x {1M (~1024x1024), 16M (~4096x4096)} = 24 rows."""
+
     PARAMS = [
         ("op_name, M, N, dtype, op_cls, strategy", [
-            # silu_and_mul
+            # silu_and_mul: fp16 1M, fp16 16M, fp32 1M, fp32 16M x 2 strategies = 8 rows
             pytest.param("silu_and_mul", 1024, 1024, torch.float16, SiluAndMulOp, "direct", marks=pytest.mark.smoke),
             pytest.param("silu_and_mul", 1024, 1024, torch.float16, SiluAndMulOp, "explicit_parallel", marks=pytest.mark.smoke),
             pytest.param("silu_and_mul", 1024, 1024, torch.float32, SiluAndMulOp, "direct", marks=pytest.mark.full),
             pytest.param("silu_and_mul", 1024, 1024, torch.float32, SiluAndMulOp, "explicit_parallel", marks=pytest.mark.full),
             pytest.param("silu_and_mul", 4096, 4096, torch.float16, SiluAndMulOp, "direct", marks=pytest.mark.full),
             pytest.param("silu_and_mul", 4096, 4096, torch.float16, SiluAndMulOp, "explicit_parallel", marks=pytest.mark.full),
-            # gelu_and_mul
+            pytest.param("silu_and_mul", 4096, 4096, torch.float32, SiluAndMulOp, "direct", marks=pytest.mark.full),
+            pytest.param("silu_and_mul", 4096, 4096, torch.float32, SiluAndMulOp, "explicit_parallel", marks=pytest.mark.full),
+            # gelu_and_mul: fp16 1M, fp16 16M, fp32 1M, fp32 16M x 2 strategies = 8 rows
             pytest.param("gelu_and_mul", 1024, 1024, torch.float16, GeluAndMulOp, "direct", marks=pytest.mark.smoke),
             pytest.param("gelu_and_mul", 1024, 1024, torch.float16, GeluAndMulOp, "explicit_parallel", marks=pytest.mark.smoke),
+            pytest.param("gelu_and_mul", 1024, 1024, torch.float32, GeluAndMulOp, "direct", marks=pytest.mark.full),
+            pytest.param("gelu_and_mul", 1024, 1024, torch.float32, GeluAndMulOp, "explicit_parallel", marks=pytest.mark.full),
             pytest.param("gelu_and_mul", 4096, 4096, torch.float16, GeluAndMulOp, "direct", marks=pytest.mark.full),
             pytest.param("gelu_and_mul", 4096, 4096, torch.float16, GeluAndMulOp, "explicit_parallel", marks=pytest.mark.full),
-            # gelu_tanh_and_mul
+            pytest.param("gelu_and_mul", 4096, 4096, torch.float32, GeluAndMulOp, "direct", marks=pytest.mark.full),
+            pytest.param("gelu_and_mul", 4096, 4096, torch.float32, GeluAndMulOp, "explicit_parallel", marks=pytest.mark.full),
+            # gelu_tanh_and_mul: fp16 1M, fp16 16M, fp32 1M, fp32 16M x 2 strategies = 8 rows
             pytest.param("gelu_tanh_and_mul", 1024, 1024, torch.float16, GeluTanhAndMulOp, "direct", marks=pytest.mark.smoke),
             pytest.param("gelu_tanh_and_mul", 1024, 1024, torch.float16, GeluTanhAndMulOp, "explicit_parallel", marks=pytest.mark.smoke),
+            pytest.param("gelu_tanh_and_mul", 1024, 1024, torch.float32, GeluTanhAndMulOp, "direct", marks=pytest.mark.full),
+            pytest.param("gelu_tanh_and_mul", 1024, 1024, torch.float32, GeluTanhAndMulOp, "explicit_parallel", marks=pytest.mark.full),
             pytest.param("gelu_tanh_and_mul", 4096, 4096, torch.float16, GeluTanhAndMulOp, "direct", marks=pytest.mark.full),
             pytest.param("gelu_tanh_and_mul", 4096, 4096, torch.float16, GeluTanhAndMulOp, "explicit_parallel", marks=pytest.mark.full),
+            pytest.param("gelu_tanh_and_mul", 4096, 4096, torch.float32, GeluTanhAndMulOp, "direct", marks=pytest.mark.full),
+            pytest.param("gelu_tanh_and_mul", 4096, 4096, torch.float32, GeluTanhAndMulOp, "explicit_parallel", marks=pytest.mark.full),
         ]),
     ]
 
