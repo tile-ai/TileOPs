@@ -107,6 +107,48 @@ def test_bitwise_xor_op(n_total: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Broadcast pattern tests for binary bitwise ops (L3)
+# ---------------------------------------------------------------------------
+
+_BROADCAST_PATTERNS = [
+    ((2, 64, 128), (1, 1, 128)),   # bias-add
+    ((2, 64, 128), (2, 64, 1)),    # row broadcast
+    ((64, 128), (1, 1)),           # scalar broadcast
+]
+
+_BITWISE_OPS = [
+    ("bitwise_and", BitwiseAndOp, torch.bitwise_and),
+    ("bitwise_or", BitwiseOrOp, torch.bitwise_or),
+    ("bitwise_xor", BitwiseXorOp, torch.bitwise_xor),
+]
+
+
+class BitwiseBroadcastFixture(FixtureBase):
+    PARAMS = [
+        ("op_name, op_cls, ref_fn, a_shape, b_shape", [
+            pytest.param(name, cls, ref, a_s, b_s,
+                         marks=pytest.mark.smoke if i == 0 and j == 0
+                         else pytest.mark.full)
+            for j, (name, cls, ref) in enumerate(_BITWISE_OPS)
+            for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
+        ]),
+    ]
+
+
+@BitwiseBroadcastFixture
+def test_bitwise_broadcast(
+    op_name, op_cls, ref_fn, a_shape, b_shape,
+) -> None:
+    a = torch.randint(-1000, 1000, a_shape, dtype=torch.int32, device="cuda")
+    b = torch.randint(-1000, 1000, b_shape, dtype=torch.int32, device="cuda")
+    op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=torch.int32)
+    ref = ref_fn(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _exact_compare(out, ref)
+
+
+# ---------------------------------------------------------------------------
 # BitwiseNot op
 # ---------------------------------------------------------------------------
 

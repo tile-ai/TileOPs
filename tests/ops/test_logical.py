@@ -90,6 +90,48 @@ def test_logical_or_op(n_total: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Broadcast pattern tests for binary logical ops (L3)
+# ---------------------------------------------------------------------------
+
+_BROADCAST_PATTERNS = [
+    ((2, 64, 128), (1, 1, 128)),   # bias-add
+    ((2, 64, 128), (2, 64, 1)),    # row broadcast
+    ((64, 128), (1, 1)),           # scalar broadcast
+]
+
+_LOGICAL_OPS = [
+    ("logical_and", LogicalAndOp, torch.logical_and),
+    ("logical_or", LogicalOrOp, torch.logical_or),
+]
+
+
+class LogicalBroadcastFixture(FixtureBase):
+    PARAMS = [
+        ("op_name, op_cls, ref_fn, a_shape, b_shape", [
+            pytest.param(name, cls, ref, a_s, b_s,
+                         marks=pytest.mark.smoke if i == 0 and j == 0
+                         else pytest.mark.full)
+            for j, (name, cls, ref) in enumerate(_LOGICAL_OPS)
+            for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
+        ]),
+    ]
+
+
+@LogicalBroadcastFixture
+def test_logical_broadcast(
+    op_name, op_cls, ref_fn, a_shape, b_shape,
+) -> None:
+    dtype = torch.float16
+    a = (torch.randn(*a_shape, dtype=dtype, device="cuda") > 0).to(dtype)
+    b = (torch.randn(*b_shape, dtype=dtype, device="cuda") > 0).to(dtype)
+    op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
+    ref = ref_fn(a.bool(), b.bool())
+    with torch.no_grad():
+        out = op(a, b)
+    _bool_compare(out, ref)
+
+
+# ---------------------------------------------------------------------------
 # LogicalNot op
 # ---------------------------------------------------------------------------
 
