@@ -265,7 +265,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          VENV_PREFIX="tileops_release_venv"
+          VENV_PREFIX="tileops_ci_venv"
           HASH_INPUT="$(
             {
               echo "python=3.11"

@@ -99,7 +99,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          VENV_PREFIX="tileops_benchmark_venv"
+          VENV_PREFIX="tileops_ci_venv"
           HASH_INPUT="$(
             {
               echo "python=3.11"
@@ -120,6 +120,17 @@ jobs:
           else
             echo "No matching venv found. Will create: ${VENV_PATH}"
             echo "VENV_REUSED=false" >> "$GITHUB_ENV"
+
+            for old_venv in "${{ runner.tool_cache }}/${VENV_PREFIX}"_*; do
+              if [ ! -d "${old_venv}" ]; then
+                continue
+              fi
+              if [ "${old_venv}" = "${VENV_PATH}" ]; then
+                continue
+              fi
+              echo "Removing stale venv: ${old_venv}"
+              rm -rf "${old_venv}"
+            done
           fi
         shell: bash
 
@@ -270,7 +281,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          VENV_PREFIX="tileops_wheel_ci_venv"
+          VENV_PREFIX="tileops_packaging_venv"
           HASH_INPUT="$(
             {
               echo "python=3.11"
@@ -291,6 +302,17 @@ jobs:
           else
             echo "No matching venv found. Will create: ${VENV_PATH}"
             echo "VENV_REUSED=false" >> "$GITHUB_ENV"
+
+            for old_venv in "${{ runner.tool_cache }}/${VENV_PREFIX}"_*; do
+              if [ ! -d "${old_venv}" ]; then
+                continue
+              fi
+              if [ "${old_venv}" = "${VENV_PATH}" ]; then
+                continue
+              fi
+              echo "Removing stale venv: ${old_venv}"
+              rm -rf "${old_venv}"
+            done
           fi
         shell: bash
 
@@ -306,7 +328,8 @@ jobs:
           python -m venv "${VENV_PATH}"
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip setuptools wheel --no-user
+          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
         shell: bash
 
       - name: Install required dependencies
@@ -317,7 +340,7 @@ jobs:
             echo "Cached packaging venv already prepared at ${VENV_PATH}"
             exit 0
           fi
-          pip install build pytest
+          echo "Packaging dependencies already installed via .[dev]"
         shell: bash
 
       - name: Build wheel package
