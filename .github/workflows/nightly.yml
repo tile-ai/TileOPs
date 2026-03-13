@@ -97,7 +97,7 @@ jobs:
           export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           set -o pipefail
-          python -m pytest -q benchmarks/ops | tee tileops_benchmarks.log
+          python -m pytest -q benchmarks/ops --junit-xml=bench_results.xml | tee tileops_benchmarks.log
         shell: bash
 
       - name: Merge benchmark profile summary
@@ -132,6 +132,7 @@ jobs:
           name: tileops_benchmark_${{ github.run_id }}
           path: |
             tileops_benchmarks.log
+            bench_results.xml
           if-no-files-found: warn
           retention-days: 14
 
