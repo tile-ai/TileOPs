@@ -43,6 +43,8 @@ from .kernel import Kernel
 from .linear_attn import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
+    GLABwdKernel,
+    GLAFwdKernel,
     PrepareWYReprKernel,
     compute_w_u_bwd_tl,
     compute_w_u_tl,
@@ -78,6 +80,8 @@ __all__ = [
     "GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel",
     "GatedDeltaNetBwdKernel",
     "GatedDeltaNetFwdKernel",
+    "GLABwdKernel",
+    "GLAFwdKernel",
     "GemmKernel",
     "GemvKernel",
     "GqaBwdKernel",

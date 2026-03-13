@@ -38,7 +38,6 @@ def _prepare_wy_repr_kernel(batch: int, head: int, seq_len: int, chunk_size: int
                 k_shared = T.alloc_shared([block_C, dim_k], dtype)
                 g_shared = T.alloc_shared([block_C], dtype)
                 beta_shared = T.alloc_shared([block_C], dtype)
-                k_beta_shared = T.alloc_shared([block_C, dim_k], dtype)
                 S_shared = T.alloc_shared([block_C, block_C], dtype)
                 P_shared = T.alloc_shared([block_C, block_C], dtype)
                 gram_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
@@ -49,48 +48,17 @@ def _prepare_wy_repr_kernel(batch: int, head: int, seq_len: int, chunk_size: int
                 T.copy(beta[bid, hid, by * block_C: (by + 1) * block_C], beta_shared, disable_tma=True)
                 T.copy(k[bid, hid, by * block_C: (by + 1) * block_C, :], k_shared, disable_tma=True)
 
-                # k_beta = k * beta
-                for i_s, i_k in T.Parallel(block_C, dim_k):
-                    k_beta_shared[i_s, i_k] = k_shared[i_s, i_k] * beta_shared[i_s]
-
-                # Gram = k_beta @ k_beta^T (single gemm)
+                # KK^T (without beta — paper: diag(β)·KK^T, not (k*β)(k*β)^T)
                 T.clear(gram_frag)
-                T.gemm(k_beta_shared, k_beta_shared, gram_frag, transpose_B=True)
+                T.gemm(k_shared, k_shared, gram_frag, transpose_B=True)
 
-                # --- Compute Aw = (I - tril(Gram,-1))^{-1} ---
-                # Neumann series: L^{-1} = I + N + N^2 + ... + N^{C-1}
-                # where N = tril(Gram, -1) (strictly lower triangular)
-                # Computed via repeated squaring in log2(C) rounds.
-
-                # P = N = tril(Gram, -1)
-                for i, j in T.Parallel(block_C, block_C):
-                    P_shared[i, j] = T.if_then_else(
-                        i > j, gram_frag[i, j], T.float32(0.0))
-                # S = I
-                for i, j in T.Parallel(block_C, block_C):
-                    S_shared[i, j] = T.if_then_else(
-                        i == j, T.float32(1.0), T.float32(0.0))
-
-                for _r in T.Serial(num_rounds):
-                    # S = S + P @ S
-                    T.clear(temp_frag)
-                    T.gemm(P_shared, S_shared, temp_frag)
-                    for i, j in T.Parallel(block_C, block_C):
-                        S_shared[i, j] = S_shared[i, j] + temp_frag[i, j]
-                    # P = P @ P
-                    T.clear(temp_frag)
-                    T.gemm(P_shared, P_shared, temp_frag)
-                    T.copy(temp_frag, P_shared)
-
-                T.copy(S_shared, temp_frag)
-                T.copy(temp_frag, Aw[bid, hid, by * block_C: (by + 1) * block_C, :], disable_tma=True)
-
-                # --- Compute Au = (I - tril(Gram_g,-1))^{-1} ---
-                # N_g = tril(Gram * exp(g_i - g_j), -1)
+                # --- Compute A_g = (I + strictLower(diag(β)·(Γ⊙KK^T)))^{-1} ---
+                # Single gated matrix for both Aw and Au (paper uses one A_g).
+                # P = -strictLower(diag(β)·(Γ⊙KK^T)) for Neumann: (I-P)^{-1}
                 for i, j in T.Parallel(block_C, block_C):
                     P_shared[i, j] = T.if_then_else(
                         i > j,
-                        gram_frag[i, j] * T.exp2((g_shared[i] - g_shared[j]) * _LOG2E),
+                        -gram_frag[i, j] * beta_shared[i] * T.exp2((g_shared[i] - g_shared[j]) * _LOG2E),
                         T.float32(0.0))
                 # S = I
                 for i, j in T.Parallel(block_C, block_C):
@@ -106,7 +74,9 @@ def _prepare_wy_repr_kernel(batch: int, head: int, seq_len: int, chunk_size: int
                     T.gemm(P_shared, P_shared, temp_frag)
                     T.copy(temp_frag, P_shared)
 
+                # S = A_g^{-1}; write same matrix to both Aw and Au
                 T.copy(S_shared, temp_frag)
+                T.copy(temp_frag, Aw[bid, hid, by * block_C: (by + 1) * block_C, :], disable_tma=True)
                 T.copy(temp_frag, Au[bid, hid, by * block_C: (by + 1) * block_C, :], disable_tma=True)
 
         @T.prim_func
