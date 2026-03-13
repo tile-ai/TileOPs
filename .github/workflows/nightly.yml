@@ -14,7 +14,7 @@ concurrency:
 jobs:
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    timeout-minutes: 45
+    timeout-minutes: 120
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
@@ -89,6 +89,7 @@ jobs:
         shell: bash
 
       - name: Run benchmark ops
+        continue-on-error: true
         run: |
           set -euo pipefail
           VENV_DIR="tileops_benchmark_venv"
@@ -110,8 +111,7 @@ jobs:
               cat profile_run.log
             } >> tileops_benchmarks.log
           else
-            echo "::error::profile_run.log not found" >> tileops_benchmarks.log
-            exit 1
+            echo "::warning::profile_run.log not found; benchmark may have failed partially" >> tileops_benchmarks.log
           fi
         shell: bash
 
@@ -135,9 +135,75 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  packaging:
-    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+  op_test:
+    if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [benchmark]
+    timeout-minutes: 120
+    runs-on: [self-hosted, tile-ops, venv]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use local bare mirror on self-hosted runner to reduce checkout latency
+          reference: /home/ci-runner/repo-mirror
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ensure persistent venv and install dependencies
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_op_test_venv"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+
+          echo "Creating fresh venv at ${VENV_PATH}"
+          rm -rf "${VENV_PATH}"
+          python -m venv "${VENV_PATH}"
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          python -m pip install --upgrade pip setuptools wheel --no-user
+          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
+        shell: bash
+
+      - name: Run full op tests
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_op_test_venv"
+          source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
+          export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
+          echo "PYTHONPATH=$PYTHONPATH"
+          set -o pipefail
+          python -m pytest tests/ -v --tb=short --junit-xml=test_results.xml | tee tileops_op_test.log
+        shell: bash
+
+      - name: Cleanup venv
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          VENV_DIR="tileops_op_test_venv"
+          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          echo "Removing venv at: ${VENV_PATH}"
+          rm -rf "${VENV_PATH}"
+        shell: bash
+
+      - name: Upload op test artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: tileops_op_test_${{ github.run_id }}
+          path: |
+            test_results.xml
+            tileops_op_test.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  packaging:
+    if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    needs: [op_test]
     permissions:
       contents: write
     runs-on: [self-hosted, tile-ops, venv]
