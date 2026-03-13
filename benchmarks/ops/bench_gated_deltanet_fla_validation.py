@@ -165,13 +165,13 @@ def test_gated_deltanet_fla_validation_fwd(
     # Performance: TileOPs
     def tileops_fn():
         return fwd_op.forward(q, k, v, g, beta)
-    result = bm.profile(tileops_fn)
+    result = _profile_manual(tileops_fn, bm)
     BenchmarkReport.record("gated_deltanet_fla_validation_fwd", locals(), result, tag="tileops")
 
     # Performance: FLA
     def fla_fn():
         return chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
-    result_fla = bm.profile(fla_fn)
+    result_fla = _profile_manual(fla_fn, bm)
     BenchmarkReport.record("gated_deltanet_fla_validation_fwd", locals(), result_fla, tag="fla")
 
 
@@ -243,22 +243,23 @@ def test_gated_deltanet_fla_validation_bwd(
     # Performance: TileOPs bwd only
     def tileops_bwd():
         return bwd_op.forward(do, q.data, k.data, v.data, g.data, beta.data, S_fwd)
-    result = bm.profile(tileops_bwd)
+    result = _profile_manual(tileops_bwd, bm)
     BenchmarkReport.record("gated_deltanet_fla_validation_bwd", locals(), result, tag="tileops")
 
-    # Performance: FLA fwd+bwd
+    # Performance: FLA bwd only (run fwd once, then time only backward)
     q_f2 = q_fla.data.detach().requires_grad_(True)
     k_f2 = k_fla.data.detach().requires_grad_(True)
     v_f2 = v_fla.data.detach().requires_grad_(True)
     g_f2 = g_fla.data.detach().requires_grad_(True)
     beta_f2 = beta_fla.data.detach().requires_grad_(True)
 
-    def fla_fwdbwd():
-        q_f2.grad = k_f2.grad = v_f2.grad = g_f2.grad = beta_f2.grad = None
-        o, _ = chunk_gated_delta_rule(q_f2, k_f2, v_f2, g_f2, beta_f2, scale=scale)
-        o.backward(do_fla, retain_graph=True)
+    o_f2, _ = chunk_gated_delta_rule(q_f2, k_f2, v_f2, g_f2, beta_f2, scale=scale)
 
-    result_fla = _profile_manual(fla_fwdbwd, bm)
+    def fla_bwd_only():
+        q_f2.grad = k_f2.grad = v_f2.grad = g_f2.grad = beta_f2.grad = None
+        o_f2.backward(do_fla, retain_graph=True)
+
+    result_fla = _profile_manual(fla_bwd_only, bm)
     BenchmarkReport.record("gated_deltanet_fla_validation_bwd", locals(), result_fla, tag="fla")
 
 

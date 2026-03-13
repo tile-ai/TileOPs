@@ -156,7 +156,7 @@ def test_gated_deltanet_vs_fla_bwd(
     result = bm.profile(bwd_op.forward, do, q, k, v, g, beta, S_fwd)
     BenchmarkReport.record("gated_deltanet_bwd", locals(), result, tag="tileops")
 
-    # --- FLA: fwd+bwd via autograd (BTHK layout) ---
+    # --- FLA: bwd only via autograd (BTHK layout) ---
     scale = DK ** -0.5
     q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
     do_fla = do.permute(0, 2, 1, 3).contiguous()  # [B,H,S,DV] -> [B,S,H,DV]
@@ -167,10 +167,12 @@ def test_gated_deltanet_vs_fla_bwd(
     g_fla = g_fla.detach().requires_grad_(True)
     beta_fla = beta_fla.detach().requires_grad_(True)
 
+    # Run fwd once to build computation graph, then time only backward
+    o_fla, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
+
     def fla_bwd():
         q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
-        o, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
-        o.backward(do_fla, retain_graph=True)
+        o_fla.backward(do_fla, retain_graph=True)
         return q_fla.grad, k_fla.grad, v_fla.grad
 
     result_fla = _profile_manual(fla_bwd, bm)
