@@ -43,8 +43,6 @@ from .kernel import Kernel
 from .linear_attn import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
-    GLABwdKernel,
-    GLAFwdKernel,
 )
 from .mhc import mhc_post_kernel, mhc_pre_kernel
 from .norm import (
@@ -77,8 +75,6 @@ __all__ = [
     "GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel",
     "GatedDeltaNetBwdKernel",
     "GatedDeltaNetFwdKernel",
-    "GLABwdKernel",
-    "GLAFwdKernel",
     "GemmKernel",
     "GemvKernel",
     "GqaBwdKernel",

@@ -99,6 +99,11 @@ class GatedDeltaNetFlaValidationFixture(FixtureBase):
             (2, 4096, 4, 64, 64, 64, torch.float16),
             (2, 8192, 4, 64, 64, 64, torch.float16),
             (2, 16384, 4, 64, 64, 64, torch.float16),
+            (2, 256, 4, 64, 64, 64, torch.bfloat16),
+            (2, 1024, 4, 64, 64, 64, torch.bfloat16),
+            (2, 4096, 4, 64, 64, 64, torch.bfloat16),
+            (2, 8192, 4, 64, 64, 64, torch.bfloat16),
+            (2, 16384, 4, 64, 64, 64, torch.bfloat16),
         ]),
     ]
 
@@ -217,7 +222,8 @@ def test_gated_deltanet_fla_validation_bwd(
     print(f"\n[BWD] B={batch} H={heads} S={seq_len}")
     for name, cos in grad_cosines.items():
         print(f"  cosine {name} = {cos:.6f}")
-        assert cos >= 0.999, f"BWD cosine similarity for {name} too low: {cos:.6f}"
+        min_cos = 0.998 if dtype == torch.bfloat16 else 0.999
+        assert cos >= min_cos, f"BWD cosine similarity for {name} too low: {cos:.6f}"
 
     # Performance: TileOPs bwd only
     def tileops_bwd():
