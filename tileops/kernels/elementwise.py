@@ -301,7 +301,7 @@ def _make_fused_gated_direct(M, N, dtype, activation_func, threads=256):
     return kernel
 
 
-def _make_fused_gated_kernel(M, N, dtype, activation_func, threads=256, num_per_thread=8):
+def _make_fused_gated_explicit(M, N, dtype, activation_func, threads=256, num_per_thread=8):
     """FusedGated explicit_parallel: N elements per thread. x[:, :N] is gate, x[:, N:] is value."""
     block_N = threads * num_per_thread
 
@@ -553,7 +553,7 @@ class FusedGatedKernel(Kernel):
                 threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
-            return _make_fused_gated_kernel(
+            return _make_fused_gated_explicit(
                 self.M, self.N, self.dtype_str, self.activation_func,
                 cfg["threads"], cfg["num_per_thread"],
             )
