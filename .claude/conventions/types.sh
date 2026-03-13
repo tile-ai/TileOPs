@@ -12,7 +12,7 @@
 # Commit / PR types
 # ---------------------------------------------------------------------------
 
-COMMIT_PR_TYPES="Feat|BugFix|Fix|Refactor|Enhancement|Doc|Chore|Bench|CI|Test|Perf|Style"
+COMMIT_PR_TYPES="Feat|BugFix|Fix|Refactor|Enhancement|Doc|Chore|Maintain|Bench|CI|Test|Perf|Style"
 
 # Full commit message / PR title regex
 #   [Type] description   or   [Type][Scope] description
@@ -22,7 +22,7 @@ COMMIT_MSG_PATTERN="^\[(${COMMIT_PR_TYPES})\](\[[a-zA-Z0-9_-]+\])? .+"
 # Branch naming
 # ---------------------------------------------------------------------------
 
-BRANCH_PREFIXES="feat|fix|refactor|doc|chore|perf|test|bench"
+BRANCH_PREFIXES="feat|fix|refactor|doc|chore|maintain|perf|test|bench"
 BRANCH_NAME_PATTERN="^(${BRANCH_PREFIXES})/[a-z0-9._-]+/[a-z0-9._-]+$"
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,7 @@ declare -A TYPE_TO_LABEL=(
   [Enhancement]=enhancement
   [Doc]=docs
   [Chore]=chore
+  [Maintain]=maintain
   [Bench]=bench
   [CI]=ci
   [Test]=test
@@ -45,7 +46,7 @@ declare -A TYPE_TO_LABEL=(
 )
 
 # All type-related labels (used for stale-label cleanup)
-ALL_TYPE_LABELS="feature fix bug refactor enhancement docs chore bench ci test perf style"
+ALL_TYPE_LABELS="feature fix bug refactor enhancement docs chore maintain bench ci test perf style"
 
 # Extra labels (not derived from types)
 EXTRA_LABELS="all-ai-powered|human-led|breaking change|help wanted|good first issue"
@@ -54,7 +55,7 @@ EXTRA_LABELS="all-ai-powered|human-led|breaking change|help wanted|good first is
 # Issue types (ALL CAPS, used in issue titles)
 # ---------------------------------------------------------------------------
 
-ISSUE_TYPES="FEAT|BUG|PERF|REFACTOR|DOCS|TEST|META|BENCHMARK"
+ISSUE_TYPES="FEAT|BUG|PERF|REFACTOR|DOCS|TEST|META|MAINTAIN|BENCHMARK"
 
 # Issue type → GitHub label (for auto-label workflow)
 declare -A ISSUE_TYPE_TO_LABEL=(
@@ -65,6 +66,7 @@ declare -A ISSUE_TYPE_TO_LABEL=(
   [DOCS]=docs
   [TEST]=test
   [META]=chore
+  [MAINTAIN]=maintain
   [BENCHMARK]=bench
 )
 
@@ -77,6 +79,7 @@ declare -A ISSUE_TO_COMMIT_TYPE=(
   [DOCS]=Doc
   [TEST]=Test
   [META]=Chore
+  [MAINTAIN]=Maintain
   [BENCHMARK]=Bench
 )
 
@@ -89,6 +92,7 @@ declare -A ISSUE_TO_BRANCH_PREFIX=(
   [DOCS]=doc
   [TEST]=test
   [META]=chore
+  [MAINTAIN]=maintain
   [BENCHMARK]=bench
 )
 
