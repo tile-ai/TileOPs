@@ -24,13 +24,16 @@ import torch
 from tileops.kernels.elementwise import (
     AbsKernel,
     AddKernel,
+    AlibiKernel,
     BitwiseAndKernel,
     BitwiseNotKernel,
     BitwiseOrKernel,
     BitwiseXorKernel,
     CeilKernel,
+    ClampKernel,
     CosKernel,
     DivKernel,
+    EluKernel,
     EqKernel,
     ErfKernel,
     ExpKernel,
@@ -44,9 +47,11 @@ from tileops.kernels.elementwise import (
     GtKernel,
     HardsigmoidKernel,
     HardswishKernel,
+    HardtanhKernel,
     IsfiniteKernel,
     IsinfKernel,
     IsnanKernel,
+    LeakyReluKernel,
     LeKernel,
     LerpKernel,
     Log1pKernel,
@@ -55,13 +60,16 @@ from tileops.kernels.elementwise import (
     LogicalOrKernel,
     LogKernel,
     LtKernel,
+    MaskedFillKernel,
     MaximumKernel,
     MinimumKernel,
     MishKernel,
     MulKernel,
+    NanToNumKernel,
     NegKernel,
     NeKernel,
     PowKernel,
+    PreluKernel,
     ReciprocalKernel,
     ReluKernel,
     RemainderKernel,
@@ -73,10 +81,13 @@ from tileops.kernels.elementwise import (
     SiluAndMulKernel,
     SiluKernel,
     SinKernel,
+    SinusoidalKernel,
+    SoftplusKernel,
     SqrtKernel,
     SubKernel,
     TanhKernel,
     TruncKernel,
+    WhereKernel,
 )
 from tileops.kernels.kernel import Kernel
 
@@ -250,6 +261,18 @@ __all__ = [
     "IsfiniteOp",
     "IsinfOp",
     "IsnanOp",
+    # --- independent (custom-signature, 11) ---
+    "LeakyReluOp",
+    "EluOp",
+    "HardtanhOp",
+    "SoftplusOp",
+    "PreluOp",
+    "WhereOp",
+    "ClampOp",
+    "MaskedFillOp",
+    "NanToNumOp",
+    "AlibiOp",
+    "SinusoidalOp",
 ]
 
 
@@ -1060,6 +1083,322 @@ class IsfiniteOp(UnaryOp):
 
     _op_name = "isfinite"
     kernel_cls = IsfiniteKernel
+
+
+# ---------------------------------------------------------------------------
+# Independent (custom-signature) op classes (11)
+# ---------------------------------------------------------------------------
+
+
+class LeakyReluOp(Op):
+    """Leaky ReLU: y = x if x > 0 else negative_slope * x.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        negative_slope: Slope for negative inputs (default 0.01).
+    """
+
+    def __init__(self, N_total: int, dtype: torch.dtype, negative_slope: float = 0.01):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.negative_slope = negative_slope
+        self.kernel = LeakyReluKernel(N_total, dtype, negative_slope=negative_slope)
+
+    @property
+    def default_kernel_map(self):
+        return {"leaky_relu": LeakyReluKernel}
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+
+class EluOp(Op):
+    """ELU: y = x if x > 0 else alpha * (exp(x) - 1).
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        alpha: Scale for the negative part (default 1.0).
+    """
+
+    def __init__(self, N_total: int, dtype: torch.dtype, alpha: float = 1.0):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.alpha = alpha
+        self.kernel = EluKernel(N_total, dtype, alpha=alpha)
+
+    @property
+    def default_kernel_map(self):
+        return {"elu": EluKernel}
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+
+class HardtanhOp(Op):
+    """Hardtanh: y = clamp(x, min_val, max_val).
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        min_val: Lower bound (default -1.0).
+        max_val: Upper bound (default 1.0).
+    """
+
+    def __init__(self, N_total: int, dtype: torch.dtype,
+                 min_val: float = -1.0, max_val: float = 1.0):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.min_val = min_val
+        self.max_val = max_val
+        self.kernel = HardtanhKernel(N_total, dtype, min_val=min_val, max_val=max_val)
+
+    @property
+    def default_kernel_map(self):
+        return {"hardtanh": HardtanhKernel}
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+
+class SoftplusOp(Op):
+    """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        beta: Scaling factor (default 1.0).
+        threshold: Linear regime threshold (default 20.0).
+    """
+
+    def __init__(self, N_total: int, dtype: torch.dtype,
+                 beta: float = 1.0, threshold: float = 20.0):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.beta = beta
+        self.threshold = threshold
+        self.kernel = SoftplusKernel(N_total, dtype, beta=beta, threshold=threshold)
+
+    @property
+    def default_kernel_map(self):
+        return {"softplus": SoftplusKernel}
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+
+class PreluOp(Op):
+    """PReLU: y = x if x > 0 else weight[channel] * x.
+
+    Args:
+        shape: Shape of the input tensor (must have a channel dimension).
+        dtype: Torch dtype.
+        num_channels: Number of channels (weight length).
+    """
+
+    def __init__(self, shape: tuple, dtype: torch.dtype, num_channels: int):
+        self.shape = shape
+        self.dtype = dtype
+        self.num_channels = num_channels
+        N_total = prod(shape)
+        self.N_total = N_total
+        self.kernel = PreluKernel(N_total, num_channels, dtype)
+
+    @property
+    def default_kernel_map(self):
+        return {"prelu": PreluKernel}
+
+    def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1), weight.contiguous().reshape(-1)).reshape(orig_shape)
+
+
+class WhereOp(Op):
+    """Where: out = cond ? x : y.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype for x and y.
+    """
+
+    def __init__(self, N_total: int, dtype: torch.dtype):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.kernel = WhereKernel(N_total, dtype)
+
+    @property
+    def default_kernel_map(self):
+        return {"where": WhereKernel}
+
+    def forward(self, cond: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        orig_shape = x.shape
+        cond_flat = cond.contiguous().reshape(-1).to(torch.int8)
+        return self.kernel(
+            cond_flat,
+            x.contiguous().reshape(-1),
+            y.contiguous().reshape(-1),
+        ).reshape(orig_shape)
+
+
+class ClampOp(Op):
+    """Clamp: y = clamp(x, min, max) with optional bounds.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        min_val: Lower bound (None = no lower bound).
+        max_val: Upper bound (None = no upper bound).
+    """
+
+    def __init__(self, N_total: int, dtype: torch.dtype,
+                 min_val: float = None, max_val: float = None):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.min_val = min_val
+        self.max_val = max_val
+        self.kernel = ClampKernel(N_total, dtype, min_val=min_val, max_val=max_val)
+
+    @property
+    def default_kernel_map(self):
+        return {"clamp": ClampKernel}
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+
+class MaskedFillOp(Op):
+    """MaskedFill: out = mask ? fill_value : x.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        fill_value: Scalar value to fill where mask is True.
+    """
+
+    def __init__(self, N_total: int, dtype: torch.dtype, fill_value: float):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.fill_value = fill_value
+        self.kernel = MaskedFillKernel(N_total, dtype, fill_value)
+
+    @property
+    def default_kernel_map(self):
+        return {"masked_fill": MaskedFillKernel}
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        orig_shape = x.shape
+        mask_flat = mask.contiguous().reshape(-1).to(torch.int8)
+        return self.kernel(
+            x.contiguous().reshape(-1),
+            mask_flat,
+        ).reshape(orig_shape)
+
+
+class NanToNumOp(Op):
+    """NanToNum: replace NaN, +Inf, -Inf with specified values.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        nan_val: Replacement for NaN (default 0.0).
+        posinf_val: Replacement for +Inf (default 1e4).
+        neginf_val: Replacement for -Inf (default -1e4).
+    """
+
+    def __init__(self, N_total: int, dtype: torch.dtype,
+                 nan_val: float = 0.0, posinf_val: float = 1e4, neginf_val: float = -1e4):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.nan_val = nan_val
+        self.posinf_val = posinf_val
+        self.neginf_val = neginf_val
+        self.kernel = NanToNumKernel(
+            N_total, dtype, nan_val=nan_val, posinf_val=posinf_val, neginf_val=neginf_val,
+        )
+
+    @property
+    def default_kernel_map(self):
+        return {"nan_to_num": NanToNumKernel}
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+
+class AlibiOp(Op):
+    """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|.
+
+    Generates the full (num_heads, seq_len, seq_len) bias tensor.
+
+    Args:
+        seq_len: Sequence length.
+        num_heads: Number of attention heads.
+        dtype: Torch dtype.
+    """
+
+    def __init__(self, seq_len: int, num_heads: int, dtype: torch.dtype):
+        self.seq_len = seq_len
+        self.num_heads = num_heads
+        self.dtype = dtype
+        self.kernel = AlibiKernel(seq_len, num_heads, dtype)
+
+    @property
+    def default_kernel_map(self):
+        return {"alibi": AlibiKernel}
+
+    def forward(self) -> torch.Tensor:
+        out = self.kernel()
+        return out.reshape(self.num_heads, self.seq_len, self.seq_len)
+
+
+class SinusoidalOp(Op):
+    """Sinusoidal positional encoding from "Attention Is All You Need".
+
+    Generates the full (seq_len, d_model) encoding tensor.
+
+    Args:
+        seq_len: Sequence length.
+        d_model: Model dimension.
+        dtype: Torch dtype.
+    """
+
+    def __init__(self, seq_len: int, d_model: int, dtype: torch.dtype):
+        self.seq_len = seq_len
+        self.d_model = d_model
+        self.dtype = dtype
+        self.kernel = SinusoidalKernel(seq_len, d_model, dtype)
+
+    @property
+    def default_kernel_map(self):
+        return {"sinusoidal": SinusoidalKernel}
+
+    def forward(self) -> torch.Tensor:
+        out = self.kernel()
+        return out.reshape(self.seq_len, self.d_model)
 
 
 # ---------------------------------------------------------------------------

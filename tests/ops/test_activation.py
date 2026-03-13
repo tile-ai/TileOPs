@@ -225,5 +225,87 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _extreme, torch.tanh, TanhOp)
 
 
+# ===========================================================================
+# 5 independent activation ops (issue #439)
+# ===========================================================================
+
+
+@ActivationFixture
+def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import LeakyReluOp
+    _make_activation_test(
+        n_total, dtype, _randn,
+        lambda x: F.leaky_relu(x.float(), 0.01).to(x.dtype),
+        LeakyReluOp,
+    )
+
+
+@ActivationFixture
+def test_elu(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import EluOp
+    _make_activation_test(
+        n_total, dtype, _randn,
+        lambda x: F.elu(x.float(), 1.0).to(x.dtype),
+        EluOp,
+    )
+
+
+@ActivationFixture
+def test_hardtanh(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import HardtanhOp
+    _make_activation_test(
+        n_total, dtype, _randn,
+        lambda x: F.hardtanh(x.float(), -1.0, 1.0).to(x.dtype),
+        HardtanhOp,
+    )
+
+
+@ActivationFixture
+def test_softplus(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import SoftplusOp
+    _make_activation_test(
+        n_total, dtype, _randn,
+        lambda x: F.softplus(x.float(), 1.0, 20.0).to(x.dtype),
+        SoftplusOp,
+    )
+
+
+class PreluFixture(FixtureBase):
+    PARAMS = [
+        ("n_total, dtype", [
+            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@PreluFixture
+def test_prelu(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import PreluOp
+
+    C = 64
+    H = n_total // C
+    # Shape (1, C, H) so F.prelu sees channel dim at index 1
+    shape = (1, C, H)
+    x = torch.randn(shape, device="cuda", dtype=dtype)
+    weight = torch.randn(C, device="cuda", dtype=dtype).abs() * 0.1 + 0.01
+    ref = F.prelu(x.float(), weight.float()).to(dtype)
+
+    # Our kernel treats input as (C, H) flattened, channel = flat_idx // H
+    # Reshape to (C, H) for op
+    op_shape = (C, H)
+    op = PreluOp(shape=op_shape, dtype=dtype, num_channels=C)
+    out = op(x.reshape(op_shape), weight)
+    if dtype == torch.float16:
+        tol = {"atol": 1e-3, "rtol": 1e-3}
+    elif dtype == torch.bfloat16:
+        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
+    else:
+        tol = {"atol": 1e-5, "rtol": 1e-5}
+    torch.testing.assert_close(out, ref.reshape(op_shape), **tol)
+    print("All checks passed for PreluOp.")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

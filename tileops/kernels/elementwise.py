@@ -93,6 +93,18 @@ __all__ = [
     "SiluAndMulKernel",
     "GeluAndMulKernel",
     "GeluTanhAndMulKernel",
+    # --- independent (custom-signature) ---
+    "LeakyReluKernel",
+    "EluKernel",
+    "HardtanhKernel",
+    "SoftplusKernel",
+    "PreluKernel",
+    "WhereKernel",
+    "ClampKernel",
+    "MaskedFillKernel",
+    "NanToNumKernel",
+    "AlibiKernel",
+    "SinusoidalKernel",
 ]
 
 _BITWISE_DTYPES = (
@@ -1257,3 +1269,670 @@ class IsfiniteKernel(FloatPredicateKernel):
     @staticmethod
     def op_func(x):
         return T.isfinite(T.cast(x, "float32"))
+
+
+# ---------------------------------------------------------------------------
+# Independent (custom-signature) kernel classes (11)
+# ---------------------------------------------------------------------------
+
+
+def _make_leaky_relu_kernel(N, dtype, negative_slope, threads=256, npt=8):
+    """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x."""
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[1])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    idx = (bx * threads_arg + i) * npt_arg + j
+                    val = x[idx]
+                    zero = T.cast(0, val.dtype)
+                    slope = T.cast(negative_slope, val.dtype)
+                    y[idx] = T.if_then_else(val > zero, val, slope * val)
+
+        return main
+
+    return kernel
+
+
+class LeakyReluKernel(Kernel):
+    """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, N_total, dtype, negative_slope=0.01, config=None, tune=False):
+        super().__init__()
+        self.N_total = N_total
+        self.dtype = dtype
+        self.negative_slope = negative_slope
+        cfg = self.default_config
+        self.kernel = _make_leaky_relu_kernel(
+            N_total, self.dtype_str, negative_slope, cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, x):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+
+
+def _make_elu_kernel(N, dtype, alpha, threads=256, npt=8):
+    """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1)."""
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[1])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    idx = (bx * threads_arg + i) * npt_arg + j
+                    val = x[idx]
+                    zero = T.cast(0, "float32")
+                    a = T.cast(alpha, "float32")
+                    one = T.cast(1.0, "float32")
+                    v32 = T.cast(val, "float32")
+                    y[idx] = T.if_then_else(v32 > zero, val, T.Cast(val.dtype, a * (T.exp(v32) - one)))
+
+        return main
+
+    return kernel
+
+
+class EluKernel(Kernel):
+    """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, N_total, dtype, alpha=1.0, config=None, tune=False):
+        super().__init__()
+        self.N_total = N_total
+        self.dtype = dtype
+        self.alpha = alpha
+        cfg = self.default_config
+        self.kernel = _make_elu_kernel(
+            N_total, self.dtype_str, alpha, cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, x):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+
+
+def _make_hardtanh_kernel(N, dtype, min_val, max_val, threads=256, npt=8):
+    """Build hardtanh kernel: y = clamp(x, min_val, max_val)."""
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[1])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    idx = (bx * threads_arg + i) * npt_arg + j
+                    val = x[idx]
+                    lo = T.cast(min_val, "float32")
+                    hi = T.cast(max_val, "float32")
+                    v32 = T.cast(val, "float32")
+                    y[idx] = T.Cast(val.dtype, T.min(T.max(v32, lo), hi))
+
+        return main
+
+    return kernel
+
+
+class HardtanhKernel(Kernel):
+    """Hardtanh: y = clamp(x, min_val, max_val)."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None, tune=False):
+        super().__init__()
+        self.N_total = N_total
+        self.dtype = dtype
+        self.min_val = min_val
+        self.max_val = max_val
+        cfg = self.default_config
+        self.kernel = _make_hardtanh_kernel(
+            N_total, self.dtype_str, min_val, max_val, cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, x):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+
+
+def _make_softplus_kernel(N, dtype, beta, threshold, threads=256, npt=8):
+    """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[1])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    idx = (bx * threads_arg + i) * npt_arg + j
+                    val = x[idx]
+                    v32 = T.cast(val, "float32")
+                    b = T.cast(beta, "float32")
+                    t = T.cast(threshold, "float32")
+                    one = T.cast(1.0, "float32")
+                    scaled = v32 * b
+                    sp = T.log(one + T.exp(scaled)) / b
+                    y[idx] = T.if_then_else(scaled > t, val, T.Cast(val.dtype, sp))
+
+        return main
+
+    return kernel
+
+
+class SoftplusKernel(Kernel):
+    """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None, tune=False):
+        super().__init__()
+        self.N_total = N_total
+        self.dtype = dtype
+        self.beta = beta
+        self.threshold = threshold
+        cfg = self.default_config
+        self.kernel = _make_softplus_kernel(
+            N_total, self.dtype_str, beta, threshold, cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, x):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+
+
+def _make_prelu_kernel(N, C, dtype, threads=256, npt=8):
+    """Build PReLU kernel: y = x if x > 0 else weight[channel] * x.
+
+    Weight is per-channel. Channel index is computed as: (flat_idx // (N // C)) % C
+    assuming N is total elements and C is the channel count.
+    """
+    block_size = threads * npt
+    elements_per_channel = N // C
+
+    @tilelang.jit(out_idx=[2])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((N,), dtype),
+            weight: T.Tensor((C,), dtype),
+            y: T.Tensor((N,), dtype),
+        ):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    idx = (bx * threads_arg + i) * npt_arg + j
+                    val = x[idx]
+                    ch = (idx // elements_per_channel) % C
+                    w = weight[ch]
+                    zero = T.cast(0, val.dtype)
+                    y[idx] = T.if_then_else(val > zero, val, w * val)
+
+        return main
+
+    return kernel
+
+
+class PreluKernel(Kernel):
+    """PReLU: y = x if x > 0 else weight[channel] * x.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        C: Number of channels (weight length).
+        dtype: Torch dtype.
+        config: Optional config dict.
+        tune: Whether to autotune.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, N_total, C, dtype, config=None, tune=False):
+        super().__init__()
+        self.N_total = N_total
+        self.C = C
+        self.dtype = dtype
+        cfg = self.default_config
+        self.kernel = _make_prelu_kernel(
+            N_total, C, self.dtype_str, cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, x, weight):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x, weight)
+
+
+def _make_where_kernel(N, dtype, threads=256, npt=8):
+    """Build where kernel: out = cond ? x : y."""
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[3])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            cond: T.Tensor((N,), "int8"),
+            x: T.Tensor((N,), dtype),
+            y_in: T.Tensor((N,), dtype),
+            out: T.Tensor((N,), dtype),
+        ):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    idx = (bx * threads_arg + i) * npt_arg + j
+                    c = cond[idx]
+                    zero = T.IntImm("int8", 0)
+                    out[idx] = T.if_then_else(c != zero, x[idx], y_in[idx])
+
+        return main
+
+    return kernel
+
+
+class WhereKernel(Kernel):
+    """Where: out = cond ? x : y.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype for x and y.
+        config: Optional config dict.
+        tune: Whether to autotune.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, N_total, dtype, config=None, tune=False):
+        super().__init__()
+        self.N_total = N_total
+        self.dtype = dtype
+        cfg = self.default_config
+        self.kernel = _make_where_kernel(
+            N_total, self.dtype_str, cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, cond, x, y):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])(cond, x, y)
+
+
+def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val, threads=256, npt=8):
+    """Build clamp kernel: y = clamp(x, min_val, max_val) with optional bounds."""
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[1])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    idx = (bx * threads_arg + i) * npt_arg + j
+                    v32 = T.cast(x[idx], "float32")
+                    if has_min:
+                        lo = T.cast(min_val, "float32")
+                        v32 = T.max(v32, lo)
+                    if has_max:
+                        hi = T.cast(max_val, "float32")
+                        v32 = T.min(v32, hi)
+                    y[idx] = T.Cast(dtype, v32)
+
+        return main
+
+    return kernel
+
+
+class ClampKernel(Kernel):
+    """Clamp: y = clamp(x, min, max) with optional bounds.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        min_val: Lower bound (None = no lower bound).
+        max_val: Upper bound (None = no upper bound).
+        config: Optional config dict.
+        tune: Whether to autotune.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None, tune=False):
+        super().__init__()
+        self.N_total = N_total
+        self.dtype = dtype
+        self.min_val = min_val
+        self.max_val = max_val
+        cfg = self.default_config
+        self.kernel = _make_clamp_kernel(
+            N_total, self.dtype_str,
+            has_min=min_val is not None,
+            has_max=max_val is not None,
+            min_val=min_val if min_val is not None else 0.0,
+            max_val=max_val if max_val is not None else 0.0,
+            threads=cfg["threads"], npt=cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, x):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+
+
+def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
+    """Build masked_fill kernel: out = mask ? fill_value : x."""
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[2])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((N,), dtype),
+            mask: T.Tensor((N,), "int8"),
+            out: T.Tensor((N,), dtype),
+        ):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    idx = (bx * threads_arg + i) * npt_arg + j
+                    m = mask[idx]
+                    zero = T.IntImm("int8", 0)
+                    fv = T.cast(fill_value, dtype)
+                    out[idx] = T.if_then_else(m != zero, fv, x[idx])
+
+        return main
+
+    return kernel
+
+
+class MaskedFillKernel(Kernel):
+    """MaskedFill: out = mask ? fill_value : x.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        fill_value: Scalar value to fill where mask is True.
+        config: Optional config dict.
+        tune: Whether to autotune.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
+        super().__init__()
+        self.N_total = N_total
+        self.dtype = dtype
+        self.fill_value = fill_value
+        cfg = self.default_config
+        self.kernel = _make_masked_fill_kernel(
+            N_total, self.dtype_str, fill_value, cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, x, mask):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x, mask)
+
+
+def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val, threads=256, npt=8):
+    """Build nan_to_num kernel: replace NaN, +Inf, -Inf with given values."""
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[1])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    idx = (bx * threads_arg + i) * npt_arg + j
+                    val = x[idx]
+                    v32 = T.cast(val, "float32")
+                    nan_r = T.cast(nan_val, val.dtype)
+                    pos_r = T.cast(posinf_val, val.dtype)
+                    neg_r = T.cast(neginf_val, val.dtype)
+                    # Check: NaN first, then +inf, then -inf
+                    result = T.if_then_else(
+                        T.isnan(v32),
+                        nan_r,
+                        T.if_then_else(
+                            T.isinf(v32),
+                            T.if_then_else(v32 > T.cast(0, "float32"), pos_r, neg_r),
+                            val,
+                        ),
+                    )
+                    y[idx] = result
+
+        return main
+
+    return kernel
+
+
+class NanToNumKernel(Kernel):
+    """NanToNum: replace NaN, +Inf, -Inf with specified values.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        nan_val: Replacement for NaN (default 0.0).
+        posinf_val: Replacement for +Inf (default 1e4).
+        neginf_val: Replacement for -Inf (default -1e4).
+        config: Optional config dict.
+        tune: Whether to autotune.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4,
+                 config=None, tune=False):
+        super().__init__()
+        self.N_total = N_total
+        self.dtype = dtype
+        self.nan_val = nan_val
+        self.posinf_val = posinf_val
+        self.neginf_val = neginf_val
+        cfg = self.default_config
+        self.kernel = _make_nan_to_num_kernel(
+            N_total, self.dtype_str, nan_val, posinf_val, neginf_val,
+            cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, x):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+
+
+def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
+    """Build ALiBi kernel: bias[h, i, j] = -slope_h * |i - j|.
+
+    Slopes: slope_h = 2^(-8*h/H) for head h in [0, H).
+    Output shape: (num_heads, seq_len, seq_len).
+    Total elements: num_heads * seq_len * seq_len.
+    """
+    N_total = num_heads * seq_len * seq_len
+    block_size = threads * npt
+    S2 = seq_len * seq_len
+
+    @tilelang.jit(out_idx=[0])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(out: T.Tensor((N_total,), dtype)):
+            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    flat = (bx * threads_arg + i) * npt_arg + j
+                    h = flat // S2
+                    rem = flat % S2
+                    row = rem // seq_len
+                    col = rem % seq_len
+                    # slope = 2^(-8 * (h+1) / num_heads)
+                    exp_val = T.cast(-8.0, "float32") * T.cast(h + 1, "float32") / T.cast(num_heads, "float32")
+                    slope = T.exp2(exp_val)
+                    dist = T.cast(row - col, "float32")
+                    # Use abs via if_then_else since T.abs may not handle int
+                    abs_dist = T.if_then_else(dist > T.cast(0, "float32"), dist, -dist)
+                    out[flat] = T.Cast(dtype, -slope * abs_dist)
+
+        return main
+
+    return kernel
+
+
+class AlibiKernel(Kernel):
+    """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|.
+
+    Generates the full (num_heads, seq_len, seq_len) bias tensor.
+    Slopes follow the ALiBi paper: slope_h = 2^(-8*(h+1)/H).
+
+    Args:
+        seq_len: Sequence length.
+        num_heads: Number of attention heads.
+        dtype: Torch dtype.
+        config: Optional config dict.
+        tune: Whether to autotune.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, seq_len, num_heads, dtype, config=None, tune=False):
+        super().__init__()
+        self.seq_len = seq_len
+        self.num_heads = num_heads
+        self.dtype = dtype
+        cfg = self.default_config
+        self.kernel = _make_alibi_kernel(
+            seq_len, num_heads, self.dtype_str, cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])()
+
+
+def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
+    """Build sinusoidal positional encoding kernel.
+
+    PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
+    PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+    Output shape: (seq_len, d_model).
+    """
+    N_total = seq_len * d_model
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[0])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(out: T.Tensor((N_total,), dtype)):
+            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    flat = (bx * threads_arg + i) * npt_arg + j
+                    pos = flat // d_model
+                    dim = flat % d_model
+                    # dim_pair = dim // 2 (the "i" in the formula)
+                    dim_pair = dim // 2
+                    # angle = pos / 10000^(2*dim_pair / d_model)
+                    # = pos * exp(-2*dim_pair/d_model * log(10000))
+                    log_10000 = T.cast(9.210340371976184, "float32")  # log(10000)
+                    exponent = T.cast(-2.0, "float32") * T.cast(dim_pair, "float32") / T.cast(d_model, "float32") * log_10000
+                    angle = T.cast(pos, "float32") * T.exp(exponent)
+                    # Even dim -> sin, odd dim -> cos
+                    is_even = dim % 2 == 0
+                    result = T.if_then_else(is_even, T.sin(angle), T.cos(angle))
+                    out[flat] = T.Cast(dtype, result)
+
+        return main
+
+    return kernel
+
+
+class SinusoidalKernel(Kernel):
+    """Sinusoidal positional encoding from "Attention Is All You Need".
+
+    PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
+    PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+
+    Args:
+        seq_len: Sequence length.
+        d_model: Model dimension (must be even).
+        dtype: Torch dtype.
+        config: Optional config dict.
+        tune: Whether to autotune.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(self, seq_len, d_model, dtype, config=None, tune=False):
+        super().__init__()
+        self.seq_len = seq_len
+        self.d_model = d_model
+        self.dtype = dtype
+        cfg = self.default_config
+        self.kernel = _make_sinusoidal_kernel(
+            seq_len, d_model, self.dtype_str, cfg["threads"], cfg["num_per_thread"],
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self):
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self):
+        cfg = self.config
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])()
