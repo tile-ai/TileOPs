@@ -286,25 +286,39 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
 
     C = 64
     H = n_total // C
-    # Shape (1, C, H) so F.prelu sees channel dim at index 1
+    # Shape (1, C, H): batch=1, channels=C, spatial=H
     shape = (1, C, H)
     x = torch.randn(shape, device="cuda", dtype=dtype)
     weight = torch.randn(C, device="cuda", dtype=dtype).abs() * 0.1 + 0.01
     ref = F.prelu(x.float(), weight.float()).to(dtype)
 
-    # Our kernel treats input as (C, H) flattened, channel = flat_idx // H
-    # Reshape to (C, H) for op
-    op_shape = (C, H)
-    op = PreluOp(shape=op_shape, dtype=dtype, num_channels=C)
-    out = op(x.reshape(op_shape), weight)
+    op = PreluOp(shape=shape, dtype=dtype, num_channels=C)
+    out = op(x, weight)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
     elif dtype == torch.bfloat16:
         tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
-    torch.testing.assert_close(out, ref.reshape(op_shape), **tol)
+    torch.testing.assert_close(out, ref, **tol)
     print("All checks passed for PreluOp.")
+
+
+@pytest.mark.smoke
+def test_prelu_batch_dim() -> None:
+    """PReLU with a leading batch dimension: shape (2, 4, 8)."""
+    from tileops.ops.elementwise import PreluOp
+
+    dtype = torch.float32
+    shape = (2, 4, 8)
+    C = 4
+    x = torch.randn(shape, device="cuda", dtype=dtype)
+    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
+    ref = F.prelu(x, weight)
+    op = PreluOp(shape=shape, dtype=dtype, num_channels=C)
+    out = op(x, weight)
+    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+    print("All checks passed for PreluOp batch-dim.")
 
 
 if __name__ == "__main__":

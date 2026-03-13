@@ -1473,14 +1473,14 @@ class SoftplusKernel(Kernel):
         return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
 
 
-def _make_prelu_kernel(N, C, dtype, threads=256, npt=8):
+def _make_prelu_kernel(N, C, inner_size, dtype, threads=256, npt=8):
     """Build PReLU kernel: y = x if x > 0 else weight[channel] * x.
 
-    Weight is per-channel. Channel index is computed as: (flat_idx // (N // C)) % C
-    assuming N is total elements and C is the channel count.
+    Weight is per-channel. Channel index follows PyTorch convention:
+    for flat index ``idx``, channel = (idx // inner_size) % C, where
+    ``inner_size`` is the product of all dimensions after the channel dim.
     """
     block_size = threads * npt
-    elements_per_channel = N // C
 
     @tilelang.jit(out_idx=[2])
     def kernel(threads_arg, npt_arg):
@@ -1494,7 +1494,7 @@ def _make_prelu_kernel(N, C, dtype, threads=256, npt=8):
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
                     val = x[idx]
-                    ch = (idx // elements_per_channel) % C
+                    ch = (idx // inner_size) % C
                     w = weight[ch]
                     zero = T.cast(0, val.dtype)
                     y[idx] = T.if_then_else(val > zero, val, w * val)
@@ -1507,9 +1507,15 @@ def _make_prelu_kernel(N, C, dtype, threads=256, npt=8):
 class PreluKernel(Kernel):
     """PReLU: y = x if x > 0 else weight[channel] * x.
 
+    Channel index follows PyTorch convention: channels live at
+    dimension 1 (or dimension 0 for 1-D inputs). The ``inner_size``
+    parameter is the product of all dimensions after the channel
+    dimension.
+
     Args:
         N_total: Total number of elements (flattened).
         C: Number of channels (weight length).
+        inner_size: Product of dimensions after the channel dim.
         dtype: Torch dtype.
         config: Optional config dict.
         tune: Whether to autotune.
@@ -1517,14 +1523,15 @@ class PreluKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    def __init__(self, N_total, C, dtype, config=None, tune=False):
+    def __init__(self, N_total, C, inner_size, dtype, config=None, tune=False):
         super().__init__()
         self.N_total = N_total
         self.C = C
+        self.inner_size = inner_size
         self.dtype = dtype
         cfg = self.default_config
         self.kernel = _make_prelu_kernel(
-            N_total, C, self.dtype_str, cfg["threads"], cfg["num_per_thread"],
+            N_total, C, inner_size, self.dtype_str, cfg["threads"], cfg["num_per_thread"],
         )
         self.init_config(config, tune)
 
@@ -1887,10 +1894,10 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
                     # dim_pair = dim // 2 (the "i" in the formula)
                     dim_pair = dim // 2
                     # angle = pos / 10000^(2*dim_pair / d_model)
-                    # = pos * exp(-2*dim_pair/d_model * log(10000))
-                    log_10000 = T.cast(9.210340371976184, "float32")  # log(10000)
-                    exponent = T.cast(-2.0, "float32") * T.cast(dim_pair, "float32") / T.cast(d_model, "float32") * log_10000
-                    angle = T.cast(pos, "float32") * T.exp(exponent)
+                    base = T.cast(10000.0, "float32")
+                    exp_frac = T.cast(dim_pair, "float32") * T.cast(2.0, "float32") / T.cast(d_model, "float32")
+                    divisor = T.pow(base, exp_frac)
+                    angle = T.cast(pos, "float32") / divisor
                     # Even dim -> sin, odd dim -> cos
                     is_even = dim % 2 == 0
                     result = T.if_then_else(is_even, T.sin(angle), T.cos(angle))

@@ -1203,6 +1203,9 @@ class SoftplusOp(Op):
 class PreluOp(Op):
     """PReLU: y = x if x > 0 else weight[channel] * x.
 
+    Channel dimension follows PyTorch convention: dimension 1 for inputs
+    with ndim >= 2, dimension 0 for 1-D inputs.
+
     Args:
         shape: Shape of the input tensor (must have a channel dimension).
         dtype: Torch dtype.
@@ -1215,7 +1218,10 @@ class PreluOp(Op):
         self.num_channels = num_channels
         N_total = prod(shape)
         self.N_total = N_total
-        self.kernel = PreluKernel(N_total, num_channels, dtype)
+        # PyTorch PReLU: channel dim is 1 for ndim>=2, else 0
+        inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
+        self.inner_size = inner_size
+        self.kernel = PreluKernel(N_total, num_channels, inner_size, dtype)
 
     @property
     def default_kernel_map(self):
