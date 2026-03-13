@@ -14,6 +14,7 @@ Utility:
 - coalesce_broadcast_dims: reduces N-dim broadcast to minimal effective dims
 """
 
+import weakref
 from math import prod
 from typing import Dict, List, Optional
 
@@ -90,7 +91,7 @@ from .op import Op
 # through forward() without hitting unsupported Python side-effects.
 # ---------------------------------------------------------------------------
 
-_OP_REGISTRY: dict = {}
+_OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
 
 def _register_unary_custom_op(op_cls, output_dtype_override=None):
