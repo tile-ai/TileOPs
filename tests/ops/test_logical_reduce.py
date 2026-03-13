@@ -23,11 +23,13 @@ class LogicalReduceBasicFixture(FixtureBase):
                 pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.bool, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-pow2 last dim
                 pytest.param(128, 300, torch.float32, marks=pytest.mark.full),
                 pytest.param(128, 300, torch.float16, marks=pytest.mark.full),
+                pytest.param(128, 300, torch.bool, marks=pytest.mark.full),
                 # Tail-M: M not divisible by block_m
                 pytest.param(129, 512, torch.float16, marks=pytest.mark.full),
             ],
@@ -42,6 +44,7 @@ class LogicalReduceNonContigFixture(FixtureBase):
             [
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.bool, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -79,6 +82,7 @@ class LogicalReduce1DFixture(FixtureBase):
                 pytest.param(512, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(512, torch.float32, marks=pytest.mark.full),
                 pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(512, torch.bool, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -100,13 +104,22 @@ class LogicalReduceTest(TestBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         # Mix of zeros and non-zeros for meaningful logical testing
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        # Force some rows to be all-zero for meaningful "any" tests
-        if self.m > 4:
-            x[0] = 0.0
-        # Force some rows to have all non-zero for "all" tests
-        if self.m > 4:
-            x[1] = 1.0
+        if self.dtype == torch.bool:
+            x = torch.randint(0, 2, (self.m, self.n), dtype=torch.bool, device="cuda")
+            # Force some rows to be all-False for meaningful "any" tests
+            if self.m > 4:
+                x[0] = False
+            # Force some rows to be all-True for "all" tests
+            if self.m > 4:
+                x[1] = True
+        else:
+            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
+            # Force some rows to be all-zero for meaningful "any" tests
+            if self.m > 4:
+                x[0] = 0.0
+            # Force some rows to have all non-zero for "all" tests
+            if self.m > 4:
+                x[1] = 1.0
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -147,7 +160,10 @@ def test_any_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    if dtype == torch.bool:
+        x_full = torch.randint(0, 2, (m, n * 2), dtype=torch.bool, device="cuda")
+    else:
+        x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
     op = AnyOp(M=m, N=n, dtype=dtype)
     ref = x.contiguous().bool().any(dim=-1)
@@ -186,7 +202,10 @@ def test_any_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
 def test_any_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    if dtype == torch.bool:
+        x = torch.randint(0, 2, (n,), dtype=torch.bool, device="cuda")
+    else:
+        x = torch.randn(n, dtype=dtype, device="cuda")
     op = AnyOp(M=1, N=n, dtype=dtype)
     ref = x.bool().any(dim=-1)
     y = op(x)
@@ -212,7 +231,10 @@ def test_all_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    if dtype == torch.bool:
+        x_full = torch.randint(0, 2, (m, n * 2), dtype=torch.bool, device="cuda")
+    else:
+        x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
     op = AllOp(M=m, N=n, dtype=dtype)
     ref = x.contiguous().bool().all(dim=-1)
@@ -251,7 +273,10 @@ def test_all_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
 def test_all_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    if dtype == torch.bool:
+        x = torch.randint(0, 2, (n,), dtype=torch.bool, device="cuda")
+    else:
+        x = torch.randn(n, dtype=dtype, device="cuda")
     op = AllOp(M=1, N=n, dtype=dtype)
     ref = x.bool().all(dim=-1)
     y = op(x)

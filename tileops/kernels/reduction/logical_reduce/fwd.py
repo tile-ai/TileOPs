@@ -25,6 +25,10 @@ __all__ = ["LogicalReduceKernel"]
 
 _LOGICAL_REDUCE_KINDS = {"any", "all"}
 
+# TileLang does not support bool as a storage dtype for T.alloc_shared / T.copy.
+# When the caller's dtype is bool, we use float32 internally instead.
+_BOOL_STORAGE_DTYPE = torch.float32
+
 
 # ---------------------------------------------------------------------------
 # Logical reduce kernel
@@ -133,11 +137,15 @@ class LogicalReduceKernel(Kernel):
 
     Output dtype is always bool.
 
+    Note: TileLang does not support bool as a storage dtype for shared memory.
+    When dtype=torch.bool, the kernel is compiled for float32 internally and
+    the Op layer is responsible for casting the input before calling forward().
+
     Args:
         M: Number of rows (product of all dims except last).
         N: Hidden dimension (last dim).
         op_kind: One of "any", "all".
-        dtype: Input data type (float32, float16, or bfloat16).
+        dtype: Input data type (float32, float16, bfloat16, or bool).
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
     """
@@ -162,19 +170,22 @@ class LogicalReduceKernel(Kernel):
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        # TileLang cannot handle bool as a shared-memory storage dtype;
+        # remap bool -> float32 for the TileLang kernel compilation.
+        self._kernel_dtype = _BOOL_STORAGE_DTYPE if dtype == torch.bool else dtype
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self.kernel = _logical_reduce_kernel(
             self.M,
             self.N,
             self.op_kind,
-            self.dtype_str,
+            self.dtype_to_str(self._kernel_dtype),
         )
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
         """Select default block_m based on shared memory budget."""
-        smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
+        smem_per_row = self.N_padded * torch.tensor([], dtype=self._kernel_dtype).element_size()
         max_block_m = (48 * 1024) // smem_per_row
         block_m = 1
         for bm in [1, 2, 4, 8]:
@@ -184,7 +195,7 @@ class LogicalReduceKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
+        smem_per_row = self.N_padded * torch.tensor([], dtype=self._kernel_dtype).element_size()
         max_block_m = (48 * 1024) // smem_per_row
         block_ms = [bm for bm in [1, 2, 4, 8] if bm <= max_block_m]
         threads_list = [128, 256]
@@ -195,7 +206,8 @@ class LogicalReduceKernel(Kernel):
         """Run the any/all kernel.
 
         Args:
-            x: Input tensor of shape (M, N_padded).
+            x: Input tensor of shape (M, N_padded). Must have dtype matching
+               _kernel_dtype (float32 when the original dtype is bool).
 
         Returns:
             Output tensor of shape (M,) with dtype bool.
@@ -204,7 +216,7 @@ class LogicalReduceKernel(Kernel):
             self.M,
             self.N,
             self.op_kind,
-            self.dtype_str,
+            self.dtype_to_str(self._kernel_dtype),
             self.config["block_m"],
             self.config["threads"],
             x,

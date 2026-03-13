@@ -3,6 +3,9 @@
 The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment
 (with 1, which is neutral for AND/all), calls the kernel, and reshapes the
 output back. Output dtype is always bool.
+
+Supports any numeric dtype as input including torch.bool (bool inputs are
+cast to float32 internally before the TileLang kernel call).
 """
 
 from typing import Dict, Optional
@@ -25,10 +28,14 @@ class AllOp(Op):
     Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
     Padded positions use 1 (True), which is neutral for AND/all.
 
+    Supports any numeric dtype including torch.bool. Bool inputs are cast to
+    float32 internally because TileLang does not support bool as a shared
+    memory storage dtype.
+
     Args:
         M: Product of all leading dimensions.
         N: Last dimension size.
-        dtype: Input data type.
+        dtype: Input data type (any dtype including torch.bool).
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -79,6 +86,11 @@ class AllOp(Op):
         M_actual = x.shape[0]
         if M_actual != self.M:
             raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
+
+        # Cast bool to float32: TileLang cannot handle bool as a shared-memory
+        # storage dtype. The kernel is compiled for float32 in this case.
+        if x.dtype == torch.bool:
+            x = x.to(torch.float32)
 
         # Pad to alignment with 1.0 (True is neutral for AND/all)
         if self.N_padded != self.N:
