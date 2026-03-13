@@ -9,6 +9,10 @@ Variants:
 
 Each variant supports 1D layout (seq_len, head_dim) and
 2D layout (batch, seq_len, num_heads, head_dim).
+
+The op computes cos/sin internally from variant parameters; tests call
+``op(x)`` directly and compare against a pure-PyTorch reference that
+independently computes the same frequency tables.
 """
 
 import math
@@ -29,12 +33,12 @@ def _compute_freqs_cis_base(head_dim: int, seq_len: int, base: float = 10000.0,
     """Compute standard RoPE cos/sin tables.
 
     Returns:
-        (cos, sin) each of shape (seq_len, head_dim).
+        (cos, sin) each of shape (seq_len, head_dim // 2).
     """
     half = head_dim // 2
     freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
     t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, freqs)  # (seq_len, half)
+    angles = torch.outer(t, freqs)
     cos_vals = torch.cos(angles).to(dtype)
     sin_vals = torch.sin(angles).to(dtype)
     return cos_vals, sin_vals
@@ -58,21 +62,23 @@ def _rotate_half_non_neox(x: torch.Tensor) -> torch.Tensor:
 
 def ref_rope_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     """Reference neox RoPE: full-dim cos/sin broadcast with half-rotation."""
-    cos_full = torch.cat([cos, cos], dim=-1)  # (seq_len, head_dim)
+    cos_full = torch.cat([cos, cos], dim=-1)
     sin_full = torch.cat([sin, sin], dim=-1)
     if x.ndim == 2:
-        return (x.float() * cos_full.float() + _rotate_half_neox(x).float() * sin_full.float()).to(x.dtype)
+        return (x.float() * cos_full.float()
+                + _rotate_half_neox(x).float() * sin_full.float()).to(x.dtype)
     elif x.ndim == 4:
-        cos_full = cos_full.unsqueeze(0).unsqueeze(2)  # (1, seq_len, 1, head_dim)
+        cos_full = cos_full.unsqueeze(0).unsqueeze(2)
         sin_full = sin_full.unsqueeze(0).unsqueeze(2)
-        return (x.float() * cos_full.float() + _rotate_half_neox(x).float() * sin_full.float()).to(x.dtype)
+        return (x.float() * cos_full.float()
+                + _rotate_half_neox(x).float() * sin_full.float()).to(x.dtype)
     else:
         raise ValueError(f"Unsupported ndim={x.ndim}")
 
 
 def ref_rope_non_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     """Reference non-neox (RoFormer) RoPE: adjacent pair rotation."""
-    cos_interleaved = cos.repeat_interleave(2, dim=-1)  # (seq_len, head_dim)
+    cos_interleaved = cos.repeat_interleave(2, dim=-1)
     sin_interleaved = sin.repeat_interleave(2, dim=-1)
     if x.ndim == 2:
         return (x.float() * cos_interleaved.float()
@@ -173,7 +179,12 @@ def _compute_longrope_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
 
 
 class RopeTest(TestBase):
-    """Generic test harness for RoPE ops."""
+    """Generic test harness for RoPE ops.
+
+    The op computes cos/sin internally; the test generates only x as input
+    and computes the reference rotation using independently generated
+    frequency tables.
+    """
 
     def __init__(self, variant: str, layout: str, batch: int, seq_len: int,
                  num_heads: int, head_dim: int, dtype: torch.dtype,
@@ -187,18 +198,18 @@ class RopeTest(TestBase):
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs or {}
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        """Generate only x; cos/sin are computed by the op internally."""
         if self.layout == "1d":
             x = torch.randn(self.seq_len, self.head_dim, device="cuda", dtype=self.dtype)
         else:
             x = torch.randn(self.batch, self.seq_len, self.num_heads, self.head_dim,
                              device="cuda", dtype=self.dtype)
-
-        cos, sin = self._compute_cos_sin()
-        return x, cos, sin
+        return (x,)
 
     def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.variant == "neox" or self.variant == "non_neox":
+        """Independently compute cos/sin for the reference implementation."""
+        if self.variant in ("neox", "non_neox"):
             return _compute_freqs_cis_base(self.head_dim, self.seq_len, dtype=self.dtype)
         elif self.variant == "rope_llama31":
             return _compute_llama31_freqs(self.head_dim, self.seq_len, dtype=self.dtype,
@@ -212,8 +223,9 @@ class RopeTest(TestBase):
         else:
             raise ValueError(f"Unknown variant: {self.variant}")
 
-    def ref_program(self, x: torch.Tensor, cos: torch.Tensor,
-                    sin: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        """Pure-PyTorch reference: independently computes cos/sin and applies rotation."""
+        cos, sin = self._compute_cos_sin()
         if self.variant in ("neox", "rope_llama31", "yarn_rope", "longrope"):
             return ref_rope_neox(x, cos, sin)
         elif self.variant == "non_neox":

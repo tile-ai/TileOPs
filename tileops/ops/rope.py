@@ -193,7 +193,11 @@ def _longrope_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
 class _RopeOpBase(Op):
     """Base class for all RoPE ops.
 
-    Subclass must set ``kernel_cls`` and ``_op_name``.
+    Subclass must set ``kernel_cls``, ``_op_name``, and implement
+    ``_compute_cos_sin()`` to generate variant-specific frequency tables.
+
+    At construction time, cos/sin tables are computed from variant parameters
+    and cached. The ``forward()`` method accepts only the input tensor ``x``.
 
     Args:
         seq_len: Sequence length.
@@ -227,10 +231,26 @@ class _RopeOpBase(Op):
         self.batch = batch
         self.num_heads = num_heads
 
+        # Compute variant-specific cos/sin tables from stored parameters
+        self._cos, self._sin = self._compute_cos_sin()
+
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map[self._op_name](
             seq_len=seq_len, head_dim=head_dim, dtype=dtype,
             layout=layout, batch=batch, num_heads=num_heads, tune=tune,
+        )
+
+    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute variant-specific cos/sin frequency tables.
+
+        Must be overridden by each concrete subclass to use its stored
+        variant parameters.
+
+        Returns:
+            (cos, sin) each of shape (seq_len, head_dim // 2).
+        """
+        raise NotImplementedError(
+            "Subclass must implement _compute_cos_sin()"
         )
 
     @property
@@ -249,14 +269,13 @@ class _RopeOpBase(Op):
             x_elems = self.batch * self.seq_len * self.num_heads * self.head_dim
         return (2 * x_elems + cos_sin_elems) * elem
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor,
-                sin: torch.Tensor) -> torch.Tensor:
-        """Apply RoPE rotation.
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply RoPE rotation using internally computed cos/sin tables.
 
         Args:
-            x: Input tensor.
-            cos: Cosine frequency table of shape (seq_len, head_dim // 2).
-            sin: Sine frequency table of shape (seq_len, head_dim // 2).
+            x: Input tensor. Shape depends on layout:
+                - 1D: ``(seq_len, head_dim)``
+                - 2D: ``(batch, seq_len, num_heads, head_dim)``
 
         Returns:
             Rotated output tensor with same shape as x.
@@ -265,7 +284,7 @@ class _RopeOpBase(Op):
             raise ValueError("Input must be a CUDA tensor")
         if x.dtype != self.dtype:
             raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        return self.kernel(x, cos, sin)
+        return self.kernel(x, self._cos, self._sin)
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +294,8 @@ class _RopeOpBase(Op):
 
 class RopeNeoxOp(_RopeOpBase):
     """GPT-NeoX style RoPE op with standard theta frequencies.
+
+    Computes cos/sin tables at construction using standard theta = base^(-2k/d).
 
     Reference: GPT-NeoX / HuggingFace transformers RotaryEmbedding.
 
@@ -302,9 +323,15 @@ class RopeNeoxOp(_RopeOpBase):
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
 
+    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return _base_freqs(self.head_dim, self.seq_len, base=self.base,
+                           dtype=self.dtype)
+
 
 class RopeNonNeoxOp(_RopeOpBase):
     """Original RoFormer RoPE op with adjacent-pair rotation.
+
+    Computes cos/sin tables at construction using standard theta = base^(-2k/d).
 
     Reference: Su et al., "RoFormer: Enhanced Transformer with Rotary Position Embedding".
 
@@ -332,9 +359,16 @@ class RopeNonNeoxOp(_RopeOpBase):
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
 
+    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return _base_freqs(self.head_dim, self.seq_len, base=self.base,
+                           dtype=self.dtype)
+
 
 class RopeLlama31Op(_RopeOpBase):
     """Llama 3.1 RoPE op with piecewise frequency scaling.
+
+    Computes cos/sin tables at construction using Llama 3.1 piecewise-scaled
+    frequencies based on wavelength thresholds.
 
     Reference: Meta Llama 3.1 model implementation.
 
@@ -372,9 +406,22 @@ class RopeLlama31Op(_RopeOpBase):
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
 
+    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return _llama31_freqs(
+            self.head_dim, self.seq_len, base=self.base,
+            scale_factor=self.scale_factor,
+            low_freq_factor=self.low_freq_factor,
+            high_freq_factor=self.high_freq_factor,
+            original_max_position=self.original_max_position,
+            dtype=self.dtype,
+        )
+
 
 class RopeYarnOp(_RopeOpBase):
     """YaRN RoPE op with linear-ramp frequency interpolation.
+
+    Computes cos/sin tables at construction using YaRN linear-ramp
+    interpolation between scaled and original frequencies.
 
     Reference: Peng et al., "YaRN: Efficient Context Window Extension of LLMs".
 
@@ -415,9 +462,20 @@ class RopeYarnOp(_RopeOpBase):
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
 
+    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return _yarn_freqs(
+            self.head_dim, self.seq_len, base=self.base,
+            scale=self.scale, original_max_position=self.original_max_position,
+            beta_fast=self.beta_fast, beta_slow=self.beta_slow,
+            attn_factor=self.attn_factor, dtype=self.dtype,
+        )
+
 
 class RopeLongRopeOp(_RopeOpBase):
     """LongRoPE op with per-dimension frequency rescaling.
+
+    Computes cos/sin tables at construction using per-dimension rescale
+    factors applied to the base frequencies.
 
     Reference: Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
 
@@ -447,3 +505,9 @@ class RopeLongRopeOp(_RopeOpBase):
         self.rescale_factors = rescale_factors
         super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
                          kernel_map, tune)
+
+    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return _longrope_freqs(
+            self.head_dim, self.seq_len, base=self.base,
+            rescale_factors=self.rescale_factors, dtype=self.dtype,
+        )
