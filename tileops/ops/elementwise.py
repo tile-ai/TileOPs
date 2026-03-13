@@ -17,26 +17,47 @@ import torch
 from tileops.kernels.elementwise import (
     AbsKernel,
     AddKernel,
+    BitwiseAndKernel,
     BitwiseNotKernel,
+    BitwiseOrKernel,
+    BitwiseXorKernel,
     CeilKernel,
     CosKernel,
+    DivKernel,
+    EqKernel,
     ErfKernel,
     ExpKernel,
     Expm1Kernel,
+    FloorDivideKernel,
     FloorKernel,
+    GeKernel,
+    GeluAndMulKernel,
     GeluKernel,
+    GeluTanhAndMulKernel,
+    GtKernel,
     HardsigmoidKernel,
     HardswishKernel,
     IsfiniteKernel,
     IsinfKernel,
     IsnanKernel,
+    LeKernel,
+    LerpKernel,
     Log1pKernel,
+    LogicalAndKernel,
     LogicalNotKernel,
+    LogicalOrKernel,
     LogKernel,
+    LtKernel,
+    MaximumKernel,
+    MinimumKernel,
     MishKernel,
+    MulKernel,
     NegKernel,
+    NeKernel,
+    PowKernel,
     ReciprocalKernel,
     ReluKernel,
+    RemainderKernel,
     RoundKernel,
     RsqrtKernel,
     SeluKernel,
@@ -46,6 +67,7 @@ from tileops.kernels.elementwise import (
     SiluKernel,
     SinKernel,
     SqrtKernel,
+    SubKernel,
     TanhKernel,
     TruncKernel,
 )
@@ -58,9 +80,37 @@ __all__ = [
     "UnaryOp",
     "BinaryOp",
     "FusedGatedOp",
+    # Unary
     "ReluOp",
+    # Binary arithmetic
     "AddOp",
+    "SubOp",
+    "MulOp",
+    "DivOp",
+    "RemainderOp",
+    "PowOp",
+    "FloorDivideOp",
+    "LerpOp",
+    "MaximumOp",
+    "MinimumOp",
+    # Comparison (output bool)
+    "EqOp",
+    "NeOp",
+    "GtOp",
+    "LtOp",
+    "GeOp",
+    "LeOp",
+    # Logical (output bool)
+    "LogicalAndOp",
+    "LogicalOrOp",
+    # Bitwise
+    "BitwiseAndOp",
+    "BitwiseOrOp",
+    "BitwiseXorOp",
+    # Fused gated
     "SiluAndMulOp",
+    "GeluAndMulOp",
+    "GeluTanhAndMulOp",
     # --- math (17) ---
     "AbsOp",
     "CeilOp",
@@ -243,6 +293,13 @@ class BinaryOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        supported = self.kernel_cls.SUPPORTED_DTYPES
+        if supported is not None and dtype not in supported:
+            names = ", ".join(str(dt) for dt in supported)
+            raise ValueError(
+                f"{self._op_name} does not support dtype {dtype}. "
+                f"Supported: [{names}]"
+            )
         self.dtype = dtype
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
@@ -273,6 +330,10 @@ class BinaryOp(Op):
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if not a.is_cuda or not b.is_cuda:
             raise ValueError("Inputs must be CUDA tensors")
+        if a.dtype != self.dtype:
+            raise ValueError(f"Expected a.dtype {self.dtype}, got {a.dtype}")
+        if b.dtype != self.dtype:
+            raise ValueError(f"Expected b.dtype {self.dtype}, got {b.dtype}")
         if a.numel() != self.a_numel:
             raise ValueError(
                 f"Expected a to have {self.a_numel} elements, got {a.numel()}"
@@ -313,6 +374,13 @@ class FusedGatedOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        supported = self.kernel_cls.SUPPORTED_DTYPES
+        if supported is not None and dtype not in supported:
+            names = ", ".join(str(dt) for dt in supported)
+            raise ValueError(
+                f"{self._op_name} does not support dtype {dtype}. "
+                f"Supported: [{names}]"
+            )
         self.M = M
         self.N = N
         self.dtype = dtype
@@ -332,6 +400,8 @@ class FusedGatedOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         if x.shape != (self.M, 2 * self.N):
             raise ValueError(
                 f"Expected shape ({self.M}, {2 * self.N}), got {tuple(x.shape)}"
@@ -359,11 +429,247 @@ class AddOp(BinaryOp):
     kernel_cls = AddKernel
 
 
+class SubOp(BinaryOp):
+    """Element-wise subtraction with broadcast: y = a - b."""
+
+    _op_name = "sub"
+    kernel_cls = SubKernel
+
+
+class MulOp(BinaryOp):
+    """Element-wise multiplication with broadcast: y = a * b."""
+
+    _op_name = "mul"
+    kernel_cls = MulKernel
+
+
+class DivOp(BinaryOp):
+    """Element-wise division with broadcast: y = a / b."""
+
+    _op_name = "div"
+    kernel_cls = DivKernel
+
+
+class RemainderOp(BinaryOp):
+    """Element-wise remainder with broadcast: y = a % b."""
+
+    _op_name = "remainder"
+    kernel_cls = RemainderKernel
+
+
+class PowOp(BinaryOp):
+    """Element-wise power with broadcast: y = a ** b."""
+
+    _op_name = "pow"
+    kernel_cls = PowKernel
+
+
+class FloorDivideOp(BinaryOp):
+    """Element-wise floor division with broadcast: y = floor(a / b)."""
+
+    _op_name = "floor_divide"
+    kernel_cls = FloorDivideKernel
+
+
+class LerpOp(BinaryOp):
+    """Element-wise lerp with broadcast: y = a + weight * (b - a).
+
+    Unlike ``torch.lerp(a, b, weight)`` where weight is a runtime parameter,
+    here weight is a **construction-time constant** baked into the compiled
+    kernel. This enables compile-time folding but means a new Op instance is
+    needed for each distinct weight value.
+
+    Args:
+        a_shape: Shape of input a.
+        b_shape: Shape of input b.
+        dtype: Torch dtype.
+        weight: Scalar interpolation weight, fixed at construction (default 0.5).
+        strategy: Kernel strategy override.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune.
+    """
+
+    _op_name = "lerp"
+    kernel_cls = LerpKernel
+
+    def __init__(
+        self,
+        a_shape: tuple,
+        b_shape: tuple,
+        dtype: torch.dtype,
+        weight: float = 0.5,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        supported = self.kernel_cls.SUPPORTED_DTYPES
+        if supported is not None and dtype not in supported:
+            names = ", ".join(str(dt) for dt in supported)
+            raise ValueError(
+                f"{self._op_name} does not support dtype {dtype}. "
+                f"Supported: [{names}]"
+            )
+        self.dtype = dtype
+        self.a_shape = tuple(a_shape)
+        self.b_shape = tuple(b_shape)
+        self.strategy = strategy
+        self._weight = weight
+        out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
+            a_shape, b_shape,
+        )
+        self.out_shape = out_shape
+        self.N_total = prod(out_shape)
+        self.a_numel = prod(a_shape)
+        self.b_numel = prod(b_shape)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map[self._op_name](
+            self.N_total, dtype, coalesced_shape, a_strides, b_strides,
+            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+            weight=weight,
+        )
+
+
+class MaximumOp(BinaryOp):
+    """Element-wise maximum with broadcast: y = max(a, b)."""
+
+    _op_name = "maximum"
+    kernel_cls = MaximumKernel
+
+
+class MinimumOp(BinaryOp):
+    """Element-wise minimum with broadcast: y = min(a, b)."""
+
+    _op_name = "minimum"
+    kernel_cls = MinimumKernel
+
+
+# ---------------------------------------------------------------------------
+# Comparison op subclasses (output bool)
+# ---------------------------------------------------------------------------
+#
+# Kernels produce int8 (1/0) because TileLang cannot vectorize bool.
+# The Op forward() casts to torch.bool after the kernel call.
+
+
+class _BoolOutputBinaryOp(BinaryOp):
+    """Mixin that casts kernel int8 output to torch.bool."""
+
+    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        result = super().forward(a, b)
+        return result.to(torch.bool)
+
+
+class EqOp(_BoolOutputBinaryOp):
+    """Element-wise equality with broadcast: y = (a == b)."""
+
+    _op_name = "eq"
+    kernel_cls = EqKernel
+
+
+class NeOp(_BoolOutputBinaryOp):
+    """Element-wise not-equal with broadcast: y = (a != b)."""
+
+    _op_name = "ne"
+    kernel_cls = NeKernel
+
+
+class GtOp(_BoolOutputBinaryOp):
+    """Element-wise greater-than with broadcast: y = (a > b)."""
+
+    _op_name = "gt"
+    kernel_cls = GtKernel
+
+
+class LtOp(_BoolOutputBinaryOp):
+    """Element-wise less-than with broadcast: y = (a < b)."""
+
+    _op_name = "lt"
+    kernel_cls = LtKernel
+
+
+class GeOp(_BoolOutputBinaryOp):
+    """Element-wise greater-equal with broadcast: y = (a >= b)."""
+
+    _op_name = "ge"
+    kernel_cls = GeKernel
+
+
+class LeOp(_BoolOutputBinaryOp):
+    """Element-wise less-equal with broadcast: y = (a <= b)."""
+
+    _op_name = "le"
+    kernel_cls = LeKernel
+
+
+# ---------------------------------------------------------------------------
+# Logical op subclasses (output bool)
+# ---------------------------------------------------------------------------
+
+
+class LogicalAndOp(_BoolOutputBinaryOp):
+    """Element-wise logical AND with broadcast using non-zero truthiness."""
+
+    _op_name = "logical_and"
+    kernel_cls = LogicalAndKernel
+
+
+class LogicalOrOp(_BoolOutputBinaryOp):
+    """Element-wise logical OR with broadcast using non-zero truthiness."""
+
+    _op_name = "logical_or"
+    kernel_cls = LogicalOrKernel
+
+
+# ---------------------------------------------------------------------------
+# Bitwise op subclasses
+# ---------------------------------------------------------------------------
+
+
+class BitwiseAndOp(BinaryOp):
+    """Element-wise bitwise AND with broadcast: y = a & b."""
+
+    _op_name = "bitwise_and"
+    kernel_cls = BitwiseAndKernel
+
+
+class BitwiseOrOp(BinaryOp):
+    """Element-wise bitwise OR with broadcast: y = a | b."""
+
+    _op_name = "bitwise_or"
+    kernel_cls = BitwiseOrKernel
+
+
+class BitwiseXorOp(BinaryOp):
+    """Element-wise bitwise XOR with broadcast: y = a ^ b."""
+
+    _op_name = "bitwise_xor"
+    kernel_cls = BitwiseXorKernel
+
+
+# ---------------------------------------------------------------------------
+# Fused gated op subclasses
+# ---------------------------------------------------------------------------
+
+
 class SiluAndMulOp(FusedGatedOp):
     """SiLU-and-Mul: y = silu(gate) * value."""
 
     _op_name = "silu_and_mul"
     kernel_cls = SiluAndMulKernel
+
+
+class GeluAndMulOp(FusedGatedOp):
+    """GELU-and-Mul: y = gelu(gate) * value (exact GELU)."""
+
+    _op_name = "gelu_and_mul"
+    kernel_cls = GeluAndMulKernel
+
+
+class GeluTanhAndMulOp(FusedGatedOp):
+    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value (tanh approximation)."""
+
+    _op_name = "gelu_tanh_and_mul"
+    kernel_cls = GeluTanhAndMulKernel
 
 
 # ---------------------------------------------------------------------------

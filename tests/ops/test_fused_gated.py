@@ -1,4 +1,4 @@
-"""Tests for fused gated elementwise ops (silu_and_mul).
+"""Tests for fused gated elementwise ops (silu_and_mul, gelu_and_mul, gelu_tanh_and_mul).
 
 Covers L1 smoke correctness and multi-dtype coverage.
 """
@@ -8,15 +8,17 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.elementwise import SiluAndMulOp
+from tileops.ops.elementwise import GeluAndMulOp, GeluTanhAndMulOp, SiluAndMulOp
+
+# ---------------------------------------------------------------------------
+# SiluAndMul
+# ---------------------------------------------------------------------------
 
 
 class SiluAndMulFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
-            # Smoke: fp16, 1M elements (M=1024, N=1024)
             pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
-            # Full: other dtypes and sizes
             pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1024, 1024, torch.float32, marks=pytest.mark.full),
             pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
@@ -33,7 +35,6 @@ class SiluAndMulTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        # x has shape (M, 2*N): gate in [:, :N], value in [:, N:]
         x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
         return (x,)
 
@@ -45,8 +46,6 @@ class SiluAndMulTest(TestBase):
 
 
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    # Fused gated ops involve sigmoid (transcendental) computed in native dtype,
-    # compared against fp32 reference. Slightly relaxed vs standard elementwise.
     if dtype == torch.float32:
         return 1e-5, 1e-5
     elif dtype == torch.float16:
@@ -61,6 +60,106 @@ def test_silu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     op = SiluAndMulOp(M=m, N=n, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+# ---------------------------------------------------------------------------
+# GeluAndMul
+# ---------------------------------------------------------------------------
+
+
+class GeluAndMulFixture(FixtureBase):
+    PARAMS = [
+        ("m, n, dtype", [
+            pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.full),
+            pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+class GeluAndMulTest(TestBase):
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype):
+        self.m = m
+        self.n = n
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
+        return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        gate = x_f32[:, : self.n]
+        value = x_f32[:, self.n :]
+        return (F.gelu(gate) * value).to(x.dtype)
+
+
+@GeluAndMulFixture
+def test_gelu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
+    test = GeluAndMulTest(m, n, dtype)
+    op = GeluAndMulOp(M=m, N=n, dtype=dtype)
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+# ---------------------------------------------------------------------------
+# GeluTanhAndMul
+# ---------------------------------------------------------------------------
+
+
+class GeluTanhAndMulFixture(FixtureBase):
+    PARAMS = [
+        ("m, n, dtype", [
+            pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.full),
+            pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+class GeluTanhAndMulTest(TestBase):
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype):
+        self.m = m
+        self.n = n
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
+        return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        gate = x_f32[:, : self.n]
+        value = x_f32[:, self.n :]
+        return (F.gelu(gate, approximate="tanh") * value).to(x.dtype)
+
+
+@GeluTanhAndMulFixture
+def test_gelu_tanh_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
+    test = GeluTanhAndMulTest(m, n, dtype)
+    op = GeluTanhAndMulOp(M=m, N=n, dtype=dtype)
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+def test_fused_gated_rejects_integer_dtype() -> None:
+    """Fused gated ops are float-only and must reject integer dtypes early."""
+    with pytest.raises(ValueError, match="does not support dtype"):
+        GeluAndMulOp(M=16, N=16, dtype=torch.int32)
+
+
+@pytest.mark.smoke
+def test_fused_gated_rejects_runtime_dtype_mismatch() -> None:
+    """Runtime inputs should match the construction-time dtype contract."""
+    op = SiluAndMulOp(M=16, N=8, dtype=torch.float16)
+    x = torch.randn(16, 16, device="cuda", dtype=torch.float32)
+    with pytest.raises(ValueError, match="Expected x.dtype"):
+        op(x)
 
 
 if __name__ == "__main__":

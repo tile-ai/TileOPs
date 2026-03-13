@@ -28,11 +28,9 @@ __all__ = [
     "BinaryKernel",
     "FusedGatedKernel",
     "UnaryKernel",
-    # --- concrete: existing ---
-    "AddKernel",
+    # --- unary: existing ---
     "ReluKernel",
-    "SiluAndMulKernel",
-    # --- concrete: unary math (17) ---
+    # --- unary: math (17) ---
     "AbsKernel",
     "CeilKernel",
     "CosKernel",
@@ -50,7 +48,7 @@ __all__ = [
     "SinKernel",
     "SqrtKernel",
     "TruncKernel",
-    # --- concrete: activations (8) ---
+    # --- unary: activations (8) ---
     "GeluKernel",
     "HardsigmoidKernel",
     "HardswishKernel",
@@ -59,13 +57,42 @@ __all__ = [
     "SigmoidKernel",
     "SiluKernel",
     "TanhKernel",
-    # --- concrete: logical / bitwise (2) ---
+    # --- unary: logical / bitwise (2) ---
     "BitwiseNotKernel",
     "LogicalNotKernel",
-    # --- concrete: special predicates (3) ---
+    # --- unary: special predicates (3) ---
     "IsfiniteKernel",
     "IsinfKernel",
     "IsnanKernel",
+    # --- binary arithmetic ---
+    "AddKernel",
+    "SubKernel",
+    "MulKernel",
+    "DivKernel",
+    "RemainderKernel",
+    "PowKernel",
+    "FloorDivideKernel",
+    "LerpKernel",
+    "MaximumKernel",
+    "MinimumKernel",
+    # --- comparison (OUTPUT_DTYPE = "int8", cast to bool by Op layer) ---
+    "EqKernel",
+    "NeKernel",
+    "GtKernel",
+    "LtKernel",
+    "GeKernel",
+    "LeKernel",
+    # --- logical (OUTPUT_DTYPE = "int8", cast to bool by Op layer) ---
+    "LogicalAndKernel",
+    "LogicalOrKernel",
+    # --- bitwise ---
+    "BitwiseAndKernel",
+    "BitwiseOrKernel",
+    "BitwiseXorKernel",
+    # --- fused gated ---
+    "SiluAndMulKernel",
+    "GeluAndMulKernel",
+    "GeluTanhAndMulKernel",
 ]
 
 _BITWISE_DTYPES = (
@@ -372,7 +399,8 @@ class BinaryKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel"]
     DEFAULT_STRATEGY = "explicit_parallel"
-    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., "bool")
+    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., "int8")
+    SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
     @staticmethod
     def op_func(a, b):
@@ -384,6 +412,11 @@ class BinaryKernel(Kernel):
         a_numel, b_numel, strategy=None, config=None, tune=False,
     ):
         super().__init__()
+        if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         self.coalesced_shape = coalesced_shape
@@ -448,6 +481,7 @@ class FusedGatedKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
     @staticmethod
     def activation_func(x):
@@ -456,6 +490,11 @@ class FusedGatedKernel(Kernel):
 
     def __init__(self, M, N, dtype, config=None, tune=False):
         super().__init__()
+        if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.M = M
         self.N = N
         self.dtype = dtype
@@ -518,12 +557,366 @@ class AddKernel(BinaryKernel):
         return a + b
 
 
+class SubKernel(BinaryKernel):
+    """Element-wise subtraction: y = a - b."""
+
+    @staticmethod
+    def op_func(a, b):
+        return a - b
+
+
+class MulKernel(BinaryKernel):
+    """Element-wise multiplication: y = a * b."""
+
+    @staticmethod
+    def op_func(a, b):
+        return a * b
+
+
+class DivKernel(BinaryKernel):
+    """Element-wise division: y = a / b."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        return a / b
+
+
+class RemainderKernel(BinaryKernel):
+    """Element-wise remainder: y = a - floor(a / b) * b.
+
+    Matches PyTorch remainder semantics for floating-point inputs.
+    Uses floor-based formula since T.FloorMod requires integer types.
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        return a - T.floor(a / b) * b
+
+
+class PowKernel(BinaryKernel):
+    """Element-wise power: y = a ** b."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        a_f32 = T.Cast("float32", a)
+        b_f32 = T.Cast("float32", b)
+        return T.Cast(a.dtype, T.pow(a_f32, b_f32))
+
+
+class FloorDivideKernel(BinaryKernel):
+    """Element-wise floor division: y = floor(a / b)."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        return T.floor(a / b)
+
+
+class LerpKernel(BinaryKernel):
+    """Element-wise lerp: y = a + weight * (b - a).
+
+    PyTorch lerp is ternary (a, b, weight). Here weight is a compile-time
+    constant passed at kernel construction, keeping the binary kernel template.
+
+    Args:
+        weight: Scalar interpolation weight (default 0.5).
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        raise NotImplementedError("Use _make_lerp_op_func(weight) instead")
+
+    def __init__(
+        self, N_total, dtype, coalesced_shape, a_strides, b_strides,
+        a_numel, b_numel, strategy=None, config=None, tune=False, weight=0.5,
+    ):
+        self._weight = weight
+        super().__init__(
+            N_total, dtype, coalesced_shape, a_strides, b_strides,
+            a_numel, b_numel, strategy=strategy, config=config, tune=tune,
+        )
+
+    def _build_kernel(self, strategy):
+        """Override to inject compile-time weight into op_func."""
+        w = self._weight
+
+        def lerp_func(a, b):
+            return a + T.cast(w, a.dtype) * (b - a)
+
+        cfg = self.default_config
+        if strategy == "direct":
+            return _make_binary_direct(
+                self.N_total, self.dtype_str, lerp_func,
+                self.coalesced_shape, self.a_strides, self.b_strides,
+                self.a_numel, self.b_numel,
+                output_dtype=self.OUTPUT_DTYPE, threads=cfg["threads"],
+            )
+        elif strategy == "explicit_parallel":
+            return _make_binary_explicit(
+                self.N_total, self.dtype_str, lerp_func,
+                self.coalesced_shape, self.a_strides, self.b_strides,
+                self.a_numel, self.b_numel,
+                output_dtype=self.OUTPUT_DTYPE,
+                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+            )
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+
+
+class MaximumKernel(BinaryKernel):
+    """Element-wise maximum: y = max(a, b) with NaN propagation.
+
+    Matches torch.maximum: if either operand is NaN, the result is NaN.
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
+        # otherwise return the larger value. Signed-zero tie semantics are
+        # tracked separately in issue #469.
+        a_is_nan = T.isnan(T.Cast("float32", a))
+        b_is_nan = T.isnan(T.Cast("float32", b))
+        ordered_max = T.if_then_else(a > b, a, b)
+        nan_result = T.if_then_else(a_is_nan, a, T.if_then_else(b_is_nan, b, ordered_max))
+        return nan_result
+
+
+class MinimumKernel(BinaryKernel):
+    """Element-wise minimum: y = min(a, b) with NaN propagation.
+
+    Matches torch.minimum: if either operand is NaN, the result is NaN.
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
+        # otherwise return the smaller value. Signed-zero tie semantics are
+        # tracked separately in issue #469.
+        a_is_nan = T.isnan(T.Cast("float32", a))
+        b_is_nan = T.isnan(T.Cast("float32", b))
+        ordered_min = T.if_then_else(a < b, a, b)
+        nan_result = T.if_then_else(a_is_nan, a, T.if_then_else(b_is_nan, b, ordered_min))
+        return nan_result
+
+
+# ---------------------------------------------------------------------------
+# Comparison kernel subclasses (output int8: 1/0 flags, cast to bool in Op layer)
+# ---------------------------------------------------------------------------
+
+
+class EqKernel(BinaryKernel):
+    """Element-wise equality: y = (a == b), stored as int8 (1/0)."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a == b, one, zero)
+
+
+class NeKernel(BinaryKernel):
+    """Element-wise not-equal: y = (a != b), stored as int8 (1/0)."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a != b, one, zero)
+
+
+class GtKernel(BinaryKernel):
+    """Element-wise greater-than: y = (a > b), stored as int8 (1/0)."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a > b, one, zero)
+
+
+class LtKernel(BinaryKernel):
+    """Element-wise less-than: y = (a < b), stored as int8 (1/0)."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a < b, one, zero)
+
+
+class GeKernel(BinaryKernel):
+    """Element-wise greater-equal: y = (a >= b), stored as int8 (1/0)."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a >= b, one, zero)
+
+
+class LeKernel(BinaryKernel):
+    """Element-wise less-equal: y = (a <= b), stored as int8 (1/0)."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        return T.if_then_else(a <= b, one, zero)
+
+
+# ---------------------------------------------------------------------------
+# Logical kernel subclasses (output int8: 1/0-encoded logical values)
+# ---------------------------------------------------------------------------
+
+
+class LogicalAndKernel(BinaryKernel):
+    """Element-wise logical AND with non-zero truthiness, stored as int8."""
+
+    SUPPORTED_DTYPES = _LOGICAL_DTYPES
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        a_nonzero = a != T.cast(0, a.dtype)
+        b_nonzero = b != T.cast(0, b.dtype)
+        return T.if_then_else(a_nonzero & b_nonzero, one, zero)
+
+
+class LogicalOrKernel(BinaryKernel):
+    """Element-wise logical OR with non-zero truthiness, stored as int8."""
+
+    SUPPORTED_DTYPES = _LOGICAL_DTYPES
+    OUTPUT_DTYPE = "int8"
+
+    @staticmethod
+    def op_func(a, b):
+        one = T.IntImm("int8", 1)
+        zero = T.IntImm("int8", 0)
+        a_nonzero = a != T.cast(0, a.dtype)
+        b_nonzero = b != T.cast(0, b.dtype)
+        return T.if_then_else(a_nonzero | b_nonzero, one, zero)
+
+
+# ---------------------------------------------------------------------------
+# Bitwise kernel subclasses
+# ---------------------------------------------------------------------------
+
+
+class BitwiseAndKernel(BinaryKernel):
+    """Element-wise bitwise AND: y = a & b (integer inputs)."""
+
+    SUPPORTED_DTYPES = _BITWISE_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        return a & b
+
+
+class BitwiseOrKernel(BinaryKernel):
+    """Element-wise bitwise OR: y = a | b (integer inputs)."""
+
+    SUPPORTED_DTYPES = _BITWISE_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        return a | b
+
+
+class BitwiseXorKernel(BinaryKernel):
+    """Element-wise bitwise XOR: y = a ^ b (integer inputs)."""
+
+    SUPPORTED_DTYPES = _BITWISE_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        return a ^ b
+
+
+# ---------------------------------------------------------------------------
+# Fused gated kernel subclasses
+# ---------------------------------------------------------------------------
+
+
 class SiluAndMulKernel(FusedGatedKernel):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def activation_func(x):
         return x * T.sigmoid(x)
+
+
+class GeluAndMulKernel(FusedGatedKernel):
+    """GELU-and-Mul: y = gelu(gate) * value.
+
+    Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
+    erf is computed in float32 to avoid missing half-precision intrinsic.
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def activation_func(x):
+        inv_sqrt2 = T.cast(0.7071067811865476, "float32")  # 1/sqrt(2)
+        half = T.cast(0.5, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        x_f32 = T.Cast("float32", x)
+        erf_val = T.Cast(x.dtype, T.erf(x_f32 * inv_sqrt2))
+        return x * half * (one + erf_val)
+
+
+class GeluTanhAndMulKernel(FusedGatedKernel):
+    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value.
+
+    Uses tanh approximation: gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def activation_func(x):
+        sqrt_2_over_pi = T.cast(0.7978845608028654, "float32")  # sqrt(2/pi)
+        coeff = T.cast(0.044715, "float32")  # GELU tanh approx coefficient
+        half = T.cast(0.5, x.dtype)
+        one = T.cast(1.0, x.dtype)
+        x_f32 = T.Cast("float32", x)
+        inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
+        tanh_val = T.Cast(x.dtype, T.tanh(inner))
+        return half * x * (one + tanh_val)
 
 
 # ---------------------------------------------------------------------------
