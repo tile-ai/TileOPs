@@ -1,9 +1,10 @@
 """Benchmarks for binary/comparison/logical/bitwise/fused-gated elementwise ops.
 
 Profiles TileOPs vs PyTorch baselines for each new op category using
-small, medium, and large 1D shapes with the default op configuration.
+DNN-realistic 2D shapes (tokens × hidden_dim) with the default op configuration.
 """
 
+from math import prod
 from typing import Callable, Optional
 
 import pytest
@@ -32,7 +33,8 @@ from tileops.ops.elementwise import (
     SubOp,
 )
 
-_SHAPES = (262_144, 1_048_576, 4_000_000)
+# DNN-realistic shapes: (tokens, hidden_dim)
+_SHAPES = ((1024, 4096), (1024, 10240), (1024, 20480))
 
 
 # ---------------------------------------------------------------------------
@@ -45,18 +47,19 @@ class BinaryBenchCase:
 
     def __init__(
         self,
-        n_total: int,
+        shape: tuple,
         dtype: torch.dtype,
         output_dtype: torch.dtype,
         gen_inputs: Callable,
     ):
-        self.n_total = n_total
+        self.shape = shape
+        self.n_total = prod(shape)
         self.dtype = dtype
         self.output_dtype = output_dtype
         self._gen_inputs = gen_inputs
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._gen_inputs(self.n_total, self.dtype)
+        return self._gen_inputs(self.shape, self.dtype)
 
 
 class BinaryBenchmark(BenchmarkBase):
@@ -75,13 +78,15 @@ class BinaryBenchmark(BenchmarkBase):
 class FusedGatedBenchCase:
     """Minimal test harness for fused gated ops."""
 
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
+    def __init__(self, M: int, N: int, dtype: torch.dtype):
+        self.M = M
+        self.N = N
+        self.n_total = M * N
         self.dtype = dtype
         self.output_dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(1, 2 * self.n_total, device="cuda", dtype=self.dtype),)
+        return (torch.randn(self.M, 2 * self.N, device="cuda", dtype=self.dtype),)
 
 
 class FusedGatedBenchmark(BenchmarkBase):
@@ -103,27 +108,27 @@ class FusedGatedBenchmark(BenchmarkBase):
 # ---------------------------------------------------------------------------
 
 
-def _randn_pair(n: int, dtype: torch.dtype):
-    a = torch.randn(n, device="cuda", dtype=dtype)
-    b = torch.randn(n, device="cuda", dtype=dtype)
+def _randn_pair(shape: tuple, dtype: torch.dtype):
+    a = torch.randn(*shape, device="cuda", dtype=dtype)
+    b = torch.randn(*shape, device="cuda", dtype=dtype)
     return a, b
 
 
-def _positive_pair(n: int, dtype: torch.dtype):
-    a = torch.rand(n, device="cuda", dtype=dtype) + 0.1
-    b = torch.rand(n, device="cuda", dtype=dtype) + 0.1
+def _positive_pair(shape: tuple, dtype: torch.dtype):
+    a = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
+    b = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
     return a, b
 
 
-def _int_pair(n: int, dtype: torch.dtype):
-    a = torch.randint(-1000, 1000, (n,), device="cuda", dtype=torch.int32)
-    b = torch.randint(-1000, 1000, (n,), device="cuda", dtype=torch.int32)
+def _int_pair(shape: tuple, dtype: torch.dtype):
+    a = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
+    b = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
     return a, b
 
 
-def _bool_pair(n: int, dtype: torch.dtype):
-    a = (torch.randn(n, device="cuda", dtype=dtype) > 0).to(dtype)
-    b = (torch.randn(n, device="cuda", dtype=dtype) > 0).to(dtype)
+def _bool_pair(shape: tuple, dtype: torch.dtype):
+    a = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
+    b = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
     return a, b
 
 
@@ -134,7 +139,7 @@ def _bool_pair(n: int, dtype: torch.dtype):
 
 class BinaryArithBenchFixture(FixtureBase):
     PARAMS = [
-        ("op_name, n_total, dtype, output_dtype, op_cls, baseline_fn, gen_inputs", [
+        ("op_name, shape, dtype, output_dtype, op_cls, baseline_fn, gen_inputs", [
             # sub
             pytest.param("sub", _SHAPES[0], torch.float16, torch.float16, SubOp, torch.sub, _randn_pair, marks=pytest.mark.smoke),
             pytest.param("sub", _SHAPES[1], torch.float16, torch.float16, SubOp, torch.sub, _randn_pair, marks=pytest.mark.full),
@@ -174,18 +179,17 @@ class BinaryArithBenchFixture(FixtureBase):
 @BinaryArithBenchFixture
 def test_binary_arith_bench(
     op_name: str,
-    n_total: int,
+    shape: tuple,
     dtype: torch.dtype,
     output_dtype: torch.dtype,
     op_cls,
     baseline_fn,
     gen_inputs,
 ) -> None:
-    test = BinaryBenchCase(n_total, dtype, output_dtype, gen_inputs)
+    test = BinaryBenchCase(shape, dtype, output_dtype, gen_inputs)
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    shape = (n_total,)
     op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
@@ -201,14 +205,14 @@ def test_binary_arith_bench(
 
 class ComparisonBenchFixture(FixtureBase):
     PARAMS = [
-        ("op_name, n_total, dtype, baseline_fn", [
-            pytest.param("eq", _SHAPES[1], torch.float16, torch.eq, marks=pytest.mark.smoke),
-            pytest.param("eq", _SHAPES[2], torch.float16, torch.eq, marks=pytest.mark.full),
-            pytest.param("ne", _SHAPES[1], torch.float16, torch.ne, marks=pytest.mark.full),
-            pytest.param("gt", _SHAPES[1], torch.float16, torch.gt, marks=pytest.mark.full),
-            pytest.param("lt", _SHAPES[1], torch.float16, torch.lt, marks=pytest.mark.full),
-            pytest.param("ge", _SHAPES[1], torch.float16, torch.ge, marks=pytest.mark.full),
-            pytest.param("le", _SHAPES[1], torch.float16, torch.le, marks=pytest.mark.full),
+        ("op_name, shape, dtype, baseline_fn", [
+            pytest.param("eq", _SHAPES[0], torch.float16, torch.eq, marks=pytest.mark.smoke),
+            pytest.param("eq", _SHAPES[1], torch.float16, torch.eq, marks=pytest.mark.full),
+            pytest.param("ne", _SHAPES[0], torch.float16, torch.ne, marks=pytest.mark.full),
+            pytest.param("gt", _SHAPES[0], torch.float16, torch.gt, marks=pytest.mark.full),
+            pytest.param("lt", _SHAPES[0], torch.float16, torch.lt, marks=pytest.mark.full),
+            pytest.param("ge", _SHAPES[0], torch.float16, torch.ge, marks=pytest.mark.full),
+            pytest.param("le", _SHAPES[0], torch.float16, torch.le, marks=pytest.mark.full),
         ]),
     ]
 
@@ -225,15 +229,14 @@ _CMP_OPS = {
 @ComparisonBenchFixture
 def test_comparison_bench(
     op_name: str,
-    n_total: int,
+    shape: tuple,
     dtype: torch.dtype,
     baseline_fn,
 ) -> None:
-    test = BinaryBenchCase(n_total, dtype, torch.bool, _randn_pair)
+    test = BinaryBenchCase(shape, dtype, torch.bool, _randn_pair)
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    shape = (n_total,)
     op = _CMP_OPS[op_name](a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(f"cmp_{op_name}", locals(), result, tag="tileops")
@@ -249,11 +252,11 @@ def test_comparison_bench(
 
 class LogicalBenchFixture(FixtureBase):
     PARAMS = [
-        ("op_name, n_total, dtype, op_cls, baseline_fn", [
-            pytest.param("logical_and", _SHAPES[1], torch.float16, LogicalAndOp, torch.logical_and, marks=pytest.mark.smoke),
-            pytest.param("logical_and", _SHAPES[2], torch.float16, LogicalAndOp, torch.logical_and, marks=pytest.mark.full),
-            pytest.param("logical_or", _SHAPES[1], torch.float16, LogicalOrOp, torch.logical_or, marks=pytest.mark.smoke),
-            pytest.param("logical_or", _SHAPES[2], torch.float16, LogicalOrOp, torch.logical_or, marks=pytest.mark.full),
+        ("op_name, shape, dtype, op_cls, baseline_fn", [
+            pytest.param("logical_and", _SHAPES[0], torch.float16, LogicalAndOp, torch.logical_and, marks=pytest.mark.smoke),
+            pytest.param("logical_and", _SHAPES[1], torch.float16, LogicalAndOp, torch.logical_and, marks=pytest.mark.full),
+            pytest.param("logical_or", _SHAPES[0], torch.float16, LogicalOrOp, torch.logical_or, marks=pytest.mark.smoke),
+            pytest.param("logical_or", _SHAPES[1], torch.float16, LogicalOrOp, torch.logical_or, marks=pytest.mark.full),
         ]),
     ]
 
@@ -261,16 +264,15 @@ class LogicalBenchFixture(FixtureBase):
 @LogicalBenchFixture
 def test_logical_bench(
     op_name: str,
-    n_total: int,
+    shape: tuple,
     dtype: torch.dtype,
     op_cls,
     baseline_fn,
 ) -> None:
-    test = BinaryBenchCase(n_total, dtype, torch.bool, _bool_pair)
+    test = BinaryBenchCase(shape, dtype, torch.bool, _bool_pair)
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    shape = (n_total,)
     op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
@@ -288,11 +290,11 @@ def test_logical_bench(
 
 class BitwiseBenchFixture(FixtureBase):
     PARAMS = [
-        ("op_name, n_total, op_cls, baseline_fn", [
-            pytest.param("bitwise_and", _SHAPES[1], BitwiseAndOp, torch.bitwise_and, marks=pytest.mark.smoke),
-            pytest.param("bitwise_and", _SHAPES[2], BitwiseAndOp, torch.bitwise_and, marks=pytest.mark.full),
-            pytest.param("bitwise_or", _SHAPES[1], BitwiseOrOp, torch.bitwise_or, marks=pytest.mark.full),
-            pytest.param("bitwise_xor", _SHAPES[1], BitwiseXorOp, torch.bitwise_xor, marks=pytest.mark.full),
+        ("op_name, shape, op_cls, baseline_fn", [
+            pytest.param("bitwise_and", _SHAPES[0], BitwiseAndOp, torch.bitwise_and, marks=pytest.mark.smoke),
+            pytest.param("bitwise_and", _SHAPES[1], BitwiseAndOp, torch.bitwise_and, marks=pytest.mark.full),
+            pytest.param("bitwise_or", _SHAPES[0], BitwiseOrOp, torch.bitwise_or, marks=pytest.mark.full),
+            pytest.param("bitwise_xor", _SHAPES[0], BitwiseXorOp, torch.bitwise_xor, marks=pytest.mark.full),
         ]),
     ]
 
@@ -300,16 +302,15 @@ class BitwiseBenchFixture(FixtureBase):
 @BitwiseBenchFixture
 def test_bitwise_bench(
     op_name: str,
-    n_total: int,
+    shape: tuple,
     op_cls,
     baseline_fn,
 ) -> None:
     dtype = torch.int32
-    test = BinaryBenchCase(n_total, dtype, dtype, _int_pair)
+    test = BinaryBenchCase(shape, dtype, dtype, _int_pair)
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    shape = (n_total,)
     op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
@@ -325,13 +326,13 @@ def test_bitwise_bench(
 
 class FusedGatedBenchFixture(FixtureBase):
     PARAMS = [
-        ("op_name, n_total, dtype, op_cls", [
-            pytest.param("gelu_and_mul", _SHAPES[0], torch.float16, GeluAndMulOp, marks=pytest.mark.smoke),
-            pytest.param("gelu_and_mul", _SHAPES[1], torch.float16, GeluAndMulOp, marks=pytest.mark.full),
-            pytest.param("gelu_and_mul", _SHAPES[2], torch.float16, GeluAndMulOp, marks=pytest.mark.full),
-            pytest.param("gelu_tanh_and_mul", _SHAPES[0], torch.float16, GeluTanhAndMulOp, marks=pytest.mark.smoke),
-            pytest.param("gelu_tanh_and_mul", _SHAPES[1], torch.float16, GeluTanhAndMulOp, marks=pytest.mark.full),
-            pytest.param("gelu_tanh_and_mul", _SHAPES[2], torch.float16, GeluTanhAndMulOp, marks=pytest.mark.full),
+        ("op_name, M, N, dtype, op_cls", [
+            pytest.param("gelu_and_mul", 1024, 4096, torch.float16, GeluAndMulOp, marks=pytest.mark.smoke),
+            pytest.param("gelu_and_mul", 1024, 10240, torch.float16, GeluAndMulOp, marks=pytest.mark.full),
+            pytest.param("gelu_and_mul", 1024, 20480, torch.float16, GeluAndMulOp, marks=pytest.mark.full),
+            pytest.param("gelu_tanh_and_mul", 1024, 4096, torch.float16, GeluTanhAndMulOp, marks=pytest.mark.smoke),
+            pytest.param("gelu_tanh_and_mul", 1024, 10240, torch.float16, GeluTanhAndMulOp, marks=pytest.mark.full),
+            pytest.param("gelu_tanh_and_mul", 1024, 20480, torch.float16, GeluTanhAndMulOp, marks=pytest.mark.full),
         ]),
     ]
 
@@ -355,15 +356,16 @@ _FUSED_BASELINES = {
 @FusedGatedBenchFixture
 def test_fused_gated_bench(
     op_name: str,
-    n_total: int,
+    M: int,
+    N: int,
     dtype: torch.dtype,
     op_cls,
 ) -> None:
-    test = FusedGatedBenchCase(n_total, dtype)
+    test = FusedGatedBenchCase(M, N, dtype)
     bm = FusedGatedBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(M=1, N=n_total, dtype=dtype)
+    op = op_cls(M=M, N=N, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 

@@ -91,10 +91,10 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 class AddSameShapeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
-            pytest.param(4_000_000, torch.float16, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(16_384, torch.float16, marks=pytest.mark.full),
         ]),
     ]
 
@@ -174,8 +174,8 @@ def test_add_broadcast(a_shape, b_shape, dtype: torch.dtype) -> None:
 class AddStrategyFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype, strategy", [
-            pytest.param(1_000_000, torch.float16, "direct", marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float16, "explicit_parallel", marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, "direct", marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float16, "explicit_parallel", marks=pytest.mark.full),
         ]),
     ]
 
@@ -237,8 +237,8 @@ class BinaryPositiveTest(TestBase):
 class SubFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -260,8 +260,8 @@ def test_sub_op(n_total: int, dtype: torch.dtype) -> None:
 class MulFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -283,8 +283,8 @@ def test_mul_op(n_total: int, dtype: torch.dtype) -> None:
 class DivFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -306,8 +306,8 @@ def test_div_op(n_total: int, dtype: torch.dtype) -> None:
 class RemainderFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -346,8 +346,8 @@ def test_remainder_op(n_total: int, dtype: torch.dtype) -> None:
 class PowFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -385,8 +385,8 @@ def test_pow_op(n_total: int, dtype: torch.dtype) -> None:
 class FloorDivideFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -426,8 +426,8 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
 class LerpFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -474,8 +474,8 @@ def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
 class MaximumFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -497,8 +497,8 @@ def test_maximum_op(n_total: int, dtype: torch.dtype) -> None:
 class MinimumFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 

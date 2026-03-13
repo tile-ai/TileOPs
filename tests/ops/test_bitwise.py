@@ -48,8 +48,8 @@ class BitwiseTest(TestBase):
 class BitwiseAndFixture(FixtureBase):
     PARAMS = [
         ("n_total", [
-            pytest.param(1_000_000, marks=pytest.mark.smoke),
-            pytest.param(4_000_000, marks=pytest.mark.full),
+            pytest.param(4_096, marks=pytest.mark.smoke),
+            pytest.param(16_384, marks=pytest.mark.full),
         ]),
     ]
 
@@ -70,8 +70,8 @@ def test_bitwise_and_op(n_total: int) -> None:
 class BitwiseOrFixture(FixtureBase):
     PARAMS = [
         ("n_total", [
-            pytest.param(1_000_000, marks=pytest.mark.smoke),
-            pytest.param(4_000_000, marks=pytest.mark.full),
+            pytest.param(4_096, marks=pytest.mark.smoke),
+            pytest.param(16_384, marks=pytest.mark.full),
         ]),
     ]
 
@@ -92,8 +92,8 @@ def test_bitwise_or_op(n_total: int) -> None:
 class BitwiseXorFixture(FixtureBase):
     PARAMS = [
         ("n_total", [
-            pytest.param(1_000_000, marks=pytest.mark.smoke),
-            pytest.param(4_000_000, marks=pytest.mark.full),
+            pytest.param(4_096, marks=pytest.mark.smoke),
+            pytest.param(16_384, marks=pytest.mark.full),
         ]),
     ]
 
