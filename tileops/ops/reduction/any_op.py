@@ -4,8 +4,9 @@ The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment
 (with 0, which is neutral for OR/any), calls the kernel, and reshapes the
 output back. Output dtype is always bool.
 
-Supports any numeric dtype as input including torch.bool (bool inputs are
-cast to float32 internally before the TileLang kernel call).
+Supports any numeric dtype as input including torch.bool and complex types
+(bool and complex inputs are pre-converted to float32 before the TileLang
+kernel call because TileLang does not support those storage dtypes).
 """
 
 from typing import Dict, Optional
@@ -16,10 +17,23 @@ import torch.nn.functional as F
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
+from tileops.kernels.reduction.logical_reduce.fwd import _UNSUPPORTED_STORAGE_DTYPES
 
 from ..op import Op
 
 __all__ = ["AnyOp"]
+
+
+def _to_logical_float32(x: torch.Tensor) -> torch.Tensor:
+    """Convert an unsupported-storage-dtype tensor to float32 for kernel dispatch.
+
+    - bool:    True -> 1.0, False -> 0.0
+    - complex: nonzero (either real or imaginary part != 0) -> 1.0, else 0.0
+    """
+    if x.dtype == torch.bool:
+        return x.to(torch.float32)
+    # complex: element is "truthy" if real != 0 OR imag != 0
+    return ((x.real != 0) | (x.imag != 0)).to(torch.float32)
 
 
 class AnyOp(Op):
@@ -28,14 +42,15 @@ class AnyOp(Op):
     Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
     Padded positions use 0 (False), which is neutral for OR/any.
 
-    Supports any numeric dtype including torch.bool. Bool inputs are cast to
-    float32 internally because TileLang does not support bool as a shared
-    memory storage dtype.
+    Supports any numeric dtype including torch.bool and complex types. Inputs
+    with dtypes that TileLang cannot use as shared-memory storage (bool,
+    complex64, complex128) are pre-converted to float32 in forward().
 
     Args:
         M: Product of all leading dimensions.
         N: Last dimension size.
-        dtype: Input data type (any dtype including torch.bool).
+        dtype: Input data type (any dtype including torch.bool, complex64,
+               complex128).
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -87,10 +102,11 @@ class AnyOp(Op):
         if M_actual != self.M:
             raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
 
-        # Cast bool to float32: TileLang cannot handle bool as a shared-memory
-        # storage dtype. The kernel is compiled for float32 in this case.
-        if x.dtype == torch.bool:
-            x = x.to(torch.float32)
+        # Pre-convert unsupported storage dtypes (bool, complex) to float32.
+        # TileLang cannot handle these as shared-memory storage dtypes; the
+        # kernel is compiled for float32 in those cases.
+        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
+            x = _to_logical_float32(x)
 
         # Pad to alignment with 0 (False is neutral for OR/any)
         if self.N_padded != self.N:

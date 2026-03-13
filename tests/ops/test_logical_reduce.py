@@ -24,12 +24,15 @@ class LogicalReduceBasicFixture(FixtureBase):
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bool, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.complex64, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.complex128, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-pow2 last dim
                 pytest.param(128, 300, torch.float32, marks=pytest.mark.full),
                 pytest.param(128, 300, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 300, torch.bool, marks=pytest.mark.full),
+                pytest.param(128, 300, torch.complex64, marks=pytest.mark.full),
                 # Tail-M: M not divisible by block_m
                 pytest.param(129, 512, torch.float16, marks=pytest.mark.full),
             ],
@@ -112,6 +115,16 @@ class LogicalReduceTest(TestBase):
             # Force some rows to be all-True for "all" tests
             if self.m > 4:
                 x[1] = True
+        elif self.dtype in (torch.complex64, torch.complex128):
+            real = torch.randn(self.m, self.n, dtype=torch.float32, device="cuda")
+            imag = torch.randn(self.m, self.n, dtype=torch.float32, device="cuda")
+            x = torch.complex(real, imag).to(self.dtype)
+            # Force some rows to be all-zero (complex zero)
+            if self.m > 4:
+                x[0] = 0 + 0j
+            # Force some rows to have all non-zero
+            if self.m > 4:
+                x[1] = 1 + 1j
         else:
             x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
             # Force some rows to be all-zero for meaningful "any" tests
@@ -162,6 +175,10 @@ def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     if dtype == torch.bool:
         x_full = torch.randint(0, 2, (m, n * 2), dtype=torch.bool, device="cuda")
+    elif dtype in (torch.complex64, torch.complex128):
+        real = torch.randn(m, n * 2, dtype=torch.float32, device="cuda")
+        imag = torch.randn(m, n * 2, dtype=torch.float32, device="cuda")
+        x_full = torch.complex(real, imag).to(dtype)
     else:
         x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
@@ -204,6 +221,10 @@ def test_any_1d(n: int, dtype: torch.dtype) -> None:
 
     if dtype == torch.bool:
         x = torch.randint(0, 2, (n,), dtype=torch.bool, device="cuda")
+    elif dtype in (torch.complex64, torch.complex128):
+        real = torch.randn(n, dtype=torch.float32, device="cuda")
+        imag = torch.randn(n, dtype=torch.float32, device="cuda")
+        x = torch.complex(real, imag).to(dtype)
     else:
         x = torch.randn(n, dtype=dtype, device="cuda")
     op = AnyOp(M=1, N=n, dtype=dtype)
@@ -233,6 +254,10 @@ def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     if dtype == torch.bool:
         x_full = torch.randint(0, 2, (m, n * 2), dtype=torch.bool, device="cuda")
+    elif dtype in (torch.complex64, torch.complex128):
+        real = torch.randn(m, n * 2, dtype=torch.float32, device="cuda")
+        imag = torch.randn(m, n * 2, dtype=torch.float32, device="cuda")
+        x_full = torch.complex(real, imag).to(dtype)
     else:
         x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
@@ -275,6 +300,10 @@ def test_all_1d(n: int, dtype: torch.dtype) -> None:
 
     if dtype == torch.bool:
         x = torch.randint(0, 2, (n,), dtype=torch.bool, device="cuda")
+    elif dtype in (torch.complex64, torch.complex128):
+        real = torch.randn(n, dtype=torch.float32, device="cuda")
+        imag = torch.randn(n, dtype=torch.float32, device="cuda")
+        x = torch.complex(real, imag).to(dtype)
     else:
         x = torch.randn(n, dtype=dtype, device="cuda")
     op = AllOp(M=1, N=n, dtype=dtype)

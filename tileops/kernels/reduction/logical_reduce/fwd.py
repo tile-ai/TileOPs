@@ -25,9 +25,18 @@ __all__ = ["LogicalReduceKernel"]
 
 _LOGICAL_REDUCE_KINDS = {"any", "all"}
 
-# TileLang does not support bool as a storage dtype for T.alloc_shared / T.copy.
-# When the caller's dtype is bool, we use float32 internally instead.
-_BOOL_STORAGE_DTYPE = torch.float32
+# TileLang does not support bool or complex dtypes as a storage dtype for
+# T.alloc_shared / T.copy. When the caller's dtype is one of these, we use
+# float32 internally instead. The Op layer is responsible for pre-converting
+# the tensor to float32 before calling the kernel.
+_FLOAT32_STORAGE_DTYPE = torch.float32
+_UNSUPPORTED_STORAGE_DTYPES = frozenset(
+    {
+        torch.bool,
+        torch.complex64,
+        torch.complex128,
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -137,15 +146,17 @@ class LogicalReduceKernel(Kernel):
 
     Output dtype is always bool.
 
-    Note: TileLang does not support bool as a storage dtype for shared memory.
-    When dtype=torch.bool, the kernel is compiled for float32 internally and
-    the Op layer is responsible for casting the input before calling forward().
+    Note: TileLang does not support bool or complex dtypes as a storage dtype
+    for shared memory. When dtype is one of these, the kernel is compiled for
+    float32 internally and the Op layer is responsible for pre-converting the
+    input tensor to float32 before calling forward().
 
     Args:
         M: Number of rows (product of all dims except last).
         N: Hidden dimension (last dim).
         op_kind: One of "any", "all".
-        dtype: Input data type (float32, float16, bfloat16, or bool).
+        dtype: Input data type (float32, float16, bfloat16, bool, complex64,
+               or complex128).
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
     """
@@ -170,9 +181,11 @@ class LogicalReduceKernel(Kernel):
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
-        # TileLang cannot handle bool as a shared-memory storage dtype;
-        # remap bool -> float32 for the TileLang kernel compilation.
-        self._kernel_dtype = _BOOL_STORAGE_DTYPE if dtype == torch.bool else dtype
+        # TileLang cannot handle bool or complex dtypes as shared-memory
+        # storage dtypes; remap all unsupported dtypes -> float32.
+        self._kernel_dtype = (
+            _FLOAT32_STORAGE_DTYPE if dtype in _UNSUPPORTED_STORAGE_DTYPES else dtype
+        )
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self.kernel = _logical_reduce_kernel(
             self.M,
