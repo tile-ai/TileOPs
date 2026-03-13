@@ -282,8 +282,27 @@ def _make_binary_explicit(
 # ---------------------------------------------------------------------------
 
 
+def _make_fused_gated_direct(M, N, dtype, activation_func, threads=256):
+    """FusedGated direct: 1 element per thread. x[:, :N] is gate, x[:, N:] is value."""
+
+    @tilelang.jit(out_idx=[1])
+    def kernel(threads_arg):
+        @T.prim_func
+        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
+            with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
+                for i in T.Parallel(threads_arg):
+                    col = bx * threads_arg + i
+                    gate = x[by, col]
+                    value = x[by, N + col]
+                    y[by, col] = activation_func(gate) * value
+
+        return main
+
+    return kernel
+
+
 def _make_fused_gated_kernel(M, N, dtype, activation_func, threads=256, num_per_thread=8):
-    """FusedGated: x[:, :N] is gate, x[:, N:] is value. y = activation(gate) * value."""
+    """FusedGated explicit_parallel: N elements per thread. x[:, :N] is gate, x[:, N:] is value."""
     block_N = threads * num_per_thread
 
     @tilelang.jit(out_idx=[1])
@@ -490,11 +509,14 @@ class FusedGatedKernel(Kernel):
         M: Number of rows.
         N: Half the column dimension (output width).
         dtype: Torch dtype.
+        strategy: One of "direct", "explicit_parallel".
         config: Optional dict with "threads" and "num_per_thread".
         tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    STRATEGIES = ["direct", "explicit_parallel"]
+    DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
     @staticmethod
@@ -502,7 +524,7 @@ class FusedGatedKernel(Kernel):
         """Activation function. Must be overridden by subclass."""
         raise NotImplementedError
 
-    def __init__(self, M, N, dtype, config=None, tune=False):
+    def __init__(self, M, N, dtype, strategy=None, config=None, tune=False):
         super().__init__()
         if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
             supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
@@ -512,12 +534,27 @@ class FusedGatedKernel(Kernel):
         self.M = M
         self.N = N
         self.dtype = dtype
-        cfg = self.default_config
-        self.kernel = _make_fused_gated_kernel(
-            M, N, self.dtype_str, self.activation_func,
-            cfg["threads"], cfg["num_per_thread"],
+        self.strategy = strategy or self.DEFAULT_STRATEGY
+        assert self.strategy in self.STRATEGIES, (
+            f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
         )
+        self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
+
+    def _build_kernel(self, strategy):
+        cfg = self.default_config
+        if strategy == "direct":
+            return _make_fused_gated_direct(
+                self.M, self.N, self.dtype_str, self.activation_func,
+                threads=cfg["threads"],
+            )
+        elif strategy == "explicit_parallel":
+            return _make_fused_gated_kernel(
+                self.M, self.N, self.dtype_str, self.activation_func,
+                cfg["threads"], cfg["num_per_thread"],
+            )
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
 
     @property
     def default_config(self) -> dict:
@@ -526,7 +563,10 @@ class FusedGatedKernel(Kernel):
 
     def forward(self, x):
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        if self.strategy == "direct":
+            return self.kernel(cfg["threads"])(x)
+        else:
+            return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
 
 
 # ---------------------------------------------------------------------------
