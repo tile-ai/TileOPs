@@ -125,31 +125,62 @@ def _compute_llama31_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
     return cos_vals, sin_vals
 
 
+def _yarn_find_correction_dim(num_rotations: float, dim: int, base: float,
+                              max_position_embeddings: int) -> float:
+    """Canonical yarn_find_correction_dim from TVM position_embedding.py."""
+    return dim * math.log(max_position_embeddings / (num_rotations * 2 * math.pi)) / (
+        2 * math.log(base)
+    )
+
+
+def _yarn_find_correction_range(beta_fast: float, beta_slow: float, dim: int,
+                                base: float,
+                                max_position_embeddings: int) -> tuple[int, int]:
+    """Canonical yarn_find_correction_range from TVM position_embedding.py."""
+    low = math.floor(
+        _yarn_find_correction_dim(beta_fast, dim, base, max_position_embeddings)
+    )
+    high = math.ceil(
+        _yarn_find_correction_dim(beta_slow, dim, base, max_position_embeddings)
+    )
+    return max(low, 0), min(high, dim - 1)
+
+
 def _compute_yarn_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
                         scale: float = 16.0, original_max_position: int = 4096,
                         beta_fast: float = 32.0, beta_slow: float = 1.0,
                         attn_factor: float = 1.0,
                         dtype: torch.dtype = torch.float32,
                         device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor]:
-    """YaRN frequency computation with linear ramp."""
+    """Canonical YaRN frequency computation with NTK-aware interpolation.
+
+    Reference: TVM ``rope_freq_yarn`` in position_embedding.py.
+
+    Key formula:
+    - freq_extra = 1 / (base ^ (2k/d))  (original, for extrapolation)
+    - freq_inter = 1 / ((scale * base) ^ (2k/d))  (NTK-aware, for interpolation)
+    - Linear ramp mask between correction dims
+    - inv_freq = freq_inter * (1 - mask) + freq_extra * mask
+    """
     half = head_dim // 2
-    freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
+    dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
 
-    low_dim = max(int(half * math.log(original_max_position / (beta_fast * 2 * math.pi))
-                      / math.log(base)), 0)
-    high_dim = min(int(half * math.log(original_max_position / (beta_slow * 2 * math.pi))
-                       / math.log(base)), half - 1)
+    freq_extra = 1.0 / (base ** (dim_indices / half))
+    freq_inter = 1.0 / ((scale * base) ** (dim_indices / half))
 
-    ramp = torch.zeros(half, device=device, dtype=torch.float32)
-    if high_dim > low_dim:
-        ramp_range = torch.arange(half, device=device, dtype=torch.float32)
-        ramp = torch.clamp((ramp_range - low_dim) / (high_dim - low_dim), 0.0, 1.0)
+    low, high = _yarn_find_correction_range(
+        beta_fast, beta_slow, half, base, original_max_position,
+    )
+    if low == high:
+        high = high + 1
 
-    freqs_scaled = freqs / scale
-    freqs_interpolated = (1.0 - ramp) * freqs_scaled + ramp * freqs
+    inv_freq_mask = 1.0 - torch.clamp(
+        (dim_indices - low) / (high - low), 0.0, 1.0,
+    )
+    inv_freq = freq_inter * (1.0 - inv_freq_mask) + freq_extra * inv_freq_mask
 
     t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, freqs_interpolated)
+    angles = torch.outer(t, inv_freq)
     cos_vals = (torch.cos(angles) * attn_factor).to(dtype)
     sin_vals = (torch.sin(angles) * attn_factor).to(dtype)
     return cos_vals, sin_vals
@@ -157,19 +188,41 @@ def _compute_yarn_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
 
 def _compute_longrope_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
                             rescale_factors: torch.Tensor | None = None,
+                            max_position_embeddings: int = 4096,
+                            original_max_position_embeddings: int = 4096,
                             dtype: torch.dtype = torch.float32,
                             device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor]:
-    """LongRoPE frequency computation with per-dim rescale."""
+    """Canonical LongRoPE frequency computation with amplitude scaling.
+
+    Reference: TVM ``rope_freq_longrope`` in position_embedding.py.
+
+    Key formula:
+    - divisor = ext_factors[k] * base^(2k/d)  (ext_factors multiply divisor)
+    - scaling_factor = sqrt(1 + log(scale) / log(orig_max_pos)) if scale > 1
+    - cos/sin are multiplied by scaling_factor (amplitude factor)
+    """
     half = head_dim // 2
-    freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
+    dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
+    divisor = base ** (dim_indices / half)
+
     if rescale_factors is not None:
-        rescale_factors = rescale_factors.to(device=device, dtype=torch.float32)
-        freqs = freqs / rescale_factors
+        rf = rescale_factors.to(device=device, dtype=torch.float32)
+        divisor = rf * divisor
+
+    freqs = 1.0 / divisor
+
+    scale = max_position_embeddings / original_max_position_embeddings
+    if scale > 1.0:
+        scaling_factor = math.sqrt(
+            1.0 + math.log(scale) / math.log(original_max_position_embeddings)
+        )
+    else:
+        scaling_factor = 1.0
 
     t = torch.arange(seq_len, device=device, dtype=torch.float32)
     angles = torch.outer(t, freqs)
-    cos_vals = torch.cos(angles).to(dtype)
-    sin_vals = torch.sin(angles).to(dtype)
+    cos_vals = (torch.cos(angles) * scaling_factor).to(dtype)
+    sin_vals = (torch.sin(angles) * scaling_factor).to(dtype)
     return cos_vals, sin_vals
 
 
@@ -407,11 +460,16 @@ def test_rope_longrope_1d(batch: int, seq_len: int, num_heads: int,
 
     half = head_dim // 2
     rescale = torch.linspace(1.0, 2.0, half, device="cuda")
-    extra = {"rescale_factors": rescale}
+    max_pos = 16384
+    orig_max_pos = 4096
+    extra = {"rescale_factors": rescale,
+             "max_position_embeddings": max_pos,
+             "original_max_position_embeddings": orig_max_pos}
     test = RopeTest("longrope", "1d", batch, seq_len, num_heads, head_dim, dtype,
                     extra_kwargs=extra)
     op = RopeLongRopeOp(seq_len=seq_len, head_dim=head_dim, dtype=dtype, layout="1d",
-                        rescale_factors=rescale)
+                        rescale_factors=rescale, max_position_embeddings=max_pos,
+                        original_max_position_embeddings=orig_max_pos)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -423,11 +481,17 @@ def test_rope_longrope_2d(batch: int, seq_len: int, num_heads: int,
 
     half = head_dim // 2
     rescale = torch.linspace(1.0, 2.0, half, device="cuda")
-    extra = {"rescale_factors": rescale}
+    max_pos = 16384
+    orig_max_pos = 4096
+    extra = {"rescale_factors": rescale,
+             "max_position_embeddings": max_pos,
+             "original_max_position_embeddings": orig_max_pos}
     test = RopeTest("longrope", "2d", batch, seq_len, num_heads, head_dim, dtype,
                     extra_kwargs=extra)
     op = RopeLongRopeOp(seq_len=seq_len, head_dim=head_dim, dtype=dtype, layout="2d",
-                        batch=batch, num_heads=num_heads, rescale_factors=rescale)
+                        batch=batch, num_heads=num_heads, rescale_factors=rescale,
+                        max_position_embeddings=max_pos,
+                        original_max_position_embeddings=orig_max_pos)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
