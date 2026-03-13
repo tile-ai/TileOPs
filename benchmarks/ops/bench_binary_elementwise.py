@@ -30,6 +30,7 @@ from tileops.ops.elementwise import (
     MulOp,
     PowOp,
     RemainderOp,
+    SiluAndMulOp,
     SubOp,
 )
 
@@ -372,6 +373,56 @@ def test_fused_gated_bench(
     baseline_fn = _FUSED_BASELINES[op_name]
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+
+
+# ---------------------------------------------------------------------------
+# Fused gated strategy benchmark (direct vs explicit_parallel)
+# ---------------------------------------------------------------------------
+
+
+class FusedGatedStrategyBenchFixture(FixtureBase):
+    PARAMS = [
+        ("op_name, M, N, dtype, op_cls, strategy", [
+            # silu_and_mul
+            pytest.param("silu_and_mul", 1024, 1024, torch.float16, SiluAndMulOp, "direct", marks=pytest.mark.smoke),
+            pytest.param("silu_and_mul", 1024, 1024, torch.float16, SiluAndMulOp, "explicit_parallel", marks=pytest.mark.smoke),
+            pytest.param("silu_and_mul", 1024, 1024, torch.float32, SiluAndMulOp, "direct", marks=pytest.mark.full),
+            pytest.param("silu_and_mul", 1024, 1024, torch.float32, SiluAndMulOp, "explicit_parallel", marks=pytest.mark.full),
+            pytest.param("silu_and_mul", 4096, 4096, torch.float16, SiluAndMulOp, "direct", marks=pytest.mark.full),
+            pytest.param("silu_and_mul", 4096, 4096, torch.float16, SiluAndMulOp, "explicit_parallel", marks=pytest.mark.full),
+            # gelu_and_mul
+            pytest.param("gelu_and_mul", 1024, 1024, torch.float16, GeluAndMulOp, "direct", marks=pytest.mark.smoke),
+            pytest.param("gelu_and_mul", 1024, 1024, torch.float16, GeluAndMulOp, "explicit_parallel", marks=pytest.mark.smoke),
+            pytest.param("gelu_and_mul", 4096, 4096, torch.float16, GeluAndMulOp, "direct", marks=pytest.mark.full),
+            pytest.param("gelu_and_mul", 4096, 4096, torch.float16, GeluAndMulOp, "explicit_parallel", marks=pytest.mark.full),
+            # gelu_tanh_and_mul
+            pytest.param("gelu_tanh_and_mul", 1024, 1024, torch.float16, GeluTanhAndMulOp, "direct", marks=pytest.mark.smoke),
+            pytest.param("gelu_tanh_and_mul", 1024, 1024, torch.float16, GeluTanhAndMulOp, "explicit_parallel", marks=pytest.mark.smoke),
+            pytest.param("gelu_tanh_and_mul", 4096, 4096, torch.float16, GeluTanhAndMulOp, "direct", marks=pytest.mark.full),
+            pytest.param("gelu_tanh_and_mul", 4096, 4096, torch.float16, GeluTanhAndMulOp, "explicit_parallel", marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@FusedGatedStrategyBenchFixture
+def test_fused_gated_strategy_bench(
+    op_name: str,
+    M: int,
+    N: int,
+    dtype: torch.dtype,
+    op_cls,
+    strategy: str,
+) -> None:
+    """Benchmark each fused gated strategy to validate DEFAULT_STRATEGY choice."""
+    test = FusedGatedBenchCase(M, N, dtype)
+    bm = FusedGatedBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = op_cls(M=M, N=N, dtype=dtype, strategy=strategy)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(
+        f"{op_name}_strategy", locals(), result, tag=f"tileops_{strategy}",
+    )
 
 
 # ---------------------------------------------------------------------------

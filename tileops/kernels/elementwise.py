@@ -699,6 +699,10 @@ class FusedGatedKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel"]
+    # Benchmark (H200, 4096x4096 fp16): explicit_parallel ~2x faster than direct
+    #   silu_and_mul:       3.04 TB/s explicit vs 1.50 TB/s direct
+    #   gelu_and_mul:       2.72 TB/s explicit vs 1.47 TB/s direct
+    #   gelu_tanh_and_mul:  3.38 TB/s explicit vs 1.51 TB/s direct
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
