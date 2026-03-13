@@ -49,12 +49,13 @@ def _make_dropout_kernel(N, dtype, p, seed, threads=256, num_per_thread=8):
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
                     rand_val = T.rng_rand_float()
-                    keep = rand_val >= T.cast(p, "float32")
-                    y[idx] = T.if_then_else(
-                        keep,
-                        x[idx] * T.cast(scale, x[idx].dtype),
-                        T.cast(0.0, x[idx].dtype),
-                    )
+                    if idx < N:
+                        keep = rand_val >= T.cast(p, "float32")
+                        y[idx] = T.if_then_else(
+                            keep,
+                            x[idx] * T.cast(scale, x[idx].dtype),
+                            T.cast(0.0, x[idx].dtype),
+                        )
 
         return main
 

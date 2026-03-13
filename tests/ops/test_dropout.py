@@ -14,17 +14,36 @@ import torch
 from tests.test_base import FixtureBase
 
 
-class DropoutFixture(FixtureBase):
+class DropoutStatFixture(FixtureBase):
+    """Fixture for statistical drop-rate tests.
+
+    Uses 4M elements so that sigma is small enough for the 3-sigma bound
+    to be robust (sigma ~ 2.3e-4 for p=0.5 at N=4M).
+    """
+
     PARAMS = [
         ("n_total, dtype, p", [
             # Smoke: basic dropout
+            pytest.param(4_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
+            # Full: required p values and additional dtypes
+            pytest.param(4_000_000, torch.float16, 0.1, marks=pytest.mark.full),
+            pytest.param(4_000_000, torch.float16, 0.3, marks=pytest.mark.full),
+            pytest.param(4_000_000, torch.bfloat16, 0.5, marks=pytest.mark.full),
+            pytest.param(4_000_000, torch.float32, 0.5, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+class DropoutScaleFixture(FixtureBase):
+    """Fixture for scale-factor tests (does not need large N)."""
+
+    PARAMS = [
+        ("n_total, dtype, p", [
             pytest.param(1_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
-            # Full: various drop rates and dtypes
             pytest.param(1_000_000, torch.float16, 0.1, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float16, 0.3, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.bfloat16, 0.5, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float32, 0.5, marks=pytest.mark.full),
-            pytest.param(4_000_000, torch.float16, 0.3, marks=pytest.mark.full),
         ]),
     ]
 
@@ -47,7 +66,7 @@ class DropoutEdgeCaseFixture(FixtureBase):
     ]
 
 
-@DropoutFixture
+@DropoutStatFixture
 def test_dropout_statistical_rate(n_total: int, dtype: torch.dtype, p: float) -> None:
     """Verify that the fraction of dropped elements is within 3 sigma of p."""
     from tileops.ops.dropout import DropoutOp
@@ -60,17 +79,16 @@ def test_dropout_statistical_rate(n_total: int, dtype: torch.dtype, p: float) ->
     n_dropped = (y == 0).sum().item()
     drop_rate = n_dropped / n_total
 
-    # 5-sigma bound for Bernoulli(p) with n_total samples.
-    # Using 5-sigma instead of 3-sigma for robustness in automated CI
-    # (3-sigma gives ~0.3% false-positive rate per test; 5-sigma is ~5.7e-5%).
+    # 3-sigma bound for Bernoulli(p) with n_total samples.
+    # At N=4M, sigma ~ 2.3e-4 for p=0.5, giving a 3-sigma window of ~6.9e-4.
     sigma = (p * (1 - p) / n_total) ** 0.5
-    assert abs(drop_rate - p) < 5 * sigma, (
-        f"Drop rate {drop_rate:.4f} outside 5-sigma bound "
-        f"[{p - 5 * sigma:.4f}, {p + 5 * sigma:.4f}] for p={p}"
+    assert abs(drop_rate - p) < 3 * sigma, (
+        f"Drop rate {drop_rate:.6f} outside 3-sigma bound "
+        f"[{p - 3 * sigma:.6f}, {p + 3 * sigma:.6f}] for p={p}"
     )
 
 
-@DropoutFixture
+@DropoutScaleFixture
 def test_dropout_scale_factor(n_total: int, dtype: torch.dtype, p: float) -> None:
     """Verify non-dropped elements are scaled by 1/(1-p)."""
     from tileops.ops.dropout import DropoutOp
