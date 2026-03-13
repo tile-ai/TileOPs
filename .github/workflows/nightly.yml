@@ -29,6 +29,28 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Configure persistent compile caches
+        run: |
+          set -euo pipefail
+
+          TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
+          TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
+          TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
+
+          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+
+          {
+            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
+            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
+            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+          } >> "$GITHUB_ENV"
+
+          echo "Configured compile caches:"
+          echo "  TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
+          echo "  TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
+          echo "  TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+        shell: bash
+
       - name: Validate GPU frequency
         run: |
           set -euo pipefail
@@ -95,6 +117,13 @@ jobs:
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
           export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
+          python - <<'PY'
+          import os
+
+          print("Runtime cache env:")
+          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
+              print(f"{key}={os.environ.get(key)}")
+          PY
           set -o pipefail
           python -m pytest -q benchmarks/ops | tee tileops_benchmarks.log
         shell: bash
@@ -152,6 +181,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Configure persistent compile caches
+        run: |
+          set -euo pipefail
+
+          TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
+          TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
+          TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
+
+          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+
+          {
+            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
+            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
+            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+          } >> "$GITHUB_ENV"
+
+          echo "Configured compile caches:"
+          echo "  TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
+          echo "  TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
+          echo "  TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+        shell: bash
 
       - name: Validate GPU frequency
         run: |
@@ -241,6 +292,13 @@ jobs:
           unset PYTHONPATH || true
 
           cd "${TMP_TEST_DIR}"
+          python - <<'PY'
+          import os
+
+          print("Runtime cache env:")
+          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
+              print(f"{key}={os.environ.get(key)}")
+          PY
           python -m pytest -q tests -m "smoke or full or nightly"
         shell: bash
 
