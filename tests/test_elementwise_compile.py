@@ -1,8 +1,11 @@
 """Tests for torch.compile compatibility of elementwise ops.
 
-Covers 6 representative cases: relu (unary), add (binary with broadcast),
-eq (comparison with bool output), silu_and_mul (fused gated), abs (math unary),
-sign (branching unary).
+Section 1: Detailed compile tests for 6 representative ops (relu, add, eq,
+silu_and_mul, abs, sign) with full fixture/test structure.
+
+Section 2: Parametrized compile-smoke tests covering every remaining registered
+op to ensure the registration table is fully exercised.
+
 Validates that torch.compile(op, fullgraph=True) produces correct output.
 """
 
@@ -13,10 +16,59 @@ from tests.test_base import FixtureBase, TestBase, exact_compare
 from tileops.ops.elementwise import (
     AbsOp,
     AddOp,
+    BitwiseAndOp,
+    BitwiseNotOp,
+    BitwiseOrOp,
+    BitwiseXorOp,
+    CeilOp,
+    CosOp,
+    DivOp,
     EqOp,
+    ErfOp,
+    Expm1Op,
+    ExpOp,
+    FloorDivideOp,
+    FloorOp,
+    GeluAndMulOp,
+    GeluOp,
+    GeluTanhAndMulOp,
+    GeOp,
+    GtOp,
+    HardsigmoidOp,
+    HardswishOp,
+    IsfiniteOp,
+    IsinfOp,
+    IsnanOp,
+    LeOp,
+    LerpOp,
+    Log1pOp,
+    LogicalAndOp,
+    LogicalNotOp,
+    LogicalOrOp,
+    LogOp,
+    LtOp,
+    MaximumOp,
+    MinimumOp,
+    MishOp,
+    MulOp,
+    NegOp,
+    NeOp,
+    PowOp,
+    ReciprocalOp,
     ReluOp,
+    RemainderOp,
+    RoundOp,
+    RsqrtOp,
+    SeluOp,
+    SigmoidOp,
     SignOp,
     SiluAndMulOp,
+    SiluOp,
+    SinOp,
+    SqrtOp,
+    SubOp,
+    TanhOp,
+    TruncOp,
 )
 
 
@@ -301,6 +353,228 @@ def test_register_fake_fused_gated_shape(M, N, dtype):
     out = compiled_op(x)
     assert out.shape == (M, N), f"Shape mismatch: {out.shape} vs {(M, N)}"
     assert out.dtype == dtype
+
+
+# ---------------------------------------------------------------------------
+# Exhaustive compile-smoke: every registered op
+# ---------------------------------------------------------------------------
+# These tests instantiate and torch.compile each op to verify that the
+# custom_op registration, register_fake, and CUDA codegen all succeed.
+# They are marked "smoke" so CI catches registration regressions early.
+
+_N = 1024 * 1024
+_SHAPE = (1024, 1024)
+_SMALL = (256, 256)
+_DTYPE = torch.float16
+
+
+# --- Remaining unary ops (not covered by detailed tests above) ---
+
+_UNARY_FLOAT_OPS = [
+    pytest.param(ExpOp, torch.exp, "exp", marks=pytest.mark.smoke),
+    pytest.param(LogOp, lambda x: torch.log(x.abs().clamp(min=1e-4).float()).to(x.dtype), "log", marks=pytest.mark.smoke),
+    pytest.param(SqrtOp, lambda x: torch.sqrt(x.abs().float()).to(x.dtype), "sqrt", marks=pytest.mark.smoke),
+    pytest.param(RsqrtOp, lambda x: torch.rsqrt(x.abs().clamp(min=1e-4).float()).to(x.dtype), "rsqrt", marks=pytest.mark.smoke),
+    pytest.param(NegOp, torch.neg, "neg", marks=pytest.mark.smoke),
+    pytest.param(ReciprocalOp, lambda x: torch.reciprocal(x.float()).to(x.dtype), "reciprocal", marks=pytest.mark.smoke),
+    pytest.param(SinOp, lambda x: torch.sin(x.float()).to(x.dtype), "sin", marks=pytest.mark.smoke),
+    pytest.param(CosOp, lambda x: torch.cos(x.float()).to(x.dtype), "cos", marks=pytest.mark.smoke),
+    pytest.param(FloorOp, lambda x: torch.floor(x.float()).to(x.dtype), "floor", marks=pytest.mark.smoke),
+    pytest.param(CeilOp, lambda x: torch.ceil(x.float()).to(x.dtype), "ceil", marks=pytest.mark.smoke),
+    pytest.param(RoundOp, lambda x: torch.round(x.float()).to(x.dtype), "round", marks=pytest.mark.smoke),
+    pytest.param(TruncOp, lambda x: torch.trunc(x.float()).to(x.dtype), "trunc", marks=pytest.mark.smoke),
+    pytest.param(ErfOp, lambda x: torch.erf(x.float()).to(x.dtype), "erf", marks=pytest.mark.smoke),
+    pytest.param(Log1pOp, lambda x: torch.log1p(x.abs().float()).to(x.dtype), "log1p", marks=pytest.mark.smoke),
+    pytest.param(Expm1Op, lambda x: torch.expm1(x.float()).to(x.dtype), "expm1", marks=pytest.mark.smoke),
+    pytest.param(GeluOp, lambda x: torch.nn.functional.gelu(x.float()).to(x.dtype), "gelu", marks=pytest.mark.smoke),
+    pytest.param(SiluOp, lambda x: torch.nn.functional.silu(x.float()).to(x.dtype), "silu", marks=pytest.mark.smoke),
+    pytest.param(SigmoidOp, lambda x: torch.sigmoid(x.float()).to(x.dtype), "sigmoid", marks=pytest.mark.smoke),
+    pytest.param(TanhOp, lambda x: torch.tanh(x.float()).to(x.dtype), "tanh", marks=pytest.mark.smoke),
+    pytest.param(HardswishOp, lambda x: torch.nn.functional.hardswish(x.float()).to(x.dtype), "hardswish", marks=pytest.mark.smoke),
+    pytest.param(HardsigmoidOp, lambda x: torch.nn.functional.hardsigmoid(x.float()).to(x.dtype), "hardsigmoid", marks=pytest.mark.smoke),
+    pytest.param(MishOp, lambda x: torch.nn.functional.mish(x.float()).to(x.dtype), "mish", marks=pytest.mark.smoke),
+    pytest.param(SeluOp, lambda x: torch.nn.functional.selu(x.float()).to(x.dtype), "selu", marks=pytest.mark.smoke),
+]
+
+
+@pytest.mark.parametrize("op_cls, ref_fn, name", _UNARY_FLOAT_OPS)
+def test_unary_float_compile(op_cls, ref_fn, name):
+    """Compile-smoke for remaining float unary ops."""
+    n = _N
+    op = op_cls(N_total=n, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    x = torch.randn(n, dtype=_DTYPE, device="cuda")
+    out = compiled_op(x)
+    ref = ref_fn(x)
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+# --- Unary bool-output ops ---
+
+_UNARY_BOOL_OPS = [
+    pytest.param(LogicalNotOp, lambda x: ~(x != 0), torch.float16, "logical_not", marks=pytest.mark.smoke),
+    pytest.param(IsnanOp, torch.isnan, torch.float16, "isnan", marks=pytest.mark.smoke),
+    pytest.param(IsinfOp, torch.isinf, torch.float16, "isinf", marks=pytest.mark.smoke),
+    pytest.param(IsfiniteOp, torch.isfinite, torch.float16, "isfinite", marks=pytest.mark.smoke),
+]
+
+
+@pytest.mark.parametrize("op_cls, ref_fn, dtype, name", _UNARY_BOOL_OPS)
+def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
+    """Compile-smoke for unary ops with bool output."""
+    n = _N
+    op = op_cls(N_total=n, dtype=dtype)
+    compiled_op = torch.compile(op, fullgraph=True)
+    x = torch.randn(n, dtype=dtype, device="cuda")
+    out = compiled_op(x)
+    ref = ref_fn(x)
+    assert out.dtype == torch.bool
+    assert torch.equal(out, ref)
+
+
+# --- Unary bitwise op ---
+
+@pytest.mark.smoke
+def test_bitwise_not_compile():
+    """Compile-smoke for BitwiseNotOp."""
+    n = _N
+    x_int = torch.randint(0, 256, (n,), dtype=torch.uint8, device="cuda")
+    op = BitwiseNotOp(N_total=n, dtype=torch.uint8)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x_int)
+    ref = ~x_int
+    assert torch.equal(out, ref)
+
+
+# --- Remaining binary same-dtype ops ---
+
+_BINARY_ARITH_OPS = [
+    pytest.param(SubOp, lambda a, b: (a.float() - b.float()).half(), "sub", marks=pytest.mark.smoke),
+    pytest.param(MulOp, lambda a, b: (a.float() * b.float()).half(), "mul", marks=pytest.mark.smoke),
+    pytest.param(DivOp, lambda a, b: (a.float() / b.float()).half(), "div", marks=pytest.mark.smoke),
+    pytest.param(RemainderOp, lambda a, b: torch.remainder(a.float(), b.float()).half(), "remainder", marks=pytest.mark.smoke),
+    pytest.param(PowOp, lambda a, b: torch.pow(a.float().abs(), b.float().abs()).half(), "pow", marks=pytest.mark.smoke),
+    pytest.param(FloorDivideOp, lambda a, b: torch.floor_divide(a.float(), b.float()).half(), "floor_divide", marks=pytest.mark.smoke),
+    pytest.param(MaximumOp, lambda a, b: torch.maximum(a.float(), b.float()).half(), "maximum", marks=pytest.mark.smoke),
+    pytest.param(MinimumOp, lambda a, b: torch.minimum(a.float(), b.float()).half(), "minimum", marks=pytest.mark.smoke),
+]
+
+
+@pytest.mark.parametrize("op_cls, ref_fn, name", _BINARY_ARITH_OPS)
+def test_binary_arith_compile(op_cls, ref_fn, name):
+    """Compile-smoke for remaining binary arithmetic ops."""
+    shape = _SMALL
+    a = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    b = torch.randn(shape, dtype=_DTYPE, device="cuda").abs().clamp(min=0.1)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b)
+    ref = ref_fn(a, b)
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+# --- Lerp (special binary with weight) ---
+
+@pytest.mark.smoke
+def test_lerp_compile():
+    """Compile-smoke for LerpOp."""
+    shape = _SMALL
+    a = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    b = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    op = LerpOp(a_shape=shape, b_shape=shape, dtype=_DTYPE, weight=0.3)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b)
+    ref = torch.lerp(a.float(), b.float(), 0.3).half()
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+# --- Remaining comparison ops ---
+
+_COMPARISON_OPS = [
+    pytest.param(NeOp, lambda a, b: a != b, "ne", marks=pytest.mark.smoke),
+    pytest.param(GtOp, lambda a, b: a > b, "gt", marks=pytest.mark.smoke),
+    pytest.param(LtOp, lambda a, b: a < b, "lt", marks=pytest.mark.smoke),
+    pytest.param(GeOp, lambda a, b: a >= b, "ge", marks=pytest.mark.smoke),
+    pytest.param(LeOp, lambda a, b: a <= b, "le", marks=pytest.mark.smoke),
+]
+
+
+@pytest.mark.parametrize("op_cls, ref_fn, name", _COMPARISON_OPS)
+def test_comparison_compile(op_cls, ref_fn, name):
+    """Compile-smoke for remaining comparison ops (bool output)."""
+    shape = _SMALL
+    a = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    b = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b)
+    ref = ref_fn(a, b)
+    assert out.dtype == torch.bool
+    assert torch.equal(out, ref)
+
+
+# --- Logical binary ops ---
+
+_LOGICAL_OPS = [
+    pytest.param(LogicalAndOp, lambda a, b: (a != 0) & (b != 0), "logical_and", marks=pytest.mark.smoke),
+    pytest.param(LogicalOrOp, lambda a, b: (a != 0) | (b != 0), "logical_or", marks=pytest.mark.smoke),
+]
+
+
+@pytest.mark.parametrize("op_cls, ref_fn, name", _LOGICAL_OPS)
+def test_logical_binary_compile(op_cls, ref_fn, name):
+    """Compile-smoke for logical binary ops (bool output)."""
+    shape = _SMALL
+    a = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    b = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b)
+    ref = ref_fn(a, b)
+    assert out.dtype == torch.bool
+    assert torch.equal(out, ref)
+
+
+# --- Bitwise binary ops ---
+
+_BITWISE_BINARY_OPS = [
+    pytest.param(BitwiseAndOp, lambda a, b: a & b, "bitwise_and", marks=pytest.mark.smoke),
+    pytest.param(BitwiseOrOp, lambda a, b: a | b, "bitwise_or", marks=pytest.mark.smoke),
+    pytest.param(BitwiseXorOp, lambda a, b: a ^ b, "bitwise_xor", marks=pytest.mark.smoke),
+]
+
+
+@pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
+def test_bitwise_binary_compile(op_cls, ref_fn, name):
+    """Compile-smoke for bitwise binary ops."""
+    shape = _SMALL
+    a = torch.randint(0, 256, shape, dtype=torch.uint8, device="cuda")
+    b = torch.randint(0, 256, shape, dtype=torch.uint8, device="cuda")
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.uint8)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b)
+    ref = ref_fn(a, b)
+    assert torch.equal(out, ref)
+
+
+# --- Remaining fused gated ops ---
+
+_FUSED_GATED_OPS = [
+    pytest.param(GeluAndMulOp, "gelu_and_mul", marks=pytest.mark.smoke),
+    pytest.param(GeluTanhAndMulOp, "gelu_tanh_and_mul", marks=pytest.mark.smoke),
+]
+
+
+@pytest.mark.parametrize("op_cls, name", _FUSED_GATED_OPS)
+def test_fused_gated_compile(op_cls, name):
+    """Compile-smoke for remaining fused gated ops."""
+    M, N = 64, 128
+    x = torch.randn(M, 2 * N, dtype=_DTYPE, device="cuda")
+    op = op_cls(M=M, N=N, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x)
+    assert out.shape == (M, N)
+    assert out.dtype == _DTYPE
 
 
 if __name__ == "__main__":
