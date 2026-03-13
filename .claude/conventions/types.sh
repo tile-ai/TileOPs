@@ -30,19 +30,19 @@ BRANCH_NAME_PATTERN="^(${BRANCH_PREFIXES})/[a-z0-9._-]+/[a-z0-9._-]+$"
 # ---------------------------------------------------------------------------
 
 declare -A TYPE_TO_LABEL=(
-  [Feat]=feature
-  [BugFix]=fix
-  [Fix]=fix
-  [Refactor]=refactor
-  [Enhancement]=enhancement
-  [Doc]=docs
-  [Chore]=chore
-  [Maintain]=maintain
   [Bench]=bench
+  [BugFix]=fix
+  [Chore]=chore
   [CI]=ci
-  [Test]=test
+  [Doc]=docs
+  [Enhancement]=enhancement
+  [Feat]=feature
+  [Fix]=fix
+  [Maintain]=maintain
   [Perf]=perf
+  [Refactor]=refactor
   [Style]=style
+  [Test]=test
 )
 
 # All type-related labels (used for stale-label cleanup)
@@ -59,41 +59,41 @@ ISSUE_TYPES="BENCHMARK|BUG|DOCS|FEAT|MAINTAIN|META|PERF|REFACTOR|TEST"
 
 # Issue type → GitHub label (for auto-label workflow)
 declare -A ISSUE_TYPE_TO_LABEL=(
-  [FEAT]=feature
+  [BENCHMARK]=bench
   [BUG]=bug
+  [DOCS]=docs
+  [FEAT]=feature
+  [MAINTAIN]=maintain
+  [META]=chore
   [PERF]=perf
   [REFACTOR]=refactor
-  [DOCS]=docs
   [TEST]=test
-  [META]=chore
-  [MAINTAIN]=maintain
-  [BENCHMARK]=bench
 )
 
 # Issue type → commit/PR type prefix
 declare -A ISSUE_TO_COMMIT_TYPE=(
+  [BENCHMARK]=Bench
   [BUG]=BugFix
+  [DOCS]=Doc
   [FEAT]=Feat
+  [MAINTAIN]=Maintain
+  [META]=Chore
   [PERF]=Enhancement
   [REFACTOR]=Refactor
-  [DOCS]=Doc
   [TEST]=Test
-  [META]=Chore
-  [MAINTAIN]=Maintain
-  [BENCHMARK]=Bench
 )
 
 # Issue type → branch prefix
 declare -A ISSUE_TO_BRANCH_PREFIX=(
+  [BENCHMARK]=bench
   [BUG]=fix
+  [DOCS]=doc
   [FEAT]=feat
+  [MAINTAIN]=maintain
+  [META]=chore
   [PERF]=perf
   [REFACTOR]=refactor
-  [DOCS]=doc
   [TEST]=test
-  [META]=chore
-  [MAINTAIN]=maintain
-  [BENCHMARK]=bench
 )
 
 # Default for unrecognized issue types
