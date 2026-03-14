@@ -1301,9 +1301,15 @@ class LeakyReluKernel(Kernel):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     def __init__(self, N_total, dtype, negative_slope=0.01, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         self.negative_slope = negative_slope
@@ -1350,9 +1356,15 @@ class EluKernel(Kernel):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     def __init__(self, N_total, dtype, alpha=1.0, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         self.alpha = alpha
@@ -1398,9 +1410,15 @@ class HardtanhKernel(Kernel):
     """Hardtanh: y = clamp(x, min_val, max_val)."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         self.min_val = min_val
@@ -1450,9 +1468,15 @@ class SoftplusKernel(Kernel):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         self.beta = beta
@@ -1523,8 +1547,15 @@ class PreluKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
     def __init__(self, N_total, C, inner_size, dtype, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.C = C
         self.inner_size = inner_size
@@ -1582,8 +1613,15 @@ class WhereKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         cfg = self.default_config
@@ -1641,8 +1679,15 @@ class ClampKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
     def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         self.min_val = min_val
@@ -1706,8 +1751,15 @@ class MaskedFillKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
     def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         self.fill_value = fill_value
@@ -1775,9 +1827,16 @@ class NanToNumKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
     def __init__(self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4,
                  config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.N_total = N_total
         self.dtype = dtype
         self.nan_val = nan_val
@@ -1851,8 +1910,15 @@ class AlibiKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
     def __init__(self, seq_len, num_heads, dtype, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.seq_len = seq_len
         self.num_heads = num_heads
         self.dtype = dtype
@@ -1924,8 +1990,15 @@ class SinusoidalKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
     def __init__(self, seq_len, d_model, dtype, config=None, tune=False):
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype

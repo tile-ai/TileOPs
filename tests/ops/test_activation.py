@@ -76,7 +76,7 @@ def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> Non
 
 
 # ===========================================================================
-# 8 activation ops (issue #437)
+# Template-based activation ops
 # ===========================================================================
 
 
@@ -226,7 +226,7 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
 
 
 # ===========================================================================
-# 5 independent activation ops (issue #439)
+# Independent activation ops
 # ===========================================================================
 
 
@@ -319,6 +319,13 @@ def test_prelu_batch_dim() -> None:
     out = op(x, weight)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
     print("All checks passed for PreluOp batch-dim.")
+
+
+@pytest.mark.smoke
+def test_independent_activation_rejects_non_float_dtype() -> None:
+    from tileops.kernels.elementwise import LeakyReluKernel
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        LeakyReluKernel(N_total=16, dtype=torch.int32)
 
 
 if __name__ == "__main__":

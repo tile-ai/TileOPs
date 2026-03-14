@@ -119,7 +119,7 @@ def test_special_predicates_reject_non_float_dtype() -> None:
 
 
 # ===========================================================================
-# 6 independent ops (issue #439): where, clamp, masked_fill, nan_to_num,
+# Independent special ops: where, clamp, masked_fill, nan_to_num,
 # alibi, sinusoidal
 # ===========================================================================
 
@@ -457,6 +457,13 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5, equal_nan=True)
     print("All checks passed for NanToNumOp edge case.")
+
+
+@pytest.mark.smoke
+def test_independent_special_rejects_non_float_dtype() -> None:
+    from tileops.kernels.elementwise import ClampKernel
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        ClampKernel(N_total=16, dtype=torch.int32)
 
 
 if __name__ == "__main__":
