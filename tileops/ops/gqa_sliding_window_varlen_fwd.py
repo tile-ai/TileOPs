@@ -53,7 +53,8 @@ class GqaSlidingWindowVarlenFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+        if heads % heads_kv != 0:
+            raise ValueError("heads must be divisible by heads_kv")
         if window_size_left != -1 and window_size_left < 0:
             raise ValueError(
                 f"window_size_left must be -1 (unlimited) or >= 0, got {window_size_left}")

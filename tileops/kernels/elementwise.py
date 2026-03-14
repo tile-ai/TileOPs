@@ -713,8 +713,8 @@ class MaximumKernel(BinaryKernel):
     @staticmethod
     def op_func(a, b):
         # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
-        # otherwise return the larger value. Signed-zero tie semantics are
-        # tracked separately in issue #469.
+        # otherwise return the larger value.
+        # Signed-zero tie semantics are tracked separately.
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         ordered_max = T.if_then_else(a > b, a, b)
@@ -733,8 +733,8 @@ class MinimumKernel(BinaryKernel):
     @staticmethod
     def op_func(a, b):
         # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
-        # otherwise return the smaller value. Signed-zero tie semantics are
-        # tracked separately in issue #469.
+        # otherwise return the smaller value.
+        # Signed-zero tie semantics are tracked separately.
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         ordered_min = T.if_then_else(a < b, a, b)

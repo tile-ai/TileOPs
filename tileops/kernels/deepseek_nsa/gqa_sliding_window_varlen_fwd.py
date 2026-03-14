@@ -117,7 +117,8 @@ def _gqa_sw_fwd_varlen_kernel(
     accum_dtype: str = 'float',
 ) -> Callable:
     scale = make_log2e_scale(dim)
-    assert heads % heads_kv == 0
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     has_window = window_size_left >= 0 or window_size_right >= 0
 
@@ -299,7 +300,8 @@ class _GqaSlidingWindowVarlenFwdKernelBase(Kernel):
         tune: bool = False,
     ) -> None:
         super().__init__()
-        assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+        if heads % heads_kv != 0:
+            raise ValueError("heads must be divisible by heads_kv")
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -381,7 +383,8 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     accum_dtype: str = "float",
 ) -> Callable:
     scale = make_log2e_scale(dim)
-    assert heads % heads_kv == 0
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     has_window = window_size_left >= 0 or window_size_right >= 0
 

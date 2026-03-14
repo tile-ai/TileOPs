@@ -1,6 +1,6 @@
 """Tests for unary math elementwise ops (17 ops).
 
-Covers L1 correctness across supported float dtypes and the issue #437
+Covers L1 correctness across supported float dtypes and
 L4 edge cases for numerically sensitive ops.
 """
 
@@ -229,7 +229,7 @@ def test_math_ops_reject_non_float_dtype() -> None:
 
 
 # ---------------------------------------------------------------------------
-# L4 edge-case tests from issue #437 (fp32, 4K)
+# L4 edge-case tests (fp32, 4K)
 # ---------------------------------------------------------------------------
 
 
