@@ -35,5 +35,6 @@ Items marked **[RECOMMENDED]** should pass — note in PR body if skipped with r
 - [ ] **[REQUIRED]** Unit tests in `tests/ops/` with reference comparison (FP16 atol=1e-3, BF16 atol=1.6e-2)
 - [ ] **[REQUIRED]** Tests cover unsupported-dtype rejection paths (expect `ValueError`)
 - [ ] **[REQUIRED]** Dtype support matrix documented in PR body
+- [ ] **[REQUIRED]** No issue references (`#123`, `TODO: see #456`) in source or test files — issues track goals in GitHub, not in code
 - [ ] **[RECOMMENDED]** Benchmark class in `benchmarks/`
 - [ ] **[RECOMMENDED]** `__init__.py` exports are synchronized (`__all__` + explicit re-exports)
