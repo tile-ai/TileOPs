@@ -56,16 +56,12 @@ class TestNoAssertValidation:
         should have been replaced with if/raise ValueError."""
         violations = []
         for fpath in _collect_py_files(KERNEL_DIRS):
-            # Skip internal-invariant files per issue scope
             rel = fpath.relative_to(ROOT)
             rel_str = str(rel)
-            # op.py and utils.py asserts are internal invariants, leave untouched
-            if rel_str.endswith("op.py") or rel_str.endswith("utils.py"):
+            # utils.py asserts are internal invariants, leave untouched
+            if rel_str.endswith("utils.py"):
                 continue
-            # elementwise.py strategy asserts are internal invariants
-            if "elementwise.py" in rel_str:
-                continue
-            # fp8_lighting_indexer.py assert is a runtime check but not in scope
+            # fp8_lighting_indexer.py assert is a post-condition check, not in scope
             if "fp8_lighting_indexer" in rel_str:
                 continue
 

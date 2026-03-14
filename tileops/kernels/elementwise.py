@@ -344,9 +344,10 @@ class UnaryKernel(Kernel):
         self.dtype = dtype
         self.output_dtype = self.OUTPUT_DTYPE or dtype
         self.strategy = strategy or self.DEFAULT_STRATEGY
-        assert self.strategy in self.STRATEGIES, (
-            f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
-        )
+        if self.strategy not in self.STRATEGIES:
+            raise ValueError(
+                f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
+            )
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
@@ -437,9 +438,10 @@ class BinaryKernel(Kernel):
         self.a_numel = a_numel
         self.b_numel = b_numel
         self.strategy = strategy or self.DEFAULT_STRATEGY
-        assert self.strategy in self.STRATEGIES, (
-            f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
-        )
+        if self.strategy not in self.STRATEGIES:
+            raise ValueError(
+                f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
+            )
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
