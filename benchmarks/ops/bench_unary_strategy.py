@@ -2,7 +2,14 @@
 
 Uses relu as the representative op. Sweeps DNN-realistic 2D shapes
 (tokens x hidden_dim), all SUPPORTED_DTYPES, and all 3 strategies to
-validate DEFAULT_STRATEGY = "register_copy".
+evaluate DEFAULT_STRATEGY.
+
+H200 observations:
+  - register_copy wins clearly for fp16/bf16 across all shapes.
+  - fp32 small shapes (1024x4096) show run-to-run variance between
+    register_copy and explicit_parallel; neither dominates reliably.
+  - Current DEFAULT_STRATEGY = "register_copy" is a reasonable choice
+    but not proven dominant for every dtype/shape combination.
 
 Acceptance criteria (issue #498):
   >= 3 shapes x 3 dtypes x 3 strategies = 27 benchmark points.
