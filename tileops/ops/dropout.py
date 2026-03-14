@@ -23,7 +23,7 @@ __all__ = ["DropoutOp"]
 
 
 class DropoutOp(Op):
-    """Dropout operation with Philox PRNG for deterministic replay.
+    """Dropout operation with deterministic replay via TileLang RNG.
 
     Compatible with PyTorch dropout semantics:
     - Training mode: output = x * mask / (1 - p), mask ~ Bernoulli(1 - p)
@@ -32,12 +32,14 @@ class DropoutOp(Op):
     - p=1: all zeros
 
     Same seed produces identical masks for deterministic replay.
+    Uses T.rng_init / T.rng_rand_float (backed by cuRAND Philox4_32_10
+    by default) for per-thread random number generation.
 
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype (float16, bfloat16, float32).
         p: Drop probability in [0, 1].
-        seed: Integer seed for Philox PRNG.
+        seed: Integer seed for RNG.
         training: If False, dropout is disabled (identity pass-through).
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
@@ -64,15 +66,19 @@ class DropoutOp(Op):
         self.seed = seed
         self.training = training
 
-        # Build kernel only when dropout is actually active
+        # Skip kernel build when dropout has no effect (identity or all-zeros)
         self._skip = not training or p == 0.0
-        if not self._skip:
-            self.dispatch_kernel(kernel_map)
+        self._all_zero = training and p == 1.0
+
+        # Always populate kernel_map for Op base class consistency
+        self.dispatch_kernel(kernel_map)
+
+        # Build kernel only when dropout is actually active
+        if not self._skip and not self._all_zero:
             self.kernel = self.kernel_map[self._op_name](
                 N_total, dtype, p=p, seed=seed, tune=tune,
             )
         else:
-            # Still need kernel_map for the interface but no kernel is built
             self.kernel = None
 
     @property
@@ -99,8 +105,8 @@ class DropoutOp(Op):
         if self._skip:
             return x
 
-        # Edge case: p=1 means all zeros
-        if self.p == 1.0:
+        # Edge case: p=1 means all zeros (no kernel needed)
+        if self._all_zero:
             return torch.zeros_like(x)
 
         orig_shape = x.shape

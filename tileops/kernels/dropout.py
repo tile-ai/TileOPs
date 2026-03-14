@@ -1,8 +1,9 @@
-"""Dropout kernel with Philox PRNG for deterministic random mask generation.
+"""Dropout kernel with deterministic random mask generation.
 
 Implements inverted dropout: output = x * mask / (1 - p)
-where mask ~ Bernoulli(1 - p), using cuRAND Philox4_32_10 for deterministic
-replay (same seed + same thread layout = same mask).
+where mask ~ Bernoulli(1 - p), using TileLang's T.rng_init / T.rng_rand_float
+(backed by cuRAND Philox4_32_10 by default) for deterministic replay
+(same seed + same thread layout = same mask).
 
 Strategy: explicit_parallel (N elements per thread) with per-thread RNG state.
 """
@@ -23,17 +24,18 @@ _FLOAT_DTYPES = (
 
 
 def _make_dropout_kernel(N, dtype, p, seed, threads=256, num_per_thread=8):
-    """Build a dropout kernel with Philox PRNG.
+    """Build a dropout kernel using TileLang RNG.
 
-    Each thread initializes its own Philox state using (seed, thread_global_id)
-    and generates uniform random floats. Elements where rand < p are dropped;
-    surviving elements are scaled by 1/(1-p).
+    Each thread calls T.rng_init(seed) which initialises per-thread RNG state
+    (Philox4_32_10 by default, keyed by block/thread ID), then calls
+    T.rng_rand_float() to generate uniform [0, 1) floats. Elements where
+    rand < p are dropped; surviving elements are scaled by 1/(1-p).
 
     Args:
         N: Total number of elements (flattened).
         dtype: TileLang dtype string.
         p: Drop probability in [0, 1].
-        seed: Integer seed for Philox PRNG.
+        seed: Integer seed for TileLang RNG.
         threads: Threads per block.
         num_per_thread: Elements processed per thread.
     """
@@ -63,17 +65,17 @@ def _make_dropout_kernel(N, dtype, p, seed, threads=256, num_per_thread=8):
 
 
 class DropoutKernel(Kernel):
-    """Dropout kernel with Philox PRNG for deterministic mask generation.
+    """Dropout kernel with deterministic mask generation via TileLang RNG.
 
     Applies inverted dropout: output = x * mask / (1 - p) where mask is
-    Bernoulli(1 - p). Uses cuRAND Philox4_32_10 generator initialized with
-    the given seed for deterministic replay.
+    Bernoulli(1 - p). Uses T.rng_init / T.rng_rand_float (backed by cuRAND
+    Philox4_32_10 by default) for deterministic replay.
 
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype for input (float16, bfloat16, float32).
         p: Drop probability in [0, 1].
-        seed: Integer seed for the Philox PRNG.
+        seed: Integer seed for TileLang RNG.
         config: Optional dict with "threads" and "num_per_thread".
         tune: Whether to autotune.
     """
