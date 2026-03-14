@@ -445,17 +445,17 @@ def test_fp8_accumulation_in_higher_precision():
 
 
 @pytest.mark.smoke
-def test_unary_rejects_unsupported_dtype():
-    """UnaryKernel raises ValueError for dtypes not in SUPPORTED_DTYPES."""
-    from tileops.kernels.elementwise import LogicalNotKernel
+def test_bitwise_kernel_rejects_fp8():
+    """BitwiseNotKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
+    from tileops.kernels.elementwise import BitwiseNotKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
-        LogicalNotKernel(N_total=_N, dtype=torch.float8_e4m3fn)
+        BitwiseNotKernel(N_total=_N, dtype=torch.float8_e4m3fn)
 
 
 @pytest.mark.smoke
-def test_binary_rejects_unsupported_dtype():
-    """BinaryKernel raises ValueError for dtypes not in SUPPORTED_DTYPES."""
+def test_binary_bitwise_kernel_rejects_fp8():
+    """BitwiseAndKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
     from tileops.kernels.elementwise import BitwiseAndKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
