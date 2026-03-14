@@ -658,6 +658,113 @@ def test_minimum_nan_propagation(dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Maximum/Minimum signed-zero regression tests
+# ---------------------------------------------------------------------------
+
+
+class SignedZeroFixture(FixtureBase):
+    PARAMS = [
+        ("dtype", [
+            pytest.param(torch.float16, marks=pytest.mark.smoke),
+            pytest.param(torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(torch.float32, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@SignedZeroFixture
+def test_maximum_signed_zero(dtype: torch.dtype) -> None:
+    """maximum(+0.0, -0.0) must return +0.0 (IEEE / PyTorch semantics)."""
+    pos_zero = torch.tensor(0.0, dtype=dtype, device="cuda")
+    neg_zero = torch.tensor(-0.0, dtype=dtype, device="cuda")
+
+    # Both orderings: (+0, -0) and (-0, +0)
+    a = torch.stack([pos_zero, neg_zero, pos_zero, neg_zero])
+    b = torch.stack([neg_zero, pos_zero, pos_zero, neg_zero])
+    shape = (4,)
+    op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.maximum(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+
+    # Value equality
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    # Sign-bit equality: +0 and -0 compare equal but have different sign bits
+    out_signbits = torch.signbit(out)
+    ref_signbits = torch.signbit(ref)
+    assert torch.equal(out_signbits, ref_signbits), (
+        f"Signed-zero mismatch: out signs={out_signbits}, ref signs={ref_signbits}"
+    )
+
+
+@SignedZeroFixture
+def test_minimum_signed_zero(dtype: torch.dtype) -> None:
+    """minimum(-0.0, +0.0) must return -0.0 (IEEE / PyTorch semantics)."""
+    pos_zero = torch.tensor(0.0, dtype=dtype, device="cuda")
+    neg_zero = torch.tensor(-0.0, dtype=dtype, device="cuda")
+
+    # Both orderings: (-0, +0) and (+0, -0)
+    a = torch.stack([neg_zero, pos_zero, neg_zero, pos_zero])
+    b = torch.stack([pos_zero, neg_zero, neg_zero, pos_zero])
+    shape = (4,)
+    op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.minimum(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+
+    # Value equality
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    # Sign-bit equality
+    out_signbits = torch.signbit(out)
+    ref_signbits = torch.signbit(ref)
+    assert torch.equal(out_signbits, ref_signbits), (
+        f"Signed-zero mismatch: out signs={out_signbits}, ref signs={ref_signbits}"
+    )
+
+
+@SignedZeroFixture
+def test_maximum_signed_zero_with_nan(dtype: torch.dtype) -> None:
+    """Signed-zero fix must not regress NaN propagation."""
+    nan = float("nan")
+    a = torch.tensor([nan, 0.0, -0.0, nan], dtype=dtype, device="cuda")
+    b = torch.tensor([0.0, nan, nan, -0.0], dtype=dtype, device="cuda")
+    shape = (4,)
+    op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.maximum(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    # NaN positions must match
+    assert torch.equal(torch.isnan(out), torch.isnan(ref)), (
+        f"NaN positions differ: out={out}, ref={ref}"
+    )
+    # Non-NaN values: sign bits must match too
+    mask = ~torch.isnan(ref)
+    if mask.any():
+        torch.testing.assert_close(out[mask], ref[mask], atol=0, rtol=0)
+
+
+@SignedZeroFixture
+def test_minimum_signed_zero_with_nan(dtype: torch.dtype) -> None:
+    """Signed-zero fix must not regress NaN propagation."""
+    nan = float("nan")
+    a = torch.tensor([nan, 0.0, -0.0, nan], dtype=dtype, device="cuda")
+    b = torch.tensor([-0.0, nan, nan, 0.0], dtype=dtype, device="cuda")
+    shape = (4,)
+    op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.minimum(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    # NaN positions must match
+    assert torch.equal(torch.isnan(out), torch.isnan(ref)), (
+        f"NaN positions differ: out={out}, ref={ref}"
+    )
+    # Non-NaN values: sign bits must match too
+    mask = ~torch.isnan(ref)
+    if mask.any():
+        torch.testing.assert_close(out[mask], ref[mask], atol=0, rtol=0)
+
+
+# ---------------------------------------------------------------------------
 # L4 edge case tests (fp32, 4K)
 # ---------------------------------------------------------------------------
 
