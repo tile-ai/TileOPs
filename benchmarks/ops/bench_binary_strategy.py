@@ -4,7 +4,7 @@ Uses add as the representative op. Sweeps DNN-realistic 2D shapes
 (tokens x hidden_dim), all SUPPORTED_DTYPES, and both strategies to
 validate DEFAULT_STRATEGY = "explicit_parallel".
 
-Acceptance criteria (issue #498):
+Acceptance criteria:
   >= 3 shapes x 3 dtypes x 2 strategies = 18 benchmark points.
 """
 

@@ -1,4 +1,4 @@
-"""Validate that elementwise strategy benchmark modules satisfy issue #498 AC.
+"""Validate that elementwise strategy benchmark modules satisfy acceptance criteria.
 
 Tests check:
 - UnaryKernel benchmark has >= 3 shapes x 3 dtypes x 3 strategies = 27 cases

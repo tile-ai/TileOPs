@@ -11,7 +11,7 @@ H200 observations:
   - Current DEFAULT_STRATEGY = "register_copy" is a reasonable choice
     but not proven dominant for every dtype/shape combination.
 
-Acceptance criteria (issue #498):
+Acceptance criteria:
   >= 3 shapes x 3 dtypes x 3 strategies = 27 benchmark points.
 """
 
