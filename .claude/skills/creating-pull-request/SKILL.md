@@ -34,7 +34,18 @@ gh repo view --json nameWithOwner -q '.nameWithOwner'
 
 Split into `{owner}` and `{repo}`.
 
-### Step 2: Create the PR
+### Step 2: Structural compliance check (new ops only)
+
+If this PR does **not** touch kernel/op code, skip to Step 3.
+
+If this PR introduces or modifies a kernel/op:
+
+1. Read [op-compliance-checklist.md](op-compliance-checklist.md) for the full checklist.
+1. Verify the code against every item. Record each as `PASS`, `FAIL (reason)`, or `SKIP (reason)`.
+
+**HARD GATE:** Any `[REQUIRED]` item that is `FAIL` must be fixed before proceeding. `[RECOMMENDED]` items may be skipped with a reason. In the PR body `## Structural Compliance`, only list failures and skips. If all pass, write "All checks passed."
+
+### Step 3: Create the PR
 
 Use `gh pr create`. **Do NOT use the GitHub MCP tool** — `gh` CLI avoids the `\n` pitfall.
 
@@ -66,7 +77,7 @@ PR body section rules:
 - `## Additional context` — optional
 - **Delete** inapplicable optional sections entirely. Never leave empty headers.
 
-### Step 3: Add labels (MANDATORY)
+### Step 4: Add labels (MANDATORY)
 
 **At least one label is required.** Select based on PR type:
 
@@ -92,7 +103,7 @@ Authorship label (**required**):
 gh pr edit <PR_NUMBER> --add-label "<label1>" --add-label "<label2>"
 ```
 
-### Step 4: HARD GATE — Validate PR
+### Step 5: HARD GATE — Validate PR
 
 ```bash
 .claude/skills/creating-pull-request/scripts/validate.sh <owner/repo> <PR_NUMBER>

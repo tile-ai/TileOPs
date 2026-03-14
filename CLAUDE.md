@@ -25,12 +25,10 @@ TileOPs is a high-performance LLM operator library built on TileLang. The goal i
 
 ## Skill Index
 
-| Skill                    | Trigger                                                                                                                 |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `migrating-new-op`       | Use when adding or migrating an operator to TileOPs with the required kernel->op delivery path and validation checklist |
-| `committing-changes`     | Use when creating a clean commit: pre-commit validation, branch naming, commit message format, push                     |
-| `creating-pull-request`  | Use when creating a PR from a pushed branch: title/body format, labels, metadata validation                             |
-| `lifecycle-pull-request` | Full PR lifecycle end-to-end: commit, create PR, monitor CI, handle reviews (composes the above two skills)             |
-| `creating-issue`         | Use when filing a GitHub issue: title format, body structure, and TileOPs conventions                                   |
-| `lifecycle-issue-fixer`  | End-to-end issue resolution: read issue, worktree, explore, TDD, verify, and create PR with full lifecycle              |
-| `check-kernel-format`    | Run after kernel+op delivery or tuning to verify all structural requirements before opening a PR                        |
+| Skill                    | Trigger                                                                                                     |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `committing-changes`     | Use when creating a clean commit: pre-commit validation, branch naming, commit message format, push         |
+| `creating-pull-request`  | Use when creating a PR from a pushed branch: title/body format, labels, metadata validation                 |
+| `lifecycle-pull-request` | Full PR lifecycle end-to-end: commit, create PR, monitor CI, handle reviews (composes the above two skills) |
+| `creating-issue`         | Use when filing a GitHub issue: title format, body structure, and TileOPs conventions                       |
+| `lifecycle-issue-fixer`  | End-to-end issue resolution: read issue, worktree, explore, TDD, verify, and create PR with full lifecycle  |
