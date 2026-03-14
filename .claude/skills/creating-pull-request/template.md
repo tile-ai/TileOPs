@@ -22,9 +22,7 @@ All checks passed.
 
 ## Benchmark
 
-<!-- Required when PR involves performance changes -->
-
-<paste benchmark log or table here>
+<!-- Required when PR adds new ops or modifies kernel/op code. See benchmark-template.md for format. -->
 
 ## Regression
 
