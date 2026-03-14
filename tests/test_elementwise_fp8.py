@@ -84,6 +84,75 @@ def test_fp8_default_config_npt16(dtype):
 
 
 # ---------------------------------------------------------------------------
+# AC2 supplement: Direct kernel forward() returns correct dtype for e5m2
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_unary_kernel_forward_e5m2_dtype():
+    """UnaryKernel.forward() returns float8_e5m2, not float16."""
+    from tileops.kernels.elementwise import ExpKernel
+
+    n = _N
+    dtype = torch.float8_e5m2
+    kernel = ExpKernel(N_total=n, dtype=dtype)
+    x = (torch.randn(n, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
+    out = kernel(x)
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+
+
+@pytest.mark.smoke
+def test_binary_kernel_forward_e5m2_dtype():
+    """BinaryKernel.forward() returns float8_e5m2, not float16."""
+    from tileops.kernels.elementwise import AddKernel
+
+    n = _N
+    dtype = torch.float8_e5m2
+    kernel = AddKernel(
+        N_total=n, dtype=dtype,
+        coalesced_shape=(n,), a_strides=(1,), b_strides=(1,),
+        a_numel=n, b_numel=n,
+    )
+    a = (torch.randn(n, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
+    b = (torch.randn(n, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
+    out = kernel(a, b)
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+
+
+@pytest.mark.smoke
+def test_fused_gated_kernel_forward_e5m2_dtype():
+    """FusedGatedKernel.forward() returns float8_e5m2, not float16."""
+    from tileops.kernels.elementwise import SiluAndMulKernel
+
+    M, N = 64, 128
+    dtype = torch.float8_e5m2
+    kernel = SiluAndMulKernel(M=M, N=N, dtype=dtype)
+    x = (torch.randn(M, 2 * N, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
+    out = kernel(x)
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+
+
+@pytest.mark.smoke
+def test_unary_kernel_forward_e5m2_preserves_inf():
+    """UnaryKernel.forward() preserves Inf for e5m2 (direct kernel call)."""
+    from tileops.kernels.elementwise import ExpKernel
+
+    n = _N
+    dtype = torch.float8_e5m2
+    kernel = ExpKernel(N_total=n, dtype=dtype)
+    # exp(16) overflows to Inf in fp16
+    x = torch.full((n,), 16.0, dtype=torch.float16, device="cuda").to(dtype)
+    out = kernel(x)
+    assert out.dtype == dtype
+    out_fp32 = out.to(torch.float32)
+    ref_fp32 = torch.exp(x.to(torch.float16)).to(dtype).to(torch.float32)
+    assert torch.equal(out_fp32, ref_fp32), (
+        f"Direct kernel e5m2 exp should match reference. "
+        f"Got {out_fp32[:3]}, expected {ref_fp32[:3]}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # AC3: Correctness tests for representative ops
 # ---------------------------------------------------------------------------
 

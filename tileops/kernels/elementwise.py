@@ -523,9 +523,12 @@ class UnaryKernel(Kernel):
     def forward(self, x):
         cfg = self.config
         if self.strategy == "direct":
-            return self.kernel(cfg["threads"])(x)
+            result = self.kernel(cfg["threads"])(x)
         else:
-            return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+            result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
 
 
 class BinaryKernel(Kernel):
@@ -649,9 +652,12 @@ class BinaryKernel(Kernel):
     def forward(self, a, b):
         cfg = self.config
         if self.strategy == "direct":
-            return self.kernel(cfg["threads"])(a, b)
+            result = self.kernel(cfg["threads"])(a, b)
         else:
-            return self.kernel(cfg["threads"], cfg["num_per_thread"])(a, b)
+            result = self.kernel(cfg["threads"], cfg["num_per_thread"])(a, b)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
 
 
 class FusedGatedKernel(Kernel):
@@ -716,7 +722,10 @@ class FusedGatedKernel(Kernel):
 
     def forward(self, x):
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
 
 
 # ---------------------------------------------------------------------------
