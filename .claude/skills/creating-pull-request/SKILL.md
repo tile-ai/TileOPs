@@ -41,9 +41,9 @@ If this PR does **not** touch kernel/op code, skip to Step 3.
 If this PR introduces or modifies a kernel/op:
 
 1. Read [op-compliance-checklist.md](op-compliance-checklist.md) for the full checklist.
-1. Verify the code against every item. Record each as `PASS` or `FAIL (reason)`.
+1. Verify the code against every item. Record each as `PASS`, `FAIL (reason)`, or `SKIP (reason)`.
 
-**HARD GATE:** If any item is `FAIL`, fix the code before proceeding. In the PR body `## Structural Compliance` section, only list FAIL items. If all pass, write "All checks passed."
+**HARD GATE:** Any `[REQUIRED]` item that is `FAIL` must be fixed before proceeding. `[RECOMMENDED]` items may be skipped with a reason. In the PR body `## Structural Compliance`, only list failures and skips. If all pass, write "All checks passed."
 
 ### Step 3: Create the PR
 
