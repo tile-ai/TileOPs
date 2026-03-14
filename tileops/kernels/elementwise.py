@@ -15,6 +15,18 @@ Strategies:
 
 Binary register_copy is NOT supported (incompatible with stride-based access).
 Boundary checks handled by TileLang LegalizeSafeMemoryAccess.
+
+fp8 dtype support (e4m3fn, e5m2):
+  Accumulation strategy: fp8 input → cast to fp16 → compute → cast back to fp8.
+  Direct fp8 arithmetic loses too much precision for non-trivial ops (sigmoid,
+  exp, etc.), so all computation is performed in fp16 as the accumulation dtype.
+  Default num_per_thread=16 for fp8 (1 byte × 16 = 128-bit memory alignment).
+  Default strategy is explicit_parallel (register_copy is unreliable for fp8).
+
+  Saturation semantics (TileLang uses NVIDIA saturating conversion):
+  - e4m3fn: no Inf/NaN representation, saturates to ±448.0 on overflow
+  - e5m2: has Inf/NaN representation, but saturating conversion mode
+    clamps overflow to ±57344.0 (max finite value)
 """
 
 import tilelang
@@ -116,13 +128,31 @@ _BITWISE_DTYPES = (
     torch.int64,
 )
 
+_FP8_DTYPES = (
+    torch.float8_e4m3fn,
+    torch.float8_e5m2,
+)
+
 _FLOAT_DTYPES = (
     torch.float16,
     torch.bfloat16,
     torch.float32,
+    torch.float8_e4m3fn,
+    torch.float8_e5m2,
 )
 
 _LOGICAL_DTYPES = _BITWISE_DTYPES + _FLOAT_DTYPES
+
+
+def _is_fp8(dtype: torch.dtype) -> bool:
+    """Check if a torch dtype is an fp8 variant."""
+    return dtype in _FP8_DTYPES
+
+
+def _fp8_accum_dtype_str() -> str:
+    """Return the TileLang dtype string used for fp8 intermediate accumulation."""
+    return "float16"
+
 
 # ---------------------------------------------------------------------------
 # Strategy factory: Unary
@@ -282,9 +312,32 @@ def _make_binary_explicit(
 # ---------------------------------------------------------------------------
 
 
-def _make_fused_gated_kernel(M, N, dtype, activation_func, threads=256, num_per_thread=8):
-    """FusedGated: x[:, :N] is gate, x[:, N:] is value. y = activation(gate) * value."""
+def _make_fused_gated_kernel(M, N, dtype, activation_func, threads=256, num_per_thread=8,
+                             fp8_accum=False):
+    """FusedGated: x[:, :N] is gate, x[:, N:] is value. y = activation(gate) * value.
+
+    When fp8_accum=True, gate and value are cast to fp16 for the activation and
+    multiplication, then the result is cast back to the fp8 output dtype.
+    """
     block_N = threads * num_per_thread
+
+    if fp8_accum:
+        accum_dtype = _fp8_accum_dtype_str()
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
+                with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = (bx * threads_arg + i) * npt_arg + j
+                        gate = T.cast(x[by, col], accum_dtype)
+                        value = T.cast(x[by, N + col], accum_dtype)
+                        y[by, col] = T.Cast(dtype, activation_func(gate) * value)
+
+            return main
+
+        return kernel
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
@@ -343,7 +396,12 @@ class UnaryKernel(Kernel):
         self.N_total = N_total
         self.dtype = dtype
         self.output_dtype = self.OUTPUT_DTYPE or dtype
-        self.strategy = strategy or self.DEFAULT_STRATEGY
+        # fp8: register_copy may not reliably handle 8-bit fragments;
+        # default to explicit_parallel for fp8 dtypes
+        if strategy is None and _is_fp8(dtype):
+            self.strategy = "explicit_parallel"
+        else:
+            self.strategy = strategy or self.DEFAULT_STRATEGY
         if self.strategy not in self.STRATEGIES:
             raise ValueError(
                 f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
@@ -351,22 +409,43 @@ class UnaryKernel(Kernel):
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
+    def _get_effective_op_func(self):
+        """Return op_func wrapped with fp8->fp16 accumulation if needed.
+
+        fp8 accumulation strategy: cast fp8 input to fp16, run op_func,
+        cast result back to the fp8 output dtype. This ensures sufficient
+        precision for non-trivial operations (sigmoid, exp, etc.).
+        """
+        if _is_fp8(self.dtype) and self.OUTPUT_DTYPE is None:
+            # fp8 -> fp16 accumulation -> fp8
+            base_op = self.op_func
+            out_dtype_str = self.dtype_str
+
+            def fp8_accum_op(x):
+                x_fp16 = T.cast(x, _fp8_accum_dtype_str())
+                result = base_op(x_fp16)
+                return T.Cast(out_dtype_str, result)
+
+            return fp8_accum_op
+        return self.op_func
+
     def _build_kernel(self, strategy):
         cfg = self.default_config
+        effective_op = self._get_effective_op_func()
         if strategy == "direct":
             return _make_unary_direct(
-                self.N_total, self.dtype_str, self.op_func,
+                self.N_total, self.dtype_str, effective_op,
                 output_dtype=self.output_dtype_str, threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
             return _make_unary_explicit(
-                self.N_total, self.dtype_str, self.op_func,
+                self.N_total, self.dtype_str, effective_op,
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
             )
         elif strategy == "register_copy":
             return _make_unary_regcopy(
-                self.N_total, self.dtype_str, self.op_func,
+                self.N_total, self.dtype_str, effective_op,
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
             )
@@ -379,6 +458,9 @@ class UnaryKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if _is_fp8(self.dtype):
+            # fp8: 1 byte per element, 16 elements = 128-bit alignment
+            return {"threads": 256, "num_per_thread": 16}
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
@@ -445,18 +527,38 @@ class BinaryKernel(Kernel):
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
+    def _get_effective_op_func(self):
+        """Return op_func wrapped with fp8->fp16 accumulation if needed.
+
+        fp8 accumulation strategy: cast fp8 inputs to fp16, run op_func,
+        cast result back to the fp8 output dtype.
+        """
+        if _is_fp8(self.dtype) and self.OUTPUT_DTYPE is None:
+            base_op = self.op_func
+            out_dtype_str = self.dtype_str
+
+            def fp8_accum_op(a, b):
+                a_fp16 = T.cast(a, _fp8_accum_dtype_str())
+                b_fp16 = T.cast(b, _fp8_accum_dtype_str())
+                result = base_op(a_fp16, b_fp16)
+                return T.Cast(out_dtype_str, result)
+
+            return fp8_accum_op
+        return self.op_func
+
     def _build_kernel(self, strategy):
         cfg = self.default_config
+        effective_op = self._get_effective_op_func()
         if strategy == "direct":
             return _make_binary_direct(
-                self.N_total, self.dtype_str, self.op_func,
+                self.N_total, self.dtype_str, effective_op,
                 self.coalesced_shape, self.a_strides, self.b_strides,
                 self.a_numel, self.b_numel,
                 output_dtype=self.OUTPUT_DTYPE, threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
             return _make_binary_explicit(
-                self.N_total, self.dtype_str, self.op_func,
+                self.N_total, self.dtype_str, effective_op,
                 self.coalesced_shape, self.a_strides, self.b_strides,
                 self.a_numel, self.b_numel,
                 output_dtype=self.OUTPUT_DTYPE,
@@ -467,6 +569,8 @@ class BinaryKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if _is_fp8(self.dtype):
+            return {"threads": 256, "num_per_thread": 16}
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
@@ -513,14 +617,34 @@ class FusedGatedKernel(Kernel):
         self.N = N
         self.dtype = dtype
         cfg = self.default_config
+        activation = self._get_effective_activation()
         self.kernel = _make_fused_gated_kernel(
-            M, N, self.dtype_str, self.activation_func,
+            M, N, self.dtype_str, activation,
             cfg["threads"], cfg["num_per_thread"],
+            fp8_accum=_is_fp8(dtype),
         )
         self.init_config(config, tune)
 
+    def _get_effective_activation(self):
+        """Return activation_func wrapped with fp8->fp16 accumulation if needed.
+
+        For fp8: gate and value are read as fp8, cast to fp16 for activation
+        computation, then the fused result is cast back to fp8.
+        """
+        if _is_fp8(self.dtype):
+            base_act = self.activation_func
+
+            def fp8_activation(x):
+                x_fp16 = T.cast(x, _fp8_accum_dtype_str())
+                return base_act(x_fp16)
+
+            return fp8_activation
+        return self.activation_func
+
     @property
     def default_config(self) -> dict:
+        if _is_fp8(self.dtype):
+            return {"threads": 256, "num_per_thread": 16}
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
@@ -684,17 +808,29 @@ class LerpKernel(BinaryKernel):
         def lerp_func(a, b):
             return a + T.cast(w, a.dtype) * (b - a)
 
+        # Wrap with fp8 accumulation if needed
+        if _is_fp8(self.dtype) and self.OUTPUT_DTYPE is None:
+            out_dtype_str = self.dtype_str
+
+            def effective_op(a, b):
+                a_fp16 = T.cast(a, _fp8_accum_dtype_str())
+                b_fp16 = T.cast(b, _fp8_accum_dtype_str())
+                result = lerp_func(a_fp16, b_fp16)
+                return T.Cast(out_dtype_str, result)
+        else:
+            effective_op = lerp_func
+
         cfg = self.default_config
         if strategy == "direct":
             return _make_binary_direct(
-                self.N_total, self.dtype_str, lerp_func,
+                self.N_total, self.dtype_str, effective_op,
                 self.coalesced_shape, self.a_strides, self.b_strides,
                 self.a_numel, self.b_numel,
                 output_dtype=self.OUTPUT_DTYPE, threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
             return _make_binary_explicit(
-                self.N_total, self.dtype_str, lerp_func,
+                self.N_total, self.dtype_str, effective_op,
                 self.coalesced_shape, self.a_strides, self.b_strides,
                 self.a_numel, self.b_numel,
                 output_dtype=self.OUTPUT_DTYPE,
