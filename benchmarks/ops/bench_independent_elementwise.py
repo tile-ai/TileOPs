@@ -1,9 +1,11 @@
 """Benchmarks for 11 independent elementwise ops.
 
-Profiles TileOPs vs PyTorch baselines across 3 shape tiers and all supported dtypes.
+Profiles TileOPs vs PyTorch baselines using DNN-realistic 2-D shapes
+(tokens × hidden_dim) across all supported dtypes.
 """
 
-from typing import Callable, Optional
+from math import prod
+from typing import Optional
 
 import pytest
 import torch
@@ -25,23 +27,27 @@ from tileops.ops.elementwise import (
     WhereOp,
 )
 
-_SHAPES = (262_144, 1_048_576, 4_000_000)
+# DNN-realistic shapes: (tokens, hidden_dim)
+# small=4096, medium=10240, large=20480 (pow2 + non-pow2 mix)
+_UNARY_SHAPES = [(1024, 4096), (1024, 10240), (1024, 20480)]
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
-class UnaryBenchCase:
-    """Test harness for unary-like ops."""
+# ---------------------------------------------------------------------------
+# Benchmark base classes
+# ---------------------------------------------------------------------------
 
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
+class UnaryBenchCase:
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
+        return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
 
 
 class UnaryBenchmark(BenchmarkBase):
-
     def calculate_flops(self) -> Optional[float]:
         return self.test.n_total
 
@@ -54,18 +60,17 @@ class UnaryBenchmark(BenchmarkBase):
 # ---------------------------------------------------------------------------
 
 def _unary_params():
-    """Generate params: 6 ops × 3 shapes × 3 dtypes. Smoke = smallest shape + fp16."""
     params = []
     for op_name in ("leaky_relu", "elu", "hardtanh", "softplus", "clamp", "nan_to_num"):
-        for shape in _SHAPES:
+        for shape in _UNARY_SHAPES:
             for dtype in _DTYPES:
-                mark = pytest.mark.smoke if (shape == _SHAPES[0] and dtype == torch.float16) else pytest.mark.full
+                mark = pytest.mark.smoke if (shape == _UNARY_SHAPES[0] and dtype == torch.float16) else pytest.mark.full
                 params.append(pytest.param(op_name, shape, dtype, marks=mark))
     return params
 
 
 class UnaryIndependentBenchFixture(FixtureBase):
-    PARAMS = [("op_name, n_total, dtype", _unary_params())]
+    PARAMS = [("op_name, shape, dtype", _unary_params())]
 
 
 _UNARY_OPS = {
@@ -79,9 +84,10 @@ _UNARY_OPS = {
 
 
 @UnaryIndependentBenchFixture
-def test_unary_independent_bench(op_name: str, n_total: int, dtype: torch.dtype) -> None:
+def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> None:
+    n_total = prod(shape)
     op_cls, baseline_fn, extra_kwargs = _UNARY_OPS[op_name]
-    test = UnaryBenchCase(n_total, dtype)
+    test = UnaryBenchCase(shape, dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -97,22 +103,23 @@ def test_unary_independent_bench(op_name: str, n_total: int, dtype: torch.dtype)
 # prelu (2 inputs: x + weight)
 # ---------------------------------------------------------------------------
 
-class PreluBenchCase:
+_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 20480)]
 
-    def __init__(self, n_total: int, num_channels: int, dtype: torch.dtype):
-        self.n_total = n_total
+
+class PreluBenchCase:
+    def __init__(self, shape: tuple, num_channels: int, dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
         self.num_channels = num_channels
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        h = self.n_total // self.num_channels
-        x = torch.randn(1, self.num_channels, h, device="cuda", dtype=self.dtype)
+        x = torch.randn(self.shape, device="cuda", dtype=self.dtype)
         weight = torch.randn(self.num_channels, device="cuda", dtype=self.dtype).abs() * 0.25
         return x, weight
 
 
 class PreluBenchmark(BenchmarkBase):
-
     def calculate_flops(self) -> Optional[float]:
         return self.test.n_total
 
@@ -123,29 +130,31 @@ class PreluBenchmark(BenchmarkBase):
 
 def _prelu_params():
     params = []
-    for shape in _SHAPES:
+    for tokens, hidden in _PRELU_SHAPES:
         for dtype in _DTYPES:
-            mark = pytest.mark.smoke if (shape == _SHAPES[0] and dtype == torch.float16) else pytest.mark.full
-            params.append(pytest.param(shape, 64, dtype, marks=mark))
+            mark = pytest.mark.smoke if (hidden == _PRELU_SHAPES[0][1] and dtype == torch.float16) else pytest.mark.full
+            params.append(pytest.param((tokens, hidden), hidden, dtype, marks=mark))
     return params
 
 
 class PreluBenchFixture(FixtureBase):
-    PARAMS = [("n_total, num_channels, dtype", _prelu_params())]
+    PARAMS = [("shape, num_channels, dtype", _prelu_params())]
 
 
 @PreluBenchFixture
-def test_prelu_bench(n_total: int, num_channels: int, dtype: torch.dtype) -> None:
-    test = PreluBenchCase(n_total, num_channels, dtype)
+def test_prelu_bench(shape: tuple, num_channels: int, dtype: torch.dtype) -> None:
+    test = PreluBenchCase(shape, num_channels, dtype)
     bm = PreluBenchmark(test)
     x, weight = test.gen_inputs()
 
-    h = n_total // num_channels
-    op = PreluOp(shape=(1, num_channels, h), dtype=dtype, num_channels=num_channels)
-    result = bm.profile(op, x, weight)
+    # PReLU shape convention: (batch, channels, spatial)
+    prelu_shape = (1, num_channels, shape[0])
+    n_total = prod(shape)
+    op = PreluOp(shape=prelu_shape, dtype=dtype, num_channels=num_channels)
+    result = bm.profile(op, x.reshape(prelu_shape), weight)
     BenchmarkReport.record("prelu", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(F.prelu, x, weight)
+    result_bl = bm.profile(F.prelu, x.reshape(prelu_shape), weight)
     BenchmarkReport.record("prelu", locals(), result_bl, tag="baseline")
 
 
@@ -154,20 +163,19 @@ def test_prelu_bench(n_total: int, num_channels: int, dtype: torch.dtype) -> Non
 # ---------------------------------------------------------------------------
 
 class WhereBenchCase:
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        cond = torch.rand(self.n_total, device="cuda") > 0.5
-        x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
-        y = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
+        cond = torch.rand(self.shape, device="cuda") > 0.5
+        x = torch.randn(self.shape, device="cuda", dtype=self.dtype)
+        y = torch.randn(self.shape, device="cuda", dtype=self.dtype)
         return cond, x, y
 
 
 class WhereBenchmark(BenchmarkBase):
-
     def calculate_flops(self) -> Optional[float]:
         return self.test.n_total
 
@@ -176,22 +184,23 @@ class WhereBenchmark(BenchmarkBase):
         return t.n_total * (t.dtype.itemsize * 2 + 1) + t.n_total * t.dtype.itemsize
 
 
-def _shape_dtype_params():
+def _shape_dtype_params(shapes):
     params = []
-    for shape in _SHAPES:
+    for shape in shapes:
         for dtype in _DTYPES:
-            mark = pytest.mark.smoke if (shape == _SHAPES[0] and dtype == torch.float16) else pytest.mark.full
+            mark = pytest.mark.smoke if (shape == shapes[0] and dtype == torch.float16) else pytest.mark.full
             params.append(pytest.param(shape, dtype, marks=mark))
     return params
 
 
 class WhereBenchFixture(FixtureBase):
-    PARAMS = [("n_total, dtype", _shape_dtype_params())]
+    PARAMS = [("shape, dtype", _shape_dtype_params(_UNARY_SHAPES))]
 
 
 @WhereBenchFixture
-def test_where_bench(n_total: int, dtype: torch.dtype) -> None:
-    test = WhereBenchCase(n_total, dtype)
+def test_where_bench(shape: tuple, dtype: torch.dtype) -> None:
+    n_total = prod(shape)
+    test = WhereBenchCase(shape, dtype)
     bm = WhereBenchmark(test)
     cond, x, y = test.gen_inputs()
 
@@ -208,19 +217,18 @@ def test_where_bench(n_total: int, dtype: torch.dtype) -> None:
 # ---------------------------------------------------------------------------
 
 class MaskedFillBenchCase:
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
-        mask = torch.rand(self.n_total, device="cuda") > 0.5
+        x = torch.randn(self.shape, device="cuda", dtype=self.dtype)
+        mask = torch.rand(self.shape, device="cuda") > 0.5
         return x, mask
 
 
 class MaskedFillBenchmark(BenchmarkBase):
-
     def calculate_flops(self) -> Optional[float]:
         return self.test.n_total
 
@@ -230,12 +238,13 @@ class MaskedFillBenchmark(BenchmarkBase):
 
 
 class MaskedFillBenchFixture(FixtureBase):
-    PARAMS = [("n_total, dtype", _shape_dtype_params())]
+    PARAMS = [("shape, dtype", _shape_dtype_params(_UNARY_SHAPES))]
 
 
 @MaskedFillBenchFixture
-def test_masked_fill_bench(n_total: int, dtype: torch.dtype) -> None:
-    test = MaskedFillBenchCase(n_total, dtype)
+def test_masked_fill_bench(shape: tuple, dtype: torch.dtype) -> None:
+    n_total = prod(shape)
+    test = MaskedFillBenchCase(shape, dtype)
     bm = MaskedFillBenchmark(test)
     x, mask = test.gen_inputs()
 
@@ -255,7 +264,6 @@ def test_masked_fill_bench(n_total: int, dtype: torch.dtype) -> None:
 # ---------------------------------------------------------------------------
 
 class GenerativeBenchCase:
-
     def __init__(self, seq_len: int, dim: int, dtype: torch.dtype):
         self.n_total = seq_len * dim
         self.seq_len = seq_len
@@ -267,7 +275,6 @@ class GenerativeBenchCase:
 
 
 class GenerativeBenchmark(BenchmarkBase):
-
     def calculate_flops(self) -> Optional[float]:
         return self.test.n_total
 
@@ -276,9 +283,8 @@ class GenerativeBenchmark(BenchmarkBase):
 
 
 def _generative_params():
-    """alibi: 3 shapes × 3 dtypes, sinusoidal: 3 shapes × 3 dtypes."""
     alibi_shapes = [(512, 64), (2048, 64), (4096, 128)]
-    sinusoidal_shapes = [(512, 256), (2048, 256), (4096, 512)]
+    sinusoidal_shapes = [(512, 256), (2048, 300), (4096, 512)]
     params = []
     for op_name, shapes in [("alibi", alibi_shapes), ("sinusoidal", sinusoidal_shapes)]:
         for seq_len, dim in shapes:
