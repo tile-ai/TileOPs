@@ -16,16 +16,9 @@ Closes #<issue-number>
 
 <!-- Required for new ops or kernel/op changes. Agent-generated — do not edit manually. -->
 
-<details>
-<summary>Kernel/Op convention checks (N/N passed)</summary>
+<!-- Only list FAIL items. If all checks pass, write "All checks passed." -->
 
-| #   | Check                                      | Result |
-| --- | ------------------------------------------ | ------ |
-| 1   | `_<op>_kernel` closure exists              | PASS   |
-| 2   | `@tilelang.jit(out_idx=[...])` wraps inner | PASS   |
-| ... | ...                                        | ...    |
-
-</details>
+All checks passed.
 
 ## Benchmark
 
