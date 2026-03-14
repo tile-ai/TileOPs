@@ -1231,6 +1231,10 @@ class LeakyReluOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self._instance_key)
@@ -1395,6 +1399,10 @@ class PreluOp(Op):
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, weight, self._instance_key)
@@ -1439,6 +1447,10 @@ class WhereOp(Op):
     ) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(cond, x, y, self._instance_key)
@@ -1520,6 +1532,10 @@ class MaskedFillOp(Op):
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, mask, self._instance_key)
@@ -1564,6 +1580,10 @@ class NanToNumOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self._instance_key)
