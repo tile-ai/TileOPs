@@ -17,7 +17,7 @@ PR benchmarks are lightweight performance profiles, not nightly regression suite
 
 
 class MyOpBenchmark(BenchmarkBase):
-    def calculate_flops(self): ...  # must return non-None
+    def calculate_flops(self): ...  # None for pure data-movement ops
     def calculate_memory(self): ...  # must return non-None
 
 
@@ -27,17 +27,19 @@ class MyOpBenchmark(BenchmarkBase):
 
 ## PR body format
 
+`BenchmarkReport.dump()` auto-generates a unified table with speedup (baseline latency / tileops latency) when tileops + baseline pairs exist. Paste the generated table directly.
+
 ````markdown
 ## Benchmark
 
 **Environment**: \<GPU>, CUDA \<ver>, PyTorch \<ver>, TileLang \<ver>
 
-<!-- Table columns are flexible. Must include: latency, bandwidth, TFLOPs, baseline, speedup.
-     Add op-specific metrics if issue requires them. Column names may vary. -->
+<!-- Paste the table from BenchmarkReport.dump() output.
+     Speedup is auto-calculated. Add op-specific metric columns if issue requires them. -->
 
-| Op | Shape | dtype | ... | Speedup |
-|----|-------|-------|-----|---------|
-| ... | ... | ... | ... | ...x |
+| params... | tileops lat(ms) | baseline lat(ms) | tflops | bandwidth(TB/s) | speedup |
+|-----------|-----------------|-------------------|--------|-----------------|---------|
+| ... | ... | ... | ... | ... | ...x |
 
 **Takeaways:**
 - \<wins: what's faster, by how much>
@@ -52,7 +54,8 @@ PYTHONPATH="$PWD" python -m pytest benchmarks/ops/bench_<op>.py -v
 
 ## Formatting notes
 
+- Speedup is auto-calculated by `BenchmarkReport.dump()` when tileops/baseline pairs exist
 - Multiple ops → group by op with sub-headers
 - Slower than baseline → brief reason (informational, not blocking)
-- TFLOPs not meaningful (pure data movement) → `—`
+- TFLOPs not meaningful (pure data movement) → `calculate_flops()` returns None, displayed as `—`
 - **Takeaways** required — concise conclusions, not data repetition

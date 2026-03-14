@@ -10,10 +10,16 @@ from tests.test_base import TestBase
 
 
 def _get_env_metadata() -> list[str]:
-    """Collect GPU model, driver version, CUDA version, and torch version."""
+    """Collect GPU model, driver version, CUDA version, torch and tilelang versions."""
     lines = []
     lines.append(f"- **Torch version**: {torch.__version__}")
     lines.append(f"- **CUDA version (torch)**: {torch.version.cuda or 'N/A'}")
+
+    try:
+        import tilelang
+        lines.append(f"- **TileLang version**: {tilelang.__version__}")
+    except (ImportError, AttributeError):
+        lines.append("- **TileLang version**: N/A")
 
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
@@ -113,8 +119,19 @@ class BenchmarkReport:
         })
 
     @staticmethod
+    def _params_key(params: dict) -> tuple:
+        """Create a hashable key from a params dict for cross-tag pairing."""
+        return tuple(sorted(params.items()))
+
+    @staticmethod
     def dump(path: str) -> None:
-        """Write all collected results to a markdown-formatted log file."""
+        """Write all collected results to a markdown-formatted log file.
+
+        When both "tileops" and a baseline tag exist for the same benchmark
+        group, produces a unified table with automatic speedup calculation
+        (baseline latency / tileops latency).  Falls back to separate
+        per-tag tables when pairing is not possible.
+        """
         if not BenchmarkReport._records:
             return
 
@@ -138,27 +155,81 @@ class BenchmarkReport:
             lines.append("")
 
             # Group by tag
-            tag_entries = {}
+            tag_entries: dict[str, list[dict]] = {}
             for entry in entries:
                 tag_entries.setdefault(entry["tag"], []).append(entry)
 
-            for tag, tag_group in tag_entries.items():
-                lines.append(f"### {tag}")
-                lines.append("")
+            tags = list(tag_entries.keys())
+            tileops_tags = [t for t in tags if t.startswith("tileops")]
+            baseline_tags = [t for t in tags if not t.startswith("tileops")]
 
-                param_keys = list(tag_group[0]["params"].keys())
-                header_parts = param_keys + result_keys
+            # Unified table when exactly one tileops tag and one baseline tag
+            if len(tileops_tags) == 1 and len(baseline_tags) == 1:
+                tileops_tag = tileops_tags[0]
+                baseline_tag = baseline_tags[0]
+
+                # Index baseline entries by params for O(1) lookup
+                bl_by_params = {
+                    BenchmarkReport._params_key(e["params"]): e
+                    for e in tag_entries[baseline_tag]
+                }
+
+                param_keys = list(tag_entries[tileops_tag][0]["params"].keys())
+                header_parts = (
+                    param_keys
+                    + [f"{tileops_tag} lat(ms)", f"{baseline_tag} lat(ms)"]
+                    + ["tflops", "bandwidth(TB/s)", "speedup"]
+                )
                 lines.append("| " + " | ".join(header_parts) + " |")
-                lines.append("| " + " | ".join(["---"] * len(header_parts)) + " |")
+                lines.append(
+                    "| " + " | ".join(["---"] * len(header_parts)) + " |"
+                )
 
-                for entry in tag_group:
+                for entry in tag_entries[tileops_tag]:
+                    key = BenchmarkReport._params_key(entry["params"])
+                    bl_entry = bl_by_params.get(key)
+
                     row = [str(entry["params"].get(k, "")) for k in param_keys]
-                    for rk in result_keys:
+
+                    tp_lat = entry["result"].get("latency_ms")
+                    bl_lat = bl_entry["result"].get("latency_ms") if bl_entry else None
+                    row.append(f"{tp_lat:.2f}" if tp_lat is not None else "N/A")
+                    row.append(f"{bl_lat:.2f}" if bl_lat is not None else "N/A")
+
+                    for rk in ("tflops", "bandwidth_tbs"):
                         val = entry["result"].get(rk)
-                        row.append(f"{val:.2f}" if val is not None else "N/A")
+                        row.append(f"{val:.2f}" if val is not None else "—")
+
+                    if tp_lat and bl_lat and tp_lat > 0:
+                        speedup = bl_lat / tp_lat
+                        row.append(f"{speedup:.2f}x")
+                    else:
+                        row.append("N/A")
+
                     lines.append("| " + " | ".join(row) + " |")
 
                 lines.append("")
+            else:
+                # Fallback: separate tables per tag
+                for tag, tag_group in tag_entries.items():
+                    lines.append(f"### {tag}")
+                    lines.append("")
+
+                    param_keys = list(tag_group[0]["params"].keys())
+                    header_parts = param_keys + result_keys
+                    lines.append("| " + " | ".join(header_parts) + " |")
+                    lines.append(
+                        "| " + " | ".join(["---"] * len(header_parts)) + " |"
+                    )
+
+                    for entry in tag_group:
+                        row = [str(entry["params"].get(k, "")) for k in param_keys]
+                        for rk in result_keys:
+                            val = entry["result"].get(rk)
+                            row.append(f"{val:.2f}" if val is not None else "N/A")
+                        lines.append("| " + " | ".join(row) + " |")
+
+                    lines.append("")
 
         with open(path, "w") as f:
             f.write("\n".join(lines))

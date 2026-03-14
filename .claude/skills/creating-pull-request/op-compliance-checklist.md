@@ -10,6 +10,7 @@ Items marked **[RECOMMENDED]** should pass — note in PR body if skipped with r
 - [ ] **[REQUIRED]** fp16/bf16 intermediate math that can overflow (cubic terms, division, exp) is promoted to fp32
 - [ ] **[REQUIRED]** Runtime validation uses `ValueError`/`TypeError`, never `assert` (stripped under `python -O`)
 - [ ] **[REQUIRED]** Output dtype matches PyTorch reference semantics (e.g. comparison ops → `bool`, not float 0/1)
+- [ ] **[REQUIRED]** `Op.output_dtype` reflects the actual output tensor dtype after all post-processing (e.g. post-cast). If the kernel returns an intermediate dtype and the Op applies a final cast, `output_dtype` must be the final dtype. `total_memory` calculations must use this final dtype
 
 ## Kernel Structure
 
@@ -32,7 +33,7 @@ Items marked **[RECOMMENDED]** should pass — note in PR body if skipped with r
 ## Benchmark
 
 - [ ] **[REQUIRED]** `benchmarks/ops/bench_<op>.py` exists, inherits `BenchmarkBase`
-- [ ] **[REQUIRED]** `calculate_flops()` and `calculate_memory()` both return non-None
+- [ ] **[REQUIRED]** `calculate_flops()` and `calculate_memory()` are implemented. `calculate_memory()` must return non-None. `calculate_flops()` may return None for pure data-movement ops (displayed as `—` in report)
 - [ ] **[REQUIRED]** Op developer provides a set of benchmark shapes. Each op must be profiled on ≥3 shapes across all `SUPPORTED_DTYPES`. Non-pow2 if op supports it
 - [ ] **[REQUIRED]** Baseline comparison: **new ops** → PyTorch baseline required; **modifications to existing ops** (strategy/optimization/refactor) → before/after comparison required, PyTorch baseline recommended
 - [ ] **[REQUIRED]** Required metrics: latency (ms), bandwidth (TB/s), TFLOPs. If the issue specifies op-specific metrics, those must also be reported
@@ -41,7 +42,7 @@ Items marked **[RECOMMENDED]** should pass — note in PR body if skipped with r
 
 ## Delivery
 
-- [ ] **[REQUIRED]** Unit tests in `tests/ops/` with reference comparison (FP16 atol=1e-3, BF16 atol=1.6e-2)
+- [ ] **[REQUIRED]** Unit tests in `tests/ops/` with reference comparison (FP16 atol=1e-3, BF16 atol=1.6e-2, FP8 e4m3fn atol=0.125, FP8 e5m2 atol=0.25)
 - [ ] **[REQUIRED]** Tests cover unsupported-dtype rejection paths (expect `ValueError`)
 - [ ] **[REQUIRED]** Dtype support matrix documented in PR body
 - [ ] **[REQUIRED]** No issue references (`#123`, `TODO: see #456`) in source or test files — issues track goals in GitHub, not in code
