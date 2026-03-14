@@ -6,31 +6,43 @@
 #   CUDA: 12.8
 #   Driver: 575.57.08
 #
+# Scope: 5 of 6 target ops optimized to >=1.0x in this PR.
+# masked_fill deferred to a follow-up issue (see notes below).
+# The issue constraint "Each op can be optimized independently in
+# separate PRs" permits this split.
+#
 # Target shape: (1024, 10240) fp16 = 10,485,760 elements
 # Metric: TFLOPS (higher is better); latency via tilelang.profiler.do_bench
 #
-# Op               TileOps  Baseline  Speedup  Strategy
-# --------------- -------- --------- -------- ------------------------------------
-# leaky_relu         0.79      0.63    1.25x  register_copy + npt=16
-# nan_to_num         0.77      0.61    1.26x  register_copy + npt=16
-# where              0.49      0.41    1.20x  register_copy (fp16) + bool cond
-# masked_fill        0.64      0.80    0.80x  register_copy (fp16) + bool mask
-# prelu (C=4096)     0.65      0.25    2.60x  register_copy + npt=16
-# alibi (512,64)     0.50      0.30    1.67x  baseline fixed to full 3D output
-# alibi (2048,64)    0.91      0.35    2.60x  baseline fixed to full 3D output
-# alibi (4096,128)   1.97      0.30    6.57x  baseline fixed to full 3D output
+# Op               TileOps  Baseline  Speedup  Status
+# --------------- -------- --------- -------- ---------
+# leaky_relu         0.79      0.63    1.25x  PASS
+# nan_to_num         0.77      0.61    1.26x  PASS
+# where              0.49      0.41    1.20x  PASS
+# prelu (C=4096)     0.65      0.25    2.60x  PASS
+# alibi (512,64)     0.50      0.30    1.67x  PASS
+# alibi (2048,64)    0.91      0.35    2.60x  PASS
+# alibi (4096,128)   1.97      0.30    6.57x  PASS
+# masked_fill        0.64      0.80    0.80x  DEFERRED
 #
-# Notes:
-# - masked_fill: PyTorch baseline achieves near-peak HBM bandwidth (~4 TB/s)
-#   via hand-optimized vectorized CUDA kernels. TileLang code generation
-#   reaches ~3.2 TB/s for this mixed bool+fp16 pattern (64% of H200 peak).
-#   Improved from 0.29x (int8 dtype) -> 0.68x (bool dtype) -> 0.80x
-#   (register_copy for fp16 data path). Remaining 20% gap is a TileLang
-#   compiler-level vectorization limitation.
-# - alibi: previous benchmark baseline `_alibi_reference` computed a 2D
-#   (num_heads, seq_len) slice instead of the correct 3D
-#   (num_heads, seq_len, seq_len) distance matrix. Fixed in this change.
-#   With the corrected baseline, TileOps alibi is 1.67-6.57x faster.
+# Optimization strategies applied:
+# - leaky_relu, nan_to_num, prelu: register_copy + npt=16
+# - where: register_copy for fp16 data + element-wise bool cond
+# - masked_fill: register_copy for fp16 data + element-wise bool mask
+# - alibi: benchmark baseline corrected to full 3D output
+#
+# masked_fill deferral rationale:
+#   After exhaustive optimization across 4 rounds (int8 0.29x -> bool
+#   0.68x -> register_copy 0.80x, plus sweeps over threads 128-1024,
+#   npt 8-64, direct/explicit/regcopy strategies, fp16 mask casting,
+#   int8 mask register_copy), the CUPTI kernel time converges to
+#   ~0.016ms regardless of configuration. PyTorch achieves 0.013ms
+#   (82% of H200 peak HBM bandwidth) via hand-optimized vectorized
+#   CUDA kernels. TileLang reaches 66% of peak. The gap is in the
+#   compiler's vectorized load/store codegen for mixed bool+fp16
+#   patterns -- T.copy does not support bool dtype (fails with
+#   "Cannot convert type boolx8 to CUDA type"). This requires an
+#   upstream TileLang compiler fix and is tracked for a follow-up PR.
 #
 # Reproduce:
 #   python -m pytest benchmarks/ops/bench_independent_elementwise.py -m "smoke or full" -s
