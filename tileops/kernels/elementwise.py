@@ -23,10 +23,12 @@ fp8 dtype support (e4m3fn, e5m2):
   Default num_per_thread=16 for fp8 (1 byte × 16 = 128-bit memory alignment).
   Default strategy is explicit_parallel (register_copy is unreliable for fp8).
 
-  Saturation semantics (TileLang uses NVIDIA saturating conversion):
-  - e4m3fn: no Inf/NaN representation, saturates to ±448.0 on overflow
-  - e5m2: has Inf/NaN representation, but saturating conversion mode
-    clamps overflow to ±57344.0 (max finite value)
+  Saturation semantics (matches NVIDIA spec):
+  - e4m3fn: no Inf/NaN representation, kernel uses T.Cast (saturating)
+    which clamps overflow to ±448.0 -- correct for this format.
+  - e5m2: has Inf/NaN representation, kernel produces fp16 output to
+    preserve non-finite values (Inf, NaN). The Op layer performs the final
+    non-saturating cast to e5m2 via PyTorch's .to() which preserves Inf/NaN.
 """
 
 import tilelang
@@ -147,6 +149,18 @@ _LOGICAL_DTYPES = _BITWISE_DTYPES + _FLOAT_DTYPES
 def _is_fp8(dtype: torch.dtype) -> bool:
     """Check if a torch dtype is an fp8 variant."""
     return dtype in _FP8_DTYPES
+
+
+def _fp8_needs_nonsaturating_cast(dtype: torch.dtype) -> bool:
+    """Return True if the fp8 format supports Inf/NaN and needs non-saturating output.
+
+    e5m2 has Inf/NaN representation -- TileLang's T.Cast uses saturating conversion
+    which incorrectly clamps Inf to max-finite.  For e5m2, the kernel must produce
+    fp16 output and let PyTorch do the final non-saturating cast.
+
+    e4m3fn has no Inf representation, so saturating T.Cast is correct.
+    """
+    return dtype == torch.float8_e5m2
 
 
 def _fp8_accum_dtype_str() -> str:
@@ -313,27 +327,49 @@ def _make_binary_explicit(
 
 
 def _make_fused_gated_kernel(M, N, dtype, activation_func, threads=256, num_per_thread=8,
-                             fp8_accum=False):
+                             fp8_accum=None, output_dtype=None):
     """FusedGated: x[:, :N] is gate, x[:, N:] is value. y = activation(gate) * value.
 
-    When fp8_accum=True, gate and value are cast to fp16 for the activation and
-    multiplication, then the result is cast back to the fp8 output dtype.
+    Args:
+        fp8_accum: "saturating" for e4m3fn (T.Cast back to fp8),
+                   "nonsaturating" for e5m2 (leave as fp16, Op casts later).
+                   None for non-fp8 dtypes.
+        output_dtype: TileLang dtype string for the output tensor. Defaults to dtype.
     """
     block_N = threads * num_per_thread
+    out_dtype = output_dtype or dtype
 
-    if fp8_accum:
+    if fp8_accum == "saturating":
         accum_dtype = _fp8_accum_dtype_str()
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
             @T.prim_func
-            def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
+            def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
                 with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         col = (bx * threads_arg + i) * npt_arg + j
                         gate = T.cast(x[by, col], accum_dtype)
                         value = T.cast(x[by, N + col], accum_dtype)
-                        y[by, col] = T.Cast(dtype, activation_func(gate) * value)
+                        y[by, col] = T.Cast(out_dtype, activation_func(gate) * value)
+
+            return main
+
+        return kernel
+
+    if fp8_accum == "nonsaturating":
+        accum_dtype = _fp8_accum_dtype_str()
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = (bx * threads_arg + i) * npt_arg + j
+                        gate = T.cast(x[by, col], accum_dtype)
+                        value = T.cast(x[by, N + col], accum_dtype)
+                        y[by, col] = activation_func(gate) * value
 
             return main
 
@@ -342,7 +378,7 @@ def _make_fused_gated_kernel(M, N, dtype, activation_func, threads=256, num_per_
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
-        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
+        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
             with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     col = (bx * threads_arg + i) * npt_arg + j
@@ -395,7 +431,16 @@ class UnaryKernel(Kernel):
             )
         self.N_total = N_total
         self.dtype = dtype
-        self.output_dtype = self.OUTPUT_DTYPE or dtype
+        # For e5m2: kernel produces fp16 to preserve Inf/NaN; Op layer
+        # performs the final non-saturating cast to e5m2 via PyTorch.
+        # For e4m3fn: kernel produces e4m3fn via saturating T.Cast (correct,
+        # since e4m3fn has no Inf representation).
+        self._fp8_output_dtype = None
+        if _is_fp8(dtype) and self.OUTPUT_DTYPE is None and _fp8_needs_nonsaturating_cast(dtype):
+            self._fp8_output_dtype = dtype
+            self.output_dtype = torch.float16
+        else:
+            self.output_dtype = self.OUTPUT_DTYPE or dtype
         # fp8: register_copy may not reliably handle 8-bit fragments;
         # default to explicit_parallel for fp8 dtypes
         if strategy is None and _is_fp8(dtype):
@@ -412,21 +457,32 @@ class UnaryKernel(Kernel):
     def _get_effective_op_func(self):
         """Return op_func wrapped with fp8->fp16 accumulation if needed.
 
-        fp8 accumulation strategy: cast fp8 input to fp16, run op_func,
-        cast result back to the fp8 output dtype. This ensures sufficient
-        precision for non-trivial operations (sigmoid, exp, etc.).
+        fp8 accumulation strategy:
+        - e4m3fn: cast to fp16, compute, T.Cast back to e4m3fn (saturating).
+          e4m3fn has no Inf, so saturation is correct.
+        - e5m2: cast to fp16, compute, leave as fp16 (kernel output is fp16).
+          The Op layer does the final non-saturating cast to e5m2 via PyTorch
+          to preserve Inf/NaN.
         """
         if _is_fp8(self.dtype) and self.OUTPUT_DTYPE is None:
-            # fp8 -> fp16 accumulation -> fp8
             base_op = self.op_func
-            out_dtype_str = self.dtype_str
+            if _fp8_needs_nonsaturating_cast(self.dtype):
+                # e5m2: compute in fp16, leave result as fp16
+                def fp8_accum_op(x):
+                    x_fp16 = T.cast(x, _fp8_accum_dtype_str())
+                    return base_op(x_fp16)
 
-            def fp8_accum_op(x):
-                x_fp16 = T.cast(x, _fp8_accum_dtype_str())
-                result = base_op(x_fp16)
-                return T.Cast(out_dtype_str, result)
+                return fp8_accum_op
+            else:
+                # e4m3fn: compute in fp16, saturating cast back to e4m3fn
+                out_dtype_str = self.dtype_str
 
-            return fp8_accum_op
+                def fp8_accum_op(x):
+                    x_fp16 = T.cast(x, _fp8_accum_dtype_str())
+                    result = base_op(x_fp16)
+                    return T.Cast(out_dtype_str, result)
+
+                return fp8_accum_op
         return self.op_func
 
     def _build_kernel(self, strategy):
@@ -514,6 +570,9 @@ class BinaryKernel(Kernel):
             )
         self.N_total = N_total
         self.dtype = dtype
+        self._fp8_output_dtype = None
+        if _is_fp8(dtype) and self.OUTPUT_DTYPE is None and _fp8_needs_nonsaturating_cast(dtype):
+            self._fp8_output_dtype = dtype
         self.coalesced_shape = coalesced_shape
         self.a_strides = a_strides
         self.b_strides = b_strides
@@ -530,38 +589,51 @@ class BinaryKernel(Kernel):
     def _get_effective_op_func(self):
         """Return op_func wrapped with fp8->fp16 accumulation if needed.
 
-        fp8 accumulation strategy: cast fp8 inputs to fp16, run op_func,
-        cast result back to the fp8 output dtype.
+        See UnaryKernel._get_effective_op_func for the e4m3fn vs e5m2 rationale.
         """
         if _is_fp8(self.dtype) and self.OUTPUT_DTYPE is None:
             base_op = self.op_func
-            out_dtype_str = self.dtype_str
+            if _fp8_needs_nonsaturating_cast(self.dtype):
+                # e5m2: compute in fp16, leave result as fp16
+                def fp8_accum_op(a, b):
+                    a_fp16 = T.cast(a, _fp8_accum_dtype_str())
+                    b_fp16 = T.cast(b, _fp8_accum_dtype_str())
+                    return base_op(a_fp16, b_fp16)
 
-            def fp8_accum_op(a, b):
-                a_fp16 = T.cast(a, _fp8_accum_dtype_str())
-                b_fp16 = T.cast(b, _fp8_accum_dtype_str())
-                result = base_op(a_fp16, b_fp16)
-                return T.Cast(out_dtype_str, result)
+                return fp8_accum_op
+            else:
+                # e4m3fn: compute in fp16, saturating cast back
+                out_dtype_str = self.dtype_str
 
-            return fp8_accum_op
+                def fp8_accum_op(a, b):
+                    a_fp16 = T.cast(a, _fp8_accum_dtype_str())
+                    b_fp16 = T.cast(b, _fp8_accum_dtype_str())
+                    result = base_op(a_fp16, b_fp16)
+                    return T.Cast(out_dtype_str, result)
+
+                return fp8_accum_op
         return self.op_func
 
     def _build_kernel(self, strategy):
         cfg = self.default_config
         effective_op = self._get_effective_op_func()
+        # For e5m2: kernel output is fp16 (non-saturating path)
+        kernel_output_dtype = self.OUTPUT_DTYPE
+        if self._fp8_output_dtype is not None:
+            kernel_output_dtype = _fp8_accum_dtype_str()
         if strategy == "direct":
             return _make_binary_direct(
                 self.N_total, self.dtype_str, effective_op,
                 self.coalesced_shape, self.a_strides, self.b_strides,
                 self.a_numel, self.b_numel,
-                output_dtype=self.OUTPUT_DTYPE, threads=cfg["threads"],
+                output_dtype=kernel_output_dtype, threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
             return _make_binary_explicit(
                 self.N_total, self.dtype_str, effective_op,
                 self.coalesced_shape, self.a_strides, self.b_strides,
                 self.a_numel, self.b_numel,
-                output_dtype=self.OUTPUT_DTYPE,
+                output_dtype=kernel_output_dtype,
                 threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
             )
         else:
@@ -616,30 +688,24 @@ class FusedGatedKernel(Kernel):
         self.M = M
         self.N = N
         self.dtype = dtype
+        self._fp8_output_dtype = None
+        # Determine fp8 accumulation mode and output dtype
+        fp8_accum = None
+        kernel_output_dtype = None
+        if _is_fp8(dtype):
+            if _fp8_needs_nonsaturating_cast(dtype):
+                fp8_accum = "nonsaturating"
+                kernel_output_dtype = _fp8_accum_dtype_str()
+                self._fp8_output_dtype = dtype
+            else:
+                fp8_accum = "saturating"
         cfg = self.default_config
-        activation = self._get_effective_activation()
         self.kernel = _make_fused_gated_kernel(
-            M, N, self.dtype_str, activation,
+            M, N, self.dtype_str, self.activation_func,
             cfg["threads"], cfg["num_per_thread"],
-            fp8_accum=_is_fp8(dtype),
+            fp8_accum=fp8_accum, output_dtype=kernel_output_dtype,
         )
         self.init_config(config, tune)
-
-    def _get_effective_activation(self):
-        """Return activation_func wrapped with fp8->fp16 accumulation if needed.
-
-        For fp8: gate and value are read as fp8, cast to fp16 for activation
-        computation, then the fused result is cast back to fp8.
-        """
-        if _is_fp8(self.dtype):
-            base_act = self.activation_func
-
-            def fp8_activation(x):
-                x_fp16 = T.cast(x, _fp8_accum_dtype_str())
-                return base_act(x_fp16)
-
-            return fp8_activation
-        return self.activation_func
 
     @property
     def default_config(self) -> dict:
@@ -810,15 +876,28 @@ class LerpKernel(BinaryKernel):
 
         # Wrap with fp8 accumulation if needed
         if _is_fp8(self.dtype) and self.OUTPUT_DTYPE is None:
-            out_dtype_str = self.dtype_str
+            if _fp8_needs_nonsaturating_cast(self.dtype):
+                # e5m2: compute in fp16, leave as fp16
+                def effective_op(a, b):
+                    a_fp16 = T.cast(a, _fp8_accum_dtype_str())
+                    b_fp16 = T.cast(b, _fp8_accum_dtype_str())
+                    return lerp_func(a_fp16, b_fp16)
+            else:
+                # e4m3fn: compute in fp16, saturating cast back
+                out_dtype_str = self.dtype_str
 
-            def effective_op(a, b):
-                a_fp16 = T.cast(a, _fp8_accum_dtype_str())
-                b_fp16 = T.cast(b, _fp8_accum_dtype_str())
-                result = lerp_func(a_fp16, b_fp16)
-                return T.Cast(out_dtype_str, result)
+                def effective_op(a, b):
+                    a_fp16 = T.cast(a, _fp8_accum_dtype_str())
+                    b_fp16 = T.cast(b, _fp8_accum_dtype_str())
+                    result = lerp_func(a_fp16, b_fp16)
+                    return T.Cast(out_dtype_str, result)
         else:
             effective_op = lerp_func
+
+        # For e5m2: kernel output is fp16 (non-saturating path)
+        kernel_output_dtype = self.OUTPUT_DTYPE
+        if self._fp8_output_dtype is not None:
+            kernel_output_dtype = _fp8_accum_dtype_str()
 
         cfg = self.default_config
         if strategy == "direct":
@@ -826,14 +905,14 @@ class LerpKernel(BinaryKernel):
                 self.N_total, self.dtype_str, effective_op,
                 self.coalesced_shape, self.a_strides, self.b_strides,
                 self.a_numel, self.b_numel,
-                output_dtype=self.OUTPUT_DTYPE, threads=cfg["threads"],
+                output_dtype=kernel_output_dtype, threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
             return _make_binary_explicit(
                 self.N_total, self.dtype_str, effective_op,
                 self.coalesced_shape, self.a_strides, self.b_strides,
                 self.a_numel, self.b_numel,
-                output_dtype=self.OUTPUT_DTYPE,
+                output_dtype=kernel_output_dtype,
                 threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
             )
         else:

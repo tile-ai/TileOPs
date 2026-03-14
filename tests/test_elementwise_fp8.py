@@ -243,13 +243,12 @@ def test_e4m3fn_saturates_on_overflow():
 
 
 @pytest.mark.smoke
-def test_e5m2_overflow_saturates():
-    """e5m2 overflow saturates to max finite value under TileLang's saturating conversion.
+def test_e5m2_overflow_produces_inf():
+    """e5m2 produces Inf on overflow (has Inf/NaN representation).
 
-    TileLang uses NVIDIA's saturating fp8 conversion mode, which clamps
-    overflow to the max finite value (57344.0) for both e4m3fn and e5m2.
-    While e5m2 has Inf/NaN representation, the saturating conversion mode
-    prevents Inf from being produced via arithmetic overflow.
+    Per NVIDIA spec, e5m2 follows IEEE-like overflow semantics.
+    The kernel produces fp16 output to preserve Inf, then the Op layer
+    casts to e5m2 via PyTorch's non-saturating conversion.
     """
     from tileops.ops.elementwise import AddOp
 
@@ -264,12 +263,83 @@ def test_e5m2_overflow_saturates():
     op = AddOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
     out = op(a, b)
     out_fp32 = out.to(torch.float32)
-    e5m2_max = torch.finfo(torch.float8_e5m2).max
-    # Saturating conversion: overflowed values clamp to max finite value
-    assert torch.all(out_fp32 <= e5m2_max), (
-        f"e5m2 output should saturate to <= {e5m2_max}, got max={out_fp32.max().item()}"
+    # e5m2 supports Inf, so overflowed values should be Inf
+    assert torch.any(torch.isinf(out_fp32)), (
+        f"e5m2 should produce Inf on overflow, got max={out_fp32.max().item()}"
     )
-    assert not torch.any(torch.isnan(out_fp32)), "e5m2 should not produce NaN from overflow"
+
+
+@pytest.mark.smoke
+def test_e5m2_exp_overflow_produces_inf():
+    """e5m2 exp(large) should produce Inf, matching PyTorch reference."""
+    from tileops.ops.elementwise import ExpOp
+
+    n = 1024
+    dtype = torch.float8_e5m2
+    # exp(16) in fp16 overflows to Inf
+    x_fp16 = torch.full((n,), 16.0, dtype=torch.float16, device="cuda")
+    x = x_fp16.to(dtype)
+    op = ExpOp(N_total=n, dtype=dtype)
+    out = op(x)
+    ref = torch.exp(x.to(torch.float16)).to(dtype)
+    assert torch.equal(out, ref), (
+        f"e5m2 exp overflow should match reference. "
+        f"Got {out.to(torch.float32)[:3]}, expected {ref.to(torch.float32)[:3]}"
+    )
+
+
+@pytest.mark.smoke
+def test_e5m2_div_by_zero_produces_inf():
+    """e5m2 1/0 should produce Inf, matching PyTorch reference."""
+    from tileops.ops.elementwise import DivOp
+
+    n = 1024
+    dtype = torch.float8_e5m2
+    a_shape = (n,)
+    a = torch.ones(n, dtype=torch.float16, device="cuda").to(dtype)
+    b = torch.zeros(n, dtype=torch.float16, device="cuda").to(dtype)
+    op = DivOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
+    out = op(a, b)
+    out_fp32 = out.to(torch.float32)
+    assert torch.all(torch.isinf(out_fp32)), (
+        f"e5m2 1/0 should produce Inf, got {out_fp32[:3]}"
+    )
+
+
+@pytest.mark.smoke
+def test_e5m2_log_zero_produces_neg_inf():
+    """e5m2 log(0) should produce -Inf, matching PyTorch reference."""
+    from tileops.ops.elementwise import LogOp
+
+    n = 1024
+    dtype = torch.float8_e5m2
+    x = torch.zeros(n, dtype=torch.float16, device="cuda").to(dtype)
+    op = LogOp(N_total=n, dtype=dtype)
+    out = op(x)
+    ref = torch.log(x.to(torch.float16)).to(dtype)
+    assert torch.equal(out, ref), (
+        f"e5m2 log(0) should produce -Inf. "
+        f"Got {out.to(torch.float32)[:3]}, expected {ref.to(torch.float32)[:3]}"
+    )
+
+
+@pytest.mark.smoke
+def test_e4m3fn_exp_overflow_saturates():
+    """e4m3fn exp(large) should saturate to 448.0, not produce Inf."""
+    from tileops.ops.elementwise import ExpOp
+
+    n = 1024
+    dtype = torch.float8_e4m3fn
+    x_fp16 = torch.full((n,), 10.0, dtype=torch.float16, device="cuda")
+    x = x_fp16.to(dtype)
+    op = ExpOp(N_total=n, dtype=dtype)
+    out = op(x)
+    out_fp32 = out.to(torch.float32)
+    e4m3_max = torch.finfo(torch.float8_e4m3fn).max
+    assert torch.all(out_fp32 <= e4m3_max), (
+        f"e4m3fn exp should saturate to <= {e4m3_max}, got max={out_fp32.max().item()}"
+    )
+    assert not torch.any(torch.isinf(out_fp32)), "e4m3fn should not produce Inf"
 
 
 # ---------------------------------------------------------------------------

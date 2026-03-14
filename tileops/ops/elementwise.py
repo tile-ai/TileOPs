@@ -500,7 +500,13 @@ class UnaryOp(Op):
         """Direct kernel call for use inside custom_op implementation."""
         orig_shape = x.shape
         x = x.contiguous().reshape(-1)
-        return self.kernel(x).reshape(orig_shape)
+        result = self.kernel(x).reshape(orig_shape)
+        # For e5m2: kernel produces fp16 to preserve Inf/NaN;
+        # cast to e5m2 here using PyTorch's non-saturating conversion.
+        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
+        if fp8_out is not None:
+            result = result.to(fp8_out)
+        return result
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -586,9 +592,13 @@ class BinaryOp(Op):
 
     def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
-        return self.kernel(
+        result = self.kernel(
             a.contiguous().view(-1), b.contiguous().view(-1),
         ).reshape(self.out_shape)
+        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
+        if fp8_out is not None:
+            result = result.to(fp8_out)
+        return result
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if not a.is_cuda or not b.is_cuda:
@@ -670,7 +680,11 @@ class FusedGatedOp(Op):
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
         x = x.contiguous()
-        return self.kernel(x)
+        result = self.kernel(x)
+        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
+        if fp8_out is not None:
+            result = result.to(fp8_out)
+        return result
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
