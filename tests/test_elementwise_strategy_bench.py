@@ -25,7 +25,7 @@ class TestUnaryStrategyBenchStructure:
             "register_copy",
         }
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_unary_default_strategy_is_valid(self):
         """DEFAULT_STRATEGY must be one of the declared STRATEGIES.
 
@@ -37,7 +37,7 @@ class TestUnaryStrategyBenchStructure:
         """
         assert UnaryKernel.DEFAULT_STRATEGY in UnaryKernel.STRATEGIES
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_unary_bench_module_parametrize_count(self):
         """bench_unary_strategy must have >= 27 parametrized cases (3x3x3)."""
         from benchmarks.ops.bench_unary_strategy import UnaryStrategyFixture
@@ -47,7 +47,7 @@ class TestUnaryStrategyBenchStructure:
             f"Expected >= 27 unary strategy benchmark cases, got {len(cases)}"
         )
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_unary_bench_covers_all_strategies(self):
         """All 3 strategies must appear in the benchmark parameters."""
         from benchmarks.ops.bench_unary_strategy import UnaryStrategyFixture
@@ -58,7 +58,7 @@ class TestUnaryStrategyBenchStructure:
             strategies_seen.add(case.values[3])
         assert strategies_seen == {"direct", "explicit_parallel", "register_copy"}
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_unary_bench_covers_all_dtypes(self):
         """All 3 dtypes (fp16, bf16, fp32) must appear in the benchmark."""
         from benchmarks.ops.bench_unary_strategy import UnaryStrategyFixture
@@ -69,7 +69,7 @@ class TestUnaryStrategyBenchStructure:
             dtypes_seen.add(case.values[2])
         assert dtypes_seen == {torch.float16, torch.bfloat16, torch.float32}
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_unary_bench_covers_min_shapes(self):
         """At least 3 distinct shapes must appear in the benchmark."""
         from benchmarks.ops.bench_unary_strategy import UnaryStrategyFixture
@@ -95,7 +95,7 @@ class TestBinaryStrategyBenchStructure:
             "explicit_parallel",
         }
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_binary_default_strategy_is_valid(self):
         """DEFAULT_STRATEGY must be one of the declared STRATEGIES.
 
@@ -105,7 +105,7 @@ class TestBinaryStrategyBenchStructure:
         """
         assert BinaryKernel.DEFAULT_STRATEGY in BinaryKernel.STRATEGIES
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_binary_bench_module_parametrize_count(self):
         """bench_binary_strategy must have >= 18 parametrized cases (3x3x2)."""
         from benchmarks.ops.bench_binary_strategy import BinaryStrategyFixture
@@ -115,7 +115,7 @@ class TestBinaryStrategyBenchStructure:
             f"Expected >= 18 binary strategy benchmark cases, got {len(cases)}"
         )
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_binary_bench_covers_all_strategies(self):
         """Both strategies must appear in the benchmark parameters."""
         from benchmarks.ops.bench_binary_strategy import BinaryStrategyFixture
@@ -126,7 +126,7 @@ class TestBinaryStrategyBenchStructure:
             strategies_seen.add(case.values[3])
         assert strategies_seen == {"direct", "explicit_parallel"}
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_binary_bench_covers_all_dtypes(self):
         """All 3 dtypes (fp16, bf16, fp32) must appear in the benchmark."""
         from benchmarks.ops.bench_binary_strategy import BinaryStrategyFixture
@@ -137,7 +137,7 @@ class TestBinaryStrategyBenchStructure:
             dtypes_seen.add(case.values[2])
         assert dtypes_seen == {torch.float16, torch.bfloat16, torch.float32}
 
-    @pytest.mark.full
+    @pytest.mark.smoke
     def test_binary_bench_covers_min_shapes(self):
         """At least 3 distinct shapes must appear in the benchmark."""
         from benchmarks.ops.bench_binary_strategy import BinaryStrategyFixture
