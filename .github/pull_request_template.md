@@ -44,8 +44,10 @@
 
 ## Checklist
 
-- [ ] `pre-commit run --all-files` passed
-- [ ] Relevant local unit tests passed
-- [ ] **(New ops)** Structural compliance verified (see below)
-- [ ] **(New ops)** Dtype support matrix documented above
-- [ ] **(New ops)** Benchmark results reported above and in tracking issue
+- [ ] I have run `pre-commit run --all-files` and fixed all linting issues.
+- [ ] I have verified that my changes pass the relevant local unit tests.
+- [ ] **(For new ops)** I have documented the supported input dtypes, output dtype, and baseline semantic reference in the PR body.
+- [ ] **(For new ops)** I have listed concrete acceptance criteria in the PR body and verified each one.
+- [ ] **(For new ops)** I have added the corresponding `Benchmark` class in `benchmarks/`.
+- [ ] **(For new ops)** I have run GPU-dependent tests and benchmarks on a real CUDA-visible machine.
+- [ ] **(For new ops)** I have reported measured benchmark results for small, medium, and large representative shapes in the PR body and tracking issue.
