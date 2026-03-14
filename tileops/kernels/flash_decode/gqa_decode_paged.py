@@ -290,9 +290,9 @@ def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: i
                                block_table: torch.Tensor, glse: torch.Tensor,
                                Output_partial: torch.Tensor) -> torch.Tensor:
 
-    if K.shape[0] != seqlen_kv or V.shape[0] != seqlen_kv:
+    if not (K.shape[0] == V.shape[0] == seqlen_kv):
         raise ValueError("error: dimension mismatch!")
-    if K.shape[1] != groups or V.shape[1] != groups:
+    if not (K.shape[1] == V.shape[1] == groups):
         raise ValueError("error: groups mismatch!")
     real_max = real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
     chunk_size = real_max // (num_split * block_N) * block_N

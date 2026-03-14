@@ -34,19 +34,6 @@ def _collect_py_files(dirs):
     return sorted(set(files))
 
 
-def _is_validation_assert(node: ast.Assert, source_lines: list[str]) -> bool:
-    """Heuristic: an assert used for runtime input validation.
-
-    We consider an assert to be a validation assert if it has a message
-    (msg is not None) and is NOT inside a T.prim_func or @T.macro
-    (i.e., not inside TileLang DSL code).
-
-    We also skip asserts in __init__.py strategy checks (elementwise)
-    and internal-invariant asserts in op.py/utils.py.
-    """
-    return node.msg is not None
-
-
 class TestNoAssertValidation:
     """No assert statements for runtime input validation in kernels/ops."""
 
