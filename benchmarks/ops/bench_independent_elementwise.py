@@ -1,6 +1,6 @@
-"""Benchmarks for 11 independent elementwise ops added in issue #439.
+"""Benchmarks for 11 independent elementwise ops.
 
-Profiles TileOPs vs PyTorch baselines across small, medium, and large shapes.
+Profiles TileOPs vs PyTorch baselines across 3 shape tiers and all supported dtypes.
 """
 
 from typing import Callable, Optional
@@ -26,6 +26,7 @@ from tileops.ops.elementwise import (
 )
 
 _SHAPES = (262_144, 1_048_576, 4_000_000)
+_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
 class UnaryBenchCase:
@@ -52,35 +53,19 @@ class UnaryBenchmark(BenchmarkBase):
 # Unary-like ops: leaky_relu, elu, hardtanh, softplus, clamp, nan_to_num
 # ---------------------------------------------------------------------------
 
+def _unary_params():
+    """Generate params: 6 ops × 3 shapes × 3 dtypes. Smoke = smallest shape + fp16."""
+    params = []
+    for op_name in ("leaky_relu", "elu", "hardtanh", "softplus", "clamp", "nan_to_num"):
+        for shape in _SHAPES:
+            for dtype in _DTYPES:
+                mark = pytest.mark.smoke if (shape == _SHAPES[0] and dtype == torch.float16) else pytest.mark.full
+                params.append(pytest.param(op_name, shape, dtype, marks=mark))
+    return params
+
+
 class UnaryIndependentBenchFixture(FixtureBase):
-    PARAMS = [
-        ("op_name, n_total, dtype", [
-            # leaky_relu
-            pytest.param("leaky_relu", _SHAPES[0], torch.float16, marks=pytest.mark.smoke),
-            pytest.param("leaky_relu", _SHAPES[1], torch.float16, marks=pytest.mark.full),
-            pytest.param("leaky_relu", _SHAPES[2], torch.float16, marks=pytest.mark.full),
-            # elu
-            pytest.param("elu", _SHAPES[0], torch.float16, marks=pytest.mark.smoke),
-            pytest.param("elu", _SHAPES[1], torch.float16, marks=pytest.mark.full),
-            pytest.param("elu", _SHAPES[2], torch.float16, marks=pytest.mark.full),
-            # hardtanh
-            pytest.param("hardtanh", _SHAPES[0], torch.float16, marks=pytest.mark.smoke),
-            pytest.param("hardtanh", _SHAPES[1], torch.float16, marks=pytest.mark.full),
-            pytest.param("hardtanh", _SHAPES[2], torch.float16, marks=pytest.mark.full),
-            # softplus
-            pytest.param("softplus", _SHAPES[0], torch.float16, marks=pytest.mark.smoke),
-            pytest.param("softplus", _SHAPES[1], torch.float16, marks=pytest.mark.full),
-            pytest.param("softplus", _SHAPES[2], torch.float16, marks=pytest.mark.full),
-            # clamp
-            pytest.param("clamp", _SHAPES[0], torch.float16, marks=pytest.mark.smoke),
-            pytest.param("clamp", _SHAPES[1], torch.float16, marks=pytest.mark.full),
-            pytest.param("clamp", _SHAPES[2], torch.float16, marks=pytest.mark.full),
-            # nan_to_num
-            pytest.param("nan_to_num", _SHAPES[0], torch.float16, marks=pytest.mark.smoke),
-            pytest.param("nan_to_num", _SHAPES[1], torch.float16, marks=pytest.mark.full),
-            pytest.param("nan_to_num", _SHAPES[2], torch.float16, marks=pytest.mark.full),
-        ]),
-    ]
+    PARAMS = [("op_name, n_total, dtype", _unary_params())]
 
 
 _UNARY_OPS = {
@@ -136,14 +121,17 @@ class PreluBenchmark(BenchmarkBase):
         return t.n_total * t.dtype.itemsize * 2 + t.num_channels * t.dtype.itemsize
 
 
+def _prelu_params():
+    params = []
+    for shape in _SHAPES:
+        for dtype in _DTYPES:
+            mark = pytest.mark.smoke if (shape == _SHAPES[0] and dtype == torch.float16) else pytest.mark.full
+            params.append(pytest.param(shape, 64, dtype, marks=mark))
+    return params
+
+
 class PreluBenchFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, num_channels, dtype", [
-            pytest.param(_SHAPES[0], 64, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(_SHAPES[1], 64, torch.float16, marks=pytest.mark.full),
-            pytest.param(_SHAPES[2], 64, torch.float16, marks=pytest.mark.full),
-        ]),
-    ]
+    PARAMS = [("n_total, num_channels, dtype", _prelu_params())]
 
 
 @PreluBenchFixture
@@ -188,14 +176,17 @@ class WhereBenchmark(BenchmarkBase):
         return t.n_total * (t.dtype.itemsize * 2 + 1) + t.n_total * t.dtype.itemsize
 
 
+def _shape_dtype_params():
+    params = []
+    for shape in _SHAPES:
+        for dtype in _DTYPES:
+            mark = pytest.mark.smoke if (shape == _SHAPES[0] and dtype == torch.float16) else pytest.mark.full
+            params.append(pytest.param(shape, dtype, marks=mark))
+    return params
+
+
 class WhereBenchFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(_SHAPES[0], torch.float16, marks=pytest.mark.smoke),
-            pytest.param(_SHAPES[1], torch.float16, marks=pytest.mark.full),
-            pytest.param(_SHAPES[2], torch.float16, marks=pytest.mark.full),
-        ]),
-    ]
+    PARAMS = [("n_total, dtype", _shape_dtype_params())]
 
 
 @WhereBenchFixture
@@ -239,13 +230,7 @@ class MaskedFillBenchmark(BenchmarkBase):
 
 
 class MaskedFillBenchFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(_SHAPES[0], torch.float16, marks=pytest.mark.smoke),
-            pytest.param(_SHAPES[1], torch.float16, marks=pytest.mark.full),
-            pytest.param(_SHAPES[2], torch.float16, marks=pytest.mark.full),
-        ]),
-    ]
+    PARAMS = [("n_total, dtype", _shape_dtype_params())]
 
 
 @MaskedFillBenchFixture
@@ -290,17 +275,21 @@ class GenerativeBenchmark(BenchmarkBase):
         return self.test.n_total * self.test.dtype.itemsize
 
 
+def _generative_params():
+    """alibi: 3 shapes × 3 dtypes, sinusoidal: 3 shapes × 3 dtypes."""
+    alibi_shapes = [(512, 64), (2048, 64), (4096, 128)]
+    sinusoidal_shapes = [(512, 256), (2048, 256), (4096, 512)]
+    params = []
+    for op_name, shapes in [("alibi", alibi_shapes), ("sinusoidal", sinusoidal_shapes)]:
+        for seq_len, dim in shapes:
+            for dtype in _DTYPES:
+                mark = pytest.mark.smoke if (seq_len == shapes[0][0] and dtype == torch.float16) else pytest.mark.full
+                params.append(pytest.param(op_name, seq_len, dim, dtype, marks=mark))
+    return params
+
+
 class GenerativeBenchFixture(FixtureBase):
-    PARAMS = [
-        ("op_name, seq_len, dim, dtype", [
-            pytest.param("alibi", 512, 64, torch.float16, marks=pytest.mark.smoke),
-            pytest.param("alibi", 2048, 64, torch.float16, marks=pytest.mark.full),
-            pytest.param("alibi", 4096, 128, torch.float16, marks=pytest.mark.full),
-            pytest.param("sinusoidal", 512, 256, torch.float16, marks=pytest.mark.smoke),
-            pytest.param("sinusoidal", 2048, 256, torch.float16, marks=pytest.mark.full),
-            pytest.param("sinusoidal", 4096, 512, torch.float16, marks=pytest.mark.full),
-        ]),
-    ]
+    PARAMS = [("op_name, seq_len, dim, dtype", _generative_params())]
 
 
 def _alibi_reference(seq_len: int, num_heads: int, dtype: torch.dtype) -> torch.Tensor:
