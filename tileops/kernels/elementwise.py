@@ -1592,14 +1592,18 @@ class PreluKernel(Kernel):
 
 
 def _make_where_kernel(N, dtype, threads=256, npt=8):
-    """Build where kernel: out = cond ? x : y."""
+    """Build where kernel: out = cond ? x : y.
+
+    Accepts bool condition tensor directly to avoid dtype conversion
+    overhead in the Op layer.
+    """
     block_size = threads * npt
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(
-            cond: T.Tensor((N,), "int8"),
+            cond: T.Tensor((N,), "bool"),
             x: T.Tensor((N,), dtype),
             y_in: T.Tensor((N,), dtype),
             out: T.Tensor((N,), dtype),
@@ -1607,9 +1611,7 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
-                    c = cond[idx]
-                    zero = T.IntImm("int8", 0)
-                    out[idx] = T.if_then_else(c != zero, x[idx], y_in[idx])
+                    out[idx] = T.if_then_else(cond[idx], x[idx], y_in[idx])
 
         return main
 
@@ -1647,7 +1649,7 @@ class WhereKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = 8 if self.dtype == torch.float32 else 32
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, cond, x, y):
@@ -1729,7 +1731,11 @@ class ClampKernel(Kernel):
 
 
 def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
-    """Build masked_fill kernel: out = mask ? fill_value : x."""
+    """Build masked_fill kernel: out = mask ? fill_value : x.
+
+    Accepts bool mask tensor directly to avoid dtype conversion
+    overhead in the Op layer.
+    """
     block_size = threads * npt
 
     @tilelang.jit(out_idx=[2])
@@ -1737,16 +1743,14 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
         @T.prim_func
         def main(
             x: T.Tensor((N,), dtype),
-            mask: T.Tensor((N,), "int8"),
+            mask: T.Tensor((N,), "bool"),
             out: T.Tensor((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
-                    m = mask[idx]
-                    zero = T.IntImm("int8", 0)
                     fv = T.cast(fill_value, dtype)
-                    out[idx] = T.if_then_else(m != zero, fv, x[idx])
+                    out[idx] = T.if_then_else(mask[idx], fv, x[idx])
 
         return main
 
@@ -1786,7 +1790,7 @@ class MaskedFillKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = 8 if self.dtype == torch.float32 else 16
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, x, mask):

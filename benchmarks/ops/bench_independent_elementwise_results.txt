@@ -1,0 +1,32 @@
+# Benchmark Results: Independent Elementwise Ops Optimization (Issue #497)
+#
+# Environment:
+#   GPU: NVIDIA H200
+#   Torch: 2.9.1+cu128
+#   CUDA: 12.8
+#   Driver: 575.57.08
+#
+# Target shape: (1024, 10240) fp16 = 10,485,760 elements
+# Metric: TFLOPS (higher is better)
+#
+# Op               TileOps  Baseline  Speedup  Strategy
+# --------------- -------- --------- -------- ------------------------------------
+# leaky_relu         0.79      0.63    1.25x  register_copy + npt=16
+# nan_to_num         0.77      0.61    1.26x  register_copy + npt=16
+# where              0.43      0.42    1.02x  bool cond dtype (was int8)
+# masked_fill        0.54      0.80    0.68x  bool mask dtype (was int8)
+# prelu (C=4096)     0.65      0.25    2.60x  register_copy + npt=16
+# alibi (512,64)     0.00      0.00    N/A    output shape mismatch (see note)
+#
+# Notes:
+# - masked_fill: PyTorch baseline achieves near-peak bandwidth (~4 TB/s).
+#   TileLang code generation does not vectorize mixed bool+fp16 loads as
+#   efficiently. Improved from 0.29x (int8) to 0.68x (bool).
+# - alibi: benchmark baseline computes (num_heads, seq_len) = 2D output,
+#   while TileOps kernel computes (num_heads, seq_len, seq_len) = 3D output.
+#   Baseline reference `_alibi_reference` is a simplified 2D slice, not the
+#   full distance matrix. Comparison is invalid at O(seq_len^2) vs O(seq_len).
+#
+# All latencies measured via tilelang.profiler.do_bench (cupti/event backend).
+# Full profile_run.log available at repo root after running:
+#   python -m pytest benchmarks/ops/bench_independent_elementwise.py -m "smoke or full" -s
