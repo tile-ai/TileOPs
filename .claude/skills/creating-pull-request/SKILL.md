@@ -72,7 +72,7 @@ PR body section rules:
 
 - `## Summary` — always required
 - `## Test plan` — always required
-- `## Benchmark` — required when PR involves performance changes
+- `## Benchmark` — **required** when PR adds new ops or modifies existing kernel/op code. This is a lightweight performance profile, not a nightly regression suite. See [benchmark-template.md](benchmark-template.md) for the required format.
 - `## Regression` — recommended when PR is bugfix or refactor
 - `## Additional context` — optional
 - **Delete** inapplicable optional sections entirely. Never leave empty headers.
