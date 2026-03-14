@@ -184,7 +184,7 @@ def test_fused_gated_kernel_has_strategies() -> None:
 @pytest.mark.smoke
 def test_fused_gated_kernel_rejects_unknown_strategy() -> None:
     """FusedGatedKernel must reject unknown strategy names."""
-    with pytest.raises(AssertionError, match="Unknown strategy"):
+    with pytest.raises(ValueError, match="Unknown strategy"):
         SiluAndMulKernel(M=16, N=16, dtype=torch.float16, strategy="nonexistent")
 
 
