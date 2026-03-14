@@ -76,7 +76,7 @@ def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> Non
 
 
 # ===========================================================================
-# 8 activation ops (issue #437)
+# Template-based activation ops
 # ===========================================================================
 
 
@@ -223,6 +223,109 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
         return x
 
     _make_activation_test(n_total, dtype, _extreme, torch.tanh, TanhOp)
+
+
+# ===========================================================================
+# Independent activation ops
+# ===========================================================================
+
+
+@ActivationFixture
+def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import LeakyReluOp
+    _make_activation_test(
+        n_total, dtype, _randn,
+        lambda x: F.leaky_relu(x.float(), 0.01).to(x.dtype),
+        LeakyReluOp,
+    )
+
+
+@ActivationFixture
+def test_elu(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import EluOp
+    _make_activation_test(
+        n_total, dtype, _randn,
+        lambda x: F.elu(x.float(), 1.0).to(x.dtype),
+        EluOp,
+    )
+
+
+@ActivationFixture
+def test_hardtanh(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import HardtanhOp
+    _make_activation_test(
+        n_total, dtype, _randn,
+        lambda x: F.hardtanh(x.float(), -1.0, 1.0).to(x.dtype),
+        HardtanhOp,
+    )
+
+
+@ActivationFixture
+def test_softplus(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import SoftplusOp
+    _make_activation_test(
+        n_total, dtype, _randn,
+        lambda x: F.softplus(x.float(), 1.0, 20.0).to(x.dtype),
+        SoftplusOp,
+    )
+
+
+class PreluFixture(FixtureBase):
+    PARAMS = [
+        ("n_total, dtype", [
+            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@PreluFixture
+def test_prelu(n_total: int, dtype: torch.dtype) -> None:
+    from tileops.ops.elementwise import PreluOp
+
+    C = 64
+    H = n_total // C
+    # Shape (1, C, H): batch=1, channels=C, spatial=H
+    shape = (1, C, H)
+    x = torch.randn(shape, device="cuda", dtype=dtype)
+    weight = torch.randn(C, device="cuda", dtype=dtype).abs() * 0.1 + 0.01
+    ref = F.prelu(x.float(), weight.float()).to(dtype)
+
+    op = PreluOp(shape=shape, dtype=dtype, num_channels=C)
+    out = op(x, weight)
+    if dtype == torch.float16:
+        tol = {"atol": 1e-3, "rtol": 1e-3}
+    elif dtype == torch.bfloat16:
+        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
+    else:
+        tol = {"atol": 1e-5, "rtol": 1e-5}
+    torch.testing.assert_close(out, ref, **tol)
+    print("All checks passed for PreluOp.")
+
+
+@pytest.mark.smoke
+def test_prelu_batch_dim() -> None:
+    """PReLU with a leading batch dimension: shape (2, 4, 8)."""
+    from tileops.ops.elementwise import PreluOp
+
+    dtype = torch.float32
+    shape = (2, 4, 8)
+    C = 4
+    x = torch.randn(shape, device="cuda", dtype=dtype)
+    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
+    ref = F.prelu(x, weight)
+    op = PreluOp(shape=shape, dtype=dtype, num_channels=C)
+    out = op(x, weight)
+    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+    print("All checks passed for PreluOp batch-dim.")
+
+
+@pytest.mark.smoke
+def test_independent_activation_rejects_non_float_dtype() -> None:
+    from tileops.kernels.elementwise import LeakyReluKernel
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        LeakyReluKernel(N_total=16, dtype=torch.int32)
 
 
 if __name__ == "__main__":

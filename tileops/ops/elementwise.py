@@ -24,13 +24,16 @@ import torch
 from tileops.kernels.elementwise import (
     AbsKernel,
     AddKernel,
+    AlibiKernel,
     BitwiseAndKernel,
     BitwiseNotKernel,
     BitwiseOrKernel,
     BitwiseXorKernel,
     CeilKernel,
+    ClampKernel,
     CosKernel,
     DivKernel,
+    EluKernel,
     EqKernel,
     ErfKernel,
     ExpKernel,
@@ -44,9 +47,11 @@ from tileops.kernels.elementwise import (
     GtKernel,
     HardsigmoidKernel,
     HardswishKernel,
+    HardtanhKernel,
     IsfiniteKernel,
     IsinfKernel,
     IsnanKernel,
+    LeakyReluKernel,
     LeKernel,
     LerpKernel,
     Log1pKernel,
@@ -55,13 +60,16 @@ from tileops.kernels.elementwise import (
     LogicalOrKernel,
     LogKernel,
     LtKernel,
+    MaskedFillKernel,
     MaximumKernel,
     MinimumKernel,
     MishKernel,
     MulKernel,
+    NanToNumKernel,
     NegKernel,
     NeKernel,
     PowKernel,
+    PreluKernel,
     ReciprocalKernel,
     ReluKernel,
     RemainderKernel,
@@ -73,10 +81,13 @@ from tileops.kernels.elementwise import (
     SiluAndMulKernel,
     SiluKernel,
     SinKernel,
+    SinusoidalKernel,
+    SoftplusKernel,
     SqrtKernel,
     SubKernel,
     TanhKernel,
     TruncKernel,
+    WhereKernel,
 )
 from tileops.kernels.kernel import Kernel
 
@@ -145,6 +156,116 @@ def _register_binary_custom_op(op_cls, output_bool: bool = False):
     ) -> torch.Tensor:
         out_dtype = torch.bool if output_bool else a.dtype
         return a.new_empty(out_shape, dtype=out_dtype)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_prelu_custom_op(op_cls):
+    """Register a PReLU-style op (x, weight -> y) for torch.compile."""
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
+    def _wrapped(
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(x, weight)
+
+    @_wrapped.register_fake
+    def _(
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        return torch.empty_like(x)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_where_custom_op(op_cls):
+    """Register a where-style op (cond, x, y -> out) for torch.compile."""
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
+    def _wrapped(
+        cond: torch.Tensor,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(cond, x, y)
+
+    @_wrapped.register_fake
+    def _(
+        cond: torch.Tensor,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        return torch.empty_like(x)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_masked_fill_custom_op(op_cls):
+    """Register a masked-fill-style op (x, mask -> y) for torch.compile."""
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
+    def _wrapped(
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(x, mask)
+
+    @_wrapped.register_fake
+    def _(
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        return torch.empty_like(x)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_generative_custom_op(op_cls, out_shape_fn):
+    """Register a generative op (no tensor input -> out) for torch.compile.
+
+    A scalar ``device_carrier`` tensor is passed so that ``register_fake``
+    can derive the correct device and dtype from a real tensor reference,
+    which is required by the torch.compile tracing infrastructure.
+
+    Args:
+        op_cls: The Op subclass to register.
+        out_shape_fn: Callable(carrier, num_a, num_b) -> Tensor returning
+            the output metadata so register_fake can produce the right shape.
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
+    def _wrapped(
+        device_carrier: torch.Tensor,
+        num_a: int,
+        num_b: int,
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward()
+
+    @_wrapped.register_fake
+    def _(
+        device_carrier: torch.Tensor,
+        num_a: int,
+        num_b: int,
+        instance_key: int,
+    ) -> torch.Tensor:
+        return out_shape_fn(device_carrier, num_a, num_b)
 
     op_cls._wrapped = _wrapped
 
@@ -250,6 +371,18 @@ __all__ = [
     "IsfiniteOp",
     "IsinfOp",
     "IsnanOp",
+    # --- independent (custom-signature, 11) ---
+    "LeakyReluOp",
+    "EluOp",
+    "HardtanhOp",
+    "SoftplusOp",
+    "PreluOp",
+    "WhereOp",
+    "ClampOp",
+    "MaskedFillOp",
+    "NanToNumOp",
+    "AlibiOp",
+    "SinusoidalOp",
 ]
 
 
@@ -1063,6 +1196,467 @@ class IsfiniteOp(UnaryOp):
 
 
 # ---------------------------------------------------------------------------
+# Independent (custom-signature) op classes (11)
+# ---------------------------------------------------------------------------
+
+
+class LeakyReluOp(Op):
+    """Leaky ReLU: y = x if x > 0 else negative_slope * x.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        negative_slope: Slope for negative inputs (default 0.01).
+    """
+
+    _op_name = "leaky_relu"
+    _wrapped = None
+
+    def __init__(self, N_total: int, dtype: torch.dtype, negative_slope: float = 0.01):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.negative_slope = negative_slope
+        self.kernel = LeakyReluKernel(N_total, dtype, negative_slope=negative_slope)
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"leaky_relu": LeakyReluKernel}
+
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self._instance_key)
+        return self._eager_forward(x)
+
+
+class EluOp(Op):
+    """ELU: y = x if x > 0 else alpha * (exp(x) - 1).
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        alpha: Scale for the negative part (default 1.0).
+    """
+
+    _op_name = "elu"
+    _wrapped = None
+
+    def __init__(self, N_total: int, dtype: torch.dtype, alpha: float = 1.0):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.alpha = alpha
+        self.kernel = EluKernel(N_total, dtype, alpha=alpha)
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"elu": EluKernel}
+
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self._instance_key)
+        return self._eager_forward(x)
+
+
+class HardtanhOp(Op):
+    """Hardtanh: y = clamp(x, min_val, max_val).
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        min_val: Lower bound (default -1.0).
+        max_val: Upper bound (default 1.0).
+    """
+
+    _op_name = "hardtanh"
+    _wrapped = None
+
+    def __init__(self, N_total: int, dtype: torch.dtype,
+                 min_val: float = -1.0, max_val: float = 1.0):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.min_val = min_val
+        self.max_val = max_val
+        self.kernel = HardtanhKernel(N_total, dtype, min_val=min_val, max_val=max_val)
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"hardtanh": HardtanhKernel}
+
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self._instance_key)
+        return self._eager_forward(x)
+
+
+class SoftplusOp(Op):
+    """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        beta: Scaling factor (default 1.0).
+        threshold: Linear regime threshold (default 20.0).
+    """
+
+    _op_name = "softplus"
+    _wrapped = None
+
+    def __init__(self, N_total: int, dtype: torch.dtype,
+                 beta: float = 1.0, threshold: float = 20.0):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.beta = beta
+        self.threshold = threshold
+        self.kernel = SoftplusKernel(N_total, dtype, beta=beta, threshold=threshold)
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"softplus": SoftplusKernel}
+
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self._instance_key)
+        return self._eager_forward(x)
+
+
+class PreluOp(Op):
+    """PReLU: y = x if x > 0 else weight[channel] * x.
+
+    Channel dimension follows PyTorch convention: dimension 1 for inputs
+    with ndim >= 2, dimension 0 for 1-D inputs.
+
+    Args:
+        shape: Shape of the input tensor (must have a channel dimension).
+        dtype: Torch dtype.
+        num_channels: Number of channels (weight length).
+    """
+
+    _op_name = "prelu"
+    _wrapped = None
+
+    def __init__(self, shape: tuple, dtype: torch.dtype, num_channels: int):
+        self.shape = shape
+        self.dtype = dtype
+        self.num_channels = num_channels
+        N_total = prod(shape)
+        self.N_total = N_total
+        # PyTorch PReLU: channel dim is 1 for ndim>=2, else 0
+        inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
+        self.inner_size = inner_size
+        self.kernel = PreluKernel(N_total, num_channels, inner_size, dtype)
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"prelu": PreluKernel}
+
+    def _eager_forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
+        return self.kernel(
+            x.contiguous().reshape(-1), weight.contiguous().reshape(-1),
+        ).reshape(orig_shape)
+
+    def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, weight, self._instance_key)
+        return self._eager_forward(x, weight)
+
+
+class WhereOp(Op):
+    """Where: out = cond ? x : y.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype for x and y.
+    """
+
+    _op_name = "where"
+    _wrapped = None
+
+    def __init__(self, N_total: int, dtype: torch.dtype):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.kernel = WhereKernel(N_total, dtype)
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"where": WhereKernel}
+
+    def _eager_forward(
+        self, cond: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
+    ) -> torch.Tensor:
+        orig_shape = x.shape
+        cond_flat = cond.contiguous().reshape(-1).to(torch.int8)
+        return self.kernel(
+            cond_flat,
+            x.contiguous().reshape(-1),
+            y.contiguous().reshape(-1),
+        ).reshape(orig_shape)
+
+    def forward(
+        self, cond: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
+    ) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(cond, x, y, self._instance_key)
+        return self._eager_forward(cond, x, y)
+
+
+class ClampOp(Op):
+    """Clamp: y = clamp(x, min, max) with optional bounds.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        min_val: Lower bound (None = no lower bound).
+        max_val: Upper bound (None = no upper bound).
+    """
+
+    _op_name = "clamp"
+    _wrapped = None
+
+    def __init__(self, N_total: int, dtype: torch.dtype,
+                 min_val: float = None, max_val: float = None):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.min_val = min_val
+        self.max_val = max_val
+        self.kernel = ClampKernel(N_total, dtype, min_val=min_val, max_val=max_val)
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"clamp": ClampKernel}
+
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self._instance_key)
+        return self._eager_forward(x)
+
+
+class MaskedFillOp(Op):
+    """MaskedFill: out = mask ? fill_value : x.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        fill_value: Scalar value to fill where mask is True.
+    """
+
+    _op_name = "masked_fill"
+    _wrapped = None
+
+    def __init__(self, N_total: int, dtype: torch.dtype, fill_value: float):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.fill_value = fill_value
+        self.kernel = MaskedFillKernel(N_total, dtype, fill_value)
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"masked_fill": MaskedFillKernel}
+
+    def _eager_forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
+        mask_flat = mask.contiguous().reshape(-1).to(torch.int8)
+        return self.kernel(
+            x.contiguous().reshape(-1),
+            mask_flat,
+        ).reshape(orig_shape)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, mask, self._instance_key)
+        return self._eager_forward(x, mask)
+
+
+class NanToNumOp(Op):
+    """NanToNum: replace NaN, +Inf, -Inf with specified values.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        nan_val: Replacement for NaN (default 0.0).
+        posinf_val: Replacement for +Inf (default 1e4).
+        neginf_val: Replacement for -Inf (default -1e4).
+    """
+
+    _op_name = "nan_to_num"
+    _wrapped = None
+
+    def __init__(self, N_total: int, dtype: torch.dtype,
+                 nan_val: float = 0.0, posinf_val: float = 1e4, neginf_val: float = -1e4):
+        self.N_total = N_total
+        self.dtype = dtype
+        self.nan_val = nan_val
+        self.posinf_val = posinf_val
+        self.neginf_val = neginf_val
+        self.kernel = NanToNumKernel(
+            N_total, dtype, nan_val=nan_val, posinf_val=posinf_val, neginf_val=neginf_val,
+        )
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"nan_to_num": NanToNumKernel}
+
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
+        return self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self._instance_key)
+        return self._eager_forward(x)
+
+
+class AlibiOp(Op):
+    """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|.
+
+    Generates the full (num_heads, seq_len, seq_len) bias tensor.
+
+    Args:
+        seq_len: Sequence length.
+        num_heads: Number of attention heads.
+        dtype: Torch dtype.
+    """
+
+    _op_name = "alibi"
+    _wrapped = None
+
+    def __init__(self, seq_len: int, num_heads: int, dtype: torch.dtype):
+        self.seq_len = seq_len
+        self.num_heads = num_heads
+        self.dtype = dtype
+        self.kernel = AlibiKernel(seq_len, num_heads, dtype)
+        # Scalar tensor used as device/dtype carrier for torch.compile tracing
+        self._device_carrier = torch.empty((), dtype=dtype, device="cuda")
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"alibi": AlibiKernel}
+
+    def _eager_forward(self) -> torch.Tensor:
+        out = self.kernel()
+        return out.reshape(self.num_heads, self.seq_len, self.seq_len)
+
+    def forward(self) -> torch.Tensor:
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(
+                self._device_carrier,
+                self.num_heads, self.seq_len,
+                self._instance_key,
+            )
+        return self._eager_forward()
+
+
+class SinusoidalOp(Op):
+    """Sinusoidal positional encoding from "Attention Is All You Need".
+
+    Generates the full (seq_len, d_model) encoding tensor.
+
+    Args:
+        seq_len: Sequence length.
+        d_model: Model dimension.
+        dtype: Torch dtype.
+    """
+
+    _op_name = "sinusoidal"
+    _wrapped = None
+
+    def __init__(self, seq_len: int, d_model: int, dtype: torch.dtype):
+        self.seq_len = seq_len
+        self.d_model = d_model
+        self.dtype = dtype
+        self.kernel = SinusoidalKernel(seq_len, d_model, dtype)
+        # Scalar tensor used as device/dtype carrier for torch.compile tracing
+        self._device_carrier = torch.empty((), dtype=dtype, device="cuda")
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"sinusoidal": SinusoidalKernel}
+
+    def _eager_forward(self) -> torch.Tensor:
+        out = self.kernel()
+        return out.reshape(self.seq_len, self.d_model)
+
+    def forward(self) -> torch.Tensor:
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(
+                self._device_carrier,
+                self.seq_len, self.d_model,
+                self._instance_key,
+            )
+        return self._eager_forward()
+
+
+# ---------------------------------------------------------------------------
 # torch.compile registration for all 55 concrete ops
 # ---------------------------------------------------------------------------
 
@@ -1103,6 +1697,35 @@ for _cls in [
 # --- Fused gated ops (3 ops) ---
 for _cls in [SiluAndMulOp, GeluAndMulOp, GeluTanhAndMulOp]:
     _register_fused_gated_custom_op(_cls)
+
+# --- Independent unary-like ops (6 ops: x -> y with baked params) ---
+for _cls in [
+    LeakyReluOp, EluOp, HardtanhOp, SoftplusOp, ClampOp, NanToNumOp,
+]:
+    _register_unary_custom_op(_cls)
+
+# --- PReLU op (1 op: x, weight -> y) ---
+_register_prelu_custom_op(PreluOp)
+
+# --- Where op (1 op: cond, x, y -> out) ---
+_register_where_custom_op(WhereOp)
+
+# --- MaskedFill op (1 op: x, mask -> y) ---
+_register_masked_fill_custom_op(MaskedFillOp)
+
+# --- Generative ops (2 ops: no tensor input -> out) ---
+_register_generative_custom_op(
+    AlibiOp,
+    out_shape_fn=lambda carrier, num_heads, seq_len: carrier.new_empty(
+        (num_heads, seq_len, seq_len),
+    ),
+)
+_register_generative_custom_op(
+    SinusoidalOp,
+    out_shape_fn=lambda carrier, seq_len, d_model: carrier.new_empty(
+        (seq_len, d_model),
+    ),
+)
 
 # Clean up loop variable
 del _cls
