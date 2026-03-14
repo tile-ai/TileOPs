@@ -57,10 +57,10 @@ from .norm import (
 
 __all__ = [
     "BinaryKernel",
-    "DropoutKernel",
     "BatchNormBwdKernel",
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
+    "DropoutKernel",
     "EngramDecodeKernel",
     "EngramGateConvBwdKernel",
     "EngramGateConvFwdKernel",
