@@ -28,7 +28,7 @@ Items marked **[RECOMMENDED]** should pass — note in PR body if skipped with r
 - [ ] **[RECOMMENDED]** `default_config` and `autotune_configs` properties are defined
 - [ ] **[RECOMMENDED]** `supported_archs` class attribute is set
 - [ ] **[RECOMMENDED]** `accum_dtype` is hardcoded in kernel — never a property, config key, or parameter
-- [ ] **[RECOMMENDED]** `kernel_map` is the last `__init__` parameter; `dispatch_kernel(kernel_map)` called before kernel use
+- [ ] **[RECOMMENDED]** `__init__` signature ends with `kernel_map=None, tune=False`; `dispatch_kernel(kernel_map)` called before kernel use
 
 ## Delivery
 
