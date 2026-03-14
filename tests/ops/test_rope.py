@@ -566,5 +566,13 @@ def test_rope_noncontiguous_1d_works() -> None:
     torch.testing.assert_close(out_nc, out_c, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.smoke
+def test_rope_rejects_non_float_dtype() -> None:
+    from tileops.kernels.rope import RopeNeoxKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        RopeNeoxKernel(seq_len=16, head_dim=64, dtype=torch.int32)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

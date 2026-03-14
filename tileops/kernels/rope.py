@@ -27,6 +27,8 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
+_FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
 __all__ = [
     "RopeNeoxKernel",
     "RopeNonNeoxKernel",
@@ -248,14 +250,22 @@ class _RopeKernelBase(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
     ROTATION_STYLE: str = "neox"  # "neox" or "non_neox"
 
     def __init__(self, seq_len: int, head_dim: int, dtype: torch.dtype,
                  layout: str = "1d", batch: int = 1, num_heads: int = 1,
                  config: dict | None = None, tune: bool = False):
         super().__init__()
-        assert head_dim % 2 == 0, f"head_dim must be even, got {head_dim}"
-        assert layout in ("1d", "2d"), f"layout must be '1d' or '2d', got '{layout}'"
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
+        if head_dim % 2 != 0:
+            raise ValueError(f"head_dim must be even, got {head_dim}")
+        if layout not in ("1d", "2d"):
+            raise ValueError(f"layout must be '1d' or '2d', got '{layout}'")
 
         self.seq_len = seq_len
         self.head_dim = head_dim
