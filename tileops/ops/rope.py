@@ -405,8 +405,33 @@ class _RopeOpBase(Op):
             x_elems = self.batch * self.seq_len * self.num_heads * self.head_dim
         return (2 * x_elems + cos_sin_elems) * elem
 
+    def _validate_and_prepare(self, x: torch.Tensor) -> torch.Tensor:
+        """Validate input shape/dtype/device and return a contiguous tensor.
+
+        Raises:
+            ValueError: If x is not CUDA, has wrong dtype, or wrong shape.
+        """
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if self.layout == "1d":
+            expected = (self.seq_len, self.head_dim)
+        else:
+            expected = (self.batch, self.seq_len, self.num_heads, self.head_dim)
+        if tuple(x.shape) != expected:
+            raise ValueError(
+                f"Expected input shape {expected} for layout "
+                f"'{self.layout}', got {tuple(x.shape)}"
+            )
+        return x.contiguous()
+
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Direct kernel call for use inside custom_op implementation."""
+        """Direct kernel call for use inside custom_op implementation.
+
+        Called from the custom_op wrapper after validation has already
+        been performed in ``forward()``.
+        """
         cos, sin = self._get_cos_sin(x.device)
         return self.kernel(x, cos, sin)
 
@@ -421,10 +446,7 @@ class _RopeOpBase(Op):
         Returns:
             Rotated output tensor with same shape as x.
         """
-        if not x.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        x = self._validate_and_prepare(x)
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self._instance_key)

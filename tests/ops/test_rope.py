@@ -527,5 +527,44 @@ def test_rope_non_neox_edge(batch: int, seq_len: int, num_heads: int,
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
+# ---------------------------------------------------------------------------
+# Input validation regression tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_rope_rejects_wrong_shape_2d() -> None:
+    """A same-numel but wrong-shape 2D tensor must be rejected."""
+    from tileops.ops.rope import RopeNeoxOp
+
+    # Op configured for batch=2, seq_len=2, num_heads=1, head_dim=4
+    op = RopeNeoxOp(seq_len=2, head_dim=4, dtype=torch.float16, layout="2d",
+                    batch=2, num_heads=1)
+    # Wrong shape: (1, 4, 1, 4) has same numel (16) as (2, 2, 1, 4) but different layout
+    x = torch.randn(1, 4, 1, 4, device="cuda", dtype=torch.float16)
+    with pytest.raises(ValueError, match="Expected input shape"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_rope_noncontiguous_1d_works() -> None:
+    """A non-contiguous 1D view must produce correct results after contiguity normalization."""
+    from tileops.ops.rope import RopeNeoxOp
+
+    seq_len, head_dim = 4, 8
+    op = RopeNeoxOp(seq_len=seq_len, head_dim=head_dim, dtype=torch.float32, layout="1d")
+
+    # Create a non-contiguous view: transpose makes it non-contiguous
+    base = torch.randn(head_dim, seq_len, device="cuda", dtype=torch.float32)
+    x_nc = base.t()  # shape (seq_len, head_dim), non-contiguous
+    assert not x_nc.is_contiguous()
+
+    # Reference with contiguous copy
+    x_c = x_nc.contiguous()
+    out_nc = op(x_nc)
+    out_c = op(x_c)
+    torch.testing.assert_close(out_nc, out_c, atol=1e-5, rtol=1e-5)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
