@@ -11,11 +11,8 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_softmax import (
-    LogSoftmaxFixture,
     LogSoftmaxTest,
-    LogSumExpFixture,
     LogSumExpTest,
-    SoftmaxFixture,
     SoftmaxTest,
 )
 from tileops.ops.reduction.log_softmax import LogSoftmaxOp
@@ -70,7 +67,15 @@ class LogSumExpBenchmark(BenchmarkBase):
 # ===================================================================
 
 
-@SoftmaxFixture
+_SOFTMAX_BENCH_PARAMS = [
+    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
+    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
+    pytest.param(1024, 3000, torch.float16, True, id="non-power-of-two"),
+    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
+]
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _SOFTMAX_BENCH_PARAMS)
 def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = SoftmaxTest(m, n, dtype)
     bm = SoftmaxBenchmark(test)
@@ -92,7 +97,10 @@ def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 # ===================================================================
 
 
-@LogSoftmaxFixture
+_LOG_SOFTMAX_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _LOG_SOFTMAX_BENCH_PARAMS)
 def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSoftmaxTest(m, n, dtype)
     bm = LogSoftmaxBenchmark(test)
@@ -114,7 +122,10 @@ def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> No
 # ===================================================================
 
 
-@LogSumExpFixture
+_LOGSUMEXP_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _LOGSUMEXP_BENCH_PARAMS)
 def test_logsumexp_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSumExpTest(m, n, dtype)
     bm = LogSumExpBenchmark(test)

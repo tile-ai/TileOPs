@@ -32,15 +32,15 @@ class MeanPoolingFixture(FixtureBase):
             ),
             # varlen case: lengths [2048, 2048, 2048, 2048] -> offsets [0, 2048, 4096, 6144, 8192]
             pytest.param(
-                1, 8192, 64, 128, 64, torch.float16, torch.float32, True,
+                1, 8192, 64, 128, 64, torch.float16, torch.float32, False,
                 torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device='cuda'),
-                marks=pytest.mark.nightly,
+                marks=pytest.mark.full,
             ),
             # varlen case: lengths [100, 200, 300, 400] -> offsets [0, 100, 300, 600, 1000]
             pytest.param(
-                1, 1000, 64, 128, 32, torch.float16, torch.float32, True,
+                1, 1000, 64, 128, 32, torch.float16, torch.float32, False,
                 torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device='cuda'),
-                marks=pytest.mark.nightly,
+                marks=pytest.mark.full,
             ),
         ]),
     ]

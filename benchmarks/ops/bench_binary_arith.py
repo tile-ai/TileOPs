@@ -10,8 +10,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_binary_arith import AddSameShapeFixture, AddSameShapeTest
-from tests.test_base import FixtureBase
+from tests.ops.test_binary_arith import AddSameShapeTest
 from tileops.ops.elementwise import AddOp
 
 
@@ -28,7 +27,14 @@ class AddBenchmark(BenchmarkBase):
         return 3 * t.n_total * elem_bytes
 
 
-@AddSameShapeFixture
+_ADD_BENCH_PARAMS = [
+    pytest.param(4_000_000, torch.float16, id="throughput-fp16"),
+    pytest.param(4_000_000, torch.bfloat16, id="throughput-bf16"),
+    pytest.param(1_000_000, torch.float32, id="baseline-fp32"),
+]
+
+
+@pytest.mark.parametrize("n_total, dtype", _ADD_BENCH_PARAMS)
 def test_add_bench(n_total: int, dtype: torch.dtype) -> None:
     test = AddSameShapeTest(n_total, dtype)
     bm = AddBenchmark(test)
@@ -47,16 +53,13 @@ def test_add_bench(n_total: int, dtype: torch.dtype) -> None:
     BenchmarkReport.record("add", locals(), result_bl, tag="baseline")
 
 
-class AddStrategyBenchFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype, strategy", [
-            pytest.param(4_000_000, torch.float16, "direct", marks=pytest.mark.smoke),
-            pytest.param(4_000_000, torch.float16, "explicit_parallel", marks=pytest.mark.full),
-        ]),
-    ]
+_ADD_STRATEGY_BENCH_PARAMS = [
+    pytest.param(4_000_000, torch.float16, "direct", id="direct"),
+    pytest.param(4_000_000, torch.float16, "explicit_parallel", id="explicit-parallel"),
+]
 
 
-@AddStrategyBenchFixture
+@pytest.mark.parametrize("n_total, dtype, strategy", _ADD_STRATEGY_BENCH_PARAMS)
 def test_add_strategy_bench(n_total: int, dtype: torch.dtype, strategy: str) -> None:
     """Benchmark each binary strategy to determine optimal default."""
     test = AddSameShapeTest(n_total, dtype)

@@ -10,8 +10,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_activation import ReluFixture, ReluTest
-from tests.test_base import FixtureBase
+from tests.ops.test_activation import ReluTest
 from tileops.ops.elementwise import ReluOp
 
 
@@ -28,7 +27,14 @@ class ReluBenchmark(BenchmarkBase):
         return 2 * t.n_total * elem_bytes
 
 
-@ReluFixture
+_RELU_BENCH_PARAMS = [
+    pytest.param(4_000_000, torch.float16, id="throughput-fp16"),
+    pytest.param(4_000_000, torch.bfloat16, id="throughput-bf16"),
+    pytest.param(1_000_000, torch.float32, id="baseline-fp32"),
+]
+
+
+@pytest.mark.parametrize("n_total, dtype", _RELU_BENCH_PARAMS)
 def test_relu_bench(n_total: int, dtype: torch.dtype) -> None:
     test = ReluTest(n_total, dtype)
     bm = ReluBenchmark(test)
@@ -46,17 +52,14 @@ def test_relu_bench(n_total: int, dtype: torch.dtype) -> None:
     BenchmarkReport.record("relu", locals(), result_bl, tag="baseline")
 
 
-class ReluStrategyBenchFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype, strategy", [
-            pytest.param(4_000_000, torch.float16, "direct", marks=pytest.mark.smoke),
-            pytest.param(4_000_000, torch.float16, "explicit_parallel", marks=pytest.mark.full),
-            pytest.param(4_000_000, torch.float16, "register_copy", marks=pytest.mark.full),
-        ]),
-    ]
+_RELU_STRATEGY_BENCH_PARAMS = [
+    pytest.param(4_000_000, torch.float16, "direct", id="direct"),
+    pytest.param(4_000_000, torch.float16, "explicit_parallel", id="explicit-parallel"),
+    pytest.param(4_000_000, torch.float16, "register_copy", id="register-copy"),
+]
 
 
-@ReluStrategyBenchFixture
+@pytest.mark.parametrize("n_total, dtype, strategy", _RELU_STRATEGY_BENCH_PARAMS)
 def test_relu_strategy_bench(n_total: int, dtype: torch.dtype, strategy: str) -> None:
     """Benchmark each unary strategy to determine optimal default."""
     test = ReluTest(n_total, dtype)
