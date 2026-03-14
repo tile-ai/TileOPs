@@ -12,6 +12,21 @@ Closes #<issue-number>
 
 <!-- OPTIONAL SECTIONS: Delete entirely if not applicable. Never leave empty headers. -->
 
+## Structural Compliance
+
+<!-- Required for new ops or kernel/op changes. Agent-generated — do not edit manually. -->
+
+<details>
+<summary>Kernel/Op convention checks (N/N passed)</summary>
+
+| #   | Check                                      | Result |
+| --- | ------------------------------------------ | ------ |
+| 1   | `_<op>_kernel` closure exists              | PASS   |
+| 2   | `@tilelang.jit(out_idx=[...])` wraps inner | PASS   |
+| ... | ...                                        | ...    |
+
+</details>
+
 ## Benchmark
 
 <!-- Required when PR involves performance changes -->

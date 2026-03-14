@@ -1,7 +1,8 @@
 # Kernel and Op Conventions
 
 Reference for TileOps structural requirements. All kernel and op code must conform to these
-conventions before opening a PR. See `check-kernel-format` skill for the validation workflow.
+conventions before opening a PR. The PR template includes a structural checklist derived from
+these rules.
 
 ______________________________________________________________________
 
@@ -151,14 +152,14 @@ ______________________________________________________________________
 
 ## 4. Tuning Requirements
 
-> Tuning workflow is handled by the `tune` skill (`tune/skill.md`). The items below
-> are the deliverables that must be present before a PR is opened.
+> Tuning workflow and domain knowledge (profiling, hardware constraints, matmul patterns,
+> debugging) are documented in the [project wiki](https://github.com/tile-ai/TileOPs/wiki).
 
-- All known optimizations from `tune/skill.md` have been applied recursively until no
-  further improvements are possible, or performance is within 5–10% of the reference.
+- All known optimizations have been applied recursively until no further improvements are
+  possible, or performance is within 5–10% of the reference.
 - If the kernel contains matrix multiplication (GEMV, GEMM, batch matmul, or a
-  dot-product reduction loop), consult `tune-multiplication/skill.md` for applicable
-  patterns and document which were applied or ruled out.
+  dot-product reduction loop), consult the wiki tuning guides for applicable patterns and
+  document which were applied or ruled out.
 - All serial/sequential computation has been evaluated for restructuring with `T.Parallel`,
   `T.copy`, or `T.Pipelined`; the decision is recorded in the PR description.
 - Autotune covers all hardware-aligned config values; the search space is documented in
@@ -180,7 +181,4 @@ ______________________________________________________________________
 - [DEVELOPMENT.md](DEVELOPMENT.md) — architecture overview (2-layer stack), coding
   standards, testing strategy, and PR process
 - `tileops/kernels/flash_decode/gqa_decode.py` — reference implementation
-- `.claude/skills/migrating-new-op/SKILL.md` — op/kernel delivery workflow
-- `.claude/skills/tune/skill.md` — benchmarking methodology and nsys analysis
-- `.claude/skills/tune-multiplication/skill.md` — matmul/GEMV tuning patterns
-- `.claude/skills/kernel-debug/skill.md` — TileLang debugging techniques
+- [Project Wiki](https://github.com/tile-ai/TileOPs/wiki) — tuning methodology, hardware constraints, matmul patterns, debugging guides

@@ -34,7 +34,46 @@ gh repo view --json nameWithOwner -q '.nameWithOwner'
 
 Split into `{owner}` and `{repo}`.
 
-### Step 2: Create the PR
+### Step 2: Structural compliance check (new ops only)
+
+If this PR introduces or modifies a kernel/op, read `docs/kernel-op-conventions.md` and verify the code against **every** item below. Record each as `PASS` or `FAIL (reason)`.
+
+**T.prim_func (§1)**
+
+- `_<op_name>_kernel(static_params) -> Callable` closure exists
+- `@tilelang.jit(out_idx=[...])` wraps the config-parameterised inner function
+- `with T.Kernel()` is inside `@T.macro`, not directly in `@T.prim_func`
+- No Python builtins (`float()`, `math.cos()`) applied to TileLang IR nodes
+- Tile-ops (`T.clear`, `T.copy`, `T.gemm`) are at `T.Kernel` scope, not inside `T.Parallel`
+
+**Kernel class (§2)**
+
+- `Kernel.forward` takes only GPU tensor args — no format conversion, batching, or dtype casting
+- `Kernel.forward` body is `return self.kernel(config...)(tensors)` and nothing else
+- `default_config` and `autotune_configs` properties are defined
+- `supported_archs` class attribute is set
+- `accum_dtype` is hardcoded in the kernel — not a property, config key, or parameter
+- `@torch.library.custom_op` + `.register_fake` wrapper exists
+
+**Op class (§3)**
+
+- `Op.forward` owns all pre/post-processing (format conversion, dtype cast, batching, reshaping)
+- `Op.forward` delegates GPU computation to `self.kernel(...)`
+- `accum_dtype` is not stored on `Op` and not a parameter of `Op.__init__`
+- `kernel_map` is the last `__init__` parameter; `dispatch_kernel(kernel_map)` called before kernel instantiation
+- `__init__.py` exports are synchronized (`__all__` + explicit re-exports)
+
+**Delivery completeness**
+
+- Unit tests in `tests/ops/` with reference comparison (FP16 atol=1e-3, BF16 atol=1.6e-2)
+- Benchmark class in `benchmarks/`
+- Dtype support matrix documented in PR body
+
+**HARD GATE:** If any item is `FAIL`, fix the code before proceeding to Step 3. Include the full check results in the PR body under `## Structural Compliance`.
+
+If this PR does **not** touch kernel/op code, skip this step entirely.
+
+### Step 3: Create the PR
 
 Use `gh pr create`. **Do NOT use the GitHub MCP tool** — `gh` CLI avoids the `\n` pitfall.
 
@@ -66,7 +105,7 @@ PR body section rules:
 - `## Additional context` — optional
 - **Delete** inapplicable optional sections entirely. Never leave empty headers.
 
-### Step 3: Add labels (MANDATORY)
+### Step 4: Add labels (MANDATORY)
 
 **At least one label is required.** Select based on PR type:
 
@@ -92,7 +131,7 @@ Authorship label (**required**):
 gh pr edit <PR_NUMBER> --add-label "<label1>" --add-label "<label2>"
 ```
 
-### Step 4: HARD GATE — Validate PR
+### Step 5: HARD GATE — Validate PR
 
 ```bash
 .claude/skills/creating-pull-request/scripts/validate.sh <owner/repo> <PR_NUMBER>
