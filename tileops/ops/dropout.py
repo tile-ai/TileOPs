@@ -10,6 +10,7 @@ Edge cases:
 - training=False: identity pass-through
 """
 
+import weakref
 from typing import Dict, Optional
 
 import torch
@@ -20,6 +21,8 @@ from tileops.kernels.kernel import Kernel
 from .op import Op
 
 __all__ = ["DropoutOp"]
+
+_OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
 
 class DropoutOp(Op):
@@ -81,6 +84,9 @@ class DropoutOp(Op):
         else:
             self.kernel = None
 
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._op_name: self.kernel_cls}
@@ -89,6 +95,16 @@ class DropoutOp(Op):
     def total_memory(self) -> float:
         """Read x + write y."""
         return self.N_total * self.dtype.itemsize * 2
+
+    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self._skip:
+            return x.clone()
+        if self._all_zero:
+            return torch.zeros_like(x)
+        orig_shape = x.shape
+        x_flat = x.contiguous().reshape(-1)
+        y_flat = self.kernel(x_flat)
+        return y_flat.reshape(orig_shape)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -99,17 +115,27 @@ class DropoutOp(Op):
             raise ValueError(
                 f"Expected {self.N_total} elements, got {x.numel()}"
             )
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, self._instance_key)
+        return self._eager_forward(x)
 
-        # Edge cases: identity pass-through (return input directly to
-        # preserve aliasing, matching torch.nn.functional.dropout semantics)
-        if self._skip:
-            return x
+    _wrapped = None
 
-        # Edge case: p=1 means all zeros (no kernel needed)
-        if self._all_zero:
-            return torch.zeros_like(x)
 
-        orig_shape = x.shape
-        x_flat = x.contiguous().reshape(-1)
-        y_flat = self.kernel(x_flat)
-        return y_flat.reshape(orig_shape)
+# ---------------------------------------------------------------------------
+# torch.compile registration
+# ---------------------------------------------------------------------------
+
+@torch.library.custom_op("top::dropout", mutates_args=())
+def _wrapped_dropout(x: torch.Tensor, instance_key: int) -> torch.Tensor:
+    instance = _OP_REGISTRY[instance_key]
+    return instance._eager_forward(x)
+
+
+@_wrapped_dropout.register_fake
+def _(x: torch.Tensor, instance_key: int) -> torch.Tensor:
+    return torch.empty_like(x)
+
+
+DropoutOp._wrapped = _wrapped_dropout
