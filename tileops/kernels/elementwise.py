@@ -1595,7 +1595,9 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
     """Build where kernel: out = cond ? x : y.
 
     Accepts bool condition tensor directly to avoid dtype conversion
-    overhead in the Op layer.
+    overhead in the Op layer. Uses register_copy for the fp16 data
+    path (x, y, out) with element-wise bool cond access, since
+    T.copy does not support bool vectorization.
     """
     block_size = threads * npt
 
@@ -1609,9 +1611,16 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
             out: T.Tensor((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                y_reg = T.alloc_fragment((block_size,), dtype)
+                o_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                T.copy(y_in[bx * block_size : (bx + 1) * block_size], y_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    out[idx] = T.if_then_else(cond[idx], x[idx], y_in[idx])
+                    k = i * npt_arg + j
+                    idx = bx * block_size + k
+                    o_reg[k] = T.if_then_else(cond[idx], x_reg[k], y_reg[k])
+                T.copy(o_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -1734,7 +1743,9 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
     Accepts bool mask tensor directly to avoid dtype conversion
-    overhead in the Op layer.
+    overhead in the Op layer. Uses register_copy for the fp16 data
+    path (x and out) with element-wise bool mask access, since
+    T.copy does not support bool vectorization.
     """
     block_size = threads * npt
 
@@ -1747,10 +1758,15 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
             out: T.Tensor((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                o_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
+                    k = i * npt_arg + j
+                    idx = bx * block_size + k
                     fv = T.cast(fill_value, dtype)
-                    out[idx] = T.if_then_else(mask[idx], fv, x[idx])
+                    o_reg[k] = T.if_then_else(mask[idx], fv, x_reg[k])
+                T.copy(o_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 

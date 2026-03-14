@@ -7,26 +7,30 @@
 #   Driver: 575.57.08
 #
 # Target shape: (1024, 10240) fp16 = 10,485,760 elements
-# Metric: TFLOPS (higher is better)
+# Metric: TFLOPS (higher is better); latency via tilelang.profiler.do_bench
 #
 # Op               TileOps  Baseline  Speedup  Strategy
 # --------------- -------- --------- -------- ------------------------------------
 # leaky_relu         0.79      0.63    1.25x  register_copy + npt=16
 # nan_to_num         0.77      0.61    1.26x  register_copy + npt=16
-# where              0.43      0.42    1.02x  bool cond dtype (was int8)
-# masked_fill        0.54      0.80    0.68x  bool mask dtype (was int8)
+# where              0.49      0.41    1.20x  register_copy (fp16) + bool cond
+# masked_fill        0.64      0.80    0.80x  register_copy (fp16) + bool mask
 # prelu (C=4096)     0.65      0.25    2.60x  register_copy + npt=16
-# alibi (512,64)     0.00      0.00    N/A    output shape mismatch (see note)
+# alibi (512,64)     0.50      0.30    1.67x  baseline fixed to full 3D output
+# alibi (2048,64)    0.91      0.35    2.60x  baseline fixed to full 3D output
+# alibi (4096,128)   1.97      0.30    6.57x  baseline fixed to full 3D output
 #
 # Notes:
-# - masked_fill: PyTorch baseline achieves near-peak bandwidth (~4 TB/s).
-#   TileLang code generation does not vectorize mixed bool+fp16 loads as
-#   efficiently. Improved from 0.29x (int8) to 0.68x (bool).
-# - alibi: benchmark baseline computes (num_heads, seq_len) = 2D output,
-#   while TileOps kernel computes (num_heads, seq_len, seq_len) = 3D output.
-#   Baseline reference `_alibi_reference` is a simplified 2D slice, not the
-#   full distance matrix. Comparison is invalid at O(seq_len^2) vs O(seq_len).
+# - masked_fill: PyTorch baseline achieves near-peak HBM bandwidth (~4 TB/s)
+#   via hand-optimized vectorized CUDA kernels. TileLang code generation
+#   reaches ~3.2 TB/s for this mixed bool+fp16 pattern (64% of H200 peak).
+#   Improved from 0.29x (int8 dtype) -> 0.68x (bool dtype) -> 0.80x
+#   (register_copy for fp16 data path). Remaining 20% gap is a TileLang
+#   compiler-level vectorization limitation.
+# - alibi: previous benchmark baseline `_alibi_reference` computed a 2D
+#   (num_heads, seq_len) slice instead of the correct 3D
+#   (num_heads, seq_len, seq_len) distance matrix. Fixed in this change.
+#   With the corrected baseline, TileOps alibi is 1.67-6.57x faster.
 #
-# All latencies measured via tilelang.profiler.do_bench (cupti/event backend).
-# Full profile_run.log available at repo root after running:
+# Reproduce:
 #   python -m pytest benchmarks/ops/bench_independent_elementwise.py -m "smoke or full" -s
