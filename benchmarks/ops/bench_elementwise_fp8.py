@@ -15,7 +15,11 @@ from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.test_base import FixtureBase
 from tileops.ops.elementwise import AddOp, ExpOp, ReluOp, SiluAndMulOp
 
-_SHAPES_1D = (262_144, 1_048_576, 4_000_000)
+# Shapes modeled on real LLM workloads: batch × seq_len × hidden_dim
+# Small:  1 × 2048 × 4096  =  8,388,608  (single-batch inference, LLaMA-7B hidden)
+# Medium: 8 × 2048 × 4096  = 67,108,864  (multi-batch inference)
+# Large:  4 × 4096 × 8192  = 134,217,728 (training, LLaMA-70B hidden)
+_SHAPES_1D = (1 * 2048 * 4096, 8 * 2048 * 4096, 4 * 4096 * 8192)
 _FP8_DTYPES = [torch.float8_e4m3fn, torch.float8_e5m2]
 
 
@@ -161,7 +165,15 @@ def test_fp8_binary_bench(op_name, n_total, dtype):
 # Fused gated fp8 benchmark: silu_and_mul
 # ---------------------------------------------------------------------------
 
-_GATED_SHAPES = [(256, 512), (1024, 1024), (2048, 4096)]
+# Fused gated shapes: (batch × seq_len, intermediate_dim)
+# LLaMA-7B:  hidden=4096,  intermediate=11008
+# LLaMA-13B: hidden=5120,  intermediate=13824
+# LLaMA-70B: hidden=8192,  intermediate=28672
+_GATED_SHAPES = [
+    (1 * 2048, 11008),   # LLaMA-7B single-batch inference
+    (8 * 2048, 11008),   # LLaMA-7B multi-batch inference
+    (4 * 4096, 28672),   # LLaMA-70B training
+]
 _gated_params = []
 for _M, _N in _GATED_SHAPES:
     for _dt in _FP8_DTYPES:
