@@ -1280,7 +1280,7 @@ def _make_leaky_relu_kernel(N, dtype, negative_slope, threads=256, npt=8):
     """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x.
 
     Uses register_copy strategy: fragment load -> compute -> fragment store
-    for coalesced memory access and reduced launch overhead.
+    for coalesced memory access and reduced per-element instruction overhead.
     """
     block_size = threads * npt
 
@@ -1595,9 +1595,9 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
     """Build where kernel: out = cond ? x : y.
 
     Accepts bool condition tensor directly to avoid dtype conversion
-    overhead in the Op layer. Uses register_copy for the fp16 data
-    path (x, y, out) with element-wise bool cond access, since
-    T.copy does not support bool vectorization.
+    overhead in the Op layer. Uses register_copy for the data path
+    (x, y, out) with element-wise bool cond access, since T.copy
+    does not support bool vectorization.
     """
     block_size = threads * npt
 
@@ -1743,9 +1743,9 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
     Accepts bool mask tensor directly to avoid dtype conversion
-    overhead in the Op layer. Uses register_copy for the fp16 data
-    path (x and out) with element-wise bool mask access, since
-    T.copy does not support bool vectorization.
+    overhead in the Op layer. Uses register_copy for the data path
+    (x and out) with element-wise bool mask access, since T.copy
+    does not support bool vectorization.
     """
     block_size = threads * npt
 
