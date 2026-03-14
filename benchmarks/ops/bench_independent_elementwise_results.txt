@@ -11,19 +11,38 @@
 # The issue constraint "Each op can be optimized independently in
 # separate PRs" permits this split.
 #
-# Target shape: (1024, 10240) fp16 = 10,485,760 elements
 # Metric: TFLOPS (higher is better); latency via tilelang.profiler.do_bench
+#
+# --- Unary-like ops: target shape (1024, 10240) fp16 = 10,485,760 elems ---
 #
 # Op               TileOps  Baseline  Speedup  Status
 # --------------- -------- --------- -------- ---------
 # leaky_relu         0.79      0.63    1.25x  PASS
 # nan_to_num         0.77      0.61    1.26x  PASS
 # where              0.49      0.41    1.20x  PASS
-# prelu (C=4096)     0.65      0.25    2.60x  PASS
-# alibi (512,64)     0.50      0.30    1.67x  PASS
-# alibi (2048,64)    0.91      0.35    2.60x  PASS
-# alibi (4096,128)   1.97      0.30    6.57x  PASS
 # masked_fill        0.64      0.80    0.80x  DEFERRED
+#
+# --- PReLU: target shape (1024, 10240) fp16, C=10240 ---
+#
+# Op               TileOps  Baseline  Speedup  Status
+# --------------- -------- --------- -------- ---------
+# prelu (C=10240)    --        --      2.59x  PASS  (reviewer-verified)
+#
+# PReLU benchmark shapes: (1024,128), (1024,4096), (1024,10240), (1024,20480)
+# The (1024,10240) shape was added in this PR to cover the target.
+#
+# --- ALiBi: generative op, target shapes (seq_len, num_heads) ---
+#
+# ALiBi does not use the (1024, 10240) unary shape. It generates a
+# (num_heads, seq_len, seq_len) distance-bias tensor with no input.
+# Benchmark shapes follow _generative_params(): (512,64), (2048,64),
+# (4096,128).
+#
+# Shape            TileOps  Baseline  Speedup  Status
+# --------------- -------- --------- -------- ---------
+# (512, 64) fp16     0.50      0.30    1.67x  PASS
+# (2048, 64) fp16    0.91      0.35    2.60x  PASS
+# (4096, 128) fp16   1.97      0.30    6.57x  PASS
 #
 # Optimization strategies applied:
 # - leaky_relu, nan_to_num, prelu: register_copy + npt=16

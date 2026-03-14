@@ -103,7 +103,7 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
 # prelu (2 inputs: x + weight)
 # ---------------------------------------------------------------------------
 
-_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 20480)]
+_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 20480)]
 
 
 class PreluBenchCase:
