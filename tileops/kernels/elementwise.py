@@ -539,9 +539,10 @@ class FusedGatedKernel(Kernel):
         self.N = N
         self.dtype = dtype
         self.strategy = strategy or self.DEFAULT_STRATEGY
-        assert self.strategy in self.STRATEGIES, (
-            f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
-        )
+        if self.strategy not in self.STRATEGIES:
+            raise ValueError(
+                f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
+            )
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
