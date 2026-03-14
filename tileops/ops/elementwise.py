@@ -482,7 +482,10 @@ class UnaryOp(Op):
         self.kernel = self.kernel_map[self._op_name](
             N_total, dtype, strategy=strategy, tune=tune,
         )
-        self.output_dtype = getattr(self.kernel, "output_dtype", dtype)
+        # Use _fp8_output_dtype (the final dtype after Op-layer post-cast)
+        # rather than kernel.output_dtype (which is fp16 for e5m2).
+        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
+        self.output_dtype = fp8_out or getattr(self.kernel, "output_dtype", dtype)
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -587,8 +590,10 @@ class BinaryOp(Op):
     @property
     def total_memory(self) -> float:
         """Read a + read b + write y."""
-        elem = self.dtype.itemsize
-        return (self.a_numel + self.b_numel + self.N_total) * elem
+        in_elem = self.dtype.itemsize
+        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
+        out_elem = fp8_out.itemsize if fp8_out is not None else in_elem
+        return (self.a_numel + self.b_numel) * in_elem + self.N_total * out_elem
 
     def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
@@ -674,8 +679,10 @@ class FusedGatedOp(Op):
     @property
     def total_memory(self) -> float:
         """Read x (M*2N) + write y (M*N)."""
-        elem = self.dtype.itemsize
-        return (self.M * 2 * self.N + self.M * self.N) * elem
+        in_elem = self.dtype.itemsize
+        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
+        out_elem = fp8_out.itemsize if fp8_out is not None else in_elem
+        return self.M * 2 * self.N * in_elem + self.M * self.N * out_elem
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""

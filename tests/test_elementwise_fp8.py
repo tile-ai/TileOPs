@@ -439,5 +439,32 @@ def test_fp8_accumulation_in_higher_precision():
     )
 
 
+# ---------------------------------------------------------------------------
+# Unsupported dtype rejection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_unary_rejects_unsupported_dtype():
+    """UnaryKernel raises ValueError for dtypes not in SUPPORTED_DTYPES."""
+    from tileops.kernels.elementwise import LogicalNotKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        LogicalNotKernel(N_total=_N, dtype=torch.float8_e4m3fn)
+
+
+@pytest.mark.smoke
+def test_binary_rejects_unsupported_dtype():
+    """BinaryKernel raises ValueError for dtypes not in SUPPORTED_DTYPES."""
+    from tileops.kernels.elementwise import BitwiseAndKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        BitwiseAndKernel(
+            N_total=_N, dtype=torch.float8_e4m3fn,
+            coalesced_shape=(_N,), a_strides=(1,), b_strides=(1,),
+            a_numel=_N, b_numel=_N,
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
