@@ -157,7 +157,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 benchmarks/select_nightly_benchmarks.py \
-            --history benchmarks/bench_run_history.json \
+            --history .github/bench_run_history.json \
             --n 15 \
             --output rotation_meta.json \
             > selected_bench_files.txt
@@ -265,7 +265,7 @@ jobs:
           import json
           from pathlib import Path
 
-          history_path = Path('benchmarks/bench_run_history.json')
+          history_path = Path('.github/bench_run_history.json')
           meta_path = Path('rotation_meta.json')
 
           history = json.loads(history_path.read_text()) if history_path.exists() else {}
@@ -285,7 +285,7 @@ jobs:
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benchmarks/bench_run_history.json
+          git add .github/bench_run_history.json
           if git diff --staged --quiet; then
             echo "History unchanged."
           else
