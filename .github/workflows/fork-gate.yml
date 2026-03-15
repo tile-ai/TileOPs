@@ -61,11 +61,11 @@ jobs:
           set -euo pipefail
 
           if ! gh label list --repo "${{ github.repository }}" --search "safe-to-run-gpu" --json name --jq '.[].name' | grep -qx "safe-to-run-gpu"; then
-            gh label create safe-to-run-gpu --repo "${{ github.repository }}" --color 2A9D8F --description "Fork PR is in the automated GPU fast path"
+            gh label create safe-to-run-gpu --repo "${{ github.repository }}" --color 2A9D8F --description "Fork PR matches the future automated GPU fast-path policy"
           fi
 
           if ! gh label list --repo "${{ github.repository }}" --search "needs-gpu-review" --json name --jq '.[].name' | grep -qx "needs-gpu-review"; then
-            gh label create needs-gpu-review --repo "${{ github.repository }}" --color E76F51 --description "Fork PR requires review before GPU fast path"
+            gh label create needs-gpu-review --repo "${{ github.repository }}" --color E76F51 --description "Fork PR is outside the future automated GPU fast-path policy"
           fi
 
       - name: Sync gate labels

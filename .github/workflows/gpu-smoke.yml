@@ -121,19 +121,11 @@ jobs:
                     ;;
                   .github/workflows/*|pyproject.toml|requirements*.txt|requirements*.in|setup.py|setup.cfg|Dockerfile*|scripts/bootstrap*|scripts/install*)
                     allow_fast_path="false"
-                    reason="Fork fast path blocked by high-risk file: $path"
-                    skip_gpu_smoke="true"
-                    scope="blocked"
-                    pytest_targets=""
-                    break
+                    reason="Fork PR changed a high-risk file: $path"
                     ;;
                   *)
                     allow_fast_path="false"
-                    reason="Fork fast path blocked by unsupported file: $path"
-                    skip_gpu_smoke="true"
-                    scope="blocked"
-                    pytest_targets=""
-                    break
+                    reason="Fork PR changed a file outside the future fast-path policy: $path"
                     ;;
                 esac
               fi
@@ -168,23 +160,34 @@ jobs:
               esac
             done
 
-            if [[ "$skip_gpu_smoke" != "true" ]]; then
-              if [[ "$scope" == "skip" ]]; then
+            if [[ "$scope" == "skip" ]]; then
+              if [[ "$is_fork" == "true" ]]; then
+                scope="full-smoke"
+                pytest_targets="tests"
+                if [[ "$allow_fast_path" == "true" ]]; then
+                  reason="Fork PR default-allow policy: run full GPU smoke."
+                else
+                  reason="${reason}; current policy still runs GPU smoke."
+                fi
+              else
                 skip_gpu_smoke="true"
                 pytest_targets=""
                 reason="Docs-only or metadata-only change; GPU smoke skipped."
-              elif [[ "$scope" == "targeted" ]]; then
-                if [[ "${#selected_targets[@]}" -eq 0 ]]; then
-                  scope="full-smoke"
-                  pytest_targets="tests"
-                  reason="No mapped tests were collected; falling back to full smoke."
+              fi
+            elif [[ "$scope" == "targeted" ]]; then
+              if [[ "${#selected_targets[@]}" -eq 0 ]]; then
+                scope="full-smoke"
+                pytest_targets="tests"
+                reason="No mapped tests were collected; falling back to full smoke."
+              else
+                pytest_targets="${selected_targets[*]}"
+                if [[ "$is_fork" == "true" && "$allow_fast_path" != "true" ]]; then
+                  reason="${reason}; current policy still runs targeted GPU smoke."
                 else
-                  pytest_targets="${selected_targets[*]}"
                   reason="Running targeted GPU smoke tests."
                 fi
               fi
             fi
-          fi
 
           {
             echo "is_fork=$is_fork"
