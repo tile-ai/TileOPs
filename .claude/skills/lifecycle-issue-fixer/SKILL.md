@@ -117,7 +117,27 @@ Write `docs/plans/issue-{number}-context.json`:
 }
 ```
 
-### 1g. Summarize and confirm
+### 1g. Guard rails
+
+- If the issue is **not found** (404): report error and **stop**.
+- If the issue is **closed**: warn the user and ask "This issue is already closed. Do you still want to proceed?"
+- If the issue has **linked PRs** (check body for `#NNN` PR references): warn the user "This issue may already have PR #\{pr} addressing it. Proceed anyway?"
+
+### 1h. HARD GATE — Claim the issue
+
+**Before any work begins, you MUST claim the issue.** This step is mandatory — do NOT proceed to Phase 2 without completing it.
+
+Check the issue's assignees:
+
+```bash
+gh issue view {number} --repo {owner}/{repo} --json assignees --jq '.assignees[].login'
+```
+
+- **No assignees:** Assign yourself by running `gh issue edit {number} --repo {owner}/{repo} --add-assignee @me`, then proceed.
+- **Assigned to current user:** Already claimed, proceed.
+- **Assigned to someone else:** **STOP.** Report to the user: "Issue #\{number} is assigned to @\{assignee}. Will not claim — another contributor is working on it." Do NOT proceed unless the user explicitly overrides.
+
+### 1i. Summarize and confirm
 
 Print a summary to the user:
 
@@ -132,24 +152,6 @@ Print a summary to the user:
 > **Acceptance criteria:** {AC list}
 >
 > Proceeding to Phase 2.
-
-### 1h. Claim the issue
-
-Before any work begins, check the issue's assignees:
-
-```bash
-gh issue view {number} --repo {owner}/{repo} --json assignees --jq '.assignees[].login'
-```
-
-- **No assignees:** Assign yourself by running `gh issue edit {number} --repo {owner}/{repo} --add-assignee @me`, then proceed.
-- **Assigned to current user:** Already claimed, proceed.
-- **Assigned to someone else:** **STOP.** Report to the user: "Issue #\{number} is assigned to @\{assignee}. Will not claim — another contributor is working on it." Do NOT proceed unless the user explicitly overrides.
-
-### 1i. Guard rails
-
-- If the issue is **not found** (404): report error and **stop**.
-- If the issue is **closed**: warn the user and ask "This issue is already closed. Do you still want to proceed?"
-- If the issue has **linked PRs** (check body for `#NNN` PR references): warn the user "This issue may already have PR #\{pr} addressing it. Proceed anyway?"
 
 ______________________________________________________________________
 
