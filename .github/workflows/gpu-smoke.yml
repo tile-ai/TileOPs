@@ -16,7 +16,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   ci-prereq:
@@ -267,14 +267,16 @@ jobs:
             done
 
             if [[ "$scope" == "skip" ]]; then
-              if [[ "$is_fork" == "true" ]]; then
+              if [[ "$allow_fast_path" == "true" ]]; then
+                # All changed files matched docs/metadata patterns; skip GPU smoke
+                # for both trusted and fork PRs.
+                skip_gpu_smoke="true"
+                pytest_targets=""
+                reason="Docs-only or metadata-only change; GPU smoke skipped."
+              elif [[ "$is_fork" == "true" ]]; then
                 scope="full-smoke"
                 pytest_targets="tests"
-                if [[ "$allow_fast_path" == "true" ]]; then
-                  reason="Fork PR default-allow policy: run full GPU smoke."
-                else
-                  reason="${reason}; current policy still runs GPU smoke."
-                fi
+                reason="${reason}; current policy still runs GPU smoke."
               else
                 skip_gpu_smoke="true"
                 pytest_targets=""
@@ -341,40 +343,47 @@ jobs:
 
           if [[ "$IS_FORK" == "true" ]]; then
             RUNTIME_ROOT="${RUNNER_TEMP}/gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
-            # Keep fork PRs isolated from trusted caches, but let them share
-            # a dedicated fork-only compile cache to avoid repeated cold JIT builds.
-            FORK_CACHE_ROOT="/home/ci-runner/.fork-pr-cache"
-            TILELANG_CACHE_DIR="${FORK_CACHE_ROOT}/tilelang/cache"
+            # Per-run isolated cache: rsync from trusted cache into temp dir.
+            # Fork PRs never write to any persistent shared state.
+            TILELANG_CACHE_DIR="${RUNTIME_ROOT}/tilelang/cache"
             TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-            TRITON_CACHE_DIR="${FORK_CACHE_ROOT}/triton/cache"
-            PIP_CACHE_DIR="${FORK_CACHE_ROOT}/pip/cache"
+            TRITON_CACHE_DIR="${RUNTIME_ROOT}/triton/cache"
+            PIP_CACHE_DIR="${RUNTIME_ROOT}/pip/cache"
+            WHEEL_DIR="${RUNTIME_ROOT}/wheels"
             VENV_PATH="${RUNTIME_ROOT}/venv"
             VENV_REUSED="false"
-            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}"
+            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
-            # Seed the fork-only cache from trusted caches once so the first
-            # fork PR run can still benefit from existing compiled artifacts.
-            if [[ ! -f "${FORK_CACHE_ROOT}/.seeded-from-trusted" ]]; then
-              mkdir -p "${FORK_CACHE_ROOT}"
-              if command -v rsync >/dev/null 2>&1; then
-                rsync -a --ignore-existing /home/ci-runner/.tilelang/cache/ "${TILELANG_CACHE_DIR}/" || true
-                rsync -a --ignore-existing /home/ci-runner/.triton/cache/ "${TRITON_CACHE_DIR}/" || true
-                rsync -a --ignore-existing /home/ci-runner/.cache/pip/ "${PIP_CACHE_DIR}/" || true
-              else
-                cp -an /home/ci-runner/.tilelang/cache/. "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
-                cp -an /home/ci-runner/.triton/cache/. "${TRITON_CACHE_DIR}/" 2>/dev/null || true
-                cp -an /home/ci-runner/.cache/pip/. "${PIP_CACHE_DIR}/" 2>/dev/null || true
+            # Copy trusted compile caches into the isolated per-run dir.
+            # rsync is fast for warm caches (<5s); fork state is fully disposable.
+            TRUSTED_WHEEL_DIR="/home/ci-runner/.wheel-cache"
+            copy_start=$SECONDS
+            if command -v rsync >/dev/null 2>&1; then
+              rsync -a /home/ci-runner/.tilelang/cache/ "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
+              rsync -a /home/ci-runner/.triton/cache/ "${TRITON_CACHE_DIR}/" 2>/dev/null || true
+              rsync -a /home/ci-runner/.cache/pip/ "${PIP_CACHE_DIR}/" 2>/dev/null || true
+              if [[ -d "${TRUSTED_WHEEL_DIR}" ]]; then
+                rsync -a "${TRUSTED_WHEEL_DIR}/" "${WHEEL_DIR}/" 2>/dev/null || true
               fi
-              touch "${FORK_CACHE_ROOT}/.seeded-from-trusted"
+            else
+              cp -a /home/ci-runner/.tilelang/cache/. "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
+              cp -a /home/ci-runner/.triton/cache/. "${TRITON_CACHE_DIR}/" 2>/dev/null || true
+              cp -a /home/ci-runner/.cache/pip/. "${PIP_CACHE_DIR}/" 2>/dev/null || true
+              if [[ -d "${TRUSTED_WHEEL_DIR}" ]]; then
+                cp -a "${TRUSTED_WHEEL_DIR}/." "${WHEEL_DIR}/" 2>/dev/null || true
+              fi
             fi
+            copy_elapsed=$(( SECONDS - copy_start ))
+            echo "Cache copy completed in ${copy_elapsed}s"
           else
             RUNTIME_ROOT="/home/ci-runner"
             TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
             TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
             TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
             PIP_CACHE_DIR=""
+            WHEEL_DIR="/home/ci-runner/.wheel-cache"
 
-            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${WHEEL_DIR}"
 
             VENV_PREFIX="tileops_ci_venv"
             HASH_INPUT="$(
@@ -399,6 +408,7 @@ jobs:
             echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
             echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
             echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+            echo "WHEEL_DIR=${WHEEL_DIR}"
             echo "VENV_PATH=${VENV_PATH}"
             echo "VENV_REUSED=${VENV_REUSED}"
           } >> "$GITHUB_ENV"
@@ -467,9 +477,16 @@ jobs:
           source "${VENV_PATH}/bin/activate"
           python -m pip install --upgrade pip setuptools wheel --no-user
           if [[ "$IS_FORK" == "true" ]]; then
-            PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]'
+            FIND_LINKS_FLAG=""
+            if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
+              FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
+            fi
+            # shellcheck disable=SC2086
+            PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
           else
             PIP_NO_BUILD_ISOLATION=1 PIP_NO_CACHE_DIR=1 pip install -e '.[dev]'
+            # Export wheels so fork PRs can reuse them
+            pip wheel -e '.[dev]' -w "${WHEEL_DIR}" --no-deps 2>/dev/null || true
           fi
 
       - name: Run tests
@@ -502,6 +519,21 @@ jobs:
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
           python -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" | tee gpu_smoke.log
+
+      - name: Cache stats
+        if: ${{ always() && needs.security-policy.outputs.is_fork != 'true' }}
+        run: |
+          set -euo pipefail
+          echo "=== Trusted cache stats ==="
+          for cache_dir in "${TILELANG_CACHE_DIR}" "${TRITON_CACHE_DIR}" "${WHEEL_DIR}"; do
+            if [[ -d "${cache_dir}" ]]; then
+              file_count=$(find "${cache_dir}" -type f | wc -l)
+              cache_size=$(du -sh "${cache_dir}" 2>/dev/null | cut -f1)
+              echo "${cache_dir}: ${file_count} files, ${cache_size}"
+            else
+              echo "${cache_dir}: does not exist"
+            fi
+          done
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
