@@ -1,4 +1,4 @@
-name: CI
+name: Preflight Checks
 
 permissions:
   contents: read
