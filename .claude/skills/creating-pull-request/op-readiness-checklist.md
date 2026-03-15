@@ -5,6 +5,7 @@ Items marked **[RECOMMENDED]** should pass — note in PR body if skipped with r
 
 ## Correctness & Safety
 
+- [ ] **[REQUIRED]** `Op.forward` validates input shape/numel before launching kernels (e.g. `UnaryOp.forward` rejects `x.numel() != N_total`, `BinaryOp.forward` rejects mismatched shapes) — prevents out-of-bounds GPU access
 - [ ] **[REQUIRED]** `Kernel.__init__` validates dtype against `SUPPORTED_DTYPES` and raises `ValueError` — template kernels (`UnaryKernel`, `BinaryKernel`, `FusedGatedKernel`) inherit this; independent kernels must add it explicitly
 - [ ] **[REQUIRED]** No hardcoded narrow-type constants in kernels (e.g. `T.cast(1.0, "float16")`) — use `x.dtype` or an explicit wide intermediate type
 - [ ] **[REQUIRED]** fp16/bf16 intermediate math that can overflow (cubic terms, division, exp) is promoted to fp32
