@@ -121,11 +121,11 @@ Write `docs/plans/issue-{number}-context.json`:
 
 - If the issue is **not found** (404): report error and **stop**.
 - If the issue is **closed**: warn the user and ask "This issue is already closed. Do you still want to proceed?"
-- If the issue has **linked PRs** (check body for `#NNN` PR references): warn the user "This issue may already have PR #\{pr} addressing it. Proceed anyway?"
+- If the issue has **linked PRs** (use `gh issue view {number} --json linkedPullRequests`): warn the user "This issue may already have PR #\{pr} addressing it. Proceed anyway?"
 
 ### 1h. HARD GATE — Claim the issue
 
-**Before any work begins, you MUST claim the issue.** This step is mandatory — do NOT proceed to Phase 2 without completing it.
+**Before any work begins, you MUST claim the issue.** Do not proceed to Phase 2 without completing this step.
 
 Check the issue's assignees:
 
