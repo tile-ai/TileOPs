@@ -30,6 +30,7 @@ from tileops.ops.elementwise import (
     MulOp,
     PowOp,
     RemainderOp,
+    SiluAndMulOp,
     SubOp,
 )
 
@@ -372,6 +373,58 @@ def test_fused_gated_bench(
     baseline_fn = _FUSED_BASELINES[op_name]
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+
+
+# ---------------------------------------------------------------------------
+# Fused gated strategy benchmark (direct vs explicit_parallel)
+# ---------------------------------------------------------------------------
+
+
+_STRATEGY_SHAPES = [(1024, 4096), (1024, 10240), (4096, 4096)]
+_STRATEGY_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+_STRATEGY_OPS = [
+    ("silu_and_mul", SiluAndMulOp),
+    ("gelu_and_mul", GeluAndMulOp),
+    ("gelu_tanh_and_mul", GeluTanhAndMulOp),
+]
+
+
+def _strategy_params():
+    """3 ops × 3 shapes × 3 dtypes × 2 strategies = 54 rows."""
+    params = []
+    for op_name, op_cls in _STRATEGY_OPS:
+        for M, N in _STRATEGY_SHAPES:
+            for dtype in _STRATEGY_DTYPES:
+                for strategy in ("direct", "explicit_parallel"):
+                    is_smoke = _STRATEGY_SHAPES[0] == (M, N) and dtype == torch.float16
+                    mark = pytest.mark.smoke if is_smoke else pytest.mark.full
+                    params.append(pytest.param(op_name, M, N, dtype, op_cls, strategy, marks=mark))
+    return params
+
+
+class FusedGatedStrategyBenchFixture(FixtureBase):
+    PARAMS = [("op_name, M, N, dtype, op_cls, strategy", _strategy_params())]
+
+
+@FusedGatedStrategyBenchFixture
+def test_fused_gated_strategy_bench(
+    op_name: str,
+    M: int,
+    N: int,
+    dtype: torch.dtype,
+    op_cls,
+    strategy: str,
+) -> None:
+    """Benchmark each fused gated strategy to validate DEFAULT_STRATEGY choice."""
+    test = FusedGatedBenchCase(M, N, dtype)
+    bm = FusedGatedBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = op_cls(M=M, N=N, dtype=dtype, strategy=strategy)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(
+        f"{op_name}_strategy", locals(), result, tag=f"tileops_{strategy}",
+    )
 
 
 # ---------------------------------------------------------------------------
