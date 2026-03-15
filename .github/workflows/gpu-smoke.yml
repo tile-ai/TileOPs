@@ -73,6 +73,11 @@ jobs:
                 continue
               fi
 
+              if [[ "$conclusion" == "skipped" ]]; then
+                pending="true"
+                continue
+              fi
+
               if [[ "$conclusion" != "success" ]]; then
                 failed="$check_name"
                 break
