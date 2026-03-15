@@ -5,7 +5,7 @@ permissions: read-all
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 18 * * *"
+    - cron: "0 17 * * *"
 
 concurrency:
   group: nightly-${{ github.ref }}
@@ -14,7 +14,7 @@ concurrency:
 jobs:
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    timeout-minutes: 90
+    timeout-minutes: 150
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
@@ -150,6 +150,36 @@ jobs:
           PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
         shell: bash
 
+      - name: Fetch benchmark run history
+        run: |
+          set -euo pipefail
+          # Try to fetch history from the report repo; empty JSON on failure
+          gh api repos/superAngGao/TileOPs-report/contents/scripts/bench_run_history.json \
+            --jq '.content' 2>/dev/null \
+            | base64 -d > bench_run_history.json 2>/dev/null \
+            || echo '{}' > bench_run_history.json
+          echo "History entries: $(python3 -c "import json; print(len(json.load(open('bench_run_history.json'))))")"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+
+      - name: Select benchmark files to run
+        id: rotation
+        run: |
+          set -euo pipefail
+          BENCH_FILES=$(python3 benchmarks/select_nightly_benchmarks.py \
+            --history bench_run_history.json \
+            --n 15 \
+            --output rotation_meta.json)
+
+          echo "bench_files=${BENCH_FILES}" >> "$GITHUB_OUTPUT"
+          echo "Selected benchmarks:"
+          echo "${BENCH_FILES}" | tr ' ' '\n'
+          echo ""
+          echo "Rotation metadata:"
+          cat rotation_meta.json
+        shell: bash
+
       - name: Run benchmark ops
         continue-on-error: true
         run: |
@@ -164,8 +194,15 @@ jobs:
           for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
               print(f"{key}={os.environ.get(key)}")
           PY
+
+          BENCH_FILES="${{ steps.rotation.outputs.bench_files }}"
+          if [ -z "${BENCH_FILES}" ]; then
+            echo "::error::No benchmark files selected"
+            exit 1
+          fi
+
           set -o pipefail
-          python -m pytest -q benchmarks/ops --junit-xml=bench_results.xml | tee tileops_benchmarks.log
+          python -m pytest -q ${BENCH_FILES} --junit-xml=bench_results.xml | tee tileops_benchmarks.log
         shell: bash
 
       - name: Benchmark step summary
@@ -223,6 +260,7 @@ jobs:
           path: |
             tileops_benchmarks.log
             bench_results.xml
+            rotation_meta.json
           if-no-files-found: warn
           retention-days: 14
 
