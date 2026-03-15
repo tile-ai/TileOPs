@@ -707,41 +707,57 @@ class LerpKernel(BinaryKernel):
 class MaximumKernel(BinaryKernel):
     """Element-wise maximum: y = max(a, b) with NaN propagation.
 
-    Matches torch.maximum: if either operand is NaN, the result is NaN.
+    Matches torch.maximum semantics:
+    - If either operand is NaN, the result is NaN.
+    - maximum(+0.0, -0.0) = +0.0 (IEEE 754 signed-zero).
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
-        # otherwise return the larger value.
-        # Signed-zero tie semantics are tracked separately.
-        a_is_nan = T.isnan(T.Cast("float32", a))
-        b_is_nan = T.isnan(T.Cast("float32", b))
-        ordered_max = T.if_then_else(a > b, a, b)
-        nan_result = T.if_then_else(a_is_nan, a, T.if_then_else(b_is_nan, b, ordered_max))
-        return nan_result
+        a_f32 = T.Cast("float32", a)
+        b_f32 = T.Cast("float32", b)
+        a_is_nan = T.isnan(a_f32)
+        b_is_nan = T.isnan(b_f32)
+        # Signed-zero tie-break: when a == b, prefer the operand whose sign
+        # is non-negative (+0 over -0). copysign(1, x) is +1 for +0 and -1
+        # for -0, so a_sign >= b_sign selects the positive-signed operand.
+        one_f32 = T.cast(1.0, "float32")
+        a_sign = T.copysign(one_f32, a_f32)
+        b_sign = T.copysign(one_f32, b_f32)
+        ordered_max = T.if_then_else(
+            a > b, a, T.if_then_else(b > a, b,
+                                     T.if_then_else(a_sign >= b_sign, a, b)))
+        return T.if_then_else(a_is_nan, a, T.if_then_else(b_is_nan, b, ordered_max))
 
 
 class MinimumKernel(BinaryKernel):
     """Element-wise minimum: y = min(a, b) with NaN propagation.
 
-    Matches torch.minimum: if either operand is NaN, the result is NaN.
+    Matches torch.minimum semantics:
+    - If either operand is NaN, the result is NaN.
+    - minimum(-0.0, +0.0) = -0.0 (IEEE 754 signed-zero).
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
-        # otherwise return the smaller value.
-        # Signed-zero tie semantics are tracked separately.
-        a_is_nan = T.isnan(T.Cast("float32", a))
-        b_is_nan = T.isnan(T.Cast("float32", b))
-        ordered_min = T.if_then_else(a < b, a, b)
-        nan_result = T.if_then_else(a_is_nan, a, T.if_then_else(b_is_nan, b, ordered_min))
-        return nan_result
+        a_f32 = T.Cast("float32", a)
+        b_f32 = T.Cast("float32", b)
+        a_is_nan = T.isnan(a_f32)
+        b_is_nan = T.isnan(b_f32)
+        # Signed-zero tie-break: when a == b, prefer the operand whose sign
+        # is negative (-0 over +0). copysign(1, x) is -1 for -0 and +1 for
+        # +0, so a_sign <= b_sign selects the negative-signed operand.
+        one_f32 = T.cast(1.0, "float32")
+        a_sign = T.copysign(one_f32, a_f32)
+        b_sign = T.copysign(one_f32, b_f32)
+        ordered_min = T.if_then_else(
+            a < b, a, T.if_then_else(b < a, b,
+                                     T.if_then_else(a_sign <= b_sign, a, b)))
+        return T.if_then_else(a_is_nan, a, T.if_then_else(b_is_nan, b, ordered_min))
 
 
 # ---------------------------------------------------------------------------
