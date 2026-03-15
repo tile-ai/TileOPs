@@ -195,14 +195,24 @@ jobs:
             printf ' - %s\n' "${changed_files[@]}"
 
             # Fast path: if no Python files changed, GPU smoke is unnecessary.
+            # For fork PRs, also check for high-risk files (workflow, build
+            # config, etc.) that must still trigger GPU smoke even without
+            # Python changes to avoid security bypass.
             has_python="false"
+            has_high_risk="false"
             for path in "${changed_files[@]}"; do
               if [[ "$path" == *.py ]]; then
                 has_python="true"
-                break
+              fi
+              if [[ "$is_fork" == "true" ]]; then
+                case "$path" in
+                  .github/workflows/*|pyproject.toml|requirements*.txt|requirements*.in|setup.py|setup.cfg|Dockerfile*|scripts/bootstrap*|scripts/install*)
+                    has_high_risk="true"
+                    ;;
+                esac
               fi
             done
-            if [[ "$has_python" == "false" ]]; then
+            if [[ "$has_python" == "false" && "$has_high_risk" == "false" ]]; then
               skip_gpu_smoke="true"
               reason="No Python files changed; GPU smoke skipped."
               {
@@ -211,6 +221,24 @@ jobs:
                 echo "allow_fast_path=$allow_fast_path"
                 echo "scope=skip"
                 echo "pytest_targets="
+                echo "reason=$reason"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [[ "$has_python" == "false" && "$has_high_risk" == "true" ]]; then
+              # Fork PR changed high-risk build/infra files but no Python.
+              # Run full GPU smoke to validate the environment is not broken.
+              skip_gpu_smoke="false"
+              allow_fast_path="false"
+              scope="full-smoke"
+              pytest_targets="tests"
+              reason="Fork PR changed high-risk file(s) without Python changes; running full GPU smoke."
+              {
+                echo "skip_gpu_smoke=$skip_gpu_smoke"
+                echo "is_fork=$is_fork"
+                echo "allow_fast_path=$allow_fast_path"
+                echo "scope=$scope"
+                echo "pytest_targets=$pytest_targets"
                 echo "reason=$reason"
               } >> "$GITHUB_OUTPUT"
               exit 0
@@ -485,8 +513,8 @@ jobs:
             PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
           else
             PIP_NO_BUILD_ISOLATION=1 PIP_NO_CACHE_DIR=1 pip install -e '.[dev]'
-            # Export wheels so fork PRs can reuse them
-            pip wheel -e '.[dev]' -w "${WHEEL_DIR}" --no-deps 2>/dev/null || true
+            # Export wheels (including dependencies) so fork PRs can reuse them
+            pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
           fi
 
       - name: Run tests
