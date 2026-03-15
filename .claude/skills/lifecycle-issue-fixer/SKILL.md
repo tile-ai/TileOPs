@@ -121,7 +121,7 @@ Write `docs/plans/issue-{number}-context.json`:
 
 - If the issue is **not found** (404): report error and **stop**.
 - If the issue is **closed**: warn the user and ask "This issue is already closed. Do you still want to proceed?"
-- If the issue has **linked PRs** (use `gh issue view {number} --json linkedPullRequests`): warn the user "This issue may already have PR #\{pr} addressing it. Proceed anyway?"
+- If the issue has **linked PRs** (use `gh issue view {number} --json linkedPullRequests`): warn the user "This issue may already have linked PR(s) addressing it (e.g., #\{pr}). Proceed anyway?"
 
 ### 1h. HARD GATE — Claim the issue
 
