@@ -64,6 +64,13 @@ from .reduction import (
     VarMeanOp,
     VarOp,
 )
+from .rope import (
+    RopeLlama31Op,
+    RopeLongRopeOp,
+    RopeNeoxOp,
+    RopeNonNeoxOp,
+    RopeYarnOp,
+)
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
@@ -108,6 +115,11 @@ __all__ = [
     "NSATopkVarlenOp",
     "Op",
     "RmsNormOp",
+    "RopeLlama31Op",
+    "RopeLongRopeOp",
+    "RopeNeoxOp",
+    "RopeNonNeoxOp",
+    "RopeYarnOp",
     "UnaryOp",
     "TopkSelectorOp",
     # --- Reduction ops (uncomment as sub-category PRs land) ---
