@@ -16,13 +16,13 @@ __all__ = ["TopkSelectorKernel"]
 
 def convert_to_uint16(x):
     hval = T.Cast(T.float16, x)
-    bits_uint = T.reinterpret(T.uint16, hval)
+    bits_uint = T.reinterpret(hval, T.uint16)
     bits_uint = T.if_then_else(x < 0, ~bits_uint & (0xFFFF), bits_uint | (0x8000))
     return bits_uint >> 8
 
 
 def convert_to_uint32(x):
-    bits_uint = T.reinterpret(T.uint32, T.Cast(T.float32, x))
+    bits_uint = T.reinterpret(T.Cast(T.float32, x), T.uint32)
     bits_uint = T.if_then_else(
         x < 0,
         ~bits_uint & T.Cast(T.uint32, (0xFFFFFFFF)),
