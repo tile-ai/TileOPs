@@ -1279,7 +1279,11 @@ class IsfiniteKernel(FloatPredicateKernel):
 
 
 def _make_leaky_relu_kernel(N, dtype, negative_slope, threads=256, npt=8):
-    """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x."""
+    """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x.
+
+    Uses register_copy strategy: fragment load -> compute -> fragment store
+    for coalesced memory access and reduced per-element instruction overhead.
+    """
     block_size = threads * npt
 
     @tilelang.jit(out_idx=[1])
@@ -1287,12 +1291,15 @@ def _make_leaky_relu_kernel(N, dtype, negative_slope, threads=256, npt=8):
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                y_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    val = x[idx]
+                    val = x_reg[i * npt_arg + j]
                     zero = T.cast(0, val.dtype)
                     slope = T.cast(negative_slope, val.dtype)
-                    y[idx] = T.if_then_else(val > zero, val, slope * val)
+                    y_reg[i * npt_arg + j] = T.if_then_else(val > zero, val, slope * val)
+                T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -1323,7 +1330,7 @@ class LeakyReluKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = 4 if self.dtype == torch.float32 else 16
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, x):
@@ -1505,6 +1512,9 @@ def _make_prelu_kernel(N, C, inner_size, dtype, threads=256, npt=8):
     Weight is per-channel. Channel index follows PyTorch convention:
     for flat index ``idx``, channel = (idx // inner_size) % C, where
     ``inner_size`` is the product of all dimensions after the channel dim.
+
+    Uses register_copy strategy for input/output to improve memory
+    coalescing for the main data path.
     """
     block_size = threads * npt
 
@@ -1517,13 +1527,18 @@ def _make_prelu_kernel(N, C, inner_size, dtype, threads=256, npt=8):
             y: T.Tensor((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                y_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    val = x[idx]
+                    k = i * npt_arg + j
+                    idx = bx * block_size + k
+                    val = x_reg[k]
                     ch = (idx // inner_size) % C
                     w = weight[ch]
                     zero = T.cast(0, val.dtype)
-                    y[idx] = T.if_then_else(val > zero, val, w * val)
+                    y_reg[k] = T.if_then_else(val > zero, val, w * val)
+                T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -1570,7 +1585,7 @@ class PreluKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = 4 if self.dtype == torch.float32 else 16
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, x, weight):
@@ -1579,24 +1594,35 @@ class PreluKernel(Kernel):
 
 
 def _make_where_kernel(N, dtype, threads=256, npt=8):
-    """Build where kernel: out = cond ? x : y."""
+    """Build where kernel: out = cond ? x : y.
+
+    Accepts bool condition tensor directly to avoid dtype conversion
+    overhead in the Op layer. Uses register_copy for the data path
+    (x, y, out) with element-wise bool cond access, since T.copy
+    does not support bool vectorization.
+    """
     block_size = threads * npt
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(
-            cond: T.Tensor((N,), "int8"),
+            cond: T.Tensor((N,), "bool"),
             x: T.Tensor((N,), dtype),
             y_in: T.Tensor((N,), dtype),
             out: T.Tensor((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                y_reg = T.alloc_fragment((block_size,), dtype)
+                o_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                T.copy(y_in[bx * block_size : (bx + 1) * block_size], y_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    c = cond[idx]
-                    zero = T.IntImm("int8", 0)
-                    out[idx] = T.if_then_else(c != zero, x[idx], y_in[idx])
+                    k = i * npt_arg + j
+                    idx = bx * block_size + k
+                    o_reg[k] = T.if_then_else(cond[idx], x_reg[k], y_reg[k])
+                T.copy(o_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -1634,7 +1660,7 @@ class WhereKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = 8 if self.dtype == torch.float32 else 32
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, cond, x, y):
@@ -1716,7 +1742,13 @@ class ClampKernel(Kernel):
 
 
 def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
-    """Build masked_fill kernel: out = mask ? fill_value : x."""
+    """Build masked_fill kernel: out = mask ? fill_value : x.
+
+    Accepts bool mask tensor directly to avoid dtype conversion
+    overhead in the Op layer. Uses register_copy for the data path
+    (x and out) with element-wise bool mask access, since T.copy
+    does not support bool vectorization.
+    """
     block_size = threads * npt
 
     @tilelang.jit(out_idx=[2])
@@ -1724,16 +1756,19 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
         @T.prim_func
         def main(
             x: T.Tensor((N,), dtype),
-            mask: T.Tensor((N,), "int8"),
+            mask: T.Tensor((N,), "bool"),
             out: T.Tensor((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                o_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    m = mask[idx]
-                    zero = T.IntImm("int8", 0)
+                    k = i * npt_arg + j
+                    idx = bx * block_size + k
                     fv = T.cast(fill_value, dtype)
-                    out[idx] = T.if_then_else(m != zero, fv, x[idx])
+                    o_reg[k] = T.if_then_else(mask[idx], fv, x_reg[k])
+                T.copy(o_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -1773,7 +1808,7 @@ class MaskedFillKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = 8 if self.dtype == torch.float32 else 16
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, x, mask):
@@ -1782,7 +1817,11 @@ class MaskedFillKernel(Kernel):
 
 
 def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val, threads=256, npt=8):
-    """Build nan_to_num kernel: replace NaN, +Inf, -Inf with given values."""
+    """Build nan_to_num kernel: replace NaN, +Inf, -Inf with given values.
+
+    Uses register_copy strategy: fragment load -> compute -> fragment store
+    for coalesced memory access.
+    """
     block_size = threads * npt
 
     @tilelang.jit(out_idx=[1])
@@ -1790,14 +1829,16 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val, threads=2
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                y_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    val = x[idx]
+                    k = i * npt_arg + j
+                    val = x_reg[k]
                     v32 = T.cast(val, "float32")
                     nan_r = T.cast(nan_val, val.dtype)
                     pos_r = T.cast(posinf_val, val.dtype)
                     neg_r = T.cast(neginf_val, val.dtype)
-                    # Check: NaN first, then +inf, then -inf
                     result = T.if_then_else(
                         T.isnan(v32),
                         nan_r,
@@ -1807,7 +1848,8 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val, threads=2
                             val,
                         ),
                     )
-                    y[idx] = result
+                    y_reg[k] = result
+                T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -1853,7 +1895,7 @@ class NanToNumKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = 4 if self.dtype == torch.float32 else 16
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, x):

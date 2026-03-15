@@ -103,7 +103,7 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
 # prelu (2 inputs: x + weight)
 # ---------------------------------------------------------------------------
 
-_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 20480)]
+_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 20480)]
 
 
 class PreluBenchCase:
@@ -299,9 +299,14 @@ class GenerativeBenchFixture(FixtureBase):
 
 
 def _alibi_reference(seq_len: int, num_heads: int, dtype: torch.dtype) -> torch.Tensor:
+    """Full ALiBi bias: (num_heads, seq_len, seq_len), bias[h,i,j] = -slope_h * |i-j|."""
     positions = torch.arange(seq_len, device="cuda", dtype=torch.float32)
-    slopes = 2.0 ** (-(8.0 * torch.arange(1, num_heads + 1, device="cuda", dtype=torch.float32) / num_heads))
-    bias = positions.unsqueeze(0) * slopes.unsqueeze(1)
+    dist = (positions.unsqueeze(1) - positions.unsqueeze(0)).abs()  # (S, S)
+    slopes = torch.pow(
+        2.0,
+        -8.0 * torch.arange(1, num_heads + 1, device="cuda", dtype=torch.float32) / num_heads,
+    )
+    bias = (-slopes[:, None, None] * dist[None, :, :])  # (H, S, S)
     return bias.to(dtype)
 
 
@@ -318,9 +323,10 @@ def _sinusoidal_reference(seq_len: int, d_model: int, dtype: torch.dtype) -> tor
 @GenerativeBenchFixture
 def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dtype) -> None:
     test = GenerativeBenchCase(seq_len, dim, dtype)
-    bm = GenerativeBenchmark(test)
 
     if op_name == "alibi":
+        # ALiBi outputs (num_heads, seq_len, seq_len); override n_total
+        test.n_total = dim * seq_len * seq_len
         op = AlibiOp(seq_len=seq_len, num_heads=dim, dtype=dtype)
 
         def baseline_fn():
@@ -331,6 +337,7 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
         def baseline_fn():
             return _sinusoidal_reference(seq_len, dim, dtype)
 
+    bm = GenerativeBenchmark(test)
     result = bm.profile(op)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
