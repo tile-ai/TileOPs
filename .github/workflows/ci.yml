@@ -1,7 +1,7 @@
 name: CI
 
 permissions:
-  contents: write
+  contents: read
   checks: read
 
 on:
@@ -33,7 +33,7 @@ jobs:
           fi
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" \
-            --jq '[.check_runs[] | select(.name == "pre-commit" or .name == "tileops_test_release") | .conclusion]')
+            --jq '[.check_runs[] | select(.name == "pre-commit" or .name == "gpu-smoke") | .conclusion]')
           ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
           COUNT=$(echo "$CHECKS" | jq 'length')
           if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 2 ]]; then
@@ -175,169 +175,3 @@ jobs:
         with:
           # Run on all files once, and print diff on failure
           extra_args: --all-files --show-diff-on-failure
-
-  tileops_test_release:
-    needs: [ci-gate, detect-test-scope]
-    # needs: pre-commit
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && needs.ci-gate.outputs.skip != 'true' && needs.detect-test-scope.outputs.skip_gpu_smoke != 'true' }}
-    runs-on: [self-hosted, tile-ops, venv]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          # Shallow clone to reduce network flakiness on self-hosted runners (see #351)
-          fetch-depth: 1
-          # Use local bare mirror on self-hosted runner to reduce checkout latency
-          reference: /home/ci-runner/repo-mirror
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Configure persistent compile caches
-        run: |
-          set -euo pipefail
-
-          TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
-          TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-          TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
-
-          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
-
-          {
-            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-          } >> "$GITHUB_ENV"
-
-          echo "Configured compile caches:"
-          echo "  TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-          echo "  TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-          echo "  TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-        shell: bash
-
-      - name: Validate GPU frequency
-        run: |
-          set -euo pipefail
-          TARGET_CLOCK_MHZ=1830
-          RETRIES=5
-          SLEEP_SECONDS=2
-
-          if ! command -v nvidia-smi >/dev/null 2>&1; then
-            echo "::error::nvidia-smi is not available on this runner."
-            exit 1
-          fi
-
-          echo "Detected GPUs:"
-          nvidia-smi -L
-
-          attempt=1
-          while [ "$attempt" -le "$RETRIES" ]; do
-            echo "Validation attempt ${attempt}/${RETRIES}"
-            mismatch=0
-            while IFS=',' read -r gpu_index gpu_name gpu_clock; do
-              gpu_index="$(echo "$gpu_index" | xargs)"
-              gpu_name="$(echo "$gpu_name" | xargs)"
-              gpu_clock="$(echo "$gpu_clock" | xargs)"
-              echo "GPU ${gpu_index} (${gpu_name}) clock: ${gpu_clock} MHz"
-              if [ "$gpu_clock" != "$TARGET_CLOCK_MHZ" ]; then
-                mismatch=1
-              fi
-            done < <(nvidia-smi --query-gpu=index,name,clocks.current.graphics --format=csv,noheader,nounits)
-
-            if [ "$mismatch" -eq 0 ]; then
-              echo "All GPUs locked at ${TARGET_CLOCK_MHZ} MHz."
-              break
-            fi
-
-            if [ "$attempt" -eq "$RETRIES" ]; then
-              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz on all GPUs."
-              exit 1
-            fi
-
-            sleep "$SLEEP_SECONDS"
-            attempt=$((attempt + 1))
-          done
-        shell: bash
-
-      - name: Resolve persistent venv
-        run: |
-          set -euo pipefail
-
-          VENV_PREFIX="tileops_ci_venv"
-          HASH_INPUT="$(
-            {
-              echo "python=3.11"
-              echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              sha256sum pyproject.toml
-            } | sha256sum | cut -c1-16
-          )"
-          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-
-          echo "Resolved venv path: ${VENV_PATH}"
-          echo "VENV_DIR=${VENV_DIR}" >> "$GITHUB_ENV"
-          echo "VENV_PATH=${VENV_PATH}" >> "$GITHUB_ENV"
-
-          if [ -x "${VENV_PATH}/bin/python" ]; then
-            echo "Reusing existing venv: ${VENV_PATH}"
-            echo "VENV_REUSED=true" >> "$GITHUB_ENV"
-          else
-            echo "No matching venv found. Will create: ${VENV_PATH}"
-            echo "VENV_REUSED=false" >> "$GITHUB_ENV"
-          fi
-        shell: bash
-
-      - name: Ensure persistent venv and install dependencies
-        run: |
-          set -euo pipefail
-          if [ "${VENV_REUSED}" = "true" ]; then
-            echo "Using cached venv at ${VENV_PATH}"
-            exit 0
-          fi
-
-          echo "Creating fresh venv at ${VENV_PATH}"
-          python -m venv "${VENV_PATH}"
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-          python -m pip install --upgrade pip setuptools wheel --no-user
-          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
-        shell: bash
-
-      - name: Run tests
-        run: |
-          set -euo pipefail
-          source "${VENV_PATH}/bin/activate"
-          export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
-          echo "PYTHONPATH=$PYTHONPATH"
-          python - <<'PY'
-          import os
-
-          print("Runtime cache env:")
-          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
-              print(f"{key}={os.environ.get(key)}")
-          PY
-          set -o pipefail
-          TEST_MARK_EXPR="smoke or full"
-          TEST_SCOPE="full-smoke"
-          PYTEST_TARGETS="tests"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TEST_MARK_EXPR="smoke"
-            TEST_SCOPE="${{ needs.detect-test-scope.outputs.scope }}"
-            PYTEST_TARGETS="${{ needs.detect-test-scope.outputs.pytest_targets }}"
-          fi
-          echo "Resolved test scope: ${TEST_SCOPE}"
-          echo "Resolved pytest targets: ${PYTEST_TARGETS}"
-          read -r -a TARGETS <<< "${PYTEST_TARGETS}"
-          echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
-          python -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" | tee tileops_test_release.log
-        shell: bash
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        if: always()  # Equivalent to when: always
-        with:
-          name: tileops_test_release.log
-          path: tileops_test_release.log
-          retention-days: 7  # Equivalent to expire_in: 1 week
