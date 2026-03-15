@@ -167,14 +167,18 @@ jobs:
         id: rotation
         run: |
           set -euo pipefail
-          BENCH_FILES=$(python3 benchmarks/select_nightly_benchmarks.py \
+          python3 benchmarks/select_nightly_benchmarks.py \
             --history bench_run_history.json \
             --n 15 \
-            --output rotation_meta.json)
+            --output rotation_meta.json \
+            > selected_bench_files.txt
+
+          # Convert newline-separated paths to space-separated for pytest
+          BENCH_FILES=$(tr '\n' ' ' < selected_bench_files.txt | sed 's/ $//')
 
           echo "bench_files=${BENCH_FILES}" >> "$GITHUB_OUTPUT"
           echo "Selected benchmarks:"
-          echo "${BENCH_FILES}" | tr ' ' '\n'
+          cat selected_bench_files.txt
           echo ""
           echo "Rotation metadata:"
           cat rotation_meta.json

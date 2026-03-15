@@ -37,7 +37,9 @@ def load_history(path: str | None) -> dict[str, str]:
         return {}
     try:
         return json.loads(Path(path).read_text())
-    except Exception:
+    except json.JSONDecodeError:
+        print(f"Warning: Could not parse history file at '{path}'. "
+              "Proceeding with empty history.", file=sys.stderr)
         return {}
 
 
@@ -58,15 +60,8 @@ def select_benchmarks(
     # Sort previously-run by last_run date ascending (oldest first)
     previously_run.sort(key=lambda f: history[f])
 
-    selected: list[str] = []
-    # Phase 1: never-run files
-    selected.extend(never_run[:n])
-    # Phase 2: fill with oldest-run files
-    remaining = n - len(selected)
-    if remaining > 0:
-        selected.extend(previously_run[:remaining])
-
-    return selected
+    # Combine lists in order of priority and take the top n
+    return (never_run + previously_run)[:n]
 
 
 def main() -> None:
@@ -117,7 +112,7 @@ def main() -> None:
     Path(args.output).write_text(json.dumps(meta, indent=2))
 
     # Print paths for consumption by the workflow
-    print(" ".join(selected_paths))
+    print("\n".join(selected_paths))
 
 
 if __name__ == "__main__":
