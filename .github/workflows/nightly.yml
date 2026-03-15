@@ -15,6 +15,8 @@ jobs:
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     timeout-minutes: 150
+    permissions:
+      contents: write
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
@@ -150,25 +152,12 @@ jobs:
           PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
         shell: bash
 
-      - name: Fetch benchmark run history
-        run: |
-          set -euo pipefail
-          # Try to fetch history from the report repo; empty JSON on failure
-          gh api repos/superAngGao/TileOPs-report/contents/scripts/bench_run_history.json \
-            --jq '.content' 2>/dev/null \
-            | base64 -d > bench_run_history.json 2>/dev/null \
-            || echo '{}' > bench_run_history.json
-          echo "History entries: $(python3 -c "import json; print(len(json.load(open('bench_run_history.json'))))")"
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-
       - name: Select benchmark files to run
         id: rotation
         run: |
           set -euo pipefail
           python3 benchmarks/select_nightly_benchmarks.py \
-            --history bench_run_history.json \
+            --history benchmarks/bench_run_history.json \
             --n 15 \
             --output rotation_meta.json \
             > selected_bench_files.txt
@@ -267,6 +256,43 @@ jobs:
             rotation_meta.json
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Update benchmark run history
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json
+          from pathlib import Path
+
+          history_path = Path('benchmarks/bench_run_history.json')
+          meta_path = Path('rotation_meta.json')
+
+          history = json.loads(history_path.read_text()) if history_path.exists() else {}
+
+          if meta_path.exists():
+              meta = json.loads(meta_path.read_text())
+              date = meta.get('date', '')
+              for f in meta.get('selected_files', []):
+                  history[f] = date
+              print(f'Updated {len(meta.get(\"selected_files\", []))} entries, date={date}')
+          else:
+              print('No rotation_meta.json found, skipping')
+
+          history_path.write_text(json.dumps(history, indent=2, sort_keys=True))
+          print(f'Total history entries: {len(history)}')
+          "
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/bench_run_history.json
+          if git diff --staged --quiet; then
+            echo "History unchanged."
+          else
+            git commit -m "chore: update bench_run_history.json [skip ci]"
+            git push origin HEAD:main
+          fi
+        shell: bash
 
   op_test:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
