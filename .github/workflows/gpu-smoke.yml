@@ -188,6 +188,7 @@ jobs:
                 fi
               fi
             fi
+          fi
 
           {
             echo "is_fork=$is_fork"
