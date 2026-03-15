@@ -80,7 +80,8 @@ class Fp8FusedGatedBenchCase:
 
 class Fp8FusedGatedBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        # silu: 4 FLOPs/elem (neg, exp, add, mul) + mul with value
+        # FIXME(ying): hardcoded for silu (4 FLOPs/elem + 1 mul with value = 5).
+        # Must update when benchmarking other activations (e.g. gelu).
         return self.test.M * self.test.N * 5
 
     def calculate_memory(self) -> Optional[float]:
