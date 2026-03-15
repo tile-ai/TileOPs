@@ -63,6 +63,17 @@ class Kernel(ABC):
     def __call__(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
         return self.forward(*args, **kwargs)
 
+    @property
+    def autotune_supply_prog(self) -> Optional[Callable]:
+        """Return a supply_prog callback for autotuning input generation.
+
+        Override in subclasses whose kernels have scalar (T.int32, etc.) parameters
+        that the default tensor-only auto-generation cannot handle.
+
+        The callback signature is: (params: list[KernelParam]) -> list[Tensor | int | ...]
+        """
+        return None
+
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
@@ -73,9 +84,11 @@ class Kernel(ABC):
         print(f'Start autotuning {self.__class__.__name__}...')
 
         # Apply autotune decorator to the kernel function
-        autotuned_kernel_fn = autotune(
-            configs=self.autotune_configs, warmup=warmup, rep=rep)(
-                self.kernel)
+        autotune_kwargs: Dict[str, Any] = dict(
+            configs=self.autotune_configs, warmup=warmup, rep=rep)
+        if self.autotune_supply_prog is not None:
+            autotune_kwargs["supply_prog"] = self.autotune_supply_prog
+        autotuned_kernel_fn = autotune(**autotune_kwargs)(self.kernel)
 
         # Call without config parameters to trigger autotuning, returns the tuned kernel
         tuned_kernel = autotuned_kernel_fn()
