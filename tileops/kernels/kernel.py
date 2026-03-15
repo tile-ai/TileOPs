@@ -64,7 +64,7 @@ class Kernel(ABC):
         return self.forward(*args, **kwargs)
 
     @property
-    def autotune_supply_prog(self) -> Optional[callable]:
+    def autotune_supply_prog(self) -> Optional[Callable]:
         """Return a supply_prog callback for autotuning input generation.
 
         Override in subclasses whose kernels have scalar (T.int32, etc.) parameters
