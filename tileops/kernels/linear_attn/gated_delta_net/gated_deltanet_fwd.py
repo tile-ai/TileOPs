@@ -295,22 +295,6 @@ class GatedDeltaNetFwdKernel(Kernel):
         self.dim_v = dim_v
         self.dtype = dtype
         self.init_config(config, tune)
-        # Cache JIT-compiled kernels
-        self._fused_fn = fused_prepare_compute_w_u_tl(
-            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
-        )(self.config["fused_num_stages"], self.config["fused_threads"])
-        self._h_recurrence_fn = _h_recurrence_tl(
-            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
-            block_v=self.config.get("h_block_v", 0),
-        )(self.config["h_num_stages"], self.config["h_threads"])
-        self._output_o_fn = _output_o_tl(
-            batch, head, seq_len, chunk_size, dim_k, dim_v, self.dtype_str,
-        )(self.config["o_threads"])
-        torch_dtype = {"float32": torch.float32, "float16": torch.float16,
-                       "bfloat16": torch.bfloat16}[self.dtype_str]
-        self._S_0 = torch.zeros(
-            batch, head, dim_k, dim_v, dtype=torch_dtype, device="cuda",
-        )
 
     @property
     def default_config(self) -> dict:

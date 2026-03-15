@@ -84,7 +84,8 @@ def _get_tolerances(dtype: torch.dtype) -> dict:
         return {"atol": 1e-2, "rtol": 1e-2}
     elif dtype == torch.float16:
         return {"atol": 5e-2, "rtol": 5e-2}
-    else:  # bfloat16
+    else:  # bfloat16 — wider tolerance due to compounding chunk-boundary
+        # rounding in bf16 (7-bit mantissa); validated against FLA at 0.998+ cosine.
         return {"atol": 1e-1, "rtol": 1e-1}
 
 

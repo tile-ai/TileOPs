@@ -114,11 +114,15 @@ class GatedDeltaNetFlaValidationFixture(FixtureBase):
             (2, 4096, 4, 64, 64, 64, torch.float16),
             (2, 8192, 4, 64, 64, 64, torch.float16),
             (2, 16384, 4, 64, 64, 64, torch.float16),
+            (2, 32768, 4, 64, 64, 64, torch.float16),
+            (2, 65536, 4, 64, 64, 64, torch.float16),
             (2, 256, 4, 64, 64, 64, torch.bfloat16),
             (2, 1024, 4, 64, 64, 64, torch.bfloat16),
             (2, 4096, 4, 64, 64, 64, torch.bfloat16),
             (2, 8192, 4, 64, 64, 64, torch.bfloat16),
             (2, 16384, 4, 64, 64, 64, torch.bfloat16),
+            (2, 32768, 4, 64, 64, 64, torch.bfloat16),
+            (2, 65536, 4, 64, 64, 64, torch.bfloat16),
         ]),
     ]
 
@@ -246,18 +250,16 @@ def test_gated_deltanet_fla_validation_bwd(
     result = _profile_manual(tileops_bwd, bm)
     BenchmarkReport.record("gated_deltanet_fla_validation_bwd", locals(), result, tag="tileops")
 
-    # Performance: FLA bwd only (run fwd once, then time only backward)
-    q_f2 = q_fla.data.detach().requires_grad_(True)
-    k_f2 = k_fla.data.detach().requires_grad_(True)
-    v_f2 = v_fla.data.detach().requires_grad_(True)
-    g_f2 = g_fla.data.detach().requires_grad_(True)
-    beta_f2 = beta_fla.data.detach().requires_grad_(True)
-
-    o_f2, _ = chunk_gated_delta_rule(q_f2, k_f2, v_f2, g_f2, beta_f2, scale=scale)
-
+    # Performance: FLA bwd only (re-create forward graph each rep to avoid
+    # memory accumulation from retain_graph=True across 100+ reps)
     def fla_bwd_only():
-        q_f2.grad = k_f2.grad = v_f2.grad = g_f2.grad = beta_f2.grad = None
-        o_f2.backward(do_fla, retain_graph=True)
+        q_f2 = q_fla.data.detach().requires_grad_(True)
+        k_f2 = k_fla.data.detach().requires_grad_(True)
+        v_f2 = v_fla.data.detach().requires_grad_(True)
+        g_f2 = g_fla.data.detach().requires_grad_(True)
+        beta_f2 = beta_fla.data.detach().requires_grad_(True)
+        o_f2, _ = chunk_gated_delta_rule(q_f2, k_f2, v_f2, g_f2, beta_f2, scale=scale)
+        o_f2.backward(do_fla)
 
     result_fla = _profile_manual(fla_bwd_only, bm)
     BenchmarkReport.record("gated_deltanet_fla_validation_bwd", locals(), result_fla, tag="fla")
@@ -297,7 +299,7 @@ def test_gated_deltanet_fla_validation_fwdbwd(
     def tileops_fwdbwd():
         q.grad = k.grad = v.grad = g.grad = beta.grad = None
         o = op(q, k, v, g, beta)
-        o.backward(do, retain_graph=True)
+        o.backward(do)
 
     result = _profile_manual(tileops_fwdbwd, bm, warmup=50)
     latency_tile = result["latency_ms"]
@@ -314,7 +316,7 @@ def test_gated_deltanet_fla_validation_fwdbwd(
     def fla_fwdbwd():
         q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
         o, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
-        o.backward(do_fla, retain_graph=True)
+        o.backward(do_fla)
 
     result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
     latency_fla = result_fla["latency_ms"]

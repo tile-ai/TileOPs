@@ -421,9 +421,9 @@ def _gated_deltanet_bwd_wrapped_kernel_fake(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     dq = torch.empty(batch, head, seq_len, dim_k, dtype=q.dtype, device=q.device)
     dk = torch.empty_like(dq)
-    dv = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
-    dg = torch.empty(batch, head, seq_len, dtype=q.dtype, device=q.device)
-    dbeta = torch.empty_like(dg)
+    dv = torch.empty(batch, head, seq_len, dim_v, dtype=v.dtype, device=v.device)
+    dg = torch.empty(batch, head, seq_len, dtype=g.dtype, device=g.device)
+    dbeta = torch.empty(batch, head, seq_len, dtype=beta.dtype, device=beta.device)
     return dq, dk, dv, dg, dbeta
 
 
