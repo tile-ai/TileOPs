@@ -11,7 +11,7 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -19,40 +19,119 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ci-gate:
+  ci-prereq:
     runs-on: ubuntu-latest
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
-      - name: Check existing GPU smoke result for this SHA
+      - name: Wait for CI prerequisites
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action || '' }}
+          IS_DRAFT: ${{ github.event.pull_request.draft || false }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
 
-          if [[ "$EVENT_NAME" != "pull_request" || "$EVENT_ACTION" != "ready_for_review" ]]; then
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" \
-            --jq '[.check_runs[] | select(.name == "gpu-smoke") | .conclusion]')
-          ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
-          COUNT=$(echo "$CHECKS" | jq 'length')
-          if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 1 ]]; then
-            echo "GPU smoke already passed for SHA $HEAD_SHA; skipping"
+          if [[ "$IS_DRAFT" == "true" ]]; then
+            echo "Draft PR; skipping GPU smoke."
             echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
+          required_checks=(validate-commits pre-commit gitleaks actionlint)
+          deadline=$((SECONDS + 900))
+
+          while true; do
+            checks_json=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs")
+            latest_checks=$(echo "$checks_json" | jq '
+              .check_runs
+              | group_by(.name)
+              | map(max_by(.id))
+            ')
+
+            pending="false"
+            failed=""
+
+            for check_name in "${required_checks[@]}"; do
+              status=$(echo "$latest_checks" | jq -r --arg name "$check_name" '
+                map(select(.name == $name)) | first | .status // ""
+              ')
+              conclusion=$(echo "$latest_checks" | jq -r --arg name "$check_name" '
+                map(select(.name == $name)) | first | .conclusion // ""
+              ')
+
+              if [[ -z "$status" || "$status" != "completed" ]]; then
+                pending="true"
+                continue
+              fi
+
+              if [[ "$conclusion" != "success" ]]; then
+                failed="$check_name"
+                break
+              fi
+            done
+
+            title_status=$(echo "$latest_checks" | jq -r '
+              map(select(.name == "validate-pr-title")) | first | .status // ""
+            ')
+            title_conclusion=$(echo "$latest_checks" | jq -r '
+              map(select(.name == "validate-pr-title")) | first | .conclusion // ""
+            ')
+            if [[ -n "$title_status" && "$title_status" == "completed" && "$title_conclusion" != "success" && "$title_conclusion" != "skipped" ]]; then
+              failed="validate-pr-title"
+            elif [[ -n "$title_status" && "$title_status" != "completed" ]]; then
+              pending="true"
+            fi
+
+            if [[ -n "$failed" ]]; then
+              echo "CI prerequisite failed: $failed"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [[ "$pending" == "false" ]]; then
+              break
+            fi
+
+            if (( SECONDS >= deadline )); then
+              echo "Timed out waiting for CI prerequisites."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          if [[ "$EVENT_ACTION" == "ready_for_review" ]]; then
+            CHECKS=$(echo "$latest_checks" | jq '
+              [
+                .[]
+                | select(.name == "gpu-smoke")
+                | .conclusion
+              ]
+            ')
+            ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
+            COUNT=$(echo "$CHECKS" | jq 'length')
+            if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 1 ]]; then
+              echo "GPU smoke already passed for SHA $HEAD_SHA; skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
   security-policy:
-    needs: ci-gate
-    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
+    needs: ci-prereq
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-prereq.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     outputs:
       is_fork: ${{ steps.policy.outputs.is_fork }}
@@ -199,62 +278,9 @@ jobs:
             echo "reason=$reason"
           } >> "$GITHUB_OUTPUT"
 
-  gitleaks:
-    needs: ci-gate
-    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Install gitleaks
-        env:
-          GITLEAKS_VERSION: "8.30.0"
-        run: |
-          set -euo pipefail
-
-          install_dir="${RUNNER_TEMP}/bin"
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-
-          mkdir -p "$install_dir"
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" \
-            -o "${RUNNER_TEMP}/${archive}"
-          tar -xzf "${RUNNER_TEMP}/${archive}" -C "$install_dir" gitleaks
-          echo "$install_dir" >> "$GITHUB_PATH"
-
-      - name: Run gitleaks
-        run: gitleaks dir . --redact --no-banner
-
-  actionlint:
-    needs: ci-gate
-    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Install actionlint
-        env:
-          ACTIONLINT_VERSION: "1.7.11"
-        run: |
-          set -euo pipefail
-
-          install_dir="${RUNNER_TEMP}/bin"
-          mkdir -p "$install_dir"
-          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
-            | bash -s -- "$ACTIONLINT_VERSION" "$install_dir"
-          echo "$install_dir" >> "$GITHUB_PATH"
-
-      - name: Run actionlint
-        run: actionlint -color
-
   gpu-smoke:
-    needs: [ci-gate, security-policy, gitleaks, actionlint]
-    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' && needs.security-policy.outputs.skip_gpu_smoke != 'true' }}
+    needs: [ci-prereq, security-policy]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-prereq.outputs.skip != 'true' && needs.security-policy.outputs.skip_gpu_smoke != 'true' }}
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code for fork PR

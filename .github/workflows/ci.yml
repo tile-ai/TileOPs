@@ -9,7 +9,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
@@ -18,6 +18,82 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Source type conventions
+        id: types
+        run: |
+          source .claude/conventions/types.sh
+          echo "pattern=$COMMIT_MSG_PATTERN" >> "$GITHUB_OUTPUT"
+      - name: Validate commit messages
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "Not a pull request event; skipping commit validation."
+            exit 0
+          fi
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "Checking commits from $BASE_SHA to $HEAD_SHA"
+
+          PATTERN='${{ steps.types.outputs.pattern }}'
+
+          STATUS=0
+          while IFS= read -r COMMIT_SHA; do
+            SUBJECT="$(git log -1 --format=%s "$COMMIT_SHA")"
+            if [[ "$SUBJECT" =~ ^Merge\  ]]; then
+              echo "SKIP (merge): $SUBJECT"
+              continue
+            fi
+            if [[ ! "$SUBJECT" =~ $PATTERN ]]; then
+              echo "::error::Commit $COMMIT_SHA does not follow TileOPs format."
+              echo "  Expected: [Type] description  or  [Type][Scope] description"
+              echo "  Got: $SUBJECT"
+              STATUS=1
+            else
+              echo "OK: $SUBJECT"
+            fi
+          done < <(git log --format=%H "${BASE_SHA}..${HEAD_SHA}")
+
+          exit $STATUS
+
+  validate-pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .claude/conventions
+          sparse-checkout-cone-mode: false
+      - name: Validate PR title format
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "Not a pull request event; skipping PR title validation."
+            exit 0
+          fi
+
+          source .claude/conventions/types.sh
+          if [[ ! "$PR_TITLE" =~ $COMMIT_MSG_PATTERN ]]; then
+            echo "::error::PR title does not follow TileOPs format."
+            echo "Expected: [Type] description  or  [Type][Scope] description"
+            echo "Types: $COMMIT_PR_TYPES"
+            echo "Got: $PR_TITLE"
+            exit 1
+          fi
+          echo "PR title is valid: $PR_TITLE"
+
   ci-gate:
     runs-on: ubuntu-latest
     outputs:
@@ -29,17 +105,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action || '' }}
+          TARGET_BRANCH: ${{ github.base_ref || '' }}
+          IS_DRAFT: ${{ github.event.pull_request.draft || false }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
 
-          if [[ "$EVENT_NAME" != "pull_request" || "$EVENT_ACTION" != "ready_for_review" ]]; then
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" \
-            --jq '[.check_runs[] | select(.name == "pre-commit" or .name == "gitleaks" or .name == "actionlint") | .conclusion]')
+          if [[ "$TARGET_BRANCH" != "main" || "$IS_DRAFT" == "true" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$EVENT_ACTION" != "ready_for_review" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" --jq '
+            [
+              .check_runs
+              | group_by(.name)
+              | map(max_by(.id))[]
+              | select(.name == "pre-commit" or .name == "gitleaks" or .name == "actionlint")
+              | .conclusion
+            ]
+          ')
           ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
           COUNT=$(echo "$CHECKS" | jq 'length')
           if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 3 ]]; then
@@ -50,7 +145,7 @@ jobs:
           fi
 
   pre-commit:
-    needs: ci-gate
+    needs: [validate-commits, validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -70,7 +165,7 @@ jobs:
           extra_args: --all-files --show-diff-on-failure
 
   gitleaks:
-    needs: ci-gate
+    needs: [validate-commits, validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -98,7 +193,7 @@ jobs:
         run: gitleaks dir . --redact --no-banner
 
   actionlint:
-    needs: ci-gate
+    needs: [validate-commits, validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
