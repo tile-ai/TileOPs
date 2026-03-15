@@ -314,12 +314,29 @@ jobs:
 
           if [[ "$IS_FORK" == "true" ]]; then
             RUNTIME_ROOT="${RUNNER_TEMP}/gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
-            TILELANG_CACHE_DIR="${RUNTIME_ROOT}/tilelang/cache"
+            # Keep fork PRs isolated from trusted caches, but let them share
+            # a dedicated fork-only compile cache to avoid repeated cold JIT builds.
+            FORK_CACHE_ROOT="/home/ci-runner/.fork-pr-cache"
+            TILELANG_CACHE_DIR="${FORK_CACHE_ROOT}/tilelang/cache"
             TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-            TRITON_CACHE_DIR="${RUNTIME_ROOT}/triton/cache"
+            TRITON_CACHE_DIR="${FORK_CACHE_ROOT}/triton/cache"
             VENV_PATH="${RUNTIME_ROOT}/venv"
             VENV_REUSED="false"
             mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+
+            # Seed the fork-only cache from trusted caches once so the first
+            # fork PR run can still benefit from existing compiled artifacts.
+            if [[ ! -f "${FORK_CACHE_ROOT}/.seeded-from-trusted" ]]; then
+              mkdir -p "${FORK_CACHE_ROOT}"
+              if command -v rsync >/dev/null 2>&1; then
+                rsync -a --ignore-existing /home/ci-runner/.tilelang/cache/ "${TILELANG_CACHE_DIR}/" || true
+                rsync -a --ignore-existing /home/ci-runner/.triton/cache/ "${TRITON_CACHE_DIR}/" || true
+              else
+                cp -an /home/ci-runner/.tilelang/cache/. "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
+                cp -an /home/ci-runner/.triton/cache/. "${TRITON_CACHE_DIR}/" 2>/dev/null || true
+              fi
+              touch "${FORK_CACHE_ROOT}/.seeded-from-trusted"
+            fi
           else
             RUNTIME_ROOT="/home/ci-runner"
             TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
