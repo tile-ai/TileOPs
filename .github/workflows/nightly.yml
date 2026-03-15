@@ -258,7 +258,7 @@ jobs:
           retention-days: 14
 
       - name: Update benchmark run history
-        if: ${{ always() }}
+        if: ${{ always() && hashFiles('bench_results.xml') != '' }}
         run: |
           set -euo pipefail
           python3 -c "
