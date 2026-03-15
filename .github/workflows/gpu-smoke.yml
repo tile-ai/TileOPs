@@ -205,12 +205,14 @@ jobs:
             if [[ "$has_python" == "false" ]]; then
               skip_gpu_smoke="true"
               reason="No Python files changed; GPU smoke skipped."
-              echo "skip_gpu_smoke=$skip_gpu_smoke" >> "$GITHUB_OUTPUT"
-              echo "is_fork=$is_fork" >> "$GITHUB_OUTPUT"
-              echo "allow_fast_path=$allow_fast_path" >> "$GITHUB_OUTPUT"
-              echo "scope=skip" >> "$GITHUB_OUTPUT"
-              echo "pytest_targets=" >> "$GITHUB_OUTPUT"
-              echo "reason=$reason" >> "$GITHUB_OUTPUT"
+              {
+                echo "skip_gpu_smoke=$skip_gpu_smoke"
+                echo "is_fork=$is_fork"
+                echo "allow_fast_path=$allow_fast_path"
+                echo "scope=skip"
+                echo "pytest_targets="
+                echo "reason=$reason"
+              } >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
