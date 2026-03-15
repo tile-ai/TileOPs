@@ -13,15 +13,37 @@ on:
 
 jobs:
   apply-label:
-    if: ${{ github.event.action != 'edited' || github.event.changes.title != null }}
     runs-on: ubuntu-latest
     steps:
+      - name: Skip non-title edits
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_ACTION" != "edited" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! jq -e '.changes | has("title")' "$EVENT_PATH" >/dev/null; then
+            echo "Body-only edit detected; skipping label sync."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: ${{ steps.guard.outputs.should_run == 'true' }}
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           sparse-checkout: .claude/conventions
           sparse-checkout-cone-mode: false
       - name: Extract type from title and apply label
+        if: ${{ steps.guard.outputs.should_run == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
