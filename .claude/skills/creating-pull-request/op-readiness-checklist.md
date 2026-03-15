@@ -1,4 +1,4 @@
-# Op Structural Compliance Checklist
+# Op Structural Readiness Checklist
 
 Items marked **[REQUIRED]** must pass — block the PR if they fail.
 Items marked **[RECOMMENDED]** should pass — note in PR body if skipped with reason.

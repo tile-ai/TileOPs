@@ -12,7 +12,7 @@ Closes #<issue-number>
 
 <!-- OPTIONAL SECTIONS: Delete entirely if not applicable. Never leave empty headers. -->
 
-## Structural Compliance
+## Structural Readiness
 
 <!-- Required for new ops or kernel/op changes. Agent-generated — do not edit manually. -->
 
