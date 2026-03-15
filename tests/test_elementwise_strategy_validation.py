@@ -28,12 +28,8 @@ class TestUnaryKernelStrategyValidation:
 
     @pytest.mark.parametrize("strategy", ReluKernel.STRATEGIES)
     def test_valid_strategies_do_not_raise(self, strategy):
-        """Valid strategies must not raise ValueError (may fail later without GPU)."""
-        try:
-            ReluKernel(N_total=1024, dtype=torch.float16, strategy=strategy)
-        except ValueError as exc:
-            if "strategy" in str(exc).lower():
-                pytest.fail(f"Valid strategy '{strategy}' raised ValueError: {exc}")
+        """Valid strategies must not raise any exception during construction."""
+        ReluKernel(N_total=1024, dtype=torch.float16, strategy=strategy)
 
 
 @pytest.mark.smoke
@@ -79,14 +75,10 @@ class TestBinaryKernelStrategyValidation:
 
     @pytest.mark.parametrize("strategy", AddKernel.STRATEGIES)
     def test_valid_strategies_do_not_raise(self, strategy):
-        """Valid strategies must not raise ValueError (may fail later without GPU)."""
+        """Valid strategies must not raise any exception during construction."""
         shape = (1024,)
-        try:
-            AddKernel(
-                N_total=1024, dtype=torch.float16,
-                coalesced_shape=shape, a_strides=(1,), b_strides=(1,),
-                a_numel=1024, b_numel=1024, strategy=strategy,
-            )
-        except ValueError as exc:
-            if "strategy" in str(exc).lower():
-                pytest.fail(f"Valid strategy '{strategy}' raised ValueError: {exc}")
+        AddKernel(
+            N_total=1024, dtype=torch.float16,
+            coalesced_shape=shape, a_strides=(1,), b_strides=(1,),
+            a_numel=1024, b_numel=1024, strategy=strategy,
+        )
