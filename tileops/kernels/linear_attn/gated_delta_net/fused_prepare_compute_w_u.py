@@ -75,45 +75,18 @@ def fused_prepare_compute_w_u_tl(
                 T.copy(g[bid, hid, by * block_C : (by + 1) * block_C], g_shared, disable_tma=True)
                 T.copy(beta[bid, hid, by * block_C : (by + 1) * block_C], beta_shared, disable_tma=True)
 
-                # k_beta = k * beta
-                for i_s, i_k in T.Parallel(block_C, dim_k):
-                    k_beta_shared[i_s, i_k] = k_shared[i_s, i_k] * beta_shared[i_s]
-
-                # Gram = k_beta @ k_beta^T
+                # KKT = k @ k^T (without beta, paper: diag(β)·KK^T not (k*β)(k*β)^T)
                 T.clear(gram_frag)
-                T.gemm(k_beta_shared, k_beta_shared, gram_frag, transpose_B=True)
+                T.gemm(k_shared, k_shared, gram_frag, transpose_B=True)
 
-                # --- Compute Aw = (I - tril(Gram,-1))^{-1} via Neumann series ---
-                for i, j in T.Parallel(block_C, block_C):
-                    P_shared[i, j] = T.if_then_else(
-                        i > j, gram_frag[i, j], T.float32(0.0))
-                for i, j in T.Parallel(block_C, block_C):
-                    S_shared[i, j] = T.if_then_else(
-                        i == j, T.float32(1.0), T.float32(0.0))
-
-                for _r in T.Serial(num_rounds):
-                    T.clear(temp_frag)
-                    T.gemm(P_shared, S_shared, temp_frag)
-                    for i, j in T.Parallel(block_C, block_C):
-                        S_shared[i, j] = S_shared[i, j] + temp_frag[i, j]
-                    T.clear(temp_frag)
-                    T.gemm(P_shared, P_shared, temp_frag)
-                    T.copy(temp_frag, P_shared)
-
-                # S_shared = Aw; write to global (for backward) and compute w
-                T.copy(S_shared, temp_frag)
-                T.copy(temp_frag, Aw[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
-
-                # w = Aw @ k_beta  (Aw still in S_shared)
-                T.clear(w_frag)
-                T.gemm(S_shared, k_beta_shared, w_frag)
-                T.copy(w_frag, w[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
-
-                # --- Compute Au = (I - tril(Gram_g,-1))^{-1} ---
+                # --- Compute A_g = (I + strictLower(diag(β)·(Γ⊙KK^T)))^{-1} ---
+                # Paper uses a SINGLE gated matrix for both w and u.
+                # g_shared already contains cumsum'd values (done externally).
+                # P = -strictLower(diag(β)·(Γ⊙KK^T)) for Neumann: (I-P)^{-1} = (I+strictLower(...))^{-1}
                 for i, j in T.Parallel(block_C, block_C):
                     P_shared[i, j] = T.if_then_else(
                         i > j,
-                        gram_frag[i, j] * T.exp2((g_shared[i] - g_shared[j]) * _LOG2E),
+                        -gram_frag[i, j] * beta_shared[i] * T.exp2((g_shared[i] - g_shared[j]) * _LOG2E),
                         T.float32(0.0))
                 for i, j in T.Parallel(block_C, block_C):
                     S_shared[i, j] = T.if_then_else(
@@ -128,15 +101,25 @@ def fused_prepare_compute_w_u_tl(
                     T.gemm(P_shared, P_shared, temp_frag)
                     T.copy(temp_frag, P_shared)
 
-                # S_shared = Au; write to global (for backward) and compute u
+                # S_shared = A_g^{-1}; write to both Aw and Au (same matrix)
                 T.copy(S_shared, temp_frag)
+                T.copy(temp_frag, Aw[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
                 T.copy(temp_frag, Au[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
+
+                # k_beta = k * beta, v_beta = v * beta
+                for i_s, i_k in T.Parallel(block_C, dim_k):
+                    k_beta_shared[i_s, i_k] = k_shared[i_s, i_k] * beta_shared[i_s]
+
+                # w = A_g^{-1} @ k_beta  (paper: T·K = A^{-1}·diag(β)·K)
+                T.clear(w_frag)
+                T.gemm(S_shared, k_beta_shared, w_frag)
+                T.copy(w_frag, w[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
 
                 # v_beta = v * beta
                 for i, j in T.Parallel(block_C, dim_v):
                     v_beta_shared[i, j] = v_shared[i, j] * beta_shared[i]
 
-                # u = Au @ v_beta  (Au still in S_shared)
+                # u = A_g^{-1} @ v_beta  (paper: T·V = A^{-1}·diag(β)·V)
                 T.clear(u_frag)
                 T.gemm(S_shared, v_beta_shared, u_frag)
                 T.copy(u_frag, u[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)

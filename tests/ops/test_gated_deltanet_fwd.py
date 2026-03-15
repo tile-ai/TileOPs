@@ -12,10 +12,11 @@ from tileops.ops import GatedDeltaNetFwdOp
 
 def _prepare_wy_repr_torch_ref(
     k: torch.Tensor,
-    g: torch.Tensor,
+    g_cum: torch.Tensor,
     beta: torch.Tensor,
     chunk_size: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Paper: A_g = I + strictLower(diag(β)·(Γ⊙KK^T)), single gated matrix for both."""
     B, H, S, DK = k.shape
     assert S % chunk_size == 0
     BC = chunk_size
@@ -27,21 +28,18 @@ def _prepare_wy_repr_torch_ref(
             for c in range(S // BC):
                 i0, i1 = c * BC, (c + 1) * BC
                 kc = k[b, h, i0:i1, :].float()
-                gc = g[b, h, i0:i1].float()
+                gc = g_cum[b, h, i0:i1].float()
                 bc = beta[b, h, i0:i1].float()
-                k_beta = kc * bc.unsqueeze(-1)
-                Gram = k_beta @ k_beta.T
+                # Paper: diag(β) · (Γ ⊙ KK^T)
+                Gram = kc @ kc.T  # KK^T, no β_j
+                Gamma = torch.exp(gc.unsqueeze(1) - gc.unsqueeze(0))
+                M = bc.unsqueeze(-1) * (Gamma * Gram)  # diag(β) · (Γ ⊙ KK^T)
 
-                L = torch.tril(Gram, diagonal=-1).neg()
-                L.diagonal(0).fill_(1.0)
-                L_inv = torch.linalg.inv(L)
-                Aw[b, h, i0:i1, :] = L_inv
-
-                Gram_g = Gram * torch.exp(gc.unsqueeze(1) - gc.unsqueeze(0))
-                L_u = torch.tril(Gram_g, diagonal=-1).neg()
-                L_u.diagonal(0).fill_(1.0)
-                L_u_inv = torch.linalg.inv(L_u)
-                Au[b, h, i0:i1, :] = L_u_inv
+                # A_g = I + strictLower(M), invert via direct linalg
+                A_g = torch.eye(BC, device=k.device) + torch.tril(M, diagonal=-1)
+                A_g_inv = torch.linalg.inv(A_g)
+                Aw[b, h, i0:i1, :] = A_g_inv
+                Au[b, h, i0:i1, :] = A_g_inv  # same matrix
 
     return Aw, Au
 
@@ -94,13 +92,18 @@ def _kernel2_torch_ref(
         w_c = w[:, :, i0:i1, :]
         u_c = u[:, :, i0:i1, :]
 
-        v_new_c = u_c - (w_c * torch.exp(g_c).unsqueeze(-1)) @ h
+        # v_new = u - w * exp(g + g_last) @ h  (paper: Ũ - W̃← · S̃→^T)
+        g_last_val = g_c[:, :, -1:]  # [B, H, 1]
+        v_new_c = u_c - (w_c * torch.exp(g_c + g_last_val).unsqueeze(-1)) @ h
 
+        # o = q @ h * exp(g) + causal_attn(Γ-weighted) @ v_new
         o_part = torch.einsum("bhnk,bhkv->bhnv", q_c, h)
         o_part = o_part * torch.exp(g_c).unsqueeze(-1)
         attn = torch.einsum("bhnk,bhmk->bhnm", q_c, k_c)
+        # Γ-weighted causal: attn[i,j] = exp(g_cum_i - g_cum_j) * (q_i @ k_j) for i>=j
+        Gamma_causal = torch.exp(g_c.unsqueeze(-1) - g_c.unsqueeze(-2))
         mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.bool), diagonal=0)
-        attn = attn.masked_fill(~mask.unsqueeze(0).unsqueeze(0), 0.0)
+        attn = (attn * Gamma_causal).masked_fill(~mask.unsqueeze(0).unsqueeze(0), 0.0)
         o_c = o_part + torch.einsum("bhnm,bhmv->bhnv", attn, v_new_c)
         o[:, :, i0:i1, :] = o_c
 
@@ -139,6 +142,8 @@ class GatedDeltaNetFwdFixture(FixtureBase):
             pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -182,10 +187,13 @@ class GatedDeltaNetFwdTest(TestBase):
     ) -> torch.Tensor:
         B, H, S, DK = k.shape
         _, _, _, DV = v.shape
-        Aw, Au = _prepare_wy_repr_torch_ref(k, g, beta, self.chunk_size)
+        # Chunk-local cumulative sum of g (paper requires cumulated gates)
+        BC = self.chunk_size
+        g_cum = g.float().reshape(B, H, S // BC, BC).cumsum(-1).reshape(B, H, S).to(g.dtype)
+        Aw, Au = _prepare_wy_repr_torch_ref(k, g_cum, beta, self.chunk_size)
         w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, self.chunk_size)
         S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-        _S, o = _kernel2_torch_ref(q, k, g, w, u, S_0, self.chunk_size)
+        _S, o = _kernel2_torch_ref(q, k, g_cum, w, u, S_0, self.chunk_size)
         return o.to(self.dtype)
 
 

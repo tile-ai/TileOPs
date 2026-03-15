@@ -3,9 +3,6 @@ from .gated_delta_net import (
     GatedDeltaNetDecodeFP32Kernel,
     GatedDeltaNetDecodeKernel,
     GatedDeltaNetFwdKernel,
-    PrepareWYReprKernel,
-    compute_w_u_bwd_tl,
-    compute_w_u_tl,
 )
 
 __all__ = [
@@ -13,7 +10,4 @@ __all__ = [
     "GatedDeltaNetDecodeFP32Kernel",
     "GatedDeltaNetDecodeKernel",
     "GatedDeltaNetFwdKernel",
-    "PrepareWYReprKernel",
-    "compute_w_u_bwd_tl",
-    "compute_w_u_tl",
 ]

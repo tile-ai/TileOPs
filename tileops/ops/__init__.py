@@ -10,7 +10,7 @@ from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2CLUTOp, FFTC2COp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .fp8_quant import Fp8QuantOp
-from .gated_deltanet import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp
+from .gated_deltanet import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 from .gated_deltanet_decode import GatedDeltaNetDecodeOp
 from .gemm import GemmOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
@@ -83,6 +83,7 @@ __all__ = [
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeOp",
     "GatedDeltaNetFwdOp",
+    "GatedDeltaNetOp",
     "GemmOp",
     "GqaSlidingWindowFwdOp",
     "GqaSlidingWindowVarlenFwdOp",
