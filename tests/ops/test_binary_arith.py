@@ -726,9 +726,10 @@ def test_minimum_signed_zero(dtype: torch.dtype) -> None:
 def test_maximum_signed_zero_with_nan(dtype: torch.dtype) -> None:
     """Signed-zero fix must not regress NaN propagation."""
     nan = float("nan")
-    a = torch.tensor([nan, 0.0, -0.0, nan], dtype=dtype, device="cuda")
-    b = torch.tensor([0.0, nan, nan, -0.0], dtype=dtype, device="cuda")
-    shape = (4,)
+    # Mix of NaN pairs and non-NaN signed-zero pairs so both code paths execute
+    a = torch.tensor([nan, 1.0, -0.0, 0.0, nan, 3.0], dtype=dtype, device="cuda")
+    b = torch.tensor([1.0, nan, 0.0, -0.0, -0.0, 2.0], dtype=dtype, device="cuda")
+    shape = (6,)
     op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.maximum(a, b)
     with torch.no_grad():
@@ -737,19 +738,24 @@ def test_maximum_signed_zero_with_nan(dtype: torch.dtype) -> None:
     assert torch.equal(torch.isnan(out), torch.isnan(ref)), (
         f"NaN positions differ: out={out}, ref={ref}"
     )
-    # Non-NaN values: sign bits must match too
+    # Non-NaN values must exist and match (including sign bits for zeros)
     mask = ~torch.isnan(ref)
-    if mask.any():
-        torch.testing.assert_close(out[mask], ref[mask], atol=0, rtol=0)
+    assert mask.any(), "Test bug: expected some non-NaN reference values"
+    torch.testing.assert_close(out[mask], ref[mask], atol=0, rtol=0)
+    assert torch.equal(torch.signbit(out[mask]), torch.signbit(ref[mask])), (
+        f"Signed-zero mismatch in non-NaN values: "
+        f"out signs={torch.signbit(out[mask])}, ref signs={torch.signbit(ref[mask])}"
+    )
 
 
 @SignedZeroFixture
 def test_minimum_signed_zero_with_nan(dtype: torch.dtype) -> None:
     """Signed-zero fix must not regress NaN propagation."""
     nan = float("nan")
-    a = torch.tensor([nan, 0.0, -0.0, nan], dtype=dtype, device="cuda")
-    b = torch.tensor([-0.0, nan, nan, 0.0], dtype=dtype, device="cuda")
-    shape = (4,)
+    # Mix of NaN pairs and non-NaN signed-zero pairs so both code paths execute
+    a = torch.tensor([nan, -0.0, 0.0, 1.0, nan, 2.0], dtype=dtype, device="cuda")
+    b = torch.tensor([1.0, nan, -0.0, 0.0, 0.0, 3.0], dtype=dtype, device="cuda")
+    shape = (6,)
     op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.minimum(a, b)
     with torch.no_grad():
@@ -758,10 +764,14 @@ def test_minimum_signed_zero_with_nan(dtype: torch.dtype) -> None:
     assert torch.equal(torch.isnan(out), torch.isnan(ref)), (
         f"NaN positions differ: out={out}, ref={ref}"
     )
-    # Non-NaN values: sign bits must match too
+    # Non-NaN values must exist and match (including sign bits for zeros)
     mask = ~torch.isnan(ref)
-    if mask.any():
-        torch.testing.assert_close(out[mask], ref[mask], atol=0, rtol=0)
+    assert mask.any(), "Test bug: expected some non-NaN reference values"
+    torch.testing.assert_close(out[mask], ref[mask], atol=0, rtol=0)
+    assert torch.equal(torch.signbit(out[mask]), torch.signbit(ref[mask])), (
+        f"Signed-zero mismatch in non-NaN values: "
+        f"out signs={torch.signbit(out[mask])}, ref signs={torch.signbit(ref[mask])}"
+    )
 
 
 # ---------------------------------------------------------------------------
