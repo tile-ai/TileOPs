@@ -723,8 +723,9 @@ class MaximumKernel(BinaryKernel):
         # Signed-zero tie-break: when a == b, prefer the operand whose sign
         # is non-negative (+0 over -0). copysign(1, x) is +1 for +0 and -1
         # for -0, so a_sign >= b_sign selects the positive-signed operand.
-        a_sign = T.copysign(T.FloatImm("float32", 1.0), a_f32)
-        b_sign = T.copysign(T.FloatImm("float32", 1.0), b_f32)
+        one_f32 = T.cast(1.0, "float32")
+        a_sign = T.copysign(one_f32, a_f32)
+        b_sign = T.copysign(one_f32, b_f32)
         ordered_max = T.if_then_else(
             a > b, a, T.if_then_else(b > a, b,
                                      T.if_then_else(a_sign >= b_sign, a, b)))
@@ -750,8 +751,9 @@ class MinimumKernel(BinaryKernel):
         # Signed-zero tie-break: when a == b, prefer the operand whose sign
         # is negative (-0 over +0). copysign(1, x) is -1 for -0 and +1 for
         # +0, so a_sign <= b_sign selects the negative-signed operand.
-        a_sign = T.copysign(T.FloatImm("float32", 1.0), a_f32)
-        b_sign = T.copysign(T.FloatImm("float32", 1.0), b_f32)
+        one_f32 = T.cast(1.0, "float32")
+        a_sign = T.copysign(one_f32, a_f32)
+        b_sign = T.copysign(one_f32, b_f32)
         ordered_min = T.if_then_else(
             a < b, a, T.if_then_else(b < a, b,
                                      T.if_then_else(a_sign <= b_sign, a, b)))
