@@ -320,9 +320,10 @@ jobs:
             TILELANG_CACHE_DIR="${FORK_CACHE_ROOT}/tilelang/cache"
             TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
             TRITON_CACHE_DIR="${FORK_CACHE_ROOT}/triton/cache"
+            PIP_CACHE_DIR="${FORK_CACHE_ROOT}/pip/cache"
             VENV_PATH="${RUNTIME_ROOT}/venv"
             VENV_REUSED="false"
-            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}"
 
             # Seed the fork-only cache from trusted caches once so the first
             # fork PR run can still benefit from existing compiled artifacts.
@@ -331,9 +332,11 @@ jobs:
               if command -v rsync >/dev/null 2>&1; then
                 rsync -a --ignore-existing /home/ci-runner/.tilelang/cache/ "${TILELANG_CACHE_DIR}/" || true
                 rsync -a --ignore-existing /home/ci-runner/.triton/cache/ "${TRITON_CACHE_DIR}/" || true
+                rsync -a --ignore-existing /home/ci-runner/.cache/pip/ "${PIP_CACHE_DIR}/" || true
               else
                 cp -an /home/ci-runner/.tilelang/cache/. "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
                 cp -an /home/ci-runner/.triton/cache/. "${TRITON_CACHE_DIR}/" 2>/dev/null || true
+                cp -an /home/ci-runner/.cache/pip/. "${PIP_CACHE_DIR}/" 2>/dev/null || true
               fi
               touch "${FORK_CACHE_ROOT}/.seeded-from-trusted"
             fi
@@ -342,6 +345,7 @@ jobs:
             TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
             TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
             TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
+            PIP_CACHE_DIR=""
 
             mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
 
@@ -367,6 +371,7 @@ jobs:
             echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
             echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
             echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+            echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
             echo "VENV_PATH=${VENV_PATH}"
             echo "VENV_REUSED=${VENV_REUSED}"
           } >> "$GITHUB_ENV"
@@ -434,7 +439,11 @@ jobs:
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
           python -m pip install --upgrade pip setuptools wheel --no-user
-          PIP_NO_BUILD_ISOLATION=1 PIP_NO_CACHE_DIR=1 pip install -e '.[dev]'
+          if [[ "$IS_FORK" == "true" ]]; then
+            PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]'
+          else
+            PIP_NO_BUILD_ISOLATION=1 PIP_NO_CACHE_DIR=1 pip install -e '.[dev]'
+          fi
 
       - name: Run tests
         env:
