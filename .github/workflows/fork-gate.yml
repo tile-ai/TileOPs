@@ -1,0 +1,104 @@
+name: Fork Gate
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: fork-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fork-gate:
+    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate fork fast-path policy
+        id: evaluate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed_files < <(
+            gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename'
+          )
+
+          allow_fast_path="true"
+          reason="All changed files are in the fork fast-path allowlist."
+
+          for path in "${changed_files[@]}"; do
+            case "$path" in
+              *.md|.github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|tileops/ops/*.py|tests/ops/test_*.py)
+                ;;
+              .github/workflows/*|pyproject.toml|requirements*.txt|requirements*.in|setup.py|setup.cfg|Dockerfile*|scripts/bootstrap*|scripts/install*)
+                allow_fast_path="false"
+                reason="High-risk file changed: $path"
+                break
+                ;;
+              *)
+                allow_fast_path="false"
+                reason="Unsupported fast-path file changed: $path"
+                break
+                ;;
+            esac
+          done
+
+          echo "allow_fast_path=$allow_fast_path" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure gate labels exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh label list --repo "${{ github.repository }}" --search "safe-to-run-gpu" --json name --jq '.[].name' | grep -qx "safe-to-run-gpu"; then
+            gh label create safe-to-run-gpu --repo "${{ github.repository }}" --color 2A9D8F --description "Fork PR is in the automated GPU fast path"
+          fi
+
+          if ! gh label list --repo "${{ github.repository }}" --search "needs-gpu-review" --json name --jq '.[].name' | grep -qx "needs-gpu-review"; then
+            gh label create needs-gpu-review --repo "${{ github.repository }}" --color E76F51 --description "Fork PR requires review before GPU fast path"
+          fi
+
+      - name: Sync gate labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ALLOW_FAST_PATH: ${{ steps.evaluate.outputs.allow_fast_path }}
+          REASON: ${{ steps.evaluate.outputs.reason }}
+        run: |
+          set -euo pipefail
+
+          current_labels=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name')
+
+          add_label() {
+            local name="$1"
+            if ! echo "$current_labels" | grep -qx "$name"; then
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "$name"
+            fi
+          }
+
+          remove_label() {
+            local name="$1"
+            if echo "$current_labels" | grep -qx "$name"; then
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --remove-label "$name"
+            fi
+          }
+
+          if [[ "$ALLOW_FAST_PATH" == "true" ]]; then
+            add_label "safe-to-run-gpu"
+            remove_label "needs-gpu-review"
+          else
+            add_label "needs-gpu-review"
+            remove_label "safe-to-run-gpu"
+          fi
+
+          echo "$REASON"

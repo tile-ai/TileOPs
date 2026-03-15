@@ -14,7 +14,6 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Keep only the newest run for the same PR or branch ref.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
@@ -26,152 +25,99 @@ jobs:
     steps:
       - name: Check existing CI results for this SHA
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          if [[ "${{ github.event.action }}" != "ready_for_review" ]]; then
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" != "pull_request" || "$EVENT_ACTION" != "ready_for_review" ]]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
           CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" \
-            --jq '[.check_runs[] | select(.name == "pre-commit" or .name == "gpu-smoke") | .conclusion]')
+            --jq '[.check_runs[] | select(.name == "pre-commit" or .name == "gitleaks" or .name == "actionlint") | .conclusion]')
           ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
           COUNT=$(echo "$CHECKS" | jq 'length')
-          if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 2 ]]; then
-            echo "CI already passed for SHA $HEAD_SHA — skipping"
+          if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 3 ]]; then
+            echo "CI already passed for SHA $HEAD_SHA; skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-  detect-test-scope:
-    needs: ci-gate
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && needs.ci-gate.outputs.skip != 'true' }}
-    runs-on: ubuntu-latest
-    outputs:
-      skip_gpu_smoke: ${{ steps.scope.outputs.skip_gpu_smoke }}
-      scope: ${{ steps.scope.outputs.scope }}
-      pytest_targets: ${{ steps.scope.outputs.pytest_targets }}
-    steps:
-      - name: Checkout test files
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          sparse-checkout: |
-            tests/ops
-
-      - name: Determine pytest scope
-        id: scope
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          add_target() {
-            local target="$1"
-            if [[ -z "${seen_targets[$target]:-}" ]]; then
-              selected_targets+=("$target")
-              seen_targets["$target"]=1
-            fi
-          }
-
-          scope="full-smoke"
-          skip_gpu_smoke="false"
-          pytest_targets="tests"
-
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            mapfile -t changed_files < <(
-              gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --paginate \
-                --jq '.[].filename'
-            )
-
-            echo "Changed files (${#changed_files[@]}):"
-            printf ' - %s\n' "${changed_files[@]}"
-
-            scope="skip"
-            declare -A seen_targets=()
-            selected_targets=()
-
-            for path in "${changed_files[@]}"; do
-              case "$path" in
-                *.md|.github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|.github/workflows/auto-label.yml|.github/workflows/stale-issues.yml)
-                  ;;
-                tileops/ops/*.py)
-                  test_path="tests/ops/test_$(basename "${path%.py}").py"
-                  if [[ -f "$test_path" ]]; then
-                    add_target "$test_path"
-                    if [[ "$scope" == "skip" ]]; then
-                      scope="targeted"
-                    fi
-                  else
-                    echo "No direct smoke test mapping for $path; falling back to full smoke."
-                    scope="full-smoke"
-                    break
-                  fi
-                  ;;
-                tests/ops/test_*.py)
-                  add_target "$path"
-                  if [[ "$scope" == "skip" ]]; then
-                    scope="targeted"
-                  fi
-                  ;;
-                *)
-                  echo "Shared or unsupported path $path; falling back to full smoke."
-                  scope="full-smoke"
-                  break
-                  ;;
-              esac
-            done
-
-            if [[ "$scope" == "skip" ]]; then
-              skip_gpu_smoke="true"
-              pytest_targets=""
-            elif [[ "$scope" == "targeted" ]]; then
-              if [[ "${#selected_targets[@]}" -eq 0 ]]; then
-                echo "No mapped tests were collected; falling back to full smoke."
-                scope="full-smoke"
-                pytest_targets="tests"
-              else
-                pytest_targets="${selected_targets[*]}"
-              fi
-            fi
-          fi
-
-          echo "Resolved CI scope: $scope"
-          if [[ "$skip_gpu_smoke" == "true" ]]; then
-            echo "GPU smoke job will be skipped."
-          else
-            echo "Resolved pytest targets: ${pytest_targets:-<none>}"
-          fi
-
-          echo "skip_gpu_smoke=$skip_gpu_smoke" >> "$GITHUB_OUTPUT"
-          echo "scope=$scope" >> "$GITHUB_OUTPUT"
-          echo "pytest_targets=$pytest_targets" >> "$GITHUB_OUTPUT"
 
   pre-commit:
     needs: ci-gate
-    if: ${{ github.repository == 'tile-ai/TileOPs' && github.event_name != 'schedule' && needs.ci-gate.outputs.skip != 'true' }}
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # Shallow clone to reduce network flakiness on self-hosted runners (see #351)
           fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"  # At least 3.9 to avoid pre-commit-hooks reporting Python version too low
+          python-version: "3.10"
 
       - name: Run pre-commit
-        # Official pre-commit Action, automatically:
-        # 1) Install pre-commit
-        # 2) Generate virtual environment according to .pre-commit-config.yaml configuration
-        # 3) Execute pre-commit run
         uses: pre-commit/action@v3.0.1
         with:
-          # Run on all files once, and print diff on failure
           extra_args: --all-files --show-diff-on-failure
+
+  gitleaks:
+    needs: ci-gate
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.0"
+        run: |
+          set -euo pipefail
+
+          install_dir="${RUNNER_TEMP}/bin"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+
+          mkdir -p "$install_dir"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" \
+            -o "${RUNNER_TEMP}/${archive}"
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "$install_dir" gitleaks
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Run gitleaks
+        run: gitleaks dir . --redact --no-banner
+
+  actionlint:
+    needs: ci-gate
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.11"
+        run: |
+          set -euo pipefail
+
+          install_dir="${RUNNER_TEMP}/bin"
+          mkdir -p "$install_dir"
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+            | bash -s -- "$ACTIONLINT_VERSION" "$install_dir"
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Run actionlint
+        run: actionlint -color
