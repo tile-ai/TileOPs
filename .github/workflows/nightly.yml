@@ -21,8 +21,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Use local bare mirror on self-hosted runner to reduce checkout latency
-          reference: /home/ci-runner/repo-mirror
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -154,8 +152,10 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
-          export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
+          current_dir="$(pwd)"
+          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           python - <<'PY'
           import os
@@ -180,10 +180,10 @@ jobs:
               TOTAL=0; FAILURES=0; ERRORS=0; SKIPPED=0
               while IFS= read -r _line; do
                 if [[ "$_line" == *'<testsuite '* && "$_line" != *'<testsuites'* ]]; then
-                  [[ "$_line" =~ [[:space:]]tests=\"([0-9]+)\" ]]    && TOTAL=$((TOTAL + ${BASH_REMATCH[1]}))
-                  [[ "$_line" =~ [[:space:]]failures=\"([0-9]+)\" ]] && FAILURES=$((FAILURES + ${BASH_REMATCH[1]}))
-                  [[ "$_line" =~ [[:space:]]errors=\"([0-9]+)\" ]]   && ERRORS=$((ERRORS + ${BASH_REMATCH[1]}))
-                  [[ "$_line" =~ [[:space:]]skipped=\"([0-9]+)\" ]]  && SKIPPED=$((SKIPPED + ${BASH_REMATCH[1]}))
+                  [[ "$_line" =~ [[:space:]]tests=\"([0-9]+)\" ]]    && TOTAL=$((TOTAL + BASH_REMATCH[1]))
+                  [[ "$_line" =~ [[:space:]]failures=\"([0-9]+)\" ]] && FAILURES=$((FAILURES + BASH_REMATCH[1]))
+                  [[ "$_line" =~ [[:space:]]errors=\"([0-9]+)\" ]]   && ERRORS=$((ERRORS + BASH_REMATCH[1]))
+                  [[ "$_line" =~ [[:space:]]skipped=\"([0-9]+)\" ]]  && SKIPPED=$((SKIPPED + BASH_REMATCH[1]))
                 fi
               done < bench_results.xml
               PASSED=$((TOTAL - FAILURES - ERRORS - SKIPPED))
@@ -236,8 +236,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Use local bare mirror on self-hosted runner to reduce checkout latency
-          reference: /home/ci-runner/repo-mirror
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -264,8 +262,10 @@ jobs:
         run: |
           set -euo pipefail
           VENV_DIR="tileops_op_test_venv"
+          # shellcheck source=/dev/null
           source "${{ runner.tool_cache }}/${VENV_DIR}/bin/activate"
-          export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
+          current_dir="$(pwd)"
+          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           set -o pipefail
           python -m pytest tests/ -v --tb=short --junit-xml=test_results.xml | tee tileops_op_test.log
@@ -301,9 +301,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          # Use local bare mirror on self-hosted runner to reduce checkout latency
-          reference: /home/ci-runner/repo-mirror
 
       - name: Set up Python
         uses: actions/setup-python@v5

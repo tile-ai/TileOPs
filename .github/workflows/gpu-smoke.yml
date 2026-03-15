@@ -1,0 +1,494 @@
+name: GPU Smoke
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-prereq:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Wait for CI prerequisites
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action || '' }}
+          IS_DRAFT: ${{ github.event.pull_request.draft || false }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$IS_DRAFT" == "true" ]]; then
+            echo "Draft PR; skipping GPU smoke."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          required_checks=(validate-commits pre-commit gitleaks actionlint)
+          deadline=$((SECONDS + 900))
+
+          while true; do
+            checks_json=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs")
+            latest_checks=$(echo "$checks_json" | jq '
+              .check_runs
+              | group_by(.name)
+              | map(max_by(.id))
+            ')
+
+            pending="false"
+            failed=""
+
+            for check_name in "${required_checks[@]}"; do
+              status=$(echo "$latest_checks" | jq -r --arg name "$check_name" '
+                map(select(.name == $name)) | first | .status // ""
+              ')
+              conclusion=$(echo "$latest_checks" | jq -r --arg name "$check_name" '
+                map(select(.name == $name)) | first | .conclusion // ""
+              ')
+
+              if [[ -z "$status" || "$status" != "completed" ]]; then
+                pending="true"
+                continue
+              fi
+
+              if [[ "$conclusion" == "skipped" ]]; then
+                pending="true"
+                continue
+              fi
+
+              if [[ "$conclusion" != "success" ]]; then
+                failed="$check_name"
+                break
+              fi
+            done
+
+            title_status=$(echo "$latest_checks" | jq -r '
+              map(select(.name == "validate-pr-title")) | first | .status // ""
+            ')
+            title_conclusion=$(echo "$latest_checks" | jq -r '
+              map(select(.name == "validate-pr-title")) | first | .conclusion // ""
+            ')
+            if [[ -n "$title_status" && "$title_status" == "completed" && "$title_conclusion" != "success" && "$title_conclusion" != "skipped" ]]; then
+              failed="validate-pr-title"
+            elif [[ -n "$title_status" && "$title_status" != "completed" ]]; then
+              pending="true"
+            fi
+
+            if [[ -n "$failed" ]]; then
+              echo "CI prerequisite failed: $failed"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [[ "$pending" == "false" ]]; then
+              break
+            fi
+
+            if (( SECONDS >= deadline )); then
+              echo "Timed out waiting for CI prerequisites."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          if [[ "$EVENT_ACTION" == "ready_for_review" ]]; then
+            CHECKS=$(echo "$latest_checks" | jq '
+              [
+                .[]
+                | select(.name == "gpu-smoke")
+                | .conclusion
+              ]
+            ')
+            ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
+            COUNT=$(echo "$CHECKS" | jq 'length')
+            if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 1 ]]; then
+              echo "GPU smoke already passed for SHA $HEAD_SHA; skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+  security-policy:
+    needs: ci-prereq
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-prereq.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      is_fork: ${{ steps.policy.outputs.is_fork }}
+      allow_fast_path: ${{ steps.policy.outputs.allow_fast_path }}
+      skip_gpu_smoke: ${{ steps.policy.outputs.skip_gpu_smoke }}
+      scope: ${{ steps.policy.outputs.scope }}
+      pytest_targets: ${{ steps.policy.outputs.pytest_targets }}
+      reason: ${{ steps.policy.outputs.reason }}
+    steps:
+      - name: Checkout test files
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: |
+            tests/ops
+
+      - name: Determine GPU policy and pytest scope
+        id: policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          add_target() {
+            local target="$1"
+            if [[ -z "${seen_targets[$target]:-}" ]]; then
+              selected_targets+=("$target")
+              seen_targets["$target"]=1
+            fi
+          }
+
+          is_fork="false"
+          allow_fast_path="true"
+          skip_gpu_smoke="false"
+          scope="full-smoke"
+          pytest_targets="tests"
+          reason="GPU smoke will run."
+
+          if [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPO" != "$BASE_REPO" ]]; then
+            is_fork="true"
+          fi
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            mapfile -t changed_files < <(
+              gh api "repos/${BASE_REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename'
+            )
+
+            echo "Changed files (${#changed_files[@]}):"
+            printf ' - %s\n' "${changed_files[@]}"
+
+            scope="skip"
+            declare -A seen_targets=()
+            selected_targets=()
+
+            for path in "${changed_files[@]}"; do
+              if [[ "$is_fork" == "true" ]]; then
+                case "$path" in
+                  .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|tileops/ops/*.py|tests/ops/test_*.py|*.md)
+                    ;;
+                  .github/workflows/*|pyproject.toml|requirements*.txt|requirements*.in|setup.py|setup.cfg|Dockerfile*|scripts/bootstrap*|scripts/install*)
+                    allow_fast_path="false"
+                    reason="Fork PR changed a high-risk file: $path"
+                    ;;
+                  *)
+                    allow_fast_path="false"
+                    reason="Fork PR changed a file outside the future fast-path policy: $path"
+                    ;;
+                esac
+              fi
+
+              case "$path" in
+                .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|.github/workflows/auto-label.yml|.github/workflows/stale-issues.yml|*.md)
+                  ;;
+                tileops/ops/*.py)
+                  test_path="tests/ops/test_$(basename "${path%.py}").py"
+                  if [[ -f "$test_path" ]]; then
+                    add_target "$test_path"
+                    if [[ "$scope" == "skip" ]]; then
+                      scope="targeted"
+                    fi
+                  else
+                    scope="full-smoke"
+                    reason="No direct smoke test mapping for $path; falling back to full smoke."
+                    break
+                  fi
+                  ;;
+                tests/ops/test_*.py)
+                  add_target "$path"
+                  if [[ "$scope" == "skip" ]]; then
+                    scope="targeted"
+                  fi
+                  ;;
+                *)
+                  scope="full-smoke"
+                  reason="Shared or unsupported path $path; falling back to full smoke."
+                  break
+                  ;;
+              esac
+            done
+
+            if [[ "$scope" == "skip" ]]; then
+              if [[ "$is_fork" == "true" ]]; then
+                scope="full-smoke"
+                pytest_targets="tests"
+                if [[ "$allow_fast_path" == "true" ]]; then
+                  reason="Fork PR default-allow policy: run full GPU smoke."
+                else
+                  reason="${reason}; current policy still runs GPU smoke."
+                fi
+              else
+                skip_gpu_smoke="true"
+                pytest_targets=""
+                reason="Docs-only or metadata-only change; GPU smoke skipped."
+              fi
+            elif [[ "$scope" == "targeted" ]]; then
+              if [[ "${#selected_targets[@]}" -eq 0 ]]; then
+                scope="full-smoke"
+                pytest_targets="tests"
+                reason="No mapped tests were collected; falling back to full smoke."
+              else
+                pytest_targets="${selected_targets[*]}"
+                if [[ "$is_fork" == "true" && "$allow_fast_path" != "true" ]]; then
+                  reason="${reason}; current policy still runs targeted GPU smoke."
+                else
+                  reason="Running targeted GPU smoke tests."
+                fi
+              fi
+            fi
+          fi
+
+          {
+            echo "is_fork=$is_fork"
+            echo "allow_fast_path=$allow_fast_path"
+            echo "skip_gpu_smoke=$skip_gpu_smoke"
+            echo "scope=$scope"
+            echo "pytest_targets=$pytest_targets"
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
+
+  gpu-smoke:
+    needs: [ci-prereq, security-policy]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-prereq.outputs.skip != 'true' && needs.security-policy.outputs.skip_gpu_smoke != 'true' }}
+    runs-on: [self-hosted, tile-ops, venv]
+    steps:
+      - name: Checkout code for fork PR
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout code for trusted branch
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve runtime state
+        env:
+          IS_FORK: ${{ needs.security-policy.outputs.is_fork }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$IS_FORK" == "true" ]]; then
+            RUNTIME_ROOT="${RUNNER_TEMP}/gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            # Keep fork PRs isolated from trusted caches, but let them share
+            # a dedicated fork-only compile cache to avoid repeated cold JIT builds.
+            FORK_CACHE_ROOT="/home/ci-runner/.fork-pr-cache"
+            TILELANG_CACHE_DIR="${FORK_CACHE_ROOT}/tilelang/cache"
+            TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
+            TRITON_CACHE_DIR="${FORK_CACHE_ROOT}/triton/cache"
+            PIP_CACHE_DIR="${FORK_CACHE_ROOT}/pip/cache"
+            VENV_PATH="${RUNTIME_ROOT}/venv"
+            VENV_REUSED="false"
+            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}"
+
+            # Seed the fork-only cache from trusted caches once so the first
+            # fork PR run can still benefit from existing compiled artifacts.
+            if [[ ! -f "${FORK_CACHE_ROOT}/.seeded-from-trusted" ]]; then
+              mkdir -p "${FORK_CACHE_ROOT}"
+              if command -v rsync >/dev/null 2>&1; then
+                rsync -a --ignore-existing /home/ci-runner/.tilelang/cache/ "${TILELANG_CACHE_DIR}/" || true
+                rsync -a --ignore-existing /home/ci-runner/.triton/cache/ "${TRITON_CACHE_DIR}/" || true
+                rsync -a --ignore-existing /home/ci-runner/.cache/pip/ "${PIP_CACHE_DIR}/" || true
+              else
+                cp -an /home/ci-runner/.tilelang/cache/. "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
+                cp -an /home/ci-runner/.triton/cache/. "${TRITON_CACHE_DIR}/" 2>/dev/null || true
+                cp -an /home/ci-runner/.cache/pip/. "${PIP_CACHE_DIR}/" 2>/dev/null || true
+              fi
+              touch "${FORK_CACHE_ROOT}/.seeded-from-trusted"
+            fi
+          else
+            RUNTIME_ROOT="/home/ci-runner"
+            TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
+            TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
+            TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
+            PIP_CACHE_DIR=""
+
+            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+
+            VENV_PREFIX="tileops_ci_venv"
+            HASH_INPUT="$(
+              {
+                echo "python=3.11"
+                echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
+                sha256sum pyproject.toml
+              } | sha256sum | cut -c1-16
+            )"
+            VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
+            VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+            if [[ -x "${VENV_PATH}/bin/python" ]]; then
+              VENV_REUSED="true"
+            else
+              VENV_REUSED="false"
+            fi
+          fi
+
+          {
+            echo "RUNTIME_ROOT=${RUNTIME_ROOT}"
+            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
+            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
+            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+            echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+            echo "VENV_PATH=${VENV_PATH}"
+            echo "VENV_REUSED=${VENV_REUSED}"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate GPU frequency
+        run: |
+          set -euo pipefail
+          TARGET_CLOCK_MHZ=1830
+          RETRIES=5
+          SLEEP_SECONDS=2
+
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error::nvidia-smi is not available on this runner."
+            exit 1
+          fi
+
+          echo "Detected GPUs:"
+          nvidia-smi -L
+
+          attempt=1
+          while [ "$attempt" -le "$RETRIES" ]; do
+            echo "Validation attempt ${attempt}/${RETRIES}"
+            mismatch=0
+            while IFS=',' read -r gpu_index gpu_name gpu_clock; do
+              gpu_index="$(echo "$gpu_index" | xargs)"
+              gpu_name="$(echo "$gpu_name" | xargs)"
+              gpu_clock="$(echo "$gpu_clock" | xargs)"
+              echo "GPU ${gpu_index} (${gpu_name}) clock: ${gpu_clock} MHz"
+              if [[ "$gpu_clock" != "$TARGET_CLOCK_MHZ" ]]; then
+                mismatch=1
+              fi
+            done < <(nvidia-smi --query-gpu=index,name,clocks.current.graphics --format=csv,noheader,nounits)
+
+            if [[ "$mismatch" -eq 0 ]]; then
+              echo "All GPUs locked at ${TARGET_CLOCK_MHZ} MHz."
+              break
+            fi
+
+            if [[ "$attempt" -eq "$RETRIES" ]]; then
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz on all GPUs."
+              exit 1
+            fi
+
+            sleep "$SLEEP_SECONDS"
+            attempt=$((attempt + 1))
+          done
+
+      - name: Ensure venv and install dependencies
+        env:
+          IS_FORK: ${{ needs.security-policy.outputs.is_fork }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$VENV_REUSED" == "true" ]]; then
+            echo "Using cached venv at ${VENV_PATH}"
+            exit 0
+          fi
+
+          if [[ "$IS_FORK" == "true" ]]; then
+            rm -rf "${VENV_PATH}"
+          fi
+
+          echo "Creating fresh venv at ${VENV_PATH}"
+          python -m venv "${VENV_PATH}"
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          python -m pip install --upgrade pip setuptools wheel --no-user
+          if [[ "$IS_FORK" == "true" ]]; then
+            PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]'
+          else
+            PIP_NO_BUILD_ISOLATION=1 PIP_NO_CACHE_DIR=1 pip install -e '.[dev]'
+          fi
+
+      - name: Run tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TEST_SCOPE: ${{ needs.security-policy.outputs.scope }}
+          PYTEST_TARGETS: ${{ needs.security-policy.outputs.pytest_targets }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          current_dir="$(pwd)"
+          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
+          echo "PYTHONPATH=$PYTHONPATH"
+          python - <<'PY'
+          import os
+
+          print("Runtime cache env:")
+          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
+              print(f"{key}={os.environ.get(key)}")
+          PY
+
+          TEST_MARK_EXPR="smoke or full"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            TEST_MARK_EXPR="smoke"
+          fi
+
+          echo "Resolved test scope: ${TEST_SCOPE}"
+          echo "Resolved pytest targets: ${PYTEST_TARGETS}"
+          read -r -a TARGETS <<< "${PYTEST_TARGETS}"
+          echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
+          python -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" | tee gpu_smoke.log
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu_smoke.log
+          path: gpu_smoke.log
+          retention-days: 7
+
+      - name: Cleanup isolated fork state
+        if: ${{ always() && needs.security-policy.outputs.is_fork == 'true' }}
+        run: rm -rf "${RUNTIME_ROOT}"
