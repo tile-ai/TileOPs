@@ -1,4 +1,4 @@
-"""Benchmarks for representative unary elementwise ops added in issue #437.
+"""Benchmarks for representative unary elementwise ops.
 
 Profiles TileOPs vs PyTorch baselines for each new elementwise category using
 small, medium, and large 1D shapes with the default op configuration.

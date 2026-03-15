@@ -41,7 +41,8 @@ def _gated_deltanet_decode_tl(
     dtype: str = "float32",
 ):
     accum_dtype = "float32"
-    assert dim_k % k_tile == 0, f"dim_k={dim_k} must be divisible by k_tile={k_tile}"
+    if dim_k % k_tile != 0:
+        raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -325,7 +326,8 @@ def _gated_deltanet_decode_fp32_tl(
     """
     dtype = "float32"
     accum_dtype = "float32"
-    assert dim_k % k_tile == 0, f"dim_k={dim_k} must be divisible by k_tile={k_tile}"
+    if dim_k % k_tile != 0:
+        raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -424,7 +426,8 @@ class GatedDeltaNetDecodeFP32Kernel(Kernel):
         tune: bool = False,
     ):
         super().__init__()
-        assert dtype == "float32", f"{self.__class__.__name__} only supports float32"
+        if dtype != "float32":
+            raise ValueError(f"{self.__class__.__name__} only supports float32")
         self.batch = batch
         self.head = head
         self.dim_k = dim_k

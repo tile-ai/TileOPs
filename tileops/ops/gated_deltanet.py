@@ -52,9 +52,10 @@ class GatedDeltaNetFwdOp(Op):
         self.chunk_size = chunk_size
         self.dtype = dtype
 
-        assert seq_len % chunk_size == 0, (
-            f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
-        )
+        if seq_len % chunk_size != 0:
+            raise ValueError(
+                f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
+            )
 
         self.dispatch_kernel(kernel_map)
 
@@ -134,7 +135,8 @@ class GatedDeltaNetBwdOp(Op):
         self.chunk_size = chunk_size
         self.dtype = dtype
 
-        assert seq_len % chunk_size == 0, f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
+        if seq_len % chunk_size != 0:
+            raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
 
         self.dispatch_kernel(kernel_map)
 

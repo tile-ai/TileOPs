@@ -344,9 +344,10 @@ class UnaryKernel(Kernel):
         self.dtype = dtype
         self.output_dtype = self.OUTPUT_DTYPE or dtype
         self.strategy = strategy or self.DEFAULT_STRATEGY
-        assert self.strategy in self.STRATEGIES, (
-            f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
-        )
+        if self.strategy not in self.STRATEGIES:
+            raise ValueError(
+                f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
+            )
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
@@ -437,9 +438,10 @@ class BinaryKernel(Kernel):
         self.a_numel = a_numel
         self.b_numel = b_numel
         self.strategy = strategy or self.DEFAULT_STRATEGY
-        assert self.strategy in self.STRATEGIES, (
-            f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
-        )
+        if self.strategy not in self.STRATEGIES:
+            raise ValueError(
+                f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
+            )
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
@@ -713,8 +715,8 @@ class MaximumKernel(BinaryKernel):
     @staticmethod
     def op_func(a, b):
         # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
-        # otherwise return the larger value. Signed-zero tie semantics are
-        # tracked separately in issue #469.
+        # otherwise return the larger value.
+        # Signed-zero tie semantics are tracked separately.
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         ordered_max = T.if_then_else(a > b, a, b)
@@ -733,8 +735,8 @@ class MinimumKernel(BinaryKernel):
     @staticmethod
     def op_func(a, b):
         # NaN propagation: if a is NaN return a (NaN), if b is NaN return b (NaN),
-        # otherwise return the smaller value. Signed-zero tie semantics are
-        # tracked separately in issue #469.
+        # otherwise return the smaller value.
+        # Signed-zero tie semantics are tracked separately.
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         ordered_min = T.if_then_else(a < b, a, b)

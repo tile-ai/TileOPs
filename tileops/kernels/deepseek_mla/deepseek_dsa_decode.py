@@ -65,11 +65,12 @@ def _sparse_mla_kernel(batch: int,
 
 
     """
-    assert dim == tilelang.math.next_power_of_2(
-        dim), f"haven't check padding correctness yet, dim={dim}"
-    assert tail_dim == tilelang.math.next_power_of_2(
-        tail_dim), f"haven't check padding correctness yet, dim={tail_dim}"
-    assert is_causal, 'non-causal is not supported'
+    if dim != tilelang.math.next_power_of_2(dim):
+        raise ValueError(f"haven't check padding correctness yet, dim={dim}")
+    if tail_dim != tilelang.math.next_power_of_2(tail_dim):
+        raise ValueError(f"haven't check padding correctness yet, dim={tail_dim}")
+    if not is_causal:
+        raise ValueError('non-causal is not supported')
     sm_scale = ((1.0 / (dim + tail_dim))**0.5 if sm_scale is None else sm_scale) * LOG2E
 
     head_kv = heads // kv_group
@@ -106,24 +107,27 @@ def _sparse_mla_kernel(batch: int,
 
         heads = head_kv
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
-        if padded_h != heads:
-            assert kv_group == 1, (
+        if padded_h != heads and kv_group != 1:
+            raise ValueError(
                 'here we solve the heads padding automatically, '
                 'other wise you should handle q copy and output copy '
                 'with your mask (when kv_group == 1, use g_i * padded_h:(g_i+1) * '
                 'padded_h would be handled automatically)')
 
-        assert topk % block_i == 0, (
-            'otherwise will load some index=0 thus causing wrong kv to be loaded')
+        if topk % block_i != 0:
+            raise ValueError(
+                'otherwise will load some index=0 thus causing wrong kv to be loaded')
         i_block = block_i
         n_i = tilelang.cdiv(topk, block_i)
-        assert n_i % 2 == 0, 'n_i should be a multiple of 2'
+        if n_i % 2 != 0:
+            raise ValueError('n_i should be a multiple of 2')
         d = dim
         d_tail = tail_dim
         stride_kv = kv_stride
 
         if head_kv > 64:
-            assert head_kv % 64 == 0, 'head_kv should be a multiple of 64'
+            if head_kv % 64 != 0:
+                raise ValueError('head_kv should be a multiple of 64')
             replicate_h = head_kv // 64
         else:
             replicate_h = 1

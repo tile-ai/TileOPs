@@ -1,4 +1,4 @@
-"""Tests for reduction __init__.py files (issue #432).
+"""Tests for reduction __init__.py files.
 
 Validates that:
 - tileops/kernels/reduction/__init__.py has active imports for implemented kernels
