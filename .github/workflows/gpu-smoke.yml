@@ -117,7 +117,7 @@ jobs:
             for path in "${changed_files[@]}"; do
               if [[ "$is_fork" == "true" ]]; then
                 case "$path" in
-                  *.md|.github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|tileops/ops/*.py|tests/ops/test_*.py)
+                  .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|tileops/ops/*.py|tests/ops/test_*.py|*.md)
                     ;;
                   .github/workflows/*|pyproject.toml|requirements*.txt|requirements*.in|setup.py|setup.cfg|Dockerfile*|scripts/bootstrap*|scripts/install*)
                     allow_fast_path="false"
@@ -139,7 +139,7 @@ jobs:
               fi
 
               case "$path" in
-                *.md|.github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|.github/workflows/auto-label.yml|.github/workflows/stale-issues.yml)
+                .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|.github/workflows/auto-label.yml|.github/workflows/stale-issues.yml|*.md)
                   ;;
                 tileops/ops/*.py)
                   test_path="tests/ops/test_$(basename "${path%.py}").py"
@@ -186,12 +186,14 @@ jobs:
             fi
           fi
 
-          echo "is_fork=$is_fork" >> "$GITHUB_OUTPUT"
-          echo "allow_fast_path=$allow_fast_path" >> "$GITHUB_OUTPUT"
-          echo "skip_gpu_smoke=$skip_gpu_smoke" >> "$GITHUB_OUTPUT"
-          echo "scope=$scope" >> "$GITHUB_OUTPUT"
-          echo "pytest_targets=$pytest_targets" >> "$GITHUB_OUTPUT"
-          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          {
+            echo "is_fork=$is_fork"
+            echo "allow_fast_path=$allow_fast_path"
+            echo "skip_gpu_smoke=$skip_gpu_smoke"
+            echo "scope=$scope"
+            echo "pytest_targets=$pytest_targets"
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
 
   gitleaks:
     needs: ci-gate
@@ -396,7 +398,8 @@ jobs:
           set -euo pipefail
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
-          export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
+          current_dir="$(pwd)"
+          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           python - <<'PY'
           import os

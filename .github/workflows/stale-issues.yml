@@ -29,6 +29,7 @@ jobs:
 
           while :; do
             if [ "$CURSOR" = "null" ]; then
+              # shellcheck disable=SC2016
               PAGE=$(gh api graphql -f owner="$OWNER" -f name="$REPO" -f query='
                 query($owner: String!, $name: String!) {
                   repository(owner: $owner, name: $name) {
@@ -44,6 +45,7 @@ jobs:
                   }
                 }')
             else
+              # shellcheck disable=SC2016
               PAGE=$(gh api graphql -f owner="$OWNER" -f name="$REPO" -f cursor="$CURSOR" -f query='
                 query($owner: String!, $name: String!, $cursor: String!) {
                   repository(owner: $owner, name: $name) {
