@@ -28,9 +28,9 @@ def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
 
         @T.prim_func
         def _gemv_main(
-                a: T.Buffer((k,), dtype),
-                b: T.Buffer((n, k), dtype),
-                c: T.Buffer((n,), dtype),
+                a: T.Tensor((k,), dtype),
+                b: T.Tensor((n, k), dtype),
+                c: T.Tensor((n,), dtype),
         ):
             # threads=(reduce_threads, block_n): tk=threadIdx.x is the fast-varying
             # dimension so consecutive warp threads access consecutive columns of B
