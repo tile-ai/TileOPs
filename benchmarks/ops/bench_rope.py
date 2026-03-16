@@ -42,20 +42,25 @@ class RopeBenchmark(BenchmarkBase):
         return (2 * t.n_total + cos_sin_elems) * elem
 
 
-def _rope_neox_reference(x: torch.Tensor, base: float = 10000.0) -> torch.Tensor:
-    """PyTorch reference for neox RoPE."""
-    seq_len, head_dim = x.shape
+def _precompute_rope_neox_cos_sin(
+    seq_len: int, head_dim: int, dtype: torch.dtype, base: float = 10000.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pre-compute cos/sin tables (matches RopeNeoxOp caching behavior)."""
     half = head_dim // 2
-    freqs = 1.0 / (base ** (torch.arange(0, half, device=x.device, dtype=torch.float32) / half))
-    t = torch.arange(seq_len, device=x.device, dtype=torch.float32)
+    freqs = 1.0 / (base ** (torch.arange(0, half, device="cuda", dtype=torch.float32) / half))
+    t = torch.arange(seq_len, device="cuda", dtype=torch.float32)
     angles = torch.outer(t, freqs)
-    cos = torch.cos(angles).to(x.dtype)
-    sin = torch.sin(angles).to(x.dtype)
+    cos_full = torch.cat([torch.cos(angles), torch.cos(angles)], dim=-1).to(dtype)
+    sin_full = torch.cat([torch.sin(angles), torch.sin(angles)], dim=-1).to(dtype)
+    return cos_full, sin_full
+
+
+def _rope_neox_apply(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Apply neox RoPE rotation with pre-computed cos/sin."""
+    half = x.shape[-1] // 2
     x1, x2 = x[..., :half], x[..., half:]
     rotated = torch.cat((-x2, x1), dim=-1)
-    cos_full = torch.cat([cos, cos], dim=-1)
-    sin_full = torch.cat([sin, sin], dim=-1)
-    return x * cos_full + rotated * sin_full
+    return x * cos + rotated * sin
 
 
 def _rope_params():
@@ -81,8 +86,10 @@ def test_rope_bench(seq_len: int, head_dim: int, dtype: torch.dtype) -> None:
     result = bm.profile(op, x)
     BenchmarkReport.record("rope_neox", locals(), result, tag="tileops")
 
+    cos, sin = _precompute_rope_neox_cos_sin(seq_len, head_dim, dtype)
+
     def baseline_fn(x):
-        return _rope_neox_reference(x)
+        return _rope_neox_apply(x, cos, sin)
 
     result_bl = bm.profile(baseline_fn, x)
     BenchmarkReport.record("rope_neox", locals(), result_bl, tag="baseline")
