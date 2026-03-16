@@ -4,12 +4,12 @@ Triton baseline is adapted from SGLang's moe_align_block_size implementation:
   sglang/sgl-kernel/benchmark/bench_moe_align_block_size.py
 
 Usage:
-    conda run -n tileops python -m pytest benchmarks/ops/bench_permute_align.py -vvs
-    conda run -n tileops python benchmarks/ops/bench_permute_align.py
+    conda run -n tileops python -m pytest benchmarks/ops/bench_moe_permute_align.py -vvs
+    conda run -n tileops python benchmarks/ops/bench_moe_permute_align.py
 """
 
 import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import pytest
 import torch
@@ -17,8 +17,36 @@ import triton
 import triton.language as tl
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_moe_permute_align import MoePermuteAlignFixture, MoePermuteAlignTest
+from tests.ops.test_moe_permute_align import MoePermuteAlignTest
+from tests.test_base import FixtureBase
 from tileops.ops.moe import MoePermuteAlignOp
+
+# ---------------------------------------------------------------------------
+# CUPTI warmup fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", autouse=True)
+def warmup_cupti():
+    """Pre-initialize the CUPTI profiler once per session.
+
+    The first torch.profiler.profile() call with CUDA activity tracking
+    incurs a one-time initialization cost.  If this happens inside do_bench's
+    estimation phase, estimate_ms is inflated and n_repeat is computed as 1,
+    causing the measured latency to include initialization overhead.
+    """
+    if not torch.cuda.is_available():
+        return
+    dummy = torch.empty(1, device="cuda")
+    schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)
+    with torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CUDA],
+        schedule=schedule,
+    ) as prof:
+        for _ in range(2):
+            dummy.zero_()
+            prof.step()
+    torch.cuda.synchronize()
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +158,34 @@ def _triton_permute_align(
 
 
 # ---------------------------------------------------------------------------
+# Benchmark fixture (production-scale configs)
+# ---------------------------------------------------------------------------
+
+
+class MoePermuteAlignBenchFixture(FixtureBase):
+    """Production-scale configs for throughput benchmarking.
+
+    Columns: total_tokens, top_k, num_experts, block_size
+    """
+    PARAMS = [
+        ("total_tokens, top_k, num_experts, block_size", [
+            # ── Mixtral-8x7B style: 8 experts, top_k=2 ──────────────────────
+            (512,  2,   8,   16),
+            (2048, 2,   8,   16),
+            (4096, 2,   8,   16),
+            # ── DeepSeek-MoE style: 64 experts, top_k=6 ─────────────────────
+            (512,  6,  64,   64),
+            (2048, 6,  64,   64),
+            (4096, 6,  64,  128),
+            (8192, 6,  64,  128),
+            # ── Large MoE: 256 experts, top_k=6 ─────────────────────────────
+            (2048, 6, 256,  128),
+            (8192, 6, 256,  128),
+        ]),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Benchmark class
 # ---------------------------------------------------------------------------
 
@@ -149,65 +205,49 @@ class MoePermuteAlignBenchmark(BenchmarkBase):
 
 
 # ---------------------------------------------------------------------------
-# Triton callable wrapper (allocates output tensors fresh each call)
+# Benchmark test
 # ---------------------------------------------------------------------------
 
 
-class _TritonBaseline:
-    """Wraps the 4-stage Triton baseline so it can be profiled like an op."""
-
-    def __init__(self, num_experts: int, block_size: int, numel: int):
-        self.num_experts = num_experts
-        self.block_size = block_size
-        max_padded = numel + (num_experts + 1) * (block_size - 1)
-        self.max_padded = max_padded
-        self.max_num_blocks = math.ceil(max_padded / block_size)
-        self.numel = numel
-
-    def __call__(self, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        dev = topk_ids.device
-        sorted_ids = torch.empty(self.max_padded, dtype=torch.int32, device=dev)
-        sorted_ids.fill_(self.numel)
-        expert_ids = torch.empty(self.max_num_blocks, dtype=torch.int32, device=dev)
-        num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
-        _triton_permute_align(
-            topk_ids, self.num_experts, self.block_size,
-            sorted_ids, expert_ids, num_post_pad,
-        )
-        return sorted_ids, expert_ids, num_post_pad
-
-
-# ---------------------------------------------------------------------------
-# Benchmark tests
-# ---------------------------------------------------------------------------
-
-
-@MoePermuteAlignFixture
+@MoePermuteAlignBenchFixture
 def test_permute_align_bench(
     total_tokens: int, top_k: int, num_experts: int, block_size: int
 ) -> None:
+    numel = total_tokens * top_k
     test = MoePermuteAlignTest(total_tokens, top_k, num_experts, block_size)
     bm = MoePermuteAlignBenchmark(test)
     inputs = test.gen_inputs()
-    numel = total_tokens * top_k
 
     # TileOPs
     op = MoePermuteAlignOp(numel, num_experts, block_size)
+
+    # Warmup: trigger JIT compilation before timed profiling
+    op(*inputs)
+    torch.cuda.synchronize()
+
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("permute_align", locals(), result, tag="tileops")
 
     # Triton baseline
-    triton_fn = _TritonBaseline(num_experts, block_size, numel)
-    result_bl = bm.profile(triton_fn, *inputs)
-    BenchmarkReport.record("permute_align", locals(), result_bl, tag="triton")
+    dev = inputs[0].device
+    max_padded = numel + (num_experts + 1) * (block_size - 1)
+    max_num_blocks = math.ceil(max_padded / block_size)
 
-    speedup = result_bl["latency_ms"] / result["latency_ms"]
-    print(
-        f"\n[{total_tokens}tok, top{top_k}, E={num_experts}, bs={block_size}] "
-        f"TileOPs: {result['latency_ms']*1e3:.1f}us  "
-        f"Triton: {result_bl['latency_ms']*1e3:.1f}us  "
-        f"speedup: {speedup:.2f}x"
-    )
+    def _triton_fn(topk_ids):
+        sorted_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)
+        sorted_ids.fill_(numel)
+        expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
+        num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
+        _triton_permute_align(topk_ids, num_experts, block_size,
+                              sorted_ids, expert_ids, num_post_pad)
+        return sorted_ids, expert_ids, num_post_pad
+
+    # Warmup Triton baseline
+    _triton_fn(*inputs)
+    torch.cuda.synchronize()
+
+    result_bl = bm.profile(_triton_fn, *inputs)
+    BenchmarkReport.record("permute_align", locals(), result_bl, tag="triton")
 
 
 if __name__ == "__main__":

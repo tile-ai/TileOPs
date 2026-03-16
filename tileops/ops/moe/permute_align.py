@@ -4,8 +4,8 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.moe import MoePermuteAlignKernel
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.moe import MoePermuteAlignKernel
 
 from ..op import Op
 

@@ -16,7 +16,6 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoePermuteAlignOp
 
-
 # ---------------------------------------------------------------------------
 # Reference implementation (pure Python / PyTorch)
 # ---------------------------------------------------------------------------
@@ -50,6 +49,7 @@ def _ref_permute_align(
         cumsum[i + 1] = cumsum[i] + padded
 
     total_padded = cumsum[num_experts]
+    # Sentinel value is numel (matches kernel: sorted_token_ids[pad_slot] = numel)
     sorted_token_ids = [numel] * total_padded
 
     slot = list(cumsum[:-1])
@@ -95,7 +95,8 @@ class MoePermuteAlignFixture(FixtureBase):
             pytest.param(128, 4,   8,   64,  marks=pytest.mark.full,  id="medium-bs64"),
             pytest.param(1024,8,   64,  128, marks=pytest.mark.full,  id="large-bs128"),
             pytest.param(1,   2,   4,   4,   marks=pytest.mark.full,  id="single-token"),
-            pytest.param(8,   1,   4,   4,   marks=pytest.mark.full,  id="one-expert"),
+            # top_k=1: each token is routed to exactly one expert
+            pytest.param(8,   1,   4,   4,   marks=pytest.mark.full,  id="top-k-1"),
         ]),
     ]
 
@@ -135,20 +136,27 @@ class MoePermuteAlignTest(TestBase):
 def _permute_align_compare(
     outputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     outputs_ref: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    block_size: int,
+    num_experts: int,
+    numel: int,
 ) -> None:
     """Order-insensitive comparison for permute_align outputs.
 
     sorted_token_ids comparison is per-expert token-set (parallel atomicAdd
     makes intra-expert ordering non-deterministic).
+
+    Args:
+        outputs: (sorted_token_ids, expert_ids, num_tokens_post_pad) from kernel.
+        outputs_ref: same tuple from reference implementation.
+        block_size: GEMM tile size used to compute num_blocks.
+        num_experts: number of experts.
+        numel: total (token, expert) assignments; also the sentinel value.
     """
     sorted_ids, expert_ids, num_post_pad = outputs
     ref_sorted, ref_expert, ref_num = outputs_ref
 
-    numel = sorted_ids[sorted_ids < sorted_ids.max().item() + 1].numel()  # sentinel = numel
-    # Determine numel from expert_ids size and block_size (passed via closure below)
-    # We use a simple heuristic: any value >= ref num_post_pad is sentinel
     n = ref_num.item()
-    num_blocks = n // _block_size  # injected by the test function
+    num_blocks = n // block_size
 
     assert num_post_pad.item() == ref_num.item(), (
         f"num_tokens_post_pad mismatch: got {num_post_pad.item()}, "
@@ -160,29 +168,31 @@ def _permute_align_compare(
     )
 
     got_sorted = sorted_ids[:n].cpu().tolist()
-    eids = expert_ids[:num_blocks].cpu().tolist()
-    sentinel = ref_num.item()  # numel is sentinel value
-    for e in range(_num_experts):
+    # Use the reference expert_ids (verified equal above) for both slices so
+    # the per-expert token sets are computed consistently.
+    ref_eids = ref_expert[:num_blocks].cpu().tolist()
+    for e in range(num_experts):
         got_tokens = sorted(
             tok
-            for b, eid in enumerate(eids)
+            for b, eid in enumerate(ref_eids)
             if eid == e
-            for tok in got_sorted[b * _block_size:(b + 1) * _block_size]
-            if tok < sentinel
+            for tok in got_sorted[b * block_size:(b + 1) * block_size]
+            if tok < numel
         )
         ref_tokens = sorted(
             tok
-            for b, eid in enumerate(eids)
+            for b, eid in enumerate(ref_eids)
             if eid == e
-            for tok in ref_sorted[:n].cpu().tolist()[b * _block_size:(b + 1) * _block_size]
-            if tok < sentinel
+            for tok in ref_sorted[:n].cpu().tolist()[b * block_size:(b + 1) * block_size]
+            if tok < numel
         )
         assert got_tokens == ref_tokens, (
             f"Expert {e} token set mismatch:\n  got: {got_tokens}\n  ref: {ref_tokens}"
         )
 
-    padding_mask = sorted_ids[:n].cpu() >= sentinel
-    assert (sorted_ids[:n].cpu()[padding_mask] == sentinel).all(), (
+    # Padding slots must all equal sentinel
+    padding_mask = sorted_ids[:n].cpu() >= numel
+    assert (sorted_ids[:n].cpu()[padding_mask] == numel).all(), (
         "Padding slots must equal sentinel (numel)"
     )
 
@@ -191,40 +201,30 @@ def _permute_align_compare(
 # Tests
 # ---------------------------------------------------------------------------
 
-# Module-level state used by the comparator closure
-_block_size: int = 0
-_num_experts: int = 0
-
 
 @MoePermuteAlignFixture
 def test_permute_align_op(
     total_tokens: int, top_k: int, num_experts: int, block_size: int
 ) -> None:
-    global _block_size, _num_experts
-    _block_size = block_size
-    _num_experts = num_experts
-
+    numel = total_tokens * top_k
     test = MoePermuteAlignTest(total_tokens, top_k, num_experts, block_size)
-    op = MoePermuteAlignOp(total_tokens * top_k, num_experts, block_size)
+    op = MoePermuteAlignOp(numel, num_experts, block_size)
     inputs = test.gen_inputs()
 
-    outputs = op(*inputs)
-    outputs_ref = test.ref_program(*inputs)
+    outputs = tuple(op(*inputs))
+    outputs_ref = tuple(test.ref_program(*inputs))
 
-    # Normalize to tuples for comparator
-    if isinstance(outputs, torch.Tensor):
-        outputs = (outputs,)
-    if isinstance(outputs_ref, torch.Tensor):
-        outputs_ref = (outputs_ref,)
-
-    _permute_align_compare(tuple(outputs), tuple(outputs_ref))
+    _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
     print(f"All checks passed for MoePermuteAlignOp [{total_tokens}tok, top{top_k}, "
           f"E={num_experts}, bs={block_size}].")
 
 
 @pytest.mark.smoke
 def test_permute_align_sentinel_padding() -> None:
-    """Padding slots must be filled with sentinel value (numel)."""
+    """Padding slots must be filled with sentinel value (numel).
+
+    Uses 3 tokens (not a multiple of block_size=4) to force non-trivial padding.
+    """
     total_tokens, top_k, num_experts, block_size = 3, 2, 4, 4
     numel = total_tokens * top_k
     topk_ids = torch.randint(0, num_experts, (total_tokens, top_k),
@@ -256,6 +256,27 @@ def test_permute_align_expert_ids_range() -> None:
     assert (eids >= 0).all() and (eids < num_experts).all(), (
         f"expert_ids out of range [0, {num_experts}): {eids}"
     )
+
+
+@pytest.mark.smoke
+def test_permute_align_skewed_distribution() -> None:
+    """All tokens routed to expert 0 — stress-tests Step 3 loop bound.
+
+    With a uniform loop bound of ceil(max_num_blocks / num_experts), expert 0
+    would only write the first few expert_ids entries and leave the rest
+    uninitialised. This test catches that regression.
+    """
+    total_tokens, top_k, num_experts, block_size = 32, 4, 8, 16
+    numel = total_tokens * top_k
+    # All tokens go to expert 0
+    topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device="cuda")
+
+    op = MoePermuteAlignOp(numel, num_experts, block_size)
+    outputs = tuple(op(topk_ids))
+    outputs_ref = tuple(_ref_permute_align(topk_ids, block_size, num_experts))
+
+    _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
+    print("All checks passed for skewed distribution (all tokens -> expert 0).")
 
 
 if __name__ == "__main__":

@@ -70,6 +70,9 @@ def _make_fused_kernel(numel: int, num_experts: int, block_size: int):
                 s_vals      = T.alloc_shared([threads], "int32")
                 s_warp_sum  = T.alloc_shared([num_warps], "int32")
                 s_warp_excl = T.alloc_shared([num_warps], "int32")
+                # s_total is a running accumulator used only by tx==0 to build
+                # s_warp_excl during the inter-warp scan; its final value (grand
+                # total) is derived independently at line 135 and not re-read.
                 s_total     = T.alloc_shared([1], "int32")
                 s_cumsum    = T.alloc_shared([num_experts + 1], "int32")
 
@@ -98,6 +101,7 @@ def _make_fused_kernel(numel: int, num_experts: int, block_size: int):
                 T.sync_threads()
 
                 # Intra-warp inclusive scan via shuffle_up
+                # 5 rounds = log2(warp_size=32): each round doubles the scan distance
                 for d in T.serial(5):
                     stride = 1 << d
                     up_val = T.tvm_warp_shuffle_up(
@@ -138,11 +142,14 @@ def _make_fused_kernel(numel: int, num_experts: int, block_size: int):
                     num_tokens_post_pad[0] = total
                 T.sync_threads()
 
-                # Step 3: fill expert_ids linearly — no binary search
+                # Step 3: fill expert_ids linearly — no binary search.
+                # Each thread tx < num_experts owns blocks [e_start, e_end).
+                # Loop bound is max_num_blocks (worst case: all tokens to one
+                # expert), guarded by `blk < e_end` to skip non-owned blocks.
                 if tx < num_experts:
                     e_start = s_cumsum[tx]     // block_size
                     e_end   = s_cumsum[tx + 1] // block_size
-                    for b in T.serial(T.ceildiv(max_num_blocks, num_experts)):
+                    for b in T.serial(max_num_blocks):
                         blk = e_start + b
                         if blk < e_end:
                             expert_ids[blk] = tx
@@ -232,8 +239,8 @@ class MoePermuteAlignKernel(Kernel):
         sorted_token_ids    = torch.empty(max_padded, dtype=torch.int32, device=flat.device)
         expert_ids          = torch.empty(max_num_blocks, dtype=torch.int32, device=flat.device)
         num_tokens_post_pad = torch.empty(1, dtype=torch.int32, device=flat.device)
-        cumsum              = torch.zeros(self.num_experts + 1, dtype=torch.int32,
-                                          device=flat.device)
+        cumsum              = torch.empty(self.num_experts + 1, dtype=torch.int32,
+                                         device=flat.device)
 
         fused_fn = self._fused_fn(threads)
         fused_fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
