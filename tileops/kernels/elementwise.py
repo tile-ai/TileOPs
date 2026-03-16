@@ -792,11 +792,8 @@ class BinaryKernel(Kernel):
             # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
             threads_opts = [128, 256, 512]
             npt_opts = [16, 32]
-        elif self.dtype == torch.float32:
-            threads_opts = [128, 256, 512]
-            npt_opts = [2, 4, 8]
         else:
-            # fp16 / bf16: 2 bytes per element
+            # fp16 / bf16 / fp32
             threads_opts = [128, 256, 512]
             npt_opts = [2, 4, 8]
         return [
