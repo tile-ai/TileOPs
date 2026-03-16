@@ -16,6 +16,7 @@ from .deepseek_nsa import (
     NSAFwdVarlenKernel,
     NSATopkVarlenKernel,
 )
+from .dropout import DropoutKernel
 from .elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
 from .engram import EngramDecodeKernel, EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from .fft import FFTC2CKernel, FFTC2CLUTKernel
@@ -59,6 +60,7 @@ __all__ = [
     "BatchNormBwdKernel",
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
+    "DropoutKernel",
     "EngramDecodeKernel",
     "EngramGateConvBwdKernel",
     "EngramGateConvFwdKernel",
