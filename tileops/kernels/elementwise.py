@@ -256,28 +256,95 @@ def _compute_broadcast_offsets(flat_idx, ndim, divisors, a_strides, b_strides):
     return a_off, b_off
 
 
+def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
+    """Return True when both inputs are contiguous with the same shape (no broadcast)."""
+    return (
+        len(coalesced_shape) == 1
+        and all(s == 1 for s in a_strides)
+        and all(s == 1 for s in b_strides)
+    )
+
+
+def _make_binary_register_copy(
+    N_total, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8,
+):
+    """Binary register_copy: fragment load -> compute -> fragment store.
+
+    Only available for same-shape contiguous inputs (no broadcast).
+    Uses T.alloc_fragment + T.copy for vectorized 128-bit memory access,
+    giving ~2-3x bandwidth vs scalar access for complex op_funcs that
+    prevent TVM's auto-vectorizer from kicking in.
+    """
+    out_dtype = output_dtype or dtype
+
+    @tilelang.jit(out_idx=[2])
+    def kernel(threads, num_per_thread):
+        block_size = threads * num_per_thread
+
+        @T.prim_func
+        def main(
+            a: T.Tensor((N_total,), dtype),
+            b: T.Tensor((N_total,), dtype),
+            y: T.Tensor((N_total,), out_dtype),
+        ):
+            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
+                a_reg = T.alloc_fragment((block_size,), dtype)
+                b_reg = T.alloc_fragment((block_size,), dtype)
+                y_reg = T.alloc_fragment((block_size,), out_dtype)
+                T.copy(a[bx * block_size:(bx + 1) * block_size], a_reg)
+                T.copy(b[bx * block_size:(bx + 1) * block_size], b_reg)
+                for i, j in T.Parallel(threads, num_per_thread):
+                    idx = i * num_per_thread + j
+                    y_reg[idx] = op_func(a_reg[idx], b_reg[idx])
+                T.copy(y_reg, y[bx * block_size:(bx + 1) * block_size])
+
+        return main
+
+    return kernel
+
+
 def _make_binary_direct(
     N_total, dtype, op_func, coalesced_shape, a_strides, b_strides,
     a_numel, b_numel, output_dtype=None, threads=256,
 ):
     """Binary direct: 1 element per thread with stride-based broadcast."""
-    ndim = len(coalesced_shape)
     out_dtype = output_dtype or dtype
+
+    # Fast path: same-shape contiguous inputs -- skip broadcast machinery
+    if _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads):
+            @T.prim_func
+            def main(
+                a: T.Tensor((N_total,), dtype),
+                b: T.Tensor((N_total,), dtype),
+                y: T.Tensor((N_total,), out_dtype),
+            ):
+                with T.Kernel(T.ceildiv(N_total, threads), threads=threads) as bx:
+                    for i in T.Parallel(threads):
+                        idx = bx * threads + i
+                        y[idx] = op_func(a[idx], b[idx])
+
+            return main
+
+        return kernel
+
+    ndim = len(coalesced_shape)
     divisors = [1] * ndim
     for i in range(ndim - 2, -1, -1):
         divisors[i] = divisors[i + 1] * coalesced_shape[i + 1]
 
     @tilelang.jit(out_idx=[2])
-    def kernel(threads_arg):
+    def kernel(threads):
         @T.prim_func
         def main(
             a: T.Tensor((a_numel,), dtype),
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, threads_arg), threads=threads_arg) as bx:
-                for i in T.Parallel(threads_arg):
-                    flat_idx = bx * threads_arg + i
+            with T.Kernel(T.ceildiv(N_total, threads), threads=threads) as bx:
+                for i in T.Parallel(threads):
+                    flat_idx = bx * threads + i
                     a_off, b_off = _compute_broadcast_offsets(
                         flat_idx, ndim, divisors, a_strides, b_strides,
                     )
@@ -293,24 +360,47 @@ def _make_binary_explicit(
     a_numel, b_numel, output_dtype=None, threads=256, num_per_thread=8,
 ):
     """Binary explicit_parallel: N elements per thread with stride-based broadcast."""
-    block_size = threads * num_per_thread
-    ndim = len(coalesced_shape)
     out_dtype = output_dtype or dtype
+
+    # Fast path: same-shape contiguous inputs -- skip broadcast machinery
+    if _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads, num_per_thread):
+            block_size = threads * num_per_thread
+
+            @T.prim_func
+            def main(
+                a: T.Tensor((N_total,), dtype),
+                b: T.Tensor((N_total,), dtype),
+                y: T.Tensor((N_total,), out_dtype),
+            ):
+                with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
+                    for i, j in T.Parallel(threads, num_per_thread):
+                        idx = (bx * threads + i) * num_per_thread + j
+                        y[idx] = op_func(a[idx], b[idx])
+
+            return main
+
+        return kernel
+
+    ndim = len(coalesced_shape)
     divisors = [1] * ndim
     for i in range(ndim - 2, -1, -1):
         divisors[i] = divisors[i + 1] * coalesced_shape[i + 1]
 
     @tilelang.jit(out_idx=[2])
-    def kernel(threads_arg, npt_arg):
+    def kernel(threads, num_per_thread):
+        block_size = threads * num_per_thread
+
         @T.prim_func
         def main(
             a: T.Tensor((a_numel,), dtype),
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    flat_idx = (bx * threads_arg + i) * npt_arg + j
+            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
+                for i, j in T.Parallel(threads, num_per_thread):
+                    flat_idx = (bx * threads + i) * num_per_thread + j
                     a_off, b_off = _compute_broadcast_offsets(
                         flat_idx, ndim, divisors, a_strides, b_strides,
                     )
@@ -571,7 +661,7 @@ class BinaryKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    STRATEGIES = ["direct", "explicit_parallel"]
+    STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., "int8")
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
@@ -601,7 +691,17 @@ class BinaryKernel(Kernel):
         self.b_strides = b_strides
         self.a_numel = a_numel
         self.b_numel = b_numel
-        self.strategy = strategy or self.DEFAULT_STRATEGY
+        self._same_shape = _is_contiguous_same_shape(
+            coalesced_shape, a_strides, b_strides,
+        )
+        if strategy is not None:
+            self.strategy = strategy
+        elif self._same_shape:
+            # register_copy gives vectorized 128-bit loads, ~2-3x faster
+            # for complex op_funcs that block TVM's auto-vectorizer.
+            self.strategy = "register_copy"
+        else:
+            self.strategy = self.DEFAULT_STRATEGY
         if self.strategy not in self.STRATEGIES:
             raise ValueError(
                 f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
@@ -659,6 +759,12 @@ class BinaryKernel(Kernel):
                 output_dtype=kernel_output_dtype,
                 threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
             )
+        elif strategy == "register_copy":
+            return _make_binary_register_copy(
+                self.N_total, self.dtype_str, effective_op,
+                output_dtype=kernel_output_dtype,
+                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+            )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
 
@@ -669,12 +775,43 @@ class BinaryKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, a, b):
+    @property
+    def autotune_configs(self) -> list[dict]:
+        """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
+
+        Covers a range of occupancy/register-pressure tradeoffs for
+        bandwidth-bound binary elementwise kernels.
+        """
+        if _is_fp8(self.dtype):
+            # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
+            threads_opts = [128, 256, 512]
+            npt_opts = [16, 32]
+        elif self.dtype == torch.float32:
+            threads_opts = [128, 256, 512]
+            npt_opts = [2, 4, 8]
+        else:
+            # fp16 / bf16: 2 bytes per element
+            threads_opts = [128, 256, 512]
+            npt_opts = [2, 4, 8]
+        return [
+            {"threads": t, "num_per_thread": n}
+            for t in threads_opts
+            for n in npt_opts
+        ]
+
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
+        # Pre-compile and cache the kernel function for the chosen config
+        # to avoid JIT lookup overhead on every forward() call.
         cfg = self.config
         if self.strategy == "direct":
-            result = self.kernel(cfg["threads"])(a, b)
+            self._compiled_fn = self.kernel(cfg["threads"])
         else:
-            result = self.kernel(cfg["threads"], cfg["num_per_thread"])(a, b)
+            self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, a, b):
+        result = self._compiled_fn(a, b)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
         return result
@@ -970,6 +1107,12 @@ class LerpKernel(BinaryKernel):
                 output_dtype=kernel_output_dtype,
                 threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
             )
+        elif strategy == "register_copy":
+            return _make_binary_register_copy(
+                self.N_total, self.dtype_str, effective_op,
+                output_dtype=kernel_output_dtype,
+                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+            )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
 
@@ -980,26 +1123,25 @@ class MaximumKernel(BinaryKernel):
     Matches torch.maximum semantics:
     - If either operand is NaN, the result is NaN.
     - maximum(+0.0, -0.0) = +0.0 (IEEE 754 signed-zero).
+
+    Performance: uses T.max for the fast path (correct signed-zero on CUDA
+    -- fmaxf returns +0 for max(+0,-0)) plus two isnan guards for NaN
+    propagation. Total IR: 1 max + 2 fp32 casts + 2 isnan + 2 select.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        a_f32 = T.Cast("float32", a)
-        b_f32 = T.Cast("float32", b)
-        a_is_nan = T.isnan(a_f32)
-        b_is_nan = T.isnan(b_f32)
-        # Signed-zero tie-break: when a == b, prefer the operand whose sign
-        # is non-negative (+0 over -0). copysign(1, x) is +1 for +0 and -1
-        # for -0, so a_sign >= b_sign selects the positive-signed operand.
-        one_f32 = T.cast(1.0, "float32")
-        a_sign = T.copysign(one_f32, a_f32)
-        b_sign = T.copysign(one_f32, b_f32)
-        ordered_max = T.if_then_else(
-            a > b, a, T.if_then_else(b > a, b,
-                                     T.if_then_else(a_sign >= b_sign, a, b)))
-        return T.if_then_else(a_is_nan, a, T.if_then_else(b_is_nan, b, ordered_max))
+        # T.max handles signed-zero correctly (returns +0 for max(+0,-0))
+        # but does NOT propagate NaN -- it returns the non-NaN operand.
+        result = T.max(a, b)
+        # NaN propagation: cast to fp32 for isnan (bfloat16 lacks native isnan).
+        a_is_nan = T.isnan(T.Cast("float32", a))
+        b_is_nan = T.isnan(T.Cast("float32", b))
+        result = T.if_then_else(b_is_nan, b, result)
+        result = T.if_then_else(a_is_nan, a, result)
+        return result
 
 
 class MinimumKernel(BinaryKernel):
@@ -1008,26 +1150,25 @@ class MinimumKernel(BinaryKernel):
     Matches torch.minimum semantics:
     - If either operand is NaN, the result is NaN.
     - minimum(-0.0, +0.0) = -0.0 (IEEE 754 signed-zero).
+
+    Performance: uses T.min for the fast path (correct signed-zero on CUDA
+    -- fminf returns -0 for min(-0,+0)) plus two isnan guards for NaN
+    propagation. See MaximumKernel for full rationale.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        a_f32 = T.Cast("float32", a)
-        b_f32 = T.Cast("float32", b)
-        a_is_nan = T.isnan(a_f32)
-        b_is_nan = T.isnan(b_f32)
-        # Signed-zero tie-break: when a == b, prefer the operand whose sign
-        # is negative (-0 over +0). copysign(1, x) is -1 for -0 and +1 for
-        # +0, so a_sign <= b_sign selects the negative-signed operand.
-        one_f32 = T.cast(1.0, "float32")
-        a_sign = T.copysign(one_f32, a_f32)
-        b_sign = T.copysign(one_f32, b_f32)
-        ordered_min = T.if_then_else(
-            a < b, a, T.if_then_else(b < a, b,
-                                     T.if_then_else(a_sign <= b_sign, a, b)))
-        return T.if_then_else(a_is_nan, a, T.if_then_else(b_is_nan, b, ordered_min))
+        # T.min handles signed-zero correctly (returns -0 for min(+0,-0))
+        # but does NOT propagate NaN -- it returns the non-NaN operand.
+        result = T.min(a, b)
+        # NaN propagation: cast to fp32 for isnan (bfloat16 lacks native isnan).
+        a_is_nan = T.isnan(T.Cast("float32", a))
+        b_is_nan = T.isnan(T.Cast("float32", b))
+        result = T.if_then_else(b_is_nan, b, result)
+        result = T.if_then_else(a_is_nan, a, result)
+        return result
 
 
 # ---------------------------------------------------------------------------
