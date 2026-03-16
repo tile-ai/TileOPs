@@ -41,13 +41,13 @@ from .op import Op
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
 from .reduction import (
-    # AllOp,
+    AllOp,
     AmaxOp,  # ReduceMaxOp
     AminOp,  # ReduceMinOp
-    # AnyOp,
+    AnyOp,
     ArgmaxOp,
     ArgminOp,
-    # CountNonzeroOp,
+    CountNonzeroOp,
     # CummaxOp,
     # CumminOp,
     CumprodOp,
@@ -125,13 +125,13 @@ __all__ = [
     "UnaryOp",
     "TopkSelectorOp",
     # --- Reduction ops (uncomment as sub-category PRs land) ---
-    # "AllOp",
+    "AllOp",
     "AmaxOp",
     "AminOp",
-    # "AnyOp",
+    "AnyOp",
     "ArgmaxOp",
     "ArgminOp",
-    # "CountNonzeroOp",
+    "CountNonzeroOp",
     # "CummaxOp",
     # "CumminOp",
     "CumprodOp",

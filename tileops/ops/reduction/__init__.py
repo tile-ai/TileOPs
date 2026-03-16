@@ -9,17 +9,23 @@ kernels are implemented.
 # Placeholder imports for reduction ops.
 # Each sub-category PR uncomments its own lines.
 
-# --- ReduceKernel ops ---
-# --- SoftmaxKernel ops ---
+# --- LogicalReduceKernel ops ---
+from .all_op import AllOp
+from .any_op import AnyOp
+
 # --- ArgreduceKernel ops ---
 from .argmax import ArgmaxOp
 from .argmin import ArgminOp
+from .count_nonzero import CountNonzeroOp
 
 # --- CumulativeKernel ops ---
 from .cumprod import CumprodOp
 from .cumsum import CumsumOp
 from .log_softmax import LogSoftmaxOp
 from .logsumexp import LogSumExpOp
+
+# --- ReduceKernel ops ---
+# --- SoftmaxKernel ops ---
 from .reduce import (
     AmaxOp,  # ReduceMaxOp
     AminOp,  # ReduceMinOp
@@ -35,17 +41,16 @@ from .softmax import SoftmaxOp
 # from .cummax import CummaxOp
 # from .cummin import CumminOp
 
-# --- LogicalReduceKernel ops ---
-# from .all import AllOp
-# from .any import AnyOp
-# from .count_nonzero import CountNonzeroOp
-
 # --- VectorNormKernel ops ---
 # from .l1_norm import L1NormOp
 # from .l2_norm import L2NormOp
 # from .inf_norm import InfNormOp
 
 __all__: list[str] = [
+    # --- LogicalReduceKernel ops ---
+    "AllOp",
+    "AnyOp",
+    "CountNonzeroOp",
     # --- ReduceKernel ops ---
     "AmaxOp",
     "AminOp",
@@ -72,10 +77,6 @@ __all__: list[str] = [
     "CumprodOp",
     # "CummaxOp",
     # "CumminOp",
-    # --- LogicalReduceKernel ops ---
-    # "AllOp",
-    # "AnyOp",
-    # "CountNonzeroOp",
     # --- VectorNormKernel ops ---
     # "L1NormOp",
     # "L2NormOp",
