@@ -1,3 +1,3 @@
-from .permute_align import PermuteAlignKernel
+from .permute_align import MoePermuteAlignKernel
 
-__all__ = ["PermuteAlignKernel"]
+__all__ = ["MoePermuteAlignKernel"]

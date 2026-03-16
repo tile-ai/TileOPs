@@ -4,15 +4,15 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.moe import PermuteAlignKernel
+from tileops.kernels.moe import MoePermuteAlignKernel
 from tileops.kernels.kernel import Kernel
 
 from ..op import Op
 
-__all__ = ["PermuteAlignOp"]
+__all__ = ["MoePermuteAlignOp"]
 
 
-class PermuteAlignOp(Op):
+class MoePermuteAlignOp(Op):
     """Route tokens to experts and pad each expert's token count to block_size.
 
     Takes ``topk_ids`` and produces the three index arrays required by MoE
@@ -27,7 +27,7 @@ class PermuteAlignOp(Op):
         tune: Whether to autotune the kernel.
 
     Example:
-        >>> op = PermuteAlignOp(numel=32, num_experts=8, block_size=16)
+        >>> op = MoePermuteAlignOp(numel=32, num_experts=8, block_size=16)
         >>> sorted_ids, expert_ids, num_post_pad = op(topk_ids)
     """
 
@@ -50,7 +50,7 @@ class PermuteAlignOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"permute_align_kernel": PermuteAlignKernel}
+        return {"permute_align_kernel": MoePermuteAlignKernel}
 
     def forward(
         self, topk_ids: torch.Tensor

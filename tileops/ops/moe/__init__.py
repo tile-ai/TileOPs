@@ -1,5 +1,5 @@
 """MoE operator package."""
 
-from .permute_align import PermuteAlignOp
+from .permute_align import MoePermuteAlignOp
 
-__all__ = ["PermuteAlignOp"]
+__all__ = ["MoePermuteAlignOp"]

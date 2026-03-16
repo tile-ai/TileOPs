@@ -1,4 +1,4 @@
-"""Benchmark for PermuteAlignOp vs Triton baseline.
+"""Benchmark for MoePermuteAlignOp vs Triton baseline.
 
 Triton baseline is adapted from SGLang's moe_align_block_size implementation:
   sglang/sgl-kernel/benchmark/bench_moe_align_block_size.py
@@ -17,8 +17,8 @@ import triton
 import triton.language as tl
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_permute_align import PermuteAlignFixture, PermuteAlignTest
-from tileops.ops.moe import PermuteAlignOp
+from tests.ops.test_moe_permute_align import MoePermuteAlignFixture, MoePermuteAlignTest
+from tileops.ops.moe import MoePermuteAlignOp
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ def _triton_permute_align(
 # ---------------------------------------------------------------------------
 
 
-class PermuteAlignBenchmark(BenchmarkBase):
+class MoePermuteAlignBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         return None
@@ -182,17 +182,17 @@ class _TritonBaseline:
 # ---------------------------------------------------------------------------
 
 
-@PermuteAlignFixture
+@MoePermuteAlignFixture
 def test_permute_align_bench(
     total_tokens: int, top_k: int, num_experts: int, block_size: int
 ) -> None:
-    test = PermuteAlignTest(total_tokens, top_k, num_experts, block_size)
-    bm = PermuteAlignBenchmark(test)
+    test = MoePermuteAlignTest(total_tokens, top_k, num_experts, block_size)
+    bm = MoePermuteAlignBenchmark(test)
     inputs = test.gen_inputs()
     numel = total_tokens * top_k
 
     # TileOPs
-    op = PermuteAlignOp(numel, num_experts, block_size)
+    op = MoePermuteAlignOp(numel, num_experts, block_size)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("permute_align", locals(), result, tag="tileops")
 
