@@ -428,17 +428,6 @@ jobs:
           pip install build pytest --no-user
         shell: bash
 
-      - name: Install required dependencies
-        run: |
-          set -euo pipefail
-          source "${VENV_PATH}/bin/activate"
-          if [ "${VENV_REUSED}" = "true" ]; then
-            echo "Cached packaging venv already prepared at ${VENV_PATH}"
-            exit 0
-          fi
-          echo "Packaging dependencies already installed explicitly in the venv"
-        shell: bash
-
       - name: Build wheel package
         run: |
           set -euo pipefail
