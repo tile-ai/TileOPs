@@ -27,10 +27,11 @@ __all__ = ["AnyOp"]
 def _to_logical_float32(x: torch.Tensor) -> torch.Tensor:
     """Convert an unsupported-storage-dtype tensor to float32 for kernel dispatch.
 
-    - bool:    True -> 1.0, False -> 0.0
-    - complex: nonzero (either real or imaginary part != 0) -> 1.0, else 0.0
+    - bool:       True -> 1.0, False -> 0.0
+    - int32/int64: direct cast to float32
+    - complex:    nonzero (either real or imaginary part != 0) -> 1.0, else 0.0
     """
-    if x.dtype == torch.bool:
+    if x.dtype in (torch.bool, torch.int32, torch.int64):
         return x.to(torch.float32)
     # complex: element is "truthy" if real != 0 OR imag != 0
     return ((x.real != 0) | (x.imag != 0)).to(torch.float32)

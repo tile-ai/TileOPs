@@ -1,4 +1,4 @@
-"""Benchmarks for logical reduce ops (any, all)."""
+"""Benchmarks for logical reduce ops (any, all, count_nonzero)."""
 
 from typing import Optional
 
@@ -20,6 +20,9 @@ class LogicalReduceBenchFixture(FixtureBase):
                 pytest.param(1024, 4096, torch.float16, "all", marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.bfloat16, "all", marks=pytest.mark.full),
                 pytest.param(4096, 4096, torch.float16, "all", marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float16, "count_nonzero", marks=pytest.mark.smoke),
+                pytest.param(1024, 4096, torch.bfloat16, "count_nonzero", marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.float16, "count_nonzero", marks=pytest.mark.full),
             ],
         ),
     ]
@@ -41,6 +44,8 @@ class LogicalReduceBenchTest(TestBase):
             return x.bool().any(dim=-1)
         elif self.op_kind == "all":
             return x.bool().all(dim=-1)
+        elif self.op_kind == "count_nonzero":
+            return torch.count_nonzero(x, dim=-1).to(torch.int64)
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
@@ -61,10 +66,12 @@ def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.all_op import AllOp
     from tileops.ops.reduction.any_op import AnyOp
+    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     op_map = {
         "any": AnyOp,
         "all": AllOp,
+        "count_nonzero": CountNonzeroOp,
     }
     cls = op_map[op_kind]
     return cls(M=m, N=n, dtype=dtype)

@@ -16,6 +16,7 @@ from .any_op import AnyOp
 # --- ArgreduceKernel ops ---
 from .argmax import ArgmaxOp
 from .argmin import ArgminOp
+from .count_nonzero import CountNonzeroOp
 
 # --- CumulativeKernel ops ---
 from .cumprod import CumprodOp
@@ -37,7 +38,6 @@ from .reduce import (
 )
 from .softmax import SoftmaxOp
 
-# from .count_nonzero import CountNonzeroOp
 # from .cummax import CummaxOp
 # from .cummin import CumminOp
 
@@ -50,7 +50,7 @@ __all__: list[str] = [
     # --- LogicalReduceKernel ops ---
     "AllOp",
     "AnyOp",
-    # "CountNonzeroOp",
+    "CountNonzeroOp",
     # --- ReduceKernel ops ---
     "AmaxOp",
     "AminOp",

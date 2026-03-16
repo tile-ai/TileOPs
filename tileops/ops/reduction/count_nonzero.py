@@ -1,8 +1,8 @@
-"""AllOp: returns bool indicating if all elements are non-zero along dim=-1.
+"""CountNonzeroOp: counts non-zero elements along dim=-1, returning int64.
 
 The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment
-(with 1, which is neutral for AND/all), calls the kernel, and reshapes the
-output back. Output dtype is always bool.
+(with 0, which is neutral for sum/count), calls the kernel, and reshapes the
+output back. Output dtype is always int64.
 
 Supports any numeric dtype as input including torch.bool and complex types
 (bool and complex inputs are pre-converted to float32 before the TileLang
@@ -21,7 +21,7 @@ from tileops.kernels.reduction.logical_reduce.fwd import _UNSUPPORTED_STORAGE_DT
 
 from ..op import Op
 
-__all__ = ["AllOp"]
+__all__ = ["CountNonzeroOp"]
 
 
 def _to_logical_float32(x: torch.Tensor) -> torch.Tensor:
@@ -37,11 +37,11 @@ def _to_logical_float32(x: torch.Tensor) -> torch.Tensor:
     return ((x.real != 0) | (x.imag != 0)).to(torch.float32)
 
 
-class AllOp(Op):
-    """All reduction along dim=-1, returning bool.
+class CountNonzeroOp(Op):
+    """Count nonzero reduction along dim=-1, returning int64.
 
     Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
-    Padded positions use 1 (True), which is neutral for AND/all.
+    Padded positions use 0, which is neutral for sum/count.
 
     Supports any numeric dtype including torch.bool and complex types. Inputs
     with dtypes that TileLang cannot use as shared-memory storage (bool,
@@ -72,7 +72,7 @@ class AllOp(Op):
         self.kernel = self.kernel_map["logical_reduce"](
             M,
             N,
-            "all",
+            "count_nonzero",
             dtype,
             tune=tune,
         )
@@ -82,13 +82,13 @@ class AllOp(Op):
         return {"logical_reduce": LogicalReduceKernel}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute all along dim=-1.
+        """Compute count_nonzero along dim=-1.
 
         Args:
             x: Input tensor with last dim == N.
 
         Returns:
-            Bool tensor with shape == x.shape[:-1].
+            Int64 tensor with shape == x.shape[:-1].
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
@@ -109,9 +109,9 @@ class AllOp(Op):
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = _to_logical_float32(x)
 
-        # Pad to alignment with 1.0 (True is neutral for AND/all)
+        # Pad to alignment with 0 (zero is neutral for sum/count)
         if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N), value=1.0)
+            x = F.pad(x, (0, self.N_padded - self.N), value=0.0)
 
         y = self.kernel(x)
 

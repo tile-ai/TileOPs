@@ -1,14 +1,15 @@
-"""Logical reduce kernels (any, all) using TileLang.
+"""Logical reduce kernels (any, all, count_nonzero) using TileLang.
 
 Casts input to bool (0/1 as float32), then reduces:
   - any: reduce_max (1 if any element is non-zero)
   - all: reduce_min (1 if all elements are non-zero)
+  - count_nonzero: reduce_sum (count of non-zero elements per row)
 
 Operates on 2D (M, N_padded) tensors; the Op layer handles reshape.
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
 memory instructions.
 
-Output is always bool dtype.
+Output is bool for any/all, int64 for count_nonzero.
 """
 
 import itertools
@@ -23,7 +24,7 @@ from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 
 __all__ = ["LogicalReduceKernel"]
 
-_LOGICAL_REDUCE_KINDS = {"any", "all"}
+_LOGICAL_REDUCE_KINDS = {"any", "all", "count_nonzero"}
 
 # TileLang does not support bool or complex dtypes as a storage dtype for
 # T.alloc_shared / T.copy. When the caller's dtype is one of these, we use
@@ -35,6 +36,8 @@ _UNSUPPORTED_STORAGE_DTYPES = frozenset(
         torch.bool,
         torch.complex64,
         torch.complex128,
+        torch.int32,
+        torch.int64,
     }
 )
 
@@ -45,22 +48,26 @@ _UNSUPPORTED_STORAGE_DTYPES = frozenset(
 
 
 def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
-    """Build a TileLang any/all kernel.
+    """Build a TileLang any/all/count_nonzero kernel.
 
     Cast input to bool (0.0 or 1.0 in float32), then:
       - any: reduce_max over the row (1.0 if any element is non-zero)
       - all: reduce_min over the row (1.0 if all elements are non-zero)
+      - count_nonzero: reduce_sum over the row (count of non-zero elements)
 
     Args:
         M: Number of rows (product of all leading dimensions).
         N: Original hidden dimension (last dim, before padding).
-        op_kind: One of "any", "all".
+        op_kind: One of "any", "all", "count_nonzero".
         dtype: TileLang dtype string (e.g. "float16", "bfloat16", "float32").
 
     Returns:
         A TileLang JIT-compiled kernel factory accepting (block_m, threads).
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
+
+    if op_kind == "count_nonzero":
+        return _count_nonzero_kernel(M, N_padded, dtype)
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
@@ -115,6 +122,69 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
     return _func
 
 
+def _count_nonzero_kernel(M: int, N_padded: int, dtype: str):
+    """Build a TileLang count_nonzero kernel.
+
+    Cast input to bool (0.0 or 1.0 in float32), then reduce_sum over
+    each row. Output is int64 (count of non-zero elements per row).
+
+    Args:
+        M: Number of rows (product of all leading dimensions).
+        N_padded: Padded hidden dimension (already aligned).
+        dtype: TileLang dtype string (e.g. "float16", "bfloat16", "float32").
+
+    Returns:
+        A TileLang JIT-compiled kernel factory accepting (block_m, threads).
+    """
+
+    @tilelang.jit(out_idx=[1])
+    def _func(block_m, threads):
+        @T.macro
+        def compute(
+            x: T.Tensor[(M, N_padded), dtype],
+            out: T.Tensor[(M,), "int64"],  # noqa: F821
+        ):
+            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                shared_buf = T.alloc_shared((block_m, N_padded), dtype)
+                x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                bool_vals = T.alloc_fragment((block_m, N_padded), "float32")
+                result = T.alloc_fragment((block_m,), "float32")
+                out_local = T.alloc_fragment((block_m,), "int64")
+
+                # Load via shared memory
+                T.copy(x[pid_m * block_m, 0], shared_buf)
+
+                # Cast to fp32
+                for i, j in T.Parallel(block_m, N_padded):
+                    x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+
+                # Cast to bool (0.0 or 1.0)
+                for i, j in T.Parallel(block_m, N_padded):
+                    bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
+
+                # count_nonzero: sum of bool values per row
+                # Padding is 0 (neutral for sum)
+                T.reduce_sum(bool_vals, result, dim=1)
+
+                # Cast result to int64
+                for i in T.Parallel(block_m):
+                    out_local[i] = T.cast(result[i], "int64")
+
+                # Write output
+                T.copy(out_local, out[pid_m * block_m])
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N_padded), dtype],
+            out: T.Tensor[(M,), "int64"],  # noqa: F821
+        ):
+            compute(x, out)
+
+        return main
+
+    return _func
+
+
 # ---------------------------------------------------------------------------
 # custom_op wrappers for torch.compile compatibility
 # ---------------------------------------------------------------------------
@@ -130,12 +200,16 @@ def _logical_reduce_fwd_wrapped(
     threads: int,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    out_int8 = _logical_reduce_kernel(M, N, op_kind, dtype_str)(block_m, threads)(x)
-    return out_int8.bool()
+    out_raw = _logical_reduce_kernel(M, N, op_kind, dtype_str)(block_m, threads)(x)
+    if op_kind == "count_nonzero":
+        return out_raw.to(torch.int64)
+    return out_raw.bool()
 
 
 @_logical_reduce_fwd_wrapped.register_fake
 def _(M, N, op_kind, dtype_str, block_m, threads, x):
+    if op_kind == "count_nonzero":
+        return torch.empty((M,), dtype=torch.int64, device=x.device)
     return torch.empty((M,), dtype=torch.bool, device=x.device)
 
 
@@ -145,13 +219,13 @@ def _(M, N, op_kind, dtype_str, block_m, threads, x):
 
 
 class LogicalReduceKernel(Kernel):
-    """Any / all forward kernel.
+    """Any / all / count_nonzero forward kernel.
 
     Supports SM80+ architectures. Uses 256-element alignment for shared
-    memory copies. Casts input to bool (0/1) and reduces via max (any) or
-    min (all).
+    memory copies. Casts input to bool (0/1) and reduces via max (any),
+    min (all), or sum (count_nonzero).
 
-    Output dtype is always bool.
+    Output dtype is bool for any/all and int64 for count_nonzero.
 
     Note: TileLang does not support bool or complex dtypes as a storage dtype
     for shared memory. When dtype is one of these, the kernel is compiled for
@@ -161,7 +235,7 @@ class LogicalReduceKernel(Kernel):
     Args:
         M: Number of rows (product of all dims except last).
         N: Hidden dimension (last dim).
-        op_kind: One of "any", "all".
+        op_kind: One of "any", "all", "count_nonzero".
         dtype: Input data type (float32, float16, bfloat16, bool, complex64,
                or complex128).
         config: Optional kernel configuration dict.
@@ -223,14 +297,15 @@ class LogicalReduceKernel(Kernel):
         return [{"block_m": bm, "threads": t} for bm, t in configs]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the any/all kernel.
+        """Run the any/all/count_nonzero kernel.
 
         Args:
             x: Input tensor of shape (M, N_padded). Must have dtype matching
                _kernel_dtype (float32 when the original dtype is bool).
 
         Returns:
-            Output tensor of shape (M,) with dtype bool.
+            Output tensor of shape (M,) with dtype bool (any/all) or int64
+            (count_nonzero).
         """
         return _logical_reduce_fwd_wrapped(
             self.M,

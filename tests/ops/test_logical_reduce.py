@@ -1,7 +1,8 @@
-"""Correctness tests for logical reduce ops (any, all).
+"""Correctness tests for logical reduce ops (any, all, count_nonzero).
 
-Covers: AnyOp, AllOp.
-Each op reduces along dim=-1 and returns bool dtype.
+Covers: AnyOp, AllOp, CountNonzeroOp.
+any/all reduce along dim=-1 and return bool dtype.
+count_nonzero reduces along dim=-1 and returns int64 dtype.
 Uses exact match (torch.equal) for comparison.
 """
 
@@ -26,6 +27,8 @@ class LogicalReduceBasicFixture(FixtureBase):
                 pytest.param(128, 512, torch.bool, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.complex64, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.complex128, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.int32, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.int64, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-pow2 last dim
@@ -125,6 +128,14 @@ class LogicalReduceTest(TestBase):
             # Force some rows to have all non-zero
             if self.m > 4:
                 x[1] = 1 + 1j
+        elif self.dtype in (torch.int32, torch.int64):
+            x = torch.randint(-5, 6, (self.m, self.n), dtype=self.dtype, device="cuda")
+            # Force some rows to be all-zero for meaningful "any" tests
+            if self.m > 4:
+                x[0] = 0
+            # Force some rows to have all non-zero for "all" tests
+            if self.m > 4:
+                x[1] = 1
         else:
             x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
             # Force some rows to be all-zero for meaningful "any" tests
@@ -140,6 +151,8 @@ class LogicalReduceTest(TestBase):
             return x.bool().any(dim=-1)
         elif self.op_kind == "all":
             return x.bool().all(dim=-1)
+        elif self.op_kind == "count_nonzero":
+            return torch.count_nonzero(x, dim=-1).to(torch.int64)
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
@@ -149,6 +162,18 @@ def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     assert output_ref.dtype == torch.bool, f"Expected ref bool dtype, got {output_ref.dtype}"
     assert torch.equal(output, output_ref), (
         f"Bool mismatch.\n"
+        f"  output:     {output[:10]}...\n"
+        f"  output_ref: {output_ref[:10]}...\n"
+        f"  mismatches: {(output != output_ref).sum().item()} / {output.numel()}"
+    )
+
+
+def _exact_compare_int64(output: torch.Tensor, output_ref: torch.Tensor) -> None:
+    """Exact match comparison for int64 count_nonzero outputs."""
+    assert output.dtype == torch.int64, f"Expected int64 dtype, got {output.dtype}"
+    assert output_ref.dtype == torch.int64, f"Expected ref int64 dtype, got {output_ref.dtype}"
+    assert torch.equal(output, output_ref), (
+        f"Int64 mismatch.\n"
         f"  output:     {output[:10]}...\n"
         f"  output_ref: {output_ref[:10]}...\n"
         f"  mismatches: {(output != output_ref).sum().item()} / {output.numel()}"
@@ -311,6 +336,85 @@ def test_all_1d(n: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.dtype == torch.bool
     assert torch.equal(y.view_as(ref), ref), "1D all mismatch"
+
+
+# ---------------------------------------------------------------------------
+# CountNonzeroOp tests
+# ---------------------------------------------------------------------------
+
+
+@LogicalReduceBasicFixture
+def test_count_nonzero_op(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
+
+    test = LogicalReduceTest(m, n, dtype, "count_nonzero")
+    op = CountNonzeroOp(M=m, N=n, dtype=dtype)
+    test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
+
+
+@LogicalReduceNonContigFixture
+def test_count_nonzero_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
+
+    if dtype == torch.bool:
+        x_full = torch.randint(0, 2, (m, n * 2), dtype=torch.bool, device="cuda")
+    elif dtype in (torch.complex64, torch.complex128):
+        real = torch.randn(m, n * 2, dtype=torch.float32, device="cuda")
+        imag = torch.randn(m, n * 2, dtype=torch.float32, device="cuda")
+        x_full = torch.complex(real, imag).to(dtype)
+    else:
+        x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x = x_full[:, :n]
+    op = CountNonzeroOp(M=m, N=n, dtype=dtype)
+    ref = torch.count_nonzero(x.contiguous(), dim=-1).to(torch.int64)
+    y = op(x)
+    assert y.dtype == torch.int64
+    assert torch.equal(y, ref), f"non-contig count_nonzero mismatch: {(y != ref).sum().item()}"
+
+
+@LogicalReduce3DFixture
+def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
+
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    M = batch * seq
+    op = CountNonzeroOp(M=M, N=hidden, dtype=dtype)
+    ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
+    y = op(x)
+    assert y.dtype == torch.int64
+    assert torch.equal(y, ref), f"3D count_nonzero mismatch: {(y != ref).sum().item()}"
+
+
+@LogicalReduce4DFixture
+def test_count_nonzero_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
+
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    M = b0 * b1 * b2
+    op = CountNonzeroOp(M=M, N=n, dtype=dtype)
+    ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
+    y = op(x)
+    assert y.dtype == torch.int64
+    assert torch.equal(y, ref), f"4D count_nonzero mismatch: {(y != ref).sum().item()}"
+
+
+@LogicalReduce1DFixture
+def test_count_nonzero_1d(n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
+
+    if dtype == torch.bool:
+        x = torch.randint(0, 2, (n,), dtype=torch.bool, device="cuda")
+    elif dtype in (torch.complex64, torch.complex128):
+        real = torch.randn(n, dtype=torch.float32, device="cuda")
+        imag = torch.randn(n, dtype=torch.float32, device="cuda")
+        x = torch.complex(real, imag).to(dtype)
+    else:
+        x = torch.randn(n, dtype=dtype, device="cuda")
+    op = CountNonzeroOp(M=1, N=n, dtype=dtype)
+    ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
+    y = op(x)
+    assert y.dtype == torch.int64
+    assert torch.equal(y.view_as(ref), ref), "1D count_nonzero mismatch"
 
 
 if __name__ == "__main__":

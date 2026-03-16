@@ -52,6 +52,7 @@ IMPLEMENTED_OP_CLASSES = [
     "AnyOp",
     "ArgmaxOp",
     "ArgminOp",
+    "CountNonzeroOp",
     "CumprodOp",
     "CumsumOp",
     "LogSoftmaxOp",
@@ -68,7 +69,6 @@ IMPLEMENTED_OP_CLASSES = [
 # --- Placeholder op classes (still commented out) ---
 
 PLACEHOLDER_OP_CLASSES = [
-    "CountNonzeroOp",
     "CummaxOp",
     "CumminOp",
     "InfNormOp",
