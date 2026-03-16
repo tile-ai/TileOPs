@@ -25,6 +25,7 @@ from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
 from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
 from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
+from .moe import MoePermuteAlignOp
 from .norm import (
     AdaLayerNormOp,
     AdaLayerNormZeroOp,
@@ -37,7 +38,6 @@ from .norm import (
     LayerNormOp,
     RmsNormOp,
 )
-from .moe import MoePermuteAlignOp
 from .op import Op
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---

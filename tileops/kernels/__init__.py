@@ -40,13 +40,13 @@ from .flash_decode import (
 )
 from .gemm import GemmKernel, GemvKernel
 from .grouped_gemm import grouped_gemm_kernel
-from .moe import MoePermuteAlignKernel
 from .kernel import Kernel
 from .linear_attn import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
 )
 from .mhc import mhc_post_kernel, mhc_pre_kernel
+from .moe import MoePermuteAlignKernel
 from .norm import (
     BatchNormBwdKernel,
     BatchNormFwdInferKernel,
