@@ -412,7 +412,8 @@ class UnaryKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
-    # Benchmark (H200, 4M fp16): register_copy 2.40 TB/s > direct 1.04 > explicit 0.86
+    # Benchmark (H200): register_copy wins for fp16/bf16 across all tested shapes;
+    # fp32 small shapes show variance between register_copy and explicit_parallel.
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None
