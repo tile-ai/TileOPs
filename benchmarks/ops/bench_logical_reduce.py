@@ -58,8 +58,10 @@ class LogicalReduceBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         t = self.test
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + write output bools (M * 1 byte)
-        return t.m * t.n * elem_bytes + t.m
+        # Output bytes: bool (1 byte) for any/all, int64 (8 bytes) for count_nonzero
+        out_elem_bytes = 8 if t.op_kind == "count_nonzero" else 1
+        # Read x (M*N) + write output (M * out_elem_bytes)
+        return t.m * t.n * elem_bytes + t.m * out_elem_bytes
 
 
 def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
