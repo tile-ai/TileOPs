@@ -425,18 +425,7 @@ jobs:
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
           python -m pip install --upgrade pip setuptools wheel --no-user
-          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
-        shell: bash
-
-      - name: Install required dependencies
-        run: |
-          set -euo pipefail
-          source "${VENV_PATH}/bin/activate"
-          if [ "${VENV_REUSED}" = "true" ]; then
-            echo "Cached packaging venv already prepared at ${VENV_PATH}"
-            exit 0
-          fi
-          echo "Packaging dependencies already installed via .[dev]"
+          pip install build pytest --no-user
         shell: bash
 
       - name: Build wheel package
