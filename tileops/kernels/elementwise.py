@@ -376,19 +376,23 @@ def _make_binary_explicit(
 # ---------------------------------------------------------------------------
 
 
-def _make_fused_gated_direct(M, N, dtype, op_func, threads=256):
+def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=None):
     """FusedGated direct: 1 element per thread. x[:, :N] is gate, x[:, N:] is value.
 
     ``op_func(gate, value)`` is the compound operation that applies the
     activation to *gate* and multiplies by *value*.  For fp8 dtypes the
     caller wraps it via ``_wrap_fp8_accumulation`` so this factory stays
     fp8-agnostic.
+
+    Args:
+        output_dtype: TileLang dtype string for the output tensor. Defaults to dtype.
     """
+    out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg):
         @T.prim_func
-        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
+        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
             with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
                 for i in T.Parallel(threads_arg):
                     col = bx * threads_arg + i
@@ -739,6 +743,7 @@ class FusedGatedKernel(Kernel):
             return _make_fused_gated_direct(
                 self.M, self.N, self.dtype_str, effective_op,
                 threads=cfg["threads"],
+                output_dtype=self._kernel_output_dtype,
             )
         elif strategy == "explicit_parallel":
             return _make_fused_gated_explicit(

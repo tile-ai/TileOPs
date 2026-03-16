@@ -133,6 +133,33 @@ def test_fused_gated_kernel_forward_e5m2_dtype():
 
 
 @pytest.mark.smoke
+def test_fused_gated_direct_e5m2_preserves_inf():
+    """FusedGated direct strategy must preserve Inf for e5m2, not saturate.
+
+    Regression test: the direct kernel previously declared its output buffer
+    as e5m2, causing TileLang to saturate fp16 Inf to 57344.0 on store.
+    The fix routes e5m2 through an fp16 output buffer (matching
+    explicit_parallel) so PyTorch's .to() preserves Inf/NaN.
+    """
+    from tileops.kernels.elementwise import SiluAndMulKernel
+
+    M, N = 1, 16
+    dtype = torch.float8_e5m2
+    # Large values that silu(gate)*value will overflow to Inf in fp16
+    gate_fp16 = torch.full((M, N), 50000.0, dtype=torch.float16, device="cuda")
+    value_fp16 = torch.full((M, N), 50000.0, dtype=torch.float16, device="cuda")
+    x_fp16 = torch.cat([gate_fp16, value_fp16], dim=1)
+    x = x_fp16.to(dtype)
+    kernel = SiluAndMulKernel(M=M, N=N, dtype=dtype, strategy="direct")
+    out = kernel(x)
+    out_fp32 = out.to(torch.float32)
+    assert torch.any(torch.isinf(out_fp32)), (
+        f"FusedGated direct e5m2 should produce Inf on overflow, "
+        f"got max={out_fp32.max().item()}"
+    )
+
+
+@pytest.mark.smoke
 def test_unary_kernel_forward_e5m2_preserves_inf():
     """UnaryKernel.forward() preserves Inf for e5m2 (direct kernel call)."""
     from tileops.kernels.elementwise import ExpKernel
