@@ -640,6 +640,7 @@ class FusedGatedOp(Op):
         M: Number of rows.
         N: Half column dim (output width).
         dtype: Torch dtype.
+        strategy: Kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -653,6 +654,7 @@ class FusedGatedOp(Op):
         M: int,
         N: int,
         dtype: torch.dtype,
+        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -666,8 +668,11 @@ class FusedGatedOp(Op):
         self.M = M
         self.N = N
         self.dtype = dtype
+        self.strategy = strategy
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](M, N, dtype, tune=tune)
+        self.kernel = self.kernel_map[self._op_name](
+            M, N, dtype, strategy=strategy, tune=tune,
+        )
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
