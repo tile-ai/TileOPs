@@ -655,7 +655,9 @@ class BinaryKernel(Kernel):
         b_strides: Strides for input b (0 means broadcast).
         a_numel: Number of elements in a.
         b_numel: Number of elements in b.
-        strategy: One of "direct", "explicit_parallel".
+        strategy: One of "direct", "explicit_parallel", "register_copy".
+            If "register_copy" is requested but inputs require broadcast,
+            silently downgrades to "explicit_parallel".
         config: Optional dict with "threads" and "num_per_thread".
         tune: Whether to autotune.
     """
