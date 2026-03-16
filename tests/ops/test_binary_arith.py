@@ -1004,5 +1004,44 @@ def test_register_copy_downgrades_on_broadcast() -> None:
         torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
+# ---------------------------------------------------------------------------
+# tune=True regression test (must not crash)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_binary_tune_true_does_not_crash() -> None:
+    """tune=True must not crash even though op_func closures are not serializable.
+
+    The autotuner should fall back to default_config with a warning instead of
+    raising an AssertionError about non-serializable cell contents.
+    """
+    import warnings
+
+    shape = (4096,)
+    dtype = torch.float16
+
+    for op_cls in (AddOp, MaximumOp, MinimumOp):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype, tune=True)
+        # Should have produced a warning about serialization fallback
+        fallback_warnings = [
+            w for w in caught
+            if "not serializable" in str(w.message) or "falling back" in str(w.message)
+        ]
+        assert len(fallback_warnings) >= 1, (
+            f"{op_cls.__name__} with tune=True did not emit fallback warning; "
+            f"caught: {[str(w.message) for w in caught]}"
+        )
+        # Must still produce correct results
+        a = torch.randn(*shape, device="cuda", dtype=dtype)
+        b = torch.randn(*shape, device="cuda", dtype=dtype)
+        with torch.no_grad():
+            out = op(a, b)
+        assert out.shape == a.shape
+        assert out.dtype == dtype
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

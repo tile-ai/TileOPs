@@ -805,6 +805,27 @@ class BinaryKernel(Kernel):
             for n in npt_opts
         ]
 
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
+        """Override to handle serialization failures in the TileLang autotuner.
+
+        BinaryKernel JIT functions capture op_func closures that the autotuner
+        subprocess cannot serialize.  Catch the error and fall back to the
+        default config so that ``tune=True`` never crashes.
+        """
+        import warnings
+
+        try:
+            super().autotune(warmup=warmup, rep=rep)
+        except (AssertionError, Exception) as exc:
+            if "not serializable" in str(exc) or "pickle" in str(exc).lower():
+                warnings.warn(  # noqa: B028
+                    f"{self.__class__.__name__} autotuning failed "
+                    f"(op_func is not serializable); falling back to "
+                    f"default_config.")
+                self.config = dict(self.default_config)
+            else:
+                raise
+
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
