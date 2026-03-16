@@ -127,26 +127,46 @@ def _run_and_compare(total_tokens: int, top_k: int, num_experts: int, block_size
         f"num_tokens_post_pad mismatch: got {num_post_pad.item()}, expected {ref_num.item()}"
     )
 
+    numel = topk_ids.numel()
     n = ref_num.item()
-
-    # sorted_token_ids: first n elements must be a permutation-equivalent
-    # (same multiset of real token indices per expert block)
-    got_sorted = sorted_ids[:n].cpu()
-    ref_sorted_n = ref_sorted[:n].cpu()
-
-    # Group by block and compare sorted contents within each block
-    for b in range(n // block_size):
-        got_block = sorted(got_sorted[b * block_size:(b + 1) * block_size].tolist())
-        ref_block = sorted(ref_sorted_n[b * block_size:(b + 1) * block_size].tolist())
-        assert got_block == ref_block, (
-            f"Block {b} mismatch: got {got_block}, expected {ref_block}"
-        )
+    num_blocks = n // block_size
 
     # expert_ids must match exactly
-    num_blocks = n // block_size
     assert torch.equal(expert_ids[:num_blocks].cpu(), ref_expert[:num_blocks].cpu()), (
         f"expert_ids mismatch:\n  got: {expert_ids[:num_blocks].cpu()}\n  ref: {ref_expert[:num_blocks].cpu()}"
     )
+
+    # sorted_token_ids: for each expert, the set of real token indices must match.
+    # We do not require a specific intra-expert ordering because the parallel
+    # sort kernel uses atomicAdd whose order is non-deterministic.
+    got_sorted = sorted_ids[:n].cpu().tolist()
+    ref_sorted_n = ref_sorted[:n].cpu().tolist()
+
+    # Build per-expert token sets from got and ref using expert_ids
+    eids = expert_ids[:num_blocks].cpu().tolist()
+    for e in range(num_experts):
+        got_tokens = sorted(
+            tok
+            for b, eid in enumerate(eids)
+            if eid == e
+            for tok in got_sorted[b * block_size:(b + 1) * block_size]
+            if tok < numel
+        )
+        ref_tokens = sorted(
+            tok
+            for b, eid in enumerate(eids)
+            if eid == e
+            for tok in ref_sorted_n[b * block_size:(b + 1) * block_size]
+            if tok < numel
+        )
+        assert got_tokens == ref_tokens, (
+            f"Expert {e} token set mismatch:\n  got: {got_tokens}\n  ref: {ref_tokens}"
+        )
+
+    # Sentinel slots must be filled with numel
+    got_flat = sorted_ids[:n].cpu()
+    padding_mask = got_flat >= numel
+    assert (got_flat[padding_mask] == numel).all(), "Padding slots must equal sentinel (numel)"
 
 
 # ---------------------------------------------------------------------------

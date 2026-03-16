@@ -8,23 +8,25 @@ MoE grouped GEMM:
   expert_ids        [num_blocks]             - expert index per GEMM block
   num_tokens_post_pad [1]                   - total padded token count
 
-Algorithm:
+Algorithm (single fused kernel):
 
-  TileLang Kernel 1 - count:
-    * Count tokens per expert via global-memory atomicAdd.
+  Step 1 - count:
+    * Zero s_counts in shared memory.
+    * Count tokens per expert via shared-memory atomicAdd.
 
-  TileLang Kernel 2 - align:
-    * Thread 0 computes exclusive prefix-sum of padded counts.
-    * Writes expert_ids (binary search) and num_tokens_post_pad.
-    * Copies padded prefix-sum into cumsum[] for the sort step.
-    * Fills sorted_token_ids with sentinel (numel).
+  Step 2 - warp-scan prefix-sum:
+    * Warp-level inclusive scan (tvm_warp_shuffle_up) of padded counts.
+    * Inter-warp exclusive scan (for->if pattern).
+    * Writes cumsum[] to both shared s_cumsum and global output.
+    * Writes num_tokens_post_pad.
 
-  PyTorch sort step:
-    * torch.argsort(topk_ids, stable=True) gives expert-sorted token order.
-    * Computes each token's slot = cumsum[eid] + local_rank_within_expert.
-    * Scatters token indices into sorted_token_ids.
-    (TileLang does not support dynamic-index atomic_add with return_prev on
-    global memory, so this step is implemented in PyTorch.)
+  Step 3 - fill expert_ids (linear, no binary search):
+    * Thread tx < num_experts owns blocks [cumsum[tx]/bs, cumsum[tx+1]/bs).
+    * Writes expert_ids[blk] = tx directly — O(total_blocks) total work.
+
+  Step 4 - sentinel fill + scatter sort:
+    * Fill sorted_token_ids with sentinel (numel).
+    * Reuse s_cumsum as s_offset; each thread atomically claims its slot.
 
 Reference: sgl-kernel/csrc/moe/moe_align_kernel.cu
 """
@@ -43,126 +45,127 @@ __all__ = ["moe_align_kernel"]
 _THREADS = 1024
 
 
-def _make_count_kernel(numel: int, num_experts: int):
-    """Kernel 1: count tokens per expert into counts[] via atomicAdd."""
-
-    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
-    def _count(threads: int):
-
-        @T.prim_func
-        def _count_main(
-            topk_ids: T.Tensor([numel], "int32"),  # noqa: F821
-            counts: T.Tensor([num_experts], "int32"),  # noqa: F821
-        ):
-            with T.Kernel(T.ceildiv(numel, threads), threads=threads) as (bx,):
-                tx = T.get_thread_binding()
-                idx = bx * threads + tx
-                if idx < numel:
-                    T.atomic_add(counts[topk_ids[idx]], 1)
-
-        return _count_main
-
-    return _count
-
-
-def _make_align_kernel(numel: int, num_experts: int, block_size: int):
-    """Kernel 2: prefix-sum + expert_ids + sentinel fill + write cumsum."""
+def _make_fused_kernel(numel: int, num_experts: int, block_size: int):
+    """Single fused kernel: count → warp-scan → expert_ids → sentinel fill → sort."""
     max_padded = numel + (num_experts + 1) * (block_size - 1)
     max_num_blocks = math.ceil(max_padded / block_size)
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
-    def _align(threads: int):
+    def _fused(threads: int):
 
         @T.prim_func
-        def _align_main(
-            counts: T.Tensor([num_experts], "int32"),  # noqa: F821
-            sorted_token_ids: T.Tensor([max_padded], "int32"),  # noqa: F821
-            expert_ids: T.Tensor([max_num_blocks], "int32"),  # noqa: F821
-            num_tokens_post_pad: T.Tensor([1], "int32"),  # noqa: F821
-            cumsum: T.Tensor([num_experts + 1], "int32"),  # noqa: F821
+        def _fused_main(
+            flat: T.Tensor([numel], "int32"),                    # noqa: F821
+            sorted_token_ids: T.Tensor([max_padded], "int32"),   # noqa: F821
+            expert_ids: T.Tensor([max_num_blocks], "int32"),     # noqa: F821
+            num_tokens_post_pad: T.Tensor([1], "int32"),         # noqa: F821
+            cumsum: T.Tensor([num_experts + 1], "int32"),        # noqa: F821
         ):
             with T.Kernel(1, threads=threads) as (_,):
                 tx = T.get_thread_binding()
+                num_warps = threads // 32
 
-                s_prefix = T.alloc_shared([num_experts + 1], "int32")
+                # --- Shared memory ---
+                s_counts    = T.alloc_shared([num_experts], "int32")
+                s_vals      = T.alloc_shared([threads], "int32")
+                s_warp_sum  = T.alloc_shared([num_warps], "int32")
+                s_warp_excl = T.alloc_shared([num_warps], "int32")
+                s_total     = T.alloc_shared([1], "int32")
+                s_cumsum    = T.alloc_shared([num_experts + 1], "int32")
 
-                # Thread 0: serial prefix-sum of padded counts
-                if tx == 0:
-                    s_prefix[0] = 0
-                    for e in T.serial(num_experts):
-                        padded = T.ceildiv(counts[e], block_size) * block_size
-                        s_prefix[e + 1] = s_prefix[e] + padded
-                    num_tokens_post_pad[0] = s_prefix[num_experts]
-
+                # Step 1: zero s_counts
+                for i in T.serial(T.ceildiv(num_experts, threads)):
+                    idx = i * threads + tx
+                    if idx < num_experts:
+                        s_counts[idx] = T.int32(0)
                 T.sync_threads()
 
-                # Write padded cumsum to global (used by PyTorch sort step)
-                for i in T.serial(T.ceildiv(num_experts + 1, threads)):
+                # Step 1: count tokens per expert
+                for i in T.serial(T.ceildiv(numel, threads)):
                     idx = i * threads + tx
-                    if idx <= num_experts:
-                        cumsum[idx] = s_prefix[idx]
+                    if idx < numel:
+                        T.atomic_add(s_counts[flat[idx]], 1)
+                T.sync_threads()
 
-                # Fill expert_ids via binary search
-                total_padded = s_prefix[num_experts]
-                num_blocks = T.ceildiv(total_padded, block_size)
-                for i in T.serial(T.ceildiv(max_num_blocks, threads)):
-                    blk = i * threads + tx
-                    if blk < num_blocks:
-                        block_start = blk * block_size
-                        lo = T.alloc_var("int32")
-                        hi = T.alloc_var("int32")
-                        result = T.alloc_var("int32")
-                        lo = 0
-                        hi = num_experts - 1
-                        result = num_experts - 1
-                        for _ in T.serial(num_experts):
-                            mid = (lo + hi) // 2
-                            if s_prefix[mid] <= block_start and block_start < s_prefix[mid + 1]:
-                                result = mid
-                                lo = hi + 1  # break
-                            elif block_start < s_prefix[mid]:
-                                hi = mid - 1
-                            else:
-                                lo = mid + 1
-                        expert_ids[blk] = result
+                # Step 2: warp-scan prefix-sum on padded counts
+                lane    = tx % 32
+                warp_id = tx // 32
 
-                # Fill sorted_token_ids with sentinel (numel)
+                s_vals[tx] = (
+                    T.ceildiv(s_counts[tx], block_size) * block_size
+                    if tx < num_experts else T.int32(0)
+                )
+                T.sync_threads()
+
+                # Intra-warp inclusive scan via shuffle_up
+                for d in T.serial(5):
+                    stride = 1 << d
+                    up_val = T.tvm_warp_shuffle_up(
+                        T.uint32(0xFFFFFFFF), s_vals[tx], stride, 32, 32
+                    )
+                    if lane >= stride:
+                        s_vals[tx] = s_vals[tx] + up_val
+                T.sync_threads()
+
+                # Last lane of each warp records warp sum
+                if lane == 31:
+                    s_warp_sum[warp_id] = s_vals[tx]
+                T.sync_threads()
+
+                # Inter-warp exclusive scan (for->if pattern to write shared)
+                for w in T.serial(num_warps):
+                    if tx == 0:
+                        if w == 0:
+                            s_total[0] = T.int32(0)
+                        s_warp_excl[w] = s_total[0]
+                        s_total[0] = s_total[0] + s_warp_sum[w]
+                T.sync_threads()
+
+                # Convert inclusive scan -> exclusive cumsum entry
+                own_padded = (
+                    T.ceildiv(s_counts[tx], block_size) * block_size
+                    if tx < num_experts else T.int32(0)
+                )
+                excl = s_vals[tx] - own_padded + s_warp_excl[warp_id]
+
+                if tx < num_experts:
+                    s_cumsum[tx] = excl
+                    cumsum[tx] = excl
+                if tx == num_experts - 1:
+                    total = s_vals[tx] + s_warp_excl[warp_id]
+                    s_cumsum[num_experts] = total
+                    cumsum[num_experts] = total
+                    num_tokens_post_pad[0] = total
+                T.sync_threads()
+
+                # Step 3: fill expert_ids linearly — no binary search
+                if tx < num_experts:
+                    e_start = s_cumsum[tx]     // block_size
+                    e_end   = s_cumsum[tx + 1] // block_size
+                    for b in T.serial(T.ceildiv(max_num_blocks, num_experts)):
+                        blk = e_start + b
+                        if blk < e_end:
+                            expert_ids[blk] = tx
+                T.sync_threads()
+
+                # Step 4: fill sentinel
                 for i in T.serial(T.ceildiv(max_padded, threads)):
                     idx = i * threads + tx
                     if idx < max_padded:
                         sorted_token_ids[idx] = numel
+                T.sync_threads()
 
-        return _align_main
+                # Step 4: scatter token indices (reuse s_cumsum as s_offset)
+                for i in T.serial(T.ceildiv(numel, threads)):
+                    idx = i * threads + tx
+                    if idx < numel:
+                        eid  = flat[idx]
+                        slot = T.atomic_add(s_cumsum[eid], 1, return_prev=True)
+                        sorted_token_ids[slot] = idx
 
-    return _align
+        return _fused_main
 
-
-def _sort_tokens(
-    flat: torch.Tensor,
-    sorted_token_ids: torch.Tensor,
-    counts: torch.Tensor,
-    cumsum: torch.Tensor,
-    numel: int,
-    num_experts: int,
-) -> None:
-    """PyTorch sort step: scatter token indices into sorted_token_ids.
-
-    Computes each token's slot = cumsum[eid] + local_rank_within_expert,
-    where local_rank is derived from the unpadded counts prefix-sum.
-    """
-    order = torch.argsort(flat.long(), stable=True)  # expert-sorted token indices
-    sorted_eids = flat[order]  # expert id for each sorted position
-
-    # Unpadded exclusive prefix-sum for computing local ranks
-    cumsum_unpadded = torch.zeros(num_experts + 1, dtype=torch.int32, device=flat.device)
-    cumsum_unpadded[1:] = counts.cumsum(0)
-
-    local_rank = (
-        torch.arange(numel, dtype=torch.int32, device=flat.device)
-        - cumsum_unpadded[sorted_eids.long()]
-    )
-    slots = (cumsum[sorted_eids.long()] + local_rank).long()
-    sorted_token_ids[slots] = order.int()
+    return _fused
 
 
 class moe_align_kernel(Kernel):
@@ -195,8 +198,7 @@ class moe_align_kernel(Kernel):
         self.num_experts = num_experts
         self.block_size = block_size
 
-        self._count_fn = _make_count_kernel(numel, num_experts)
-        self._align_fn = _make_align_kernel(numel, num_experts, block_size)
+        self._fused_fn = _make_fused_kernel(numel, num_experts, block_size)
 
         self.init_config(config, tune=False)
 
@@ -227,21 +229,13 @@ class moe_align_kernel(Kernel):
         max_padded = self.numel + (self.num_experts + 1) * (self.block_size - 1)
         max_num_blocks = math.ceil(max_padded / self.block_size)
 
-        counts = torch.zeros(self.num_experts, dtype=torch.int32, device=flat.device)
-        sorted_token_ids = torch.empty(max_padded, dtype=torch.int32, device=flat.device)
-        expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=flat.device)
+        sorted_token_ids    = torch.empty(max_padded, dtype=torch.int32, device=flat.device)
+        expert_ids          = torch.empty(max_num_blocks, dtype=torch.int32, device=flat.device)
         num_tokens_post_pad = torch.empty(1, dtype=torch.int32, device=flat.device)
-        cumsum = torch.zeros(self.num_experts + 1, dtype=torch.int32, device=flat.device)
+        cumsum              = torch.zeros(self.num_experts + 1, dtype=torch.int32,
+                                          device=flat.device)
 
-        # Kernel 1: count tokens per expert
-        count_fn = self._count_fn(threads)
-        count_fn(flat, counts)
-
-        # Kernel 2: prefix-sum + expert_ids + sentinel fill
-        align_fn = self._align_fn(threads)
-        align_fn(counts, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
-
-        # Sort step: scatter token indices (PyTorch, stable argsort)
-        _sort_tokens(flat, sorted_token_ids, counts, cumsum, self.numel, self.num_experts)
+        fused_fn = self._fused_fn(threads)
+        fused_fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
 
         return sorted_token_ids, expert_ids, num_tokens_post_pad
