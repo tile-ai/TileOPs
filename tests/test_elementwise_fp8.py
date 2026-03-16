@@ -440,6 +440,62 @@ def test_fp8_accumulation_in_higher_precision():
 
 
 # ---------------------------------------------------------------------------
+# Shared helper: _wrap_fp8_accumulation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_is_module_private():
+    """_wrap_fp8_accumulation exists and is module-private (underscore prefix)."""
+    from tileops.kernels import elementwise
+
+    assert hasattr(elementwise, "_wrap_fp8_accumulation")
+    assert elementwise._wrap_fp8_accumulation.__name__ == "_wrap_fp8_accumulation"
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_noop_for_fp16():
+    """Non-fp8 dtypes return the original op unchanged."""
+    from tileops.kernels.elementwise import _wrap_fp8_accumulation
+
+    sentinel = lambda x: x  # noqa: E731
+    result = _wrap_fp8_accumulation(sentinel, torch.float16, "float16")
+    assert result is sentinel, "Non-fp8 dtype should return original op unchanged"
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_wraps_for_e4m3fn():
+    """e4m3fn returns a different (wrapped) callable."""
+    from tileops.kernels.elementwise import _wrap_fp8_accumulation
+
+    sentinel = lambda x: x  # noqa: E731
+    result = _wrap_fp8_accumulation(sentinel, torch.float8_e4m3fn, "float8_e4m3fn")
+    assert result is not sentinel, "e4m3fn should return a wrapped op"
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_wraps_for_e5m2():
+    """e5m2 returns a different (wrapped) callable."""
+    from tileops.kernels.elementwise import _wrap_fp8_accumulation
+
+    sentinel = lambda x: x  # noqa: E731
+    result = _wrap_fp8_accumulation(sentinel, torch.float8_e5m2, "float8_e5m2")
+    assert result is not sentinel, "e5m2 should return a wrapped op"
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_arity2():
+    """Binary arity (2) wraps correctly for fp8."""
+    from tileops.kernels.elementwise import _wrap_fp8_accumulation
+
+    sentinel = lambda a, b: a + b  # noqa: E731
+    result = _wrap_fp8_accumulation(
+        sentinel, torch.float8_e4m3fn, "float8_e4m3fn", arity=2,
+    )
+    assert result is not sentinel, "e4m3fn binary should return a wrapped op"
+
+
+# ---------------------------------------------------------------------------
 # Unsupported dtype rejection
 # ---------------------------------------------------------------------------
 
