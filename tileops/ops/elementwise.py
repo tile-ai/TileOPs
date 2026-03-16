@@ -1461,14 +1461,12 @@ class WhereOp(Op):
         self, cond: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
     ) -> torch.Tensor:
         orig_shape = x.shape
-        cond_1d = cond if cond.dtype == torch.bool else cond.bool()
-        if not cond_1d.is_contiguous() or cond_1d.ndim != 1:
-            cond_1d = cond_1d.contiguous().view(-1)
-        # Pack bool -> uint8 for vectorized T.copy in the kernel
-        cond_u8 = cond_1d.view(torch.uint8)
-        x_1d = x if (x.is_contiguous() and x.ndim == 1) else x.contiguous().view(-1)
-        y_1d = y if (y.is_contiguous() and y.ndim == 1) else y.contiguous().view(-1)
-        return self.kernel(cond_u8, x_1d, y_1d).view(orig_shape)
+        # Fast path: cast to bool if needed, then flatten + pack to uint8
+        # for vectorized T.copy in the kernel.
+        cond_flat = cond.contiguous().view(-1) if cond.dtype == torch.bool else cond.bool().contiguous().view(-1)
+        x_flat = x.contiguous().view(-1)
+        y_flat = y.contiguous().view(-1)
+        return self.kernel(cond_flat.view(torch.uint8), x_flat, y_flat).view(orig_shape)
 
     def forward(
         self, cond: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
@@ -1551,13 +1549,11 @@ class MaskedFillOp(Op):
 
     def _eager_forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
-        mask_1d = mask if mask.dtype == torch.bool else mask.bool()
-        if not mask_1d.is_contiguous() or mask_1d.ndim != 1:
-            mask_1d = mask_1d.contiguous().view(-1)
-        # Pack bool -> uint8 for vectorized T.copy in the kernel
-        mask_u8 = mask_1d.view(torch.uint8)
-        x_1d = x if (x.is_contiguous() and x.ndim == 1) else x.contiguous().view(-1)
-        return self.kernel(x_1d, mask_u8).view(orig_shape)
+        # Fast path: cast to bool if needed, then flatten + pack to uint8
+        # for vectorized T.copy in the kernel.
+        mask_flat = mask.contiguous().view(-1) if mask.dtype == torch.bool else mask.bool().contiguous().view(-1)
+        x_flat = x.contiguous().view(-1)
+        return self.kernel(x_flat, mask_flat.view(torch.uint8)).view(orig_shape)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:

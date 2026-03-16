@@ -1886,6 +1886,10 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
     perform vectorized loads (TileLang does not vectorize bool tensors).
     Each uint8 element is 0 or 1; the kernel loads it into a register
     fragment and unpacks per-element with a != 0 comparison.
+
+    Writes the result back into the x register fragment (in-place) to
+    reduce register pressure and avoid a fourth data-typed fragment
+    allocation.
     """
     block_size = threads * npt
 
@@ -1902,16 +1906,15 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
                 c_reg = T.alloc_fragment((block_size,), "uint8")
                 x_reg = T.alloc_fragment((block_size,), dtype)
                 y_reg = T.alloc_fragment((block_size,), dtype)
-                o_reg = T.alloc_fragment((block_size,), dtype)
                 T.copy(cond[bx * block_size : (bx + 1) * block_size], c_reg)
                 T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 T.copy(y_in[bx * block_size : (bx + 1) * block_size], y_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    o_reg[k] = T.if_then_else(
+                    x_reg[k] = T.if_then_else(
                         c_reg[k] != T.cast(0, "uint8"), x_reg[k], y_reg[k],
                     )
-                T.copy(o_reg, out[bx * block_size : (bx + 1) * block_size])
+                T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -1949,8 +1952,8 @@ class WhereKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 8 if self.dtype == torch.float32 else 32
-        return {"threads": 256, "num_per_thread": npt}
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 512, "num_per_thread": npt}
 
     def forward(self, cond, x, y):
         cfg = self.config
@@ -2037,6 +2040,10 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
     perform vectorized loads (TileLang does not vectorize bool tensors).
     Each uint8 element is 0 or 1; the kernel loads it into a register
     fragment and unpacks per-element with a != 0 comparison.
+
+    Writes the result back into the x register fragment (in-place) to
+    reduce register pressure and avoid a third data-typed fragment
+    allocation.
     """
     block_size = threads * npt
 
@@ -2051,16 +2058,15 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 m_reg = T.alloc_fragment((block_size,), "uint8")
                 x_reg = T.alloc_fragment((block_size,), dtype)
-                o_reg = T.alloc_fragment((block_size,), dtype)
                 T.copy(mask[bx * block_size : (bx + 1) * block_size], m_reg)
                 T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
                     fv = T.cast(fill_value, dtype)
-                    o_reg[k] = T.if_then_else(
+                    x_reg[k] = T.if_then_else(
                         m_reg[k] != T.cast(0, "uint8"), fv, x_reg[k],
                     )
-                T.copy(o_reg, out[bx * block_size : (bx + 1) * block_size])
+                T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -2100,8 +2106,8 @@ class MaskedFillKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 8 if self.dtype == torch.float32 else 32
-        return {"threads": 256, "num_per_thread": npt}
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 512, "num_per_thread": npt}
 
     def forward(self, x, mask):
         cfg = self.config
