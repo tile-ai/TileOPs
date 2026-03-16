@@ -341,7 +341,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
         def fla_fwdbwd():
             q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
             o, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
-            o.backward(do_fla, retain_graph=True)
+            o.backward(do_fla)
             return q_fla.grad, k_fla.grad, v_fla.grad
 
         result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
