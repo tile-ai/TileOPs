@@ -967,5 +967,42 @@ def test_minimum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
 
 
+# ---------------------------------------------------------------------------
+# register_copy broadcast downgrade regression test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_register_copy_downgrades_on_broadcast() -> None:
+    """Explicitly requesting register_copy on broadcast shapes must not crash.
+
+    register_copy only works for same-shape contiguous inputs. When the
+    caller passes strategy='register_copy' with broadcast shapes, the kernel
+    must silently downgrade to explicit_parallel and produce correct results.
+    """
+    a_shape = (2, 64, 128)
+    b_shape = (1, 1, 128)
+    dtype = torch.float16
+
+    for op_cls, ref_fn in [
+        (AddOp, lambda a, b: a + b),
+        (MaximumOp, lambda a, b: torch.maximum(a, b)),
+    ]:
+        op = op_cls(
+            a_shape=a_shape, b_shape=b_shape, dtype=dtype,
+            strategy="register_copy",
+        )
+        # Strategy must have been downgraded
+        assert op.kernel.strategy == "explicit_parallel", (
+            f"{op_cls.__name__} did not downgrade register_copy for broadcast inputs"
+        )
+        a = torch.randn(*a_shape, device="cuda", dtype=dtype)
+        b = torch.randn(*b_shape, device="cuda", dtype=dtype)
+        ref = ref_fn(a, b)
+        with torch.no_grad():
+            out = op(a, b)
+        torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

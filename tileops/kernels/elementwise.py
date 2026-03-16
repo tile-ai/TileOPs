@@ -695,7 +695,13 @@ class BinaryKernel(Kernel):
             coalesced_shape, a_strides, b_strides,
         )
         if strategy is not None:
-            self.strategy = strategy
+            # register_copy requires same-shape contiguous inputs (no
+            # broadcast); silently downgrade to explicit_parallel when
+            # the caller requests register_copy on broadcast shapes.
+            if strategy == "register_copy" and not self._same_shape:
+                self.strategy = "explicit_parallel"
+            else:
+                self.strategy = strategy
         elif self._same_shape:
             # register_copy gives vectorized 128-bit loads, ~2-3x faster
             # for complex op_funcs that block TVM's auto-vectorizer.
