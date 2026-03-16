@@ -3,6 +3,7 @@ from typing import Tuple
 import pytest
 import torch
 
+from tests.ops.gla_test_utils import cosine_sim, get_tolerances
 from tests.test_base import FixtureBase
 from tileops.ops import GLABwdOp, GLAFwdOp
 
@@ -137,22 +138,6 @@ def _fla_autograd_bwd(
 # =============================================================================
 
 
-def _get_tolerances(dtype: torch.dtype) -> dict:
-    if dtype == torch.float32:
-        return {"atol": 1e-2, "rtol": 1e-2}
-    elif dtype == torch.float16:
-        return {"atol": 5e-2, "rtol": 5e-2}
-    else:  # bfloat16
-        return {"atol": 1e-1, "rtol": 1e-1}
-
-
-def _cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Compute cosine similarity between two tensors (flattened)."""
-    a_flat = a.float().flatten()
-    b_flat = b.float().flatten()
-    return (torch.dot(a_flat, b_flat) / (a_flat.norm() * b_flat.norm() + 1e-12)).item()
-
-
 class GLABwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
@@ -203,9 +188,9 @@ def test_gla_bwd(
         fla_grads = {"dq": fla_dq, "dk": fla_dk, "dv": fla_dv, "dg": fla_dg}
 
         # Validate FLA vs torch reference alignment
-        tols = _get_tolerances(torch.float32)
+        tols = get_tolerances(torch.float32)
         for name in ["dq", "dk", "dv", "dg"]:
-            cos = _cosine_sim(ref_grads[name], fla_grads[name])
+            cos = cosine_sim(ref_grads[name], fla_grads[name])
             print(f"  FLA vs ref {name}: cosine={cos:.6f}")
             assert cos > 0.99, f"FLA vs ref {name} cosine too low: {cos:.6f}"
 
@@ -221,9 +206,9 @@ def test_gla_bwd(
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
     # Validate TileOPs vs torch reference
-    tols = _get_tolerances(dtype)
+    tols = get_tolerances(dtype)
     for name in ["dq", "dk", "dv", "dg"]:
-        cos = _cosine_sim(ref_grads[name], op_grads[name])
+        cos = cosine_sim(ref_grads[name], op_grads[name])
         print(f"  TileOPs vs ref {name}: cosine={cos:.6f}")
         torch.testing.assert_close(
             op_grads[name].float(), ref_grads[name].float(), **tols,
@@ -233,7 +218,7 @@ def test_gla_bwd(
     # Validate TileOPs vs FLA (if available)
     if chunk_gla is not None:
         for name in ["dq", "dk", "dv", "dg"]:
-            cos = _cosine_sim(fla_grads[name], op_grads[name])
+            cos = cosine_sim(fla_grads[name], op_grads[name])
             print(f"  TileOPs vs FLA {name}: cosine={cos:.6f}")
             assert cos > 0.99, f"TileOPs vs FLA {name} cosine too low: {cos:.6f}"
 

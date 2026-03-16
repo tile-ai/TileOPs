@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.ops.gla_test_utils import cosine_sim, get_tolerances
 from tests.ops.test_gla_bwd import _gla_fwd_torch_ref
 from tests.test_base import FixtureBase
 from tileops.ops import GLAFwdOp
@@ -9,25 +10,6 @@ try:
     from fla.ops.gla import chunk_gla
 except ImportError:
     chunk_gla = None
-
-
-# =============================================================================
-# Helpers
-# =============================================================================
-
-def _get_tolerances(dtype: torch.dtype) -> dict:
-    if dtype == torch.float32:
-        return {"atol": 1e-2, "rtol": 1e-2}
-    elif dtype == torch.float16:
-        return {"atol": 5e-2, "rtol": 5e-2}
-    else:  # bfloat16
-        return {"atol": 1e-1, "rtol": 1e-1}
-
-
-def _cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
-    a_flat = a.float().flatten()
-    b_flat = b.float().flatten()
-    return (torch.dot(a_flat, b_flat) / (a_flat.norm() * b_flat.norm() + 1e-12)).item()
 
 
 # =============================================================================
@@ -74,7 +56,7 @@ def test_gla_fwd(
     # --- FLA reference (if available) ---
     if chunk_gla is not None:
         fla_o, _ = chunk_gla(q.float(), k.float(), v.float(), g.float(), scale=scale)
-        cos = _cosine_sim(ref_o, fla_o)
+        cos = cosine_sim(ref_o, fla_o)
         print(f"  FLA vs ref o: cosine={cos:.6f}")
         assert cos > 0.99, f"FLA vs ref o cosine too low: {cos:.6f}"
 
@@ -83,8 +65,8 @@ def test_gla_fwd(
                        output_final_state=False, dtype=dtype, tune=tune)
     op_o, _ = fwd_op.forward(q, k, v, g)
 
-    tols = _get_tolerances(dtype)
-    cos = _cosine_sim(ref_o, op_o)
+    tols = get_tolerances(dtype)
+    cos = cosine_sim(ref_o, op_o)
     print(f"  TileOPs vs ref o: cosine={cos:.6f}")
     torch.testing.assert_close(
         op_o.float(), ref_o.float(), **tols,
@@ -93,7 +75,7 @@ def test_gla_fwd(
 
     # --- TileOPs vs FLA ---
     if chunk_gla is not None:
-        cos = _cosine_sim(fla_o, op_o)
+        cos = cosine_sim(fla_o, op_o)
         print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
         assert cos > 0.99, f"TileOPs vs FLA o cosine too low: {cos:.6f}"
 

@@ -335,7 +335,7 @@ def _gla_fwd_o_kernel(
 # Custom op wrappers (kept for torch.compile compatibility)
 # ---------------------------------------------------------------------------
 
-@torch.library.custom_op("top::gla_fwd_wrapped_kernel", mutates_args=())
+@torch.library.custom_op("top::gla_fwd_wrapped_kernel", mutates_args=("h_out",))
 def _gla_fwd_wrapped_kernel(
     batch: int,
     seq_len: int,
