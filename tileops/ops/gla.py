@@ -130,7 +130,7 @@ class GLABwdOp(Op):
         dim_v: int,
         chunk_size: int = 64,
         scale: float = -1.0,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:

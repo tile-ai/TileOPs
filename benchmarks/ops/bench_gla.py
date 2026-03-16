@@ -318,9 +318,9 @@ def test_gla_fwdbwd_bench(
         result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
         BenchmarkReport.record("gla_fwdbwd", locals(), result_fla, tag="fla")
     else:
-        def torch_fwdbwd():
+        def ref_autograd_fwdbwd():
             return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
-        result_bl = _profile_manual(torch_fwdbwd, bm, warmup=50)
+        result_bl = _profile_manual(ref_autograd_fwdbwd, bm, warmup=50)
         BenchmarkReport.record("gla_fwdbwd", locals(), result_bl, tag="baseline")
 
 
