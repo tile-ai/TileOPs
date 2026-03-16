@@ -40,7 +40,7 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["moe_align_kernel"]
+__all__ = ["PermuteAlignKernel"]
 
 _THREADS = 1024
 
@@ -168,8 +168,8 @@ def _make_fused_kernel(numel: int, num_experts: int, block_size: int):
     return _fused
 
 
-class moe_align_kernel(Kernel):
-    """MoE token alignment kernel.
+class PermuteAlignKernel(Kernel):
+    """MoE token permutation and alignment kernel.
 
     Converts ``topk_ids`` into the three index arrays required by MoE grouped GEMM.
 
@@ -180,7 +180,7 @@ class moe_align_kernel(Kernel):
         config: Optional config dict (unused; kept for API consistency).
 
     Example:
-        >>> kernel = moe_align_kernel(numel=32, num_experts=8, block_size=16)
+        >>> kernel = PermuteAlignKernel(numel=32, num_experts=8, block_size=16)
         >>> sorted_ids, expert_ids, num_post_pad = kernel(topk_ids)
     """
 

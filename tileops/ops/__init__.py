@@ -37,6 +37,7 @@ from .norm import (
     LayerNormOp,
     RmsNormOp,
 )
+from .moe import PermuteAlignOp
 from .op import Op
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
@@ -116,6 +117,7 @@ __all__ = [
     "NSAFwdVarlenOp",
     "NSATopkVarlenOp",
     "Op",
+    "PermuteAlignOp",
     "RmsNormOp",
     "RopeLlama31Op",
     "RopeLongRopeOp",

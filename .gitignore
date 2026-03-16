@@ -64,3 +64,5 @@ secrets.yml
 docs/plans/
 .humanize*
 .foundry/runs/
+.worktrees/
+.claude/worktrees/
