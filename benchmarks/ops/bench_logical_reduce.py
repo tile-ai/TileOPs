@@ -14,14 +14,23 @@ class LogicalReduceBenchFixture(FixtureBase):
         (
             "m, n, dtype, op_kind",
             [
+                # --- any ---
                 pytest.param(1024, 4096, torch.float16, "any", marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.bfloat16, "any", marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float32, "any", marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.int32, "any", marks=pytest.mark.full),
                 pytest.param(4096, 4096, torch.float16, "any", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float16, "all", marks=pytest.mark.smoke),
+                # --- all ---
+                pytest.param(1024, 4096, torch.float16, "all", marks=pytest.mark.full),
                 pytest.param(1024, 4096, torch.bfloat16, "all", marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float32, "all", marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.int32, "all", marks=pytest.mark.full),
                 pytest.param(4096, 4096, torch.float16, "all", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float16, "count_nonzero", marks=pytest.mark.smoke),
+                # --- count_nonzero ---
+                pytest.param(1024, 4096, torch.float16, "count_nonzero", marks=pytest.mark.full),
                 pytest.param(1024, 4096, torch.bfloat16, "count_nonzero", marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float32, "count_nonzero", marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.int32, "count_nonzero", marks=pytest.mark.full),
                 pytest.param(4096, 4096, torch.float16, "count_nonzero", marks=pytest.mark.full),
             ],
         ),
@@ -36,7 +45,12 @@ class LogicalReduceBenchTest(TestBase):
         self.op_kind = op_kind
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
+        if self.dtype in (torch.int32, torch.int64):
+            x = torch.randint(-5, 6, (self.m, self.n), dtype=self.dtype, device="cuda")
+        elif self.dtype == torch.bool:
+            x = torch.randint(0, 2, (self.m, self.n), dtype=torch.bool, device="cuda")
+        else:
+            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
