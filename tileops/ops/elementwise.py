@@ -1463,7 +1463,7 @@ class WhereOp(Op):
         orig_shape = x.shape
         # Fast path: cast to bool if needed, then flatten + pack to uint8
         # for vectorized T.copy in the kernel.
-        cond_flat = cond.contiguous().view(-1) if cond.dtype == torch.bool else cond.bool().contiguous().view(-1)
+        cond_flat = (cond if cond.dtype == torch.bool else cond.bool()).contiguous().view(-1)
         x_flat = x.contiguous().view(-1)
         y_flat = y.contiguous().view(-1)
         return self.kernel(cond_flat.view(torch.uint8), x_flat, y_flat).view(orig_shape)
@@ -1551,7 +1551,7 @@ class MaskedFillOp(Op):
         orig_shape = x.shape
         # Fast path: cast to bool if needed, then flatten + pack to uint8
         # for vectorized T.copy in the kernel.
-        mask_flat = mask.contiguous().view(-1) if mask.dtype == torch.bool else mask.bool().contiguous().view(-1)
+        mask_flat = (mask if mask.dtype == torch.bool else mask.bool()).contiguous().view(-1)
         x_flat = x.contiguous().view(-1)
         return self.kernel(x_flat, mask_flat.view(torch.uint8)).view(orig_shape)
 
