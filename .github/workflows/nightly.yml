@@ -34,19 +34,25 @@ jobs:
           TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
           TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
           TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
+          PIP_CACHE_DIR="/home/ci-runner/.cache/pip"
+          WHEEL_DIR="/home/ci-runner/.wheel-cache"
 
-          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
           {
             echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
             echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
             echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+            echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+            echo "WHEEL_DIR=${WHEEL_DIR}"
           } >> "$GITHUB_ENV"
 
           echo "Configured compile caches:"
           echo "  TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
           echo "  TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
           echo "  TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+          echo "  PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+          echo "  WHEEL_DIR=${WHEEL_DIR}"
         shell: bash
 
       - name: Validate GPU frequency
@@ -145,7 +151,13 @@ jobs:
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
           python -m pip install --upgrade pip setuptools wheel --no-user
-          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
+          FIND_LINKS_FLAG=""
+          if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
+            FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
+          fi
+          # shellcheck disable=SC2086
+          PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
+          pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
         shell: bash
 
       - name: Run benchmark ops
@@ -249,19 +261,25 @@ jobs:
           TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
           TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
           TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
+          PIP_CACHE_DIR="/home/ci-runner/.cache/pip"
+          WHEEL_DIR="/home/ci-runner/.wheel-cache"
 
-          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
           {
             echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
             echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
             echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+            echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+            echo "WHEEL_DIR=${WHEEL_DIR}"
           } >> "$GITHUB_ENV"
 
           echo "Configured compile caches:"
           echo "  TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
           echo "  TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
           echo "  TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+          echo "  PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+          echo "  WHEEL_DIR=${WHEEL_DIR}"
         shell: bash
 
       - name: Resolve persistent venv
@@ -316,7 +334,13 @@ jobs:
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
           python -m pip install --upgrade pip setuptools wheel --no-user
-          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'
+          FIND_LINKS_FLAG=""
+          if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
+            FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
+          fi
+          # shellcheck disable=SC2086
+          PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
+          pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
         shell: bash
 
       - name: Run full op tests
