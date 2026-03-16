@@ -2,6 +2,10 @@
 
 Compares forward and backward latency across sequence lengths and dtypes.
 
+When FLA is not installed, benchmarks still run using a pure-torch reference
+implementation as baseline (tagged "baseline"), so the nightly CI is never
+blocked by a missing optional dependency.
+
 Layout convention:
     TileOPs uses BHSD: q/k [B, H, S, DK], v [B, H, S, DV], g/beta [B, H, S].
     FLA uses BTHK:     q/k [B, T, H, K],  v [B, T, H, V],  g/beta [B, T, H].
@@ -13,14 +17,44 @@ from typing import Optional
 
 import pytest
 import torch
-from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+from tilelang.profiler import do_bench as _do_bench
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_gated_deltanet_bwd import _autograd_bwd_ref
 from tests.ops.test_gated_deltanet_fwd import GatedDeltaNetFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 
-from .bench_gated_deltanet_fla_validation import _profile_manual, _to_fla_layout
+try:
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+except ImportError:
+    chunk_gated_delta_rule = None
+
+
+def _to_fla_layout(q, k, v, g, beta):
+    """Convert TileOPs BHSD tensors to FLA BTHK layout."""
+    return (
+        q.permute(0, 2, 1, 3).contiguous(),
+        k.permute(0, 2, 1, 3).contiguous(),
+        v.permute(0, 2, 1, 3).contiguous(),
+        g.permute(0, 2, 1).contiguous(),
+        beta.permute(0, 2, 1).contiguous(),
+    )
+
+
+def _profile_manual(fn, bm, warmup=100, rep=100):
+    """Profile a function using do_bench with cupti/event fallback, returning a result dict."""
+    latency = _do_bench(fn, warmup=warmup, rep=rep, backend='cupti')
+    if latency <= 0:
+        latency = _do_bench(fn, warmup=warmup, rep=rep, backend='event')
+    result = {"latency_ms": latency}
+    flops = bm.calculate_flops()
+    if flops is not None:
+        result["tflops"] = flops / latency * 1e-9
+    memory = bm.calculate_memory()
+    if memory is not None:
+        result["bandwidth_tbs"] = memory / latency * 1e-9
+    return result
 
 # =============================================================================
 # Forward benchmark
@@ -43,13 +77,24 @@ class GatedDeltaNetFwdBenchmark(BenchmarkBase):
 class GatedDeltaNetVsFlaFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            (2, 1024, 4, 64, 64, 64, torch.float16, False),
+            # chunk_size=32
+            #(2, 1024, 4, 64, 64, 32, torch.float32, False),
+            #(2, 2048, 4, 64, 64, 32, torch.float32, False),
+            #(2, 4096, 4, 64, 64, 32, torch.float32, False),
+            #(2, 1024, 4, 64, 64, 32, torch.float16, False),
+            #(2, 2048, 4, 64, 64, 32, torch.float16, False),
+            (2, 4096, 4, 64, 64, 32, torch.float16, False),
+            #(2, 1024, 4, 64, 64, 32, torch.bfloat16, False),
+            #(2, 2048, 4, 64, 64, 32, torch.bfloat16, False),
+            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
+            # chunk_size=64
+            #(2, 1024, 4, 64, 64, 64, torch.float16, False),
             (2, 2048, 4, 64, 64, 64, torch.float16, False),
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
             (2, 32768, 4, 64, 64, 64, torch.float16, False),
-            (2, 1024, 4, 64, 64, 64, torch.bfloat16, False),
+            #(2, 1024, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
@@ -79,16 +124,21 @@ def test_gated_deltanet_vs_fla_fwd(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("gated_deltanet_fwd", locals(), result, tag="tileops")
 
-    # --- FLA (BTHK) ---
-    q, k, v, g, beta = inputs
-    scale = dim_k ** -0.5
-    q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
+    if chunk_gated_delta_rule is not None:
+        # --- FLA (BTHK) ---
+        q, k, v, g, beta = inputs
+        scale = dim_k ** -0.5
+        q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
 
-    def fla_fwd():
-        return chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
+        def fla_fwd():
+            return chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
 
-    result_fla = bm.profile(fla_fwd)
-    BenchmarkReport.record("gated_deltanet_fwd", locals(), result_fla, tag="fla")
+        result_fla = bm.profile(fla_fwd)
+        BenchmarkReport.record("gated_deltanet_fwd", locals(), result_fla, tag="fla")
+    else:
+        # --- Torch reference baseline ---
+        result_bl = bm.profile(test.ref_program, *inputs)
+        BenchmarkReport.record("gated_deltanet_fwd", locals(), result_bl, tag="baseline")
 
 
 # =============================================================================
@@ -112,12 +162,23 @@ class GatedDeltaNetBwdBenchmark(BenchmarkBase):
 class GatedDeltaNetVsFlaBwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            (2, 1024, 4, 64, 64, 64, torch.float16, False),
+            # chunk_size=32
+            #(2, 1024, 4, 64, 64, 32, torch.float32, False),
+            #(2, 2048, 4, 64, 64, 32, torch.float32, False),
+            #(2, 4096, 4, 64, 64, 32, torch.float32, False),
+            #(2, 1024, 4, 64, 64, 32, torch.float16, False),
+            #(2, 2048, 4, 64, 64, 32, torch.float16, False),
+            (2, 4096, 4, 64, 64, 32, torch.float16, False),
+            #(2, 1024, 4, 64, 64, 32, torch.bfloat16, False),
+            #(2, 2048, 4, 64, 64, 32, torch.bfloat16, False),
+            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
+            # chunk_size=64
+            #(2, 1024, 4, 64, 64, 64, torch.float16, False),
             (2, 2048, 4, 64, 64, 64, torch.float16, False),
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 1024, 4, 64, 64, 64, torch.bfloat16, False),
+            #(2, 1024, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
@@ -156,27 +217,34 @@ def test_gated_deltanet_vs_fla_bwd(
     result = bm.profile(bwd_op.forward, do, q, k, v, g, beta, S_fwd)
     BenchmarkReport.record("gated_deltanet_bwd", locals(), result, tag="tileops")
 
-    # --- FLA: bwd only via autograd (BTHK layout) ---
-    scale = DK ** -0.5
-    q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
-    do_fla = do.permute(0, 2, 1, 3).contiguous()  # [B,H,S,DV] -> [B,S,H,DV]
+    if chunk_gated_delta_rule is not None:
+        # --- FLA: bwd only via autograd (BTHK layout) ---
+        scale = DK ** -0.5
+        q_fla, k_fla, v_fla, g_fla, beta_fla = _to_fla_layout(q, k, v, g, beta)
+        do_fla = do.permute(0, 2, 1, 3).contiguous()  # [B,H,S,DV] -> [B,S,H,DV]
 
-    q_fla = q_fla.detach().requires_grad_(True)
-    k_fla = k_fla.detach().requires_grad_(True)
-    v_fla = v_fla.detach().requires_grad_(True)
-    g_fla = g_fla.detach().requires_grad_(True)
-    beta_fla = beta_fla.detach().requires_grad_(True)
+        q_fla = q_fla.detach().requires_grad_(True)
+        k_fla = k_fla.detach().requires_grad_(True)
+        v_fla = v_fla.detach().requires_grad_(True)
+        g_fla = g_fla.detach().requires_grad_(True)
+        beta_fla = beta_fla.detach().requires_grad_(True)
 
-    # Run fwd once to build computation graph, then time only backward
-    o_fla, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
+        # Run fwd once to build computation graph, then time only backward
+        o_fla, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
 
-    def fla_bwd():
-        q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
-        o_fla.backward(do_fla, retain_graph=True)
-        return q_fla.grad, k_fla.grad, v_fla.grad
+        def fla_bwd():
+            q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
+            o_fla.backward(do_fla, retain_graph=True)
+            return q_fla.grad, k_fla.grad, v_fla.grad
 
-    result_fla = _profile_manual(fla_bwd, bm)
-    BenchmarkReport.record("gated_deltanet_bwd", locals(), result_fla, tag="fla")
+        result_fla = _profile_manual(fla_bwd, bm)
+        BenchmarkReport.record("gated_deltanet_bwd", locals(), result_fla, tag="fla")
+    else:
+        # --- Torch autograd reference baseline ---
+        def torch_bwd():
+            return _autograd_bwd_ref(do, q, k, v, g, beta, BC)
+        result_bl = _profile_manual(torch_bwd, bm)
+        BenchmarkReport.record("gated_deltanet_bwd", locals(), result_bl, tag="baseline")
 
 
 # =============================================================================
@@ -200,12 +268,23 @@ class GatedDeltaNetFwdBwdBenchmark(BenchmarkBase):
 class GatedDeltaNetVsFlaFwdBwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            (2, 1024, 4, 64, 64, 64, torch.float16, False),
+            # chunk_size=32
+            #(2, 1024, 4, 64, 64, 32, torch.float32, False),
+            #(2, 2048, 4, 64, 64, 32, torch.float32, False),
+            #(2, 4096, 4, 64, 64, 32, torch.float32, False),
+            #(2, 1024, 4, 64, 64, 32, torch.float16, False),
+            #(2, 2048, 4, 64, 64, 32, torch.float16, False),
+            (2, 4096, 4, 64, 64, 32, torch.float16, False),
+            #(2, 1024, 4, 64, 64, 32, torch.bfloat16, False),
+            #(2, 2048, 4, 64, 64, 32, torch.bfloat16, False),
+            (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
+            # chunk_size=64
+            #(2, 1024, 4, 64, 64, 64, torch.float16, False),
             (2, 2048, 4, 64, 64, 64, torch.float16, False),
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 1024, 4, 64, 64, 64, torch.bfloat16, False),
+            #(2, 1024, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
@@ -249,23 +328,30 @@ def test_gated_deltanet_vs_fla_fwdbwd(
     result = _profile_manual(tileops_fwdbwd, bm, warmup=50)
     BenchmarkReport.record("gated_deltanet_fwdbwd", locals(), result, tag="tileops")
 
-    # --- FLA: fwd+bwd via autograd ---
-    scale = DK ** -0.5
-    q_fla = (q.data.permute(0, 2, 1, 3).contiguous()).detach().requires_grad_(True)
-    k_fla = (k.data.permute(0, 2, 1, 3).contiguous()).detach().requires_grad_(True)
-    v_fla = (v.data.permute(0, 2, 1, 3).contiguous()).detach().requires_grad_(True)
-    g_fla = (g.data.permute(0, 2, 1).contiguous()).detach().requires_grad_(True)
-    beta_fla = (beta.data.permute(0, 2, 1).contiguous()).detach().requires_grad_(True)
-    do_fla = do.permute(0, 2, 1, 3).contiguous()
+    if chunk_gated_delta_rule is not None:
+        # --- FLA: fwd+bwd via autograd ---
+        scale = DK ** -0.5
+        q_fla = (q.data.permute(0, 2, 1, 3).contiguous()).detach().requires_grad_(True)
+        k_fla = (k.data.permute(0, 2, 1, 3).contiguous()).detach().requires_grad_(True)
+        v_fla = (v.data.permute(0, 2, 1, 3).contiguous()).detach().requires_grad_(True)
+        g_fla = (g.data.permute(0, 2, 1).contiguous()).detach().requires_grad_(True)
+        beta_fla = (beta.data.permute(0, 2, 1).contiguous()).detach().requires_grad_(True)
+        do_fla = do.permute(0, 2, 1, 3).contiguous()
 
-    def fla_fwdbwd():
-        q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
-        o, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
-        o.backward(do_fla, retain_graph=True)
-        return q_fla.grad, k_fla.grad, v_fla.grad
+        def fla_fwdbwd():
+            q_fla.grad = k_fla.grad = v_fla.grad = g_fla.grad = beta_fla.grad = None
+            o, _ = chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
+            o.backward(do_fla, retain_graph=True)
+            return q_fla.grad, k_fla.grad, v_fla.grad
 
-    result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
-    BenchmarkReport.record("gated_deltanet_fwdbwd", locals(), result_fla, tag="fla")
+        result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
+        BenchmarkReport.record("gated_deltanet_fwdbwd", locals(), result_fla, tag="fla")
+    else:
+        # --- Torch autograd reference baseline ---
+        def torch_fwdbwd():
+            return _autograd_bwd_ref(do, q.data, k.data, v.data, g.data, beta.data, BC)
+        result_bl = _profile_manual(torch_fwdbwd, bm, warmup=50)
+        BenchmarkReport.record("gated_deltanet_fwdbwd", locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":
