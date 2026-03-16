@@ -4,9 +4,10 @@ The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment
 (with 0, which is neutral for sum/count), calls the kernel, and reshapes the
 output back. Output dtype is always int64.
 
-Supports any numeric dtype as input including torch.bool and complex types
-(bool and complex inputs are pre-converted to float32 before the TileLang
-kernel call because TileLang does not support those storage dtypes).
+Supports any numeric dtype as input including torch.bool, int32, int64, and
+complex types. Inputs with unsupported TileLang storage dtypes (bool, int32,
+int64, complex64, complex128) are pre-converted to float32 before the kernel
+call.
 """
 
 from typing import Dict, Optional
@@ -17,24 +18,14 @@ import torch.nn.functional as F
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
-from tileops.kernels.reduction.logical_reduce.fwd import _UNSUPPORTED_STORAGE_DTYPES
+from tileops.kernels.reduction.logical_reduce.fwd import (
+    _UNSUPPORTED_STORAGE_DTYPES,
+    to_logical_float32,
+)
 
 from ..op import Op
 
 __all__ = ["CountNonzeroOp"]
-
-
-def _to_logical_float32(x: torch.Tensor) -> torch.Tensor:
-    """Convert an unsupported-storage-dtype tensor to float32 for kernel dispatch.
-
-    - bool:       True -> 1.0, False -> 0.0
-    - int32/int64: direct cast to float32
-    - complex:    nonzero (either real or imaginary part != 0) -> 1.0, else 0.0
-    """
-    if x.dtype in (torch.bool, torch.int32, torch.int64):
-        return x.to(torch.float32)
-    # complex: element is "truthy" if real != 0 OR imag != 0
-    return ((x.real != 0) | (x.imag != 0)).to(torch.float32)
 
 
 class CountNonzeroOp(Op):
@@ -43,15 +34,15 @@ class CountNonzeroOp(Op):
     Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
     Padded positions use 0, which is neutral for sum/count.
 
-    Supports any numeric dtype including torch.bool and complex types. Inputs
-    with dtypes that TileLang cannot use as shared-memory storage (bool,
+    Supports any numeric dtype including torch.bool, int32, int64, and complex
+    types. Inputs with unsupported TileLang storage dtypes (bool, int32, int64,
     complex64, complex128) are pre-converted to float32 in forward().
 
     Args:
         M: Product of all leading dimensions.
         N: Last dimension size.
-        dtype: Input data type (any dtype including torch.bool, complex64,
-               complex128).
+        dtype: Input data type (float16, bfloat16, float32, int32, int64,
+               bool, complex64, complex128).
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -103,11 +94,11 @@ class CountNonzeroOp(Op):
         if M_actual != self.M:
             raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
 
-        # Pre-convert unsupported storage dtypes (bool, complex) to float32.
-        # TileLang cannot handle these as shared-memory storage dtypes; the
-        # kernel is compiled for float32 in those cases.
+        # Pre-convert unsupported storage dtypes (bool, int32, int64, complex)
+        # to float32. TileLang cannot handle these as shared-memory storage
+        # dtypes; the kernel is compiled for float32 in those cases.
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
-            x = _to_logical_float32(x)
+            x = to_logical_float32(x)
 
         # Pad to alignment with 0 (zero is neutral for sum/count)
         if self.N_padded != self.N:
