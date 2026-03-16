@@ -14,6 +14,7 @@ from .fp8_quant import Fp8QuantOp
 from .gated_deltanet import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 from .gated_deltanet_decode import GatedDeltaNetDecodeOp
 from .gemm import GemmOp
+from .gla import GLABwdOp, GLAFwdOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
@@ -93,6 +94,8 @@ __all__ = [
     "GatedDeltaNetDecodeOp",
     "GatedDeltaNetFwdOp",
     "GatedDeltaNetOp",
+    "GLABwdOp",
+    "GLAFwdOp",
     "GemmOp",
     "GqaSlidingWindowFwdOp",
     "GqaSlidingWindowVarlenFwdOp",
