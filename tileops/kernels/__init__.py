@@ -54,6 +54,13 @@ from .norm import (
     LayerNormKernel,
     RmsNormKernel,
 )
+from .rope import (
+    RopeLlama31Kernel,
+    RopeLongRopeKernel,
+    RopeNeoxKernel,
+    RopeNonNeoxKernel,
+    RopeYarnKernel,
+)
 
 __all__ = [
     "BinaryKernel",
@@ -95,6 +102,11 @@ __all__ = [
     "NSAFwdVarlenKernel",
     "NSATopkVarlenKernel",
     "RmsNormKernel",
+    "RopeLlama31Kernel",
+    "RopeLongRopeKernel",
+    "RopeNeoxKernel",
+    "RopeNonNeoxKernel",
+    "RopeYarnKernel",
     "SparseMlaKernel",
     "TopkSelectorKernel",
     "UnaryKernel",
