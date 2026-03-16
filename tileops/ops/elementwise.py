@@ -1464,9 +1464,11 @@ class WhereOp(Op):
         cond_1d = cond if cond.dtype == torch.bool else cond.bool()
         if not cond_1d.is_contiguous() or cond_1d.ndim != 1:
             cond_1d = cond_1d.contiguous().view(-1)
+        # Pack bool -> uint8 for vectorized T.copy in the kernel
+        cond_u8 = cond_1d.view(torch.uint8)
         x_1d = x if (x.is_contiguous() and x.ndim == 1) else x.contiguous().view(-1)
         y_1d = y if (y.is_contiguous() and y.ndim == 1) else y.contiguous().view(-1)
-        return self.kernel(cond_1d, x_1d, y_1d).view(orig_shape)
+        return self.kernel(cond_u8, x_1d, y_1d).view(orig_shape)
 
     def forward(
         self, cond: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
@@ -1552,8 +1554,10 @@ class MaskedFillOp(Op):
         mask_1d = mask if mask.dtype == torch.bool else mask.bool()
         if not mask_1d.is_contiguous() or mask_1d.ndim != 1:
             mask_1d = mask_1d.contiguous().view(-1)
+        # Pack bool -> uint8 for vectorized T.copy in the kernel
+        mask_u8 = mask_1d.view(torch.uint8)
         x_1d = x if (x.is_contiguous() and x.ndim == 1) else x.contiguous().view(-1)
-        return self.kernel(x_1d, mask_1d).view(orig_shape)
+        return self.kernel(x_1d, mask_u8).view(orig_shape)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:

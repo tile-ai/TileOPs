@@ -1882,10 +1882,10 @@ class PreluKernel(Kernel):
 def _make_where_kernel(N, dtype, threads=256, npt=8):
     """Build where kernel: out = cond ? x : y.
 
-    Accepts bool condition tensor directly to avoid dtype conversion
-    overhead in the Op layer. Uses register_copy for the data path
-    (x, y, out) with element-wise bool cond access, since T.copy
-    does not support bool vectorization.
+    The Op layer packs the bool condition as uint8 so that T.copy can
+    perform vectorized loads (TileLang does not vectorize bool tensors).
+    Each uint8 element is 0 or 1; the kernel loads it into a register
+    fragment and unpacks per-element with a != 0 comparison.
     """
     block_size = threads * npt
 
@@ -1893,21 +1893,24 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(
-            cond: T.Tensor((N,), "bool"),
+            cond: T.Tensor((N,), "uint8"),
             x: T.Tensor((N,), dtype),
             y_in: T.Tensor((N,), dtype),
             out: T.Tensor((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                c_reg = T.alloc_fragment((block_size,), "uint8")
                 x_reg = T.alloc_fragment((block_size,), dtype)
                 y_reg = T.alloc_fragment((block_size,), dtype)
                 o_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(cond[bx * block_size : (bx + 1) * block_size], c_reg)
                 T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 T.copy(y_in[bx * block_size : (bx + 1) * block_size], y_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    idx = bx * block_size + k
-                    o_reg[k] = T.if_then_else(cond[idx], x_reg[k], y_reg[k])
+                    o_reg[k] = T.if_then_else(
+                        c_reg[k] != T.cast(0, "uint8"), x_reg[k], y_reg[k],
+                    )
                 T.copy(o_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
@@ -2030,10 +2033,10 @@ class ClampKernel(Kernel):
 def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
-    Accepts bool mask tensor directly to avoid dtype conversion
-    overhead in the Op layer. Uses register_copy for the data path
-    (x and out) with element-wise bool mask access, since T.copy
-    does not support bool vectorization.
+    The Op layer packs the bool mask as uint8 so that T.copy can
+    perform vectorized loads (TileLang does not vectorize bool tensors).
+    Each uint8 element is 0 or 1; the kernel loads it into a register
+    fragment and unpacks per-element with a != 0 comparison.
     """
     block_size = threads * npt
 
@@ -2042,18 +2045,21 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
         @T.prim_func
         def main(
             x: T.Tensor((N,), dtype),
-            mask: T.Tensor((N,), "bool"),
+            mask: T.Tensor((N,), "uint8"),
             out: T.Tensor((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                m_reg = T.alloc_fragment((block_size,), "uint8")
                 x_reg = T.alloc_fragment((block_size,), dtype)
                 o_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(mask[bx * block_size : (bx + 1) * block_size], m_reg)
                 T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    idx = bx * block_size + k
                     fv = T.cast(fill_value, dtype)
-                    o_reg[k] = T.if_then_else(mask[idx], fv, x_reg[k])
+                    o_reg[k] = T.if_then_else(
+                        m_reg[k] != T.cast(0, "uint8"), fv, x_reg[k],
+                    )
                 T.copy(o_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
@@ -2094,7 +2100,7 @@ class MaskedFillKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 8 if self.dtype == torch.float32 else 16
+        npt = 8 if self.dtype == torch.float32 else 32
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, x, mask):
