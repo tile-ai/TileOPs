@@ -165,7 +165,7 @@ def _strategy_npt(strategy: str, dtype: torch.dtype) -> int:
     if dtype == torch.float32:
         return 4
     # fp16 / bf16: strategy-dependent
-    if strategy == "explicit_parallel":
+    if strategy == "explicit_parallel" and dtype in (torch.float16, torch.bfloat16):
         return 4
     return 8
 

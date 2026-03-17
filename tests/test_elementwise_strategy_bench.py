@@ -9,7 +9,7 @@ Tests check:
 import pytest
 import torch
 
-from tileops.kernels.elementwise import BinaryKernel, UnaryKernel
+from tileops.kernels.elementwise import BinaryKernel, UnaryKernel, _strategy_npt
 
 
 class TestUnaryStrategyBenchStructure:
@@ -150,3 +150,53 @@ class TestBinaryStrategyBenchStructure:
         assert len(shapes_seen) >= 3, (
             f"Expected >= 3 shapes, got {len(shapes_seen)}: {shapes_seen}"
         )
+
+
+class TestStrategyNpt:
+    """Unit tests for _strategy_npt heuristic."""
+
+    @pytest.mark.smoke
+    def test_fp32_always_returns_4(self):
+        """fp32 returns npt=4 regardless of strategy."""
+        for strategy in ("direct", "explicit_parallel", "register_copy"):
+            assert _strategy_npt(strategy, torch.float32) == 4
+
+    @pytest.mark.smoke
+    def test_fp16_explicit_parallel_returns_4(self):
+        """fp16 with explicit_parallel returns npt=4."""
+        assert _strategy_npt("explicit_parallel", torch.float16) == 4
+
+    @pytest.mark.smoke
+    def test_bf16_explicit_parallel_returns_4(self):
+        """bf16 with explicit_parallel returns npt=4."""
+        assert _strategy_npt("explicit_parallel", torch.bfloat16) == 4
+
+    @pytest.mark.smoke
+    def test_fp16_register_copy_returns_8(self):
+        """fp16 with register_copy returns npt=8."""
+        assert _strategy_npt("register_copy", torch.float16) == 8
+
+    @pytest.mark.smoke
+    def test_bf16_register_copy_returns_8(self):
+        """bf16 with register_copy returns npt=8."""
+        assert _strategy_npt("register_copy", torch.bfloat16) == 8
+
+    @pytest.mark.smoke
+    def test_integer_dtypes_always_return_8(self):
+        """Integer dtypes return npt=8 for all strategies, not 4."""
+        int_dtypes = [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8]
+        for dtype in int_dtypes:
+            for strategy in ("direct", "explicit_parallel", "register_copy"):
+                result = _strategy_npt(strategy, dtype)
+                assert result == 8, (
+                    f"Expected npt=8 for {dtype}/{strategy}, got {result}"
+                )
+
+    @pytest.mark.smoke
+    def test_bool_dtype_returns_8(self):
+        """Bool dtype returns npt=8 for all strategies."""
+        for strategy in ("direct", "explicit_parallel", "register_copy"):
+            result = _strategy_npt(strategy, torch.bool)
+            assert result == 8, (
+                f"Expected npt=8 for bool/{strategy}, got {result}"
+            )
