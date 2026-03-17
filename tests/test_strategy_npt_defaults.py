@@ -56,7 +56,6 @@ class TestUnaryDefaultConfig:
             pytest.param("explicit_parallel", torch.float32, 4, id="ep-fp32"),
             pytest.param("register_copy", torch.float32, 4, id="rc-fp32"),
         ],
-        ids=lambda x: None,
     )
     @pytest.mark.smoke
     def test_unary_npt_by_strategy(self, strategy, dtype, expected_npt):
@@ -102,7 +101,6 @@ class TestBinaryDefaultConfig:
             pytest.param("explicit_parallel", torch.float32, 4, id="ep-fp32"),
             pytest.param("register_copy", torch.float32, 4, id="rc-fp32"),
         ],
-        ids=lambda x: None,
     )
     @pytest.mark.smoke
     def test_binary_npt_by_strategy(self, strategy, dtype, expected_npt):
@@ -140,7 +138,6 @@ class TestFusedGatedDefaultConfig:
             pytest.param("explicit_parallel", torch.bfloat16, 4, id="ep-bf16"),
             pytest.param("explicit_parallel", torch.float32, 4, id="ep-fp32"),
         ],
-        ids=lambda x: None,
     )
     @pytest.mark.smoke
     def test_fused_gated_npt_by_strategy(self, strategy, dtype, expected_npt):
