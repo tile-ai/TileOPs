@@ -91,10 +91,17 @@ def main():
 
     exit_code = pytest.main(pytest_args)
 
-    # Exit 0 even if some tests "fail" — warmup success is measured by
-    # cache population, not test pass/fail.
+    # Distinguish test failures (exit 1) from infrastructure errors (exit 2+).
+    # Test failures are expected during warmup (e.g., missing optional deps,
+    # GPU OOM from parallel workers) — compilation still succeeds.
+    # Infrastructure errors (bad args, internal error, no tests collected)
+    # indicate the warmup didn't run at all and should be surfaced.
     print(f"\nWarmup complete (pytest exit code: {exit_code})")
-    sys.exit(0)
+    if exit_code in (0, 1):
+        sys.exit(0)
+    else:
+        print(f"ERROR: warmup failed with infrastructure error (exit code {exit_code})", file=sys.stderr)
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

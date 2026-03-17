@@ -41,11 +41,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
+          TILELANG_CACHE_DIR="${HOME}/.tilelang/cache"
           TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-          TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
-          PIP_CACHE_DIR="/home/ci-runner/.cache/pip"
-          WHEEL_DIR="/home/ci-runner/.wheel-cache"
+          TRITON_CACHE_DIR="${HOME}/.triton/cache"
+          PIP_CACHE_DIR="${HOME}/.cache/pip"
+          WHEEL_DIR="${HOME}/.wheel-cache"
 
           mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
@@ -163,11 +163,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
+          TILELANG_CACHE_DIR="${HOME}/.tilelang/cache"
           TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-          TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
-          PIP_CACHE_DIR="/home/ci-runner/.cache/pip"
-          WHEEL_DIR="/home/ci-runner/.wheel-cache"
+          TRITON_CACHE_DIR="${HOME}/.triton/cache"
+          PIP_CACHE_DIR="${HOME}/.cache/pip"
+          WHEEL_DIR="${HOME}/.wheel-cache"
 
           mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
@@ -394,11 +394,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
+          TILELANG_CACHE_DIR="${HOME}/.tilelang/cache"
           TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-          TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
-          PIP_CACHE_DIR="/home/ci-runner/.cache/pip"
-          WHEEL_DIR="/home/ci-runner/.wheel-cache"
+          TRITON_CACHE_DIR="${HOME}/.triton/cache"
+          PIP_CACHE_DIR="${HOME}/.cache/pip"
+          WHEEL_DIR="${HOME}/.wheel-cache"
 
           mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
@@ -533,9 +533,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
+          TILELANG_CACHE_DIR="${HOME}/.tilelang/cache"
           TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-          TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
+          TRITON_CACHE_DIR="${HOME}/.triton/cache"
 
           mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
 
