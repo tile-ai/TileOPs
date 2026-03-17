@@ -271,5 +271,74 @@ def test_elu_e5m2_output_dtype():
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
 
 
+# ---------------------------------------------------------------------------
+# AC5: Non-aligned N tail-block protection (idx < N guard)
+# ---------------------------------------------------------------------------
+
+_N_UNALIGNED = 1024 * 16 + 37  # not divisible by any typical block_size
+
+
+class UnalignedFp8Fixture(FixtureBase):
+    PARAMS = [("dtype", _FP8_DTYPES)]
+
+
+@UnalignedFp8Fixture
+def test_leaky_relu_fp8_unaligned_n(dtype):
+    """LeakyReLU fp8 correctness with non-aligned N (tail block guard)."""
+    from tileops.ops.elementwise import LeakyReluOp
+
+    n = _N_UNALIGNED
+    negative_slope = 0.01
+    x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 2.0
+    x = x_fp16.to(dtype)
+    op = LeakyReluOp(N_total=n, dtype=dtype, negative_slope=negative_slope)
+    out = op(x)
+    ref = torch.nn.functional.leaky_relu(x.to(torch.float16), negative_slope).to(dtype)
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+    assert torch.equal(out, ref), (
+        f"LeakyReLU fp8 unaligned output does not match reference. "
+        f"Max diff: {(out.to(torch.float32) - ref.to(torch.float32)).abs().max().item()}"
+    )
+
+
+@UnalignedFp8Fixture
+def test_elu_fp8_unaligned_n(dtype):
+    """ELU fp8 correctness with non-aligned N (tail block guard)."""
+    from tileops.ops.elementwise import EluOp
+
+    n = _N_UNALIGNED
+    alpha = 1.0
+    x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 1.0
+    x = x_fp16.to(dtype)
+    op = EluOp(N_total=n, dtype=dtype, alpha=alpha)
+    out = op(x)
+    ref = torch.nn.functional.elu(x.to(torch.float16), alpha).to(dtype)
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+    assert torch.equal(out, ref), (
+        f"ELU fp8 unaligned output does not match reference. "
+        f"Max diff: {(out.to(torch.float32) - ref.to(torch.float32)).abs().max().item()}"
+    )
+
+
+@UnalignedFp8Fixture
+def test_clamp_fp8_unaligned_n(dtype):
+    """Clamp fp8 correctness with non-aligned N (tail block guard)."""
+    from tileops.ops.elementwise import ClampOp
+
+    n = _N_UNALIGNED
+    min_val = -0.5
+    max_val = 0.5
+    x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 2.0
+    x = x_fp16.to(dtype)
+    op = ClampOp(N_total=n, dtype=dtype, min_val=min_val, max_val=max_val)
+    out = op(x)
+    ref = torch.clamp(x.to(torch.float16), min_val, max_val).to(dtype)
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+    assert torch.equal(out, ref), (
+        f"Clamp fp8 unaligned output does not match reference. "
+        f"Max diff: {(out.to(torch.float32) - ref.to(torch.float32)).abs().max().item()}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

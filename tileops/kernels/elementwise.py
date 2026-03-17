@@ -1737,12 +1737,13 @@ def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None,
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
-                        val = x[idx]
-                        v = T.cast(val, accum)
-                        zero = T.cast(0, accum)
-                        slope = T.cast(negative_slope, accum)
-                        result = T.if_then_else(v > zero, v, slope * v)
-                        y[idx] = T.Cast(out_dtype, result)
+                        if idx < N:
+                            val = x[idx]
+                            v = T.cast(val, accum)
+                            zero = T.cast(0, accum)
+                            slope = T.cast(negative_slope, accum)
+                            result = T.if_then_else(v > zero, v, slope * v)
+                            y[idx] = T.Cast(out_dtype, result)
 
             return main
     else:
@@ -1822,12 +1823,13 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, threads=256, npt=8):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
-                    val = x[idx]
-                    zero = T.cast(0, "float32")
-                    a = T.cast(alpha, "float32")
-                    one = T.cast(1.0, "float32")
-                    v32 = T.cast(val, "float32")
-                    y[idx] = T.if_then_else(v32 > zero, T.Cast(out_dtype, v32), T.Cast(out_dtype, a * (T.exp(v32) - one)))
+                    if idx < N:
+                        val = x[idx]
+                        zero = T.cast(0, "float32")
+                        a = T.cast(alpha, "float32")
+                        one = T.cast(1.0, "float32")
+                        v32 = T.cast(val, "float32")
+                        y[idx] = T.if_then_else(v32 > zero, T.Cast(out_dtype, v32), T.Cast(out_dtype, a * (T.exp(v32) - one)))
 
         return main
 
@@ -1886,11 +1888,12 @@ def _make_hardtanh_kernel(N, dtype, min_val, max_val, output_dtype=None, threads
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
-                    val = x[idx]
-                    lo = T.cast(min_val, "float32")
-                    hi = T.cast(max_val, "float32")
-                    v32 = T.cast(val, "float32")
-                    y[idx] = T.Cast(out_dtype, T.min(T.max(v32, lo), hi))
+                    if idx < N:
+                        val = x[idx]
+                        lo = T.cast(min_val, "float32")
+                        hi = T.cast(max_val, "float32")
+                        v32 = T.cast(val, "float32")
+                        y[idx] = T.Cast(out_dtype, T.min(T.max(v32, lo), hi))
 
         return main
 
@@ -1950,14 +1953,15 @@ def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None, threads=
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
-                    val = x[idx]
-                    v32 = T.cast(val, "float32")
-                    b = T.cast(beta, "float32")
-                    t = T.cast(threshold, "float32")
-                    one = T.cast(1.0, "float32")
-                    scaled = v32 * b
-                    sp = T.log(one + T.exp(scaled)) / b
-                    y[idx] = T.if_then_else(scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp))
+                    if idx < N:
+                        val = x[idx]
+                        v32 = T.cast(val, "float32")
+                        b = T.cast(beta, "float32")
+                        t = T.cast(threshold, "float32")
+                        one = T.cast(1.0, "float32")
+                        scaled = v32 * b
+                        sp = T.log(one + T.exp(scaled)) / b
+                        y[idx] = T.if_then_else(scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp))
 
         return main
 
@@ -2037,13 +2041,14 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         k = i * npt_arg + j
                         idx = bx * block_size + k
-                        val = x[idx]
-                        ch = (idx // inner_size) % C
-                        w = weight[ch]
-                        v = T.cast(val, accum)
-                        wf = T.cast(w, accum)
-                        zero = T.cast(0, accum)
-                        y[idx] = T.if_then_else(v > zero, T.Cast(out_dtype, v), T.Cast(out_dtype, wf * v))
+                        if idx < N:
+                            val = x[idx]
+                            ch = (idx // inner_size) % C
+                            w = weight[ch]
+                            v = T.cast(val, accum)
+                            wf = T.cast(w, accum)
+                            zero = T.cast(0, accum)
+                            y[idx] = T.if_then_else(v > zero, T.Cast(out_dtype, v), T.Cast(out_dtype, wf * v))
 
             return main
     else:
@@ -2163,9 +2168,10 @@ def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
-                        out[idx] = T.if_then_else(
-                            cond[idx] != T.cast(0, "uint8"), x[idx], y_in[idx],
-                        )
+                        if idx < N:
+                            out[idx] = T.if_then_else(
+                                cond[idx] != T.cast(0, "uint8"), x[idx], y_in[idx],
+                            )
 
             return main
     else:
@@ -2251,14 +2257,15 @@ def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
-                    v32 = T.cast(x[idx], "float32")
-                    if has_min:
-                        lo = T.cast(min_val, "float32")
-                        v32 = T.max(v32, lo)
-                    if has_max:
-                        hi = T.cast(max_val, "float32")
-                        v32 = T.min(v32, hi)
-                    y[idx] = T.Cast(out_dtype, v32)
+                    if idx < N:
+                        v32 = T.cast(x[idx], "float32")
+                        if has_min:
+                            lo = T.cast(min_val, "float32")
+                            v32 = T.max(v32, lo)
+                        if has_max:
+                            hi = T.cast(max_val, "float32")
+                            v32 = T.min(v32, hi)
+                        y[idx] = T.Cast(out_dtype, v32)
 
         return main
 
@@ -2350,10 +2357,11 @@ def _make_masked_fill_kernel(N, dtype, fill_value, is_fp8=False, threads=256, np
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
-                        fv = T.cast(fill_value, dtype)
-                        out[idx] = T.if_then_else(
-                            mask[idx] != T.cast(0, "uint8"), fv, x[idx],
-                        )
+                        if idx < N:
+                            fv = T.cast(fill_value, dtype)
+                            out[idx] = T.if_then_else(
+                                mask[idx] != T.cast(0, "uint8"), fv, x[idx],
+                            )
 
             return main
     else:
@@ -2448,22 +2456,23 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
-                        val = x[idx]
-                        v32 = T.cast(val, "float32")
-                        nan_r = T.cast(nan_val, out_dtype)
-                        pos_r = T.cast(posinf_val, out_dtype)
-                        neg_r = T.cast(neginf_val, out_dtype)
-                        pass_through = T.Cast(out_dtype, v32)
-                        result = T.if_then_else(
-                            T.isnan(v32),
-                            nan_r,
-                            T.if_then_else(
-                                T.isinf(v32),
-                                T.if_then_else(v32 > T.cast(0, "float32"), pos_r, neg_r),
-                                pass_through,
-                            ),
-                        )
-                        y[idx] = result
+                        if idx < N:
+                            val = x[idx]
+                            v32 = T.cast(val, "float32")
+                            nan_r = T.cast(nan_val, out_dtype)
+                            pos_r = T.cast(posinf_val, out_dtype)
+                            neg_r = T.cast(neginf_val, out_dtype)
+                            pass_through = T.Cast(out_dtype, v32)
+                            result = T.if_then_else(
+                                T.isnan(v32),
+                                nan_r,
+                                T.if_then_else(
+                                    T.isinf(v32),
+                                    T.if_then_else(v32 > T.cast(0, "float32"), pos_r, neg_r),
+                                    pass_through,
+                                ),
+                            )
+                            y[idx] = result
 
             return main
     else:
@@ -2573,17 +2582,18 @@ def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
             with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     flat = (bx * threads_arg + i) * npt_arg + j
-                    h = flat // S2
-                    rem = flat % S2
-                    row = rem // seq_len
-                    col = rem % seq_len
-                    # slope = 2^(-8 * (h+1) / num_heads)
-                    exp_val = T.cast(-8.0, "float32") * T.cast(h + 1, "float32") / T.cast(num_heads, "float32")
-                    slope = T.exp2(exp_val)
-                    dist = T.cast(row - col, "float32")
-                    # Use abs via if_then_else since T.abs may not handle int
-                    abs_dist = T.if_then_else(dist > T.cast(0, "float32"), dist, -dist)
-                    out[flat] = T.Cast(dtype, -slope * abs_dist)
+                    if flat < N_total:
+                        h = flat // S2
+                        rem = flat % S2
+                        row = rem // seq_len
+                        col = rem % seq_len
+                        # slope = 2^(-8 * (h+1) / num_heads)
+                        exp_val = T.cast(-8.0, "float32") * T.cast(h + 1, "float32") / T.cast(num_heads, "float32")
+                        slope = T.exp2(exp_val)
+                        dist = T.cast(row - col, "float32")
+                        # Use abs via if_then_else since T.abs may not handle int
+                        abs_dist = T.if_then_else(dist > T.cast(0, "float32"), dist, -dist)
+                        out[flat] = T.Cast(dtype, -slope * abs_dist)
 
         return main
 
@@ -2658,19 +2668,20 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
             with T.Kernel(T.ceildiv(N_total, block_size), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     flat = (bx * threads_arg + i) * npt_arg + j
-                    pos = flat // d_model
-                    dim = flat % d_model
-                    # dim_pair = dim // 2 (the "i" in the formula)
-                    dim_pair = dim // 2
-                    # angle = pos / 10000^(2*dim_pair / d_model)
-                    base = T.cast(10000.0, "float32")
-                    exp_frac = T.cast(dim_pair, "float32") * T.cast(2.0, "float32") / T.cast(d_model, "float32")
-                    divisor = T.pow(base, exp_frac)
-                    angle = T.cast(pos, "float32") / divisor
-                    # Even dim -> sin, odd dim -> cos
-                    is_even = dim % 2 == 0
-                    result = T.if_then_else(is_even, T.sin(angle), T.cos(angle))
-                    out[flat] = T.Cast(dtype, result)
+                    if flat < N_total:
+                        pos = flat // d_model
+                        dim = flat % d_model
+                        # dim_pair = dim // 2 (the "i" in the formula)
+                        dim_pair = dim // 2
+                        # angle = pos / 10000^(2*dim_pair / d_model)
+                        base = T.cast(10000.0, "float32")
+                        exp_frac = T.cast(dim_pair, "float32") * T.cast(2.0, "float32") / T.cast(d_model, "float32")
+                        divisor = T.pow(base, exp_frac)
+                        angle = T.cast(pos, "float32") / divisor
+                        # Even dim -> sin, odd dim -> cos
+                        is_even = dim % 2 == 0
+                        result = T.if_then_else(is_even, T.sin(angle), T.cos(angle))
+                        out[flat] = T.Cast(dtype, result)
 
         return main
 
