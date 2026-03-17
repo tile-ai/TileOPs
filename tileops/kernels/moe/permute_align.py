@@ -1,36 +1,24 @@
 """MoE token-to-expert alignment kernel.
 
-Converts topk_ids [total_tokens, top_k] into the three arrays needed by
-MoE grouped GEMM:
+Two execution paths selected at forward() time:
 
+Large batch (default, numel >= 1024 OR num_experts > 64):
+  K1 (1 block, 1024 threads) — count → warp-scan prefix-sum →
+      expert_ids fill (linear, no binary search) → sentinel fill → write cumsum
+  K2 (N blocks, 256 threads) — scatter via global atomicAdd on cumsum buffer
+      N = min(ceil(numel/256), 65535)
+
+Small batch (numel < 1024 AND num_experts <= 64):
+  Single fused kernel — per-worker private count rows (zero atomic conflicts),
+  concurrent sentinel fill threads. Output format identical to large-batch path.
+
+Outputs:
   sorted_token_ids  [max_num_tokens_padded]  - flat token indices sorted by
                                                expert, padded with sentinel
   expert_ids        [num_blocks]             - expert index per GEMM block
   num_tokens_post_pad [1]                   - total padded token count
 
-Algorithm (K1 align kernel + K2 multi-block scatter):
-
-  Step 1 - count:
-    * Zero s_counts in shared memory.
-    * Count tokens per expert via shared-memory atomicAdd.
-
-  Step 2 - warp-scan prefix-sum:
-    * Warp-level inclusive scan (tvm_warp_shuffle_up) of padded counts.
-    * Inter-warp exclusive scan (for->if pattern).
-    * Writes cumsum[] to both shared s_cumsum and global output.
-    * Writes num_tokens_post_pad.
-
-  Step 3 - fill expert_ids (linear, no binary search):
-    * Thread tx < num_experts owns blocks [cumsum[tx]/bs, cumsum[tx+1]/bs).
-    * Writes expert_ids[blk] = tx directly — O(total_blocks) total work.
-
-  Step 4 - sentinel fill (K1 only):
-    * Fill sorted_token_ids with sentinel (numel).
-
-  Step 5 - scatter (K2):
-    * Multi-block scatter using global atomicAdd on cumsum buffer.
-
-Reference: sgl-kernel/csrc/moe/moe_align_kernel.cu
+Reference: sglang/sgl-kernel/csrc/moe/moe_align_kernel.cu
 """
 
 import math
