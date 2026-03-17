@@ -64,45 +64,35 @@ def main():
     #   - _profile_manual() in bench_gla   (direct do_bench calls)
     #   - autotuner Phase 2                (config profiling inside tilelang)
     # Compilation (autotuner Phase 1) is unaffected — it does not use do_bench.
-    _dummy_latency = unittest.mock.patch(
-        "tilelang.profiler.do_bench", return_value=1.0)
-    _dummy_latency.start()
+    with unittest.mock.patch("tilelang.profiler.do_bench", return_value=1.0):
+        # Collect benchmark files and shard.
+        bench_dir = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "ops")
+        all_files = sorted(glob.glob(os.path.join(bench_dir, "bench_*.py")))
+        shard_files = all_files[args.shard::args.total_shards]
 
-    # Also patch the local import in benchmarks that grab do_bench directly.
-    # bench_gla.py does: from tilelang.profiler import do_bench as _do_bench
-    # The patch above covers the module-level attribute; re-imports before
-    # our patch took effect are handled by also patching the profiler module.
+        if not shard_files:
+            print(f"Shard {args.shard}/{args.total_shards}: no files to process")
+            return
 
-    # Collect benchmark files and shard.
-    bench_dir = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "ops")
-    all_files = sorted(glob.glob(os.path.join(bench_dir, "bench_*.py")))
-    shard_files = all_files[args.shard::args.total_shards]
+        print(f"Shard {args.shard}/{args.total_shards}: "
+              f"{len(shard_files)}/{len(all_files)} benchmark files")
+        for f in shard_files:
+            print(f"  {os.path.basename(f)}")
 
-    if not shard_files:
-        print(f"Shard {args.shard}/{args.total_shards}: no files to process")
-        return
+        # Run benchmarks via pytest.
+        # - Compilation happens during Op construction (autotune compiles all
+        #   config variants in parallel via ThreadPoolExecutor).
+        # - Profiling returns instantly (do_bench patched).
+        # - continue-on-error: individual test failures don't block warmup.
+        import pytest
 
-    print(f"Shard {args.shard}/{args.total_shards}: "
-          f"{len(shard_files)}/{len(all_files)} benchmark files")
-    for f in shard_files:
-        print(f"  {os.path.basename(f)}")
-
-    # Run benchmarks via pytest.
-    # - Compilation happens during Op construction (autotune compiles all
-    #   config variants in parallel via ThreadPoolExecutor).
-    # - Profiling returns instantly (do_bench patched).
-    # - continue-on-error: individual test failures don't block warmup.
-    import pytest
-
-    exit_code = pytest.main([
-        *shard_files,
-        "-v",
-        "--tb=line",
-        "-p", "no:cacheprovider",
-        "--override-ini=continue_on_collection_errors=true",
-    ])
-
-    _dummy_latency.stop()
+        exit_code = pytest.main([
+            *shard_files,
+            "-v",
+            "--tb=line",
+            "-p", "no:cacheprovider",
+            "--override-ini=continue_on_collection_errors=true",
+        ])
 
     # Exit 0 even if some tests "fail" — warmup success is measured by
     # cache population, not test pass/fail.

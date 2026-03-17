@@ -8,6 +8,7 @@ when actual dependencies change, not when linting/style config is modified.
 import hashlib
 import json
 import pathlib
+
 import tomllib
 
 d = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
