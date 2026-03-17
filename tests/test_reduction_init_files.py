@@ -33,13 +33,12 @@ IMPLEMENTED_KERNEL_CLASSES = [
     "LogSumExpKernel",
     "ReduceKernel",
     "SoftmaxKernel",
+    "VectorNormKernel",
 ]
 
 # --- Placeholder kernel classes (still commented out) ---
 
-PLACEHOLDER_KERNEL_CLASSES = [
-    "VectorNormKernel",
-]
+PLACEHOLDER_KERNEL_CLASSES: list[str] = []
 
 ALL_KERNEL_CLASSES = IMPLEMENTED_KERNEL_CLASSES + PLACEHOLDER_KERNEL_CLASSES
 
@@ -55,6 +54,9 @@ IMPLEMENTED_OP_CLASSES = [
     "CountNonzeroOp",
     "CumprodOp",
     "CumsumOp",
+    "InfNormOp",
+    "L1NormOp",
+    "L2NormOp",
     "LogSoftmaxOp",
     "LogSumExpOp",
     "MeanOp",
@@ -71,9 +73,6 @@ IMPLEMENTED_OP_CLASSES = [
 PLACEHOLDER_OP_CLASSES = [
     "CummaxOp",
     "CumminOp",
-    "InfNormOp",
-    "L1NormOp",
-    "L2NormOp",
     "ReduceMaxOp",
     "ReduceMeanOp",
     "ReduceMinOp",

@@ -22,7 +22,7 @@ from .softmax import LogSumExpKernel, SoftmaxKernel
 
 # Placeholder imports for reduction kernels.
 # Each sub-category PR uncomments its own lines.
-# from .vector_norm import VectorNormKernel
+from .vector_norm import VectorNormKernel
 
 __all__: list[str] = [
     "align_up",
@@ -38,5 +38,5 @@ __all__: list[str] = [
     "ReduceKernel",
     "LogSumExpKernel",
     "SoftmaxKernel",
-    # "VectorNormKernel",
+    "VectorNormKernel",
 ]
