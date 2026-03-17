@@ -321,6 +321,47 @@ def test_inf_1d(n: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
+# NaN propagation regression tests (inf norm)
+# ---------------------------------------------------------------------------
+
+
+class VectorNormNaNFixture(FixtureBase):
+    PARAMS = [
+        (
+            "m, n, dtype",
+            [
+                pytest.param(4, 512, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(4, 512, torch.float16, marks=pytest.mark.full),
+                pytest.param(4, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(4, 300, torch.float32, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@VectorNormNaNFixture
+def test_inf_nan_propagation(m: int, n: int, dtype: torch.dtype) -> None:
+    """InfNormOp must return NaN for rows containing NaN, matching PyTorch."""
+    x = torch.randn(m, n, dtype=dtype, device="cuda")
+    # Inject NaN into the first row
+    x[0, 0] = float("nan")
+    # Inject NaN into the last position of the second row
+    x[1, -1] = float("nan")
+    # Rows 2+ remain finite
+
+    op = _make_op(m, n, dtype, "inf")
+    ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
+    y = op(x)
+
+    # Rows with NaN should produce NaN
+    assert y[0].isnan().item(), f"Row 0 should be NaN, got {y[0]}"
+    assert y[1].isnan().item(), f"Row 1 should be NaN, got {y[1]}"
+    # Finite rows should match reference
+    atol, rtol = _get_tolerances(dtype)
+    allclose_compare(y[2:], ref[2:], atol=atol, rtol=rtol)
+
+
+# ---------------------------------------------------------------------------
 # Dtype smoke tests
 # ---------------------------------------------------------------------------
 

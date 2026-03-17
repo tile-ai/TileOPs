@@ -4,6 +4,11 @@ The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment
 (with 0.0, which is neutral for max of absolute values), calls the kernel,
 and reshapes the output back. Output dtype matches input dtype; internal
 computation in fp32.
+
+NaN propagation: T.reduce_max in TileLang does not propagate NaN (it drops
+NaN values). To match torch.linalg.vector_norm(ord=inf) semantics, the Op
+layer detects rows containing NaN before the kernel call and patches the
+output to NaN for those rows.
 """
 
 from typing import Dict, Optional
@@ -25,6 +30,9 @@ class InfNormOp(Op):
 
     Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
     Padded positions use 0.0 (neutral for max of absolute values).
+
+    NaN handling: rows containing any NaN produce NaN output, matching
+    torch.linalg.vector_norm(ord=inf) semantics.
 
     Args:
         M: Product of all leading dimensions.
@@ -81,10 +89,18 @@ class InfNormOp(Op):
         if M_actual != self.M:
             raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
 
+        # Detect rows with NaN before padding (padding adds 0.0, not NaN).
+        # T.reduce_max in TileLang drops NaN, so we must patch after.
+        nan_mask = x.isnan().any(dim=-1)  # shape (M,)
+
         # Pad to alignment with 0.0 (neutral for max of absolute values)
         if self.N_padded != self.N:
             x = F.pad(x, (0, self.N_padded - self.N))
 
         y = self.kernel(x)
+
+        # Patch NaN rows: set output to NaN where any input was NaN
+        if nan_mask.any():
+            y[nan_mask] = float("nan")
 
         return y.reshape(orig_shape)
