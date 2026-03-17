@@ -448,6 +448,18 @@ def coalesce_broadcast_dims(a_shape, b_shape):
     return out_shape, coalesced_shape, a_strides, b_strides
 
 
+def _apply_fp8_post_cast(result: torch.Tensor, kernel) -> torch.Tensor:
+    """Apply fp8 output cast if the kernel requires it.
+
+    For e5m2 dtypes the kernel produces fp16 output to preserve Inf/NaN;
+    this helper performs the final non-saturating cast via PyTorch.
+    """
+    fp8_out = getattr(kernel, "_fp8_output_dtype", None)
+    if fp8_out is not None:
+        return result.to(fp8_out)
+    return result
+
+
 class UnaryOp(Op):
     """Template base class for unary elementwise ops.
 
@@ -506,10 +518,7 @@ class UnaryOp(Op):
         result = self.kernel(x).reshape(orig_shape)
         # For e5m2: kernel produces fp16 to preserve Inf/NaN;
         # cast to e5m2 here using PyTorch's non-saturating conversion.
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -600,10 +609,7 @@ class BinaryOp(Op):
         result = self.kernel(
             a.contiguous().view(-1), b.contiguous().view(-1),
         ).reshape(self.out_shape)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if not a.is_cuda or not b.is_cuda:
@@ -693,10 +699,7 @@ class FusedGatedOp(Op):
         """Direct kernel call for use inside custom_op implementation."""
         x = x.contiguous()
         result = self.kernel(x)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -1253,10 +1256,7 @@ class LeakyReluOp(Op):
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
         result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -1298,10 +1298,7 @@ class EluOp(Op):
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
         result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -1342,10 +1339,7 @@ class HardtanhOp(Op):
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
         result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -1386,10 +1380,7 @@ class SoftplusOp(Op):
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
         result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -1437,10 +1428,7 @@ class PreluOp(Op):
         result = self.kernel(
             x.contiguous().reshape(-1), weight.contiguous().reshape(-1),
         ).reshape(orig_shape)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -1533,10 +1521,7 @@ class ClampOp(Op):
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
         result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -1626,10 +1611,7 @@ class NanToNumOp(Op):
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
         result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
@@ -1675,10 +1657,7 @@ class AlibiOp(Op):
     def _eager_forward(self) -> torch.Tensor:
         out = self.kernel()
         result = out.reshape(self.num_heads, self.seq_len, self.seq_len)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self) -> torch.Tensor:
         wrapped = type(self)._wrapped
@@ -1722,10 +1701,7 @@ class SinusoidalOp(Op):
     def _eager_forward(self) -> torch.Tensor:
         out = self.kernel()
         result = out.reshape(self.seq_len, self.d_model)
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        if fp8_out is not None:
-            result = result.to(fp8_out)
-        return result
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self) -> torch.Tensor:
         wrapped = type(self)._wrapped
