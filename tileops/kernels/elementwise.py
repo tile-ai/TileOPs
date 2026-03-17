@@ -153,6 +153,23 @@ def _is_fp8(dtype: torch.dtype) -> bool:
     return dtype in _FP8_DTYPES
 
 
+def _strategy_npt(strategy: str, dtype: torch.dtype) -> int:
+    """Return the default num_per_thread for a strategy + dtype pair.
+
+    Strategy-aware heuristic (H200 benchmarks, issue 553):
+    - explicit_parallel: npt=4 for fp16/bf16 (42% bandwidth gain vs npt=8)
+    - register_copy: npt=8 for fp16/bf16 (vectorised 128-bit loads)
+    - fp32: npt=4 for all strategies (4 bytes x 4 = 128-bit alignment)
+    - fp8: handled separately by callers (npt=16)
+    """
+    if dtype == torch.float32:
+        return 4
+    # fp16 / bf16: strategy-dependent
+    if strategy == "explicit_parallel":
+        return 4
+    return 8
+
+
 def _fp8_needs_nonsaturating_cast(dtype: torch.dtype) -> bool:
     """Return True if the fp8 format supports Inf/NaN and needs non-saturating output.
 
@@ -668,7 +685,7 @@ class UnaryKernel(Kernel):
         if _is_fp8(self.dtype):
             # fp8: 1 byte per element, 16 elements = 128-bit alignment
             return {"threads": 256, "num_per_thread": 16}
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = _strategy_npt(self.strategy, self.dtype)
         return {"threads": 256, "num_per_thread": npt}
 
     @property
@@ -855,7 +872,7 @@ class BinaryKernel(Kernel):
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
             return {"threads": 256, "num_per_thread": 16}
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = _strategy_npt(self.strategy, self.dtype)
         return {"threads": 256, "num_per_thread": npt}
 
     @property
@@ -1007,7 +1024,7 @@ class FusedGatedKernel(Kernel):
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
             return {"threads": 256, "num_per_thread": 16}
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = _strategy_npt(self.strategy, self.dtype)
         return {"threads": 256, "num_per_thread": npt}
 
     @property
