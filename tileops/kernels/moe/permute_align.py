@@ -8,7 +8,7 @@ MoE grouped GEMM:
   expert_ids        [num_blocks]             - expert index per GEMM block
   num_tokens_post_pad [1]                   - total padded token count
 
-Algorithm (single fused kernel):
+Algorithm (K1 align kernel + temporary Python scatter):
 
   Step 1 - count:
     * Zero s_counts in shared memory.
@@ -24,9 +24,9 @@ Algorithm (single fused kernel):
     * Thread tx < num_experts owns blocks [cumsum[tx]/bs, cumsum[tx+1]/bs).
     * Writes expert_ids[blk] = tx directly — O(total_blocks) total work.
 
-  Step 4 - sentinel fill + scatter sort:
+  Step 4 - sentinel fill (K1 only):
     * Fill sorted_token_ids with sentinel (numel).
-    * Reuse s_cumsum as s_offset; each thread atomically claims its slot.
+    * Scatter is performed in Python (temporary; K2 will replace this).
 
 Reference: sgl-kernel/csrc/moe/moe_align_kernel.cu
 """
@@ -45,16 +45,16 @@ __all__ = ["MoePermuteAlignKernel"]
 _THREADS = 1024
 
 
-def _make_fused_kernel(numel: int, num_experts: int, block_size: int):
-    """Single fused kernel: count → warp-scan → expert_ids → sentinel fill → sort."""
+def _make_align_kernel(numel: int, num_experts: int, block_size: int):
+    """K1: count → warp-scan → expert_ids → sentinel fill. Does NOT scatter."""
     max_padded = numel + (num_experts + 1) * (block_size - 1)
     max_num_blocks = math.ceil(max_padded / block_size)
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
-    def _fused(threads: int):
+    def _align(threads: int):
 
         @T.prim_func
-        def _fused_main(
+        def _align_main(
             flat: T.Tensor([numel], "int32"),                    # noqa: F821
             sorted_token_ids: T.Tensor([max_padded], "int32"),   # noqa: F821
             expert_ids: T.Tensor([max_num_blocks], "int32"),     # noqa: F821
@@ -160,19 +160,10 @@ def _make_fused_kernel(numel: int, num_experts: int, block_size: int):
                     idx = i * threads + tx
                     if idx < max_padded:
                         sorted_token_ids[idx] = numel
-                T.sync_threads()
 
-                # Step 4: scatter token indices (reuse s_cumsum as s_offset)
-                for i in T.serial(T.ceildiv(numel, threads)):
-                    idx = i * threads + tx
-                    if idx < numel:
-                        eid  = flat[idx]
-                        slot = T.atomic_add(s_cumsum[eid], 1, return_prev=True)
-                        sorted_token_ids[slot] = idx
+        return _align_main
 
-        return _fused_main
-
-    return _fused
+    return _align
 
 
 class MoePermuteAlignKernel(Kernel):
@@ -205,7 +196,7 @@ class MoePermuteAlignKernel(Kernel):
         self.num_experts = num_experts
         self.block_size = block_size
 
-        self._fused_fn = _make_fused_kernel(numel, num_experts, block_size)
+        self._align_fn = _make_align_kernel(numel, num_experts, block_size)
 
         self.init_config(config, tune=False)
 
@@ -242,7 +233,17 @@ class MoePermuteAlignKernel(Kernel):
         cumsum              = torch.empty(self.num_experts + 1, dtype=torch.int32,
                                          device=flat.device)
 
-        fused_fn = self._fused_fn(threads)
-        fused_fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
+        # K1: align (count + scan + expert_ids + sentinel fill)
+        align_fn = self._align_fn(threads)
+        align_fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
+
+        # Temporary Python-level scatter (replaced by K2 in next task)
+        # NOTE: This is intentionally slow; correct only.
+        cumsum_list = cumsum.cpu().tolist()
+        flat_list   = flat.cpu().tolist()
+        for idx, eid in enumerate(flat_list):
+            slot = cumsum_list[eid]
+            sorted_token_ids[slot] = idx
+            cumsum_list[eid] += 1
 
         return sorted_token_ids, expert_ids, num_tokens_post_pad
