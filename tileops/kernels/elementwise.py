@@ -1714,7 +1714,8 @@ class IsfiniteKernel(FloatPredicateKernel):
 # ---------------------------------------------------------------------------
 
 
-def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None, threads=256, npt=8):
+def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None,
+                            is_fp8=False, threads=256, npt=8):
     """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x.
 
     For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
@@ -1726,22 +1727,42 @@ def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None, threads
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    @tilelang.jit(out_idx=[1])
-    def kernel(threads_arg, npt_arg):
-        @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    val = x[idx]
-                    accum = _fp8_accum_dtype_str()
-                    v = T.cast(val, accum)
-                    zero = T.cast(0, accum)
-                    slope = T.cast(negative_slope, accum)
-                    result = T.if_then_else(v > zero, v, slope * v)
-                    y[idx] = T.Cast(out_dtype, result)
+    if is_fp8:
+        accum = _fp8_accum_dtype_str()
 
-        return main
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        val = x[idx]
+                        v = T.cast(val, accum)
+                        zero = T.cast(0, accum)
+                        slope = T.cast(negative_slope, accum)
+                        result = T.if_then_else(v > zero, v, slope * v)
+                        y[idx] = T.Cast(out_dtype, result)
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        val = x_reg[i * npt_arg + j]
+                        zero = T.cast(0, val.dtype)
+                        slope = T.cast(negative_slope, val.dtype)
+                        y_reg[i * npt_arg + j] = T.if_then_else(val > zero, val, slope * val)
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
 
     return kernel
 
@@ -1774,6 +1795,7 @@ class LeakyReluKernel(Kernel):
         self.kernel = _make_leaky_relu_kernel(
             N_total, self.dtype_str, negative_slope,
             output_dtype=self.dtype_to_str(self.output_dtype),
+            is_fp8=_is_fp8(dtype),
             threads=cfg["threads"], npt=cfg["num_per_thread"],
         )
         self.init_config(config, tune)
@@ -1983,12 +2005,16 @@ class SoftplusKernel(Kernel):
         return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
 
 
-def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None, threads=256, npt=8):
+def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
+                       is_fp8=False, threads=256, npt=8):
     """Build PReLU kernel: y = x if x > 0 else weight[channel] * x.
 
     Weight is per-channel. Channel index follows PyTorch convention:
     for flat index ``idx``, channel = (idx // inner_size) % C, where
     ``inner_size`` is the product of all dimensions after the channel dim.
+
+    For non-fp8 dtypes, uses register_copy strategy for input/output to
+    improve memory coalescing for the main data path.
 
     For fp8 dtypes, uses explicit_parallel with fp16 accumulation
     (register_copy is unreliable for 8-bit fragments).
@@ -1996,28 +2022,55 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None, threads=256, 
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    @tilelang.jit(out_idx=[2])
-    def kernel(threads_arg, npt_arg):
-        @T.prim_func
-        def main(
-            x: T.Tensor((N,), dtype),
-            weight: T.Tensor((C,), dtype),
-            y: T.Tensor((N,), out_dtype),
-        ):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    k = i * npt_arg + j
-                    idx = bx * block_size + k
-                    val = x[idx]
-                    ch = (idx // inner_size) % C
-                    w = weight[ch]
-                    accum = _fp8_accum_dtype_str()
-                    v = T.cast(val, accum)
-                    wf = T.cast(w, accum)
-                    zero = T.cast(0, accum)
-                    y[idx] = T.if_then_else(v > zero, T.Cast(out_dtype, v), T.Cast(out_dtype, wf * v))
+    if is_fp8:
+        accum = _fp8_accum_dtype_str()
 
-        return main
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                weight: T.Tensor((C,), dtype),
+                y: T.Tensor((N,), out_dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        idx = bx * block_size + k
+                        val = x[idx]
+                        ch = (idx // inner_size) % C
+                        w = weight[ch]
+                        v = T.cast(val, accum)
+                        wf = T.cast(w, accum)
+                        zero = T.cast(0, accum)
+                        y[idx] = T.if_then_else(v > zero, T.Cast(out_dtype, v), T.Cast(out_dtype, wf * v))
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                weight: T.Tensor((C,), dtype),
+                y: T.Tensor((N,), dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        idx = bx * block_size + k
+                        val = x_reg[k]
+                        ch = (idx // inner_size) % C
+                        w = weight[ch]
+                        zero = T.cast(0, val.dtype)
+                        y_reg[k] = T.if_then_else(val > zero, val, w * val)
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
 
     return kernel
 
@@ -2064,6 +2117,7 @@ class PreluKernel(Kernel):
         self.kernel = _make_prelu_kernel(
             N_total, C, inner_size, self.dtype_str,
             output_dtype=self.dtype_to_str(self.output_dtype),
+            is_fp8=_is_fp8(dtype),
             threads=cfg["threads"], npt=cfg["num_per_thread"],
         )
         self.init_config(config, tune)
@@ -2078,36 +2132,68 @@ class PreluKernel(Kernel):
         return self.kernel(cfg["threads"], cfg["num_per_thread"])(x, weight)
 
 
-def _make_where_kernel(N, dtype, threads=256, npt=8):
+def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
     """Build where kernel: out = cond ? x : y.
 
     The Op layer packs the bool condition as uint8 so that T.copy can
     perform vectorized loads (TileLang does not vectorize bool tensors).
-    Each uint8 element is 0 or 1; the kernel unpacks per-element with
-    a != 0 comparison.
+    Each uint8 element is 0 or 1; the kernel loads it into a register
+    fragment and unpacks per-element with a != 0 comparison.
+
+    For non-fp8 dtypes, writes the result back into the x register fragment
+    (in-place) to reduce register pressure and avoid a fourth data-typed
+    fragment allocation.
 
     For fp8 dtypes, uses explicit_parallel (direct element access) since
     register_copy is unreliable for 8-bit fragments.
     """
     block_size = threads * npt
 
-    @tilelang.jit(out_idx=[3])
-    def kernel(threads_arg, npt_arg):
-        @T.prim_func
-        def main(
-            cond: T.Tensor((N,), "uint8"),
-            x: T.Tensor((N,), dtype),
-            y_in: T.Tensor((N,), dtype),
-            out: T.Tensor((N,), dtype),
-        ):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    out[idx] = T.if_then_else(
-                        cond[idx] != T.cast(0, "uint8"), x[idx], y_in[idx],
-                    )
+    if is_fp8:
 
-        return main
+        @tilelang.jit(out_idx=[3])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                cond: T.Tensor((N,), "uint8"),
+                x: T.Tensor((N,), dtype),
+                y_in: T.Tensor((N,), dtype),
+                out: T.Tensor((N,), dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        out[idx] = T.if_then_else(
+                            cond[idx] != T.cast(0, "uint8"), x[idx], y_in[idx],
+                        )
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[3])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                cond: T.Tensor((N,), "uint8"),
+                x: T.Tensor((N,), dtype),
+                y_in: T.Tensor((N,), dtype),
+                out: T.Tensor((N,), dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    c_reg = T.alloc_fragment((block_size,), "uint8")
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(cond[bx * block_size : (bx + 1) * block_size], c_reg)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    T.copy(y_in[bx * block_size : (bx + 1) * block_size], y_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        x_reg[k] = T.if_then_else(
+                            c_reg[k] != T.cast(0, "uint8"), x_reg[k], y_reg[k],
+                        )
+                    T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
+
+            return main
 
     return kernel
 
@@ -2137,7 +2223,8 @@ class WhereKernel(Kernel):
         self.dtype = dtype
         cfg = self.default_config
         self.kernel = _make_where_kernel(
-            N_total, self.dtype_str, cfg["threads"], cfg["num_per_thread"],
+            N_total, self.dtype_str, is_fp8=_is_fp8(dtype),
+            threads=cfg["threads"], npt=cfg["num_per_thread"],
         )
         self.init_config(config, tune)
 
@@ -2233,34 +2320,66 @@ class ClampKernel(Kernel):
         return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
 
 
-def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
+def _make_masked_fill_kernel(N, dtype, fill_value, is_fp8=False, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
-    The Op layer packs the bool mask as uint8. Each uint8 element is 0 or 1;
-    the kernel unpacks per-element with a != 0 comparison.
+    The Op layer packs the bool mask as uint8 so that T.copy can
+    perform vectorized loads (TileLang does not vectorize bool tensors).
+    Each uint8 element is 0 or 1; the kernel loads it into a register
+    fragment and unpacks per-element with a != 0 comparison.
+
+    For non-fp8 dtypes, writes the result back into the x register fragment
+    (in-place) to reduce register pressure and avoid a third data-typed
+    fragment allocation.
 
     For fp8 dtypes, uses explicit_parallel (direct element access) since
     register_copy is unreliable for 8-bit fragments.
     """
     block_size = threads * npt
 
-    @tilelang.jit(out_idx=[2])
-    def kernel(threads_arg, npt_arg):
-        @T.prim_func
-        def main(
-            x: T.Tensor((N,), dtype),
-            mask: T.Tensor((N,), "uint8"),
-            out: T.Tensor((N,), dtype),
-        ):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    fv = T.cast(fill_value, dtype)
-                    out[idx] = T.if_then_else(
-                        mask[idx] != T.cast(0, "uint8"), fv, x[idx],
-                    )
+    if is_fp8:
 
-        return main
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                mask: T.Tensor((N,), "uint8"),
+                out: T.Tensor((N,), dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        fv = T.cast(fill_value, dtype)
+                        out[idx] = T.if_then_else(
+                            mask[idx] != T.cast(0, "uint8"), fv, x[idx],
+                        )
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                mask: T.Tensor((N,), "uint8"),
+                out: T.Tensor((N,), dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    m_reg = T.alloc_fragment((block_size,), "uint8")
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(mask[bx * block_size : (bx + 1) * block_size], m_reg)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        fv = T.cast(fill_value, dtype)
+                        x_reg[k] = T.if_then_else(
+                            m_reg[k] != T.cast(0, "uint8"), fv, x_reg[k],
+                        )
+                    T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
+
+            return main
 
     return kernel
 
@@ -2292,7 +2411,8 @@ class MaskedFillKernel(Kernel):
         self.fill_value = fill_value
         cfg = self.default_config
         self.kernel = _make_masked_fill_kernel(
-            N_total, self.dtype_str, fill_value, cfg["threads"], cfg["num_per_thread"],
+            N_total, self.dtype_str, fill_value, is_fp8=_is_fp8(dtype),
+            threads=cfg["threads"], npt=cfg["num_per_thread"],
         )
         self.init_config(config, tune)
 
@@ -2307,8 +2427,11 @@ class MaskedFillKernel(Kernel):
 
 
 def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
-                            output_dtype=None, threads=256, npt=8):
+                            output_dtype=None, is_fp8=False, threads=256, npt=8):
     """Build nan_to_num kernel: replace NaN, +Inf, -Inf with given values.
+
+    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
+    -> fragment store for coalesced memory access.
 
     For fp8 dtypes, uses explicit_parallel (direct element access) since
     register_copy is unreliable for 8-bit fragments.
@@ -2316,31 +2439,63 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    @tilelang.jit(out_idx=[1])
-    def kernel(threads_arg, npt_arg):
-        @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    val = x[idx]
-                    v32 = T.cast(val, "float32")
-                    nan_r = T.cast(nan_val, out_dtype)
-                    pos_r = T.cast(posinf_val, out_dtype)
-                    neg_r = T.cast(neginf_val, out_dtype)
-                    pass_through = T.Cast(out_dtype, v32)
-                    result = T.if_then_else(
-                        T.isnan(v32),
-                        nan_r,
-                        T.if_then_else(
-                            T.isinf(v32),
-                            T.if_then_else(v32 > T.cast(0, "float32"), pos_r, neg_r),
-                            pass_through,
-                        ),
-                    )
-                    y[idx] = result
+    if is_fp8:
 
-        return main
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        val = x[idx]
+                        v32 = T.cast(val, "float32")
+                        nan_r = T.cast(nan_val, out_dtype)
+                        pos_r = T.cast(posinf_val, out_dtype)
+                        neg_r = T.cast(neginf_val, out_dtype)
+                        pass_through = T.Cast(out_dtype, v32)
+                        result = T.if_then_else(
+                            T.isnan(v32),
+                            nan_r,
+                            T.if_then_else(
+                                T.isinf(v32),
+                                T.if_then_else(v32 > T.cast(0, "float32"), pos_r, neg_r),
+                                pass_through,
+                            ),
+                        )
+                        y[idx] = result
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        val = x_reg[k]
+                        v32 = T.cast(val, "float32")
+                        nan_r = T.cast(nan_val, val.dtype)
+                        pos_r = T.cast(posinf_val, val.dtype)
+                        neg_r = T.cast(neginf_val, val.dtype)
+                        result = T.if_then_else(
+                            T.isnan(v32),
+                            nan_r,
+                            T.if_then_else(
+                                T.isinf(v32),
+                                T.if_then_else(v32 > T.cast(0, "float32"), pos_r, neg_r),
+                                val,
+                            ),
+                        )
+                        y_reg[k] = result
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
 
     return kernel
 
@@ -2385,6 +2540,7 @@ class NanToNumKernel(Kernel):
         self.kernel = _make_nan_to_num_kernel(
             N_total, self.dtype_str, nan_val, posinf_val, neginf_val,
             output_dtype=self.dtype_to_str(self.output_dtype),
+            is_fp8=_is_fp8(dtype),
             threads=cfg["threads"], npt=cfg["num_per_thread"],
         )
         self.init_config(config, tune)
