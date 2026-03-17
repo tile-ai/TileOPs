@@ -1,40 +1,31 @@
 #!/usr/bin/env python3
 """Pre-compile all benchmark kernel variants to warm the tilelang cache.
 
-Monkeypatches tilelang.profiler.do_bench to return a dummy value so that
-kernel compilation happens normally (populating the disk cache) while GPU
-profiling is effectively skipped.
+Patches tilelang.profiler.do_bench to return a dummy value so that kernel
+compilation happens normally (populating the disk cache) while GPU profiling
+is effectively skipped.
 
 The autotuner result cache is disabled (TILELANG_AUTO_TUNING_DISABLE_CACHE=1)
 so that dummy profiling results are never persisted — the real benchmark run
 will re-profile from compiled-kernel cache hits and store genuine best configs.
 
+Uses pytest-xdist to run benchmark test cases in parallel across multiple
+workers, while the autotuner's ThreadPoolExecutor parallelizes config
+compilation within each op.  Two levels of parallelism:
+
+  Level 1: pytest-xdist workers  (-n flag)  — across ops/benchmarks
+  Level 2: ThreadPoolExecutor    (--max-workers) — across autotune configs
+
 Usage:
     python scripts/warmup_kernel_cache.py
+    python scripts/warmup_kernel_cache.py --max-workers 64 -n 4
     python scripts/warmup_kernel_cache.py --shard 0 --total-shards 4
-    python scripts/warmup_kernel_cache.py --max-workers 64
 """
 
 import argparse
-import concurrent.futures
 import glob
 import os
 import sys
-import unittest.mock
-
-
-def _patch_compile_parallelism(max_workers):
-    """Cap ThreadPoolExecutor max_workers used by the autotuner."""
-    _OrigPool = concurrent.futures.ThreadPoolExecutor
-    _cap = max_workers
-
-    class _CappedPool(_OrigPool):
-        def __init__(self, max_workers=None, **kwargs):
-            if max_workers is None or max_workers > _cap:
-                max_workers = _cap
-            super().__init__(max_workers=max_workers, **kwargs)
-
-    concurrent.futures.ThreadPoolExecutor = _CappedPool
 
 
 def main():
@@ -48,51 +39,57 @@ def main():
         help="Total number of shards")
     parser.add_argument(
         "--max-workers", type=int, default=64,
-        help="Max parallel compilation threads (default: 64)")
+        help="Max parallel compilation threads per autotune call (default: 64)")
+    parser.add_argument(
+        "-n", "--num-pytest-workers", type=int, default=8,
+        help="Number of pytest-xdist workers for parallel test execution (default: 8)")
     args = parser.parse_args()
 
-    # Cap compilation parallelism.
-    _patch_compile_parallelism(args.max_workers)
-    print(f"Compilation parallelism capped at {args.max_workers} threads")
-
-    # Prevent autotuner from caching dummy profiling results.
+    # Communicate settings to worker processes via environment variables.
+    # The conftest plugin (conftest_warmup) reads these in each worker.
     os.environ["TILELANG_AUTO_TUNING_DISABLE_CACHE"] = "1"
+    os.environ["TILEOPS_WARMUP_MODE"] = "1"
+    os.environ["TILEOPS_WARMUP_MAX_WORKERS"] = str(args.max_workers)
 
-    # Monkeypatch do_bench to skip real GPU profiling.
-    # This covers:
-    #   - BenchmarkBase.profile()          (benchmark harness)
-    #   - _profile_manual() in bench_gla   (direct do_bench calls)
-    #   - autotuner Phase 2                (config profiling inside tilelang)
-    # Compilation (autotuner Phase 1) is unaffected — it does not use do_bench.
-    with unittest.mock.patch("tilelang.profiler.do_bench", return_value=1.0):
-        # Collect benchmark files and shard.
-        bench_dir = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "ops")
-        all_files = sorted(glob.glob(os.path.join(bench_dir, "bench_*.py")))
-        shard_files = all_files[args.shard::args.total_shards]
+    print(f"Compilation parallelism: {args.num_pytest_workers} pytest workers "
+          f"x {args.max_workers} compile threads each")
 
-        if not shard_files:
-            print(f"Shard {args.shard}/{args.total_shards}: no files to process")
-            return
+    # Collect benchmark files and shard.
+    bench_dir = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "ops")
+    all_files = sorted(glob.glob(os.path.join(bench_dir, "bench_*.py")))
+    shard_files = all_files[args.shard::args.total_shards]
 
-        print(f"Shard {args.shard}/{args.total_shards}: "
-              f"{len(shard_files)}/{len(all_files)} benchmark files")
-        for f in shard_files:
-            print(f"  {os.path.basename(f)}")
+    if not shard_files:
+        print(f"Shard {args.shard}/{args.total_shards}: no files to process")
+        return
 
-        # Run benchmarks via pytest.
-        # - Compilation happens during Op construction (autotune compiles all
-        #   config variants in parallel via ThreadPoolExecutor).
-        # - Profiling returns instantly (do_bench patched).
-        # - continue-on-error: individual test failures don't block warmup.
-        import pytest
+    print(f"Shard {args.shard}/{args.total_shards}: "
+          f"{len(shard_files)}/{len(all_files)} benchmark files")
+    for f in shard_files:
+        print(f"  {os.path.basename(f)}")
 
-        exit_code = pytest.main([
-            *shard_files,
-            "-v",
-            "--tb=line",
-            "-p", "no:cacheprovider",
-            "--override-ini=continue_on_collection_errors=true",
-        ])
+    import pytest
+
+    # Add scripts/ to PYTHONPATH so `-p conftest_warmup` resolves in
+    # both the main process and xdist worker subprocesses.
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    os.environ["PYTHONPATH"] = scripts_dir + os.pathsep + os.environ.get("PYTHONPATH", "")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+
+    pytest_args = [
+        *shard_files,
+        "-v",
+        "--tb=line",
+        "-p", "no:cacheprovider",
+        "-p", "conftest_warmup",
+        "--override-ini=continue_on_collection_errors=true",
+    ]
+
+    if args.num_pytest_workers > 1:
+        pytest_args.extend(["-n", str(args.num_pytest_workers)])
+
+    exit_code = pytest.main(pytest_args)
 
     # Exit 0 even if some tests "fail" — warmup success is measured by
     # cache population, not test pass/fail.

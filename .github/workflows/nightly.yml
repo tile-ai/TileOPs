@@ -24,7 +24,7 @@ jobs:
   # =========================================================================
   cache-warmup:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    timeout-minutes: 90
+    timeout-minutes: 60
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
@@ -137,7 +137,7 @@ jobs:
           export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           echo "Starting kernel cache warmup..."
-          python scripts/warmup_kernel_cache.py --max-workers 64
+          python scripts/warmup_kernel_cache.py --max-workers 64 -n 8
         shell: bash
 
   # =========================================================================
@@ -146,7 +146,7 @@ jobs:
   benchmark:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [cache-warmup]
-    timeout-minutes: 90
+    timeout-minutes: 120
     runs-on: [self-hosted, tile-ops, venv]
     steps:
       - name: Checkout code
