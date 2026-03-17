@@ -686,10 +686,12 @@ class UnaryKernel(Kernel):
             super().autotune(warmup=warmup, rep=rep)
         except (AssertionError, Exception) as exc:
             if "not serializable" in str(exc) or "pickle" in str(exc).lower():
-                warnings.warn(  # noqa: B028
+                warnings.warn(
                     f"{self.__class__.__name__} autotuning failed "
                     f"(op_func is not serializable); falling back to "
-                    f"default_config.")
+                    f"default_config.",
+                    stacklevel=2,
+                )
                 self.config = dict(self.default_config)
             else:
                 raise
@@ -1023,10 +1025,12 @@ class FusedGatedKernel(Kernel):
             super().autotune(warmup=warmup, rep=rep)
         except (AssertionError, Exception) as exc:
             if "not serializable" in str(exc) or "pickle" in str(exc).lower():
-                warnings.warn(  # noqa: B028
+                warnings.warn(
                     f"{self.__class__.__name__} autotuning failed "
                     f"(activation_func is not serializable); falling back to "
-                    f"default_config.")
+                    f"default_config.",
+                    stacklevel=2,
+                )
                 self.config = dict(self.default_config)
             else:
                 raise
