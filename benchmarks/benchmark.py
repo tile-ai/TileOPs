@@ -9,6 +9,73 @@ from tilelang.profiler import do_bench
 from tests.test_base import TestBase
 
 
+def _patch_cupti_filter():
+    """Narrow tilelang's CUPTI kernel-name exclusion to cache-clearing only.
+
+    tilelang's ``_bench_with_cupti`` (bench.py) excludes all CUDA kernels
+    whose name contains ``"at::native::vectorized_elementwise"``.  The
+    intent is to strip the ``cache.zero_()`` overhead inserted between
+    benchmark iterations, but ``cache.zero_()`` produces a kernel with
+    ``FillFunctor`` in its name — the same ``vectorized_elementwise``
+    family that PyTorch uses for add, mul, where, maximum, etc.
+
+    The overly broad substring match therefore removes **all** PyTorch
+    elementwise kernel time, making baseline latencies near-zero for
+    elementwise benchmarks.
+
+    This patch replaces the upstream function with one that only excludes
+    kernels containing **both** ``vectorized_elementwise`` and
+    ``FillFunctor`` (i.e. the actual cache-clearing kernel).
+    """
+    import tilelang.profiler.bench as _bench_mod
+
+    if not hasattr(_bench_mod, "_bench_with_cupti"):
+        import warnings
+        warnings.warn(
+            "tilelang CUPTI patch skipped: _bench_with_cupti not found. "
+            "The upstream API may have changed — elementwise baseline "
+            "latencies measured via CUPTI may be inaccurate.",
+            stacklevel=2,
+        )
+        return
+
+    def _bench_with_cupti_fixed(fn, cache, n_repeat):
+        from tilelang.profiler.bench import suppress_stdout_stderr
+
+        with suppress_stdout_stderr():
+            schedule = torch.profiler.schedule(
+                wait=1, warmup=0, active=1, repeat=1,
+            )
+            profiler = torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CUDA],
+                schedule=schedule,
+            )
+            with profiler:
+                for _ in range(2):
+                    for _ in range(n_repeat):
+                        cache.zero_()
+                        fn()
+                    profiler.step()
+
+        total_cuda_time = 0.0
+        excluded_time = 0.0
+        for event in profiler.key_averages():
+            total_cuda_time += event.self_device_time_total
+            # Only exclude the cache.zero_() kernel (FillFunctor), not
+            # all vectorized_elementwise kernels.
+            if ("vectorized_elementwise" in event.key
+                    and "FillFunctor" in event.key):
+                excluded_time += event.self_device_time_total
+
+        kernel_time_us = (total_cuda_time - excluded_time) / n_repeat
+        return kernel_time_us * 1e-3
+
+    _bench_mod._bench_with_cupti = _bench_with_cupti_fixed
+
+
+_patch_cupti_filter()
+
+
 def _get_env_metadata() -> list[str]:
     """Collect GPU model, driver version, CUDA version, and torch version."""
     lines = []
@@ -57,7 +124,7 @@ class BenchmarkBase(ABC):
                 functor: Any,
                 *inputs: Tuple[torch.Tensor],
                 warmup: int = 100,
-                rep: int = 100) -> dict:
+                rep: int = 200) -> dict:
         """Profile a callable and return structured results.
 
         Works for both tileops ops and baseline implementations.
@@ -66,9 +133,16 @@ class BenchmarkBase(ABC):
             return functor(*inputs)
 
         with torch.no_grad():
+            # CUPTI gives pure kernel time (no host-launch overhead).
+            # It is a global singleton — when another process holds the
+            # handle (e.g. someone running ncu), do_bench returns 0.
+            # Fall back to CUDA-event with median aggregation in that case.
             latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='cupti')
             if latency <= 0:
-                latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='event')
+                latency = do_bench(
+                    bench_fn, warmup=warmup, rep=rep,
+                    backend='event', return_mode='median',
+                )
 
         result = {"latency_ms": latency}
         flops = self.calculate_flops()
