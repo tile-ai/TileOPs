@@ -8,7 +8,7 @@ MoE grouped GEMM:
   expert_ids        [num_blocks]             - expert index per GEMM block
   num_tokens_post_pad [1]                   - total padded token count
 
-Algorithm (K1 align kernel + temporary Python scatter):
+Algorithm (K1 align kernel + K2 multi-block scatter):
 
   Step 1 - count:
     * Zero s_counts in shared memory.
@@ -26,12 +26,15 @@ Algorithm (K1 align kernel + temporary Python scatter):
 
   Step 4 - sentinel fill (K1 only):
     * Fill sorted_token_ids with sentinel (numel).
-    * Scatter is performed in Python (temporary; K2 will replace this).
+
+  Step 5 - scatter (K2):
+    * Multi-block scatter using global atomicAdd on cumsum buffer.
 
 Reference: sgl-kernel/csrc/moe/moe_align_kernel.cu
 """
 
 import math
+import os
 from typing import Optional
 
 import tilelang
@@ -40,9 +43,16 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
+# Path to the CUDA helper header for the scatter kernel.
+# Provides tl_atomic_add_offset() — a workaround for TileLang's codegen
+# limitation that T.atomic_add(..., return_prev=True) does not support
+# dynamic (indirect) global-memory indices.
+_ATOMIC_HELPER_H = os.path.join(os.path.dirname(__file__), "_atomic_helper.h")
+
 __all__ = ["MoePermuteAlignKernel"]
 
 _THREADS = 1024
+_SCATTER_THREADS = 256
 
 
 def _make_align_kernel(numel: int, num_experts: int, block_size: int):
@@ -166,6 +176,46 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
     return _align
 
 
+def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
+    """K2: multi-block scatter using global atomicAdd on cumsum buffer.
+
+    cumsum[e] holds the current write offset for expert e (set by K1, then
+    incremented here). CUDA stream order guarantees K1 finishes before K2.
+
+    Reference: count_and_sort_expert_tokens_kernel in sgl-kernel.
+    """
+    max_padded = numel + (num_experts + 1) * (block_size - 1)
+    scatter_blocks = min(math.ceil(numel / _SCATTER_THREADS), 65535)
+    total_scatter_threads = scatter_blocks * _SCATTER_THREADS
+
+    @tilelang.jit(out_idx=[], compile_flags=["-O3", "-include", _ATOMIC_HELPER_H])
+    def _scatter():
+
+        @T.prim_func
+        def _scatter_main(
+            flat: T.Tensor([numel], "int32"),                   # noqa: F821
+            sorted_token_ids: T.Tensor([max_padded], "int32"),  # noqa: F821
+            cumsum: T.Tensor([num_experts + 1], "int32"),       # noqa: F821
+        ):
+            with T.Kernel(scatter_blocks, threads=_SCATTER_THREADS) as (bid,):
+                tx = T.get_thread_binding()
+                gid = bid * _SCATTER_THREADS + tx
+                for i in T.serial(T.ceildiv(numel, total_scatter_threads)):
+                    idx = gid + i * total_scatter_threads
+                    if idx < numel:
+                        eid = flat[idx]
+                        # T.atomic_add(..., return_prev=True) does not support dynamic
+                        # global-memory indices (TileLang codegen limitation).
+                        # Use tl_atomic_add_offset() from _atomic_helper.h instead.
+                        slot = T.call_extern("int32", "tl_atomic_add_offset",
+                                             T.address_of(cumsum[0]), eid, T.int32(1))
+                        sorted_token_ids[slot] = idx
+
+        return _scatter_main
+
+    return _scatter
+
+
 class MoePermuteAlignKernel(Kernel):
     """MoE token permutation and alignment kernel.
 
@@ -197,6 +247,7 @@ class MoePermuteAlignKernel(Kernel):
         self.block_size = block_size
 
         self._align_fn = _make_align_kernel(numel, num_experts, block_size)
+        self._scatter_fn = _make_scatter_kernel(numel, num_experts, block_size)
 
         self.init_config(config, tune=False)
 
@@ -233,17 +284,12 @@ class MoePermuteAlignKernel(Kernel):
         cumsum              = torch.empty(self.num_experts + 1, dtype=torch.int32,
                                          device=flat.device)
 
-        # K1: align (count + scan + expert_ids + sentinel fill)
+        # K1: align (count + scan + expert_ids + sentinel fill) → writes cumsum
         align_fn = self._align_fn(threads)
         align_fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
 
-        # Temporary Python-level scatter (replaced by K2 in next task)
-        # NOTE: This is intentionally slow; correct only.
-        cumsum_list = cumsum.cpu().tolist()
-        flat_list   = flat.cpu().tolist()
-        for idx, eid in enumerate(flat_list):
-            slot = cumsum_list[eid]
-            sorted_token_ids[slot] = idx
-            cumsum_list[eid] += 1
+        # K2: scatter tokens using global atomicAdd on cumsum
+        scatter_fn = self._scatter_fn()
+        scatter_fn(flat, sorted_token_ids, cumsum)
 
         return sorted_token_ids, expert_ids, num_tokens_post_pad
