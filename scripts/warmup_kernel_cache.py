@@ -12,13 +12,29 @@ will re-profile from compiled-kernel cache hits and store genuine best configs.
 Usage:
     python scripts/warmup_kernel_cache.py
     python scripts/warmup_kernel_cache.py --shard 0 --total-shards 4
+    python scripts/warmup_kernel_cache.py --max-workers 64
 """
 
 import argparse
+import concurrent.futures
 import glob
 import os
 import sys
 import unittest.mock
+
+
+def _patch_compile_parallelism(max_workers):
+    """Cap ThreadPoolExecutor max_workers used by the autotuner."""
+    _OrigPool = concurrent.futures.ThreadPoolExecutor
+    _cap = max_workers
+
+    class _CappedPool(_OrigPool):
+        def __init__(self, max_workers=None, **kwargs):
+            if max_workers is None or max_workers > _cap:
+                max_workers = _cap
+            super().__init__(max_workers=max_workers, **kwargs)
+
+    concurrent.futures.ThreadPoolExecutor = _CappedPool
 
 
 def main():
@@ -30,7 +46,14 @@ def main():
     parser.add_argument(
         "--total-shards", type=int, default=1,
         help="Total number of shards")
+    parser.add_argument(
+        "--max-workers", type=int, default=64,
+        help="Max parallel compilation threads (default: 64)")
     args = parser.parse_args()
+
+    # Cap compilation parallelism.
+    _patch_compile_parallelism(args.max_workers)
+    print(f"Compilation parallelism capped at {args.max_workers} threads")
 
     # Prevent autotuner from caching dummy profiling results.
     os.environ["TILELANG_AUTO_TUNING_DISABLE_CACHE"] = "1"

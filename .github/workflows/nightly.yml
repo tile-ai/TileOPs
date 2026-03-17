@@ -70,21 +70,12 @@ jobs:
           set -euo pipefail
 
           VENV_PREFIX="tileops_benchmarks_venv"
+          DEP_HASH="$(python3 scripts/dep_hash.py)"
           HASH_INPUT="$(
             {
               echo "python=3.11"
               echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              python3 -c "
-import tomllib, hashlib, json, pathlib
-d = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
-deps = {
-    'dependencies': d.get('project', {}).get('dependencies', []),
-    'optional': d.get('project', {}).get('optional-dependencies', {}),
-    'requires-python': d.get('project', {}).get('requires-python', ''),
-    'build-requires': d.get('build-system', {}).get('requires', []),
-}
-print(hashlib.sha256(json.dumps(deps, sort_keys=True).encode()).hexdigest())
-"
+              echo "${DEP_HASH}"
             } | sha256sum | cut -c1-16
           )"
           VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
@@ -146,7 +137,7 @@ print(hashlib.sha256(json.dumps(deps, sort_keys=True).encode()).hexdigest())
           export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
           echo "Starting kernel cache warmup..."
-          python scripts/warmup_kernel_cache.py
+          python scripts/warmup_kernel_cache.py --max-workers 64
         shell: bash
 
   # =========================================================================
@@ -245,21 +236,12 @@ print(hashlib.sha256(json.dumps(deps, sort_keys=True).encode()).hexdigest())
           set -euo pipefail
 
           VENV_PREFIX="tileops_benchmarks_venv"
+          DEP_HASH="$(python3 scripts/dep_hash.py)"
           HASH_INPUT="$(
             {
               echo "python=3.11"
               echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              python3 -c "
-import tomllib, hashlib, json, pathlib
-d = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
-deps = {
-    'dependencies': d.get('project', {}).get('dependencies', []),
-    'optional': d.get('project', {}).get('optional-dependencies', {}),
-    'requires-python': d.get('project', {}).get('requires-python', ''),
-    'build-requires': d.get('build-system', {}).get('requires', []),
-}
-print(hashlib.sha256(json.dumps(deps, sort_keys=True).encode()).hexdigest())
-"
+              echo "${DEP_HASH}"
             } | sha256sum | cut -c1-16
           )"
           VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
@@ -441,21 +423,12 @@ print(hashlib.sha256(json.dumps(deps, sort_keys=True).encode()).hexdigest())
           set -euo pipefail
 
           VENV_PREFIX="tileops_op_test_venv"
+          DEP_HASH="$(python3 scripts/dep_hash.py)"
           HASH_INPUT="$(
             {
               echo "python=3.11"
               echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              python3 -c "
-import tomllib, hashlib, json, pathlib
-d = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
-deps = {
-    'dependencies': d.get('project', {}).get('dependencies', []),
-    'optional': d.get('project', {}).get('optional-dependencies', {}),
-    'requires-python': d.get('project', {}).get('requires-python', ''),
-    'build-requires': d.get('build-system', {}).get('requires', []),
-}
-print(hashlib.sha256(json.dumps(deps, sort_keys=True).encode()).hexdigest())
-"
+              echo "${DEP_HASH}"
             } | sha256sum | cut -c1-16
           )"
           VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
@@ -627,21 +600,12 @@ print(hashlib.sha256(json.dumps(deps, sort_keys=True).encode()).hexdigest())
           set -euo pipefail
 
           VENV_PREFIX="tileops_packaging_venv"
+          DEP_HASH="$(python3 scripts/dep_hash.py)"
           HASH_INPUT="$(
             {
               echo "python=3.11"
               echo "install=pip install build pytest"
-              python3 -c "
-import tomllib, hashlib, json, pathlib
-d = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
-deps = {
-    'dependencies': d.get('project', {}).get('dependencies', []),
-    'optional': d.get('project', {}).get('optional-dependencies', {}),
-    'requires-python': d.get('project', {}).get('requires-python', ''),
-    'build-requires': d.get('build-system', {}).get('requires', []),
-}
-print(hashlib.sha256(json.dumps(deps, sort_keys=True).encode()).hexdigest())
-"
+              echo "${DEP_HASH}"
             } | sha256sum | cut -c1-16
           )"
           VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
