@@ -652,12 +652,61 @@ class UnaryKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x):
+    @property
+    def autotune_configs(self) -> list[dict]:
+        """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
+
+        Covers a range of occupancy/register-pressure tradeoffs for
+        bandwidth-bound unary elementwise kernels.
+        """
+        if _is_fp8(self.dtype):
+            # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
+            threads_opts = [128, 256, 512]
+            npt_opts = [16, 32]
+        else:
+            # fp16 / bf16 / fp32
+            threads_opts = [128, 256, 512]
+            npt_opts = [2, 4, 8]
+        return [
+            {"threads": t, "num_per_thread": n}
+            for t in threads_opts
+            for n in npt_opts
+        ]
+
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
+        """Override to handle serialization failures in the TileLang autotuner.
+
+        UnaryKernel JIT functions capture op_func closures that the autotuner
+        subprocess cannot serialize.  Catch the error and fall back to the
+        default config so that ``tune=True`` never crashes.
+        """
+        import warnings
+
+        try:
+            super().autotune(warmup=warmup, rep=rep)
+        except (AssertionError, Exception) as exc:
+            if "not serializable" in str(exc) or "pickle" in str(exc).lower():
+                warnings.warn(  # noqa: B028
+                    f"{self.__class__.__name__} autotuning failed "
+                    f"(op_func is not serializable); falling back to "
+                    f"default_config.")
+                self.config = dict(self.default_config)
+            else:
+                raise
+
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
+        # Pre-compile and cache the kernel function for the chosen config
+        # to avoid JIT lookup overhead on every forward() call.
         cfg = self.config
         if self.strategy == "direct":
-            result = self.kernel(cfg["threads"])(x)
+            self._compiled_fn = self.kernel(cfg["threads"])
         else:
-            result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+            self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        result = self._compiled_fn(x)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
         return result
@@ -940,12 +989,61 @@ class FusedGatedKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x):
+    @property
+    def autotune_configs(self) -> list[dict]:
+        """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
+
+        Covers a range of occupancy/register-pressure tradeoffs for
+        bandwidth-bound fused gated elementwise kernels.
+        """
+        if _is_fp8(self.dtype):
+            # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
+            threads_opts = [128, 256, 512]
+            npt_opts = [16, 32]
+        else:
+            # fp16 / bf16 / fp32
+            threads_opts = [128, 256, 512]
+            npt_opts = [2, 4, 8]
+        return [
+            {"threads": t, "num_per_thread": n}
+            for t in threads_opts
+            for n in npt_opts
+        ]
+
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
+        """Override to handle serialization failures in the TileLang autotuner.
+
+        FusedGatedKernel JIT functions capture activation_func closures that
+        the autotuner subprocess cannot serialize.  Catch the error and fall
+        back to the default config so that ``tune=True`` never crashes.
+        """
+        import warnings
+
+        try:
+            super().autotune(warmup=warmup, rep=rep)
+        except (AssertionError, Exception) as exc:
+            if "not serializable" in str(exc) or "pickle" in str(exc).lower():
+                warnings.warn(  # noqa: B028
+                    f"{self.__class__.__name__} autotuning failed "
+                    f"(activation_func is not serializable); falling back to "
+                    f"default_config.")
+                self.config = dict(self.default_config)
+            else:
+                raise
+
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
+        # Pre-compile and cache the kernel function for the chosen config
+        # to avoid JIT lookup overhead on every forward() call.
         cfg = self.config
         if self.strategy == "direct":
-            result = self.kernel(cfg["threads"])(x)
+            self._compiled_fn = self.kernel(cfg["threads"])
         else:
-            result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+            self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        result = self._compiled_fn(x)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
         return result
@@ -1815,9 +1913,14 @@ class LeakyReluKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else 16
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        return self._compiled_fn(x)
 
 
 def _make_elu_kernel(N, dtype, alpha, output_dtype=None, threads=256, npt=8):
@@ -1875,9 +1978,14 @@ class EluKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        return self._compiled_fn(x)
 
 
 def _make_hardtanh_kernel(N, dtype, min_val, max_val, output_dtype=None, threads=256, npt=8):
@@ -1935,9 +2043,14 @@ class HardtanhKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        return self._compiled_fn(x)
 
 
 def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None, threads=256, npt=8):
@@ -1998,9 +2111,14 @@ class SoftplusKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        return self._compiled_fn(x)
 
 
 def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
@@ -2121,9 +2239,14 @@ class PreluKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else 16
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x, weight):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x, weight)
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x, weight):
+        return self._compiled_fn(x, weight)
 
 
 def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
@@ -2232,9 +2355,14 @@ class WhereKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 512, "num_per_thread": npt}
 
-    def forward(self, cond, x, y):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(cond, x, y)
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, cond, x, y):
+        return self._compiled_fn(cond, x, y)
 
 
 def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
@@ -2310,9 +2438,14 @@ class ClampKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        return self._compiled_fn(x)
 
 
 def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
@@ -2424,9 +2557,14 @@ class MaskedFillKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 512, "num_per_thread": npt}
 
-    def forward(self, x, mask):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x, mask)
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x, mask):
+        return self._compiled_fn(x, mask)
 
 
 def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
@@ -2553,9 +2691,14 @@ class NanToNumKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else 16
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        return self._compiled_fn(x)
 
 
 def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
@@ -2635,9 +2778,14 @@ class AlibiKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])()
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self):
+        return self._compiled_fn()
 
 
 def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
@@ -2718,6 +2866,11 @@ class SinusoidalKernel(Kernel):
         npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self):
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
         cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])()
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self):
+        return self._compiled_fn()
