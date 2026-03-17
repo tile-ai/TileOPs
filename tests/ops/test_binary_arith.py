@@ -887,5 +887,161 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
         op(a, b)
 
 
+# ---------------------------------------------------------------------------
+# BinaryKernel autotune_configs tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_binary_kernel_has_autotune_configs() -> None:
+    """BinaryKernel subclasses must expose autotune_configs with >= 3 entries."""
+
+    shape = (4096,)
+    for op_cls in (MaximumOp, MinimumOp, AddOp, SubOp, MulOp):
+        op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.float16)
+        # Access autotune_configs from the underlying kernel object
+        kernel = op.kernel
+        configs = kernel.autotune_configs
+        assert configs is not None, (
+            f"{kernel.__class__.__name__} must define autotune_configs"
+        )
+        assert len(configs) >= 3, (
+            f"{kernel.__class__.__name__}.autotune_configs has {len(configs)} entries, need >= 3"
+        )
+        # Each config must have "threads" and "num_per_thread" keys
+        for cfg in configs:
+            assert "threads" in cfg, f"Config missing 'threads': {cfg}"
+            assert "num_per_thread" in cfg, f"Config missing 'num_per_thread': {cfg}"
+
+
+@pytest.mark.smoke
+def test_binary_kernel_autotune_configs_distinct() -> None:
+    """autotune_configs entries must be distinct (no duplicates)."""
+    shape = (4096,)
+    op = AddOp(a_shape=shape, b_shape=shape, dtype=torch.float16)
+    configs = op.kernel.autotune_configs
+    config_tuples = [(c["threads"], c["num_per_thread"]) for c in configs]
+    assert len(config_tuples) == len(set(config_tuples)), (
+        f"Duplicate configs found: {config_tuples}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Optimized maximum/minimum correctness on larger shapes
+# ---------------------------------------------------------------------------
+
+
+class OptimizedMaxMinFixture(FixtureBase):
+    PARAMS = [
+        ("n_total, dtype", [
+            pytest.param(1024 * 4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1024 * 10240, torch.float16, marks=pytest.mark.full),
+            pytest.param(1024 * 4096, torch.bfloat16, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@OptimizedMaxMinFixture
+def test_maximum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
+    """Optimized maximum matches torch.maximum on large DNN-realistic shapes."""
+    shape = (n_total,)
+    a = torch.randn(*shape, device="cuda", dtype=dtype)
+    b = torch.randn(*shape, device="cuda", dtype=dtype)
+    op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.maximum(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
+@OptimizedMaxMinFixture
+def test_minimum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
+    """Optimized minimum matches torch.minimum on large DNN-realistic shapes."""
+    shape = (n_total,)
+    a = torch.randn(*shape, device="cuda", dtype=dtype)
+    b = torch.randn(*shape, device="cuda", dtype=dtype)
+    op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.minimum(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
+# ---------------------------------------------------------------------------
+# register_copy broadcast downgrade regression test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_register_copy_downgrades_on_broadcast() -> None:
+    """Explicitly requesting register_copy on broadcast shapes must not crash.
+
+    register_copy only works for same-shape contiguous inputs. When the
+    caller passes strategy='register_copy' with broadcast shapes, the kernel
+    must silently downgrade to explicit_parallel and produce correct results.
+    """
+    a_shape = (2, 64, 128)
+    b_shape = (1, 1, 128)
+    dtype = torch.float16
+
+    for op_cls, ref_fn in [
+        (AddOp, lambda a, b: a + b),
+        (MaximumOp, lambda a, b: torch.maximum(a, b)),
+    ]:
+        op = op_cls(
+            a_shape=a_shape, b_shape=b_shape, dtype=dtype,
+            strategy="register_copy",
+        )
+        # Strategy must have been downgraded
+        assert op.kernel.strategy == "explicit_parallel", (
+            f"{op_cls.__name__} did not downgrade register_copy for broadcast inputs"
+        )
+        a = torch.randn(*a_shape, device="cuda", dtype=dtype)
+        b = torch.randn(*b_shape, device="cuda", dtype=dtype)
+        ref = ref_fn(a, b)
+        with torch.no_grad():
+            out = op(a, b)
+        torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# tune=True regression test (must not crash)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_binary_tune_true_does_not_crash() -> None:
+    """tune=True must not crash even though op_func closures are not serializable.
+
+    The autotuner should fall back to default_config with a warning instead of
+    raising an AssertionError about non-serializable cell contents.
+    """
+    import warnings
+
+    shape = (4096,)
+    dtype = torch.float16
+
+    for op_cls in (AddOp, MaximumOp, MinimumOp):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype, tune=True)
+        # Should have produced a warning about serialization fallback
+        fallback_warnings = [
+            w for w in caught
+            if "not serializable" in str(w.message) or "falling back" in str(w.message)
+        ]
+        assert len(fallback_warnings) >= 1, (
+            f"{op_cls.__name__} with tune=True did not emit fallback warning; "
+            f"caught: {[str(w.message) for w in caught]}"
+        )
+        # Must still produce correct results
+        a = torch.randn(*shape, device="cuda", dtype=dtype)
+        b = torch.randn(*shape, device="cuda", dtype=dtype)
+        with torch.no_grad():
+            out = op(a, b)
+        assert out.shape == a.shape
+        assert out.dtype == dtype
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

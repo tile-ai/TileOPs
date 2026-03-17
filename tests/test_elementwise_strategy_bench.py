@@ -88,11 +88,12 @@ class TestBinaryStrategyBenchStructure:
 
     @pytest.mark.smoke
     def test_binary_strategies_count(self):
-        """BinaryKernel must support exactly 2 strategies."""
-        assert len(BinaryKernel.STRATEGIES) == 2
+        """BinaryKernel must support exactly 3 strategies."""
+        assert len(BinaryKernel.STRATEGIES) == 3
         assert set(BinaryKernel.STRATEGIES) == {
             "direct",
             "explicit_parallel",
+            "register_copy",
         }
 
     @pytest.mark.smoke
