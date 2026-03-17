@@ -507,10 +507,9 @@ def test_fp8_selection_bench(
         result = bm.profile(op, cond, x, y)
         BenchmarkReport.record("where_fp8", locals(), result, tag="tileops")
 
+        # torch.where supports fp8 natively (pure selection, no arithmetic)
         def baseline(cond, x, y):
-            return torch.where(cond, x.to(torch.float16), y.to(torch.float16)).to(
-                dtype
-            )
+            return torch.where(cond, x, y)
 
         result_bl = bm.profile(baseline, cond, x, y)
         BenchmarkReport.record("where_fp8", locals(), result_bl, tag="baseline")
