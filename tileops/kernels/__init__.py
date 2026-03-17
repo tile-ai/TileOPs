@@ -46,6 +46,7 @@ from .linear_attn import (
     GatedDeltaNetFwdKernel,
 )
 from .mhc import mhc_post_kernel, mhc_pre_kernel
+from .moe import MoePermuteAlignKernel
 from .norm import (
     BatchNormBwdKernel,
     BatchNormFwdInferKernel,
@@ -113,6 +114,7 @@ __all__ = [
     "gqa_decode_kernel",
     "gqa_decode_paged_kernel",
     "grouped_gemm_kernel",
+    "MoePermuteAlignKernel",
     "mha_decode_kernel",
     "mha_decode_paged_kernel",
     "mhc_post_kernel",

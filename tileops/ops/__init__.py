@@ -26,6 +26,7 @@ from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
 from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
 from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
+from .moe import MoePermuteAlignOp
 from .norm import (
     AdaLayerNormOp,
     AdaLayerNormZeroOp,
@@ -119,6 +120,7 @@ __all__ = [
     "NSAFwdVarlenOp",
     "NSATopkVarlenOp",
     "Op",
+    "MoePermuteAlignOp",
     "RmsNormOp",
     "RopeLlama31Op",
     "RopeLongRopeOp",
