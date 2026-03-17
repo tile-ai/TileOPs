@@ -27,9 +27,10 @@ def pytest_configure(config):
 
     # --- Patch 2: cap compilation parallelism ---
     max_workers = int(os.environ.get("TILEOPS_WARMUP_MAX_WORKERS", "64"))
-    _OrigPool = concurrent.futures.ThreadPoolExecutor
+    orig_pool = concurrent.futures.ThreadPoolExecutor
+    config._warmup_orig_pool = orig_pool
 
-    class _CappedPool(_OrigPool):
+    class _CappedPool(orig_pool):
         def __init__(self, max_workers=None, **kwargs):  # noqa: N803
             if max_workers is None or max_workers > _cap:
                 max_workers = _cap
@@ -40,7 +41,11 @@ def pytest_configure(config):
 
 
 def pytest_unconfigure(config):
-    """Cleanup patches."""
+    """Cleanup all patches."""
     patcher = getattr(config, "_warmup_patcher", None)
     if patcher is not None:
         patcher.stop()
+
+    orig_pool = getattr(config, "_warmup_orig_pool", None)
+    if orig_pool is not None:
+        concurrent.futures.ThreadPoolExecutor = orig_pool
