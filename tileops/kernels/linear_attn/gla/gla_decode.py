@@ -197,10 +197,11 @@ def _gla_decode_wrapped_kernel_fake(
 
 
 class GLADecodeKernel(Kernel):
-    """GLA single-step decode kernel.
+    """GLA single-step decode kernel (tensor-core path).
 
     Uses T.Pipelined + T.copy for async state prefetch and T.gemm for
-    the fused matvec. Supports float32, float16, and bfloat16.
+    the fused matvec. Optimized for float16 and bfloat16 using tensor
+    cores; the Op dispatches float32 to GLADecodeFP32Kernel instead.
     """
 
     supported_archs: list[int] = [80, 89, 90]
