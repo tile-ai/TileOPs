@@ -21,6 +21,13 @@ from .count_nonzero import CountNonzeroOp
 # --- CumulativeKernel ops ---
 from .cumprod import CumprodOp
 from .cumsum import CumsumOp
+
+# from .cummax import CummaxOp
+# from .cummin import CumminOp
+# --- VectorNormKernel ops ---
+from .inf_norm import InfNormOp
+from .l1_norm import L1NormOp
+from .l2_norm import L2NormOp
 from .log_softmax import LogSoftmaxOp
 from .logsumexp import LogSumExpOp
 
@@ -37,14 +44,6 @@ from .reduce import (
     VarOp,
 )
 from .softmax import SoftmaxOp
-
-# from .cummax import CummaxOp
-# from .cummin import CumminOp
-
-# --- VectorNormKernel ops ---
-# from .l1_norm import L1NormOp
-# from .l2_norm import L2NormOp
-# from .inf_norm import InfNormOp
 
 __all__: list[str] = [
     # --- LogicalReduceKernel ops ---
@@ -78,7 +77,7 @@ __all__: list[str] = [
     # "CummaxOp",
     # "CumminOp",
     # --- VectorNormKernel ops ---
-    # "L1NormOp",
-    # "L2NormOp",
-    # "InfNormOp",
+    "InfNormOp",
+    "L1NormOp",
+    "L2NormOp",
 ]
