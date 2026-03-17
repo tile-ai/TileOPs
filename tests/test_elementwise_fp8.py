@@ -133,6 +133,33 @@ def test_fused_gated_kernel_forward_e5m2_dtype():
 
 
 @pytest.mark.smoke
+def test_fused_gated_direct_e5m2_preserves_inf():
+    """FusedGated direct strategy must preserve Inf for e5m2, not saturate.
+
+    Regression test: the direct kernel previously declared its output buffer
+    as e5m2, causing TileLang to saturate fp16 Inf to 57344.0 on store.
+    The fix routes e5m2 through an fp16 output buffer (matching
+    explicit_parallel) so PyTorch's .to() preserves Inf/NaN.
+    """
+    from tileops.kernels.elementwise import SiluAndMulKernel
+
+    M, N = 1, 16
+    dtype = torch.float8_e5m2
+    # Large values that silu(gate)*value will overflow to Inf in fp16
+    gate_fp16 = torch.full((M, N), 50000.0, dtype=torch.float16, device="cuda")
+    value_fp16 = torch.full((M, N), 50000.0, dtype=torch.float16, device="cuda")
+    x_fp16 = torch.cat([gate_fp16, value_fp16], dim=1)
+    x = x_fp16.to(dtype)
+    kernel = SiluAndMulKernel(M=M, N=N, dtype=dtype, strategy="direct")
+    out = kernel(x)
+    out_fp32 = out.to(torch.float32)
+    assert torch.any(torch.isinf(out_fp32)), (
+        f"FusedGated direct e5m2 should produce Inf on overflow, "
+        f"got max={out_fp32.max().item()}"
+    )
+
+
+@pytest.mark.smoke
 def test_unary_kernel_forward_e5m2_preserves_inf():
     """UnaryKernel.forward() preserves Inf for e5m2 (direct kernel call)."""
     from tileops.kernels.elementwise import ExpKernel
@@ -437,6 +464,62 @@ def test_fp8_accumulation_in_higher_precision():
     assert torch.equal(out, ref), (
         "fp8 SiLU should match fp16-accumulated reference"
     )
+
+
+# ---------------------------------------------------------------------------
+# Shared helper: _wrap_fp8_accumulation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_is_module_private():
+    """_wrap_fp8_accumulation exists and is module-private (underscore prefix)."""
+    from tileops.kernels import elementwise
+
+    assert hasattr(elementwise, "_wrap_fp8_accumulation")
+    assert elementwise._wrap_fp8_accumulation.__name__ == "_wrap_fp8_accumulation"
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_noop_for_fp16():
+    """Non-fp8 dtypes return the original op unchanged."""
+    from tileops.kernels.elementwise import _wrap_fp8_accumulation
+
+    sentinel = lambda x: x  # noqa: E731
+    result = _wrap_fp8_accumulation(sentinel, torch.float16, "float16")
+    assert result is sentinel, "Non-fp8 dtype should return original op unchanged"
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_wraps_for_e4m3fn():
+    """e4m3fn returns a different (wrapped) callable."""
+    from tileops.kernels.elementwise import _wrap_fp8_accumulation
+
+    sentinel = lambda x: x  # noqa: E731
+    result = _wrap_fp8_accumulation(sentinel, torch.float8_e4m3fn, "float8_e4m3fn")
+    assert result is not sentinel, "e4m3fn should return a wrapped op"
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_wraps_for_e5m2():
+    """e5m2 returns a different (wrapped) callable."""
+    from tileops.kernels.elementwise import _wrap_fp8_accumulation
+
+    sentinel = lambda x: x  # noqa: E731
+    result = _wrap_fp8_accumulation(sentinel, torch.float8_e5m2, "float8_e5m2")
+    assert result is not sentinel, "e5m2 should return a wrapped op"
+
+
+@pytest.mark.smoke
+def test_wrap_fp8_accumulation_arity2():
+    """Binary arity (2) wraps correctly for fp8."""
+    from tileops.kernels.elementwise import _wrap_fp8_accumulation
+
+    sentinel = lambda a, b: a + b  # noqa: E731
+    result = _wrap_fp8_accumulation(
+        sentinel, torch.float8_e4m3fn, "float8_e4m3fn", arity=2,
+    )
+    assert result is not sentinel, "e4m3fn binary should return a wrapped op"
 
 
 # ---------------------------------------------------------------------------
