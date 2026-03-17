@@ -1,7 +1,10 @@
-"""Benchmark for MoePermuteAlignOp vs Triton baseline.
+"""Benchmark for MoePermuteAlignOp vs Triton and sgl-kernel baselines.
 
-Triton baseline is adapted from SGLang's moe_align_block_size implementation:
-  sglang/sgl-kernel/benchmark/bench_moe_align_block_size.py
+Baselines:
+  - Triton: adapted from SGLang's moe_align_block_size (4-stage fallback)
+      sglang/sgl-kernel/benchmark/bench_moe_align_block_size.py
+  - sgl-kernel (optional): SGLang's production CUDA kernel; only runs when
+      sgl_kernel is installed (`pip install sgl-kernel`).
 
 Usage:
     conda run -n tileops python -m pytest benchmarks/ops/bench_moe_permute_align.py -vvs
@@ -15,6 +18,12 @@ import pytest
 import torch
 import triton
 import triton.language as tl
+
+try:
+    from sgl_kernel import moe_align_block_size as _sgl_moe_align_block_size
+    _SGL_KERNEL_AVAILABLE = True
+except ImportError:
+    _SGL_KERNEL_AVAILABLE = False
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_moe_permute_align import MoePermuteAlignTest
@@ -248,6 +257,27 @@ def test_permute_align_bench(
 
     result_bl = bm.profile(_triton_fn, *inputs)
     BenchmarkReport.record("permute_align", locals(), result_bl, tag="triton")
+
+    # sgl-kernel baseline (optional — only runs when sgl_kernel is installed)
+    if _SGL_KERNEL_AVAILABLE:
+        cumsum_buf = torch.empty(num_experts + 1, dtype=torch.int32, device=dev)
+
+        def _sgl_fn(topk_ids):
+            sorted_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)
+            sorted_ids.fill_(numel)
+            expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
+            num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
+            _sgl_moe_align_block_size(topk_ids, num_experts, block_size,
+                                      sorted_ids, expert_ids, num_post_pad,
+                                      cumsum_buf)
+            return sorted_ids, expert_ids, num_post_pad
+
+        # Warmup sgl-kernel baseline
+        _sgl_fn(*inputs)
+        torch.cuda.synchronize()
+
+        result_sgl = bm.profile(_sgl_fn, *inputs)
+        BenchmarkReport.record("permute_align", locals(), result_sgl, tag="sgl-kernel")
 
 
 if __name__ == "__main__":

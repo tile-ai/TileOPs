@@ -97,6 +97,11 @@ class MoePermuteAlignFixture(FixtureBase):
             pytest.param(1,   2,   4,   4,   marks=pytest.mark.full,  id="single-token"),
             # top_k=1: each token is routed to exactly one expert
             pytest.param(8,   1,   4,   4,   marks=pytest.mark.full,  id="top-k-1"),
+            # small-batch path (numel < 1024, num_experts <= 64)
+            pytest.param(100, 2,   8,   16,  marks=pytest.mark.full,  id="sb-numel200"),
+            pytest.param(300, 2,   8,   16,  marks=pytest.mark.full,  id="sb-numel600"),
+            pytest.param(400, 2,   8,   16,  marks=pytest.mark.full,  id="sb-numel800"),
+            pytest.param(100, 6,  64,   64,  marks=pytest.mark.full,  id="sb-numel600-maxexp"),
         ]),
     ]
 
