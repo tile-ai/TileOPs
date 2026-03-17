@@ -19,23 +19,6 @@ from tileops.kernels.elementwise import (
 )
 
 # ---------------------------------------------------------------------------
-# Helper: _npt_for_strategy_dtype
-# ---------------------------------------------------------------------------
-
-def _expected_npt(strategy: str, dtype: torch.dtype) -> int:
-    """Return the expected default npt for a given strategy + dtype combo."""
-    if dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-        return 16
-    if dtype == torch.float32:
-        return 4
-    # fp16 / bf16 — strategy-dependent
-    if strategy == "explicit_parallel":
-        return 4
-    # register_copy (and direct, which is element-at-a-time but config still set)
-    return 8
-
-
-# ---------------------------------------------------------------------------
 # UnaryKernel default_config tests
 # ---------------------------------------------------------------------------
 

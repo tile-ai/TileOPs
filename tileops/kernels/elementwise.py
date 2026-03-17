@@ -158,7 +158,7 @@ def _strategy_npt(strategy: str, dtype: torch.dtype) -> int:
 
     Strategy-aware heuristic (H200 benchmarks, issue 553):
     - explicit_parallel: npt=4 for fp16/bf16 (42% bandwidth gain vs npt=8)
-    - register_copy: npt=8 for fp16/bf16 (vectorised 128-bit loads)
+    - register_copy: npt=8 for fp16/bf16 (vectorized 128-bit loads)
     - fp32: npt=4 for all strategies (4 bytes x 4 = 128-bit alignment)
     - fp8: handled separately by callers (npt=16)
     """

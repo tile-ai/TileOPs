@@ -30,7 +30,7 @@ ______________________________________________________________________
 | `explicit_parallel` | 4         | 4    | 16  |
 | `register_copy`     | 8         | 4    | 16  |
 
-fp16 npt=4 vs 8 under explicit_parallel: **+42%** (1.05 vs 0.74 TB/s). Thread count 256 vs 128: \<5% delta. Deployed as strategy-aware `_strategy_npt()` in `default_config` (issue 553).
+fp16 npt=4 vs 8 under explicit_parallel: **+42%** (1.05 vs 0.74 TB/s). Thread count 256 vs 128: \<5% delta. Deployed as strategy-aware `_strategy_npt()` in `default_config` (#553).
 
 ## §4. IR Complexity
 
