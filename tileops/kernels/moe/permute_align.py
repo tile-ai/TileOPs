@@ -154,7 +154,6 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                         blk = e_start + b
                         if blk < e_end:
                             expert_ids[blk] = tx
-                T.sync_threads()
 
                 # Step 4: fill sentinel
                 for i in T.serial(T.ceildiv(max_padded, threads)):
@@ -356,13 +355,17 @@ class MoePermuteAlignKernel(Kernel):
         self.num_experts = num_experts
         self.block_size = block_size
 
-        self._align_fn = _make_align_kernel(numel, num_experts, block_size)
-        self._scatter_fn = _make_scatter_kernel(numel, num_experts, block_size)
         self._small_batch_fn = (
             _make_small_batch_kernel(numel, num_experts, block_size)
             if numel < _SMALL_NUMEL_THRESHOLD and num_experts <= _SMALL_EXPERTS_THRESHOLD
             else None
         )
+        if self._small_batch_fn is None:
+            self._align_fn   = _make_align_kernel(numel, num_experts, block_size)
+            self._scatter_fn = _make_scatter_kernel(numel, num_experts, block_size)
+        else:
+            self._align_fn   = None
+            self._scatter_fn = None
 
         self.init_config(config, tune=False)
 

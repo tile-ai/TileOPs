@@ -260,13 +260,12 @@ def test_permute_align_bench(
 
     # sgl-kernel baseline (optional — only runs when sgl_kernel is installed)
     if _SGL_KERNEL_AVAILABLE:
-        cumsum_buf = torch.empty(num_experts + 1, dtype=torch.int32, device=dev)
-
         def _sgl_fn(topk_ids):
             sorted_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)
             sorted_ids.fill_(numel)
             expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
             num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
+            cumsum_buf = torch.empty(num_experts + 1, dtype=torch.int32, device=dev)
             _sgl_moe_align_block_size(topk_ids, num_experts, block_size,
                                       sorted_ids, expert_ids, num_post_pad,
                                       cumsum_buf)
