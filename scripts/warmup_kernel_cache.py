@@ -100,7 +100,7 @@ def main():
     if exit_code in (0, 1):
         sys.exit(0)
     else:
-        print(f"ERROR: warmup failed with infrastructure error (exit code {exit_code})")
+        print(f"ERROR: warmup failed with infrastructure error (exit code {exit_code})", file=sys.stderr)
         sys.exit(exit_code)
 
 
