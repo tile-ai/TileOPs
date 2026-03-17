@@ -4,7 +4,7 @@ from .gated_delta_net import (
     GatedDeltaNetDecodeKernel,
     GatedDeltaNetFwdKernel,
 )
-from .gla import GLABwdKernel, GLAFwdKernel
+from .gla import GLABwdKernel, GLADecodeFP32Kernel, GLADecodeKernel, GLAFwdKernel
 
 __all__ = [
     "GatedDeltaNetBwdKernel",
@@ -12,5 +12,7 @@ __all__ = [
     "GatedDeltaNetDecodeKernel",
     "GatedDeltaNetFwdKernel",
     "GLABwdKernel",
+    "GLADecodeFP32Kernel",
+    "GLADecodeKernel",
     "GLAFwdKernel",
 ]
