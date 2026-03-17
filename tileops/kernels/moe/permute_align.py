@@ -53,6 +53,9 @@ __all__ = ["MoePermuteAlignKernel"]
 
 _THREADS = 1024
 _SCATTER_THREADS = 256
+_SMALL_NUMEL_THRESHOLD   = 1024
+_SMALL_EXPERTS_THRESHOLD = 64
+_FILL_THREADS            = 256
 
 
 def _make_align_kernel(numel: int, num_experts: int, block_size: int):
@@ -216,6 +219,125 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     return _scatter
 
 
+def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
+    """Single fused kernel for small batches (numel < 1024, num_experts <= 64).
+
+    Uses per-worker private count rows to eliminate atomic conflicts in count
+    and scatter phases. Concurrent sentinel fill (fill_threads) + compute
+    (worker_threads) within the same block.
+
+    Uses 0-indexed expert IDs throughout (unlike sgl-kernel which uses 1-indexed).
+    Output format matches the large-batch path (K1+K2).
+
+    Reference: moe_align_block_size_small_batch_expert_kernel in sgl-kernel.
+    """
+    max_padded     = numel + (num_experts + 1) * (block_size - 1)
+    max_num_blocks = math.ceil(max_padded / block_size)
+    worker_threads = max(num_experts, 32)
+    total_threads  = _FILL_THREADS + worker_threads
+    # tokens_cnts layout: (worker_threads+1) rows × num_experts cols (0-indexed).
+    # Row k (k>=1): worker k-1's private counts per expert (0-indexed).
+    # Row 0: reduce accumulator, initialised to 0 by expert threads.
+    cnts_size = (worker_threads + 1) * num_experts
+
+    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    def _small():
+
+        @T.prim_func
+        def _small_main(
+            flat: T.Tensor([numel], "int32"),                    # noqa: F821
+            sorted_token_ids: T.Tensor([max_padded], "int32"),   # noqa: F821
+            expert_ids: T.Tensor([max_num_blocks], "int32"),     # noqa: F821
+            num_tokens_post_pad: T.Tensor([1], "int32"),         # noqa: F821
+        ):
+            with T.Kernel(1, threads=total_threads) as (_,):
+                tx = T.get_thread_binding()
+
+                cumsum_s    = T.alloc_shared([num_experts + 1], "int32")
+                tokens_cnts = T.alloc_shared([cnts_size], "int32")
+
+                # fill_threads group: fill sentinel (concurrent with worker Phase 0)
+                if tx < _FILL_THREADS:
+                    for i in T.serial(T.ceildiv(max_padded, _FILL_THREADS)):
+                        idx = i * _FILL_THREADS + tx
+                        if idx < max_padded:
+                            sorted_token_ids[idx] = numel
+
+                # worker_threads group: Phase 0 — init private count row + count tokens
+                if tx >= _FILL_THREADS:
+                    wid = tx - _FILL_THREADS  # 0-indexed worker id
+                    # Init row wid+1 (private row for this worker)
+                    for i in T.serial(num_experts):
+                        tokens_cnts[(wid + 1) * num_experts + i] = T.int32(0)
+                    # Count tokens owned by this worker (grid-stride over numel)
+                    for i in T.serial(T.ceildiv(numel, worker_threads)):
+                        idx = wid + i * worker_threads
+                        if idx < numel:
+                            eid = flat[idx]  # 0-indexed
+                            tokens_cnts[(wid + 1) * num_experts + eid] = (
+                                tokens_cnts[(wid + 1) * num_experts + eid] + 1
+                            )
+
+                T.sync_threads()  # sync 1
+
+                # worker_threads group: Phase 1 — column-wise inclusive prefix-sum reduce
+                # Thread wid handles column wid (expert wid's counts across all workers)
+                if tx >= _FILL_THREADS:
+                    wid = tx - _FILL_THREADS
+                    if wid < num_experts:
+                        tokens_cnts[wid] = T.int32(0)  # init row 0 accumulator
+                        for k in T.serial(worker_threads):
+                            tokens_cnts[(k + 1) * num_experts + wid] = (
+                                tokens_cnts[(k + 1) * num_experts + wid]
+                                + tokens_cnts[k * num_experts + wid]
+                            )
+                        # After loop: tokens_cnts[worker_threads*E + wid] = total for expert wid
+
+                T.sync_threads()  # sync 2
+
+                # worker_threads group: Phase 2 — wid==0 builds exclusive prefix-sum cumsum
+                if tx >= _FILL_THREADS:
+                    wid = tx - _FILL_THREADS
+                    if wid == 0:
+                        cumsum_s[0] = T.int32(0)
+                        for e in T.serial(num_experts):
+                            cnt = tokens_cnts[worker_threads * num_experts + e]
+                            cumsum_s[e + 1] = (
+                                cumsum_s[e]
+                                + T.ceildiv(cnt, block_size) * block_size
+                            )
+                        num_tokens_post_pad[0] = cumsum_s[num_experts]
+
+                T.sync_threads()  # sync 3
+
+                # worker_threads group: Phase 3a — expert_ids fill (0-indexed)
+                if tx >= _FILL_THREADS:
+                    wid = tx - _FILL_THREADS
+                    if wid < num_experts:
+                        e_start = cumsum_s[wid]     // block_size
+                        e_end   = cumsum_s[wid + 1] // block_size
+                        for b in T.serial(max_num_blocks):
+                            blk = e_start + b
+                            if blk < e_end:
+                                expert_ids[blk] = wid  # 0-indexed expert id
+
+                    # Phase 3b: scatter (no atomics — per-worker private rows)
+                    # tokens_cnts[wid*E + eid] holds the running offset for worker wid
+                    # into expert eid's slot range (starts at cumsum_s[eid])
+                    for i in T.serial(T.ceildiv(numel, worker_threads)):
+                        idx = wid + i * worker_threads
+                        if idx < numel:
+                            eid = flat[idx]  # 0-indexed
+                            rank = tokens_cnts[wid * num_experts + eid]
+                            slot = rank + cumsum_s[eid]
+                            sorted_token_ids[slot] = idx
+                            tokens_cnts[wid * num_experts + eid] = rank + 1
+
+        return _small_main
+
+    return _small
+
+
 class MoePermuteAlignKernel(Kernel):
     """MoE token permutation and alignment kernel.
 
@@ -248,6 +370,11 @@ class MoePermuteAlignKernel(Kernel):
 
         self._align_fn = _make_align_kernel(numel, num_experts, block_size)
         self._scatter_fn = _make_scatter_kernel(numel, num_experts, block_size)
+        self._small_batch_fn = (
+            _make_small_batch_kernel(numel, num_experts, block_size)
+            if numel < _SMALL_NUMEL_THRESHOLD and num_experts <= _SMALL_EXPERTS_THRESHOLD
+            else None
+        )
 
         self.init_config(config, tune=False)
 
@@ -273,23 +400,23 @@ class MoePermuteAlignKernel(Kernel):
         )
 
         flat = topk_ids.flatten().contiguous()
-        threads = self.config["threads"]
+        max_padded      = self.numel + (self.num_experts + 1) * (self.block_size - 1)
+        max_num_blocks  = math.ceil(max_padded / self.block_size)
+        dev             = flat.device
 
-        max_padded = self.numel + (self.num_experts + 1) * (self.block_size - 1)
-        max_num_blocks = math.ceil(max_padded / self.block_size)
+        sorted_token_ids    = torch.empty(max_padded,     dtype=torch.int32, device=dev)
+        expert_ids          = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
+        num_tokens_post_pad = torch.empty(1,              dtype=torch.int32, device=dev)
 
-        sorted_token_ids    = torch.empty(max_padded, dtype=torch.int32, device=flat.device)
-        expert_ids          = torch.empty(max_num_blocks, dtype=torch.int32, device=flat.device)
-        num_tokens_post_pad = torch.empty(1, dtype=torch.int32, device=flat.device)
-        cumsum              = torch.empty(self.num_experts + 1, dtype=torch.int32,
-                                         device=flat.device)
-
-        # K1: align (count + scan + expert_ids + sentinel fill) → writes cumsum
-        align_fn = self._align_fn(threads)
-        align_fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
-
-        # K2: scatter tokens using global atomicAdd on cumsum
-        scatter_fn = self._scatter_fn()
-        scatter_fn(flat, sorted_token_ids, cumsum)
+        if self._small_batch_fn is not None:
+            fn = self._small_batch_fn()
+            fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad)
+        else:
+            cumsum  = torch.empty(self.num_experts + 1, dtype=torch.int32, device=dev)
+            threads = self.config["threads"]
+            align_fn = self._align_fn(threads)
+            align_fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
+            scatter_fn = self._scatter_fn()
+            scatter_fn(flat, sorted_token_ids, cumsum)
 
         return sorted_token_ids, expert_ids, num_tokens_post_pad
