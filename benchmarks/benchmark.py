@@ -51,15 +51,17 @@ def _patch_cupti_filter():
         from tilelang.profiler.bench import suppress_stdout_stderr
 
         with suppress_stdout_stderr():
+            # Use an explicit warmup phase so torch.profiler does not warn
+            # about skipped warmup and the measured active step is steadier.
             schedule = torch.profiler.schedule(
-                wait=1, warmup=0, active=1, repeat=1,
+                wait=1, warmup=1, active=1, repeat=1,
             )
             profiler = torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CUDA],
                 schedule=schedule,
             )
             with profiler:
-                for _ in range(2):
+                for _ in range(3):
                     for _ in range(n_repeat):
                         cache.zero_()
                         fn()

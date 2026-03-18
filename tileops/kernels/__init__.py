@@ -1,3 +1,4 @@
+from .conv2d import Conv2d1x1Kernel, Conv2dKernel
 from .deepseek_mla import (
     Fp8LightingIndexerKernel,
     Fp8QuantKernel,
@@ -71,6 +72,8 @@ __all__ = [
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
     "DropoutKernel",
+    "Conv2d1x1Kernel",
+    "Conv2dKernel",
     "EngramDecodeKernel",
     "EngramGateConvBwdKernel",
     "EngramGateConvFwdKernel",
