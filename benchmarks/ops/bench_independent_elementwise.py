@@ -345,5 +345,189 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
     BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
 
 
+# ---------------------------------------------------------------------------
+# fp8 benchmarks: representative independent ops with e4m3fn / e5m2
+# Baseline: PyTorch fp16-compute-then-cast (no native fp8 elementwise in PyTorch)
+# ---------------------------------------------------------------------------
+
+_FP8_DTYPES = (torch.float8_e4m3fn, torch.float8_e5m2)
+
+
+class Fp8UnaryBenchCase:
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        x = torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0
+        return (x.to(self.dtype),)
+
+
+class Fp8UnaryBenchmark(BenchmarkBase):
+    def calculate_flops(self) -> Optional[float]:
+        return self.test.n_total
+
+    def calculate_memory(self) -> Optional[float]:
+        # fp8 in (1B) + fp8 out (1B) per element
+        return self.test.n_total * 2
+
+
+_FP8_UNARY_OPS = {
+    "leaky_relu": (LeakyReluOp, lambda x: F.leaky_relu(x, 0.01), {}),
+    "elu": (EluOp, lambda x: F.elu(x, 1.0), {}),
+    "clamp": (ClampOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
+}
+
+
+def _fp8_unary_params():
+    params = []
+    for op_name in ("leaky_relu", "elu", "clamp"):
+        for shape in _UNARY_SHAPES:
+            for dtype in _FP8_DTYPES:
+                mark = (
+                    pytest.mark.smoke
+                    if (shape == _UNARY_SHAPES[0] and dtype == torch.float8_e4m3fn)
+                    else pytest.mark.full
+                )
+                params.append(pytest.param(op_name, shape, dtype, marks=mark))
+    return params
+
+
+class Fp8UnaryIndependentBenchFixture(FixtureBase):
+    PARAMS = [("op_name, shape, dtype", _fp8_unary_params())]
+
+
+@Fp8UnaryIndependentBenchFixture
+def test_fp8_unary_independent_bench(
+    op_name: str, shape: tuple, dtype: torch.dtype
+) -> None:
+    n_total = prod(shape)
+    op_cls, baseline_fn, extra_kwargs = _FP8_UNARY_OPS[op_name]
+    test = Fp8UnaryBenchCase(shape, dtype)
+    bm = Fp8UnaryBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(f"{op_name}_fp8", locals(), result, tag="tileops")
+
+    # Baseline: PyTorch fp16 compute then cast back to fp8
+    def baseline(x):
+        return baseline_fn(x.to(torch.float16)).to(dtype)
+
+    result_bl = bm.profile(baseline, *inputs)
+    BenchmarkReport.record(f"{op_name}_fp8", locals(), result_bl, tag="baseline")
+
+
+# ---------------------------------------------------------------------------
+# fp8 where / masked_fill (selection ops — pass fp8 through directly)
+# ---------------------------------------------------------------------------
+
+
+class Fp8WhereBenchCase:
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        cond = torch.rand(self.shape, device="cuda") > 0.5
+        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
+            self.dtype
+        )
+        y = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
+            self.dtype
+        )
+        return cond, x, y
+
+
+class Fp8WhereBenchmark(BenchmarkBase):
+    def calculate_flops(self) -> Optional[float]:
+        return self.test.n_total
+
+    def calculate_memory(self) -> Optional[float]:
+        # cond (1B) + fp8 x (1B) + fp8 y (1B) + fp8 out (1B)
+        return self.test.n_total * 4
+
+
+class Fp8MaskedFillBenchCase:
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
+            self.dtype
+        )
+        mask = torch.rand(self.shape, device="cuda") > 0.5
+        return x, mask
+
+
+class Fp8MaskedFillBenchmark(BenchmarkBase):
+    def calculate_flops(self) -> Optional[float]:
+        return self.test.n_total
+
+    def calculate_memory(self) -> Optional[float]:
+        # fp8 x (1B) + mask (1B) + fp8 out (1B)
+        return self.test.n_total * 3
+
+
+def _fp8_selection_params():
+    params = []
+    for op_name in ("where", "masked_fill"):
+        for shape in _UNARY_SHAPES:
+            for dtype in _FP8_DTYPES:
+                mark = (
+                    pytest.mark.smoke
+                    if (shape == _UNARY_SHAPES[0] and dtype == torch.float8_e4m3fn)
+                    else pytest.mark.full
+                )
+                params.append(pytest.param(op_name, shape, dtype, marks=mark))
+    return params
+
+
+class Fp8SelectionBenchFixture(FixtureBase):
+    PARAMS = [("op_name, shape, dtype", _fp8_selection_params())]
+
+
+@Fp8SelectionBenchFixture
+def test_fp8_selection_bench(
+    op_name: str, shape: tuple, dtype: torch.dtype
+) -> None:
+    n_total = prod(shape)
+
+    if op_name == "where":
+        test = Fp8WhereBenchCase(shape, dtype)
+        bm = Fp8WhereBenchmark(test)
+        cond, x, y = test.gen_inputs()
+
+        op = WhereOp(N_total=n_total, dtype=dtype)
+        result = bm.profile(op, cond, x, y)
+        BenchmarkReport.record("where_fp8", locals(), result, tag="tileops")
+
+        # torch.where supports fp8 natively (pure selection, no arithmetic)
+        def baseline(cond, x, y):
+            return torch.where(cond, x, y)
+
+        result_bl = bm.profile(baseline, cond, x, y)
+        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="baseline")
+    else:
+        test = Fp8MaskedFillBenchCase(shape, dtype)
+        bm = Fp8MaskedFillBenchmark(test)
+        x, mask = test.gen_inputs()
+
+        op = MaskedFillOp(N_total=n_total, dtype=dtype, fill_value=-100.0)
+        result = bm.profile(op, x, mask)
+        BenchmarkReport.record("masked_fill_fp8", locals(), result, tag="tileops")
+
+        def baseline(x, mask):
+            return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
+
+        result_bl = bm.profile(baseline, x, mask)
+        BenchmarkReport.record("masked_fill_fp8", locals(), result_bl, tag="baseline")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
