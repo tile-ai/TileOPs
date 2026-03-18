@@ -3,14 +3,14 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.mamba import SsdChunkScanKernel
+from tileops.kernels.mamba import SsdChunkScanFwdKernel
 
 from .op import Op
 
-__all__ = ["SsdChunkScanOp"]
+__all__ = ["SsdChunkScanFwdOp"]
 
 
-class SsdChunkScanOp(Op):
+class SsdChunkScanFwdOp(Op):
     """Mamba-2 SSD fused chunk output operator.
 
     Fuses the history (prev_states) contribution and intra-chunk causal decay
@@ -50,13 +50,13 @@ class SsdChunkScanOp(Op):
         self.d_state = d_state
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["ssd_chunk_scan"](
+        self.kernel = self.kernel_map["ssd_chunk_scan_fwd"](
             batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune,
         )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_chunk_scan": SsdChunkScanKernel}
+        return {"ssd_chunk_scan_fwd": SsdChunkScanFwdKernel}
 
     def forward(
         self,

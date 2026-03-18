@@ -1,10 +1,10 @@
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.ssd_chunk_scan import SsdChunkScanOp
+from tileops.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdOp
 
 
-def ssd_chunk_scan_fused_ref(
+def ssd_chunk_scan_fwd_ref(
     x: torch.Tensor,           # (b, c, L, h, p)      raw x
     cb: torch.Tensor,          # (b, c, h, L, L)
     dA_cumsum: torch.Tensor,  # (b, h, c, L)         cumsum of dA, where dA = dt * A
@@ -83,7 +83,7 @@ def ssd_chunk_scan_fused_ref(
     return y_off + y_diag
 
 
-class SsdChunkScanFixture(FixtureBase):
+class SsdChunkScanFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune", [
             (1, 2,  64, 4,  64, 32, torch.float16,  False),
@@ -94,7 +94,7 @@ class SsdChunkScanFixture(FixtureBase):
     ]
 
 
-class SsdChunkScanTest(TestBase):
+class SsdChunkScanFwdTest(TestBase):
     def __init__(
         self,
         batch: int,
@@ -129,13 +129,13 @@ class SsdChunkScanTest(TestBase):
         return x, cb, dA_cumsum, C, prev_states, dt
 
     def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
-        return ssd_chunk_scan_fused_ref(x, cb, dA_cumsum, C, prev_states, dt)
+        return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt)
 
 
-@SsdChunkScanFixture
-def test_ssd_chunk_scan(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune):
-    test = SsdChunkScanTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)
-    op = SsdChunkScanOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
+@SsdChunkScanFwdFixture
+def test_ssd_chunk_scan_fwd(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune):
+    test = SsdChunkScanFwdTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)
+    op = SsdChunkScanFwdOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
     inputs = test.gen_inputs()
     atol = 1e-1 if dtype == torch.float16 else 2e-1
     rtol = 1e-1

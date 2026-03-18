@@ -1,5 +1,5 @@
 """
-Mamba-2 SSD fused chunk output kernel (history + intra-chunk paths).
+Mamba-2 SSD fused chunk output forward kernel (history + intra-chunk paths).
 
 Inputs (pre-reshaped to chunked view):
   x:            (batch, num_chunks, chunk_len, n_heads, d_head)
@@ -58,10 +58,10 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ['SsdChunkScanKernel']
+__all__ = ["SsdChunkScanFwdKernel"]
 
 
-def _ssd_chunk_scan_kernel(
+def _ssd_chunk_scan_fwd_kernel(
     batch: int,
     num_chunks: int,
     chunk_len: int,
@@ -98,7 +98,7 @@ def _ssd_chunk_scan_kernel(
             d_t: T.Tensor(d_t_shape, dtype),                # type: ignore
             out: T.Tensor(out_shape, accum_dtype),          # type: ignore
         ):
-            # grid = (b*h*c, l_tile, p_tile) — CUDA supports at most 3D grids;
+            # grid = (b*h*c, l_tile, p_tile) -- CUDA supports at most 3D grids;
             # recover (bz, bh, bc) from the fused first dimension.
             with T.Kernel(
                 batch * n_heads * num_chunks,
@@ -248,8 +248,8 @@ def _ssd_chunk_scan_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("top::ssd_chunk_scan", mutates_args=())
-def _ssd_chunk_scan_wrapped(
+@torch.library.custom_op("top::ssd_chunk_scan_fwd", mutates_args=())
+def _ssd_chunk_scan_fwd_wrapped(
     batch: int,
     num_chunks: int,
     chunk_len: int,
@@ -269,12 +269,13 @@ def _ssd_chunk_scan_wrapped(
     prev_states: torch.Tensor,
     dt: torch.Tensor,
 ) -> torch.Tensor:
-    return _ssd_chunk_scan_kernel(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)(
+    return _ssd_chunk_scan_fwd_kernel(
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)(
         block_l, block_p, block_n, block_s, threads,
     )(x, cb, dA_cumsum, C, prev_states, dt)
 
 
-@_ssd_chunk_scan_wrapped.register_fake
+@_ssd_chunk_scan_fwd_wrapped.register_fake
 def _(
     batch: int,
     num_chunks: int,
@@ -298,8 +299,8 @@ def _(
     return x.new_empty((batch, num_chunks, chunk_len, n_heads, d_head), dtype=torch.float32)
 
 
-class SsdChunkScanKernel(Kernel):
-    """Mamba-2 SSD fused chunk output kernel.
+class SsdChunkScanFwdKernel(Kernel):
+    """Mamba-2 SSD fused chunk output forward kernel.
 
     Fuses the history (prev_states) contribution and intra-chunk causal decay
     into a single pass, computing:
@@ -333,7 +334,7 @@ class SsdChunkScanKernel(Kernel):
         self.d_head = d_head
         self.d_state = d_state
         self.dtype = dtype
-        self.kernel = _ssd_chunk_scan_kernel(
+        self.kernel = _ssd_chunk_scan_fwd_kernel(
             batch, num_chunks, chunk_len, n_heads, d_head, d_state, self.dtype_str,
         )
         self.init_config(config, tune)
@@ -357,11 +358,11 @@ class SsdChunkScanKernel(Kernel):
         threads = [128, 256]
         _configs = list(itertools.product(block_l, block_p, block_n, block_s, threads))
         return [{
-            'block_l': c[0],
-            'block_p': c[1],
-            'block_n': c[2],
-            'block_s': c[3],
-            'threads': c[4],
+            "block_l": c[0],
+            "block_p": c[1],
+            "block_n": c[2],
+            "block_s": c[3],
+            "threads": c[4],
         } for c in _configs]
 
     def forward(
@@ -373,7 +374,7 @@ class SsdChunkScanKernel(Kernel):
         prev_states: torch.Tensor,
         dt: torch.Tensor,
     ) -> torch.Tensor:
-        return _ssd_chunk_scan_wrapped(
+        return _ssd_chunk_scan_fwd_wrapped(
             self.batch, self.num_chunks, self.chunk_len, self.n_heads, self.d_head, self.d_state,
             self.dtype_str, self.config["block_l"], self.config["block_p"], self.config["block_n"],
             self.config["block_s"], self.config["threads"],

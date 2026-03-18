@@ -4,15 +4,15 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_ssd_shunk_scan import (
-    SsdChunkScanFixture,
-    SsdChunkScanTest,
-    ssd_chunk_scan_fused_ref,
+from tests.ops.test_ssd_chunk_scan_fwd import (
+    SsdChunkScanFwdFixture,
+    SsdChunkScanFwdTest,
+    ssd_chunk_scan_fwd_ref,
 )
-from tileops.ops.ssd_chunk_scan import SsdChunkScanOp
+from tileops.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdOp
 
 
-class SsdChunkScanBenchmark(BenchmarkBase):
+class SsdChunkScanFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.test
@@ -50,20 +50,20 @@ class SsdChunkScanBenchmark(BenchmarkBase):
         return float(reads + writes)
 
 
-@SsdChunkScanFixture
-def test_ssd_chunk_scan_bench(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune):
-    test = SsdChunkScanTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)
-    bm = SsdChunkScanBenchmark(test)
+@SsdChunkScanFwdFixture
+def test_ssd_chunk_scan_fwd_bench(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune):
+    test = SsdChunkScanFwdTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)
+    bm = SsdChunkScanFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SsdChunkScanOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
+    op = SsdChunkScanFwdOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("ssd_chunk_scan", locals(), result, tag="tileops")
+    BenchmarkReport.record("ssd_chunk_scan_fwd", locals(), result, tag="tileops")
 
     def baseline(*args):
-        return ssd_chunk_scan_fused_ref(*args)
+        return ssd_chunk_scan_fwd_ref(*args)
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record("ssd_chunk_scan", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record("ssd_chunk_scan_fwd", locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":
