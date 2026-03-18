@@ -1,59 +1,48 @@
-# Issue Body Sections (TileOPs)
+# Issue Body Sections
 
-These sections extend or override the standard foundry issue body template.
+## Required sections
 
-## Template
+All five top-level sections must be present. `Constraints` header required even if empty.
 
 ```markdown
 ## Description
 
 ### Symptom / Motivation
-
-{What is observed or what motivates this change}
+{what is observed or motivates the change}
 
 ### Root Cause Analysis
-
-{Why it happens — file paths, logic errors, missing features, etc. Use "N/A" for feature requests}
+{file paths, logic errors, missing features — "N/A" for feature requests}
 
 ### Related Files
-
-{Key files, functions, or configurations involved}
+{key files, functions, or configs}
 
 ## Goal
-
-{Concrete objective of this issue}
+{concrete objective — must not be empty}
 
 ## Plan
-
 <!-- type: {proposal | fixed} -->
-
-{Ordered steps to achieve the goal}
+1. {at least one step}
 
 ## Constraints
-
-{Scope limits, API stability, performance budgets, etc. Leave empty if none}
+{scope limits, API stability, perf budgets — or empty}
 
 ## Acceptance Criteria
-
 - [ ] Modified files pass unit tests
-{Additional checkboxes as needed}
+- [ ] {additional criteria as needed}
 ```
 
-## Rules
+## Validation rules
 
-- **All five top-level sections are required** (`Description`, `Goal`, `Plan`, `Constraints`, `Acceptance Criteria`).
-- `Description` must contain all three subsections (`Symptom / Motivation`, `Root Cause Analysis`, `Related Files`).
-- `Goal` must not be empty.
-- `Plan` must contain at least one step (line starting with `- ` or `1.`).
-- `Plan` must include a `<!-- type: -->` comment: `proposal` (steps are suggestions) or `fixed` (steps are prescribed).
-- `Acceptance Criteria` must contain at least one checkbox (`- [ ]`). The default criterion `"Modified files pass unit tests"` is always included.
-- `Constraints` may be empty but the header must be present.
+| Section             | Rule                                                         |
+| ------------------- | ------------------------------------------------------------ |
+| Description         | All three subsections present and non-empty                  |
+| Goal                | Non-empty                                                    |
+| Plan                | ≥1 step (`- ` or `1.`) + `<!-- type: -->` comment            |
+| Acceptance Criteria | ≥1 checkbox; always include "Modified files pass unit tests" |
 
-## Smart defaults
+## Defaults (when creating from brief description)
 
-When creating an issue from a brief description without explicit arguments:
-
-1. **Goal**: extracted from description
-1. **Plan**: `proposal` type, steps inferred from description
-1. **Constraints**: empty
-1. **Acceptance Criteria**: `"Modified files pass unit tests"` (always included)
+- Goal → extract from description
+- Plan → `proposal` type, infer steps
+- Constraints → empty
+- Acceptance Criteria → "Modified files pass unit tests"

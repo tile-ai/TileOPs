@@ -1,12 +1,10 @@
-# Pre-Create Checks: Structural Readiness (TileOPs)
+# Pre-Create Checks
 
-## Structural readiness check (new ops only)
+**Skip entirely** if PR does not touch kernel/op code.
 
-If this PR does **not** touch kernel/op code, skip this check entirely.
+If PR introduces or modifies a kernel/op:
 
-If this PR introduces or modifies a kernel/op:
+1. Read [op-readiness-checklist.md](op-readiness-checklist.md).
+1. Verify every item → `PASS`, `FAIL (reason)`, or `SKIP (reason)`.
 
-1. Read [op-readiness-checklist.md](op-readiness-checklist.md) for the full checklist.
-1. Verify the code against every item. Record each as `PASS`, `FAIL (reason)`, or `SKIP (reason)`.
-
-**HARD GATE:** Any `[REQUIRED]` item that is `FAIL` must be fixed before proceeding. `[RECOMMENDED]` items may be skipped with a reason. In the PR body `## Structural Readiness`, only list failures and skips. If all pass, write "All checks passed."
+**HARD GATE:** Any `[REQUIRED]` FAIL blocks the PR. `[RECOMMENDED]` may be skipped with reason. In `## Structural Readiness`, list only FAILs and SKIPs. All pass → "All checks passed."

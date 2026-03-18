@@ -10,26 +10,22 @@ Closes #<issue-number>
 - [x] pre-commit passed
 - [x] pytest passed
 
-<!-- OPTIONAL SECTIONS: Delete entirely if not applicable. Never leave empty headers. -->
+<!-- Delete inapplicable optional sections entirely. Never leave empty headers. -->
 
 ## Structural Readiness
 
-<!-- Required for new ops or kernel/op changes. Agent-generated — do not edit manually. -->
-
-<!-- Only list FAIL items. If all checks pass, write "All checks passed." -->
+<!-- Required for kernel/op changes. Agent-generated — do not edit. -->
 
 All checks passed.
 
 ## Benchmark
 
-<!-- Required when PR adds new ops or modifies kernel/op code. See benchmark-template.md for format. -->
+<!-- Required for kernel/op changes. Format: benchmark-template.md -->
 
 ## Regression
 
-<!-- Recommended when PR is bugfix or refactor -->
-
-<paste regression test log here>
+<!-- Recommended for bugfix/refactor -->
 
 ## Additional context
 
-<!-- Design decisions, related issues, screenshots, etc. -->
+<!-- Design decisions, related issues, screenshots -->

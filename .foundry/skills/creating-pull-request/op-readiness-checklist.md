@@ -1,49 +1,48 @@
 # Op Structural Readiness Checklist
 
-Items marked **[REQUIRED]** must pass — block the PR if they fail.
-Items marked **[RECOMMENDED]** should pass — note in PR body if skipped with reason.
+`[REQUIRED]` → block PR on failure. `[RECOMMENDED]` → note skip reason in PR body.
 
 ## Correctness & Safety
 
-- [ ] **[REQUIRED]** `Op.forward` validates input shape/numel before launching kernels (e.g. `UnaryOp.forward` rejects `x.numel() != N_total`, `BinaryOp.forward` rejects mismatched shapes) — prevents out-of-bounds GPU access
-- [ ] **[REQUIRED]** `Kernel.__init__` validates dtype against `SUPPORTED_DTYPES` and raises `ValueError` — template kernels (`UnaryKernel`, `BinaryKernel`, `FusedGatedKernel`) inherit this; independent kernels must add it explicitly
-- [ ] **[REQUIRED]** No hardcoded narrow-type constants in kernels (e.g. `T.cast(1.0, "float16")`) — use `x.dtype` or an explicit wide intermediate type
-- [ ] **[REQUIRED]** fp16/bf16 intermediate math that can overflow (cubic terms, division, exp) is promoted to fp32
-- [ ] **[REQUIRED]** Runtime validation uses `ValueError`/`TypeError`, never `assert` (stripped under `python -O`)
-- [ ] **[REQUIRED]** Output dtype matches PyTorch reference semantics (e.g. comparison ops → `bool`, not float 0/1)
+- [ ] [REQ] `Op.forward` validates input shape/numel before kernel launch
+- [ ] [REQ] `Kernel.__init__` validates dtype against `SUPPORTED_DTYPES`, raises `ValueError` (template kernels inherit; independent kernels add explicitly)
+- [ ] [REQ] No hardcoded narrow-type constants (`T.cast(1.0, "float16")`) — use `x.dtype` or wide intermediate
+- [ ] [REQ] fp16/bf16 math that can overflow (cubic, div, exp) promoted to fp32
+- [ ] [REQ] Runtime validation uses `ValueError`/`TypeError`, never `assert`
+- [ ] [REQ] Output dtype matches PyTorch semantics (comparison → `bool`, not float)
 
 ## Kernel Structure
 
-- [ ] **[REQUIRED]** `with T.Kernel()` is inside `@T.prim_func`; complex kernels factor reusable sub-routines into `@T.macro` helpers called from within the `T.Kernel` scope
-- [ ] **[REQUIRED]** `Kernel.forward` accepts only GPU tensors and only calls `self.kernel(config...)(tensors)` — no format conversion, batching, or dtype cast
-- [ ] **[RECOMMENDED]** `_<op_name>_kernel(static_params) -> Callable` closure function exists
-- [ ] **[RECOMMENDED]** `@tilelang.jit(out_idx=[...])` wraps a config-parameterised inner function
-- [ ] **[RECOMMENDED]** No Python builtins (`float()`, `int()`, `math.cos()`) on TileLang IR nodes
-- [ ] **[RECOMMENDED]** Tile-ops (`T.clear`, `T.copy`, `T.gemm`) are at `T.Kernel` scope, not inside `T.Parallel`
+- [ ] [REQ] `with T.Kernel()` inside `@T.prim_func`; reusable sub-routines as `@T.macro`
+- [ ] [REQ] `Kernel.forward` accepts only GPU tensors, calls only `self.kernel(config...)(tensors)`
+- [ ] [REC] `_<op>_kernel(static_params) -> Callable` closure exists
+- [ ] [REC] `@tilelang.jit(out_idx=[...])` wraps config-parameterised inner function
+- [ ] [REC] No Python builtins (`float()`, `int()`, `math.cos()`) on IR nodes
+- [ ] [REC] Tile-ops (`T.clear`, `T.copy`, `T.gemm`) at `T.Kernel` scope, not inside `T.Parallel`
 
 ## Op Structure
 
-- [ ] **[REQUIRED]** `Op.forward` owns all pre/post-processing (reshape, contiguous, dtype cast); delegates GPU work to `self.kernel(...)` only
-- [ ] **[REQUIRED]** `@torch.library.custom_op` + `.register_fake` wrapper exists for torch.compile compatibility
-- [ ] **[RECOMMENDED]** `default_config` and `autotune_configs` properties are defined on the Kernel class
-- [ ] **[RECOMMENDED]** `supported_archs` class attribute is set on the Kernel class
-- [ ] **[RECOMMENDED]** `accum_dtype` is hardcoded in kernel — never a property, config key, or parameter
-- [ ] **[RECOMMENDED]** Template-based Ops: `__init__` signature ends with `kernel_map=None, tune=False`; `dispatch_kernel(kernel_map)` called before kernel use. Independent Ops: `Kernel.__init__` signature ends with `config=None, tune=False`
+- [ ] [REQ] `Op.forward` owns pre/post-processing; delegates GPU work to `self.kernel(...)` only
+- [ ] [REQ] `@torch.library.custom_op` + `.register_fake` for torch.compile
+- [ ] [REC] `default_config` and `autotune_configs` properties on Kernel
+- [ ] [REC] `supported_archs` class attribute on Kernel
+- [ ] [REC] `accum_dtype` hardcoded — never property/config/parameter
+- [ ] [REC] Template ops: `__init__(…, kernel_map=None, tune=False)` + `dispatch_kernel(kernel_map)`. Independent ops: `Kernel.__init__(…, config=None, tune=False)`
 
 ## Benchmark
 
-- [ ] **[REQUIRED]** `benchmarks/ops/bench_<op>.py` exists, inherits `BenchmarkBase`
-- [ ] **[REQUIRED]** `calculate_flops()` and `calculate_memory()` both return non-None
-- [ ] **[REQUIRED]** Op developer provides a set of benchmark shapes. Each op must be profiled on ≥3 shapes across all `SUPPORTED_DTYPES`. Non-pow2 if op supports it
-- [ ] **[REQUIRED]** Baseline comparison: **new ops** → PyTorch baseline required; **modifications to existing ops** (strategy/optimization/refactor) → before/after comparison required, PyTorch baseline recommended
-- [ ] **[REQUIRED]** Required metrics: latency (ms), bandwidth (TB/s), TFLOPs. If the issue specifies op-specific metrics, those must also be reported
-- [ ] **[REQUIRED]** PR body `## Benchmark`: environment line + results table covering required metrics + benchmark command + **Takeaways** bullet points summarizing conclusions
-- [ ] **[RECOMMENDED]** If op has parameters affecting compute pattern (e.g. drop rate, branching factor), benchmark with default value. Testing multiple parameter values is recommended but not required
+- [ ] [REQ] `benchmarks/ops/bench_<op>.py` exists, inherits `BenchmarkBase`
+- [ ] [REQ] `calculate_flops()` and `calculate_memory()` return non-None
+- [ ] [REQ] ≥3 shapes × all `SUPPORTED_DTYPES`; include non-pow2 if supported
+- [ ] [REQ] Baseline: new ops → PyTorch required; modifications → before/after required, PyTorch recommended
+- [ ] [REQ] Metrics: latency (ms), bandwidth (TB/s), TFLOPs + issue-specific metrics
+- [ ] [REQ] PR body `## Benchmark`: environment + table + command + **Takeaways**
+- [ ] [REC] Benchmark with default parameter values; multiple values recommended
 
 ## Delivery
 
-- [ ] **[REQUIRED]** Unit tests in `tests/ops/` with reference comparison (FP16 atol=1e-3, BF16 atol=1.6e-2)
-- [ ] **[REQUIRED]** Tests cover unsupported-dtype rejection paths (expect `ValueError`)
-- [ ] **[REQUIRED]** Dtype support matrix documented in PR body
-- [ ] **[REQUIRED]** No issue references (`#123`, `TODO: see #456`) in source or test files — issues track goals in GitHub, not in code
-- [ ] **[RECOMMENDED]** `__init__.py` exports are synchronized (`__all__` + explicit re-exports)
+- [ ] [REQ] Unit tests in `tests/ops/` with reference comparison (FP16 atol=1e-3, BF16 atol=1.6e-2)
+- [ ] [REQ] Tests cover unsupported-dtype rejection (`ValueError`)
+- [ ] [REQ] Dtype support matrix in PR body
+- [ ] [REQ] No issue references (`#123`, `TODO: see #456`) in source/test files
+- [ ] [REC] `__init__.py` exports synchronized (`__all__` + re-exports)

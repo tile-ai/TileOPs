@@ -1,28 +1,19 @@
-# Additional PR Body Sections (TileOPs)
+# PR Body Sections
 
-These sections extend the standard foundry PR body template.
+Extensions to the standard foundry PR body template.
 
 ## Structural Readiness
 
-- **When required**: PR adds new ops or modifies existing kernel/op code
+- **When**: PR adds/modifies kernel or op code
 - **Position**: after `## Test plan`, before `## Benchmark`
-- **Content**: agent-generated from the op-readiness checklist. Only list FAIL and SKIP items. If all checks pass, write "All checks passed."
-- **Do not edit manually** — the pre-create check (Step 2) populates this.
+- **Content**: auto-generated from op-readiness checklist — list FAILs and SKIPs only; all pass → "All checks passed."
+- Do not edit manually
 
-```markdown
-## Structural Readiness
+## Benchmark
 
-<!-- Required for new ops or kernel/op changes. Agent-generated — do not edit manually. -->
+- **When**: PR adds/modifies kernel or op code (overrides foundry default of "performance changes only")
+- **Format**: [templates/benchmark-template.md](templates/benchmark-template.md)
 
-All checks passed.
-```
+## Draft-first workflow
 
-## Benchmark (enhanced)
-
-- **When required**: PR adds new ops or modifies existing kernel/op code. This is a lightweight performance profile, not a nightly regression suite.
-- **Format**: see [templates/benchmark-template.md](templates/benchmark-template.md) for the required format.
-- Overrides the standard foundry "required when PR involves performance changes" rule — in TileOPs, it is specifically required for kernel/op code changes.
-
-## Draft-first workflow note
-
-Copilot reviews drafts automatically; Gemini must be triggered separately (see `lifecycle-pull-request` Phase 2b). Once CI passes and both bot reviews are addressed, the `lifecycle-pull-request` skill marks the PR ready, triggering human reviewer notifications.
+Copilot reviews drafts automatically. Gemini must be triggered (`/gemini review`). After CI + bot reviews pass, `lifecycle-pull-request` marks PR ready for human review.
