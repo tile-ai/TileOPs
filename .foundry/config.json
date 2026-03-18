@@ -1,0 +1,11 @@
+{
+  "scripts": {
+    "lint": "pre-commit run --all-files"
+  },
+  "pr": {
+    "ai_reviews": [
+      {"name": "gemini", "kind": "comment", "body": "/gemini review"},
+      {"name": "copilot", "kind": "copilot"}
+    ]
+  }
+}
