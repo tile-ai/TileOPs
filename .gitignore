@@ -64,3 +64,4 @@ secrets.yml
 docs/plans/
 .humanize*
 .foundry/runs/
+.foundry/config.local.json
