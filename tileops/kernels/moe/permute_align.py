@@ -42,6 +42,9 @@ __all__ = ["MoePermuteAlignKernel"]
 _THREADS = 1024
 _SCATTER_THREADS = 256
 _SMALL_NUMEL_THRESHOLD   = 1024
+# Keep <= 32: the small-batch kernel allocates (worker_threads+1)*num_experts
+# int32s in shared memory.  At num_experts=64 this becomes 4160 entries and
+# causes TileLang JIT to hang during compilation.
 _SMALL_EXPERTS_THRESHOLD = 32
 _FILL_THREADS            = 256
 
