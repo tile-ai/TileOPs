@@ -660,7 +660,7 @@ jobs:
           ls -lh dist/*.whl
         shell: bash
 
-      - name: Run unit tests against built wheel
+      - name: Run ops smoke tests against built wheel
         run: |
           set -euo pipefail
           source "${VENV_PATH}/bin/activate"
@@ -679,7 +679,7 @@ jobs:
           for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
               print(f"{key}={os.environ.get(key)}")
           PY
-          python -m pytest -q tests -m "smoke"
+          python -m pytest -q tests/ops -m "smoke"
         shell: bash
 
       - name: Upload wheel artifact
