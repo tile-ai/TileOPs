@@ -4,6 +4,7 @@
 
 1. All dtypes in `SUPPORTED_DTYPES`
 1. ≥3 shapes per op; include non-pow2 if supported
+1. Shapes must map to real model geometry, not arbitrary flat numbers. Match the op's natural dimensionality (1D/2D/3D). Default to LLaMA-family sizes: hidden ∈ {4096, 5120, 8192}, intermediate ∈ {10240, 11008, 14336, 20480, 28672}, seq_len ∈ {2048, 4096}.
 1. Baseline: new ops → PyTorch required; modifications → before/after required, PyTorch recommended
 1. Metrics: latency (ms), bandwidth (TB/s), TFLOPs + issue-specific
 1. Environment: GPU, CUDA version, PyTorch version, TileLang version
