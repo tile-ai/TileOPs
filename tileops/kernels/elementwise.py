@@ -31,7 +31,8 @@ fp8 dtype support (e4m3fn, e5m2):
     non-saturating cast to e5m2 via PyTorch's .to() which preserves Inf/NaN.
 """
 
-import numpy as np
+import math
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -186,9 +187,12 @@ def _get_fp8_output_dtypes(dtype: torch.dtype):
 
 
 def _fill_value_overflows_fp16(fill_value: float) -> bool:
-    """Return True if fill_value exceeds float16 finite range (would be inf)."""
-    with np.errstate(over="ignore"):
-        return bool(np.isinf(np.float16(fill_value)))
+    """Return True if fill_value would become inf when cast to float16.
+
+    This covers both values that exceed float16 max finite (65504) and
+    values that are already +/-inf.
+    """
+    return math.isinf(fill_value) or abs(fill_value) > 65504.0
 
 
 def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
@@ -2346,11 +2350,22 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
     # finite (e.g. 100000 > 65504 for float16), even when the result would be
     # a valid inf.  Pre-detect overflow so the kernel can construct inf via
     # uint bit-reinterpretation instead of a direct T.cast literal.
+    _FP16_POS_INF_BITS = 0x7C00
+    _FP16_NEG_INF_BITS = 0xFC00
     _kernel_dtype = out_dtype if is_fp8 else dtype
     _fp16_fill_is_inf = (
         _kernel_dtype == "float16" and _fill_value_overflows_fp16(fill_value)
     )
-    _fp16_inf_bits = (0xFC00 if fill_value < 0 else 0x7C00) if _fp16_fill_is_inf else 0
+    _fp16_inf_bits = (
+        (_FP16_NEG_INF_BITS if fill_value < 0 else _FP16_POS_INF_BITS)
+        if _fp16_fill_is_inf else 0
+    )
+
+    def _make_fill_expr(target_dtype):
+        """Build TIR fill-value expression, using bit-reinterpret for inf."""
+        if _fp16_fill_is_inf:
+            return T.reinterpret(T.cast(_fp16_inf_bits, "uint16"), "float16")
+        return T.cast(fill_value, target_dtype)
 
     if is_fp8:
 
@@ -2366,12 +2381,7 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
-                            if _fp16_fill_is_inf:
-                                fv = T.reinterpret(
-                                    T.cast(_fp16_inf_bits, "uint16"), "float16",
-                                )
-                            else:
-                                fv = T.cast(fill_value, out_dtype)
+                            fv = _make_fill_expr(out_dtype)
                             x_val = T.Cast(out_dtype, x[idx])
                             out[idx] = T.if_then_else(
                                 mask[idx] != T.cast(0, "uint8"), fv, x_val,
@@ -2395,12 +2405,7 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
                     T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         k = i * npt_arg + j
-                        if _fp16_fill_is_inf:
-                            fv = T.reinterpret(
-                                T.cast(_fp16_inf_bits, "uint16"), "float16",
-                            )
-                        else:
-                            fv = T.cast(fill_value, dtype)
+                        fv = _make_fill_expr(dtype)
                         x_reg[k] = T.if_then_else(
                             m_reg[k] != T.cast(0, "uint8"), fv, x_reg[k],
                         )
