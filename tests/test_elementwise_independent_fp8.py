@@ -3,8 +3,9 @@
 Covers:
 - AC1: All independent kernels accept float8_e4m3fn and float8_e5m2
 - AC2: fp8 default_config uses num_per_thread=16 for 128-bit alignment
-- AC3: Correctness tests for leaky_relu, elu, clamp with both fp8 dtypes
+- AC3: Correctness tests for representative ops with both fp8 dtypes
 - AC4: Saturation/overflow behavior matches template kernel semantics
+- AC5: Non-aligned N tail-block protection (idx < N guard)
 
 fp8 accumulation design:
   fp8 input -> cast to fp16 -> compute -> cast back to fp8
@@ -18,6 +19,7 @@ Saturation semantics (NVIDIA spec):
 import pytest
 import torch
 
+import tileops.kernels.elementwise as _kern_mod
 from tests.test_base import FixtureBase
 
 _FP8_DTYPES = [
@@ -28,93 +30,41 @@ _FP8_DTYPES = [
 _N = 1024 * 16  # 16K elements, fits 128-bit alignment with npt=16
 
 
-# ---------------------------------------------------------------------------
-# AC1: All independent kernels accept fp8 dtypes
-# ---------------------------------------------------------------------------
-
-
 class Fp8DtypeFixture(FixtureBase):
     PARAMS = [("dtype", _FP8_DTYPES)]
 
 
-@Fp8DtypeFixture
-def test_leaky_relu_kernel_accepts_fp8(dtype):
-    """LeakyReluKernel can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import LeakyReluKernel
+# ---------------------------------------------------------------------------
+# AC1: All independent kernels accept fp8 dtypes
+# ---------------------------------------------------------------------------
 
-    kernel = LeakyReluKernel(N_total=_N, dtype=dtype)
-    assert kernel.dtype == dtype
-
-
-@Fp8DtypeFixture
-def test_elu_kernel_accepts_fp8(dtype):
-    """EluKernel can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import EluKernel
-
-    kernel = EluKernel(N_total=_N, dtype=dtype)
-    assert kernel.dtype == dtype
-
-
-@Fp8DtypeFixture
-def test_hardtanh_kernel_accepts_fp8(dtype):
-    """HardtanhKernel can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import HardtanhKernel
-
-    kernel = HardtanhKernel(N_total=_N, dtype=dtype)
-    assert kernel.dtype == dtype
+_AC1_KERNELS = [
+    pytest.param("LeakyReluKernel", {"N_total": _N}, id="leaky_relu"),
+    pytest.param("EluKernel", {"N_total": _N}, id="elu"),
+    pytest.param("HardtanhKernel", {"N_total": _N}, id="hardtanh"),
+    pytest.param("SoftplusKernel", {"N_total": _N}, id="softplus"),
+    pytest.param("ClampKernel", {"N_total": _N, "min_val": -1.0, "max_val": 1.0}, id="clamp"),
+    pytest.param("WhereKernel", {"N_total": _N}, id="where"),
+    pytest.param("MaskedFillKernel", {"N_total": _N, "fill_value": 0.0}, id="masked_fill"),
+    pytest.param("NanToNumKernel", {"N_total": _N}, id="nan_to_num"),
+    pytest.param("PreluKernel", {"N_total": _N, "C": 16, "inner_size": _N // 16}, id="prelu"),
+    pytest.param("AlibiKernel", {"seq_len": 32, "num_heads": 8}, id="alibi"),
+    pytest.param("SinusoidalKernel", {"seq_len": 32, "d_model": 64}, id="sinusoidal"),
+]
 
 
-@Fp8DtypeFixture
-def test_softplus_kernel_accepts_fp8(dtype):
-    """SoftplusKernel can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import SoftplusKernel
-
-    kernel = SoftplusKernel(N_total=_N, dtype=dtype)
-    assert kernel.dtype == dtype
+class Ac1Fixture(FixtureBase):
+    PARAMS = [
+        ("dtype", _FP8_DTYPES),
+        ("kernel_name, extra_kwargs", _AC1_KERNELS),
+    ]
 
 
-@Fp8DtypeFixture
-def test_clamp_kernel_accepts_fp8(dtype):
-    """ClampKernel can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import ClampKernel
-
-    kernel = ClampKernel(N_total=_N, dtype=dtype, min_val=-1.0, max_val=1.0)
-    assert kernel.dtype == dtype
-
-
-@Fp8DtypeFixture
-def test_where_kernel_accepts_fp8(dtype):
-    """WhereKernel can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import WhereKernel
-
-    kernel = WhereKernel(N_total=_N, dtype=dtype)
-    assert kernel.dtype == dtype
-
-
-@Fp8DtypeFixture
-def test_masked_fill_kernel_accepts_fp8(dtype):
-    """MaskedFillKernel can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import MaskedFillKernel
-
-    kernel = MaskedFillKernel(N_total=_N, dtype=dtype, fill_value=0.0)
-    assert kernel.dtype == dtype
-
-
-@Fp8DtypeFixture
-def test_nan_to_num_kernel_accepts_fp8(dtype):
-    """NanToNumKernel can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import NanToNumKernel
-
-    kernel = NanToNumKernel(N_total=_N, dtype=dtype)
-    assert kernel.dtype == dtype
-
-
-@Fp8DtypeFixture
-def test_prelu_kernel_accepts_fp8(dtype):
-    """PreluKernel can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import PreluKernel
-
-    kernel = PreluKernel(N_total=_N, C=16, inner_size=_N // 16, dtype=dtype)
+@Ac1Fixture
+def test_kernel_accepts_fp8(dtype, kernel_name, extra_kwargs):
+    """All independent kernels can be instantiated with fp8 dtype."""
+    cls = getattr(_kern_mod, kernel_name)
+    kernel = cls(dtype=dtype, **extra_kwargs)
     assert kernel.dtype == dtype
 
 
@@ -122,36 +72,30 @@ def test_prelu_kernel_accepts_fp8(dtype):
 # AC2: fp8 default_config uses num_per_thread=16 for 128-bit alignment
 # ---------------------------------------------------------------------------
 
-
-@Fp8DtypeFixture
-def test_leaky_relu_fp8_default_config_npt16(dtype):
-    """LeakyReluKernel fp8 default_config returns num_per_thread=16."""
-    from tileops.kernels.elementwise import LeakyReluKernel
-
-    kernel = LeakyReluKernel(N_total=_N, dtype=dtype)
-    assert kernel.config["num_per_thread"] == 16
+_AC2_KERNELS = [
+    pytest.param("LeakyReluKernel", {"N_total": _N}, id="leaky_relu"),
+    pytest.param("EluKernel", {"N_total": _N}, id="elu"),
+    pytest.param("ClampKernel", {"N_total": _N, "min_val": -1.0, "max_val": 1.0}, id="clamp"),
+]
 
 
-@Fp8DtypeFixture
-def test_elu_fp8_default_config_npt16(dtype):
-    """EluKernel fp8 default_config returns num_per_thread=16."""
-    from tileops.kernels.elementwise import EluKernel
-
-    kernel = EluKernel(N_total=_N, dtype=dtype)
-    assert kernel.config["num_per_thread"] == 16
+class Ac2Fixture(FixtureBase):
+    PARAMS = [
+        ("dtype", _FP8_DTYPES),
+        ("kernel_name, extra_kwargs", _AC2_KERNELS),
+    ]
 
 
-@Fp8DtypeFixture
-def test_clamp_fp8_default_config_npt16(dtype):
-    """ClampKernel fp8 default_config returns num_per_thread=16."""
-    from tileops.kernels.elementwise import ClampKernel
-
-    kernel = ClampKernel(N_total=_N, dtype=dtype, min_val=-1.0, max_val=1.0)
+@Ac2Fixture
+def test_fp8_default_config_npt16(dtype, kernel_name, extra_kwargs):
+    """fp8 default_config returns num_per_thread=16."""
+    cls = getattr(_kern_mod, kernel_name)
+    kernel = cls(dtype=dtype, **extra_kwargs)
     assert kernel.config["num_per_thread"] == 16
 
 
 # ---------------------------------------------------------------------------
-# AC3: Correctness tests for leaky_relu, elu, clamp with both fp8 dtypes
+# AC3: Correctness tests for representative ops with both fp8 dtypes
 # ---------------------------------------------------------------------------
 
 
@@ -166,7 +110,6 @@ def test_leaky_relu_fp8_correctness(dtype):
     x = x_fp16.to(dtype)
     op = LeakyReluOp(N_total=n, dtype=dtype, negative_slope=negative_slope)
     out = op(x)
-    # Reference: cast to fp16, leaky_relu, cast back to fp8
     ref = torch.nn.functional.leaky_relu(x.to(torch.float16), negative_slope).to(dtype)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
     assert torch.equal(out, ref), (
@@ -187,7 +130,6 @@ def test_elu_fp8_correctness(dtype):
     x = x_fp16.to(dtype)
     op = EluOp(N_total=n, dtype=dtype, alpha=alpha)
     out = op(x)
-    # Reference: cast to fp16, elu, cast back to fp8
     ref = torch.nn.functional.elu(x.to(torch.float16), alpha).to(dtype)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
     assert torch.equal(out, ref), (
@@ -208,11 +150,52 @@ def test_clamp_fp8_correctness(dtype):
     x = x_fp16.to(dtype)
     op = ClampOp(N_total=n, dtype=dtype, min_val=min_val, max_val=max_val)
     out = op(x)
-    # Reference: cast to fp16, clamp, cast back to fp8
     ref = torch.clamp(x.to(torch.float16), min_val, max_val).to(dtype)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
     assert torch.equal(out, ref), (
         f"Clamp fp8 output does not match reference. "
+        f"Max diff: {(out.to(torch.float32) - ref.to(torch.float32)).abs().max().item()}"
+    )
+
+
+@Fp8DtypeFixture
+def test_alibi_fp8_output_dtype(dtype):
+    """ALiBi fp8 output has correct dtype."""
+    from tileops.ops.elementwise import AlibiOp
+
+    op = AlibiOp(seq_len=32, num_heads=8, dtype=dtype)
+    out = op()
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+    assert out.shape == (8, 32, 32)
+
+
+@Fp8DtypeFixture
+def test_sinusoidal_fp8_output_dtype(dtype):
+    """Sinusoidal fp8 output has correct dtype."""
+    from tileops.ops.elementwise import SinusoidalOp
+
+    op = SinusoidalOp(seq_len=32, d_model=64, dtype=dtype)
+    out = op()
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+    assert out.shape == (32, 64)
+
+
+@Fp8DtypeFixture
+def test_masked_fill_fp8_correctness(dtype):
+    """MaskedFill correctness with fp8, including e5m2 post-cast path."""
+    from tileops.ops.elementwise import MaskedFillOp
+
+    n = _N
+    fill_value = -1.0
+    x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 2.0
+    x = x_fp16.to(dtype)
+    mask = torch.rand(n, device="cuda") > 0.5
+    op = MaskedFillOp(N_total=n, dtype=dtype, fill_value=fill_value)
+    out = op(x, mask)
+    ref = x.to(torch.float16).masked_fill(mask, fill_value).to(dtype)
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+    assert torch.equal(out, ref), (
+        f"MaskedFill fp8 output does not match reference. "
         f"Max diff: {(out.to(torch.float32) - ref.to(torch.float32)).abs().max().item()}"
     )
 
@@ -269,6 +252,29 @@ def test_elu_e5m2_output_dtype():
     op = EluOp(N_total=n, dtype=dtype)
     out = op(x)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+
+
+@pytest.mark.smoke
+def test_masked_fill_e5m2_overflow_fill_value():
+    """MaskedFill e5m2 with overflow fill_value preserves Inf via non-saturating cast."""
+    from tileops.ops.elementwise import MaskedFillOp
+
+    n = 1024
+    dtype = torch.float8_e5m2
+    fill_value = 1e5  # exceeds e5m2 max finite (57344.0), should produce Inf
+    x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 0.5
+    x = x_fp16.to(dtype)
+    mask = torch.ones(n, device="cuda", dtype=torch.bool)  # fill everything
+    op = MaskedFillOp(N_total=n, dtype=dtype, fill_value=fill_value)
+    out = op(x, mask)
+    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
+    # e5m2 supports Inf: fill_value > max_finite should produce Inf via
+    # the Op-layer non-saturating PyTorch cast
+    out_fp32 = out.to(torch.float32)
+    ref = torch.tensor(fill_value, dtype=torch.float16).to(dtype).to(torch.float32)
+    assert torch.all(out_fp32 == ref), (
+        f"Expected all elements to be {ref.item()}, got {out_fp32.unique().tolist()}"
+    )
 
 
 # ---------------------------------------------------------------------------

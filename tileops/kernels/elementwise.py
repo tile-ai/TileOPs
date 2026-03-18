@@ -168,6 +168,22 @@ def _fp8_accum_dtype_str() -> str:
     return "float16"
 
 
+def _get_fp8_output_dtypes(dtype: torch.dtype):
+    """Return (fp8_output_dtype, kernel_output_dtype) for fp8 handling.
+
+    For e5m2: kernel produces fp16 to preserve Inf/NaN; Op layer does the
+    final non-saturating cast to e5m2 via PyTorch.
+    For e4m3fn or non-fp8: kernel outputs directly in the input dtype.
+
+    Returns:
+        Tuple of (_fp8_output_dtype, output_dtype).  _fp8_output_dtype is
+        the original fp8 dtype when a post-cast is needed, else None.
+    """
+    if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
+        return dtype, torch.float16
+    return None, dtype
+
+
 def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
     """Wrap an op function with fp8 accumulation logic if *dtype* is fp8.
 
@@ -1784,14 +1800,7 @@ class LeakyReluKernel(Kernel):
         self.N_total = N_total
         self.dtype = dtype
         self.negative_slope = negative_slope
-        # fp8 e5m2: kernel produces fp16 to preserve Inf/NaN;
-        # Op layer does the final non-saturating cast to e5m2.
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_leaky_relu_kernel(
             N_total, self.dtype_str, negative_slope,
@@ -1852,12 +1861,7 @@ class EluKernel(Kernel):
         self.N_total = N_total
         self.dtype = dtype
         self.alpha = alpha
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_elu_kernel(
             N_total, self.dtype_str, alpha,
@@ -1917,12 +1921,7 @@ class HardtanhKernel(Kernel):
         self.dtype = dtype
         self.min_val = min_val
         self.max_val = max_val
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_hardtanh_kernel(
             N_total, self.dtype_str, min_val, max_val,
@@ -1985,12 +1984,7 @@ class SoftplusKernel(Kernel):
         self.dtype = dtype
         self.beta = beta
         self.threshold = threshold
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_softplus_kernel(
             N_total, self.dtype_str, beta, threshold,
@@ -2112,12 +2106,7 @@ class PreluKernel(Kernel):
         self.C = C
         self.inner_size = inner_size
         self.dtype = dtype
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_prelu_kernel(
             N_total, C, inner_size, self.dtype_str,
@@ -2227,6 +2216,10 @@ class WhereKernel(Kernel):
             )
         self.N_total = N_total
         self.dtype = dtype
+        # Where is a pure selection op (out = cond ? x : y): no arithmetic,
+        # no type conversion needed.  _fp8_output_dtype is explicitly None
+        # so _apply_fp8_post_cast is a no-op.
+        self._fp8_output_dtype = None
         cfg = self.default_config
         self.kernel = _make_where_kernel(
             N_total, self.dtype_str, is_fp8=_is_fp8(dtype),
@@ -2299,12 +2292,7 @@ class ClampKernel(Kernel):
         self.dtype = dtype
         self.min_val = min_val
         self.max_val = max_val
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_clamp_kernel(
             N_total, self.dtype_str,
@@ -2327,7 +2315,8 @@ class ClampKernel(Kernel):
         return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
 
 
-def _make_masked_fill_kernel(N, dtype, fill_value, is_fp8=False, threads=256, npt=8):
+def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
+                             is_fp8=False, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
     The Op layer packs the bool mask as uint8 so that T.copy can
@@ -2340,8 +2329,10 @@ def _make_masked_fill_kernel(N, dtype, fill_value, is_fp8=False, threads=256, np
     fragment allocation.
 
     For fp8 dtypes, uses explicit_parallel (direct element access) since
-    register_copy is unreliable for 8-bit fragments.
+    register_copy is unreliable for 8-bit fragments.  For e5m2, the kernel
+    outputs fp16 so the Op layer can do a non-saturating cast to e5m2.
     """
+    out_dtype = output_dtype or dtype
     block_size = threads * npt
 
     if is_fp8:
@@ -2352,15 +2343,16 @@ def _make_masked_fill_kernel(N, dtype, fill_value, is_fp8=False, threads=256, np
             def main(
                 x: T.Tensor((N,), dtype),
                 mask: T.Tensor((N,), "uint8"),
-                out: T.Tensor((N,), dtype),
+                out: T.Tensor((N,), out_dtype),
             ):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
-                            fv = T.cast(fill_value, dtype)
+                            fv = T.cast(fill_value, out_dtype)
+                            x_val = T.Cast(out_dtype, x[idx])
                             out[idx] = T.if_then_else(
-                                mask[idx] != T.cast(0, "uint8"), fv, x[idx],
+                                mask[idx] != T.cast(0, "uint8"), fv, x_val,
                             )
 
             return main
@@ -2417,9 +2409,12 @@ class MaskedFillKernel(Kernel):
         self.N_total = N_total
         self.dtype = dtype
         self.fill_value = fill_value
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_masked_fill_kernel(
-            N_total, self.dtype_str, fill_value, is_fp8=_is_fp8(dtype),
+            N_total, self.dtype_str, fill_value,
+            output_dtype=self.dtype_to_str(self.output_dtype),
+            is_fp8=_is_fp8(dtype),
             threads=cfg["threads"], npt=cfg["num_per_thread"],
         )
         self.init_config(config, tune)
@@ -2512,6 +2507,10 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
 class NanToNumKernel(Kernel):
     """NanToNum: replace NaN, +Inf, -Inf with specified values.
 
+    Note: For e4m3fn this is effectively a no-op because e4m3fn has no Inf
+    or NaN representation — all values are finite by construction.  The
+    kernel still runs but no replacements will occur.
+
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
@@ -2539,12 +2538,7 @@ class NanToNumKernel(Kernel):
         self.nan_val = nan_val
         self.posinf_val = posinf_val
         self.neginf_val = neginf_val
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_nan_to_num_kernel(
             N_total, self.dtype_str, nan_val, posinf_val, neginf_val,
@@ -2628,12 +2622,7 @@ class AlibiKernel(Kernel):
         self.seq_len = seq_len
         self.num_heads = num_heads
         self.dtype = dtype
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_alibi_kernel(
             seq_len, num_heads, self.dtype_to_str(self.output_dtype),
@@ -2716,12 +2705,7 @@ class SinusoidalKernel(Kernel):
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype
-        self._fp8_output_dtype = None
-        if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-            self._fp8_output_dtype = dtype
-            self.output_dtype = torch.float16
-        else:
-            self.output_dtype = dtype
+        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
         cfg = self.default_config
         self.kernel = _make_sinusoidal_kernel(
             seq_len, d_model, self.dtype_to_str(self.output_dtype),

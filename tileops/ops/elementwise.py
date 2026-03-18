@@ -1562,7 +1562,8 @@ class MaskedFillOp(Op):
         # for vectorized T.copy in the kernel.
         mask_flat = (mask if mask.dtype == torch.bool else mask.bool()).contiguous().view(-1)
         x_flat = x.contiguous().view(-1)
-        return self.kernel(x_flat, mask_flat.view(torch.uint8)).view(orig_shape)
+        result = self.kernel(x_flat, mask_flat.view(torch.uint8)).view(orig_shape)
+        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
