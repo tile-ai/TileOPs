@@ -6,6 +6,7 @@
 
 - [ ] [REQ] `Op.forward` validates input shape/numel before kernel launch
 - [ ] [REQ] `Kernel.__init__` validates dtype against `SUPPORTED_DTYPES`, raises `ValueError` (template kernels inherit; independent kernels add explicitly)
+- [ ] [REQ] User-provided scalar params are validated at the Op/API boundary against the effective kernel dtype before codegen; do not rely on TIR/lowering failures or kernel-local hotfixes to reject invalid values
 - [ ] [REQ] No hardcoded narrow-type constants (`T.cast(1.0, "float16")`) — use `x.dtype` or wide intermediate
 - [ ] [REQ] fp16/bf16 math that can overflow (cubic, div, exp) promoted to fp32
 - [ ] [REQ] Runtime validation uses `ValueError`/`TypeError`, never `assert`

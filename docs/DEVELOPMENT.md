@@ -39,6 +39,7 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
   - **Docstrings**: Google Style (Args, Returns, Example).
   - **Unit Test**: Compare output against a pure PyTorch reference implementation (required).
   - **Dtype Contract**: Explicitly define supported input dtypes, output dtype, and rejected dtypes.
+  - **Parameter Contract**: Validate user-provided scalar parameters at the Op/API boundary against the effective kernel dtype. Invalid values must fail with a user-facing `ValueError` before any TIR/codegen step.
   - **Benchmark**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
 - **Standards**:
   - Use `torch.testing.assert_close` for floating-point verification.
@@ -48,6 +49,7 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
   - Tests must assert the output dtype when it differs from the input dtype.
   - GPU-dependent unit tests must be run on a real machine with host-visible CUDA devices. Do not treat sandbox-only results as final correctness evidence.
   - Benchmark results must be reproducible.
+  - Do not fix interface-contract bugs with kernel-local lowering workarounds. If a failure is caused by invalid user parameters, fix the validation boundary first and only touch kernels when the semantics are intentionally legal and documented.
 - **Definition of Done**: The op is verified in unit tests, and benchmarks run correctly.
 
 ### Step 3: Benchmark Results
