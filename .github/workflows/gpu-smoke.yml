@@ -516,10 +516,10 @@ jobs:
             # TileLang cache keys include the library's mtime (kernel_cache.py); a fresh
             # pip install produces a new mtime, causing all rsync'd cache entries to miss.
             # See: https://github.com/tile-ai/TileOPs/issues/594
-            TRUSTED_VENV=$(find "${{ runner.tool_cache }}" -maxdepth 1 -type d -name "tileops_ci_venv_*" 2>/dev/null | head -1)
+            TRUSTED_VENV=$(find "${{ runner.tool_cache }}" -maxdepth 1 -type d -name "tileops_ci_venv_*" -exec test -x '{}/bin/python' \; -print 2>/dev/null | sort -t_ -k5 -r | head -1 || true)
             if [[ -n "$TRUSTED_VENV" ]]; then
-              TRUSTED_LIB=$(find "$TRUSTED_VENV" -name "libtilelang.so" -type f 2>/dev/null | head -1)
-              FORK_LIB=$(find "${VENV_PATH}" -name "libtilelang.so" -type f 2>/dev/null | head -1)
+              TRUSTED_LIB=$(find "$TRUSTED_VENV" -name "libtilelang.so" -type f 2>/dev/null | head -1 || true)
+              FORK_LIB=$(find "${VENV_PATH}" -name "libtilelang.so" -type f 2>/dev/null | head -1 || true)
               if [[ -n "$TRUSTED_LIB" && -n "$FORK_LIB" ]]; then
                 touch -r "$TRUSTED_LIB" "$FORK_LIB"
                 echo "Synced libtilelang.so mtime for cache key compatibility"
