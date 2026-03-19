@@ -12,7 +12,7 @@ import torch
 from tilelang.profiler import do_bench as _do_bench
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gla_decode import GLADecodeTest
+from tests.ops.test_gla_recurrence import GLADecodeTest
 from tests.test_base import FixtureBase
 from tileops.ops import GLADecodeOp
 

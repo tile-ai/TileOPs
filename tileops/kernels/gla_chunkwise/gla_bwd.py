@@ -19,7 +19,8 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.linear_attn.gla.gla_fwd import _gla_precompute_g_kernel
+
+from .gla_fwd import _gla_precompute_g_kernel
 
 __all__ = ["GLABwdKernel"]
 

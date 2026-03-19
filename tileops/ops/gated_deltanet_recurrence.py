@@ -2,11 +2,11 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel import Kernel
-from tileops.kernels.linear_attn import (
+from tileops.kernels.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeFP32Kernel,
     GatedDeltaNetDecodeKernel,
 )
+from tileops.kernels.kernel import Kernel
 
 from .op import Op
 

@@ -17,7 +17,7 @@ import torch
 from tilelang.profiler import do_bench as _do_bench
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gla_bwd import _gla_autograd_bwd_ref, _gla_fwd_torch_ref
+from tests.ops.test_gla_chunkwise_bwd import _gla_autograd_bwd_ref, _gla_fwd_torch_ref
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GLABwdOp, GLAFwdOp
 

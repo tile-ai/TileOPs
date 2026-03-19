@@ -2,8 +2,8 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.kernels.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.linear_attn import GLADecodeFP32Kernel, GLADecodeKernel
 
 from .op import Op
 
