@@ -466,5 +466,151 @@ def test_independent_special_rejects_non_float_dtype() -> None:
         ClampKernel(N_total=16, dtype=torch.int32)
 
 
+# ===========================================================================
+# Negative tests: forward() dtype / numel validation
+# ===========================================================================
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_cls, kwargs", [
+    pytest.param("EluOp", {"alpha": 1.0}, id="elu"),
+    pytest.param("HardtanhOp", {"min_val": -1.0, "max_val": 1.0}, id="hardtanh"),
+    pytest.param("SoftplusOp", {"beta": 1.0, "threshold": 20.0}, id="softplus"),
+    pytest.param("ClampOp", {"min_val": -0.5, "max_val": 0.5}, id="clamp"),
+])
+def test_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> None:
+    """forward() must raise ValueError when input dtype mismatches."""
+    import tileops.ops.elementwise as mod
+    cls = getattr(mod, op_cls)
+    op = cls(N_total=1024, dtype=torch.float16, **kwargs)
+    x = torch.randn(1024, device="cuda", dtype=torch.float32)
+    with pytest.raises(ValueError, match="dtype"):
+        op(x)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_cls, kwargs", [
+    pytest.param("EluOp", {"alpha": 1.0}, id="elu"),
+    pytest.param("HardtanhOp", {"min_val": -1.0, "max_val": 1.0}, id="hardtanh"),
+    pytest.param("SoftplusOp", {"beta": 1.0, "threshold": 20.0}, id="softplus"),
+    pytest.param("ClampOp", {"min_val": -0.5, "max_val": 0.5}, id="clamp"),
+])
+def test_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> None:
+    """forward() must raise ValueError when input numel mismatches."""
+    import tileops.ops.elementwise as mod
+    cls = getattr(mod, op_cls)
+    op = cls(N_total=1024, dtype=torch.float16, **kwargs)
+    x = torch.randn(512, device="cuda", dtype=torch.float16)
+    with pytest.raises(ValueError, match="elements"):
+        op(x)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_cls, kwargs", [
+    pytest.param("MaskedFillOp", {"fill_value": -100.0}, id="masked_fill"),
+])
+def test_masked_fill_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> None:
+    """MaskedFillOp forward() must raise ValueError when input dtype mismatches."""
+    import tileops.ops.elementwise as mod
+    cls = getattr(mod, op_cls)
+    op = cls(N_total=1024, dtype=torch.float16, **kwargs)
+    x = torch.randn(1024, device="cuda", dtype=torch.float32)
+    mask = torch.ones(1024, device="cuda", dtype=torch.bool)
+    with pytest.raises(ValueError, match="dtype"):
+        op(x, mask)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_cls, kwargs", [
+    pytest.param("MaskedFillOp", {"fill_value": -100.0}, id="masked_fill"),
+])
+def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> None:
+    """MaskedFillOp forward() must raise ValueError when input numel mismatches."""
+    import tileops.ops.elementwise as mod
+    cls = getattr(mod, op_cls)
+    op = cls(N_total=1024, dtype=torch.float16, **kwargs)
+    x = torch.randn(512, device="cuda", dtype=torch.float16)
+    mask = torch.ones(512, device="cuda", dtype=torch.bool)
+    with pytest.raises(ValueError, match="elements"):
+        op(x, mask)
+
+
+# ===========================================================================
+# Negative tests: __init__() scalar parameter validation
+# ===========================================================================
+
+
+@pytest.mark.smoke
+def test_elu_rejects_unrepresentable_alpha() -> None:
+    """EluOp must reject alpha that overflows the kernel dtype."""
+    from tileops.ops.elementwise import EluOp
+    with pytest.raises((ValueError, TypeError)):
+        EluOp(N_total=1024, dtype=torch.float16, alpha=1e6)
+
+
+@pytest.mark.smoke
+def test_hardtanh_rejects_unrepresentable_min_val() -> None:
+    """HardtanhOp must reject min_val that overflows the kernel dtype."""
+    from tileops.ops.elementwise import HardtanhOp
+    with pytest.raises((ValueError, TypeError)):
+        HardtanhOp(N_total=1024, dtype=torch.float16, min_val=1e6)
+
+
+@pytest.mark.smoke
+def test_hardtanh_rejects_unrepresentable_max_val() -> None:
+    """HardtanhOp must reject max_val that overflows the kernel dtype."""
+    from tileops.ops.elementwise import HardtanhOp
+    with pytest.raises((ValueError, TypeError)):
+        HardtanhOp(N_total=1024, dtype=torch.float16, max_val=1e6)
+
+
+@pytest.mark.smoke
+def test_softplus_rejects_unrepresentable_beta() -> None:
+    """SoftplusOp must reject beta that overflows the kernel dtype."""
+    from tileops.ops.elementwise import SoftplusOp
+    with pytest.raises((ValueError, TypeError)):
+        SoftplusOp(N_total=1024, dtype=torch.float16, beta=1e6)
+
+
+@pytest.mark.smoke
+def test_softplus_rejects_unrepresentable_threshold() -> None:
+    """SoftplusOp must reject threshold that overflows the kernel dtype."""
+    from tileops.ops.elementwise import SoftplusOp
+    with pytest.raises((ValueError, TypeError)):
+        SoftplusOp(N_total=1024, dtype=torch.float16, threshold=1e6)
+
+
+@pytest.mark.smoke
+def test_clamp_rejects_unrepresentable_min_val() -> None:
+    """ClampOp must reject min_val that overflows the kernel dtype."""
+    from tileops.ops.elementwise import ClampOp
+    with pytest.raises((ValueError, TypeError)):
+        ClampOp(N_total=1024, dtype=torch.float16, min_val=1e6)
+
+
+@pytest.mark.smoke
+def test_clamp_rejects_unrepresentable_max_val() -> None:
+    """ClampOp must reject max_val that overflows the kernel dtype."""
+    from tileops.ops.elementwise import ClampOp
+    with pytest.raises((ValueError, TypeError)):
+        ClampOp(N_total=1024, dtype=torch.float16, max_val=1e6)
+
+
+@pytest.mark.smoke
+def test_elu_rejects_infinite_alpha() -> None:
+    """EluOp must reject infinite alpha."""
+    from tileops.ops.elementwise import EluOp
+    with pytest.raises(ValueError, match="finite"):
+        EluOp(N_total=1024, dtype=torch.float32, alpha=float("inf"))
+
+
+@pytest.mark.smoke
+def test_softplus_rejects_non_numeric_beta() -> None:
+    """SoftplusOp must reject non-numeric beta."""
+    from tileops.ops.elementwise import SoftplusOp
+    with pytest.raises(TypeError, match="int/float"):
+        SoftplusOp(N_total=1024, dtype=torch.float32, beta="bad")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

@@ -1320,6 +1320,7 @@ class EluOp(Op):
     _wrapped = None
 
     def __init__(self, N_total: int, dtype: torch.dtype, alpha: float = 1.0):
+        _validate_scalar_param_repr("alpha", alpha, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.alpha = alpha
@@ -1339,6 +1340,10 @@ class EluOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self._instance_key)
@@ -1360,6 +1365,8 @@ class HardtanhOp(Op):
 
     def __init__(self, N_total: int, dtype: torch.dtype,
                  min_val: float = -1.0, max_val: float = 1.0):
+        _validate_scalar_param_repr("min_val", min_val, dtype, self._op_name)
+        _validate_scalar_param_repr("max_val", max_val, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.min_val = min_val
@@ -1380,6 +1387,10 @@ class HardtanhOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self._instance_key)
@@ -1401,6 +1412,8 @@ class SoftplusOp(Op):
 
     def __init__(self, N_total: int, dtype: torch.dtype,
                  beta: float = 1.0, threshold: float = 20.0):
+        _validate_scalar_param_repr("beta", beta, dtype, self._op_name)
+        _validate_scalar_param_repr("threshold", threshold, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.beta = beta
@@ -1421,6 +1434,10 @@ class SoftplusOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self._instance_key)
@@ -1542,6 +1559,10 @@ class ClampOp(Op):
 
     def __init__(self, N_total: int, dtype: torch.dtype,
                  min_val: float = None, max_val: float = None):
+        if min_val is not None:
+            _validate_scalar_param_repr("min_val", min_val, dtype, self._op_name)
+        if max_val is not None:
+            _validate_scalar_param_repr("max_val", max_val, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.min_val = min_val
@@ -1562,6 +1583,10 @@ class ClampOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self._instance_key)
