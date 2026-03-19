@@ -31,6 +31,7 @@ fp8 dtype support (e4m3fn, e5m2):
     non-saturating cast to e5m2 via PyTorch's .to() which preserves Inf/NaN.
 """
 
+import functools
 import math
 
 import tilelang
@@ -275,6 +276,7 @@ def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _make_unary_direct(N, dtype, op_func, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
@@ -293,6 +295,7 @@ def _make_unary_direct(N, dtype, op_func, output_dtype=None, threads=256):
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_unary_explicit(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 2: N elements per thread via T.Parallel(threads, npt)."""
     block_size = threads * num_per_thread
@@ -312,6 +315,7 @@ def _make_unary_explicit(N, dtype, op_func, output_dtype=None, threads=256, num_
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_unary_regcopy(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 3: fragment load → compute → fragment store."""
     block_size = threads * num_per_thread
@@ -367,6 +371,7 @@ def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
     )
 
 
+@functools.lru_cache(maxsize=32)
 def _make_binary_register_copy(
     N_total, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8,
 ):
@@ -405,6 +410,7 @@ def _make_binary_register_copy(
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_binary_direct(
     N_total, dtype, op_func, coalesced_shape, a_strides, b_strides,
     a_numel, b_numel, output_dtype=None, threads=256,
@@ -457,6 +463,7 @@ def _make_binary_direct(
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_binary_explicit(
     N_total, dtype, op_func, coalesced_shape, a_strides, b_strides,
     a_numel, b_numel, output_dtype=None, threads=256, num_per_thread=8,
@@ -518,6 +525,7 @@ def _make_binary_explicit(
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=None):
     """FusedGated direct: 1 element per thread. x[:, :N] is gate, x[:, N:] is value.
 
@@ -547,6 +555,7 @@ def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=Non
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_fused_gated_explicit(M, N, dtype, op_func, threads=256, num_per_thread=8,
                                output_dtype=None):
     """FusedGated explicit_parallel: N elements per thread.
@@ -1868,6 +1877,7 @@ class IsfiniteKernel(FloatPredicateKernel):
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None,
                             is_fp8=False, threads=256, npt=8):
     """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x.
@@ -1963,6 +1973,7 @@ class LeakyReluKernel(Kernel):
         return self._compiled_fn(x)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
                      threads=256, npt=8):
     """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1).
@@ -2061,6 +2072,7 @@ class EluKernel(Kernel):
         return self._compiled_fn(x)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_hardtanh_kernel(N, dtype, min_val, max_val, output_dtype=None,
                           is_fp8=False, threads=256, npt=8):
     """Build hardtanh kernel: y = clamp(x, min_val, max_val).
@@ -2156,6 +2168,7 @@ class HardtanhKernel(Kernel):
         return self._compiled_fn(x)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
                           is_fp8=False, threads=256, npt=8):
     """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
@@ -2259,6 +2272,7 @@ class SoftplusKernel(Kernel):
         return self._compiled_fn(x)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
                        is_fp8=False, threads=256, npt=8):
     """Build PReLU kernel: y = x if x > 0 else weight[channel] * x.
@@ -2387,6 +2401,7 @@ class PreluKernel(Kernel):
         return self._compiled_fn(x, weight)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
     """Build where kernel: out = cond ? x : y.
 
@@ -2503,6 +2518,7 @@ class WhereKernel(Kernel):
         return self._compiled_fn(cond, x, y)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
                        output_dtype=None, is_fp8=False, threads=256, npt=8):
     """Build clamp kernel: y = clamp(x, min_val, max_val) with optional bounds.
@@ -2620,6 +2636,7 @@ class ClampKernel(Kernel):
         return self._compiled_fn(x)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
                              is_fp8=False, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
@@ -2739,6 +2756,7 @@ class MaskedFillKernel(Kernel):
         return self._compiled_fn(x, mask)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
                             output_dtype=None, is_fp8=False, threads=256, npt=8):
     """Build nan_to_num kernel: replace NaN, +Inf, -Inf with given values.
@@ -2873,6 +2891,7 @@ class NanToNumKernel(Kernel):
         return self._compiled_fn(x)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
     """Build ALiBi kernel: bias[h, i, j] = -slope_h * |i - j|.
 
@@ -2960,6 +2979,7 @@ class AlibiKernel(Kernel):
         return self._compiled_fn()
 
 
+@functools.lru_cache(maxsize=32)
 def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
     """Build sinusoidal positional encoding kernel.
 

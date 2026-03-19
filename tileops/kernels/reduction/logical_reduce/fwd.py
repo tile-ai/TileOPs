@@ -12,6 +12,7 @@ memory instructions.
 Output is bool for any/all, int64 for count_nonzero.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -64,6 +65,7 @@ def to_logical_float32(x: torch.Tensor) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build a TileLang any/all/count_nonzero kernel.
 
@@ -139,6 +141,7 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
     return _func
 
 
+@functools.lru_cache(maxsize=32)
 def _count_nonzero_kernel(M: int, N_padded: int, dtype: str):
     """Build a TileLang count_nonzero kernel.
 

@@ -21,6 +21,7 @@ Outputs:
 Reference: sglang/sgl-kernel/csrc/moe/moe_align_kernel.cu
 """
 
+import functools
 import math
 import os
 from typing import Optional
@@ -49,6 +50,7 @@ _SMALL_EXPERTS_THRESHOLD = 32
 _FILL_THREADS            = 256
 
 
+@functools.lru_cache(maxsize=32)
 def _make_align_kernel(numel: int, num_experts: int, block_size: int):
     """K1: count → warp-scan → expert_ids → sentinel fill. Does NOT scatter."""
     max_padded = numel + (num_experts + 1) * (block_size - 1)
@@ -169,6 +171,7 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
     return _align
 
 
+@functools.lru_cache(maxsize=32)
 def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     """K2: multi-block scatter using global atomicAdd on cumsum buffer.
 
@@ -209,6 +212,7 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     return _scatter
 
 
+@functools.lru_cache(maxsize=32)
 def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     """Single fused kernel for small batches (numel < 1024, num_experts <= 64).
 

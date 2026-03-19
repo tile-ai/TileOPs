@@ -21,6 +21,8 @@ Each kernel class uses the ``explicit_parallel`` strategy:
     Global → Register → Compute → Register → Global
 """
 
+import functools
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -43,6 +45,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _make_rope_neox_1d(seq_len: int, head_dim: int, dtype: str,
                        threads: int = 256, num_per_thread: int = 8) -> object:
     """1D neox RoPE kernel: (seq_len, head_dim) x cos(seq_len, half) x sin(seq_len, half).
@@ -87,6 +90,7 @@ def _make_rope_neox_1d(seq_len: int, head_dim: int, dtype: str,
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_rope_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: int,
                        dtype: str, threads: int = 256, num_per_thread: int = 8) -> object:
     """2D neox RoPE kernel: (batch, seq_len, num_heads, head_dim).
@@ -135,6 +139,7 @@ def _make_rope_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: int,
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_rope_non_neox_1d(seq_len: int, head_dim: int, dtype: str,
                            threads: int = 256, num_per_thread: int = 8) -> object:
     """1D non-neox (RoFormer) RoPE kernel: adjacent-pair rotation.
@@ -179,6 +184,7 @@ def _make_rope_non_neox_1d(seq_len: int, head_dim: int, dtype: str,
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_rope_non_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: int,
                            dtype: str, threads: int = 256,
                            num_per_thread: int = 8) -> object:

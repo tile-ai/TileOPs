@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -31,6 +32,7 @@ def convert_to_uint32(x):
     return bits_uint
 
 
+@functools.lru_cache(maxsize=32)
 def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype):
 
     @tilelang.jit(

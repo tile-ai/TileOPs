@@ -8,6 +8,8 @@ where mask ~ Bernoulli(1 - p), using TileLang's T.rng_init / T.rng_rand_float
 Strategy: explicit_parallel (N elements per thread) with per-thread RNG state.
 """
 
+import functools
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -23,6 +25,7 @@ _FLOAT_DTYPES = (
 )
 
 
+@functools.lru_cache(maxsize=32)
 def _make_dropout_kernel(N, dtype, p, seed, threads=256, num_per_thread=8):
     """Build a dropout kernel using TileLang RNG.
 

@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -11,6 +12,7 @@ from tileops.kernels.online_softmax import LOG2E, make_online_softmax, make_resc
 __all__ = ["mla_decode_kernel", "mla_decode_ws_kernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _mla_decode_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype='float16'):
     scale = (1.0 / (dim + pe_dim))**0.5 * LOG2E
     accum_dtype = "float"
@@ -341,6 +343,7 @@ class mla_decode_kernel(Kernel):
                                           Output_partial)
 
 
+@functools.lru_cache(maxsize=32)
 def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype='float16'):
     sm_scale = (1.0 / (dim + pe_dim))**0.5 * LOG2E
     accum_dtype = "float"

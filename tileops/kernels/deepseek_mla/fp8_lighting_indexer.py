@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -11,6 +12,7 @@ from tileops.kernels.kernel import Kernel
 __all__ = ["Fp8LightingIndexerKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _fp8_lighting_indexer_kernel(batch,
                                  seq_len,
                                  heads,

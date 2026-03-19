@@ -13,6 +13,7 @@ Optimization:
   - Native dtype: bf16/fp16 halve state bandwidth vs fp32
   - K-tiling: small shared memory footprint → high occupancy
 """
+import functools
 from typing import Optional, Tuple
 
 import tilelang
@@ -33,6 +34,7 @@ _GEMM_M = 16
 # TC (tensor-core) kernel — bf16 / fp16
 # =============================================================================
 
+@functools.lru_cache(maxsize=32)
 def _gla_decode_tl(
     batch: int,
     head: int,
@@ -299,6 +301,7 @@ class GLADecodeKernel(Kernel):
 # FP32-precision decode kernel (no T.gemm → avoids TF32 mantissa truncation)
 # =============================================================================
 
+@functools.lru_cache(maxsize=32)
 def _gla_decode_fp32_tl(
     batch: int,
     head: int,

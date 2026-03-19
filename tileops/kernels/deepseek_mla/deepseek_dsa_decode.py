@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -12,6 +13,7 @@ from tileops.kernels.online_softmax import LOG2E
 __all__ = ["SparseMlaKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _sparse_mla_kernel(batch: int,
                        seq_len: int,
                        seq_len_kv: int,

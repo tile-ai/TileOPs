@@ -13,6 +13,7 @@ Three-pass design:
     Pass 2:  Gate bwd -> RMSNorm(H) bwd, RMSNorm(k) bwd -> dH, dk, dv
 """
 
+import functools
 from typing import Optional
 
 import tilelang
@@ -31,6 +32,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
+@functools.lru_cache(maxsize=32)
 def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
     accum_dtype = "float"
     d_padded = _align_up(d, ALIGNMENT)

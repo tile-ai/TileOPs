@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -10,6 +11,7 @@ from tileops.kernels.kernel import Kernel
 __all__ = ["mhc_post_kernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat16'):
 
     dtype = "float32"

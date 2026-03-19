@@ -15,6 +15,7 @@ Performance notes:
     fixing poor occupancy for L values like 3136 = 2^6 * 7^2.
 """
 
+import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -80,6 +81,7 @@ def _find_best_block_l(L: int) -> dict:
 # Training forward
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_train_kernel(
     C: int,
     L: int,
@@ -295,6 +297,7 @@ class BatchNormFwdTrainKernel(Kernel):
 # Inference forward
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_infer_kernel(
     C: int,
     L: int,
@@ -411,6 +414,7 @@ class BatchNormFwdInferKernel(Kernel):
 # Backward
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _batch_norm_bwd_kernel(
     C: int,
     L: int,

@@ -8,6 +8,7 @@ memory instructions. Padding zeros are handled by using -infinity fill so
 they contribute 0 to the softmax denominator.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -21,6 +22,7 @@ from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 __all__ = ["LogSumExpKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _logsumexp_kernel(M: int, N: int, dtype: str):
     """Build a TileLang logsumexp kernel.
 

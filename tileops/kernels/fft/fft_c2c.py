@@ -1,3 +1,4 @@
+import functools
 import math
 from typing import Any, Callable, Dict
 
@@ -8,6 +9,7 @@ import torch
 from ..kernel import Kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
     """
     1D Complex-to-Complex FFT kernel using Cooley-Tukey radix-2 algorithm.

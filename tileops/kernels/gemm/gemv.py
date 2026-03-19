@@ -1,3 +1,4 @@
+import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -12,6 +13,7 @@ __all__ = [
 ]
 
 
+@functools.lru_cache(maxsize=32)
 def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
     accum_dtype = "float"
 

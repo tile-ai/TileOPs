@@ -13,6 +13,7 @@ Both operate on 2D (M, N_padded) tensors; the Op layer handles reshape.
 memory instructions.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -34,6 +35,7 @@ __all__ = ["CumulativeKernel"]
 _DEFAULT_BLOCK_N: int = 128
 
 
+@functools.lru_cache(maxsize=32)
 def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build a TileLang inclusive prefix scan kernel.
 

@@ -12,6 +12,7 @@ memory instructions.
 Output dtype matches input dtype; internal computation in fp32.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -36,6 +37,7 @@ _VECTOR_NORM_KINDS = {"l1", "l2", "inf"}
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _vector_norm_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build a TileLang l1/l2/inf norm kernel.
 

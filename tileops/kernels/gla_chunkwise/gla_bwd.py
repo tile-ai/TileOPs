@@ -11,6 +11,7 @@ Reference:
     https://github.com/fla-org/flash-linear-attention/blob/main/fla/ops/gla/chunk.py
 """
 
+import functools
 from typing import Callable, Optional, Tuple
 
 import tilelang
@@ -31,6 +32,7 @@ LOG2_E = 1.44269504
 # Pass 1: compute dh per chunk (reverse order, sequential)
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _gla_bwd_dh_kernel(
     batch: int,
     seq_len: int,
@@ -157,6 +159,7 @@ def _gla_bwd_dh_kernel(
 # Pass 2: fused intra+inter kernel (eliminates global memory round-trip)
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _gla_bwd_fused_kernel(
     batch: int,
     seq_len: int,
