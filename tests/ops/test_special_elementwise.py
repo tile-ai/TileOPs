@@ -597,6 +597,39 @@ def test_clamp_rejects_unrepresentable_max_val() -> None:
 
 
 @pytest.mark.smoke
+def test_masked_fill_forward_rejects_cpu_mask() -> None:
+    """MaskedFillOp forward() must raise ValueError when mask is not on CUDA."""
+    from tileops.ops.elementwise import MaskedFillOp
+    op = MaskedFillOp(N_total=1024, dtype=torch.float16, fill_value=-100.0)
+    x = torch.randn(1024, device="cuda", dtype=torch.float16)
+    mask = torch.ones(1024, dtype=torch.bool)  # CPU mask
+    with pytest.raises(ValueError, match="Mask must be a CUDA tensor"):
+        op(x, mask)
+
+
+@pytest.mark.smoke
+def test_masked_fill_forward_rejects_non_bool_mask() -> None:
+    """MaskedFillOp forward() must raise ValueError when mask dtype is not bool."""
+    from tileops.ops.elementwise import MaskedFillOp
+    op = MaskedFillOp(N_total=1024, dtype=torch.float16, fill_value=-100.0)
+    x = torch.randn(1024, device="cuda", dtype=torch.float16)
+    mask = torch.ones(1024, device="cuda", dtype=torch.float32)  # wrong dtype
+    with pytest.raises(ValueError, match="mask.dtype"):
+        op(x, mask)
+
+
+@pytest.mark.smoke
+def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
+    """MaskedFillOp forward() must raise ValueError when mask numel mismatches."""
+    from tileops.ops.elementwise import MaskedFillOp
+    op = MaskedFillOp(N_total=1024, dtype=torch.float16, fill_value=-100.0)
+    x = torch.randn(1024, device="cuda", dtype=torch.float16)
+    mask = torch.ones(512, device="cuda", dtype=torch.bool)  # wrong numel
+    with pytest.raises(ValueError, match="elements"):
+        op(x, mask)
+
+
+@pytest.mark.smoke
 def test_elu_rejects_infinite_alpha() -> None:
     """EluOp must reject infinite alpha."""
     from tileops.ops.elementwise import EluOp

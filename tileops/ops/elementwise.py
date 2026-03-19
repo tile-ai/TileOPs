@@ -1558,7 +1558,7 @@ class ClampOp(Op):
     _wrapped = None
 
     def __init__(self, N_total: int, dtype: torch.dtype,
-                 min_val: float = None, max_val: float = None):
+                 min_val: Optional[float] = None, max_val: Optional[float] = None):
         if min_val is not None:
             _validate_scalar_param_repr("min_val", min_val, dtype, self._op_name)
         if max_val is not None:
@@ -1634,6 +1634,14 @@ class MaskedFillOp(Op):
             raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         if x.numel() != self.N_total:
             raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if not mask.is_cuda:
+            raise ValueError("Mask must be a CUDA tensor")
+        if mask.dtype != torch.bool:
+            raise ValueError(f"Expected mask.dtype torch.bool, got {mask.dtype}")
+        if mask.numel() != self.N_total:
+            raise ValueError(
+                f"Expected mask with {self.N_total} elements, got {mask.numel()}"
+            )
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, mask, self._instance_key)
