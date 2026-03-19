@@ -6,8 +6,8 @@ import pytest
 import torch
 from einops import rearrange, repeat
 
-from tests.test_base import TestBase, FixtureBase
 from tests.nsa_utils import prepare_token_indices
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSAFwdVarlenOp
 
 
@@ -15,9 +15,18 @@ class NsaFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, c_seq_len, dim, is_causal, scale, block_size, "
          "groups, selected_blocks, dtype, accum_dtype, tune", [
-             (1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False),
-             (4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False),
-             (2, 16, 8192, 64, True, 0.1, 32, 16, 4, torch.float16, torch.float32, False),
+             pytest.param(
+                 1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False,
+                 marks=pytest.mark.smoke,
+             ),
+             pytest.param(
+                 4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False,
+                 marks=pytest.mark.full,
+             ),
+             pytest.param(
+                 2, 16, 8192, 64, True, 0.1, 32, 16, 4, torch.float16, torch.float32, False,
+                 marks=pytest.mark.full,
+             ),
          ]),
     ]
 

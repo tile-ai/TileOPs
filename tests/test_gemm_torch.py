@@ -9,6 +9,7 @@ def calculate_gemm_flops(M, N, K):
     return 2.0 * M * N * K
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize(
     "M, N, K, dtype, num_iter",
     [
@@ -35,6 +36,7 @@ def test_pytorch_gemm(M: int, N: int, K: int, dtype, num_iter: int):
     return elapsed_time, tflops, flops
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize(
     "M, N, K, dtype, num_iter",
     [

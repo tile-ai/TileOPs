@@ -3,8 +3,8 @@ from typing import Optional
 import pytest
 import torch
 
-from tests.ops.test_topk_selector import TopkSelectorFixture, TopkSelectorTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_topk_selector import TopkSelectorTest
 from tileops.ops import TopkSelectorOp
 from tileops.utils import str2dtype
 
@@ -16,14 +16,25 @@ class TopkSelectorBenchmark(BenchmarkBase):
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test
-        index_score_memory = t.batch * t.seq_len * t.in_dtype.itemsize
-        index_memory = t.batch * t.topk * t.out_dtype.itemsize
-        starts_memory = t.batch * t.out_dtype.itemsize
-        ends_memory = t.batch * t.out_dtype.itemsize
+        index_score_memory = (t.batch * t.seq_len * t.seq_len_kv * t.kv_group * t.in_dtype.itemsize)
+        index_memory = t.batch * t.seq_len * t.topk * t.kv_group * t.out_dtype.itemsize
+        starts_memory = t.batch * t.seq_len * t.out_dtype.itemsize
+        ends_memory = t.batch * t.seq_len * t.out_dtype.itemsize
         return index_score_memory + index_memory + starts_memory + ends_memory
 
 
-@TopkSelectorFixture
+_TOPK_SELECTOR_BENCH_PARAMS = [
+    pytest.param(64, 32 * 1024, 1024, "float32", "int32", True, id="base-topk1024"),
+    pytest.param(64, 32 * 1024, 2048, "float32", "int32", True, id="base-topk2048"),
+    pytest.param(128, 64 * 1024, 1024, "float32", "int32", True, id="large-batch-topk1024"),
+    pytest.param(128, 64 * 1024, 2048, "float32", "int32", True, id="large-batch-topk2048"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, topk, in_dtype_str, out_dtype_str, tune",
+    _TOPK_SELECTOR_BENCH_PARAMS,
+)
 def test_topk_selector_bench(batch: int, seq_len: int, topk: int, in_dtype_str: str,
                               out_dtype_str: str, tune: bool) -> None:
     in_dtype = str2dtype[in_dtype_str]

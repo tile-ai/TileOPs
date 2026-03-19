@@ -1,20 +1,20 @@
 from typing import Tuple
 
-import torch
 import pytest
+import torch
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
 
 
 class GqaDecodeFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, heads_kv, seq_len_kv, dim, dtype, tune", [
-            (1, 32, 8, 8192, 128, torch.float16, False),
-            (4, 32, 4, 4096, 128, torch.bfloat16, False),
-            (8, 64, 16, 8192, 128, torch.float16, False),
+            pytest.param(1, 32, 8, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(4, 32, 4, 4096, 128, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(8, 64, 16, 8192, 128, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 

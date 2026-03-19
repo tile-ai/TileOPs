@@ -32,7 +32,6 @@ _DEFAULT_CONFIGS = {
 }
 
 
-# flake8: noqa
 def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b, dtype='float16'):
     accum_dtype = "float"
 

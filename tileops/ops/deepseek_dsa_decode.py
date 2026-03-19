@@ -69,12 +69,12 @@ class DeepSeekSparseAttentionDecodeWithKVCacheOp(Op):
         self.dtype = dtype
         self.is_causal = is_causal
 
-        if q_start_index_s != 0:
-            assert q_start_index_s > stride_kv, (f"Invalid q_start_index_s={q_start_index_s}:"
-                                                 "must be > stride_kv={stride_kv}. "
-                                                 "This indicates incorrect cp0 masking."
-                                                 "Ensure queries with pos < stride_kv are masked "
-                                                 "to avoid NaNs in early outputs.")
+        if q_start_index_s != 0 and q_start_index_s <= stride_kv:
+            raise ValueError(f"Invalid q_start_index_s={q_start_index_s}:"
+                             f"must be > stride_kv={stride_kv}. "
+                             "This indicates incorrect cp0 masking."
+                             "Ensure queries with pos < stride_kv are masked "
+                             "to avoid NaNs in early outputs.")
 
         cp0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s

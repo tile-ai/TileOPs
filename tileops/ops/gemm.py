@@ -2,14 +2,13 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.gemm import GemmKernel
-from tileops.kernels.gemv import GemvKernel
+from tileops.kernels.gemm import GemmKernel, GemvKernel
 from tileops.kernels.kernel import Kernel
 from tileops.utils import get_sm_version
 
 from .op import Op
 
-__all__ = ['GemmOp']
+__all__ = ["GemmOp"]
 
 
 class GemmOp(Op):

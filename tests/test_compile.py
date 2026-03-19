@@ -19,6 +19,7 @@ class MhaCompileFixture(FixtureBase):
     ]
 
 
+@pytest.mark.full
 @MhaCompileFixture
 def test_mha_kernel_compile(B: int, S: int, H: int, D: int, causal: bool, dtype: torch.dtype):
     test = MhaFwdTest(B, H, S, D, causal, dtype)

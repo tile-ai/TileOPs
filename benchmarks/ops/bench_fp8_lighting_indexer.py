@@ -1,10 +1,10 @@
 from typing import Optional
 
-import torch
 import pytest
+import torch
 
-from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerFixture, Fp8LightingIndexerTest
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerTest
 from tileops.ops import Fp8LightingIndexerOp
 
 
@@ -20,10 +20,10 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
         accum_dtype = torch.float32
         index_dtype = torch.int32
 
-        index_q_memory = t.seq_len * t.heads * t.index_dim * dtype.itemsize
-        index_k_memory = t.seq_len_kv * t.index_dim * dtype.itemsize
-        index_k_scale_memory = t.seq_len_kv * accum_dtype.itemsize
-        logits_memory = t.seq_len * t.seq_len_kv * accum_dtype.itemsize
+        index_q_memory = t.batch * t.seq_len * t.heads * t.index_dim * dtype.itemsize
+        index_k_memory = t.batch * t.seq_len_kv * t.index_dim * t.kv_group * dtype.itemsize
+        index_k_scale_memory = t.batch * t.seq_len_kv * t.kv_group * accum_dtype.itemsize
+        logits_memory = t.batch * t.seq_len * t.seq_len_kv * t.kv_group * accum_dtype.itemsize
         weights_memory = t.seq_len * t.heads * accum_dtype.itemsize
         cu_seqlens_ks_memory = t.seq_len * index_dtype.itemsize
         cu_seqlens_ke_memory = t.seq_len * index_dtype.itemsize
@@ -32,7 +32,16 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
                 weights_memory + cu_seqlens_ks_memory + cu_seqlens_ke_memory)
 
 
-@Fp8LightingIndexerFixture
+_FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
+    pytest.param(4096, 32, 64, 8192, True, None, False, id="default-config"),
+    pytest.param(2048, 16, 64, 4096, True, None, False, id="mid-shape"),
+]
+
+
+@pytest.mark.parametrize(
+    "seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune",
+    _FP8_LIGHTING_INDEXER_BENCH_PARAMS,
+)
 def test_fp8_lighting_indexer_bench(seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
                                     clean_logits: bool, config: Optional[dict],
                                     tune: bool) -> None:

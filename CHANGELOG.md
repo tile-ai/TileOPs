@@ -13,9 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Flash Attention v3 kernels for Hopper GPUs (SM_90)
 - DeepSeek Multi-Head Latent Attention (MLA) decode kernel
 - DeepSeek Sparse Attention (DSA) decode kernel
-- Multi-Head Attention (MHA) and Group Query Attention (GQA) forward/decode ops
-- MatMul kernel with auto-tuning support
-- 4-layer hierarchical API: Kernel → Op → Function → Layer
+- DeepSeek Native Sparse Attention (NSA) kernels (forward, top-k, window sliding, mean pooling)
+- Multi-Head Attention (MHA) and Group Query Attention (GQA) forward/backward/decode ops
+- Paged KV-cache support for MHA/GQA decode
+- MatMul (GEMM/GEMV) kernel with auto-tuning support
+- Grouped GEMM kernel
+- 1D C2C FFT kernels (radix and LUT variants)
+- Manifold-Constrained Hyper-Connection (MHC) pre/post kernels
+- FP8 quantization and lighting indexer kernels
+- Top-k selector kernel
+- 2-layer hierarchical API: Kernel → Op
 - Auto-tuning infrastructure for kernel parameter search
 - Test framework (`TestBase`, `FixtureBase`) and benchmark framework (`BenchmarkBase`, `BenchmarkReport`)
 - CI with pre-commit linting, packaging, and GPU-based test runs

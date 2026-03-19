@@ -245,8 +245,10 @@ def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: i
                                Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                                glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
 
-    assert K.shape[1] == V.shape[1] == seqlen_kv, "error: dimension mismatch!"
-    assert real_seqlen_kv <= seqlen_kv, "error: seqlen_kv mismatch!"
+    if not (K.shape[1] == V.shape[1] == seqlen_kv):
+        raise ValueError("error: dimension mismatch!")
+    if real_seqlen_kv > seqlen_kv:
+        raise ValueError("error: seqlen_kv mismatch!")
     split_length = torch.zeros(num_split, dtype=torch.int32, device=Q.device)
     for k in range(num_split):
         split_length[k] = real_seqlen_kv // (num_split * block_N) * block_N

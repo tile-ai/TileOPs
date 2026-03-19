@@ -1,12 +1,11 @@
 import math
 from typing import Tuple
 
-import torch
 import pytest
+import torch
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops.grouped_gemm import GroupedGemmOp
-
 
 # ---------------------------------------------------------------------------
 # Shared helper
@@ -41,10 +40,22 @@ def _generate_offsets(batch_sizes_list, padding_M):
 class GroupedGemmFixture(FixtureBase):
     PARAMS = [
         ("batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b, tune", [
-            (16384, 4, 4864, 4096, torch.float16, False, True, False),
-            (16384, 4, 4864, 4096, torch.float16, False, False, False),
-            (16384, 4, 4864, 4096, torch.float16, True, False, False),
-            (16384, 4, 4864, 4096, torch.float16, True, True, False),
+            pytest.param(
+                16384, 4, 4864, 4096, torch.float16, False, True, False,
+                marks=pytest.mark.smoke,
+            ),
+            pytest.param(
+                16384, 4, 4864, 4096, torch.float16, False, False, False,
+                marks=pytest.mark.full,
+            ),
+            pytest.param(
+                16384, 4, 4864, 4096, torch.float16, True, False, False,
+                marks=pytest.mark.full,
+            ),
+            pytest.param(
+                16384, 4, 4864, 4096, torch.float16, True, True, False,
+                marks=pytest.mark.full,
+            ),
         ]),
     ]
 
@@ -175,12 +186,12 @@ def test_grouped_gemm(batch_sum: int, batch_count: int, N: int, K: int, dtype: t
 class GroupedGemmCompleteFixture(FixtureBase):
     PARAMS = [
         ("batch_sum, batch_count, N, K, dtype, tune", [
-            (16384, 4, 4864, 4096, torch.float16, False),
+            pytest.param(16384, 4, 4864, 4096, torch.float16, False, marks=pytest.mark.smoke),
         ]),
     ]
 
 
-class GroupedGemmCompleteTest(TestBase):
+class GroupedGemmCompleteTest:
     """Parameter holder for GroupedGemmCompleteBenchmark (forward NT + backward NN + backward TN).
 
     The benchmark test function profiles each variant (NT/NN/TN) individually

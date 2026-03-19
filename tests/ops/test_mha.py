@@ -5,16 +5,28 @@ import torch
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from tests.test_base import TestBase, FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 
 
 class MhaFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim, causal, dtype, tune", [
-            (1, 1024, 8, 64, False, torch.float16, False),
-            (16, 2048, 16, 128, False, torch.float16, False),
-            (4, 4096, 16, 128, False, torch.bfloat16, True),
+            pytest.param(
+                1, 1024, 8, 64, False, torch.float16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-fwd-fp16",
+            ),
+            pytest.param(
+                16, 2048, 16, 128, False, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-fwd-fp16",
+            ),
+            pytest.param(
+                4, 4096, 16, 128, False, torch.bfloat16, True,
+                marks=pytest.mark.full,
+                id="full-fwd-bf16-tuned",
+            ),
         ]),
     ]
 
@@ -22,9 +34,21 @@ class MhaFwdFixture(FixtureBase):
 class MhaBwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim, causal, dtype, tune", [
-            (1, 1024, 8, 64, False, torch.float16, False),
-            (16, 2048, 16, 128, False, torch.float16, False),
-            (4, 4096, 16, 128, False, torch.bfloat16, True),
+            pytest.param(
+                1, 1024, 8, 64, False, torch.float16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-bwd-fp16",
+            ),
+            pytest.param(
+                16, 2048, 16, 128, False, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-bwd-fp16-large",
+            ),
+            pytest.param(
+                4, 4096, 16, 128, False, torch.bfloat16, True,
+                marks=pytest.mark.full,
+                id="full-bwd-bf16-tuned",
+            ),
         ]),
     ]
 

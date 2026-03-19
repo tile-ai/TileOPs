@@ -384,7 +384,8 @@ def _mha_decode_wrapped_kernel(batch: int, heads: int, seqlen_q: int, seqlen_kv:
                                Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                                real_seqlen_kv: torch.Tensor, block_table: torch.Tensor,
                                glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
-    assert K.shape[0] == V.shape[0] == seqlen_kv, "error: dimension mismatch!"
+    if not (K.shape[0] == V.shape[0] == seqlen_kv):
+        raise ValueError("error: dimension mismatch!")
     real_max = real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
     chunk_size = real_max // (num_split * block_N) * block_N
     split_length = torch.full((batch, num_split), chunk_size, dtype=torch.int32, device=Q.device)

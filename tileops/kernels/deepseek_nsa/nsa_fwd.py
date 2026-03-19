@@ -1,8 +1,7 @@
-# ruff: noqa
-import torch
-from typing import Optional, Any, Callable
+from typing import Any, Callable, Optional
 
 import tilelang
+import torch
 from tilelang import language as T
 
 from tileops.kernels.kernel import Kernel
@@ -52,7 +51,8 @@ def _nsa_fwd_varlen_kernel(
 
         nk = tilelang.cdiv(dim, block_t)
         nv = tilelang.cdiv(dim, block_t)
-        assert nk == 1, "The key dimension can not be larger than 128"
+        if nk != 1:
+            raise ValueError("The key dimension can not be larger than 128")
 
         g = groups
         bs = block_s

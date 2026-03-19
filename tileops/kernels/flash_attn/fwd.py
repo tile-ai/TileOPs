@@ -383,7 +383,8 @@ def _gqa_fwd_kernel(batch: int,
                     is_causal: bool,
                     dtype: str = 'float16') -> Callable:
     scale = make_log2e_scale(dim)  # log2(e)
-    assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
 
@@ -510,7 +511,8 @@ class GqaFwdKernel(Kernel):
         super().__init__()
         self.batch = batch
         self.heads = heads
-        assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+        if heads % heads_kv != 0:
+            raise ValueError("heads must be divisible by heads_kv")
         self.heads_kv = heads_kv
         self.seq_len = seq_len
         self.dim = dim
@@ -562,7 +564,8 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch: int,
                                     is_causal: bool,
                                     dtype: str = "float16") -> Callable:
     scale = make_log2e_scale(dim)  # log2(e)
-    assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
 
@@ -719,7 +722,8 @@ class GqaFwdWgmmaPipelinedKernel(Kernel):
         super().__init__()
         self.batch = batch
         self.heads = heads
-        assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+        if heads % heads_kv != 0:
+            raise ValueError("heads must be divisible by heads_kv")
         self.heads_kv = heads_kv
         self.seq_len = seq_len
         self.dim = dim

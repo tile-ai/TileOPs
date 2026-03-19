@@ -4,6 +4,7 @@ import torch
 from tileops.ops import MultiHeadAttentionFwdOp
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize(
     "B, S, H, D, causal, dtype",
     [

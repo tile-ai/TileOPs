@@ -19,7 +19,7 @@ def make_log2e_scale(dim):
 
     Returns (1/sqrt(dim)) * log2(e) for use with exp2-based softmax.
     """
-    return (1.0 / dim)**0.5 * LOG2E
+    return (1.0 / dim) ** 0.5 * LOG2E
 
 
 def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
@@ -34,6 +34,10 @@ def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
 
     Note: The caller is responsible for casting acc_s afterwards
     (e.g., ``T.copy(acc_s, acc_s_cast)``) and rescaling acc_o.
+
+    Use ``make_online_softmax_with_mask_guard`` instead when any attention block
+    may be fully masked (all scores = -infinity), e.g. sliding-window or varlen
+    attention with OOB guards.
 
     Args:
         scale: Pre-computed scale factor (should include LOG2E multiplication)
@@ -50,6 +54,52 @@ def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
         T.copy(scores_max, scores_max_prev)
         T.fill(scores_max, -T.infinity(accum_dtype))
         T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+        for i in T.Parallel(block_rows):
+            scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+        for i, j in T.Parallel(block_rows, block_cols):
+            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+        T.reduce_sum(acc_s, scores_sum, dim=1)
+        for i in T.Parallel(block_rows):
+            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
+    return online_softmax
+
+
+def make_online_softmax_with_mask_guard(scale, accum_dtype, block_rows, block_cols):
+    """Create an online softmax T.macro with monotonic max enforcement and NaN guard.
+
+    Use this variant instead of ``make_online_softmax`` when some attention blocks
+    may be fully masked (all scores = -infinity), e.g., causal or sliding-window
+    attention with OOB guards.  Two extra steps vs the base variant:
+
+    * **Monotonic max**: ``scores_max[i] = max(scores_max[i], scores_max_prev[i])``
+      ensures the running maximum never decreases when the current block's max
+      is smaller than the accumulated maximum.
+    * **NaN guard**: clamps ``scores_max[i]`` to at least ``-1e38`` so that
+      ``exp2(-inf - (-inf))`` never produces NaN for fully-masked blocks.
+
+    Note: These extra T.Parallel loops may conflict with WGMMA pipeline stage
+    constraints in some kernels — always verify with tests after adopting.
+
+    Args:
+        scale: Pre-computed scale factor (should include LOG2E multiplication)
+        accum_dtype: Accumulator data type (e.g., "float")
+        block_rows: Number of rows in the score matrix
+        block_cols: Number of columns in the score matrix
+
+    Returns:
+        online_softmax: A T.macro that performs the online softmax update
+    """
+
+    @T.macro
+    def online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum):
+        T.copy(scores_max, scores_max_prev)
+        T.fill(scores_max, -T.infinity(accum_dtype))
+        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+        for i in T.Parallel(block_rows):
+            scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+        for i in T.Parallel(block_rows):
+            scores_max[i] = T.max(scores_max[i], T.cast(-1e38, accum_dtype))
         for i in T.Parallel(block_rows):
             scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
         for i, j in T.Parallel(block_rows, block_cols):

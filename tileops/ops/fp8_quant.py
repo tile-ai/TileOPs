@@ -13,17 +13,21 @@ __all__ = ["Fp8QuantOp"]
 class Fp8QuantOp(Op):
 
     def __init__(self,
+                 batch,
                  seq_len_kv,
+                 kv_group,
                  index_dim,
                  in_dtype: torch.dtype,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False):
+        self.batch = batch
         self.seq_len_kv = seq_len_kv
+        self.kv_group = kv_group
         self.index_dim = index_dim
         self.in_dtype = in_dtype
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["fp8_quant_kernel"](
-            self.seq_len_kv, self.index_dim, self.in_dtype, tune=tune)
+            self.batch, self.seq_len_kv, self.kv_group, self.index_dim, self.in_dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

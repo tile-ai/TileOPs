@@ -1,0 +1,453 @@
+"""Correctness tests for the 8 basic reduce ops.
+
+Covers: SumOp, MeanOp, AminOp, AmaxOp, ProdOp, StdOp, VarOp, VarMeanOp.
+Each op reduces along dim=-1 and supports 1D-4D input.
+"""
+
+import pytest
+import torch
+
+from tests.test_base import FixtureBase, TestBase
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+class ReduceBasicFixture(FixtureBase):
+    PARAMS = [
+        (
+            "m, n, dtype",
+            [
+                pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.float32, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
+                pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
+                # Non-aligned N
+                pytest.param(128, 300, torch.float16, marks=pytest.mark.full),
+                pytest.param(128, 300, torch.bfloat16, marks=pytest.mark.full),
+                # Tail-M: M not divisible by block_m
+                pytest.param(129, 512, torch.float16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+class ReduceNonContigFixture(FixtureBase):
+    PARAMS = [
+        (
+            "m, n, dtype",
+            [
+                pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+class Reduce3DFixture(FixtureBase):
+    PARAMS = [
+        (
+            "batch, seq, hidden, dtype",
+            [
+                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+class Reduce4DFixture(FixtureBase):
+    PARAMS = [
+        (
+            "b0, b1, b2, n, dtype",
+            [
+                pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+class Reduce1DFixture(FixtureBase):
+    PARAMS = [
+        (
+            "n, dtype",
+            [
+                pytest.param(512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(512, torch.float32, marks=pytest.mark.full),
+                pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+class BesselFixture(FixtureBase):
+    PARAMS = [
+        (
+            "m, n, dtype, correction",
+            [
+                pytest.param(128, 512, torch.float16, 0, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.float16, 1, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.bfloat16, 1, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# TestBase helpers
+# ---------------------------------------------------------------------------
+
+
+class ReduceTest(TestBase):
+    """Parameterized test helper for simple reduce ops."""
+
+    def __init__(
+        self, m: int, n: int, dtype: torch.dtype, op_kind: str, use_small_range: bool = False
+    ):
+        self.m = m
+        self.n = n
+        self.dtype = dtype
+        self.op_kind = op_kind
+        self.use_small_range = use_small_range
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self.use_small_range:
+            # For prod, use small values to avoid overflow
+            x = torch.rand(self.m, self.n, dtype=self.dtype, device="cuda") * 0.01 + 0.99
+        else:
+            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
+        return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        if self.op_kind == "sum":
+            return x_f32.sum(dim=-1).to(x.dtype)
+        elif self.op_kind == "mean":
+            return x_f32.mean(dim=-1).to(x.dtype)
+        elif self.op_kind == "amax":
+            return x_f32.amax(dim=-1).to(x.dtype)
+        elif self.op_kind == "amin":
+            return x_f32.amin(dim=-1).to(x.dtype)
+        elif self.op_kind == "prod":
+            return x_f32.prod(dim=-1).to(x.dtype)
+        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+
+
+class WelfordTest(TestBase):
+    """Test helper for Welford-based ops (std, var, var_mean)."""
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str, correction: int = 1):
+        self.m = m
+        self.n = n
+        self.dtype = dtype
+        self.op_kind = op_kind
+        self.correction = correction
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
+        return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> object:
+        x_f32 = x.float()
+        if self.op_kind == "var":
+            return x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
+        elif self.op_kind == "std":
+            return x_f32.std(dim=-1, correction=self.correction).to(x.dtype)
+        elif self.op_kind == "var_mean":
+            v = x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
+            m = x_f32.mean(dim=-1).to(x.dtype)
+            return (v, m)
+        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+
+
+# ---------------------------------------------------------------------------
+# Helper to get tolerances
+# ---------------------------------------------------------------------------
+
+
+def _tol(dtype: torch.dtype) -> dict:
+    if dtype == torch.float32:
+        return {"atol": 1e-4, "rtol": 1e-4}
+    return {"atol": 1e-2, "rtol": 1e-2}
+
+
+# ---------------------------------------------------------------------------
+# SumOp tests
+# ---------------------------------------------------------------------------
+
+
+@ReduceBasicFixture
+def test_sum_op(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import SumOp
+
+    test = ReduceTest(m, n, dtype, "sum")
+    op = SumOp(M=m, N=n, dtype=dtype)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+@ReduceNonContigFixture
+def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import SumOp
+
+    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x = x_full[:, :n]
+    op = SumOp(M=m, N=n, dtype=dtype)
+    ref = x.contiguous().float().sum(dim=-1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+
+
+@Reduce3DFixture
+def test_sum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    M = batch * seq
+    op = SumOp(M=M, N=hidden, dtype=dtype)
+    ref = x.float().sum(dim=-1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y, ref, **tol), f"3D max err: {(y - ref).abs().max()}"
+
+
+@Reduce4DFixture
+def test_sum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    M = b0 * b1 * b2
+    op = SumOp(M=M, N=n, dtype=dtype)
+    ref = x.float().sum(dim=-1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y, ref, **tol), f"4D max err: {(y - ref).abs().max()}"
+
+
+# ---------------------------------------------------------------------------
+# MeanOp tests
+# ---------------------------------------------------------------------------
+
+
+@ReduceBasicFixture
+def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import MeanOp
+
+    test = ReduceTest(m, n, dtype, "mean")
+    op = MeanOp(M=m, N=n, dtype=dtype)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+# ---------------------------------------------------------------------------
+# AminOp tests
+# ---------------------------------------------------------------------------
+
+
+@ReduceBasicFixture
+def test_amin_op(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import AminOp
+
+    test = ReduceTest(m, n, dtype, "amin")
+    op = AminOp(M=m, N=n, dtype=dtype)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+# ---------------------------------------------------------------------------
+# AmaxOp tests
+# ---------------------------------------------------------------------------
+
+
+@ReduceBasicFixture
+def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import AmaxOp
+
+    test = ReduceTest(m, n, dtype, "amax")
+    op = AmaxOp(M=m, N=n, dtype=dtype)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+# ---------------------------------------------------------------------------
+# ProdOp tests
+# ---------------------------------------------------------------------------
+
+
+@ReduceBasicFixture
+def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import ProdOp
+
+    test = ReduceTest(m, n, dtype, "prod", use_small_range=True)
+    op = ProdOp(M=m, N=n, dtype=dtype)
+    # Prod is more numerically sensitive
+    tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
+    test.check(op, *test.gen_inputs(), **tol)
+
+
+# ---------------------------------------------------------------------------
+# StdOp tests
+# ---------------------------------------------------------------------------
+
+
+@ReduceBasicFixture
+def test_std_op(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import StdOp
+
+    test = WelfordTest(m, n, dtype, "std", correction=1)
+    op = StdOp(M=m, N=n, dtype=dtype, correction=1)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+@BesselFixture
+def test_std_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None:
+    from tileops.ops.reduction.reduce import StdOp
+
+    test = WelfordTest(m, n, dtype, "std", correction=correction)
+    op = StdOp(M=m, N=n, dtype=dtype, correction=correction)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+# ---------------------------------------------------------------------------
+# VarOp tests
+# ---------------------------------------------------------------------------
+
+
+@ReduceBasicFixture
+def test_var_op(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import VarOp
+
+    test = WelfordTest(m, n, dtype, "var", correction=1)
+    op = VarOp(M=m, N=n, dtype=dtype, correction=1)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+@BesselFixture
+def test_var_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None:
+    from tileops.ops.reduction.reduce import VarOp
+
+    test = WelfordTest(m, n, dtype, "var", correction=correction)
+    op = VarOp(M=m, N=n, dtype=dtype, correction=correction)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+# ---------------------------------------------------------------------------
+# VarMeanOp tests
+# ---------------------------------------------------------------------------
+
+
+@ReduceBasicFixture
+def test_var_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import VarMeanOp
+
+    test = WelfordTest(m, n, dtype, "var_mean", correction=1)
+    op = VarMeanOp(M=m, N=n, dtype=dtype, correction=1)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+@BesselFixture
+def test_var_mean_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None:
+    from tileops.ops.reduction.reduce import VarMeanOp
+
+    test = WelfordTest(m, n, dtype, "var_mean", correction=correction)
+    op = VarMeanOp(M=m, N=n, dtype=dtype, correction=correction)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+# ---------------------------------------------------------------------------
+# Multi-dim tests for non-contiguous (3D) for Welford ops
+# ---------------------------------------------------------------------------
+
+
+@Reduce3DFixture
+def test_var_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import VarOp
+
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    M = batch * seq
+    op = VarOp(M=M, N=hidden, dtype=dtype, correction=1)
+    ref = x.float().var(dim=-1, correction=1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y, ref, **tol), f"3D var max err: {(y - ref).abs().max()}"
+
+
+@Reduce3DFixture
+def test_std_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import StdOp
+
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    M = batch * seq
+    op = StdOp(M=M, N=hidden, dtype=dtype, correction=1)
+    ref = x.float().std(dim=-1, correction=1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y, ref, **tol), f"3D std max err: {(y - ref).abs().max()}"
+
+
+# ---------------------------------------------------------------------------
+# 1D input tests (F004)
+# ---------------------------------------------------------------------------
+
+
+@Reduce1DFixture
+def test_sum_1d(n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(n, dtype=dtype, device="cuda")
+    op = SumOp(M=1, N=n, dtype=dtype)
+    ref = x.float().sum(dim=-1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y.view_as(ref), ref, **tol), (
+        f"1D sum max err: {(y.view_as(ref) - ref).abs().max()}"
+    )
+
+
+@Reduce1DFixture
+def test_var_1d(n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import VarOp
+
+    x = torch.randn(n, dtype=dtype, device="cuda")
+    op = VarOp(M=1, N=n, dtype=dtype, correction=1)
+    ref = x.float().var(dim=-1, correction=1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y.view_as(ref), ref, **tol), (
+        f"1D var max err: {(y.view_as(ref) - ref).abs().max()}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Non-contiguous tests for Welford ops (F005)
+# ---------------------------------------------------------------------------
+
+
+@ReduceNonContigFixture
+def test_var_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import VarOp
+
+    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x = x_full[:, :n]
+    op = VarOp(M=m, N=n, dtype=dtype, correction=1)
+    ref = x.contiguous().float().var(dim=-1, correction=1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y, ref, **tol), f"non-contig var max err: {(y - ref).abs().max()}"
+
+
+@ReduceNonContigFixture
+def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import StdOp
+
+    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x = x_full[:, :n]
+    op = StdOp(M=m, N=n, dtype=dtype, correction=1)
+    ref = x.contiguous().float().std(dim=-1, correction=1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y, ref, **tol), f"non-contig std max err: {(y - ref).abs().max()}"
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-vvs"])

@@ -13,9 +13,6 @@ __all__ = ["mhc_pre_kernel"]
 
 def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat16'):
 
-    def sigmoid(x):
-        return 1 / (1 + T.exp2(-x * LOG2E))
-
     dtype = "float32"
     accum_dtype = "float32"
 
@@ -121,16 +118,16 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                 for i, j in T.Parallel(block_x_b, n_expand * n_expand + 2 * n_expand):
                     if j < n_expand:
                         alpha = alpha_pre
-                        h_pre_shared[i, j] = sigmoid(1 / r[bx * block_x_b + i] * alpha *
-                                                     h_pre_shared[i, j] + b_shared[j])
+                        _x = 1 / r[bx * block_x_b + i] * alpha * h_pre_shared[i, j] + b_shared[j]
+                        h_pre_shared[i, j] = 1 / (1 + T.exp2(-_x * LOG2E))
                         H_pre[bx * block_x_b + i, j] = h_pre_shared[i, j]
 
                     elif j < 2 * n_expand:
                         alpha = alpha_post
+                        _x = (1 / r[bx * block_x_b + i] * alpha *
+                              h_post_shared[i, j - n_expand] + b_shared[j])
                         h_post_shared[i, j -
-                                      n_expand] = 2 * sigmoid(1 / r[bx * block_x_b + i] * alpha *
-                                                              h_post_shared[i, j - n_expand] +
-                                                              b_shared[j])
+                                      n_expand] = 2 / (1 + T.exp2(-_x * LOG2E))
                         H_post[bx * block_x_b + i, j - n_expand] = h_post_shared[i, j - n_expand]
 
                     else:
@@ -304,7 +301,36 @@ class mhc_pre_kernel(Kernel):
         self.weights_dtype = torch.float32
         self.kernel = _mhc_pre_kernel(self.batch, self.n_expand, self.c_x, self.dtype_str)
 
+        self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
+
+    def _make_supply_prog(self):
+        """Create a supply_prog that handles scalar parameters (alpha_*, sinkhorn_*)."""
+        from tilelang.utils.tensor import get_tensor_supply as _get_tensor_supply
+
+        default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
+
+        # Scalar defaults: alpha_pre, alpha_post, alpha_res are T.float;
+        # sinkhorn_repeat is T.int; sinkhorn_eps is T.float
+        scalar_defaults = {
+            "int32": 20,       # sinkhorn_repeat
+            "float32": 0.5,    # alpha or sinkhorn_eps
+        }
+
+        def supply_prog(params):
+            inputs = []
+            for param in params:
+                if param.is_scalar():
+                    inputs.append(scalar_defaults.get(str(param.dtype), 1))
+                else:
+                    inputs.append(default_supply(param))
+            return inputs
+
+        return supply_prog
+
+    @property
+    def autotune_supply_prog(self):
+        return self._supply_prog
 
     @property
     def default_config(self) -> dict:

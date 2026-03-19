@@ -62,3 +62,9 @@ secrets.yaml
 secrets.yml
 
 docs/plans/
+.humanize*
+.foundry/runs/
+.foundry/config.local.json
+
+CLAUDE.local.md
+.claude/worktrees/
