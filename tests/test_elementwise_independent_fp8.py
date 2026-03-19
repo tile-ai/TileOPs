@@ -68,6 +68,24 @@ def test_kernel_accepts_fp8(dtype, kernel_name, extra_kwargs):
     assert kernel.dtype == dtype
 
 
+@pytest.mark.smoke
+def test_masked_fill_kernel_clamps_overflow_fill_value():
+    """MaskedFillKernel clamps fill_value exceeding e4m3fn max (448)."""
+    dtype = torch.float8_e4m3fn
+    kernel = _kern_mod.MaskedFillKernel(N_total=_N, dtype=dtype, fill_value=1e4)
+    assert kernel.fill_value == torch.finfo(dtype).max
+
+
+@pytest.mark.smoke
+def test_nan_to_num_kernel_clamps_overflow_defaults():
+    """NanToNumKernel clamps default posinf_val/neginf_val for e4m3fn."""
+    dtype = torch.float8_e4m3fn
+    kernel = _kern_mod.NanToNumKernel(N_total=_N, dtype=dtype)
+    finfo = torch.finfo(dtype)
+    assert kernel.posinf_val == finfo.max
+    assert kernel.neginf_val == finfo.min
+
+
 # ---------------------------------------------------------------------------
 # AC2: fp8 default_config uses num_per_thread=16 for 128-bit alignment
 # ---------------------------------------------------------------------------
