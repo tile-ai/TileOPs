@@ -27,7 +27,6 @@ from tests.ops.test_moe_permute import MoePermuteTest, _ref_moe_permute
 from tests.test_base import FixtureBase
 from tileops.ops.moe import MoePermuteOp
 
-
 # ---------------------------------------------------------------------------
 # CUPTI warmup
 # ---------------------------------------------------------------------------
