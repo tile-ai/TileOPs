@@ -21,21 +21,27 @@ class Fp8QuantBenchmark(BenchmarkBase):
 
 
 _FP8_QUANT_BENCH_PARAMS = [
-    pytest.param(8192, 64, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(8192, 64, torch.bfloat16, True, id="mainstream-bf16"),
-    pytest.param(4096, 128, torch.float32, True, id="wider-index"),
-    pytest.param(16384, 32, torch.float32, True, id="long-sequence"),
+    pytest.param(1, 8192, 1, 64, torch.float16, True, id="mainstream-fp16"),
+    pytest.param(1, 8192, 1, 64, torch.bfloat16, True, id="mainstream-bf16"),
+    pytest.param(1, 4096, 1, 128, torch.float32, True, id="wider-index"),
+    pytest.param(1, 16384, 1, 32, torch.float32, True, id="long-sequence"),
 ]
 
 
-@pytest.mark.parametrize("seq_len_kv, index_dim, in_dtype, tune", _FP8_QUANT_BENCH_PARAMS)
-def test_fp8_quant_bench(seq_len_kv: int, index_dim: int, in_dtype: torch.dtype,
-                         tune: bool) -> None:
-    test = Fp8QuantTest(seq_len_kv, index_dim, in_dtype)
+@pytest.mark.parametrize("batch, seq_len_kv, kv_group, index_dim, in_dtype, tune",
+                         _FP8_QUANT_BENCH_PARAMS)
+def test_fp8_quant_bench(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
+                         in_dtype: torch.dtype, tune: bool) -> None:
+    test = Fp8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
     bm = Fp8QuantBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = Fp8QuantOp(seq_len_kv=seq_len_kv, index_dim=index_dim, in_dtype=in_dtype, tune=tune)
+    op = Fp8QuantOp(batch=batch,
+                    seq_len_kv=seq_len_kv,
+                    kv_group=kv_group,
+                    index_dim=index_dim,
+                    in_dtype=in_dtype,
+                    tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("fp8_quant", locals(), result, tag="tileops")
 

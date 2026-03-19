@@ -33,24 +33,32 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
 
 
 _FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
-    pytest.param(4096, 32, 64, 8192, True, None, False, id="default-config"),
-    pytest.param(2048, 16, 64, 4096, True, None, False, id="mid-shape"),
+    pytest.param(1, 4096, 32, 64, 8192, 1, True, None, False, id="default-config"),
+    pytest.param(1, 2048, 16, 64, 4096, 1, True, None, False, id="mid-shape"),
 ]
 
 
 @pytest.mark.parametrize(
-    "seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune",
+    "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune",
     _FP8_LIGHTING_INDEXER_BENCH_PARAMS,
 )
-def test_fp8_lighting_indexer_bench(seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
-                                    clean_logits: bool, config: Optional[dict],
-                                    tune: bool) -> None:
-    test = Fp8LightingIndexerTest(seq_len, heads, index_dim, seq_len_kv, clean_logits, config)
+def test_fp8_lighting_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
+                                    seq_len_kv: int, kv_group: int, clean_logits: bool,
+                                    config: Optional[dict], tune: bool) -> None:
+    test = Fp8LightingIndexerTest(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+                                  clean_logits, config)
     bm = Fp8LightingIndexerBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = Fp8LightingIndexerOp(seq_len, heads, index_dim, seq_len_kv, clean_logits, config,
-                               tune=tune)
+    op = Fp8LightingIndexerOp(batch=batch,
+                              seq_len=seq_len,
+                              heads=heads,
+                              index_dim=index_dim,
+                              seq_len_kv=seq_len_kv,
+                              kv_group=kv_group,
+                              clean_logits=clean_logits,
+                              config=config,
+                              tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("fp8_lighting_indexer", locals(), result, tag="tileops")
 
