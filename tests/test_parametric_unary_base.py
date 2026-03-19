@@ -20,6 +20,7 @@ from tileops.kernels.elementwise import (
     LeakyReluKernel,
     MaskedFillKernel,
     NanToNumKernel,
+    ParametricUnaryKernel,
     PreluKernel,
     SoftplusKernel,
     WhereKernel,
@@ -44,12 +45,10 @@ class TestParametricUnaryBaseExists:
     """AC-1: Shared base class ParametricUnaryKernel extracted."""
 
     def test_base_class_importable(self):
-        from tileops.kernels.elementwise import ParametricUnaryKernel
         assert issubclass(ParametricUnaryKernel, Kernel)
 
     def test_base_is_abstract(self):
         """Base should not be directly instantiable (needs _builder_fn)."""
-        from tileops.kernels.elementwise import ParametricUnaryKernel
         with pytest.raises((TypeError, NotImplementedError)):
             ParametricUnaryKernel(N_total=16, dtype=torch.float16)
 
@@ -60,7 +59,6 @@ class TestAllParametricKernelsUseBase:
 
     @pytest.mark.parametrize("cls", _PARAMETRIC_KERNELS, ids=lambda c: c.__name__)
     def test_inherits_from_base(self, cls):
-        from tileops.kernels.elementwise import ParametricUnaryKernel
         assert issubclass(cls, ParametricUnaryKernel), (
             f"{cls.__name__} should inherit from ParametricUnaryKernel"
         )
@@ -111,7 +109,6 @@ class TestDefaultConfigCentralized:
     @pytest.mark.parametrize("cls", _PARAMETRIC_KERNELS, ids=lambda c: c.__name__)
     def test_no_default_config_override(self, cls):
         """Subclasses that use standard npt logic should not override default_config."""
-        from tileops.kernels.elementwise import ParametricUnaryKernel
         # It's OK if some override it for custom threads/npt, but the base should
         # have the standard implementation
         assert hasattr(ParametricUnaryKernel, "default_config")
