@@ -299,7 +299,7 @@ class TopkSelectorKernel(Kernel):
             for i, param in enumerate(params):
                 if param.is_scalar():
                     name = param.name if hasattr(param, 'name') else ''
-                    inputs.append(dim_map.get(name, batch))
+                    inputs.append(dim_map[name])
                 else:
                     shape = resolve_shape(param.shape)
                     dtype = param.torch_dtype()
