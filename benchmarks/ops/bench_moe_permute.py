@@ -133,7 +133,7 @@ def test_moe_permute_bench(
     if _VLLM_AVAILABLE:
         def _vllm_fn(hidden_states, topk_ids):
             return _vllm_moe_permute(
-                hidden_states, None, topk_ids, num_experts, num_experts
+                hidden_states, None, topk_ids, num_experts, top_k
             )
 
         _vllm_fn(hidden_states, topk_ids)  # warmup

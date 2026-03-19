@@ -86,8 +86,6 @@ def _make_scan_kernel(numel: int, num_experts: int, top_k: int):
                 T.sync_threads()
 
                 # Step 5: scatter — assign each (token, topk) pair to its expert slot
-                # permuted_idx[slot] = flat_row  (which hidden_states row to gather)
-                # inv_permuted_idx[flat_row] = slot  (inverse: permuted pos → original)
                 for i in T.serial(T.ceildiv(numel, threads)):
                     idx = i * threads + tx
                     if idx < numel:
