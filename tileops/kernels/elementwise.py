@@ -31,6 +31,8 @@ fp8 dtype support (e4m3fn, e5m2):
     non-saturating cast to e5m2 via PyTorch's .to() which preserves Inf/NaN.
 """
 
+import math
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -182,6 +184,23 @@ def _get_fp8_output_dtypes(dtype: torch.dtype):
     if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
         return dtype, torch.float16
     return None, dtype
+
+
+def _clamp_to_dtype_range(value: float, dtype: torch.dtype) -> float:
+    """Clamp *value* to the finite representable range of *dtype*.
+
+    Prevents TVM FloatImm range-check failures when a scalar literal exceeds
+    the target dtype's maximum (e.g. 1e4 into float8_e4m3fn whose max is 448).
+    NaN values are passed through unchanged (NaN is a valid sentinel, not an
+    out-of-range finite value).  Infinities are mapped to the dtype's
+    max/min finite value.
+    """
+    if math.isnan(value):
+        return value
+    finfo = torch.finfo(dtype)
+    if math.isinf(value):
+        return finfo.max if value > 0 else finfo.min
+    return max(finfo.min, min(finfo.max, float(value)))
 
 
 def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
@@ -2545,11 +2564,11 @@ class MaskedFillKernel(Kernel):
             )
         self.N_total = N_total
         self.dtype = dtype
-        self.fill_value = fill_value
         self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
+        self.fill_value = _clamp_to_dtype_range(fill_value, self.output_dtype)
         cfg = self.default_config
         self.kernel = _make_masked_fill_kernel(
-            N_total, self.dtype_str, fill_value,
+            N_total, self.dtype_str, self.fill_value,
             output_dtype=self.dtype_to_str(self.output_dtype),
             is_fp8=_is_fp8(dtype),
             threads=cfg["threads"], npt=cfg["num_per_thread"],
@@ -2677,13 +2696,13 @@ class NanToNumKernel(Kernel):
             )
         self.N_total = N_total
         self.dtype = dtype
-        self.nan_val = nan_val
-        self.posinf_val = posinf_val
-        self.neginf_val = neginf_val
         self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
+        self.nan_val = _clamp_to_dtype_range(nan_val, self.output_dtype)
+        self.posinf_val = _clamp_to_dtype_range(posinf_val, self.output_dtype)
+        self.neginf_val = _clamp_to_dtype_range(neginf_val, self.output_dtype)
         cfg = self.default_config
         self.kernel = _make_nan_to_num_kernel(
-            N_total, self.dtype_str, nan_val, posinf_val, neginf_val,
+            N_total, self.dtype_str, self.nan_val, self.posinf_val, self.neginf_val,
             output_dtype=self.dtype_to_str(self.output_dtype),
             is_fp8=_is_fp8(dtype),
             threads=cfg["threads"], npt=cfg["num_per_thread"],
