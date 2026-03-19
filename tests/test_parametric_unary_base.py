@@ -115,6 +115,26 @@ class TestDefaultConfigCentralized:
 
 
 @pytest.mark.smoke
+class TestFp8PostCastInForward:
+    """Regression: ParametricUnaryKernel.forward() must cast to _fp8_output_dtype."""
+
+    @pytest.mark.parametrize(
+        "dtype",
+        [torch.float8_e4m3fn, torch.float8_e5m2],
+        ids=["e4m3fn", "e5m2"],
+    )
+    def test_forward_casts_to_fp8(self, dtype):
+        """forward() output dtype must match the original fp8 input dtype."""
+        n = 1024 * 16
+        kernel = LeakyReluKernel(N_total=n, dtype=dtype, negative_slope=0.01)
+        x = torch.randn(n, dtype=torch.float16, device="cuda").to(dtype)
+        out = kernel.forward(x)
+        assert out.dtype == dtype, (
+            f"Expected forward() to return {dtype}, got {out.dtype}"
+        )
+
+
+@pytest.mark.smoke
 class TestNoNewPublicAPI:
     """AC-6: No new public API - ParametricUnaryKernel should not be in __all__."""
 

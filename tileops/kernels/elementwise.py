@@ -1985,7 +1985,10 @@ class ParametricUnaryKernel(Kernel):
         self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self, x):
-        return self._compiled_fn(x)
+        result = self._compiled_fn(x)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
 
 
 @functools.lru_cache(maxsize=32)
