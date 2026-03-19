@@ -1904,9 +1904,6 @@ class ParametricUnaryKernel(Kernel):
     - ``_skip_fp8_output``: set to ``True`` if the kernel should *not*
       use ``_get_fp8_output_dtypes`` (e.g. Where, which is a pure selection
       op). When True, ``_fp8_output_dtype`` is ``None``.
-    - ``_forward_nargs``: number of positional args ``forward`` receives
-      (default 1). Override or override ``forward`` directly for multi-input
-      kernels.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
