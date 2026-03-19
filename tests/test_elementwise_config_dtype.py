@@ -46,8 +46,6 @@ INDEPENDENT_KERNELS_SIMPLE = [
     NanToNumKernel,
 ]
 
-N_TOTAL = 4096
-
 
 class TestDefaultConfigNpt:
     """Verify that independent kernels return the correct npt for each dtype."""
