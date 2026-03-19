@@ -15,6 +15,7 @@ Utility:
 - coalesce_broadcast_dims: reduces N-dim broadcast to minimal effective dims
 """
 
+import math
 import weakref
 from math import prod
 from typing import Dict, List, Optional
@@ -104,6 +105,40 @@ from .op import Op
 # ---------------------------------------------------------------------------
 
 _OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+
+_FP8_NONSAT_OUTPUT_DTYPES = {
+    torch.float8_e5m2: torch.float16,
+}
+
+
+def _effective_scalar_kernel_dtype(dtype: torch.dtype) -> torch.dtype:
+    """Return the dtype used when scalar literals are materialized in kernels."""
+    return _FP8_NONSAT_OUTPUT_DTYPES.get(dtype, dtype)
+
+
+def _validate_scalar_param_repr(
+    param_name: str, value: float, dtype: torch.dtype, op_name: str,
+) -> None:
+    """Reject scalar params that cannot be represented in the kernel dtype."""
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"{op_name} expected scalar {param_name} to be int/float, got {type(value)}")
+
+    kernel_dtype = _effective_scalar_kernel_dtype(dtype)
+    finfo = torch.finfo(kernel_dtype)
+    value_f64 = float(value)
+    if math.isnan(value_f64):
+        return
+    if math.isinf(value_f64):
+        raise ValueError(
+            f"{op_name} received {param_name}={value!r}, but {param_name} must be finite and "
+            f"representable in effective kernel dtype {kernel_dtype}"
+        )
+    if not (finfo.min <= value_f64 <= finfo.max):
+        raise ValueError(
+            f"{op_name} received {param_name}={value!r}, which is not representable in "
+            f"effective kernel dtype {kernel_dtype} (valid finite range: "
+            f"[{finfo.min}, {finfo.max}])"
+        )
 
 
 def _register_unary_custom_op(op_cls, output_dtype_override=None):
@@ -1242,6 +1277,7 @@ class LeakyReluOp(Op):
     _wrapped = None
 
     def __init__(self, N_total: int, dtype: torch.dtype, negative_slope: float = 0.01):
+        _validate_scalar_param_repr("negative_slope", negative_slope, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.negative_slope = negative_slope
@@ -1545,6 +1581,7 @@ class MaskedFillOp(Op):
     _wrapped = None
 
     def __init__(self, N_total: int, dtype: torch.dtype, fill_value: float):
+        _validate_scalar_param_repr("fill_value", fill_value, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.fill_value = fill_value
@@ -1594,6 +1631,9 @@ class NanToNumOp(Op):
 
     def __init__(self, N_total: int, dtype: torch.dtype,
                  nan_val: float = 0.0, posinf_val: float = 1e4, neginf_val: float = -1e4):
+        _validate_scalar_param_repr("nan_val", nan_val, dtype, self._op_name)
+        _validate_scalar_param_repr("posinf_val", posinf_val, dtype, self._op_name)
+        _validate_scalar_param_repr("neginf_val", neginf_val, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.nan_val = nan_val

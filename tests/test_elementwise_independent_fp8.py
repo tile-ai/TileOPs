@@ -256,25 +256,38 @@ def test_elu_e5m2_output_dtype():
 
 @pytest.mark.smoke
 def test_masked_fill_e5m2_overflow_fill_value():
-    """MaskedFill e5m2 with overflow fill_value preserves Inf via non-saturating cast."""
+    """MaskedFill rejects fill_value that exceeds effective kernel dtype range."""
     from tileops.ops.elementwise import MaskedFillOp
 
     n = 1024
     dtype = torch.float8_e5m2
-    fill_value = 1e5  # exceeds e5m2 max finite (57344.0), should produce Inf
-    x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 0.5
-    x = x_fp16.to(dtype)
-    mask = torch.ones(n, device="cuda", dtype=torch.bool)  # fill everything
-    op = MaskedFillOp(N_total=n, dtype=dtype, fill_value=fill_value)
-    out = op(x, mask)
-    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
-    # e5m2 supports Inf: fill_value > max_finite should produce Inf via
-    # the Op-layer non-saturating PyTorch cast
-    out_fp32 = out.to(torch.float32)
-    ref = torch.tensor(fill_value, dtype=torch.float16).to(dtype).to(torch.float32)
-    assert torch.all(out_fp32 == ref), (
-        f"Expected all elements to be {ref.item()}, got {out_fp32.unique().tolist()}"
-    )
+    fill_value = 1e5
+    with pytest.raises(ValueError, match="fill_value=.*not representable"):
+        MaskedFillOp(N_total=n, dtype=dtype, fill_value=fill_value)
+
+
+@pytest.mark.smoke
+def test_nan_to_num_e5m2_overflow_scalar_params_rejected():
+    """NanToNum rejects replacement values that exceed effective kernel dtype range."""
+    from tileops.ops.elementwise import NanToNumOp
+
+    n = 1024
+    dtype = torch.float8_e5m2
+    with pytest.raises(ValueError, match="posinf_val=.*not representable"):
+        NanToNumOp(N_total=n, dtype=dtype, nan_val=0.0, posinf_val=1e5, neginf_val=-1.0)
+    with pytest.raises(ValueError, match="neginf_val=.*not representable"):
+        NanToNumOp(N_total=n, dtype=dtype, nan_val=0.0, posinf_val=1.0, neginf_val=-1e5)
+
+
+@pytest.mark.smoke
+def test_leaky_relu_e5m2_overflow_negative_slope_rejected():
+    """LeakyReLU rejects negative_slope that exceeds effective kernel dtype range."""
+    from tileops.ops.elementwise import LeakyReluOp
+
+    n = 1024
+    dtype = torch.float8_e5m2
+    with pytest.raises(ValueError, match="negative_slope=.*not representable"):
+        LeakyReluOp(N_total=n, dtype=dtype, negative_slope=1e5)
 
 
 # ---------------------------------------------------------------------------
