@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Callable, Optional, Tuple
 
@@ -14,6 +15,7 @@ __all__ = [
 ]
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_sw_fwd_kernel(
     batch: int,
     heads: int,
@@ -251,6 +253,7 @@ class GqaSlidingWindowFwdKernel(Kernel):
             q, k, v)
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_sw_fwd_wgmma_pipelined_kernel(
     batch: int,
     heads: int,

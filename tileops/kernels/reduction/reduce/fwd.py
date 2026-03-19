@@ -9,6 +9,7 @@ Both operate on 2D (M, N_padded) tensors; the Op layer handles reshape.
 memory instructions.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -38,6 +39,7 @@ _WELFORD_KINDS = {"std", "var", "var_mean"}
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _simple_reduce_kernel(M, N, op_kind, dtype):
     """Build a simple reduce kernel for sum/mean/amax/amin/prod.
 
@@ -98,6 +100,7 @@ def _simple_reduce_kernel(M, N, op_kind, dtype):
     return _func
 
 
+@functools.lru_cache(maxsize=32)
 def _prod_reduce_kernel(M, N, dtype):
     """Product reduce via log-sum-exp: exp(sum(log(|x|))) * sign."""
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
@@ -165,6 +168,7 @@ def _prod_reduce_kernel(M, N, dtype):
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
     """Build a Welford-based reduce kernel for std/var/var_mean."""
     N_padded = align_up(N, DEFAULT_ALIGNMENT)

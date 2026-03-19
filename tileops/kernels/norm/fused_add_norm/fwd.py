@@ -12,6 +12,7 @@ pre-norm sum without recomputation.
 memory instructions.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -34,6 +35,7 @@ def _align_up(n: int, alignment: int) -> int:
 # Fused Add + LayerNorm kernel
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _fused_add_layer_norm_kernel(M, N, eps, dtype):
     N_padded = _align_up(N, ALIGNMENT)
     pad_count = N_padded - N
@@ -224,6 +226,7 @@ class FusedAddLayerNormKernel(Kernel):
 # Fused Add + RmsNorm kernel
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _fused_add_rms_norm_kernel(M, N, eps, dtype):
     N_padded = _align_up(N, ALIGNMENT)
 

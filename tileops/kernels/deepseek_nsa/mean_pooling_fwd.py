@@ -1,3 +1,4 @@
+import functools
 from typing import Any, Callable, Optional
 
 import tilelang
@@ -9,6 +10,7 @@ from tileops.kernels.kernel import Kernel
 __all__ = ["MeanPoolingFwdKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _mean_pooling_kernel(
     batch_size: int,
     seq_len: int,

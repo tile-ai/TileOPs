@@ -1,3 +1,4 @@
+import functools
 from typing import Any, Callable, Optional
 
 import tilelang
@@ -8,6 +9,7 @@ from tileops.kernels.kernel import Kernel
 from tileops.kernels.online_softmax import LOG2E, make_online_softmax, make_rescale
 
 
+@functools.lru_cache(maxsize=32)
 def _nsa_fwd_varlen_kernel(
     batch: int,
     heads: int,

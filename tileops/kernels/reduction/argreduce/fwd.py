@@ -9,6 +9,7 @@ memory instructions.
 Output is always int64 (index values).
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -29,6 +30,7 @@ _ARGREDUCE_KINDS = {"argmax", "argmin"}
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _argreduce_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build a TileLang argmax/argmin kernel.
 

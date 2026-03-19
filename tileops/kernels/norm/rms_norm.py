@@ -7,6 +7,7 @@ instructions. Padding zeros don't affect sum of squares; division uses original 
 for correct mean computation.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -25,6 +26,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
+@functools.lru_cache(maxsize=32)
 def _rms_norm_kernel(M, N, eps, dtype):
     N_padded = _align_up(N, ALIGNMENT)
 

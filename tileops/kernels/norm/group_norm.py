@@ -16,6 +16,7 @@ length D = (C/G) * spatial_size has its own weight/bias slice of length D,
 which is tiled from the weight/bias vectors accordingly.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -34,6 +35,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
+@functools.lru_cache(maxsize=32)
 def _group_norm_kernel(M, D, eps, dtype):
     """Build a row-wise normalization kernel for shape (M, D_padded).
 

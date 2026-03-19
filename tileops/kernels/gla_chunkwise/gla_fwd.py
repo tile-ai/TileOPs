@@ -1,3 +1,4 @@
+import functools
 from typing import Any, Callable, Optional
 
 import tilelang
@@ -14,6 +15,7 @@ LOG2_E = 1.44269504
 # Pre-compute: g_cumsum per chunk (parallel, B*H*NC thread blocks)
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _gla_precompute_g_kernel(
     batch: int,
     seq_len: int,
@@ -78,6 +80,7 @@ def _gla_precompute_g_kernel(
 # Uses pre-computed g_cumsum — no T.Serial cumsum needed.
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _gla_fwd_h_kernel(
     batch: int,
     seq_len: int,
@@ -213,6 +216,7 @@ def _gla_fwd_h_kernel(
 # Uses pre-computed g_cumsum — no T.Serial cumsum needed.
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _gla_fwd_o_kernel(
     batch: int,
     seq_len: int,

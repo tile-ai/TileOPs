@@ -9,6 +9,7 @@ memory instructions. Padding zeros are handled by using -infinity fill so
 they contribute 0 to the softmax denominator.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -22,6 +23,7 @@ from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 __all__ = ["SoftmaxKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build a TileLang softmax/log_softmax kernel.
 

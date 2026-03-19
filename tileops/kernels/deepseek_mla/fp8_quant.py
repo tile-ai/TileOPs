@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional, Tuple
 
@@ -10,6 +11,7 @@ from tileops.kernels.kernel import Kernel
 __all__ = ["Fp8QuantKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
 
     @tilelang.jit(out_idx=[1, 2])

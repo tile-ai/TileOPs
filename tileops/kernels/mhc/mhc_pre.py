@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -11,6 +12,7 @@ from tileops.kernels.online_softmax import LOG2E
 __all__ = ["mhc_pre_kernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat16'):
 
     dtype = "float32"
