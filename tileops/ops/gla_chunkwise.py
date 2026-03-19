@@ -2,8 +2,8 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.kernels.gla_chunkwise import GLABwdKernel, GLAFwdKernel
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.linear_attn import GLABwdKernel, GLAFwdKernel
 
 from .op import Op
 

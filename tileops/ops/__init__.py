@@ -11,11 +11,11 @@ from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2CLUTOp, FFTC2COp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .fp8_quant import Fp8QuantOp
-from .gated_deltanet import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
-from .gated_deltanet_decode import GatedDeltaNetDecodeOp
+from .gated_deltanet_chunkwise import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
+from .gated_deltanet_recurrence import GatedDeltaNetDecodeOp
 from .gemm import GemmOp
-from .gla import GLABwdOp, GLAFwdOp
-from .gla_decode import GLADecodeOp
+from .gla_chunkwise import GLABwdOp, GLAFwdOp
+from .gla_recurrence import GLADecodeOp
 from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
 from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp

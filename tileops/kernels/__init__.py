@@ -38,13 +38,13 @@ from .flash_decode import (
     mha_decode_kernel,
     mha_decode_paged_kernel,
 )
+from .gated_deltanet_chunkwise import GatedDeltaNetBwdKernel, GatedDeltaNetFwdKernel
+from .gated_deltanet_recurrence import GatedDeltaNetDecodeFP32Kernel, GatedDeltaNetDecodeKernel
 from .gemm import GemmKernel, GemvKernel
+from .gla_chunkwise import GLABwdKernel, GLAFwdKernel
+from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 from .grouped_gemm import grouped_gemm_kernel
 from .kernel import Kernel
-from .linear_attn import (
-    GatedDeltaNetBwdKernel,
-    GatedDeltaNetFwdKernel,
-)
 from .mhc import mhc_post_kernel, mhc_pre_kernel
 from .moe import MoePermuteAlignKernel
 from .norm import (
@@ -84,7 +84,13 @@ __all__ = [
     "GqaSlidingWindowVarlenFwdKernel",
     "GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel",
     "GatedDeltaNetBwdKernel",
+    "GatedDeltaNetDecodeFP32Kernel",
+    "GatedDeltaNetDecodeKernel",
     "GatedDeltaNetFwdKernel",
+    "GLABwdKernel",
+    "GLADecodeFP32Kernel",
+    "GLADecodeKernel",
+    "GLAFwdKernel",
     "GemmKernel",
     "GemvKernel",
     "GqaBwdKernel",

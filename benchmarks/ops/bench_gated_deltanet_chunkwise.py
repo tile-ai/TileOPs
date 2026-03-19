@@ -20,8 +20,8 @@ import torch
 from tilelang.profiler import do_bench as _do_bench
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gated_deltanet_bwd import _autograd_bwd_ref
-from tests.ops.test_gated_deltanet_fwd import GatedDeltaNetFwdTest
+from tests.ops.test_gated_deltanet_chunkwise_bwd import _autograd_bwd_ref
+from tests.ops.test_gated_deltanet_chunkwise_fwd import GatedDeltaNetFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 
