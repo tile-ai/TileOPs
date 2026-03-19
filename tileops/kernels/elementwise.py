@@ -92,14 +92,14 @@ __all__ = [
     "LerpKernel",
     "MaximumKernel",
     "MinimumKernel",
-    # --- comparison (OUTPUT_DTYPE = "int8", cast to bool by Op layer) ---
+    # --- comparison (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
     "EqKernel",
     "NeKernel",
     "GtKernel",
     "LtKernel",
     "GeKernel",
     "LeKernel",
-    # --- logical (OUTPUT_DTYPE = "int8", cast to bool by Op layer) ---
+    # --- logical (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
     "LogicalAndKernel",
     "LogicalOrKernel",
     # --- bitwise ---
@@ -783,7 +783,7 @@ class BinaryKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     DEFAULT_STRATEGY = "explicit_parallel"
-    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., "int8")
+    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
     @staticmethod
@@ -806,6 +806,9 @@ class BinaryKernel(Kernel):
         self._fp8_output_dtype = None
         if _is_fp8(dtype) and self.OUTPUT_DTYPE is None and _fp8_needs_nonsaturating_cast(dtype):
             self._fp8_output_dtype = dtype
+            self.output_dtype = torch.float16
+        else:
+            self.output_dtype = self.OUTPUT_DTYPE or dtype
         self.coalesced_shape = coalesced_shape
         self.a_strides = a_strides
         self.b_strides = b_strides
@@ -850,7 +853,9 @@ class BinaryKernel(Kernel):
         cfg = self.default_config
         effective_op = self._get_effective_op_func()
         # For e5m2: kernel output is fp16 (non-saturating path)
-        kernel_output_dtype = self.OUTPUT_DTYPE
+        kernel_output_dtype = (
+            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
+        )
         if self._fp8_output_dtype is not None:
             kernel_output_dtype = _fp8_accum_dtype_str()
         if strategy == "direct":
@@ -990,6 +995,9 @@ class FusedGatedKernel(Kernel):
         if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
             self._kernel_output_dtype = _fp8_accum_dtype_str()
             self._fp8_output_dtype = dtype
+            self.output_dtype = torch.float16
+        else:
+            self.output_dtype = dtype
         self.strategy = strategy or self.DEFAULT_STRATEGY
         if self.strategy not in self.STRATEGIES:
             raise ValueError(
@@ -1259,7 +1267,9 @@ class LerpKernel(BinaryKernel):
         )
 
         # For e5m2: kernel output is fp16 (non-saturating path)
-        kernel_output_dtype = self.OUTPUT_DTYPE
+        kernel_output_dtype = (
+            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
+        )
         if self._fp8_output_dtype is not None:
             kernel_output_dtype = _fp8_accum_dtype_str()
 
@@ -1352,7 +1362,7 @@ class EqKernel(BinaryKernel):
     """Element-wise equality: y = (a == b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1365,7 +1375,7 @@ class NeKernel(BinaryKernel):
     """Element-wise not-equal: y = (a != b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1378,7 +1388,7 @@ class GtKernel(BinaryKernel):
     """Element-wise greater-than: y = (a > b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1391,7 +1401,7 @@ class LtKernel(BinaryKernel):
     """Element-wise less-than: y = (a < b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1404,7 +1414,7 @@ class GeKernel(BinaryKernel):
     """Element-wise greater-equal: y = (a >= b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1417,7 +1427,7 @@ class LeKernel(BinaryKernel):
     """Element-wise less-equal: y = (a <= b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1435,7 +1445,7 @@ class LogicalAndKernel(BinaryKernel):
     """Element-wise logical AND with non-zero truthiness, stored as int8."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1450,7 +1460,7 @@ class LogicalOrKernel(BinaryKernel):
     """Element-wise logical OR with non-zero truthiness, stored as int8."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1960,7 +1970,7 @@ class LeakyReluKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
+        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
     def init_config(self, config=None, tune=False):
@@ -2059,7 +2069,7 @@ class EluKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
+        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
     def init_config(self, config=None, tune=False):
@@ -2155,7 +2165,7 @@ class HardtanhKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
+        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
     def init_config(self, config=None, tune=False):
@@ -2259,7 +2269,7 @@ class SoftplusKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
+        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
     def init_config(self, config=None, tune=False):
@@ -2388,7 +2398,7 @@ class PreluKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
+        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
     def init_config(self, config=None, tune=False):
@@ -2623,7 +2633,7 @@ class ClampKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
+        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
     def init_config(self, config=None, tune=False):
@@ -2878,7 +2888,7 @@ class NanToNumKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
+        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
         return {"threads": 256, "num_per_thread": npt}
 
     def init_config(self, config=None, tune=False):
