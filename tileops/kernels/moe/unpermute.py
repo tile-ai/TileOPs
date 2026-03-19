@@ -42,8 +42,8 @@ def _make_unpermute_kernel(
     """
     VEC = 8  # 8 x bf16/fp16 = 128 bits
     threads = min(1024, hidden_size // VEC)
-    while threads > 0 and hidden_size % threads != 0:
-        threads -= 1
+    if threads > 0:
+        threads = 1 << (threads.bit_length() - 1)
     threads = max(threads, 1)
 
     numel = num_tokens * top_k

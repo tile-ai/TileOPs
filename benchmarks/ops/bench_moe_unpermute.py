@@ -121,11 +121,11 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
         # gather rows in permuted order, weight, then scatter-add back
         src = mm2_out[inv_permuted_idx.long()].float()  # [T*K, H]
         w = topk_weights.flatten().unsqueeze(1)          # [T*K, 1]
-        weighted = (src * w).to(mm2_out.dtype)           # [T*K, H]
-        out = torch.zeros(total_tokens, hidden_size, dtype=mm2_out.dtype, device=mm2_out.device)
+        weighted = src * w                                # [T*K, H], float32
+        out = torch.zeros(total_tokens, hidden_size, dtype=torch.float32, device=mm2_out.device)
         token_idx = torch.arange(total_tokens, device=mm2_out.device).repeat_interleave(top_k)
         out.scatter_add_(0, token_idx.unsqueeze(1).expand_as(weighted), weighted)
-        return out
+        return out.to(mm2_out.dtype)
 
     _torch_fn(mm2_out, inv_permuted_idx, topk_weights)  # warmup
     torch.cuda.synchronize()
