@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -11,6 +12,7 @@ from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax
 __all__ = ["mha_decode_paged_kernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype):
     scale = make_log2e_scale(dim)
     accum_dtype = "float"

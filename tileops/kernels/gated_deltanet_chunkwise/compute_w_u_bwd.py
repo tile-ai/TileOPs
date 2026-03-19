@@ -10,12 +10,15 @@ Backward:
   dbeta = (d(k*beta) * k).sum(-1) + (d(v*beta) * v).sum(-1)
 """
 
+import functools
+
 import tilelang
 import tilelang.language as T
 
 __all__ = ["compute_w_u_bwd_tl"]
 
 
+@functools.lru_cache(maxsize=32)
 def compute_w_u_bwd_tl(
     batch: int,
     head: int,

@@ -8,6 +8,7 @@ Backward (split for SM utilisation):
   4. compute_w_u_bwd: dw, du -> dk_wu, dv, dbeta
   5. merge: dk = dk_parallel + dk_correction + dk_wu
 """
+import functools
 from typing import Optional, Tuple
 
 import tilelang
@@ -27,6 +28,7 @@ __all__ = [
 # Split kernel: bwd_parallel (fully parallel over chunks)
 # =============================================================================
 
+@functools.lru_cache(maxsize=32)
 def _bwd_parallel_tl(
     batch: int,
     head: int,
@@ -233,6 +235,7 @@ def _bwd_parallel_tl(
 # Split kernel: dh_recurrence_bwd (sequential backward over chunks)
 # =============================================================================
 
+@functools.lru_cache(maxsize=32)
 def _dh_recurrence_bwd_tl(
     batch: int,
     head: int,

@@ -10,6 +10,7 @@ Into a single kernel where Aw/Au stay in shared memory:
 
 This eliminates the Aw/Au global memory round-trip between the two kernels.
 """
+import functools
 import math
 
 import tilelang
@@ -20,6 +21,7 @@ __all__ = ["fused_prepare_compute_w_u_tl"]
 _LOG2E = 1.4426950408889634
 
 
+@functools.lru_cache(maxsize=32)
 def fused_prepare_compute_w_u_tl(
     batch: int,
     head: int,
