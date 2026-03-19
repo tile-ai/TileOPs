@@ -152,7 +152,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                         s_num_input[r_idx ^ 1] = 0
                     T.sync_threads()
 
-                    l_num_input = s_num_input[r_idx]
+                    l_num_input = T.min(s_num_input[r_idx], SMEM_INPUT_SIZE)
                     for s in T.serial(T.ceildiv(l_num_input, BLOCK_SIZE)):
                         if s * BLOCK_SIZE + tx < l_num_input:
                             l_bin_id32 = T.Cast(T.int32, ((convert_to_uint32(
@@ -270,7 +270,54 @@ class TopkSelectorKernel(Kernel):
         self.kernel = _topk_selector_kernel(self.batch, self.seq_len, self.seq_len_kv,
                                             self.kv_group, self.topk, self.in_dtype_str,
                                             self.out_dtype_str)
+        self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
+
+    def _make_supply_prog(self):
+        import torch as _torch
+        import tvm.tir as _tir
+        from tilelang.utils.device import get_current_device as _get_current_device
+
+        batch = self.batch
+        seq_len_kv = self.seq_len_kv
+
+        dim_map = {"batch": batch, "seq_len_kv": seq_len_kv}
+
+        def resolve_shape(shape):
+            result = []
+            for s in shape:
+                if isinstance(s, _tir.Var):
+                    result.append(dim_map.get(s.name, 1))
+                else:
+                    result.append(int(s))
+            return result
+
+        def supply_prog(params):
+            inputs = []
+            device = _get_current_device()
+            int_tensors = []  # track indices of int tensor params
+            for i, param in enumerate(params):
+                if param.is_scalar():
+                    name = param.name if hasattr(param, 'name') else ''
+                    inputs.append(dim_map[name])
+                else:
+                    shape = resolve_shape(param.shape)
+                    dtype = param.torch_dtype()
+                    if dtype in (_torch.int32, _torch.int64, _torch.int16, _torch.int8):
+                        inputs.append(_torch.zeros(shape, dtype=dtype, device=device))
+                        int_tensors.append(i)
+                    else:
+                        inputs.append(_torch.rand(shape, dtype=dtype, device=device))
+            # last int tensor is 'ends' — fill with seq_len_kv so kernel processes all elements
+            if int_tensors:
+                inputs[int_tensors[-1]].fill_(seq_len_kv)
+            return inputs
+
+        return supply_prog
+
+    @property
+    def autotune_supply_prog(self):
+        return self._supply_prog
 
     @property
     def default_config(self) -> dict:

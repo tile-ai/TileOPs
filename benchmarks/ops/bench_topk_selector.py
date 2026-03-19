@@ -6,7 +6,6 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_topk_selector import TopkSelectorTest
 from tileops.ops import TopkSelectorOp
-from tileops.utils import str2dtype
 
 
 class TopkSelectorBenchmark(BenchmarkBase):
@@ -24,49 +23,34 @@ class TopkSelectorBenchmark(BenchmarkBase):
 
 
 _TOPK_SELECTOR_BENCH_PARAMS = [
-    pytest.param(1, 32 * 1024, 64 * 1024, 1, 1024, "float32", "int32", True, id="base-topk1024"),
-    pytest.param(1, 32 * 1024, 64 * 1024, 1, 2048, "float32", "int32", True, id="base-topk2048"),
-    pytest.param(1, 65535, 128 * 1024, 1, 1024, "float32", "int32", True,
+    pytest.param(1, 32 * 1024, 64 * 1024, 1, 1024, torch.float32, torch.int32, True, id="base-topk1024"),
+    pytest.param(1, 32 * 1024, 64 * 1024, 1, 2048, torch.float32, torch.int32, True, id="base-topk2048"),
+    pytest.param(1, 65535, 128 * 1024, 1, 1024, torch.float32, torch.int32, True,
                  id="large-batch-topk1024"),
-    pytest.param(1, 65535, 128 * 1024, 1, 2048, "float32", "int32", True,
+    pytest.param(1, 65535, 128 * 1024, 1, 2048, torch.float32, torch.int32, True,
                  id="large-batch-topk2048"),
 ]
 
 
 @pytest.mark.parametrize(
-    "batch, seq_len, seq_len_kv, kv_group, topk, in_dtype_str, out_dtype_str, tune",
+    "batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, tune",
     _TOPK_SELECTOR_BENCH_PARAMS,
 )
 def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group: int, topk: int,
-                             in_dtype_str: str, out_dtype_str: str, tune: bool) -> None:
-    in_dtype = str2dtype[in_dtype_str]
-    out_dtype = str2dtype[out_dtype_str]
+                             in_dtype: torch.dtype, out_dtype: torch.dtype, tune: bool) -> None:
     test = TopkSelectorTest(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
     bm = TopkSelectorBenchmark(test)
     inputs = test.gen_inputs()
 
-    tune_used = tune
-    try:
-        op = TopkSelectorOp(batch=batch,
-                            seq_len=seq_len,
-                            seq_len_kv=seq_len_kv,
-                            kv_group=kv_group,
-                            topk=topk,
-                            in_dtype=in_dtype,
-                            out_dtype=out_dtype,
-                            tune=tune)
-    except RuntimeError as e:
-        if "auto-tuning failed" not in str(e).lower():
-            raise
-        tune_used = False
-        op = TopkSelectorOp(batch=batch,
-                            seq_len=seq_len,
-                            seq_len_kv=seq_len_kv,
-                            kv_group=kv_group,
-                            topk=topk,
-                            in_dtype=in_dtype,
-                            out_dtype=out_dtype,
-                            tune=False)
+    op = TopkSelectorOp(
+        batch=batch,
+        seq_len=seq_len,
+        seq_len_kv=seq_len_kv,
+        kv_group=kv_group,
+        topk=topk,
+        in_dtype=in_dtype,
+        out_dtype=out_dtype,
+        tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("topk_selector", locals(), result, tag="tileops")
 
