@@ -48,22 +48,23 @@ class SsdChunkStateFwdBenchmark(BenchmarkBase):
 
 @SsdChunkStateFwdFixture
 def test_ssd_chunk_state_fwd_bench(
-    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune,
+    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx,
 ):
     test = SsdChunkStateFwdTest(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
     )
     bm = SsdChunkStateFwdBenchmark(test)
     inputs = test.gen_inputs()
 
     op = SsdChunkStateFwdOp(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=tune,
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
+        has_seq_idx=has_seq_idx, tune=tune,
     )
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("ssd_chunk_state_fwd", locals(), result, tag="tileops")
 
-    def baseline(*args):
-        return ssd_chunk_state_fwd_ref(*args, n_groups=n_groups)
+    def baseline(x, Bmat, dt, dA_cumsum, seq_idx):
+        return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, n_groups=n_groups, seq_idx=seq_idx)
     result_bl = bm.profile(baseline, *inputs)
     BenchmarkReport.record("ssd_chunk_state_fwd", locals(), result_bl, tag="baseline")
 

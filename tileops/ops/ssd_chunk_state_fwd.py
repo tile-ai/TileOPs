@@ -15,12 +15,13 @@ class SsdChunkStateFwdOp(Op):
 
     Computes the chunk-end SSM state for each chunk:
 
-      out[b, c, h, n, p] =
+      out[b, c, h, p, n] =
           sum_{l=0}^{Q-1}
               x[b, c*Q+l, h, p]
               * B[b, c*Q+l, g(h), n]
               * exp(dA_cumsum[b,h,c,Q-1] - dA_cumsum[b,h,c,l])
               * dt[b, h, c, l]
+              * (1 if seq_idx is None else (seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
     Args:
         batch:      Batch size.
@@ -31,6 +32,7 @@ class SsdChunkStateFwdOp(Op):
         d_state:    SSM state dimension.
         n_groups:   Number of B-matrix groups (n_heads must be divisible by n_groups).
         dtype:      Data type for inputs (float16 or bfloat16).
+        has_seq_idx: Whether to accept and apply a seq_idx mask.
         tune:       Whether to autotune tile config on construction.
     """
 
@@ -44,6 +46,7 @@ class SsdChunkStateFwdOp(Op):
         d_state: int,
         n_groups: int,
         dtype: torch.dtype,
+        has_seq_idx: bool = False,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
@@ -55,9 +58,11 @@ class SsdChunkStateFwdOp(Op):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = dtype
+        self.has_seq_idx = has_seq_idx
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["ssd_chunk_state_fwd"](
-            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=tune,
+            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
+            has_seq_idx=has_seq_idx, tune=tune,
         )
 
     @property
@@ -70,6 +75,7 @@ class SsdChunkStateFwdOp(Op):
         Bmat: torch.Tensor,
         dt: torch.Tensor,
         dA_cumsum: torch.Tensor,
+        seq_idx: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run the SSD chunk state forward pass.
 
@@ -78,9 +84,10 @@ class SsdChunkStateFwdOp(Op):
             Bmat:       (batch, seq_len, n_groups, d_state)
             dt:         (batch, n_heads, num_chunks, chunk_len) float32
             dA_cumsum:  (batch, n_heads, num_chunks, chunk_len) float32
+            seq_idx:    (batch, seq_len) int32, optional
 
         Returns:
-            out: (batch, num_chunks, n_heads, d_state, d_head) float32
+            out: (batch, num_chunks, n_heads, d_head, d_state) float32
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
@@ -92,4 +99,9 @@ class SsdChunkStateFwdOp(Op):
         dt = dt.contiguous()
         dA_cumsum = dA_cumsum.contiguous()
 
-        return self.kernel(x, Bmat, dt, dA_cumsum)
+        if seq_idx is None:
+            seq_idx = x.new_zeros(self.batch, self.num_chunks * self.chunk_len, dtype=torch.int32)
+        else:
+            seq_idx = seq_idx.contiguous()
+
+        return self.kernel(x, Bmat, dt, dA_cumsum, seq_idx)

@@ -10,15 +10,16 @@ def ssd_chunk_state_fwd_ref(
     dt: torch.Tensor,         # (b, h, c, Q)         float32
     dA_cumsum: torch.Tensor,  # (b, h, c, Q)         float32
     n_groups: int,
+    seq_idx=None
 ) -> torch.Tensor:
     """
     PyTorch reference for ssd_chunk_state_fwd.
 
     Returns:
-      out: (b, c, h, n, p)  float32
+      out: (b, c, h, p, n)  float32
 
     Semantics:
-      out[b, c, h, n, p] =
+      out[b, c, h, p, n] =
           sum_{l=0}^{Q-1}
               x[b, c*Q+l, h, p]
               * B[b, c*Q+l, g(h), n]
@@ -57,6 +58,13 @@ def ssd_chunk_state_fwd_ref(
     # weight[b, c, h, l] = decay[l] * dt[l]
     weight = decay * dt_chunked  # (b, c, h, Q)
 
+    if seq_idx is not None:
+        seq_chunked = seq_idx.reshape(b, c, Q)
+        seq_end = seq_chunked[..., -1:]          # (b, c, 1)
+        same = (seq_chunked == seq_end).unsqueeze(3)   # (b, c, Q, 1)
+        weight = weight.permute(0, 1, 3, 2) * same
+        weight = weight.permute(0, 1, 3, 2)
+
     # out[b, c, h, n, p] = sum_l weight[b,c,h,l] * B[b,c,l,h,n] * x[b,c,l,h,p]
     # weight: (b, c, h, Q) -> (b, c, Q, h, 1, 1) for broadcasting
     w = weight.permute(0, 1, 3, 2).unsqueeze(-1).unsqueeze(-1)  # (b, c, Q, h, 1, 1)
@@ -64,18 +72,19 @@ def ssd_chunk_state_fwd_ref(
     # x_chunked: (b, c, Q, h, p) -> (b, c, Q, h, 1, p)
     contrib = w * B_heads.unsqueeze(-1) * x_chunked.unsqueeze(-2)  # (b, c, Q, h, n, p)
 
-    # sum over l (Q dimension)
+    # sum over l (Q dimension), then swap to (b, c, h, p, n)
     out = contrib.sum(dim=2)  # (b, c, h, n, p)
-    return out
+    return out.permute(0, 1, 2, 4, 3)  # (b, c, h, p, n)
 
 
 class SsdChunkStateFwdFixture(FixtureBase):
     PARAMS = [
-        ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune", [
-            (1, 2,  64, 4,  64, 32, 1, torch.float16,  False),
-            (2, 4,  64, 8,  64, 64, 2, torch.float16,  False),
-            (1, 2, 128, 4, 128, 32, 1, torch.bfloat16, False),
-            (2, 2,  64, 4,  64, 32, 2, torch.bfloat16, False),
+        ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx", [
+            (1, 2,  64, 4,  64, 32, 1, torch.float16,  False, False),
+            (2, 4,  64, 8,  64, 64, 2, torch.float16,  False, False),
+            (1, 2, 128, 4, 128, 32, 1, torch.bfloat16, False, False),
+            (2, 2,  64, 4,  64, 32, 2, torch.bfloat16, False, False),
+            (2, 4,  64, 8,  64, 64, 2, torch.float16,  False, True),
         ]),
     ]
 
@@ -91,6 +100,7 @@ class SsdChunkStateFwdTest(TestBase):
         d_state: int,
         n_groups: int,
         dtype: torch.dtype,
+        has_seq_idx: bool = False,
     ):
         self.batch = batch
         self.num_chunks = num_chunks
@@ -100,6 +110,7 @@ class SsdChunkStateFwdTest(TestBase):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = dtype
+        self.has_seq_idx = has_seq_idx
 
     def gen_inputs(self):
         b, c, Q, h, p, n, g = (
@@ -112,21 +123,27 @@ class SsdChunkStateFwdTest(TestBase):
         # dA_cumsum: monotonically non-decreasing (negative values, cumsum of negatives)
         dA_cumsum = -torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda").cumsum(-1)
         dt = torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda") * 0.1 + 0.01
-        return x, Bmat, dt, dA_cumsum
+        seq_idx = None
+        if self.has_seq_idx:
+            # simulate two packed sequences per batch row, split at midpoint
+            seq_idx = torch.zeros(b, seq_len, dtype=torch.int32, device="cuda")
+            seq_idx[:, seq_len // 2:] = 1
+        return x, Bmat, dt, dA_cumsum, seq_idx
 
-    def ref_program(self, x, Bmat, dt, dA_cumsum):
-        return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.n_groups)
+    def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
+        return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.n_groups, seq_idx=seq_idx)
 
 
 @SsdChunkStateFwdFixture
 def test_ssd_chunk_state_fwd(
-    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune,
+    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx,
 ):
     test = SsdChunkStateFwdTest(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
     )
     op = SsdChunkStateFwdOp(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=tune,
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
+        has_seq_idx=has_seq_idx, tune=tune,
     )
     inputs = test.gen_inputs()
     atol = 1e-1 if dtype == torch.float16 else 2e-1

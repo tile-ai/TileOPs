@@ -37,6 +37,7 @@ from .norm import (
 from .op import Op
 from .ssd_chunk_scan_fwd import SsdChunkScanFwdOp
 from .ssd_chunk_state_fwd import SsdChunkStateFwdOp
+from .ssd_state_passing_fwd import SsdStatePassingFwdOp
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
@@ -79,5 +80,6 @@ __all__ = [
     "RmsNormOp",
     "SsdChunkScanFwdOp",
     "SsdChunkStateFwdOp",
+    "SsdStatePassingFwdOp",
     "TopkSelectorOp",
 ]

@@ -10,26 +10,30 @@ Inputs (pre-reshaped to chunked view):
               -- per-position discretization factor (float32)
   dA_cumsum:  (batch, n_heads, num_chunks, chunk_len)
               -- chunk-local prefix sums of dA = dt * A (float32)
+  seq_idx:    (batch, seq_len)  int32, optional
+              -- sequence index per token for packed/variable-length inputs;
+                 positions where seq_idx[l] != seq_idx[Q-1] are masked to zero
 
 Output:
-  out:        (batch, num_chunks, n_heads, d_state, d_head)  float32
+  out:        (batch, num_chunks, n_heads, d_head, d_state)  float32
 
-For each (b, c, h, n, p), the kernel computes:
+For each (b, c, h, p, n), the kernel computes:
 
-  out[b, c, h, n, p] =
+  out[b, c, h, p, n] =
       sum_{l in [0, chunk_len)}
           x[b, s, h, p]
           * B[b, s, g(h), n]
           * exp(dA_cumsum[b, h, c, Q-1] - dA_cumsum[b, h, c, l])
           * dt[b, h, c, l]
+          * (1 if seq_idx is None else (seq_idx[b, s] == seq_idx[b, c*Q+Q-1]))
 
 where:
   s = c * chunk_len + l
   g(h) = h // heads_per_group  (head -> group mapping)
   Q    = chunk_len
 
-The output shape (B, C, H, N, P) matches the prev_states layout consumed
-by ssd_chunk_scan_fwd: (batch, num_chunks, n_heads, d_state, d_head).
+The output shape (B, C, H, P, N) matches the ssd_minimal reference:
+  states = einsum("bclhn,bhcl,bclhp->bchpn", B, decay_states, X)
 
 The decay term exp(dA_end - dA_l) with dA_end = dA_cumsum[..., Q-1]
 is equivalent to exp(min(dA_end - dA_l, 0)) because dA_cumsum is
@@ -62,6 +66,7 @@ def _ssd_chunk_state_fwd_kernel(
     d_head: int,
     d_state: int,
     n_groups: int,
+    has_seq_idx: bool = False,
     dtype: str = "float16",
 ) -> Callable:
     accum_dtype = "float"
@@ -90,18 +95,19 @@ def _ssd_chunk_state_fwd_kernel(
             Bmat: T.Tensor((B, S, G, N), dtype),              # type: ignore
             dt: T.Tensor((B, H, C, Q), accum_dtype),          # type: ignore
             dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),   # type: ignore
-            out: T.Tensor((B, C, H, N, P), accum_dtype),      # type: ignore
+            seq_idx: T.Tensor((B, S), "int32"),               # type: ignore
+            out: T.Tensor((B, C, H, P, N), accum_dtype),      # type: ignore
         ):
             # Grid layout:
             #   axis-0: fused (batch, head, chunk)  -> B*H*C blocks
-            #   axis-1: tile over N = d_state
-            #   axis-2: tile over P = d_head
+            #   axis-1: tile over P = d_head
+            #   axis-2: tile over N = d_state
             with T.Kernel(
                 B * H * C,
-                T.ceildiv(N, block_n),
                 T.ceildiv(P, block_p),
+                T.ceildiv(N, block_n),
                 threads=threads,
-            ) as (bhc, bn, bp):
+            ) as (bhc, bp, bn):
 
                 # --------------------------------------------------------
                 # 1. Decode fused axis
@@ -120,16 +126,21 @@ def _ssd_chunk_state_fwd_kernel(
                 chunk_start = bc * Q
 
                 # --------------------------------------------------------
-                # 2. Allocate accumulator for one output tile (N x P)
+                # 2. Allocate accumulator for one output tile (P x N)
                 # --------------------------------------------------------
-                acc = T.alloc_fragment((block_n, block_p), accum_dtype)
+                acc = T.alloc_fragment((block_p, block_n), accum_dtype)
                 T.clear(acc)
 
                 # --------------------------------------------------------
-                # 3. Load chunk-end cumulative decay scalar
+                # 3. Load chunk-end cumulative decay scalar and seq_idx
                 #    dA_end = dA_cumsum[bz, bh, bc, Q-1]
                 # --------------------------------------------------------
                 dA_end = dA_cumsum[bz, bh, bc, Q - 1]
+                seq_end = T.if_then_else(
+                    has_seq_idx,
+                    seq_idx[bz, chunk_start + Q - 1],
+                    T.int32(0),
+                )
 
                 # --------------------------------------------------------
                 # 4. Allocate tiles once outside the reduction loop
@@ -166,40 +177,51 @@ def _ssd_chunk_state_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # 5.3 Compute per-position decay * dt
+                    # 5.3 Compute per-position decay * dt, masked by seq_idx
                     #     decay_tile[ll] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
+                    #                      * (seq_idx[l] == seq_idx[Q-1])  if has_seq_idx
                     for ll in T.Parallel(block_l):
                         l_idx = l0 + ll
+                        in_bounds = l_idx < Q
                         dA_l = T.if_then_else(
-                            l_idx < Q,
+                            in_bounds,
                             dA_cumsum[bz, bh, bc, l_idx],
                             T.float32(0.0),
                         )
                         dt_l = T.if_then_else(
-                            l_idx < Q,
+                            in_bounds,
                             dt[bz, bh, bc, l_idx],
                             T.float32(0.0),
                         )
-                        decay_tile[ll] = T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l
+                        same_seq = T.if_then_else(
+                            has_seq_idx,
+                            seq_idx[bz, chunk_start + l_idx] == seq_end,
+                            T.bool(True),
+                        )
+                        decay_tile[ll] = T.if_then_else(
+                            same_seq,
+                            T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l,
+                            T.float32(0.0),
+                        )
 
                     # 5.4 Local outer-product reduction:
-                    #     acc[n, p] += sum_ll  B[ll, n] * x[ll, p] * decay[ll]
+                    #     acc[p, n] += sum_ll  x[ll, p] * B[ll, n] * decay[ll]
                     for ll in T.Serial(block_l):
-                        for nn, pp in T.Parallel(block_n, block_p):
-                            acc[nn, pp] += (
-                                T.cast(b_tile[ll, nn], accum_dtype)
-                                * T.cast(x_tile[ll, pp], accum_dtype)
+                        for pp, nn in T.Parallel(block_p, block_n):
+                            acc[pp, nn] += (
+                                T.cast(x_tile[ll, pp], accum_dtype)
+                                * T.cast(b_tile[ll, nn], accum_dtype)
                                 * decay_tile[ll]
                             )
 
                 # --------------------------------------------------------
-                # 6. Write back output tile: out[bz, bc, bh, n0:n0+block_n, p0:p0+block_p]
+                # 6. Write back output tile: out[bz, bc, bh, p0:p0+block_p, n0:n0+block_n]
                 # --------------------------------------------------------
-                for nn, pp in T.Parallel(block_n, block_p):
-                    n_idx = n0 + nn
+                for pp, nn in T.Parallel(block_p, block_n):
                     p_idx = p0 + pp
-                    if n_idx < N and p_idx < P:
-                        out[bz, bc, bh, n_idx, p_idx] = acc[nn, pp]
+                    n_idx = n0 + nn
+                    if p_idx < P and n_idx < N:
+                        out[bz, bc, bh, p_idx, n_idx] = acc[pp, nn]
 
         return main
 
@@ -215,6 +237,7 @@ def _ssd_chunk_state_fwd_wrapped(
     d_head: int,
     d_state: int,
     n_groups: int,
+    has_seq_idx: bool,
     dtype: str,
     block_n: int,
     block_p: int,
@@ -224,11 +247,12 @@ def _ssd_chunk_state_fwd_wrapped(
     Bmat: torch.Tensor,
     dt: torch.Tensor,
     dA_cumsum: torch.Tensor,
+    seq_idx: torch.Tensor,
 ) -> torch.Tensor:
     return _ssd_chunk_state_fwd_kernel(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype)(
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, has_seq_idx, dtype)(
         block_n, block_p, block_l, threads,
-    )(x, Bmat, dt, dA_cumsum)
+    )(x, Bmat, dt, dA_cumsum, seq_idx)
 
 
 @_ssd_chunk_state_fwd_wrapped.register_fake
@@ -240,6 +264,7 @@ def _(
     d_head: int,
     d_state: int,
     n_groups: int,
+    has_seq_idx: bool,
     dtype: str,
     block_n: int,
     block_p: int,
@@ -249,9 +274,10 @@ def _(
     Bmat: torch.Tensor,
     dt: torch.Tensor,
     dA_cumsum: torch.Tensor,
+    seq_idx: torch.Tensor,
 ) -> torch.Tensor:
-    # Output shape matches prev_states layout: (B, C, H, N, P)
-    return x.new_empty((batch, num_chunks, n_heads, d_state, d_head), dtype=torch.float32)
+    # Output shape: (B, C, H, P, N) matching ssd_minimal bchpn convention
+    return x.new_empty((batch, num_chunks, n_heads, d_head, d_state), dtype=torch.float32)
 
 
 class SsdChunkStateFwdKernel(Kernel):
@@ -259,15 +285,16 @@ class SsdChunkStateFwdKernel(Kernel):
 
     Computes the chunk-end SSM state for each chunk:
 
-      out[b, c, h, n, p] =
+      out[b, c, h, p, n] =
           sum_{l=0}^{Q-1}
               x[b, c*Q+l, h, p]
               * B[b, c*Q+l, g(h), n]
               * exp(dA_cumsum[b,h,c,Q-1] - dA_cumsum[b,h,c,l])
               * dt[b, h, c, l]
+              * (1 if not has_seq_idx else (seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
-    Inputs:  x, Bmat, dt, dA_cumsum
-    Output:  out  (batch, num_chunks, n_heads, d_state, d_head), float32
+    Inputs:  x, Bmat, dt, dA_cumsum[, seq_idx]
+    Output:  out  (batch, num_chunks, n_heads, d_head, d_state), float32
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -282,6 +309,7 @@ class SsdChunkStateFwdKernel(Kernel):
         d_state: int,
         n_groups: int,
         dtype: torch.dtype,
+        has_seq_idx: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
@@ -294,8 +322,10 @@ class SsdChunkStateFwdKernel(Kernel):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = dtype
+        self.has_seq_idx = has_seq_idx
         self.kernel = _ssd_chunk_state_fwd_kernel(
-            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, self.dtype_str,
+            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups,
+            has_seq_idx, self.dtype_str,
         )
         self.init_config(config, tune)
 
@@ -328,11 +358,12 @@ class SsdChunkStateFwdKernel(Kernel):
         Bmat: torch.Tensor,
         dt: torch.Tensor,
         dA_cumsum: torch.Tensor,
+        seq_idx: torch.Tensor,
     ) -> torch.Tensor:
         return _ssd_chunk_state_fwd_wrapped(
             self.batch, self.num_chunks, self.chunk_len, self.n_heads, self.d_head,
-            self.d_state, self.n_groups, self.dtype_str,
+            self.d_state, self.n_groups, self.has_seq_idx, self.dtype_str,
             self.config["block_n"], self.config["block_p"], self.config["block_l"],
             self.config["threads"],
-            x, Bmat, dt, dA_cumsum,
+            x, Bmat, dt, dA_cumsum, seq_idx,
         )
