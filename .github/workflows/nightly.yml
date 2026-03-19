@@ -294,6 +294,7 @@ jobs:
         shell: bash
 
       - name: Run benchmark ops
+        id: benchmark_tests
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -370,6 +371,11 @@ jobs:
             bench_results.xml
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Fail benchmark job if pytest failed
+        if: ${{ always() && steps.benchmark_tests.outcome == 'failure' }}
+        run: exit 1
+        shell: bash
 
   # =========================================================================
   # Phase 3 — Op correctness tests (serial after benchmark for GPU exclusivity)
@@ -481,6 +487,7 @@ jobs:
         shell: bash
 
       - name: Run full op tests
+        id: op_tests
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -510,6 +517,11 @@ jobs:
             tileops_op_test.log
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Fail op test job if pytest failed
+        if: ${{ always() && steps.op_tests.outcome == 'failure' }}
+        run: exit 1
+        shell: bash
 
   # =========================================================================
   # Phase 4 — Packaging and smoke test
