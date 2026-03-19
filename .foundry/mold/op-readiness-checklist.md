@@ -16,6 +16,7 @@
 
 - [ ] [REQ] `with T.Kernel()` inside `@T.prim_func`; reusable sub-routines as `@T.macro`
 - [ ] [REQ] `Kernel.forward` accepts only GPU tensors, calls only `self.kernel(config...)(tensors)`
+- [ ] [REQ] Builder function (`_<op>_kernel`) decorated with `@functools.lru_cache(maxsize=32)`; all params hashable
 - [ ] [REC] `_<op>_kernel(static_params) -> Callable` closure exists
 - [ ] [REC] `@tilelang.jit(out_idx=[...])` wraps config-parameterised inner function
 - [ ] [REC] No Python builtins (`float()`, `int()`, `math.cos()`) on IR nodes
