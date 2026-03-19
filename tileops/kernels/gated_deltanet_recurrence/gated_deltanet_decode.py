@@ -16,6 +16,7 @@ Optimization:
   - Native dtype: bf16/fp16 halve state bandwidth vs fp32
   - K-tiling: small shared memory footprint → high occupancy
 """
+import functools
 from typing import Optional, Tuple
 
 import tilelang
@@ -32,6 +33,7 @@ _DEFAULT_K_TILE = 16
 _GEMM_M = 16
 
 
+@functools.lru_cache(maxsize=32)
 def _gated_deltanet_decode_tl(
     batch: int,
     head: int,
@@ -303,6 +305,7 @@ class GatedDeltaNetDecodeKernel(Kernel):
 # FP32-precision decode kernel (no T.gemm → avoids TF32 mantissa truncation)
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=32)
 def _gated_deltanet_decode_fp32_tl(
     batch: int,
     head: int,

@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Callable, Optional, Tuple
 
@@ -15,6 +16,7 @@ __all__ = [
 # MHA
 
 
+@functools.lru_cache(maxsize=32)
 def _mha_fwd_kernel(batch: int,
                     heads: int,
                     seq_len: int,
@@ -185,6 +187,7 @@ class MhaFwdKernel(Kernel):
                                        self.config["threads"], q, k, v)
 
 
+@functools.lru_cache(maxsize=32)
 def _mha_fwd_wgmma_pipelined_kernel(batch: int,
                                     heads: int,
                                     seq_len: int,
@@ -375,6 +378,7 @@ class MhaFwdWgmmaPipelinedKernel(Kernel):
 # GQA
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_fwd_kernel(batch: int,
                     heads: int,
                     heads_kv: int,
@@ -556,6 +560,7 @@ class GqaFwdKernel(Kernel):
                                        self.config["num_stages"], self.config["threads"], q, k, v)
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_fwd_wgmma_pipelined_kernel(batch: int,
                                     heads: int,
                                     heads_kv: int,

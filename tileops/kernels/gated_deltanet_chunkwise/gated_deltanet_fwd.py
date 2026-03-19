@@ -10,6 +10,7 @@ Splitting kernel2 into h_recurrence + output_o increases SM utilisation:
   - h_recurrence grid: (batch, head) — must be sequential (state dependency)
   - output_o grid:     (num_chunks, batch, head) — fully parallel
 """
+import functools
 from typing import Optional, Tuple
 
 import tilelang
@@ -30,6 +31,7 @@ _LOG2E = 1.4426950408889634
 # =============================================================================
 
 
+@functools.lru_cache(maxsize=32)
 def _h_recurrence_tl(
     batch: int,
     head: int,
@@ -138,6 +140,7 @@ def _h_recurrence_tl(
 # Split kernel: output_o  (fully parallel over chunks)
 # =============================================================================
 
+@functools.lru_cache(maxsize=32)
 def _output_o_tl(
     batch: int,
     head: int,
