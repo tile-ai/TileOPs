@@ -84,7 +84,9 @@ class MoeUnpermuteBenchFixture(FixtureBase):
 class MoeUnpermuteBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        return None
+        t = self.test
+        # multiply + add per element per expert slot: 2 * T*K * H
+        return 2 * t.total_tokens * t.top_k * t.hidden_size
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test

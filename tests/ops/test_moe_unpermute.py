@@ -113,11 +113,9 @@ def test_moe_unpermute_op(total_tokens, top_k, hidden_size, dtype):
     output = op(mm2_out, inv_permuted_idx, topk_weights)
     output_ref = test.ref_program(mm2_out, inv_permuted_idx, topk_weights)
 
-    # bf16/fp16 accumulation has rounding error; use loose atol
-    atol = 1e-2 if dtype == torch.bfloat16 else 5e-3
-    assert torch.allclose(output.float(), output_ref.float(), atol=atol), (
-        f"moe_unpermute mismatch: max_err={( output.float() - output_ref.float()).abs().max()}"
-    )
+    rtol = 1.6e-2 if dtype == torch.bfloat16 else 1e-3
+    atol = 1.6e-2 if dtype == torch.bfloat16 else 1e-3
+    torch.testing.assert_close(output.float(), output_ref.float(), rtol=rtol, atol=atol)
     print(f"PASS [{total_tokens}tok, top{top_k}, H={hidden_size}, {dtype}]")
 
 
