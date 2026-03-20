@@ -69,7 +69,12 @@ class Conv2dOp(Op):
             has_bias=bias,
             tune=tune,
         )
-        if self.kernel_size == (1, 1) and "conv2d_1x1_kernel" in self.kernel_map:
+        if (
+            self.kernel_size == (1, 1)
+            and self.stride == (1, 1)
+            and self.padding == (0, 0)
+            and "conv2d_1x1_kernel" in self.kernel_map
+        ):
             kernel_name = "conv2d_1x1_kernel"
         else:
             kernel_kwargs["k_h"] = self.kernel_size[0]

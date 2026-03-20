@@ -186,5 +186,20 @@ def test_conv2d_dispatches_1x1_kernel() -> None:
     assert isinstance(op.kernel, Conv2d1x1Kernel)
 
 
+@pytest.mark.smoke
+def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
+    op = Conv2dOp(
+        n=1,
+        c_in=32,
+        h=16,
+        w=16,
+        c_out=64,
+        kernel_size=1,
+        padding=1,
+        bias=True,
+    )
+    assert not isinstance(op.kernel, Conv2d1x1Kernel)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

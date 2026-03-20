@@ -39,8 +39,11 @@ def _conv2d_1x1_kernel(
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    out_h = (h + 2 * pad_h - 1) // stride_h + 1
-    out_w = (w + 2 * pad_w - 1) // stride_w + 1
+    if stride_h != 1 or stride_w != 1 or pad_h != 0 or pad_w != 0:
+        raise ValueError("Conv2d1x1Kernel requires stride=1 and padding=0")
+    out_h = h
+    out_w = w
+    hw = h * w
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _conv2d_1x1_func(
@@ -59,12 +62,13 @@ def _conv2d_1x1_kernel(
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
             with T.Kernel(
-                T.ceildiv(c_out, block_n),
-                T.ceildiv(n * out_h * out_w, block_m),
+                T.ceildiv(hw, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
                 threads=threads,
-            ) as (bx, by):
-                data_shared = T.alloc_shared((block_m, block_k), dtype)
-                weight_shared = T.alloc_shared((block_k, block_n), dtype)
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
                 T.use_swizzle(10, enable=enable_rasteration)
@@ -72,51 +76,38 @@ def _conv2d_1x1_kernel(
 
                 for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
                     for i, j in T.Parallel(block_m, block_k):
-                        m_idx = by * block_m + i
+                        oc = by * block_m + i
                         ci = k_iter * block_k + j
-                        out_hw = m_idx % (out_h * out_w)
-                        oh = out_hw // out_w
-                        ow = out_hw % out_w
-                        ih = oh * stride_h - pad_h
-                        iw = ow * stride_w - pad_w
-                        in_bound = (
-                            (m_idx < n * out_h * out_w)
-                            & (ci < c_in)
-                            & (ih >= 0)
-                            & (iw >= 0)
-                            & (ih < h)
-                            & (iw < w)
-                        )
-                        data_shared[i, j] = T.if_then_else(
-                            in_bound,
-                            x[m_idx // (out_h * out_w), ci, ih, iw],
+                        weight_shared[i, j] = T.if_then_else(
+                            (oc < c_out) & (ci < c_in),
+                            weight[oc, ci, 0, 0],
                             T.cast(0.0, dtype),
                         )
 
                     for i, j in T.Parallel(block_k, block_n):
                         ci = k_iter * block_k + i
-                        oc = bx * block_n + j
-                        weight_shared[i, j] = T.if_then_else(
-                            (ci < c_in) & (oc < c_out),
-                            weight[oc, ci, 0, 0],
+                        hw_idx = bx * block_n + j
+                        oh = hw_idx // out_w
+                        ow = hw_idx % out_w
+                        data_shared[i, j] = T.if_then_else(
+                            (ci < c_in) & (hw_idx < hw),
+                            x[bz, ci, oh, ow],
                             T.cast(0.0, dtype),
                         )
 
-                    T.gemm(data_shared, weight_shared, out_local)
+                    T.gemm(weight_shared, data_shared, out_local)
 
                 for i, j in T.Parallel(block_m, block_n):
-                    m_idx = by * block_m + i
-                    oc = bx * block_n + j
-                    if m_idx < n * out_h * out_w and oc < c_out:
-                        out_hw = m_idx % (out_h * out_w)
-                        oh = out_hw // out_w
-                        ow = out_hw % out_w
+                    oc = by * block_m + i
+                    hw_idx = bx * block_n + j
+                    if oc < c_out and hw_idx < hw:
+                        oh = hw_idx // out_w
+                        ow = hw_idx % out_w
                         if has_bias:
-                            out[m_idx // (out_h * out_w), oc, oh, ow] = T.cast(
+                            out[bz, oc, oh, ow] = T.cast(
                                 out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype)
                         else:
-                            out[m_idx // (out_h * out_w), oc, oh, ow] = T.cast(
-                                out_local[i, j], dtype)
+                            out[bz, oc, oh, ow] = T.cast(out_local[i, j], dtype)
 
         return _conv2d_1x1_main
 
@@ -319,9 +310,9 @@ class Conv2dKernel(Kernel):
             [64, 128, 256],
             [64, 128, 256],
             [32, 64],
-            [0, 1, 2, 3],
+            [1, 2, 3],
             [128, 256],
-            [True, False],
+            [True],
         )
         return [
             {
@@ -405,27 +396,27 @@ class Conv2d1x1Kernel(Kernel):
         sm_version = get_sm_version()
         if sm_version in {80}:
             return {
-                "block_m": 128,
-                "block_n": 256,
+                "block_m": 64,
+                "block_n": 64,
                 "block_k": 64,
-                "num_stages": 2,
+                "num_stages": 1,
                 "threads": 128,
                 "enable_rasteration": True,
             }
         if sm_version in {90}:
             return {
-                "block_m": 128,
-                "block_n": 128,
+                "block_m": 64,
+                "block_n": 64,
                 "block_k": 64,
-                "num_stages": 0,
+                "num_stages": 2,
                 "threads": 128,
                 "enable_rasteration": True,
             }
         return {
-            "block_m": 128,
-            "block_n": 256,
+            "block_m": 64,
+            "block_n": 64,
             "block_k": 64,
-            "num_stages": 0,
+            "num_stages": 1,
             "threads": 128,
             "enable_rasteration": True,
         }
@@ -436,9 +427,9 @@ class Conv2d1x1Kernel(Kernel):
             [64, 128, 256],
             [64, 128, 256],
             [32, 64, 128],
-            [0, 1, 2, 3],
+            [2, 3],
             [128, 256],
-            [True, False],
+            [True],
         )
         valid_configs = []
         for block_m, block_n, block_k, num_stages, threads, enable_rasteration in configs:
