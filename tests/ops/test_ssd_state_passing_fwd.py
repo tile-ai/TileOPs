@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
@@ -33,10 +34,10 @@ def ssd_state_passing_fwd_ref(
 class SsdStatePassingFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, num_chunks, n_heads, d_state, dtype, tune", [
-            (1, 2,  4,  32, torch.float16,  False),
-            (2, 4,  8,  64, torch.float16,  False),
-            (1, 2,  4,  32, torch.bfloat16, False),
-            (2, 4,  8,  64, torch.bfloat16, False),
+            pytest.param(1, 2,  4,  32, torch.float16,  False, marks=pytest.mark.smoke),
+            pytest.param(2, 4,  8,  64, torch.float16,  False, marks=pytest.mark.full),
+            pytest.param(1, 2,  4,  32, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(2, 4,  8,  64, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 

@@ -137,11 +137,7 @@ def _ssd_chunk_state_fwd_kernel(
                 #    dA_end = dA_cumsum[bz, bh, bc, Q-1]
                 # --------------------------------------------------------
                 dA_end = dA_cumsum[bz, bh, bc, Q - 1]
-                seq_end = T.if_then_else(
-                    has_seq_idx,
-                    seq_idx[bz, chunk_start + Q - 1],
-                    T.int32(0),
-                )
+                seq_end = seq_idx[bz, chunk_start + Q - 1] if has_seq_idx else T.int32(0)
 
                 # --------------------------------------------------------
                 # 4. Allocate tiles once outside the reduction loop
@@ -194,16 +190,15 @@ def _ssd_chunk_state_fwd_kernel(
                             dt[bz, bh, bc, l_idx],
                             T.float32(0.0),
                         )
-                        same_seq = T.if_then_else(
-                            has_seq_idx,
-                            seq_idx[bz, chunk_start + l_idx] == seq_end,
-                            T.bool(True),
-                        )
-                        decay_tile[ll] = T.if_then_else(
-                            same_seq,
-                            T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l,
-                            T.float32(0.0),
-                        )
+                        if has_seq_idx:
+                            same_seq = seq_idx[bz, chunk_start + l_idx] == seq_end
+                            decay_tile[ll] = T.if_then_else(
+                                same_seq,
+                                T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l,
+                                T.float32(0.0),
+                            )
+                        else:
+                            decay_tile[ll] = T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l
 
                     # 5.4 Local outer-product reduction:
                     #     acc[p, n] += sum_ll  x[ll, p] * B[ll, n] * decay[ll]
