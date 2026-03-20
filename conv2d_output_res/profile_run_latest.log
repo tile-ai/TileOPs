@@ -1,0 +1,37 @@
+# TileOPs Benchmark Report
+Generated: 2026-03-20 19:48:08
+
+## Environment
+
+- **Torch version**: 2.9.0+cu128
+- **CUDA version (torch)**: 12.8
+- **GPU model**: NVIDIA H200
+- **Driver version**: 575.57.08
+
+## conv2d
+
+### tileops
+
+| n | c_in | h | w | c_out | dtype | latency_ms | tflops | bandwidth_tbs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 64 | 56 | 56 | 64 | torch.float16 | 0.08 | 5.46 | 0.02 |
+| 1 | 128 | 28 | 28 | 128 | torch.bfloat16 | 0.15 | 0.38 | 0.00 |
+| 2 | 64 | 56 | 56 | 256 | torch.float16 | 0.00 | 47.75 | 0.94 |
+| 2 | 128 | 28 | 28 | 512 | torch.float16 | 0.01 | 34.34 | 0.36 |
+| 2 | 512 | 28 | 28 | 128 | torch.float16 | 0.01 | 26.80 | 0.28 |
+| 1 | 256 | 14 | 14 | 1024 | torch.float16 | 0.01 | 11.64 | 0.12 |
+| 1 | 512 | 7 | 7 | 2048 | torch.float16 | 0.02 | 4.99 | 0.11 |
+| 2 | 64 | 56 | 56 | 256 | torch.bfloat16 | 0.01 | 38.06 | 0.75 |
+
+### baseline
+
+| n | c_in | h | w | c_out | dtype | latency_ms | tflops | bandwidth_tbs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 64 | 56 | 56 | 64 | torch.float16 | 0.03 | 18.43 | 0.07 |
+| 1 | 128 | 28 | 28 | 128 | torch.bfloat16 | 0.03 | 2.29 | 0.02 |
+| 2 | 64 | 56 | 56 | 256 | torch.float16 | 0.02 | 12.71 | 0.25 |
+| 2 | 128 | 28 | 28 | 512 | torch.float16 | 0.01 | 17.16 | 0.18 |
+| 2 | 512 | 28 | 28 | 128 | torch.float16 | 0.01 | 17.36 | 0.18 |
+| 1 | 256 | 14 | 14 | 1024 | torch.float16 | 0.02 | 5.98 | 0.06 |
+| 1 | 512 | 7 | 7 | 2048 | torch.float16 | 0.02 | 4.76 | 0.11 |
+| 2 | 64 | 56 | 56 | 256 | torch.bfloat16 | 0.02 | 12.73 | 0.25 |

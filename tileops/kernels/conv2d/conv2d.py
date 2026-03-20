@@ -56,9 +56,9 @@ def _conv2d_1x1_kernel(
     ):
         @T.prim_func
         def _conv2d_1x1_main(
-            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in, 1, 1), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+            x: T.Tensor((n, c_in, hw), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, hw), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
             with T.Kernel(
@@ -69,45 +69,26 @@ def _conv2d_1x1_kernel(
             ) as (bx, by, bz):
                 weight_shared = T.alloc_shared((block_m, block_k), dtype)
                 data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
                 T.use_swizzle(10, enable=enable_rasteration)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
-                    for i, j in T.Parallel(block_m, block_k):
-                        oc = by * block_m + i
-                        ci = k_iter * block_k + j
-                        weight_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (ci < c_in),
-                            weight[oc, ci, 0, 0],
-                            T.cast(0.0, dtype),
-                        )
-
-                    for i, j in T.Parallel(block_k, block_n):
-                        ci = k_iter * block_k + i
-                        hw_idx = bx * block_n + j
-                        oh = hw_idx // out_w
-                        ow = hw_idx % out_w
-                        data_shared[i, j] = T.if_then_else(
-                            (ci < c_in) & (hw_idx < hw),
-                            x[bz, ci, oh, ow],
-                            T.cast(0.0, dtype),
-                        )
-
+                    T.copy(weight[by * block_m, k_iter * block_k], weight_shared)
+                    T.copy(x[bz, k_iter * block_k, bx * block_n], data_shared)
                     T.gemm(weight_shared, data_shared, out_local)
 
                 for i, j in T.Parallel(block_m, block_n):
                     oc = by * block_m + i
-                    hw_idx = bx * block_n + j
-                    if oc < c_out and hw_idx < hw:
-                        oh = hw_idx // out_w
-                        ow = hw_idx % out_w
-                        if has_bias:
-                            out[bz, oc, oh, ow] = T.cast(
-                                out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype)
-                        else:
-                            out[bz, oc, oh, ow] = T.cast(out_local[i, j], dtype)
+                    if has_bias:
+                        out_shared[i, j] = T.cast(
+                            out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype)
+                    else:
+                        out_shared[i, j] = T.cast(out_local[i, j], dtype)
+
+                T.copy(out_shared, out[bz, by * block_m, bx * block_n])
 
         return _conv2d_1x1_main
 
@@ -406,8 +387,8 @@ class Conv2d1x1Kernel(Kernel):
         if sm_version in {90}:
             return {
                 "block_m": 64,
-                "block_n": 64,
-                "block_k": 64,
+                "block_n": 128,
+                "block_k": 128,
                 "num_stages": 2,
                 "threads": 128,
                 "enable_rasteration": True,
@@ -453,11 +434,16 @@ class Conv2d1x1Kernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return self.kernel(
+        out = self.kernel(
             self.config["block_m"],
             self.config["block_n"],
             self.config["block_k"],
             self.config["num_stages"],
             self.config["threads"],
             self.config["enable_rasteration"],
-        )(x, weight, bias)
+        )(
+            x.view(self.n, self.c_in, self.h * self.w),
+            weight.view(self.c_out, self.c_in),
+            bias,
+        )
+        return out.view(self.n, self.c_out, self.h, self.w)
