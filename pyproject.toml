@@ -45,6 +45,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
+[tool.setuptools.package-data]
+tileops = ["kernels/moe/_atomic_helper.h"]
+
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
 skip = [
