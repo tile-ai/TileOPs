@@ -35,11 +35,12 @@ where:
 The output shape (B, C, H, P, N) matches the ssd_minimal reference:
   states = einsum("bclhn,bhcl,bclhp->bchpn", B, decay_states, X)
 
-The decay term exp(dA_end - dA_l) with dA_end = dA_cumsum[..., Q-1]
-is equivalent to exp(min(dA_end - dA_l, 0)) because dA_cumsum is
-monotonically non-decreasing within a chunk (dA <= 0 everywhere in
-Mamba-2), so dA_end - dA_l >= 0 always.  We keep the min-clamp for
-numerical safety.
+The decay term uses dA_end - dA_l, where dA_end = dA_cumsum[..., Q-1].
+Since dA <= 0 everywhere in Mamba-2, dA_cumsum is monotonically
+non-increasing within a chunk, so dA_end - dA_l <= 0 for all l.
+Therefore exp(dA_end - dA_l) is already a decaying factor in (0, 1],
+and exp(min(dA_end - dA_l, 0)) is equivalent. We keep the min-clamp
+for numerical safety.
 
 Notation:
   B = batch, S = seq_len, H = n_heads, P = d_head, G = n_groups,

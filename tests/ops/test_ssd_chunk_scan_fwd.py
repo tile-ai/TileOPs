@@ -137,6 +137,6 @@ def test_ssd_chunk_scan_fwd(batch, num_chunks, chunk_len, n_heads, d_head, d_sta
     test = SsdChunkScanFwdTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)
     op = SsdChunkScanFwdOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
     inputs = test.gen_inputs()
-    atol = 1e-1 if dtype == torch.float16 else 2e-1
-    rtol = 1e-1
+    atol = 1e-3 if dtype == torch.float16 else 2e-3
+    rtol = 1e-5
     test.check(op, *inputs, atol=atol, rtol=rtol)

@@ -62,8 +62,7 @@ def ssd_chunk_state_fwd_ref(
         seq_chunked = seq_idx.reshape(b, c, Q)
         seq_end = seq_chunked[..., -1:]          # (b, c, 1)
         same = (seq_chunked == seq_end).unsqueeze(3)   # (b, c, Q, 1)
-        weight = weight.permute(0, 1, 3, 2) * same
-        weight = weight.permute(0, 1, 3, 2)
+        weight = weight * same.permute(0, 1, 3, 2)
 
     # out[b, c, h, n, p] = sum_l weight[b,c,h,l] * B[b,c,l,h,n] * x[b,c,l,h,p]
     # weight: (b, c, h, Q) -> (b, c, Q, h, 1, 1) for broadcasting
