@@ -667,39 +667,67 @@ jobs:
         run: |
           set -euo pipefail
           source "${VENV_PATH}/bin/activate"
-          python -m build --wheel
-          echo "Build artifacts:"
-          ls -lh dist/*.whl
+
+          PACKAGING_LOG="${GITHUB_WORKSPACE}/packaging.log"
+          : > "${PACKAGING_LOG}"
+
+          {
+            echo "=== Build wheel package ==="
+            python -m build --wheel
+            echo
+            echo "=== Build artifacts ==="
+            ls -lh dist/*.whl
+          } 2>&1 | tee -a "${PACKAGING_LOG}"
         shell: bash
 
       - name: Run ops smoke tests against built wheel
         run: |
           set -euo pipefail
           source "${VENV_PATH}/bin/activate"
-          pip install --force-reinstall dist/*.whl
 
-          TMP_TEST_DIR="$(mktemp -d)"
-          trap 'rm -rf "${TMP_TEST_DIR}"' EXIT
-          cp -r tests "${TMP_TEST_DIR}/tests"
-          unset PYTHONPATH || true
+          PACKAGING_LOG="${GITHUB_WORKSPACE}/packaging.log"
 
-          cd "${TMP_TEST_DIR}"
-          python - <<'PY'
-          import os
+          {
+            echo
+            echo "=== Install built wheel ==="
+            pip install --force-reinstall dist/*.whl
 
-          print("Runtime cache env:")
-          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
-              print(f"{key}={os.environ.get(key)}")
-          PY
-          python -m pytest -q tests/ops -m "smoke"
+            TMP_TEST_DIR="$(mktemp -d)"
+            trap 'rm -rf "${TMP_TEST_DIR}"' EXIT
+            cp -r tests "${TMP_TEST_DIR}/tests"
+            unset PYTHONPATH || true
+
+            cd "${TMP_TEST_DIR}"
+
+            echo
+            echo "=== Runtime cache env ==="
+            python -c 'import os; [print(f"{key}={os.environ.get(key)}") for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR")]'
+
+            echo
+            echo "=== Run pytest smoke ==="
+            python -m pytest -q tests/ops -m "smoke" \
+              --junit-xml="${GITHUB_WORKSPACE}/packaging_smoke.xml"
+          } 2>&1 | tee -a "${PACKAGING_LOG}"
         shell: bash
 
       - name: Upload wheel artifact
+        if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: tileops-wheel-${{ github.sha }}
           path: dist/*.whl
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload packaging logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaging-logs-${{ github.sha }}
+          path: |
+            packaging.log
+            packaging_smoke.xml
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Publish wheel to GitHub Release (tag only)
