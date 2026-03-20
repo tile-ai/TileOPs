@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_mha_decode import MhaDecodeFixture, MhaDecodeTest
+from tests.ops.test_mha_decode import MhaDecodeTest
 from tileops.ops import MultiHeadAttentionDecodeWithKVCacheOp
 
 
@@ -25,7 +25,14 @@ class MhaDecodeBenchmark(BenchmarkBase):
                 t.dtype.itemsize)
 
 
-@MhaDecodeFixture
+_MHA_DECODE_BENCH_PARAMS = [
+    pytest.param(1, 32, 128, 8192, 128, torch.float16, True, id="fp16-long-cache"),
+    pytest.param(1, 32, 128, 8192, 128, torch.bfloat16, True, id="bf16-long-cache"),
+    pytest.param(1, 32, 128, 5, 128, torch.float16, True, id="short-kv-tail"),
+]
+
+
+@pytest.mark.parametrize("b, h, s_q, s_kv, d, dtype, tune", _MHA_DECODE_BENCH_PARAMS)
 def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
                           tune: bool) -> None:
     test = MhaDecodeTest(b, h, s_q, s_kv, d, dtype)

@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -91,10 +92,10 @@ class EngramDecodeFixture(FixtureBase):
     PARAMS = [
         # (batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune)
         ("batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune", [
-            (1, 512, 256, 12, 4, 3, torch.float16, False),
-            (4, 1024, 512, 20, 4, 5, torch.float16, False),
-            (1, 256, 256, 9, 4, 3, torch.bfloat16, False),
-            (8, 512, 256, 18, 4, 3, torch.bfloat16, False),
+            pytest.param(1, 512, 256, 12, 4, 3, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(4, 1024, 512, 20, 4, 5, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1, 256, 256, 9, 4, 3, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(8, 512, 256, 18, 4, 3, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -145,6 +146,7 @@ def test_engram_decode(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation
     test.check(op, *inputs, atol=atol, rtol=rtol)
 
 
+@pytest.mark.smoke
 def test_engram_decode_multi_step():
     """Verify multi-step decode with growing conv_state and dilated conv."""
     B, d_mem, d = 2, 256, 256

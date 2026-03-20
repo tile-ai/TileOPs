@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deepseek_nsa_cmp_fwd import NsaCmpFwdFixture, NsaCmpFwdTest
+from tests.ops.test_deepseek_nsa_cmp_fwd import NsaCmpFwdTest
 from tileops.ops import NSACmpFwdVarlenOp
 
 
@@ -22,7 +22,22 @@ class NsaCmpFwdBenchmark(BenchmarkBase):
         return q_read + k_read + v_read
 
 
-@NsaCmpFwdFixture
+_NSA_CMP_FWD_BENCH_PARAMS = [
+    pytest.param(
+        9, 8192, 32, 128, 128, 16, 128**-0.5, 32, 32, 128, 128, torch.float16, torch.float32,
+        False, id="mainstream-fp16",
+    ),
+    pytest.param(
+        16, 16384, 32, 128, 128, 16, 128**-0.5, 32, 32, 128, 128, torch.float16, torch.float32,
+        False, id="long-sequence-fp16",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, bk, bv, dtype, accum_dtype, tune",
+    _NSA_CMP_FWD_BENCH_PARAMS,
+)
 def test_nsa_cmp_fwd_bench(seq_num: int, c_seq_len: int, heads: int, dim_k: int, dim_v: int,
                            group: int, scale: float, bc: int, bs: int, bk: int, bv: int,
                            dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool) -> None:

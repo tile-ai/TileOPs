@@ -5,7 +5,6 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_engram_bwd import (
-    EngramGateConvBwdFixture,
     EngramGateConvBwdTest,
 )
 from tileops.ops.engram_bwd import EngramGateConvBwdOp
@@ -28,7 +27,15 @@ class EngramGateConvBwdBenchmark(BenchmarkBase):
         return read_bytes + write_bytes
 
 
-@EngramGateConvBwdFixture
+_ENGRAM_GATE_CONV_BWD_BENCH_PARAMS = [
+    pytest.param(1, 32, 256, torch.float16, True, id="fp16-small"),
+    pytest.param(2, 64, 512, torch.float16, True, id="fp16-mainstream"),
+    pytest.param(1, 128, 256, torch.bfloat16, True, id="bf16-long-seq"),
+    pytest.param(2, 16, 256, torch.bfloat16, True, id="bf16-batched"),
+]
+
+
+@pytest.mark.parametrize("M, seq_len, d, dtype, tune", _ENGRAM_GATE_CONV_BWD_BENCH_PARAMS)
 def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype, tune):
     test = EngramGateConvBwdTest(M, seq_len, d, dtype)
     bm = EngramGateConvBwdBenchmark(test)

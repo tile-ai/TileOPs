@@ -10,24 +10,27 @@ class GroupNormFixture(FixtureBase):
     PARAMS = [
         ("n, c, spatial, g, dtype, tune", [
             # Small CI-friendly shapes -- fp32
-            (2, 32, (8, 8), 8, torch.float32, False),
-            (4, 16, (4, 4), 4, torch.float32, False),
+            pytest.param(2, 32, (8, 8), 8, torch.float32, False, marks=pytest.mark.smoke),
+            pytest.param(4, 16, (4, 4), 4, torch.float32, False, marks=pytest.mark.full),
             # Small CI-friendly shapes -- fp16
-            (2, 32, (8, 8), 8, torch.float16, False),
-            (4, 16, (4, 4), 4, torch.float16, False),
+            pytest.param(2, 32, (8, 8), 8, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(4, 16, (4, 4), 4, torch.float16, False, marks=pytest.mark.full),
             # Small CI-friendly shapes -- bf16
-            (2, 32, (8, 8), 8, torch.bfloat16, False),
-            (4, 16, (4, 4), 4, torch.bfloat16, False),
+            pytest.param(2, 32, (8, 8), 8, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(4, 16, (4, 4), 4, torch.bfloat16, False, marks=pytest.mark.full),
             # Different group counts
-            (2, 32, (4, 4), 1, torch.float16, False),   # G=1 (layer-norm-like)
-            (2, 32, (4, 4), 32, torch.float16, False),  # G=C (instance-norm-like)
-            (2, 32, (4, 4), 16, torch.float16, False),  # G=C/2
+            pytest.param(2, 32, (4, 4), 1, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 32, (4, 4), 32, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 32, (4, 4), 16, torch.float16, False, marks=pytest.mark.full),
             # 1D spatial
-            (2, 32, (16,), 8, torch.float16, False),
+            pytest.param(2, 32, (16,), 8, torch.float16, False, marks=pytest.mark.full),
             # 3D spatial
-            (2, 16, (4, 4, 4), 4, torch.float16, False),
+            pytest.param(2, 16, (4, 4, 4), 4, torch.float16, False, marks=pytest.mark.full),
             # Non-power-of-two channels per group
-            (2, 30, (4, 4), 5, torch.float16, False),
+            pytest.param(2, 30, (4, 4), 5, torch.float16, False, marks=pytest.mark.full),
+            # Non-aligned spatial: exercises partial-tile path
+            pytest.param(2, 32, (7, 7), 8, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 32, (7, 7), 8, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -82,8 +85,8 @@ def test_group_norm_op(n: int, c: int, spatial: tuple, g: int,
 class GroupNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("n, c, spatial, g, dtype", [
-            (2, 32, (8, 8), 8, torch.float16),
-            (2, 32, (8, 8), 8, torch.bfloat16),
+            pytest.param(2, 32, (8, 8), 8, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 32, (8, 8), 8, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 

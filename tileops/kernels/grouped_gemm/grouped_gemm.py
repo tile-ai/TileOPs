@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -32,6 +33,7 @@ _DEFAULT_CONFIGS = {
 }
 
 
+@functools.lru_cache(maxsize=32)
 def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b, dtype='float16'):
     accum_dtype = "float"
 

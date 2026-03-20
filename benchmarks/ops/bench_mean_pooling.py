@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.nsa_utils import prepare_chunk_indices
-from tests.ops.test_mean_pooling_ops import MeanPoolingFixture, MeanPoolingTest
+from tests.ops.test_mean_pooling_ops import MeanPoolingTest
 from tileops.ops import MeanPoolingForwardOp
 
 
@@ -24,7 +24,26 @@ class MeanPoolingBenchmark(BenchmarkBase):
         return input_bytes + output_bytes
 
 
-@MeanPoolingFixture
+_MEAN_POOLING_BENCH_PARAMS = [
+    pytest.param(1, 8192, 64, 128, 64, torch.float16, torch.float32, True, None, id="dense-mainstream"),
+    pytest.param(2, 2048, 64, 128, 64, torch.float16, torch.float32, True, None, id="dense-batched"),
+    pytest.param(
+        1, 8192, 64, 128, 64, torch.float16, torch.float32, True,
+        torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device="cuda"),
+        id="varlen-long",
+    ),
+    pytest.param(
+        1, 1000, 64, 128, 32, torch.float16, torch.float32, True,
+        torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device="cuda"),
+        id="varlen-tail",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, heads, dim, chunk_size, dtype, accum_dtype, tune, offsets",
+    _MEAN_POOLING_BENCH_PARAMS,
+)
 def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int, chunk_size: int,
                             dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool,
                             offsets: Optional[torch.Tensor]) -> None:

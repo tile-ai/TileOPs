@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gqa_decode_paged import GqaDecodePagedFixture, GqaDecodePagedTest
+from tests.ops.test_gqa_decode_paged import GqaDecodePagedTest
 from tileops.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
 
 
@@ -25,7 +25,18 @@ class GqaDecodePagedBenchmark(BenchmarkBase):
             t.batch * num_pages * 4 + t.batch * 4
 
 
-@GqaDecodePagedFixture
+_GQA_DECODE_PAGED_BENCH_PARAMS = [
+    pytest.param(1, 16, 8, 512, 128, 128, torch.float16, True, id="baseline-page128"),
+    pytest.param(2, 8, 4, 1024, 64, 256, torch.float16, True, id="batch2-page256"),
+    pytest.param(1, 16, 4, 2048, 128, 512, torch.float16, True, id="long-cache-page512"),
+    pytest.param(1, 32, 16, 512, 64, 128, torch.float16, True, id="high-head-ratio"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune",
+    _GQA_DECODE_PAGED_BENCH_PARAMS,
+)
 def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
                                 page_size: int, dtype: torch.dtype, tune: bool) -> None:
     test = GqaDecodePagedTest(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)

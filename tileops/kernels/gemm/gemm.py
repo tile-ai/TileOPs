@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Callable, Optional
 
@@ -13,6 +14,7 @@ __all__ = [
 ]
 
 
+@functools.lru_cache(maxsize=32)
 def _gemm_kernel(m: int,
                  n: int,
                  k: int,

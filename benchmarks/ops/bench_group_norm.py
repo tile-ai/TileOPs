@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_group_norm import GroupNormFixture, GroupNormTest
+from tests.ops.test_group_norm import GroupNormTest
 from tileops.ops.norm.group_norm import GroupNormOp
 
 
@@ -29,7 +29,15 @@ class GroupNormBenchmark(BenchmarkBase):
         return (2 * total_elems + 2 * t.c) * elem_bytes
 
 
-@GroupNormFixture
+_GROUP_NORM_BENCH_PARAMS = [
+    pytest.param(8, 128, (32, 32), 32, torch.float16, True, id="image-fp16"),
+    pytest.param(8, 128, (32, 32), 32, torch.bfloat16, True, id="image-bf16"),
+    pytest.param(4, 256, (28, 28), 32, torch.float16, True, id="wider-channel"),
+    pytest.param(4, 128, (30, 30), 16, torch.float16, True, id="tail-spatial"),
+]
+
+
+@pytest.mark.parametrize("n, c, spatial, g, dtype, tune", _GROUP_NORM_BENCH_PARAMS)
 def test_group_norm_bench(n: int, c: int, spatial: tuple, g: int,
                           dtype: torch.dtype, tune: bool) -> None:
     test = GroupNormTest(n, c, spatial, g, dtype)

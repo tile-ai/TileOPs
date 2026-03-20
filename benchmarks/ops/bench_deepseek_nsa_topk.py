@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deepseek_nsa_topk import NsaTopkFixture, NsaTopkTest
+from tests.ops.test_deepseek_nsa_topk import NsaTopkTest
 from tileops.ops import NSATopkVarlenOp
 
 
@@ -25,7 +25,23 @@ class NsaTopkBenchmark(BenchmarkBase):
         return q_read + k_read + indices_write
 
 
-@NsaTopkFixture
+_NSA_TOPK_BENCH_PARAMS = [
+    pytest.param(
+        5, 1024, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False, id="mainstream-fp16",
+    ),
+    pytest.param(
+        3, 512, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False, id="shorter-seq",
+    ),
+    pytest.param(
+        9, 8192, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False, id="long-sequence",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs, bk, dtype, accum_dtype, tune",
+    _NSA_TOPK_BENCH_PARAMS,
+)
 def test_nsa_topk_bench(seq_num: int, c_seq_len: int, heads: int, dim: int, group: int,
                         scale: float, selected_block_num: int, bc: int, bs: int, bk: int,
                         dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool) -> None:

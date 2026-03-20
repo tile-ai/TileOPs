@@ -1,3 +1,4 @@
+import functools
 import math
 from typing import Any, Callable, Dict
 
@@ -11,6 +12,7 @@ from ..kernel import Kernel
 _PI = 3.14159265358979323846
 
 
+@functools.lru_cache(maxsize=32)
 def _fft_c2c_lut_kernel(n: int, dtype: str = 'complex64') -> Callable:
     """
     1D Complex-to-Complex FFT kernel with pre-computed twiddle LUT and

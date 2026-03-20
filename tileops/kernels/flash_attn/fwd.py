@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Callable, Optional, Tuple
 
@@ -15,6 +16,7 @@ __all__ = [
 # MHA
 
 
+@functools.lru_cache(maxsize=32)
 def _mha_fwd_kernel(batch: int,
                     heads: int,
                     seq_len: int,
@@ -185,6 +187,7 @@ class MhaFwdKernel(Kernel):
                                        self.config["threads"], q, k, v)
 
 
+@functools.lru_cache(maxsize=32)
 def _mha_fwd_wgmma_pipelined_kernel(batch: int,
                                     heads: int,
                                     seq_len: int,
@@ -375,6 +378,7 @@ class MhaFwdWgmmaPipelinedKernel(Kernel):
 # GQA
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_fwd_kernel(batch: int,
                     heads: int,
                     heads_kv: int,
@@ -383,7 +387,8 @@ def _gqa_fwd_kernel(batch: int,
                     is_causal: bool,
                     dtype: str = 'float16') -> Callable:
     scale = make_log2e_scale(dim)  # log2(e)
-    assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
 
@@ -510,7 +515,8 @@ class GqaFwdKernel(Kernel):
         super().__init__()
         self.batch = batch
         self.heads = heads
-        assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+        if heads % heads_kv != 0:
+            raise ValueError("heads must be divisible by heads_kv")
         self.heads_kv = heads_kv
         self.seq_len = seq_len
         self.dim = dim
@@ -554,6 +560,7 @@ class GqaFwdKernel(Kernel):
                                        self.config["num_stages"], self.config["threads"], q, k, v)
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_fwd_wgmma_pipelined_kernel(batch: int,
                                     heads: int,
                                     heads_kv: int,
@@ -562,7 +569,8 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch: int,
                                     is_causal: bool,
                                     dtype: str = "float16") -> Callable:
     scale = make_log2e_scale(dim)  # log2(e)
-    assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
 
@@ -719,7 +727,8 @@ class GqaFwdWgmmaPipelinedKernel(Kernel):
         super().__init__()
         self.batch = batch
         self.heads = heads
-        assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+        if heads % heads_kv != 0:
+            raise ValueError("heads must be divisible by heads_kv")
         self.heads_kv = heads_kv
         self.seq_len = seq_len
         self.dim = dim

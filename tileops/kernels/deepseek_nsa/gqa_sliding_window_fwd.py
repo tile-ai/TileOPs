@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Callable, Optional, Tuple
 
@@ -14,6 +15,7 @@ __all__ = [
 ]
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_sw_fwd_kernel(
     batch: int,
     heads: int,
@@ -26,7 +28,8 @@ def _gqa_sw_fwd_kernel(
     dtype: str = 'float16',
 ) -> Callable:
     scale = make_log2e_scale(dim)
-    assert heads % heads_kv == 0
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
     has_window = window_size_left >= 0 or window_size_right >= 0
@@ -205,7 +208,8 @@ class GqaSlidingWindowFwdKernel(Kernel):
         super().__init__()
         self.batch = batch
         self.heads = heads
-        assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+        if heads % heads_kv != 0:
+            raise ValueError("heads must be divisible by heads_kv")
         self.heads_kv = heads_kv
         self.seq_len = seq_len
         self.dim = dim
@@ -249,6 +253,7 @@ class GqaSlidingWindowFwdKernel(Kernel):
             q, k, v)
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_sw_fwd_wgmma_pipelined_kernel(
     batch: int,
     heads: int,
@@ -261,7 +266,8 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     dtype: str = "float16",
 ) -> Callable:
     scale = make_log2e_scale(dim)
-    assert heads % heads_kv == 0
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
     has_window = window_size_left >= 0 or window_size_right >= 0
@@ -462,7 +468,8 @@ class GqaSlidingWindowFwdWgmmaPipelinedKernel(Kernel):
         super().__init__()
         self.batch = batch
         self.heads = heads
-        assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+        if heads % heads_kv != 0:
+            raise ValueError("heads must be divisible by heads_kv")
         self.heads_kv = heads_kv
         self.seq_len = seq_len
         self.dim = dim
