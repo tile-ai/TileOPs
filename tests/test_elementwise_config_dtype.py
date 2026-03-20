@@ -7,6 +7,8 @@ Validates three fixes:
    and FusedGatedKernel instances
 """
 
+from unittest.mock import patch
+
 import pytest
 import torch
 
@@ -153,40 +155,38 @@ class TestOutputDtypeConsistency:
 
 
 class TestOutputDtypeAttribute:
-    """Verify that kernel.output_dtype is a valid attribute on instances."""
+    """Verify that kernel.output_dtype is set by the real __init__."""
 
     @pytest.mark.smoke
     def test_unary_kernel_has_output_dtype(self):
-        """UnaryKernel subclass (ReluKernel) should have output_dtype."""
-        # Use __new__ to avoid full init (which needs GPU)
-        k = ReluKernel.__new__(ReluKernel)
-        k.dtype = torch.float16
-        k.OUTPUT_DTYPE = None
-        k._fp8_output_dtype = None
-        # Simulate the init logic
-        k.output_dtype = k.OUTPUT_DTYPE or k.dtype
+        """UnaryKernel subclass (ReluKernel) constructor sets output_dtype."""
+        with (
+            patch.object(ReluKernel, "_build_kernel", return_value=None),
+            patch.object(ReluKernel, "init_config"),
+        ):
+            k = ReluKernel(N_total=1024, dtype=torch.float16)
         assert k.output_dtype == torch.float16
 
     @pytest.mark.smoke
     def test_binary_kernel_has_output_dtype(self):
-        """BinaryKernel subclass (AddKernel) should have output_dtype."""
-        # Use __new__ to avoid full init (which needs GPU)
-        k = AddKernel.__new__(AddKernel)
-        k.dtype = torch.float16
-        k.OUTPUT_DTYPE = None
-        k._fp8_output_dtype = None
-        # Simulate the init logic from BinaryKernel.__init__
-        k.output_dtype = k.OUTPUT_DTYPE or k.dtype
+        """BinaryKernel subclass (AddKernel) constructor sets output_dtype."""
+        with (
+            patch.object(AddKernel, "_build_kernel", return_value=None),
+            patch.object(AddKernel, "init_config"),
+        ):
+            k = AddKernel(
+                N_total=1024, dtype=torch.float16,
+                coalesced_shape=(1024,), a_strides=(1,), b_strides=(1,),
+                a_numel=1024, b_numel=1024,
+            )
         assert k.output_dtype == torch.float16
 
     @pytest.mark.smoke
     def test_fused_gated_kernel_has_output_dtype(self):
-        """FusedGatedKernel subclass (SiluAndMulKernel) should have output_dtype."""
-        # Use __new__ to avoid full init (which needs GPU)
-        k = SiluAndMulKernel.__new__(SiluAndMulKernel)
-        k.dtype = torch.float16
-        k._fp8_output_dtype = None
-        k._kernel_output_dtype = None
-        # Simulate the init logic from FusedGatedKernel.__init__
-        k.output_dtype = k.dtype
+        """FusedGatedKernel subclass (SiluAndMulKernel) constructor sets output_dtype."""
+        with (
+            patch.object(SiluAndMulKernel, "_build_kernel", return_value=None),
+            patch.object(SiluAndMulKernel, "init_config"),
+        ):
+            k = SiluAndMulKernel(M=32, N=1024, dtype=torch.float16)
         assert k.output_dtype == torch.float16
