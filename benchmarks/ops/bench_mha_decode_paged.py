@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_mha_decode_paged import MhaDecodePagedFixture, MhaDecodePagedTest
+from tests.ops.test_mha_decode_paged import MhaDecodePagedTest
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
 
 
@@ -25,7 +25,18 @@ class MhaDecodePagedBenchmark(BenchmarkBase):
             t.batch * num_pages * 4 + t.batch * 4
 
 
-@MhaDecodePagedFixture
+_MHA_DECODE_PAGED_BENCH_PARAMS = [
+    pytest.param(1, 16, 1, 512, 128, 128, False, torch.float16, True, id="single-token-page128"),
+    pytest.param(2, 8, 1, 1024, 64, 256, False, torch.float16, True, id="batch2-page256"),
+    pytest.param(1, 8, 1, 1024, 64, 256, False, torch.float16, True, id="longer-cache"),
+    pytest.param(1, 8, 1, 512, 64, 256, False, torch.float16, True, id="shorter-cache"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype, tune",
+    _MHA_DECODE_PAGED_BENCH_PARAMS,
+)
 def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int,
                                 page_size: int, is_causal: bool, dtype: torch.dtype,
                                 tune: bool) -> None:

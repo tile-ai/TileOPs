@@ -49,7 +49,8 @@ class Op(ABC):
         raise NotImplementedError("Op must implement default_kernel_map")
 
     def dispatch_kernel(self, kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
-        assert self.default_kernel_map is not None and len(self.default_kernel_map) > 0
+        if self.default_kernel_map is None or len(self.default_kernel_map) == 0:
+            raise ValueError("default_kernel_map must be non-empty")
         self.kernel_map = {}
         for name, default_kernel in self.default_kernel_map.items():
             if kernel_map is not None and name in kernel_map:
@@ -57,9 +58,9 @@ class Op(ABC):
             else:
                 kernel_type = default_kernel
             current_arch = get_sm_version()
-            if kernel_type is not None:
-                assert current_arch in kernel_type.supported_archs, \
-                    f'{kernel_type.__name__} is not supported on architecture {current_arch}'
+            if kernel_type is not None and current_arch not in kernel_type.supported_archs:
+                raise ValueError(
+                    f'{kernel_type.__name__} is not supported on architecture {current_arch}')
             self.kernel_map[name] = kernel_type
 
     def autotune(self) -> None:

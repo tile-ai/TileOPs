@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -11,6 +12,7 @@ from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax
 __all__ = ["mha_decode_kernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype):
     scale = make_log2e_scale(dim)
     accum_dtype = "float"
@@ -312,8 +314,10 @@ def _mha_decode_wrapped_kernel(batch: int, heads: int, seqlen_q: int, seqlen_kv:
                                num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                                glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
 
-    assert K.shape[1] == V.shape[1] == seqlen_kv, "error: dimension mismatch!"
-    assert real_seqlen_kv <= seqlen_kv, "error: seqlen_kv mismatch!"
+    if not (K.shape[1] == V.shape[1] == seqlen_kv):
+        raise ValueError("error: dimension mismatch!")
+    if real_seqlen_kv > seqlen_kv:
+        raise ValueError("error: seqlen_kv mismatch!")
     split_length = torch.zeros(num_split, dtype=torch.int32, device=Q.device)
     for k in range(num_split):
         split_length[k] = real_seqlen_kv // (num_split * block_N) * block_N
@@ -377,7 +381,30 @@ class mha_decode_kernel(Kernel):
         self.kernel = _mha_decode_kernel(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
                                          self.dim, self.is_causal, self.dtype_str)
 
+        self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
+
+    def _make_supply_prog(self):
+        """Create a supply_prog that handles the scalar real_seqlen_kv parameter."""
+        from tilelang.utils.tensor import get_tensor_supply as _get_tensor_supply
+
+        default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
+        seqlen_kv = self.seqlen_kv
+
+        def supply_prog(params):
+            inputs = []
+            for param in params:
+                if param.is_scalar():
+                    inputs.append(seqlen_kv)
+                else:
+                    inputs.append(default_supply(param))
+            return inputs
+
+        return supply_prog
+
+    @property
+    def autotune_supply_prog(self):
+        return self._supply_prog
 
     @property
     def default_config(self) -> dict:

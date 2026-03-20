@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deepseek_nsa_fwd import NsaFwdFixture, NsaFwdTest
+from tests.ops.test_deepseek_nsa_fwd import NsaFwdTest
 from tileops.ops import NSAFwdVarlenOp
 
 
@@ -27,7 +27,23 @@ class NsaFwdBenchmark(BenchmarkBase):
         return (q_memory + k_memory + v_memory + output_memory + block_indices_memory)
 
 
-@NsaFwdFixture
+_NSA_FWD_BENCH_PARAMS = [
+    pytest.param(
+        1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False, id="single-block",
+    ),
+    pytest.param(
+        4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False, id="long-context",
+    ),
+    pytest.param(
+        2, 16, 8192, 64, True, 0.1, 32, 16, 4, torch.float16, torch.float32, False, id="multi-selected-blocks",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, heads, c_seq_len, dim, is_causal, scale, block_size, groups, selected_blocks, dtype, accum_dtype, tune",
+    _NSA_FWD_BENCH_PARAMS,
+)
 def test_nsa_fwd_bench(batch: int, heads: int, c_seq_len: int, dim: int, is_causal: bool,
                        scale: float, block_size: int, groups: int, selected_blocks: int,
                        dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool) -> None:

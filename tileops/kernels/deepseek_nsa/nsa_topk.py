@@ -1,3 +1,4 @@
+import functools
 from typing import Any, Callable, Optional
 
 import tilelang
@@ -8,6 +9,7 @@ from tileops.kernels.kernel import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
 
+@functools.lru_cache(maxsize=32)
 def _nsa_topk_varlen_kernel(
     seq_num: int,
     c_seq_len: int,

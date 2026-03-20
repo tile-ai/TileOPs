@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerFixture, Fp8LightingIndexerTest
+from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerTest
 from tileops.ops import Fp8LightingIndexerOp
 
 
@@ -20,10 +20,10 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
         accum_dtype = torch.float32
         index_dtype = torch.int32
 
-        index_q_memory = t.seq_len * t.heads * t.index_dim * dtype.itemsize
-        index_k_memory = t.seq_len_kv * t.index_dim * dtype.itemsize
-        index_k_scale_memory = t.seq_len_kv * accum_dtype.itemsize
-        logits_memory = t.seq_len * t.seq_len_kv * accum_dtype.itemsize
+        index_q_memory = t.batch * t.seq_len * t.heads * t.index_dim * dtype.itemsize
+        index_k_memory = t.batch * t.seq_len_kv * t.index_dim * t.kv_group * dtype.itemsize
+        index_k_scale_memory = t.batch * t.seq_len_kv * t.kv_group * accum_dtype.itemsize
+        logits_memory = t.batch * t.seq_len * t.seq_len_kv * t.kv_group * accum_dtype.itemsize
         weights_memory = t.seq_len * t.heads * accum_dtype.itemsize
         cu_seqlens_ks_memory = t.seq_len * index_dtype.itemsize
         cu_seqlens_ke_memory = t.seq_len * index_dtype.itemsize
@@ -32,27 +32,38 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
                 weights_memory + cu_seqlens_ks_memory + cu_seqlens_ke_memory)
 
 
-@Fp8LightingIndexerFixture
-def test_fp8_lighting_indexer_bench(seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
-                                    clean_logits: bool, config: Optional[dict],
-                                    tune: bool) -> None:
-    test = Fp8LightingIndexerTest(seq_len, heads, index_dim, seq_len_kv, clean_logits, config)
+_FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
+    pytest.param(1, 4096, 32, 64, 8192, 1, True, None, False, id="default-config"),
+    pytest.param(1, 2048, 16, 64, 4096, 1, True, None, False, id="mid-shape"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune",
+    _FP8_LIGHTING_INDEXER_BENCH_PARAMS,
+)
+def test_fp8_lighting_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
+                                    seq_len_kv: int, kv_group: int, clean_logits: bool,
+                                    config: Optional[dict], tune: bool) -> None:
+    test = Fp8LightingIndexerTest(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+                                  clean_logits, config)
     bm = Fp8LightingIndexerBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = Fp8LightingIndexerOp(seq_len, heads, index_dim, seq_len_kv, clean_logits, config,
-                               tune=tune)
+    op = Fp8LightingIndexerOp(batch=batch,
+                              seq_len=seq_len,
+                              heads=heads,
+                              index_dim=index_dim,
+                              seq_len_kv=seq_len_kv,
+                              kv_group=kv_group,
+                              clean_logits=clean_logits,
+                              config=config,
+                              tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("fp8_lighting_indexer", locals(), result, tag="tileops")
 
-    try:
-        result_bl = bm.profile(test.ref_program, *inputs)
-    except RuntimeError as e:
-        if "out of memory" not in str(e).lower():
-            raise
-        result_bl = None
-    if result_bl is not None:
-        BenchmarkReport.record("fp8_lighting_indexer", locals(), result_bl, tag="baseline")
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record("fp8_lighting_indexer", locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

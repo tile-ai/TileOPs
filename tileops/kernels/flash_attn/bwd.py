@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Callable, Optional, Tuple
 
@@ -117,6 +118,7 @@ class FlashAttnBwdPostprocessKernel(Kernel):
 # MHA
 
 
+@functools.lru_cache(maxsize=32)
 def _mha_bwd_kernel(batch: int,
                     heads: int,
                     seq_len: int,
@@ -279,6 +281,7 @@ class MhaBwdKernel(Kernel):
         return self.kernel(**self.config)(*inputs)
 
 
+@functools.lru_cache(maxsize=32)
 def _mha_bwd_wgmma_pipelined_kernel(batch: int,
                                     heads: int,
                                     seq_len: int,
@@ -464,6 +467,7 @@ class MhaBwdWgmmaPipelinedKernel(Kernel):
 # GQA
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_bwd_kernel(batch: int,
                     heads: int,
                     heads_kv: int,
@@ -473,7 +477,8 @@ def _gqa_bwd_kernel(batch: int,
                     dtype: str = "float16") -> Callable:
     sm_scale = (1.0 / dim)**0.5
     scale = (1.0 / dim)**0.5 * LOG2E
-    assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
 
@@ -626,6 +631,7 @@ class GqaBwdKernel(Kernel):
         return self.kernel(**self.config)(*inputs)
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_bwd_wgmma_pipelined_kernel(batch: int,
                                     heads: int,
                                     heads_kv: int,
@@ -635,7 +641,8 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch: int,
                                     dtype: str = "float16") -> Callable:
     sm_scale = (1.0 / dim)**0.5
     scale = (1.0 / dim)**0.5 * LOG2E
-    assert heads % heads_kv == 0, "heads must be divisible by heads_kv"
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
 

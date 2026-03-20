@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -11,6 +12,7 @@ from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax
 __all__ = ["gqa_decode_paged_kernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
     scale = make_log2e_scale(dim)
     accum_dtype = "float"
@@ -290,8 +292,10 @@ def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: i
                                block_table: torch.Tensor, glse: torch.Tensor,
                                Output_partial: torch.Tensor) -> torch.Tensor:
 
-    assert K.shape[0] == V.shape[0] == seqlen_kv, "error: dimension mismatch!"
-    assert K.shape[1] == V.shape[1] == groups, "error: groups mismatch!"
+    if not (K.shape[0] == V.shape[0] == seqlen_kv):
+        raise ValueError("error: dimension mismatch!")
+    if not (K.shape[1] == V.shape[1] == groups):
+        raise ValueError("error: groups mismatch!")
     real_max = real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
     chunk_size = real_max // (num_split * block_N) * block_N
     split_length = torch.full((batch, num_split), chunk_size, dtype=torch.int32, device=Q.device)

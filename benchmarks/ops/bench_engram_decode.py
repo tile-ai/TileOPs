@@ -5,7 +5,6 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_engram_decode import (
-    EngramDecodeFixture,
     EngramDecodeTest,
     _ref_engram_decode_step,
 )
@@ -38,7 +37,17 @@ class EngramDecodeBenchmark(BenchmarkBase):
                 + 2 * d + w * d + B * d) * elem
 
 
-@EngramDecodeFixture
+_ENGRAM_DECODE_BENCH_PARAMS = [
+    pytest.param(1, 512, 256, 12, 4, 3, torch.float16, True, id="fp16-mainstream"),
+    pytest.param(4, 1024, 512, 20, 4, 5, torch.float16, True, id="fp16-large"),
+    pytest.param(8, 512, 256, 18, 4, 3, torch.bfloat16, True, id="bf16-batched"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune",
+    _ENGRAM_DECODE_BENCH_PARAMS,
+)
 def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune):
     test = EngramDecodeTest(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
     bm = EngramDecodeBenchmark(test)

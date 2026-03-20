@@ -38,12 +38,18 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
   - Wrap the kernel in a Python function.
   - **Docstrings**: Google Style (Args, Returns, Example).
   - **Unit Test**: Compare output against a pure PyTorch reference implementation (required).
+  - **Dtype Contract**: Explicitly define supported input dtypes, output dtype, and rejected dtypes.
+  - **Parameter Contract**: Validate user-provided scalar parameters at the Op/API boundary against the effective kernel dtype. Invalid values must fail with a user-facing `ValueError` before any TIR/codegen step.
   - **Benchmark**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
 - **Standards**:
-  - Use `torch.testing.assert_close` for verification.
+  - Use `torch.testing.assert_close` for floating-point verification.
     - **FP16**: `rtol=1e-3`, `atol=1e-3`
     - **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
+  - Use exact comparison (`torch.equal`) for non-floating outputs such as `bool`, masks, and index tensors.
+  - Tests must assert the output dtype when it differs from the input dtype.
+  - GPU-dependent unit tests must be run on a real machine with host-visible CUDA devices. Do not treat sandbox-only results as final correctness evidence.
   - Benchmark results must be reproducible.
+  - Do not fix interface-contract bugs with kernel-local lowering workarounds. If a failure is caused by invalid user parameters, fix the validation boundary first and only touch kernels when the semantics are intentionally legal and documented.
 - **Definition of Done**: The op is verified in unit tests, and benchmarks run correctly.
 
 ### Step 3: Benchmark Results
@@ -51,7 +57,27 @@ Developing a new operator involves a bottom-up approach, moving from Kernel impl
 - **Location**: `benchmarks/ops/bench_{operator_name}.py`
 - **Goal**: Measure Latency, TFLOPS (required) and DRAM Bandwidth (required).
 - **Execution**: `pytest benchmarks/` auto-generates `profile_run.log`.
+- **Required Order**: Run the targeted correctness suite on the same real GPU machine before reporting benchmark numbers.
+- **Required Shapes**: Benchmark tables must include representative small, medium, and large shapes unless the issue explicitly defines a different benchmark matrix.
 - **Definition of Done**: Benchmark the op and put the results in the issue.
+
+### Step 4: PR Acceptance Package
+
+Every PR that adds a new op, expands dtype coverage, or changes semantic behavior must include the following in the PR description:
+
+1. A dtype support matrix that states the actual supported input dtypes, output dtype, and PyTorch or documented baseline semantics.
+1. A concrete acceptance checklist (`AC-1`, `AC-2`, ...) covering implementation, correctness tests, dtype contract checks, and benchmark deliverables.
+1. A benchmark comparison table with real measured data and environment metadata.
+
+Use the following benchmark table shape in the PR body:
+
+| Shape / Params | dtype | Op         | TileOPs (ms) | Baseline (ms) | Ratio | Notes |
+| -------------- | ----- | ---------- | ------------ | ------------- | ----- | ----- |
+| example        | fp16  | example_op | ...          | ...           | ...   | ...   |
+
+The PR body should stay concise: keep the summary, dtype matrix, acceptance checklist, and benchmark table. Do not paste long verification command transcripts into the PR description unless the reviewer explicitly asks for them.
+
+If the implementation is correctness-first and performance follow-up is deferred, state that explicitly in the PR body and link the follow-up issue. Do not leave the benchmark section implicit.
 
 ______________________________________________________________________
 
@@ -130,6 +156,10 @@ def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
   - Each op defines a `TestBase` subclass in `tests/ops/` with `gen_inputs()` and `ref_program()`.
   - Tests must cover `FP16` and `BF16` data types.
   - Tests must parameterize over common shapes (Batch size, Heads, Sequence length).
+  - Tests must encode the dtype contract explicitly: supported dtypes are covered, unsupported dtypes are rejected, and output dtypes are asserted.
+  - Changes to shared test infrastructure such as `tests/test_base.py`, common fixtures, or shared comparators must preserve existing default semantics unless the migration plan updates all affected tests in the same PR.
+  - Before claiming the implementation is ready, run the full targeted test files for the affected op family on a real GPU machine, not just reject-path or smoke subsets.
+  - If a PR touches shared test infrastructure, also run a broader real-machine `pytest -m smoke` pass before merge to catch regressions outside the target op family.
 
 ### Benchmarks
 
@@ -140,6 +170,10 @@ def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
   - Latency (ms)
   - TFLOPS (Terra Floating-point Operations Per Second)
   - DRAM Bandwidth (GB/s)
+- **Reporting Rules**:
+  - Benchmark numbers reported in PRs and issues must come from a real GPU machine, not a sandbox without direct CUDA visibility.
+  - Report small, medium, and large representative shapes.
+  - Do not cherry-pick only favorable shapes; if a representative large-shape result regresses versus baseline, report it as-is.
 
 ______________________________________________________________________
 

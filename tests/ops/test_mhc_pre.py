@@ -14,9 +14,9 @@ from tileops.ops import ManifoldConstrainedHyperConnectionPreOp
 class MhcPreFixture(FixtureBase):
     PARAMS = [
         ("batch, n_expand, c_x, dtype, tune", [
-            (1, 4, 1280, torch.bfloat16, False),
-            (2, 4, 1920, torch.bfloat16, False),
-            (4, 4, 2560, torch.bfloat16, False),
+            pytest.param(1, 4, 1280, torch.bfloat16, False, marks=pytest.mark.smoke),
+            pytest.param(2, 4, 1920, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(4, 4, 2560, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 

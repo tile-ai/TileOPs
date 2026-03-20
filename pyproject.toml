@@ -34,6 +34,7 @@ dev = [
     "ruff==0.14.13",
     "codespell==2.4.1",
     "pytest>=8.0",
+    "pytest-xdist>=3.0",
 ]
 
 [build-system]
@@ -108,3 +109,8 @@ known-first-party = ["tileops"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py", "bench_*.py"]
+markers = [
+    "smoke: fast PR critical-path tests",
+    "full: standard correctness coverage",
+    "nightly: exhaustive or long-running coverage",
+]

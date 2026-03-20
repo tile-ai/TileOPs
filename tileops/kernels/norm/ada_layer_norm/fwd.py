@@ -16,6 +16,7 @@ computation subtracts the exact padding bias to keep results numerically stable
 even for large-offset inputs.
 """
 
+import functools
 import itertools
 from typing import Optional
 
@@ -34,6 +35,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
+@functools.lru_cache(maxsize=32)
 def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False):
     N_padded = _align_up(N, ALIGNMENT)
     pad_count = N_padded - N  # number of zero-padded elements per row

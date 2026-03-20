@@ -5,7 +5,6 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_engram_fwd import (
-    EngramGateConvFwdFixture,
     EngramGateConvFwdTest,
     ref_engram_gate_conv_fwd,
 )
@@ -36,7 +35,15 @@ class EngramGateConvFwdBenchmark(BenchmarkBase):
         return (5 * M * T * d) * elem + 4 * M * T * 4 + 6 * d * elem
 
 
-@EngramGateConvFwdFixture
+_ENGRAM_GATE_CONV_FWD_BENCH_PARAMS = [
+    pytest.param(1, 32, 256, torch.float16, True, id="fp16-small"),
+    pytest.param(2, 64, 512, torch.float16, True, id="fp16-mainstream"),
+    pytest.param(1, 128, 256, torch.bfloat16, True, id="bf16-long-seq"),
+    pytest.param(2, 16, 256, torch.bfloat16, True, id="bf16-batched"),
+]
+
+
+@pytest.mark.parametrize("M, seq_len, d, dtype, tune", _ENGRAM_GATE_CONV_FWD_BENCH_PARAMS)
 def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype, tune):
     test = EngramGateConvFwdTest(M, seq_len, d, dtype)
     bm = EngramGateConvFwdBenchmark(test)

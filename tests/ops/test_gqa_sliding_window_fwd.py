@@ -12,26 +12,26 @@ class GqaSlidingWindowFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune", [
             # ── Basic correctness ─────────────────────────────────────────────
-            (2, 512,  8, 2,  64, True,  -1,  -1, torch.float16, False),  # causal full
-            (2, 512,  8, 2,  64, True,  128, -1, torch.float16, False),  # causal + left window
-            (2, 512,  8, 2,  64, False, -1,  -1, torch.float16, False),  # bidirectional full
-            (2, 512,  8, 2,  64, False, 64,  64, torch.float16, False),  # bidirectional window
-            (2, 128,  8, 1, 128, True,   1,  -1, torch.float16, False),  # tiny left window
+            pytest.param(2, 512,  8, 2,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(2, 512,  8, 2,  64, True,  128, -1, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 512,  8, 2,  64, False, -1,  -1, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 512,  8, 2,  64, False, 64,  64, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 128,  8, 1, 128, True,   1,  -1, torch.float16, False, marks=pytest.mark.full),
             # ── dtype ─────────────────────────────────────────────────────────
-            (2, 512,  8, 2,  64, True,  -1,  -1, torch.bfloat16, False),  # bfloat16 causal
-            (2, 512,  8, 2,  64, False, 64,  64, torch.bfloat16, False),  # bfloat16 window
+            pytest.param(2, 512,  8, 2,  64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(2, 512,  8, 2,  64, False, 64,  64, torch.bfloat16, False, marks=pytest.mark.full),
             # ── GQA ratio ─────────────────────────────────────────────────────
-            (2, 512,  8, 8,  64, True,  -1,  -1, torch.float16, False),  # MHA (ratio 1:1)
-            (2, 512, 16, 1,  64, True,  -1,  -1, torch.float16, False),  # ratio 16:1
+            pytest.param(2, 512,  8, 8,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 512, 16, 1,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),
             # ── Non-power-of-2 sequence lengths ───────────────────────────────
-            (2, 384,  8, 2,  64, True,  -1,  -1, torch.float16, False),  # seq=384
-            (2, 768,  8, 2,  64, False, 256, -1, torch.float16, False),  # seq=768 + left window
+            pytest.param(2, 384,  8, 2,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 768,  8, 2,  64, False, 256, -1, torch.float16, False, marks=pytest.mark.full),
             # ── Large sequence ─────────────────────────────────────────────────
-            (1, 2048, 8, 2,  64, True,  512, -1, torch.float16, False),  # long causal + window
+            pytest.param(1, 2048, 8, 2,  64, True,  512, -1, torch.float16, False, marks=pytest.mark.full),
             # ── Right window only ──────────────────────────────────────────────
-            (2, 512,  8, 2,  64, False, -1,  64, torch.float16, False),  # right window only
+            pytest.param(2, 512,  8, 2,  64, False, -1,  64, torch.float16, False, marks=pytest.mark.full),
             # ── wl=0 boundary: only current-position left context ─────────────
-            (2, 256,  8, 2,  64, True,   0,  -1, torch.float16, False),  # causal + wl=0
+            pytest.param(2, 256,  8, 2,  64, True,   0,  -1, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -131,6 +131,7 @@ def test_gqa_sliding_window_fwd_op(
 class TestGqaSlidingWindowFwdOpMetrics:
     """Unit tests for total_flops and total_memory correctness."""
 
+    @pytest.mark.smoke
     def test_total_flops_causal_wl0(self):
         """is_causal=True, wl=0: every query attends only to itself (eff_kv=1)."""
         B, S, H, Hkv, D = 2, 256, 8, 2, 64
@@ -140,6 +141,7 @@ class TestGqaSlidingWindowFwdOpMetrics:
         expected = 4 * B * H * S * 1 * D   # total_attended = S * 1
         assert op.total_flops == expected, f"got {op.total_flops}, expected {expected}"
 
+    @pytest.mark.smoke
     def test_total_flops_causal_finite_window(self):
         """is_causal=True, wl=128, S=512: window limits left context, not S//2."""
         B, S, H, Hkv, D = 1, 512, 8, 2, 64
@@ -151,6 +153,7 @@ class TestGqaSlidingWindowFwdOpMetrics:
         expected = 4 * B * H * total_attended * D
         assert op.total_flops == expected, f"got {op.total_flops}, expected {expected}"
 
+    @pytest.mark.smoke
     def test_total_memory_gqa(self):
         """For GQA (heads > heads_kv), Q and O must use heads, not heads_kv."""
         B, S, H, Hkv, D = 2, 512, 8, 2, 64
@@ -168,12 +171,14 @@ class TestGqaSlidingWindowFwdOpValidation:
 
     # ── window_size validation (caught in __init__, no GPU kernel needed) ─────
 
+    @pytest.mark.smoke
     def test_invalid_window_size_left_raises(self):
         with pytest.raises(ValueError, match="window_size_left"):
             GqaSlidingWindowFwdOp(
                 batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
                 is_causal=True, window_size_left=-2)
 
+    @pytest.mark.smoke
     def test_invalid_window_size_right_raises(self):
         with pytest.raises(ValueError, match="window_size_right"):
             GqaSlidingWindowFwdOp(
@@ -188,6 +193,7 @@ class TestGqaSlidingWindowFwdOpValidation:
             batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
             is_causal=True, dtype=torch.float16)
 
+    @pytest.mark.smoke
     def test_dtype_mismatch_raises(self, float16_op):
         q = torch.randn(1, 64, 4, 64, dtype=torch.bfloat16, device="cuda")
         k = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device="cuda")
@@ -195,6 +201,7 @@ class TestGqaSlidingWindowFwdOpValidation:
         with pytest.raises(ValueError, match="dtype"):
             float16_op.forward(q, k, v)
 
+    @pytest.mark.smoke
     def test_cpu_tensor_raises(self, float16_op):
         q = torch.randn(1, 64, 4, 64, dtype=torch.float16)   # CPU
         k = torch.randn(1, 64, 2, 64, dtype=torch.float16)
