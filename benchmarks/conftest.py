@@ -28,12 +28,13 @@ def pytest_runtest_call(item):
     if not entries:
         return
 
-    # Find tileops entry and baseline entries.
+    # Separate tileops entry (tag starts with "tileops") from baselines.
     tileops_entry = None
     baseline_entries = []
     for e in entries:
-        if e["tag"] == "tileops":
-            tileops_entry = e
+        if e["tag"].startswith("tileops"):
+            if tileops_entry is None:
+                tileops_entry = e
         else:
             baseline_entries.append(e)
 
@@ -50,7 +51,9 @@ def pytest_runtest_call(item):
         if bw is not None:
             item.user_properties.append(("tileops_bandwidth_tbs", f"{bw:.2f}"))
 
-    for be in baseline_entries:
+    # Use the first baseline only to avoid duplicate property names in JUnit XML.
+    if baseline_entries:
+        be = baseline_entries[0]
         tag = be["tag"]
         item.user_properties.append(("baseline_tag", tag))
         item.user_properties.append(("baseline_latency_ms",
@@ -59,7 +62,6 @@ def pytest_runtest_call(item):
         if bl_tflops is not None:
             item.user_properties.append(("baseline_tflops", f"{bl_tflops:.2f}"))
 
-        # Compute baseline ratio if both tileops and baseline have latency.
         if tileops_entry:
             tl = tileops_entry.get("latency_ms", 0)
             bl = be.get("latency_ms", 0)
