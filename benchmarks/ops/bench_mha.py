@@ -88,12 +88,12 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
 
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("mha_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     baseline_fn = _baseline_mha_fwd(test)
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
-        BenchmarkReport.record("mha_fwd", locals(), result_bl, tag="FA3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="FA3")
 
 
 _MHA_BWD_BENCH_PARAMS = _MHA_FWD_BENCH_PARAMS
@@ -108,12 +108,12 @@ def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
 
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("mha_bwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     baseline_fn = _baseline_mha_bwd(test)
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
-        BenchmarkReport.record("mha_bwd", locals(), result_bl, tag="FA3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="FA3")
 
 
 if __name__ == "__main__":

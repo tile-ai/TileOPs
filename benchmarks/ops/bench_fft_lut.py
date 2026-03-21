@@ -48,14 +48,14 @@ def test_fft_lut_bench(n: int, dtype: torch.dtype, tune: bool) -> None:
 
     op_lut = FFTC2CLUTOp(n, dtype=dtype, tune=tune)
     result_lut = bm.profile(op_lut, *inputs)
-    BenchmarkReport.record("fft_c2c_lut", locals(), result_lut, tag="tileops-lut")
+    BenchmarkReport.record(op_lut, locals(), result_lut, tag="tileops-lut")
 
     op_base = FFTC2COp(n, dtype=dtype, tune=tune)
     result_base = bm.profile(op_base, *inputs)
-    BenchmarkReport.record("fft_c2c_lut", locals(), result_base, tag="tileops-base")
+    BenchmarkReport.record(op_base, locals(), result_base, tag="tileops-base")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("fft_c2c_lut", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_lut, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

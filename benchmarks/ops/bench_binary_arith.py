@@ -389,13 +389,13 @@ def test_add_bench(n_total: int, dtype: torch.dtype) -> None:
     shape = (n_total,)
     op = AddOp(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("add", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(a, b):
         return a + b
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("add", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

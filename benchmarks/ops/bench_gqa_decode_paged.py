@@ -46,10 +46,10 @@ def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv
     op = GroupQueryAttentionDecodePagedWithKVCacheOp(
         batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gqa_decode_paged", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("gqa_decode_paged", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

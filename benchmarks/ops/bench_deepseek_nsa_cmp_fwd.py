@@ -52,10 +52,10 @@ def test_nsa_cmp_fwd_bench(seq_num: int, c_seq_len: int, heads: int, dim_k: int,
         bc=test.bc, bs=test.bs, bk=test.bk, bv=test.bv, dtype=test.dtype,
         accum_dtype=test.accum_dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("nsa_cmp_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("nsa_cmp_fwd", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

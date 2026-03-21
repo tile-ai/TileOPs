@@ -120,7 +120,7 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     torch.cuda.synchronize()
 
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gqa_sliding_window_varlen_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # FA3 baseline
     max_seqlen_k = max(seqlens_k)

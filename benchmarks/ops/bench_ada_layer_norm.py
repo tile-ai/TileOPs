@@ -59,7 +59,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
 
     op = AdaLayerNormOp(M=m, N=n, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("ada_layer_norm", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: PyTorch composite F.layer_norm + arithmetic
     def baseline_fn(x, scale, shift):
@@ -67,7 +67,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
         return scale * normed + shift
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("ada_layer_norm", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 _ADA_LAYER_NORM_ZERO_BENCH_PARAMS = _ADA_LAYER_NORM_BENCH_PARAMS
@@ -81,7 +81,7 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
 
     op = AdaLayerNormZeroOp(M=m, N=n, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("ada_layer_norm_zero", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: PyTorch composite F.layer_norm + arithmetic + gate
     def baseline_fn(x, scale, shift, gate):
@@ -89,7 +89,7 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
         return gate * (scale * normed + shift)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("ada_layer_norm_zero", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

@@ -507,6 +507,49 @@ jobs:
           python -m pytest tests/ -v --tb=short --junit-xml=test_results.xml | tee tileops_op_test.log
         shell: bash
 
+      - name: Download benchmark artifacts
+        uses: actions/download-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: tileops_benchmark_${{ github.run_id }}
+        continue-on-error: true
+
+      - name: Download previous perf history
+        uses: actions/download-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: tileops_perf_history
+          path: .perf_history
+        continue-on-error: true
+
+      - name: Generate nightly report
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          source "${VENV_PATH}/bin/activate"
+          current_dir="$(pwd)"
+          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
+
+          HISTORY_FLAG=""
+          if [ -f .perf_history/perf_history.json ]; then
+            HISTORY_FLAG="--history .perf_history/perf_history.json"
+          fi
+
+          # shellcheck disable=SC2086
+          python scripts/nightly_report.py \
+            --test-xml test_results.xml \
+            --bench-xml bench_results.xml \
+            ${HISTORY_FLAG} \
+            --output nightly_report.md \
+            --history-out perf_history.json \
+            || echo "::warning::nightly_report.py failed"
+        shell: bash
+
+      - name: Post nightly report to step summary
+        if: ${{ always() && hashFiles('nightly_report.md') != '' }}
+        run: cat nightly_report.md >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
       - name: Upload op test artifacts
         uses: actions/upload-artifact@v4
         if: ${{ always() }}
@@ -515,7 +558,17 @@ jobs:
           path: |
             test_results.xml
             tileops_op_test.log
+            nightly_report.md
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload perf history
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && hashFiles('perf_history.json') != '' }}
+        with:
+          name: tileops_perf_history
+          path: perf_history.json
+          overwrite: true
           retention-days: 14
 
       - name: Fail op test job if pytest failed
