@@ -1,0 +1,4 @@
+- `BenchmarkReport.record()` first argument must be the Op object, never a string literal. This enables automatic Op metadata extraction for the nightly report.
+- Every benchmark function must record at least one baseline with a tag other than `"tileops"`. If an external baseline (FA3, fla) is conditional on library availability, add `test.ref_program` as a torch fallback in the `else` branch.
+- Use specific baseline tag names (`"torch"`, `"FA3"`, `"fla"`, `"triton"`), not generic `"baseline"`. Tags starting with `"tileops"` (e.g. `"tileops-lut"`) are treated as TileOPs entries; all other tags are treated as baselines.
+- `calculate_flops()` and `calculate_memory()` must return non-None values. The nightly report uses these to compute TFLOPS and bandwidth columns.
