@@ -25,6 +25,7 @@ from pathlib import Path
 
 REGRESSION_THRESHOLD = 0.10  # 10% latency increase => regression
 REGRESSION_ABS_MIN = 0.01  # ignore regressions < 0.01 ms
+NOISE_FLOOR = 0.05  # ignore <=5% fluctuations (measurement noise)
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 HISTORY_RETENTION_DAYS = 14
 
@@ -199,7 +200,9 @@ def detect_regressions(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
             if best is None:
                 continue
             delta = (lat - best) / best
-            if delta > REGRESSION_THRESHOLD and (lat - best) > REGRESSION_ABS_MIN:
+            if (delta > REGRESSION_THRESHOLD
+                    and delta > NOISE_FLOOR
+                    and (lat - best) > REGRESSION_ABS_MIN):
                 regressions.append({
                     "op": op,
                     "config": cfg["name"],
@@ -223,7 +226,7 @@ def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]
             if best is None:
                 continue
             delta = (lat - best) / best
-            if delta < -REGRESSION_THRESHOLD:
+            if delta < -REGRESSION_THRESHOLD and abs(delta) > NOISE_FLOOR:
                 improvements.append({
                     "op": op,
                     "config": cfg["name"],
