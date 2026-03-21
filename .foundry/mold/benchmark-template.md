@@ -43,7 +43,7 @@ def test_my_op_bench(...):
     baseline_fn = _external_baseline(test)  # e.g. FA3/fla
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="FA3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="FA3")  # Update tag to match baseline
     else:
         result_bl = bm.profile(test.ref_program, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
