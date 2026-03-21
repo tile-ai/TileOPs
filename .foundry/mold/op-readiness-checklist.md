@@ -36,7 +36,8 @@
 - [ ] [REQ] `benchmarks/ops/bench_<op>.py` exists, inherits `BenchmarkBase`
 - [ ] [REQ] `calculate_flops()` and `calculate_memory()` return non-None
 - [ ] [REQ] ≥3 shapes × all `SUPPORTED_DTYPES`; include non-pow2 if supported
-- [ ] [REQ] Baseline: new ops → PyTorch required; modifications → before/after required, PyTorch recommended
+- [ ] [REQ] `BenchmarkReport.record(op, ...)` uses Op object as first argument, not a string
+- [ ] [REQ] At least one baseline recorded; if external baseline is conditional, torch fallback in `else` branch
 - [ ] [REQ] Metrics: latency (ms), bandwidth (TB/s), TFLOPs + issue-specific metrics
 - [ ] [REQ] PR body `## Benchmark`: environment + table + command + **Takeaways**
 - [ ] [REC] Benchmark with default parameter values; multiple values recommended
