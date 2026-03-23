@@ -18,21 +18,38 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 class FusedAddLayerNormOp(Op):
-    """Fused Add + LayerNorm forward operator.
+    """Fused residual addition and Layer Normalization operator.
 
-    y = LayerNorm(x + residual)
+    Computes the residual sum followed by layer normalization in a single
+    fused kernel:
 
-    Returns dual outputs ``(y, x + residual)`` so downstream residual
-    connections can reuse the pre-norm sum without recomputation.
+    .. math::
 
-    Supports arbitrary leading dimensions (3D+) via flatten/unflatten.
-    Handles non-contiguous inputs and non-power-of-two hidden dims.
+        \\begin{aligned}
+        r &= x + \\mathrm{residual} \\\\
+        y &= \\frac{r - \\mathrm{E}[r]}{\\sqrt{\\mathrm{Var}[r] + \\epsilon}}
+            \\cdot w + b
+        \\end{aligned}
+
+    Returns dual outputs ``(y, residual_out)`` so downstream residual connections can
+    reuse the pre-norm sum without recomputation.
+
+    Supported dtypes:
+        ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
+
+    Note:
+        Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
+        Handles non-contiguous inputs and non-power-of-two hidden dims
+        by padding to 256-element alignment.
 
     Args:
-        M: Number of rows (product of all dims except last).
+        M: Number of rows (product of all dims except the last).
         N: Hidden dimension (last dim).
-        dtype: Data type (float32, float16, or bfloat16).
-        eps: Epsilon for numerical stability (default 1e-5).
+        dtype: Data type (``torch.float32``, ``torch.float16``, or
+            ``torch.bfloat16``).
+        eps: Epsilon for numerical stability.
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
@@ -65,6 +82,23 @@ class FusedAddLayerNormOp(Op):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply fused residual addition and layer normalization.
+
+        Args:
+            x: Input tensor of shape ``(*leading, N)`` on CUDA.
+            residual: Residual tensor of the same shape as *x* on CUDA.
+            weight: Affine scale of shape ``(N,)`` on CUDA.
+            bias: Affine shift of shape ``(N,)`` on CUDA.
+
+        Returns:
+            Tuple of ``(y, residual_out)`` where *y* is the normalized
+            output and *residual_out* is ``x + residual``, both of the
+            same shape as *x*.
+
+        Raises:
+            ValueError: If tensors are not on CUDA, dtypes mismatch,
+                or shapes are incompatible with the configured dimensions.
+        """
         for name, tensor in [("x", x), ("residual", residual), ("weight", weight), ("bias", bias)]:
             if not tensor.is_cuda:
                 raise ValueError(f"{name} must be a CUDA tensor")
