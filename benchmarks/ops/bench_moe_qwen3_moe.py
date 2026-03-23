@@ -246,7 +246,7 @@ def test_qwen3_moe_bench(
     if _VLLM_AVAILABLE and scoring_func == "softmax":
         def _vllm_fn(hidden, gating, w_gate_up, w_down):
             return _vllm_fused_experts(
-                hidden.float(), w_gate_up.float(), w_down.float(),
+                hidden, w_gate_up, w_down,
                 topk_weights, topk_ids,
             )
 
