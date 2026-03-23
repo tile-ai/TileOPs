@@ -130,7 +130,7 @@ class SsdChunkStateFwdTest(TestBase):
         seq_len = c * Q
         x = torch.randn(b, seq_len, h, p, dtype=self.dtype, device="cuda") * 0.1
         Bmat = torch.randn(b, seq_len, g, n, dtype=self.dtype, device="cuda") * 0.1
-        # dA_cumsum: monotonically non-decreasing (negative values, cumsum of negatives)
+        # dA_cumsum: monotonically non-increasing (negative values, cumsum of negatives)
         dA_cumsum = -torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda").cumsum(-1)
         dt = torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda") * 0.1 + 0.01
         seq_idx = None
@@ -156,6 +156,6 @@ def test_ssd_chunk_state_fwd(
         has_seq_idx=has_seq_idx, tune=tune,
     )
     inputs = test.gen_inputs()
-    atol = 1e-1 if dtype == torch.float16 else 2e-1
-    rtol = 1e-1
+    atol = 1e-3 if dtype == torch.float16 else 1.6e-2
+    rtol = 1e-3
     test.check(op, *inputs, atol=atol, rtol=rtol)

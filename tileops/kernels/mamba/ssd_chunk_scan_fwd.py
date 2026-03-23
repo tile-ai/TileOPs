@@ -186,6 +186,16 @@ def _ssd_chunk_scan_fwd_kernel(
                 x_tile = T.alloc_shared((block_s, block_p), dtype)
                 dA_s = T.alloc_fragment((block_s,), accum_dtype)
                 lcb = T.alloc_fragment((block_l, block_s), accum_dtype)
+                # lcb_cast holds lcb downcast to dtype for gemm.
+                # TileLang requires A.dtype == B.dtype for T.gemm, and x_tile is dtype
+                # (fp16/bf16).  Both Part 1 and Part 2 share the same `acc` fragment;
+                # changing the input dtype of the Part-2 gemm (e.g. to float32) would
+                # alter the fragment layout inferred for `acc`, conflicting with the
+                # layout from Part-1's gemm_ss (fp16/bf16 × fp16/bf16 → fp32).
+                # The precision loss here is bounded: cb_tile is already fp16/bf16,
+                # so lcb is limited by that quantization anyway.
+                # TODO: if TileLang adds mixed-precision gemm or a way to pin fragment
+                # layouts, remove this cast and use lcb directly.
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
                 dt_tile = T.alloc_fragment((block_s,), accum_dtype)
 

@@ -73,6 +73,6 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
     test = SsdStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
     op = SsdStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
     inputs = test.gen_inputs()
-    atol = 1e-1 if dtype == torch.float16 else 2e-1
-    rtol = 1e-1
+    atol = 1e-3 if dtype == torch.float16 else 1.6e-2
+    rtol = 1e-3
     test.check(op, *inputs, atol=atol, rtol=rtol)

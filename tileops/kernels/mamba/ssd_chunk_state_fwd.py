@@ -191,7 +191,11 @@ def _ssd_chunk_state_fwd_kernel(
                             T.float32(0.0),
                         )
                         if has_seq_idx:
-                            same_seq = seq_idx[bz, chunk_start + l_idx] == seq_end
+                            same_seq = T.if_then_else(
+                                in_bounds,
+                                seq_idx[bz, chunk_start + l_idx] == seq_end,
+                                T.bool(False),
+                            )
                             decay_tile[ll] = T.if_then_else(
                                 same_seq,
                                 T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l,
