@@ -314,38 +314,6 @@ jobs:
           python -m pytest -q benchmarks/ops --junit-xml=bench_results.xml | tee tileops_benchmarks.log
         shell: bash
 
-      - name: Benchmark step summary
-        if: ${{ always() }}
-        run: |
-          {
-            echo "## Benchmark Results"
-            echo ""
-            if [ ! -f bench_results.xml ]; then
-              echo "No bench_results.xml found — benchmark step did not produce output."
-            else
-              TOTAL=0; FAILURES=0; ERRORS=0; SKIPPED=0
-              while IFS= read -r _line; do
-                if [[ "$_line" == *'<testsuite '* && "$_line" != *'<testsuites'* ]]; then
-                  [[ "$_line" =~ [[:space:]]tests=\"([0-9]+)\" ]]    && TOTAL=$((TOTAL + BASH_REMATCH[1]))
-                  [[ "$_line" =~ [[:space:]]failures=\"([0-9]+)\" ]] && FAILURES=$((FAILURES + BASH_REMATCH[1]))
-                  [[ "$_line" =~ [[:space:]]errors=\"([0-9]+)\" ]]   && ERRORS=$((ERRORS + BASH_REMATCH[1]))
-                  [[ "$_line" =~ [[:space:]]skipped=\"([0-9]+)\" ]]  && SKIPPED=$((SKIPPED + BASH_REMATCH[1]))
-                fi
-              done < bench_results.xml
-              PASSED=$((TOTAL - FAILURES - ERRORS - SKIPPED))
-              if [ "$((FAILURES + ERRORS))" -eq 0 ]; then
-                echo "✅ All passed"
-              else
-                echo "❌ Failures detected"
-              fi
-              echo ""
-              printf "| Tests | Passed | Failed | Errors | Skipped |\n"
-              printf "|-------|--------|--------|--------|----------|\n"
-              printf "| %s | %s | %s | %s | %s |\n" "$TOTAL" "$PASSED" "$FAILURES" "$ERRORS" "$SKIPPED"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-        shell: bash
-
       - name: Merge benchmark profile summary
         if: ${{ always() }}
         run: |

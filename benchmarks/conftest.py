@@ -42,6 +42,9 @@ def pytest_runtest_call(item):
         item.user_properties.append(("op", tileops_entry["op"]))
         if "op_module" in tileops_entry:
             item.user_properties.append(("op_module", tileops_entry["op_module"]))
+        tag = tileops_entry["tag"]
+        if tag != "tileops" and tag.startswith("tileops_"):
+            item.user_properties.append(("tileops_variant", tag[len("tileops_"):]))
         item.user_properties.append(("tileops_latency_ms",
                                      f"{tileops_entry.get('latency_ms', 0):.4f}"))
         tflops = tileops_entry.get("tflops")
