@@ -1900,7 +1900,7 @@ class ParametricUnaryKernel(Kernel):
     Optional overrides:
     - ``_DEFAULT_THREADS``: class-level default thread count (default 256).
     - ``_NPT_FP8``: npt when dtype is fp8 but not fp32 (default 16).
-    - ``_NPT_NON_FP32``: npt for non-fp32, non-fp8 (default 16).
+    - ``_NPT_NON_FP32``: npt for non-fp32, non-fp8 (default 8).
     - ``_skip_fp8_output``: set to ``True`` if the kernel should *not*
       use ``_get_fp8_output_dtypes`` (e.g. Where, which is a pure selection
       op). When True, ``_fp8_output_dtype`` is ``None``.
@@ -1911,7 +1911,7 @@ class ParametricUnaryKernel(Kernel):
 
     _DEFAULT_THREADS: int = 256
     _NPT_FP8: int = 16
-    _NPT_NON_FP32: int = 16
+    _NPT_NON_FP32: int = 8
     _skip_fp8_output: bool = False
 
     def __init__(self, N_total, dtype, config=None, tune=False):
@@ -2445,7 +2445,6 @@ class WhereKernel(ParametricUnaryKernel):
     """Where: out = cond ? x : y."""
 
     _DEFAULT_THREADS = 512
-    _NPT_NON_FP32 = 8
     _skip_fp8_output = True
 
     @staticmethod
@@ -2613,7 +2612,6 @@ class MaskedFillKernel(ParametricUnaryKernel):
     """MaskedFill: out = mask ? fill_value : x."""
 
     _DEFAULT_THREADS = 512
-    _NPT_NON_FP32 = 8
 
     def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
         self._raw_fill_value = fill_value
