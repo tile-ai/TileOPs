@@ -1,8 +1,14 @@
-"""Benchmark for MoePermuteOp (cutlass path).
+"""Benchmark for MoePermuteOp.
 
 Baselines:
-  - vLLM moe_permute (optional): only runs when vllm is installed.
   - PyTorch reference: pure Python counting sort + gather.
+
+Note: vLLM moe_permute is not included as a baseline because after the
+padded-layout refactor, TileOPs' MoePermuteOp outputs a padding-aligned
+buffer ([padded_batch_sum, H]) and fwd_idx, while vLLM's moe_permute
+outputs a non-padded buffer ([T*K, H]) with different index semantics.
+The two are no longer functionally equivalent and cannot be meaningfully
+compared in isolation; use bench_moe_qwen3_moe.py for end-to-end comparison.
 
 Usage:
     conda run -n tileops python -m pytest benchmarks/ops/bench_moe_permute.py -vvs
@@ -13,14 +19,6 @@ from typing import Optional
 
 import pytest
 import torch
-
-try:
-    from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
-        moe_permute as _vllm_moe_permute,
-    )
-    _VLLM_AVAILABLE = True
-except ImportError:
-    _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_moe_permute import MoePermuteTest, _ref_moe_permute
@@ -91,10 +89,11 @@ class MoePermuteBenchmark(BenchmarkBase):
         numel = t.total_tokens * t.top_k
         H = t.hidden_size
         elem_bytes = 2  # bf16
-        # hidden_states read [T, H] + permuted_hidden write [T*K, H]
-        # + expert_first_token_offset write [E+1]*8 + inv_permuted_idx write [T*K]*4
+        # hidden_states read [T, H] + perm_h_pad write [T*K, H] (actual tokens only, pads are zero-init)
+        # + expert_first_token_offset write [E+1]*8 + fwd_idx write [T*K]*4
+        # + padded_offsets write [E]*4 + padded_sizes write [E]*4
         return (t.total_tokens * H + numel * H) * elem_bytes + \
-               (t.num_experts + 1) * 8 + numel * 4
+               (t.num_experts + 1) * 8 + numel * 4 + t.num_experts * 4 * 2
 
 
 # ---------------------------------------------------------------------------
@@ -128,19 +127,6 @@ def test_moe_permute_bench(
 
     result_ref = bm.profile(_ref_fn, hidden_states, topk_ids)
     BenchmarkReport.record("moe_permute", locals(), result_ref, tag="pytorch-ref")
-
-    # vLLM baseline (optional)
-    if _VLLM_AVAILABLE:
-        def _vllm_fn(hidden_states, topk_ids):
-            return _vllm_moe_permute(
-                hidden_states, None, topk_ids, num_experts, top_k
-            )
-
-        _vllm_fn(hidden_states, topk_ids)  # warmup
-        torch.cuda.synchronize()
-
-        result_vllm = bm.profile(_vllm_fn, hidden_states, topk_ids)
-        BenchmarkReport.record("moe_permute", locals(), result_vllm, tag="vllm")
 
 
 if __name__ == "__main__":
