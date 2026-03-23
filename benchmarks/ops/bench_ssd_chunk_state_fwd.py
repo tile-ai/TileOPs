@@ -61,7 +61,7 @@ def test_ssd_chunk_state_fwd_bench(
         has_seq_idx=has_seq_idx, tune=tune,
     )
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("ssd_chunk_state_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(x, Bmat, dt, dA_cumsum, seq_idx):
         return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, n_groups=n_groups, seq_idx=seq_idx)

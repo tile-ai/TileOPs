@@ -58,7 +58,7 @@ def test_ssd_chunk_scan_fwd_bench(batch, num_chunks, chunk_len, n_heads, d_head,
 
     op = SsdChunkScanFwdOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("ssd_chunk_scan_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(*args):
         return ssd_chunk_scan_fwd_ref(*args)

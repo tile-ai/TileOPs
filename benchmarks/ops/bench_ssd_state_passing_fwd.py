@@ -43,7 +43,7 @@ def test_ssd_state_passing_fwd_bench(batch, num_chunks, n_heads, d_state, dtype,
 
     op = SsdStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("ssd_state_passing_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(states, dA_chunk_cumsum, initial_states):
         return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
