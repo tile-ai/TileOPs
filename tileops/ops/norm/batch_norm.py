@@ -377,8 +377,6 @@ def _patched_fwd_init(self, *args, **kwargs):
 
 BatchNormFwdOp.__init__ = _patched_fwd_init
 
-_orig_fwd_forward = BatchNormFwdOp.forward
-
 
 def _patched_fwd_forward(self, x, weight, bias, running_mean, running_var, training=True):
     y, mean, rstd = _batch_norm_fwd_wrapped(
@@ -457,8 +455,6 @@ def _patched_bwd_init(self, *args, **kwargs):
 
 
 BatchNormBwdOp.__init__ = _patched_bwd_init
-
-_orig_bwd_forward = BatchNormBwdOp.forward
 
 
 def _patched_bwd_forward(self, grad_out, x, weight, mean, rstd):
