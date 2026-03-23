@@ -52,10 +52,10 @@ def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group
         out_dtype=out_dtype,
         tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("topk_selector", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("topk_selector", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

@@ -59,10 +59,10 @@ def test_dsa_decode_bench(batch: int, heads: int, seq_len_q: int, seq_len_kv: in
         batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("dsa_decode", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("dsa_decode", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

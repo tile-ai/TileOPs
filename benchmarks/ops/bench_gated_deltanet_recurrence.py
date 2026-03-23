@@ -62,10 +62,10 @@ def test_gated_deltanet_decode_bench(
 
     op = GatedDeltaNetDecodeOp(batch, heads, dim_k, dim_v, dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gated_deltanet_decode", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("gated_deltanet_decode", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

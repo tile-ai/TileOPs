@@ -122,7 +122,7 @@ def test_gla_fwd_bench(
     op = GLAFwdOp(batch, seq_len, heads, dim_k, dim_v, chunk_size,
                    scale=scale, dtype=dtype, tune=tune)
     result = bm.profile(op.forward, *inputs)
-    BenchmarkReport.record("gla_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     if chunk_gla is not None:
         # --- FLA ---
@@ -132,11 +132,11 @@ def test_gla_fwd_bench(
             return chunk_gla(q, k, v, g, scale=scale)
 
         result_fla = bm.profile(fla_fwd)
-        BenchmarkReport.record("gla_fwd", locals(), result_fla, tag="fla")
+        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch reference baseline ---
         result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record("gla_fwd", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 # =============================================================================
@@ -203,7 +203,7 @@ def test_gla_bwd_bench(
 
     bwd_op = GLABwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype, tune=tune)
     result = bm.profile(bwd_op.forward, q, k, v, g, h, do, dht)
-    BenchmarkReport.record("gla_bwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(bwd_op, locals(), result, tag="tileops")
 
     if chunk_gla is not None:
         # --- FLA: bwd via autograd ---
@@ -223,13 +223,13 @@ def test_gla_bwd_bench(
             return q_fla.grad, k_fla.grad, v_fla.grad
 
         result_fla = _profile_manual(fla_bwd, bm)
-        BenchmarkReport.record("gla_bwd", locals(), result_fla, tag="fla_bwd_with_recompute")
+        BenchmarkReport.record(bwd_op, locals(), result_fla, tag="fla_bwd_with_recompute")
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
             return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
         result_bl = _profile_manual(torch_bwd, bm)
-        BenchmarkReport.record("gla_bwd", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="baseline")
 
 
 # =============================================================================
@@ -299,7 +299,7 @@ def test_gla_fwdbwd_bench(
         return bwd_op.forward(q, k, v, g, h, do, dht)
 
     result = _profile_manual(tileops_fwdbwd, bm, warmup=50)
-    BenchmarkReport.record("gla_fwdbwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(fwd_op, locals(), result, tag="tileops")
 
     if chunk_gla is not None:
         # --- FLA: fwd+bwd via autograd ---
@@ -316,12 +316,12 @@ def test_gla_fwdbwd_bench(
             return q_fla.grad, k_fla.grad, v_fla.grad
 
         result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
-        BenchmarkReport.record("gla_fwdbwd", locals(), result_fla, tag="fla")
+        BenchmarkReport.record(fwd_op, locals(), result_fla, tag="fla")
     else:
         def ref_autograd_fwdbwd():
             return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
         result_bl = _profile_manual(ref_autograd_fwdbwd, bm, warmup=50)
-        BenchmarkReport.record("gla_fwdbwd", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(fwd_op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

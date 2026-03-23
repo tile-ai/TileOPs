@@ -152,10 +152,10 @@ def test_prelu_bench(shape: tuple, num_channels: int, dtype: torch.dtype) -> Non
     n_total = prod(shape)
     op = PreluOp(shape=prelu_shape, dtype=dtype, num_channels=num_channels)
     result = bm.profile(op, x.reshape(prelu_shape), weight)
-    BenchmarkReport.record("prelu", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(F.prelu, x.reshape(prelu_shape), weight)
-    BenchmarkReport.record("prelu", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 # ---------------------------------------------------------------------------
@@ -206,10 +206,10 @@ def test_where_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     op = WhereOp(N_total=n_total, dtype=dtype)
     result = bm.profile(op, cond, x, y)
-    BenchmarkReport.record("where", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(torch.where, cond, x, y)
-    BenchmarkReport.record("where", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 # ---------------------------------------------------------------------------
@@ -250,13 +250,13 @@ def test_masked_fill_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     op = MaskedFillOp(N_total=n_total, dtype=dtype, fill_value=-65000.0)
     result = bm.profile(op, x, mask)
-    BenchmarkReport.record("masked_fill", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x, mask):
         return x.masked_fill(mask, -65000.0)
 
     result_bl = bm.profile(baseline_fn, x, mask)
-    BenchmarkReport.record("masked_fill", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 # ---------------------------------------------------------------------------
@@ -505,14 +505,14 @@ def test_fp8_selection_bench(
 
         op = WhereOp(N_total=n_total, dtype=dtype)
         result = bm.profile(op, cond, x, y)
-        BenchmarkReport.record("where_fp8", locals(), result, tag="tileops")
+        BenchmarkReport.record(op, locals(), result, tag="tileops")
 
         # torch.where supports fp8 natively (pure selection, no arithmetic)
         def baseline(cond, x, y):
             return torch.where(cond, x, y)
 
         result_bl = bm.profile(baseline, cond, x, y)
-        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
     else:
         test = Fp8MaskedFillBenchCase(shape, dtype)
         bm = Fp8MaskedFillBenchmark(test)
@@ -520,13 +520,13 @@ def test_fp8_selection_bench(
 
         op = MaskedFillOp(N_total=n_total, dtype=dtype, fill_value=-100.0)
         result = bm.profile(op, x, mask)
-        BenchmarkReport.record("masked_fill_fp8", locals(), result, tag="tileops")
+        BenchmarkReport.record(op, locals(), result, tag="tileops")
 
         def baseline(x, mask):
             return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
 
         result_bl = bm.profile(baseline, x, mask)
-        BenchmarkReport.record("masked_fill_fp8", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

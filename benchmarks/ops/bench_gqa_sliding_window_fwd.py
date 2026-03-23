@@ -78,7 +78,7 @@ def test_gqa_sliding_window_fwd_bench(
     torch.cuda.synchronize()
 
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gqa_sliding_window_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # FA3 baseline
     q, k, v = inputs
@@ -86,7 +86,7 @@ def test_gqa_sliding_window_fwd_bench(
     if fa3_out is not None:
         result_bl = bm.profile(
             lambda q, k, v: _fa3_baseline(q, k, v, is_causal, wl, wr), *inputs)
-        BenchmarkReport.record("gqa_sliding_window_fwd", locals(), result_bl, tag="fa3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
 
 
 if __name__ == "__main__":

@@ -94,12 +94,12 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
 
     op = GroupQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gqa_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     baseline_fn = _baseline_gqa_fwd(test)
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
-        BenchmarkReport.record("gqa_fwd", locals(), result_bl, tag="FA3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="FA3")
 
 
 _GQA_BWD_BENCH_PARAMS = _GQA_FWD_BENCH_PARAMS
@@ -117,12 +117,12 @@ def test_gqa_bwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
 
     op = GroupQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gqa_bwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     baseline_fn = _baseline_gqa_bwd(test)
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
-        BenchmarkReport.record("gqa_bwd", locals(), result_bl, tag="FA3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="FA3")
 
 
 if __name__ == "__main__":

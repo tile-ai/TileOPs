@@ -3,6 +3,8 @@ from collections import defaultdict
 import pytest
 import torch
 
+from tests.test_base import _check_result
+
 
 @pytest.fixture(autouse=True)
 def setup() -> None:
@@ -100,3 +102,21 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         raise pytest.UsageError(
             "Invalid explicit test tier assignments detected:\n" + "\n".join(tier_errors)
         )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """After test execution, attach Op metadata from TestBase.check() to the item."""
+    yield
+    op_name = getattr(_check_result, "op_name", None)
+    if op_name:
+        item.user_properties.append(("op", op_name))
+        op_module = getattr(_check_result, "op_module", None)
+        if op_module:
+            item.user_properties.append(("op_module", op_module))
+        max_err = getattr(_check_result, "max_abs_err", None)
+        if max_err is not None:
+            item.user_properties.append(("max_abs_err", f"{max_err:.2e}"))
+        _check_result.op_name = None
+        _check_result.op_module = None
+        _check_result.max_abs_err = None

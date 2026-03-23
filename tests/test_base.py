@@ -1,9 +1,16 @@
+import logging
+import threading
 from abc import ABC, abstractmethod
 from functools import partial
 from typing import Any, Tuple
 
 import pytest
 import torch
+
+_logger = logging.getLogger("tileops.ops")
+
+# Thread-local storage for conftest hook to pick up per-test Op info.
+_check_result = threading.local()
 
 
 def _to_tuple(outputs):
@@ -96,11 +103,14 @@ class TestBase(ABC):
         if compare is None:
             compare = partial(allclose_compare, atol=atol, rtol=rtol)
 
+        op_name = op.__class__.__name__
+        op_module = op.__class__.__module__
+
         try:
             outputs_ref = self.ref_program(*inputs)
         except RuntimeError as e:
             if "out of memory" in str(e):
-                print(f"Skipped checking {self.__class__.__name__} due to OOM in ref: {e}")
+                _logger.warning("op=%s module=%s status=skip_oom", op_name, op_module)
                 return
             raise e
 
@@ -114,10 +124,23 @@ class TestBase(ABC):
         assert len(outputs) == len(outputs_ref), \
             f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
 
+        # Compute error metrics before comparison (so we report even on failure).
+        max_abs_err = 0.0
+        for output, output_ref in zip(outputs, outputs_ref, strict=True):
+            if output_ref is not None:
+                err = (output.float() - output_ref.float()).abs().max().item()
+                max_abs_err = max(max_abs_err, err)
+
+        # Store for conftest hook to attach to pytest report.
+        _check_result.op_name = op_name
+        _check_result.op_module = op_module
+        _check_result.max_abs_err = max_abs_err
+
         comparators = [compare] * len(outputs) if callable(compare) else list(compare)
 
         for output, output_ref, cmp in zip(outputs, outputs_ref, comparators, strict=True):
             if output_ref is not None:
                 cmp(output, output_ref)
 
-        print(f"All checks passed for {op.__class__.__name__}.")
+        _logger.info("op=%s module=%s status=pass max_abs_err=%.2e",
+                      op_name, op_module, max_abs_err)

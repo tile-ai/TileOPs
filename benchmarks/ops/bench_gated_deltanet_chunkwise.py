@@ -122,7 +122,7 @@ def test_gated_deltanet_vs_fla_fwd(
     # --- TileOPs (BHSD) ---
     op = GatedDeltaNetFwdOp(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gated_deltanet_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     if chunk_gated_delta_rule is not None:
         # --- FLA (BTHK) ---
@@ -134,11 +134,11 @@ def test_gated_deltanet_vs_fla_fwd(
             return chunk_gated_delta_rule(q_fla, k_fla, v_fla, g_fla, beta_fla, scale=scale)
 
         result_fla = bm.profile(fla_fwd)
-        BenchmarkReport.record("gated_deltanet_fwd", locals(), result_fla, tag="fla")
+        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch reference baseline ---
         result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record("gated_deltanet_fwd", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 # =============================================================================
@@ -215,7 +215,7 @@ def test_gated_deltanet_vs_fla_bwd(
 
     bwd_op = GatedDeltaNetBwdOp(B, H, S, DK, DV, BC, dtype, tune=tune)
     result = bm.profile(bwd_op.forward, do, q, k, v, g, beta, S_fwd)
-    BenchmarkReport.record("gated_deltanet_bwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(bwd_op, locals(), result, tag="tileops")
 
     if chunk_gated_delta_rule is not None:
         # --- FLA: bwd only via autograd (BTHK layout) ---
@@ -238,13 +238,13 @@ def test_gated_deltanet_vs_fla_bwd(
             return q_fla.grad, k_fla.grad, v_fla.grad
 
         result_fla = _profile_manual(fla_bwd, bm)
-        BenchmarkReport.record("gated_deltanet_bwd", locals(), result_fla, tag="fla")
+        BenchmarkReport.record(bwd_op, locals(), result_fla, tag="fla")
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
             return _autograd_bwd_ref(do, q, k, v, g, beta, BC)
         result_bl = _profile_manual(torch_bwd, bm)
-        BenchmarkReport.record("gated_deltanet_bwd", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="baseline")
 
 
 # =============================================================================
@@ -326,7 +326,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
         return q.grad, k.grad, v.grad
 
     result = _profile_manual(tileops_fwdbwd, bm, warmup=50)
-    BenchmarkReport.record("gated_deltanet_fwdbwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     if chunk_gated_delta_rule is not None:
         # --- FLA: fwd+bwd via autograd ---
@@ -345,13 +345,13 @@ def test_gated_deltanet_vs_fla_fwdbwd(
             return q_fla.grad, k_fla.grad, v_fla.grad
 
         result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
-        BenchmarkReport.record("gated_deltanet_fwdbwd", locals(), result_fla, tag="fla")
+        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch autograd reference baseline ---
         def torch_fwdbwd():
             return _autograd_bwd_ref(do, q.data, k.data, v.data, g.data, beta.data, BC)
         result_bl = _profile_manual(torch_fwdbwd, bm, warmup=50)
-        BenchmarkReport.record("gated_deltanet_fwdbwd", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

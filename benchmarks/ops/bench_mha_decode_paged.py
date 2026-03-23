@@ -47,10 +47,10 @@ def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv
     op = MultiHeadAttentionDecodePagedWithKVCacheOp(
         batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("mha_decode_paged", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("mha_decode_paged", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

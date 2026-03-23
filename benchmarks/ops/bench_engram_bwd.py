@@ -43,7 +43,7 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype, tune):
 
     op = EngramGateConvBwdOp(M, seq_len, d, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("engram_gate_conv_bwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
 
 if __name__ == "__main__":

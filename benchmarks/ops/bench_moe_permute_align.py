@@ -235,7 +235,7 @@ def test_permute_align_bench(
     torch.cuda.synchronize()
 
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("permute_align", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Triton baseline
     dev = inputs[0].device
@@ -256,7 +256,7 @@ def test_permute_align_bench(
     torch.cuda.synchronize()
 
     result_bl = bm.profile(_triton_fn, *inputs)
-    BenchmarkReport.record("permute_align", locals(), result_bl, tag="triton")
+    BenchmarkReport.record(op, locals(), result_bl, tag="triton")
 
     # sgl-kernel baseline (optional — only runs when sgl_kernel is installed)
     if _SGL_KERNEL_AVAILABLE:
@@ -276,7 +276,7 @@ def test_permute_align_bench(
         torch.cuda.synchronize()
 
         result_sgl = bm.profile(_sgl_fn, *inputs)
-        BenchmarkReport.record("permute_align", locals(), result_sgl, tag="sgl-kernel")
+        BenchmarkReport.record(op, locals(), result_sgl, tag="sgl-kernel")
 
 
 if __name__ == "__main__":

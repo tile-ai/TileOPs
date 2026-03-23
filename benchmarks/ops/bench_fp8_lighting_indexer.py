@@ -60,10 +60,10 @@ def test_fp8_lighting_indexer_bench(batch: int, seq_len: int, heads: int, index_
                               config=config,
                               tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("fp8_lighting_indexer", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("fp8_lighting_indexer", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":

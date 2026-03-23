@@ -95,7 +95,7 @@ def test_gla_decode_bench(
     # --- TileOPs ---
     op = GLADecodeOp(batch, heads, dim_k, dim_v, scale=scale, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gla_decode", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     if fused_recurrent_gla is not None:
         # --- FLA: fused_recurrent_gla with T=1 ---
@@ -113,11 +113,11 @@ def test_gla_decode_bench(
             )
 
         result_fla = _profile_manual(fla_decode, bm)
-        BenchmarkReport.record("gla_decode", locals(), result_fla, tag="fla")
+        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch reference baseline ---
         result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record("gla_decode", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
 
 
 if __name__ == "__main__":
