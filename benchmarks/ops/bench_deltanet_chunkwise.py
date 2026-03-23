@@ -286,7 +286,7 @@ def test_deltanet_vs_fla_fwdbwd(
     def tileops_fwdbwd():
         q.grad = k.grad = v.grad = beta.grad = None
         o = op(q, k, v, beta)
-        o.backward(do, retain_graph=True)
+        o.backward(do)
         return q.grad, k.grad, v.grad
 
     result = _profile_manual(tileops_fwdbwd, bm, warmup=50)
