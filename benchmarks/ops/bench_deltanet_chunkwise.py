@@ -186,12 +186,12 @@ def test_deltanet_vs_fla_bwd(
     beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
-    # --- TileOPs: fwd to get S, then profile bwd only ---
+    # --- TileOPs: fwd to get S, Aw, Au, w, u; then profile bwd only ---
     fwd_op = DeltaNetFwdOp(B, H, S, DK, DV, BC, dtype)
-    _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, beta)
+    _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op.forward(q, k, v, beta)
 
     bwd_op = DeltaNetBwdOp(B, H, S, DK, DV, BC, dtype, tune=tune)
-    result = bm.profile(bwd_op.forward, do, q, k, v, beta, S_fwd)
+    result = bm.profile(bwd_op.forward, do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
     BenchmarkReport.record(bwd_op, locals(), result, tag="tileops")
 
     if chunk_delta_rule is not None:

@@ -193,7 +193,7 @@ def test_deltanet_fwd(
     tols = _get_tolerances(dtype)
     inputs = test.gen_inputs()
     ref_o = test.ref_program(*inputs)
-    op_o, _S, _Aw, _Au = op(*inputs)
+    op_o, _S, _Aw, _Au, _w, _u = op(*inputs)
     torch.testing.assert_close(op_o, ref_o, **tols)
 
 

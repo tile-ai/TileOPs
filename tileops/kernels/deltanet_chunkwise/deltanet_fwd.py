@@ -217,7 +217,7 @@ def _deltanet_fwd_wrapped_kernel(
     o_threads: int,
     q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     beta: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     fused_fn = fused_prepare_compute_w_u_tl(
         batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
     )(fused_num_stages, fused_threads)
@@ -232,7 +232,7 @@ def _deltanet_fwd_wrapped_kernel(
     Aw, Au, w, u = fused_fn(k, v, beta)
     S_buf, v_new = h_fn(k, w, u, S_0)
     o = o_fn(q, k, S_buf, v_new)
-    return o, S_buf, Aw, Au
+    return o, S_buf, Aw, Au, w, u
 
 
 @_deltanet_fwd_wrapped_kernel.register_fake
@@ -244,13 +244,15 @@ def _deltanet_fwd_wrapped_kernel_fake(
     o_threads: int,
     q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     beta: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     num_chunks = seq_len // chunk_size
     o = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
     S = torch.empty(batch, head, num_chunks + 1, dim_k, dim_v, dtype=torch.float32, device=q.device)
     Aw = torch.empty(batch, head, seq_len, chunk_size, dtype=q.dtype, device=q.device)
     Au = torch.empty_like(Aw)
-    return o, S, Aw, Au
+    w = torch.empty(batch, head, seq_len, dim_k, dtype=q.dtype, device=q.device)
+    u = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
+    return o, S, Aw, Au, w, u
 
 
 class DeltaNetFwdKernel(Kernel):
@@ -355,7 +357,7 @@ class DeltaNetFwdKernel(Kernel):
         k: torch.Tensor,
         v: torch.Tensor,
         beta: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return _deltanet_fwd_wrapped_kernel(
             self.batch, self.head, self.seq_len, self.chunk_size,
             self.dim_k, self.dim_v, self.dtype_str,

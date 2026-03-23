@@ -303,15 +303,13 @@ def _deltanet_bwd_wrapped_kernel(
     do: torch.Tensor, q: torch.Tensor, k: torch.Tensor,
     v: torch.Tensor, beta: torch.Tensor,
     S: torch.Tensor,
+    Aw: torch.Tensor, Au: torch.Tensor,
+    w: torch.Tensor, u: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     from .compute_w_u_bwd import compute_w_u_bwd_tl
-    from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
     NC = seq_len // chunk_size
 
-    fused_fn = fused_prepare_compute_w_u_tl(
-        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
-    )(num_stages, threads)
     bwd_parallel_fn = _bwd_parallel_tl(
         batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
     )(parallel_threads)
@@ -322,14 +320,12 @@ def _deltanet_bwd_wrapped_kernel(
         batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
     )(num_stages, threads)
 
-    Aw, Au, w, u = fused_fn(k, v, beta)
     dq, dk_partial, dw, du_partial, v_new, dh_local = \
         bwd_parallel_fn(do, q, k, w, u, S)
     dk_corr, du_corr = \
         dh_recurrence_bwd_fn(k, w, v_new, dh_local)
 
     # dw_corr = -(du_corr @ S^T) per chunk — batched matmul (parallel)
-    NC = seq_len // chunk_size
     du_corr_c = du_corr.float().reshape(batch, head, NC, chunk_size, dim_v)
     S_c = S[:, :, :NC, :, :].float()
     dw_corr = -(du_corr_c @ S_c.transpose(-2, -1))
@@ -337,8 +333,6 @@ def _deltanet_bwd_wrapped_kernel(
 
     du = du_partial + du_corr
     dw_total = dw + dw_corr
-    # compute_w_u_bwd with fused A_inv backward: outputs dk, dv, dbeta
-    # (A_inv gradient through KK^T already included in dk and dbeta)
     dk_wu, dv, dbeta = wu_bwd_fn(dw_total, du, Aw, Au, k, v, beta)
 
     dk = dk_partial + dk_corr + dk_wu
@@ -354,6 +348,8 @@ def _deltanet_bwd_wrapped_kernel_fake(
     do: torch.Tensor, q: torch.Tensor, k: torch.Tensor,
     v: torch.Tensor, beta: torch.Tensor,
     S: torch.Tensor,
+    Aw: torch.Tensor, Au: torch.Tensor,
+    w: torch.Tensor, u: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     dq = torch.empty(batch, head, seq_len, dim_k, dtype=q.dtype, device=q.device)
     dk = torch.empty_like(dq)
@@ -415,21 +411,9 @@ class DeltaNetBwdKernel(Kernel):
         from tilelang.autotuner import autotune as tl_autotune
 
         from .compute_w_u_bwd import compute_w_u_bwd_tl
-        from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
         B, H, S, BC = self.batch, self.head, self.seq_len, self.chunk_size
         DK, DV, dt = self.dim_k, self.dim_v, self.dtype_str
-
-        # --- Tune fused_prepare_compute_w_u (shared with fwd) ---
-        fused_configs = [
-            {"num_stages": ns, "threads": t}
-            for ns in [1, 2] for t in [128, 256]
-        ]
-        print(f"Autotuning fused_prepare_compute_w_u ({len(fused_configs)} configs)...")
-        fused_jit = fused_prepare_compute_w_u_tl(B, H, S, BC, DK, DV, dt)
-        tuned_fused = tl_autotune(configs=fused_configs, warmup=warmup, rep=rep)(fused_jit)()
-        fused_best = tuned_fused.config
-        print(f"  Best: {fused_best}")
 
         # --- Tune bwd_parallel ---
         parallel_configs = [{"threads": t} for t in [128, 256]]
@@ -462,8 +446,8 @@ class DeltaNetBwdKernel(Kernel):
         print(f"  Best: {wu_bwd_best}")
 
         self.config = {
-            "num_stages": fused_best["num_stages"],
-            "threads": fused_best["threads"],
+            "num_stages": recurrence_best["num_stages"],
+            "threads": wu_bwd_best["threads"],
             "parallel_threads": parallel_best["threads"],
             "recurrence_threads": recurrence_best["threads"],
         }
@@ -477,6 +461,10 @@ class DeltaNetBwdKernel(Kernel):
         v: torch.Tensor,
         beta: torch.Tensor,
         S: torch.Tensor,
+        Aw: torch.Tensor,
+        Au: torch.Tensor,
+        w: torch.Tensor,
+        u: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return _deltanet_bwd_wrapped_kernel(
             self.batch, self.head, self.seq_len, self.chunk_size,
@@ -484,5 +472,5 @@ class DeltaNetBwdKernel(Kernel):
             self.config.get("num_stages", 2), self.config.get("threads", 256),
             self.config.get("parallel_threads", 256),
             self.config.get("recurrence_threads", 256),
-            do, q, k, v, beta, S,
+            do, q, k, v, beta, S, Aw, Au, w, u,
         )

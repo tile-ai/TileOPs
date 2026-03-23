@@ -115,7 +115,7 @@ def test_deltanet_bwd(
     # Forward to get S for backward kernel
     from tileops.ops import DeltaNetFwdOp
     fwd_op = DeltaNetFwdOp(B, H, S, DK, DV, BC, dtype)
-    _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, beta)
+    _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op.forward(q, k, v, beta)
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
     # Reference via autograd
@@ -124,7 +124,7 @@ def test_deltanet_bwd(
 
     # Kernel
     op = DeltaNetBwdOp(B, H, S, DK, DV, BC, dtype, tune=tune)
-    op_outputs = op.forward(do, q, k, v, beta, S_fwd)
+    op_outputs = op.forward(do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
 
     tols = _get_tolerances(dtype)
     names = ["dq", "dk", "dv", "dbeta"]

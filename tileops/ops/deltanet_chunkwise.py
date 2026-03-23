@@ -100,8 +100,8 @@ class DeltaNetFwdOp(Op):
         Returns:
             Tuple of (o, S, Aw, Au).
         """
-        o, S, Aw, Au = self.kernel(q, k, v, beta)
-        return o, S, Aw, Au
+        o, S, Aw, Au, w, u = self.kernel(q, k, v, beta)
+        return o, S, Aw, Au, w, u
 
 
 class DeltaNetBwdOp(Op):
@@ -169,6 +169,10 @@ class DeltaNetBwdOp(Op):
         v: torch.Tensor,
         beta: torch.Tensor,
         S: torch.Tensor,
+        Aw: torch.Tensor,
+        Au: torch.Tensor,
+        w: torch.Tensor,
+        u: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run deltanet backward.
 
@@ -179,11 +183,15 @@ class DeltaNetBwdOp(Op):
             v: Value tensor [B, H, S, DV].
             beta: Beta tensor [B, H, S].
             S: Per-chunk boundary states from forward [B, H, NC+1, DK, DV].
+            Aw: A_inv matrix from forward [B, H, S, BC].
+            Au: A_inv matrix from forward [B, H, S, BC].
+            w: WY w vectors from forward [B, H, S, DK].
+            u: WY u vectors from forward [B, H, S, DV].
 
         Returns:
             Tuple of (dq, dk, dv, dbeta).
         """
-        dq, dk, dv, dbeta = self.kernel(do, q, k, v, beta, S)
+        dq, dk, dv, dbeta = self.kernel(do, q, k, v, beta, S, Aw, Au, w, u)
         return dq, dk, dv, dbeta
 
 
@@ -192,15 +200,15 @@ class _DeltaNetFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q, k, v, beta, fwd_kernel, bwd_kernel):
-        o, S, Aw, Au = fwd_kernel(q, k, v, beta)
-        ctx.save_for_backward(q, k, v, beta, S)
+        o, S, Aw, Au, w, u = fwd_kernel(q, k, v, beta)
+        ctx.save_for_backward(q, k, v, beta, S, Aw, Au, w, u)
         ctx.bwd_kernel = bwd_kernel
         return o
 
     @staticmethod
     def backward(ctx, do):
-        q, k, v, beta, S = ctx.saved_tensors
-        dq, dk, dv, dbeta = ctx.bwd_kernel(do, q, k, v, beta, S)
+        q, k, v, beta, S, Aw, Au, w, u = ctx.saved_tensors
+        dq, dk, dv, dbeta = ctx.bwd_kernel(do, q, k, v, beta, S, Aw, Au, w, u)
         return dq, dk, dv, dbeta, None, None
 
 
