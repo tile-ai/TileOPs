@@ -55,17 +55,34 @@ def _restore_shape(y_cl: torch.Tensor, orig_shape: Tuple) -> torch.Tensor:
 
 
 class BatchNormFwdOp(Op):
-    """Batch normalization forward operator (training + inference).
+    """Batch Normalization forward operator (training and inference).
+
+    Computes batch normalization over the channel dimension:
+
+    .. math::
+
+        y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
+            \\cdot \\gamma + \\beta
+
+    where the mean and variance are computed per channel over ``(N, *spatial)``
+    elements.
+
+    Supported dtypes:
+        ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
+
+    Note:
+        Input tensors accept any shape ``(N, C, *spatial)``; the op reshapes
+        to ``(C, L)`` internally where ``L = N * prod(spatial)``.
 
     Args:
         N: Batch size.
         C: Number of channels.
         *spatial: Spatial dimensions (H, W, ...).
-        dtype: Input/output dtype.
-        eps: Numerical stability constant.
-        momentum: Running-stat update momentum (used in training).
-        kernel_map: Optional kernel override dict.
-        tune: If True, autotune tile configs.
+        dtype: Input/output data type.
+        eps: Epsilon for numerical stability.
+        momentum: Running-stat update momentum (used in training mode).
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
@@ -114,12 +131,24 @@ class BatchNormFwdOp(Op):
         running_var: torch.Tensor,
         training: bool = True,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """Run forward pass.
+        """Run batch normalization forward pass.
+
+        Args:
+            x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
+            weight: Affine scale (gamma) of shape ``(C,)``.
+            bias: Affine shift (beta) of shape ``(C,)``.
+            running_mean: Running mean of shape ``(C,)``, updated in-place
+                during training.
+            running_var: Running variance of shape ``(C,)``, updated in-place
+                during training.
+            training: If ``True``, compute batch statistics and update
+                running stats; otherwise use running stats directly.
 
         Returns:
-            y: Normalized output (same shape as x).
-            mean: Per-channel batch mean (None in inference mode).
-            rstd: Per-channel reciprocal std (None in inference mode).
+            Tuple of ``(y, mean, rstd)`` where *y* is the normalized output
+            (same shape as *x*), *mean* is the per-channel batch mean, and
+            *rstd* is the per-channel reciprocal standard deviation. In
+            inference mode *mean* and *rstd* are ``None``.
         """
         x_cl, orig_shape = self._prepare(x)
 
@@ -138,15 +167,31 @@ class BatchNormFwdOp(Op):
 
 
 class BatchNormBwdOp(Op):
-    """Batch normalization backward operator.
+    """Batch Normalization backward operator.
+
+    Computes gradients with respect to input, scale, and shift for batch
+    normalization:
+
+    .. math::
+
+        \\frac{\\partial \\mathcal{L}}{\\partial x},\\;
+        \\frac{\\partial \\mathcal{L}}{\\partial \\gamma},\\;
+        \\frac{\\partial \\mathcal{L}}{\\partial \\beta}
+
+    Supported dtypes:
+        ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
+
+    Note:
+        Input tensors accept any shape ``(N, C, *spatial)``; the op reshapes
+        to ``(C, L)`` internally where ``L = N * prod(spatial)``.
 
     Args:
         N: Batch size.
         C: Number of channels.
         *spatial: Spatial dimensions (H, W, ...).
-        dtype: grad_out/x/grad_x dtype.
-        kernel_map: Optional kernel override dict.
-        tune: If True, autotune tile config.
+        dtype: Data type of ``grad_out``, ``x``, and ``grad_x``.
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
@@ -185,12 +230,20 @@ class BatchNormBwdOp(Op):
         mean: torch.Tensor,
         rstd: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run backward pass.
+        """Run batch normalization backward pass.
+
+        Args:
+            grad_out: Upstream gradient of shape ``(N, C, *spatial)``.
+            x: Original input tensor of shape ``(N, C, *spatial)``.
+            weight: Affine scale (gamma) of shape ``(C,)``.
+            mean: Per-channel batch mean from the forward pass, shape ``(C,)``.
+            rstd: Per-channel reciprocal std from the forward pass,
+                shape ``(C,)``.
 
         Returns:
-            grad_x: Gradient w.r.t. input (same shape as x).
-            grad_weight: Gradient w.r.t. affine scale gamma (shape: C).
-            grad_bias: Gradient w.r.t. affine shift beta (shape: C).
+            Tuple of ``(grad_x, grad_weight, grad_bias)`` where *grad_x*
+            has the same shape as *x*, *grad_weight* has shape ``(C,)``,
+            and *grad_bias* has shape ``(C,)``.
         """
         orig_shape = grad_out.shape
         go_cl = self._prepare(grad_out)

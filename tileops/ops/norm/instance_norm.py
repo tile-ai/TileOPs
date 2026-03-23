@@ -32,21 +32,36 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 class InstanceNormOp(Op):
-    """InstanceNorm forward operator.
+    """Instance Normalization forward operator.
 
-    y = (x - mean) / sqrt(var + eps) * weight + bias
+    Computes instance normalization over spatial dimensions for each
+    ``(batch, channel)`` independently:
 
-    where mean and var are computed over *spatial dimensions for each
-    (batch, channel) independently. Equivalent to GroupNorm with G=C.
+    .. math::
+
+        y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
+            \\cdot w + b
+
+    where the mean and variance are computed over ``*spatial`` for each
+    sample-channel pair. Equivalent to Group Normalization with ``G = C``.
+
+    Supported dtypes:
+        ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
+
+    Note:
+        Supports arbitrary spatial dimensions (1-D, 2-D, 3-D+).
+        Delegates to :class:`GroupNormKernel` with ``G = C``.
+        Hidden dimension is padded to 256-element alignment internally.
 
     Args:
         N: Batch size.
         C: Number of channels.
-        spatial: Spatial dimensions tuple (H, W, ...).
-        dtype: Data type (float32, float16, or bfloat16).
-        eps: Epsilon for numerical stability (default 1e-5).
-        kernel_map: Optional kernel override dict.
-        tune: If True, autotune tile configs.
+        spatial: Spatial dimensions tuple ``(H, W, ...)``.
+        dtype: Data type (``torch.float32``, ``torch.float16``, or
+            ``torch.bfloat16``).
+        eps: Epsilon for numerical stability.
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
@@ -80,15 +95,19 @@ class InstanceNormOp(Op):
         return {"group_norm": GroupNormKernel}
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
-        """Run InstanceNorm forward.
+        """Apply instance normalization.
 
         Args:
-            x: Input tensor of shape (N, C, *spatial).
-            weight: Affine scale of shape (C,).
-            bias: Affine shift of shape (C,).
+            x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
+            weight: Affine scale of shape ``(C,)`` on CUDA.
+            bias: Affine shift of shape ``(C,)`` on CUDA.
 
         Returns:
-            Normalized output of the same shape as x.
+            Normalized tensor of the same shape as *x*.
+
+        Raises:
+            ValueError: If tensors are not on CUDA, dtypes mismatch,
+                or shapes are incompatible with the configured dimensions.
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
