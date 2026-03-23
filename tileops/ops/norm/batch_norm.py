@@ -232,13 +232,19 @@ class BatchNormBwdOp(Op):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run batch normalization backward pass.
 
+        All inputs must reside on the same CUDA device.
+
         Args:
             grad_out: Upstream gradient of shape ``(N, C, *spatial)``.
             x: Original input tensor of shape ``(N, C, *spatial)``.
-            weight: Affine scale (gamma) of shape ``(C,)``.
-            mean: Per-channel batch mean from the forward pass, shape ``(C,)``.
+            weight: Affine scale (gamma) of shape ``(C,)``. Internally
+                cast to ``torch.float32`` for the backward kernel.
+            mean: Per-channel batch mean from the forward pass, shape
+                ``(C,)``. Expected as ``torch.float32`` (produced by
+                the forward training kernel).
             rstd: Per-channel reciprocal std from the forward pass,
-                shape ``(C,)``.
+                shape ``(C,)``. Expected as ``torch.float32`` (produced
+                by the forward training kernel).
 
         Returns:
             Tuple of ``(grad_x, grad_weight, grad_bias)`` where *grad_x*
