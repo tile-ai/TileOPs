@@ -85,6 +85,7 @@ def _torch_mha_fwd(test):
 
 def _torch_mha_bwd(test):
     """Torch SDPA backward baseline (includes forward recompute)."""
+    @torch.enable_grad()
     def fn(q, k, v, o, grad_output, lse):
         q = q.detach().requires_grad_(True)
         k = k.detach().requires_grad_(True)

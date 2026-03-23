@@ -103,6 +103,8 @@ def parse_bench_xml(path: str) -> list[dict]:
             "outcome": outcome,
             "op": props.get("op"),
             "op_module": props.get("op_module"),
+            "failure_message": (failure.attrib.get("message", "") if failure is not None
+                                else None),
         }
         # Perf data
         for key in ("tileops_latency_ms", "tileops_tflops", "tileops_bandwidth_tbs",
@@ -165,6 +167,20 @@ def aggregate_bench_results(results: list[dict]) -> dict:
                 config_entry[key] = r[key]
         d["configs"].append(config_entry)
     return dict(ops)
+
+
+def collect_bench_failures(results: list[dict]) -> list[dict]:
+    """Collect failed benchmark results for reporting."""
+    return [
+        {
+            "nodeid": r["nodeid"],
+            "name": r["name"],
+            "op": r.get("op"),
+            "failure_message": r.get("failure_message"),
+        }
+        for r in results
+        if r["outcome"] == "failed"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +364,7 @@ def _ratio_emoji(ratio: float) -> str:
 def generate_report(
     test_ops: dict | None,
     bench_ops: dict | None,
+    bench_failures: list[dict],
     regressions: list[dict],
     improvements: list[dict],
     baseline_alerts: list[dict],
@@ -366,7 +383,8 @@ def generate_report(
                       for d in (test_ops or {}).values())
     total_passed = sum(d["passed"] for d in (test_ops or {}).values())
 
-    health = _PASS if (n_failures == 0 and not regressions) else _FAIL
+    health = _PASS if (n_failures == 0 and not regressions
+                       and not bench_failures) else _FAIL
     lines.append(f"# {health} TileOPs Nightly Report")
     lines.append("")
     lines.append(f"> **{now}** &ensp;|&ensp; `{commit}` &ensp;|&ensp; {gpu}")
@@ -374,6 +392,8 @@ def generate_report(
 
     # ── Summary ───────────────────────────────────────────────────────────
     corr_icon = _PASS if n_failures == 0 else f"{_FAIL} {n_failures} failed"
+    bench_fail_icon = (f"{_FAIL} {len(bench_failures)}"
+                       if bench_failures else f"{_PASS} None")
     reg_icon = f"{_PASS} None" if not regressions else f"{_WARN} {len(regressions)}"
     alert_icon = (f"{_WARN} {len(baseline_alerts)}"
                   if baseline_alerts else f"{_PASS} None")
@@ -384,6 +404,7 @@ def generate_report(
                  f" &ensp; ({total_passed}/{total_tests} tests across"
                  f" {n_test_ops} ops) |")
     lines.append(f"| **Benchmarked Ops** | {n_bench_ops} |")
+    lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
     lines.append(f"| **Regressions** (vs 14-day best) | {reg_icon} |")
     lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) |"
                  f" {alert_icon} |")
@@ -408,6 +429,21 @@ def generate_report(
                 lines.append(f"| **{op}** | `{d['module'] or 'N/A'}` "
                              f"| {d['failed']}/{total} | {tests_str} |")
             lines.append("")
+
+    # ── Benchmark Failures (only if any) ─────────────────────────────────
+    if bench_failures:
+        lines.append(f"## {_FAIL} Benchmark Failures")
+        lines.append("")
+        lines.append("| Test | Error |")
+        lines.append("|:-----|:------|")
+        for f in bench_failures:
+            name = f["name"]
+            msg = f.get("failure_message") or ""
+            if len(msg) > 120:
+                msg = msg[:120] + "..."
+            msg = msg.replace("|", "\\|")
+            lines.append(f"| {name} | {msg} |")
+        lines.append("")
 
     # ── Regressions ───────────────────────────────────────────────────────
     if regressions:
@@ -535,9 +571,11 @@ def main():
         test_ops = aggregate_test_results(test_results)
 
     bench_ops = None
+    bench_failures = []
     if args.bench_xml and Path(args.bench_xml).exists():
         bench_results = parse_bench_xml(args.bench_xml)
         bench_ops = aggregate_bench_results(bench_results)
+        bench_failures = collect_bench_failures(bench_results)
 
     # Load history and detect regressions
     history_runs = load_history(args.history)
@@ -546,7 +584,8 @@ def main():
     baseline_alerts = detect_baseline_alerts(bench_ops) if bench_ops else []
 
     # Generate report
-    report = generate_report(test_ops, bench_ops, regressions, improvements, baseline_alerts)
+    report = generate_report(test_ops, bench_ops, bench_failures,
+                             regressions, improvements, baseline_alerts)
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
 

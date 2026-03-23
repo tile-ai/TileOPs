@@ -44,7 +44,7 @@ def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: to
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":
