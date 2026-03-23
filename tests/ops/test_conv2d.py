@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.conv2d import Conv2d1x1Kernel
+from tileops.kernels.conv2d import Conv2d1x1Kernel, Conv2d3x3Kernel
 from tileops.ops import Conv2dOp
 
 
@@ -199,6 +199,21 @@ def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
         bias=True,
     )
     assert not isinstance(op.kernel, Conv2d1x1Kernel)
+
+
+@pytest.mark.smoke
+def test_conv2d_dispatches_3x3_kernel() -> None:
+    op = Conv2dOp(
+        n=1,
+        c_in=32,
+        h=16,
+        w=16,
+        c_out=64,
+        kernel_size=3,
+        padding=1,
+        bias=True,
+    )
+    assert isinstance(op.kernel, Conv2d3x3Kernel)
 
 
 if __name__ == "__main__":

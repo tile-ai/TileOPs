@@ -5,10 +5,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.gemm.gemm import GemmKernel
 from tileops.kernels.kernel import Kernel
 from tileops.utils import get_sm_version
 
-__all__ = ["Conv2d1x1Kernel", "Conv2dKernel"]
+__all__ = ["Conv2d1x1Kernel", "Conv2d3x3Kernel", "Conv2dKernel"]
 
 _HOPPER_SHARED_MEMORY_LIMIT_BYTES = 227 * 1024
 
@@ -202,6 +203,80 @@ def _conv2d_kernel(
     return _conv2d_func
 
 
+def _conv2d_3x3_im2col_kernel(
+    n: int,
+    c_in: int,
+    h: int,
+    w: int,
+    stride_h: int,
+    stride_w: int,
+    pad_h: int,
+    pad_w: int,
+    dtype: str = "float16",
+):
+    out_h = (h + 2 * pad_h - 3) // stride_h + 1
+    out_w = (w + 2 * pad_w - 3) // stride_w + 1
+    m = n * out_h * out_w
+    k_total = c_in * 9
+
+    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _conv2d_3x3_im2col_func(
+        block_m: int,
+        block_k: int,
+        threads: int,
+    ):
+        @T.prim_func
+        def _conv2d_3x3_im2col_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            col: T.Tensor((m, k_total), dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(k_total, block_k),
+                T.ceildiv(m, block_m),
+                threads=threads,
+            ) as (bx, by):
+                for i, j in T.Parallel(block_m, block_k):
+                    m_idx = by * block_m + i
+                    k_idx = bx * block_k + j
+                    filter_idx = k_idx % 9
+                    ci = k_idx // 9
+                    out_idx = m_idx % (out_h * out_w)
+                    batch = m_idx // (out_h * out_w)
+                    oh = out_idx // out_w
+                    ow = out_idx % out_w
+                    kh = filter_idx // 3
+                    kw = filter_idx % 3
+                    ih = oh * stride_h + kh - pad_h
+                    iw = ow * stride_w + kw - pad_w
+                    in_bound = (
+                        (m_idx < m)
+                        & (k_idx < k_total)
+                        & (ih >= 0)
+                        & (iw >= 0)
+                        & (ih < h)
+                        & (iw < w)
+                    )
+                    if m_idx < m and k_idx < k_total:
+                        col[m_idx, k_idx] = T.if_then_else(
+                            in_bound,
+                            x[batch, ci, ih, iw],
+                            T.cast(0.0, dtype),
+                        )
+
+        return _conv2d_3x3_im2col_main
+
+    return _conv2d_3x3_im2col_func
+
+
+def _conv2d_3x3_shared_memory_bytes(
+    block_m: int,
+    block_k: int,
+    dtype: torch.dtype,
+) -> int:
+    dtype_bytes = torch.tensor([], dtype=dtype).element_size()
+    return block_m * block_k * dtype_bytes
+
+
 class Conv2dKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
@@ -323,6 +398,115 @@ class Conv2dKernel(Kernel):
             self.config["threads"],
             self.config["enable_rasteration"],
         )(x, weight, bias)
+
+
+class Conv2d3x3Kernel(Kernel):
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h: int,
+        w: int,
+        c_out: int,
+        stride_h: int,
+        stride_w: int,
+        pad_h: int,
+        pad_w: int,
+        dtype: torch.dtype,
+        has_bias: bool = False,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        self.n = n
+        self.c_in = c_in
+        self.h = h
+        self.w = w
+        self.c_out = c_out
+        self.stride_h = stride_h
+        self.stride_w = stride_w
+        self.pad_h = pad_h
+        self.pad_w = pad_w
+        self.dtype = dtype
+        self.has_bias = has_bias
+        self.out_h = (h + 2 * pad_h - 3) // stride_h + 1
+        self.out_w = (w + 2 * pad_w - 3) // stride_w + 1
+        self.m = n * self.out_h * self.out_w
+        self.k_total = c_in * 9
+
+        self.im2col_kernel = _conv2d_3x3_im2col_kernel(
+            n,
+            c_in,
+            h,
+            w,
+            stride_h,
+            stride_w,
+            pad_h,
+            pad_w,
+            self.dtype_str,
+        )
+        self.gemm_kernel = GemmKernel(self.m, c_out, self.k_total, dtype, tune=tune)
+        self.init_config(config, tune=False)
+
+    @property
+    def default_config(self) -> dict:
+        sm_version = get_sm_version()
+        if sm_version in {90}:
+            return {
+                "block_m": 128,
+                "block_k": 128,
+                "threads": 256,
+            }
+        if sm_version in {80}:
+            return {
+                "block_m": 64,
+                "block_k": 64,
+                "threads": 128,
+            }
+        return {
+            "block_m": 64,
+            "block_k": 64,
+            "threads": 128,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        configs = itertools.product(
+            [64, 128, 256],
+            [64, 128],
+            [128, 256],
+        )
+        valid_configs = []
+        for block_m, block_k, threads in configs:
+            shared_memory_bytes = _conv2d_3x3_shared_memory_bytes(block_m, block_k, self.dtype)
+            if shared_memory_bytes > _HOPPER_SHARED_MEMORY_LIMIT_BYTES:
+                continue
+            valid_configs.append({
+                "block_m": block_m,
+                "block_k": block_k,
+                "threads": threads,
+            })
+        return valid_configs
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        col = self.im2col_kernel(
+            self.config["block_m"],
+            self.config["block_k"],
+            self.config["threads"],
+        )(x)
+        weight_matrix = weight.permute(1, 2, 3, 0).contiguous().view(self.k_total, self.c_out)
+        out_matrix = self.gemm_kernel(col, weight_matrix)
+        out = out_matrix.view(self.n, self.out_h, self.out_w, self.c_out).permute(0, 3, 1, 2).contiguous()
+        if self.has_bias and bias is not None:
+            out = out + bias.view(1, self.c_out, 1, 1)
+        return out
 
 
 class Conv2d1x1Kernel(Kernel):
