@@ -1,129 +1,29 @@
-from typing import Dict, Optional
-
 import torch
-import torch.nn.functional as F
 
-from tileops.kernels.kernel import Kernel
 from tileops.kernels.norm import RmsNormKernel
 
-from ..op import Op
+from .base import RowNormOp
 
 __all__ = ["RmsNormOp"]
 
-ALIGNMENT = 256
 
+class RmsNormOp(RowNormOp):
+    """Standalone RMS Norm operator.
 
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
-
-
-class RmsNormOp(Op):
-    """Root Mean Square Layer Normalization operator.
-
-    Computes RMS normalization over the last dimension:
-
-    .. math::
-
-        y = \\frac{x}{\\sqrt{\\mathrm{mean}(x^2) + \\epsilon}} \\cdot w
-
-    where the mean is taken over the last dimension.
-
-    Supported dtypes:
-        ``torch.float16``, ``torch.bfloat16``.
-
-    Note:
-        Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
-        Handles non-contiguous inputs and non-power-of-two hidden dims
-        by padding to 256-element alignment.
-
-    Args:
-        M: Number of rows (product of all dims except the last).
-        N: Hidden dimension (last dim).
-        dtype: Data type (``torch.float16`` or ``torch.bfloat16``).
-        eps: Epsilon for numerical stability.
-        kernel_map: Optional kernel override dictionary.
-        tune: If ``True``, autotune tile configurations.
+    y = x * rsqrt(mean(x^2, dim=-1) + eps) * weight
     """
 
-    def __init__(
-        self,
-        M: int,
-        N: int,
-        dtype: torch.dtype,
-        eps: float = 1e-6,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        self.M = M
-        self.N = N
-        self.dtype = dtype
-        self.eps = eps
-        self.N_padded = _align_up(N, ALIGNMENT)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["rms_norm"](
-            M, N, eps, dtype, tune=tune,
-        )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"rms_norm": RmsNormKernel}
+    _kernel_key = "rms_norm"
+    _kernel_cls = RmsNormKernel
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        """Apply RMS normalization.
-
-        Args:
-            x: Input tensor of shape ``(*leading, N)`` on CUDA.
-            weight: Affine scale of shape ``(N,)`` on CUDA.
-
-        Returns:
-            Normalized tensor of the same shape as *x*.
-
-        Raises:
-            ValueError: If tensors are not on CUDA, dtypes mismatch,
-                or shapes are incompatible with the configured dimensions.
-        """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if not weight.is_cuda:
-            raise ValueError("weight must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
-            )
-        if weight.dtype != self.dtype:
-            raise ValueError(
-                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
-            )
-        if weight.ndim != 1:
-            raise ValueError(
-                f"Expected weight to be 1D, got {weight.ndim}D"
-            )
-        if x.shape[-1] != self.N:
-            raise ValueError(
-                f"Expected hidden dim {self.N}, got {x.shape[-1]}"
-            )
-        if weight.shape[0] != self.N:
-            raise ValueError(
-                f"Expected weight dim {self.N}, got {weight.shape[0]}"
-            )
-
+        self._validate_cuda_dtype("x", x)
+        self._validate_hidden_dim(x)
+        self._validate_cuda_dtype("weight", weight)
+        self._validate_1d("weight", weight)
         orig_shape = x.shape
-        x = x.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
-            raise ValueError(
-                f"Expected M={self.M} (product of leading dims), got {M_actual}"
-            )
-
-        # Pad hidden dim to 256-element alignment if needed
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N))
-            weight = F.pad(weight, (0, self.N_padded - self.N))
-
-        y = self.kernel(x, weight)
-
-        # Trim padding
-        if self.N_padded != self.N:
-            y = y[:, :self.N]
-
-        return y.reshape(orig_shape)
+        x = self._flatten_and_check_M(x)
+        if self._needs_pad:
+            x = self._pad_row(x)
+            weight = self._pad_vec(weight)
+        return self._trim_and_reshape(self.kernel(x, weight), orig_shape)
