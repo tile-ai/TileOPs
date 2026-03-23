@@ -1,4 +1,4 @@
-"""TDD tests for ParametricUnaryKernel base class extraction (issue 607).
+"""TDD tests for ParametricUnaryKernel base class extraction.
 
 Validates:
 - ParametricUnaryKernel base class exists and is a Kernel subclass
