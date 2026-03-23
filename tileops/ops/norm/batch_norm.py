@@ -319,7 +319,7 @@ def _patched_fwd_forward(self, x, weight, bias, running_mean, running_var, train
         x, weight, bias, running_mean, running_var, training, self._instance_key)
     if mean.numel() == 0:
         mean = None
-    if rstd is not None and rstd.numel() == 0:
+    if rstd.numel() == 0:
         rstd = None
     return y, mean, rstd
 
