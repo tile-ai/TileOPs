@@ -204,9 +204,13 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype)
                     MMA1(V, V_shared, real_seqlen_kv, acc_s_cast, acc_o, k, hid, bid, sid)
 
                 for i, j in T.Parallel(block_M, dim):
-                    acc_o[i, j] /= logsum[i]
+                    acc_o[i, j] = T.if_then_else(
+                        logsum[i] > 0, acc_o[i, j] / logsum[i], 0)
                 for i in T.Parallel(block_M):
-                    logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
+                    logsum[i] = T.if_then_else(
+                        logsum[i] > 0,
+                        T.log2(logsum[i]) + scores_max[i] * scale,
+                        -T.infinity(accum_dtype))
                 T.copy(logsum, glse[bid, hid, sid, mid * block_M:(mid + 1) * block_M])
                 T.copy(acc_o, O_shared)
                 T.copy(
@@ -324,8 +328,6 @@ def _mha_decode_wrapped_kernel(batch: int, heads: int, seqlen_q: int, seqlen_kv:
     split_length[-1] = real_seqlen_kv - (num_split - 1) * (
         real_seqlen_kv // (num_split * block_N) * block_N)
 
-    if (split_length[0] == 0):
-        num_split = 1
     if num_split == 1:
         return _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal,
                                   dtype)(block_M, block_N, num_split, num_stages,
