@@ -1,0 +1,22 @@
+gpu_name: NVIDIA H200
+generated_at: '2026-03-23T20:40:48.310667'
+hbm_bandwidth_gbs:
+  measured: 4255.36
+  theoretical: 4800.0
+  calibration_factor: 0.8865
+tensor_core_tflops:
+  fp16:
+    measured: 370.28
+    theoretical: 989.5
+    calibration_factor: 0.3742
+  bf16:
+    measured: 364.01
+    theoretical: 989.5
+    calibration_factor: 0.3679
+theoretical_peaks:
+  hbm_bw_gbs: 4800.0
+  fp16_tensor_tflops: 989.5
+  bf16_tensor_tflops: 989.5
+  fp8_tensor_tflops: 1979.0
+  tf32_tensor_tflops: 494.7
+  fp32_tflops: 67.0
