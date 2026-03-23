@@ -31,19 +31,19 @@ class DeltaNetDecodeBenchmark(BenchmarkBase):
 class DeltaNetDecodeBenchFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, dim_k, dim_v, dtype", [
-            (1, 32, 128, 128, torch.float32),
-            (1, 32, 128, 128, torch.bfloat16),
-            (8, 32, 128, 128, torch.float32),
-            (8, 32, 128, 128, torch.bfloat16),
-            (16, 32, 128, 128, torch.float32),
-            (16, 32, 128, 128, torch.bfloat16),
-            (32, 32, 128, 128, torch.float32),
-            (32, 32, 128, 128, torch.bfloat16),
-            (1, 32, 64, 64, torch.float32),
-            (8, 32, 64, 64, torch.float32),
-            (32, 32, 64, 64, torch.float32),
-            (64, 32, 128, 128, torch.float32),
-            (64, 32, 128, 128, torch.bfloat16),
+            pytest.param(1, 32, 128, 128, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(1, 32, 128, 128, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(8, 32, 128, 128, torch.float32, marks=pytest.mark.full),
+            pytest.param(8, 32, 128, 128, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(16, 32, 128, 128, torch.float32, marks=pytest.mark.full),
+            pytest.param(16, 32, 128, 128, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(32, 32, 128, 128, torch.float32, marks=pytest.mark.full),
+            pytest.param(32, 32, 128, 128, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1, 32, 64, 64, torch.float32, marks=pytest.mark.full),
+            pytest.param(8, 32, 64, 64, torch.float32, marks=pytest.mark.full),
+            pytest.param(32, 32, 64, 64, torch.float32, marks=pytest.mark.full),
+            pytest.param(64, 32, 128, 128, torch.float32, marks=pytest.mark.nightly),
+            pytest.param(64, 32, 128, 128, torch.bfloat16, marks=pytest.mark.nightly),
         ]),
     ]
 
