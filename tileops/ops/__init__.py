@@ -6,6 +6,8 @@ from .deepseek_nsa import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
+from .deltanet_chunkwise import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
+from .deltanet_recurrence import DeltaNetDecodeOp
 from .dropout import DropoutOp
 from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2CLUTOp, FFTC2COp
@@ -92,6 +94,10 @@ __all__ = [
     "FusedAddLayerNormOp",
     "FusedAddRmsNormOp",
     "FusedGatedOp",
+    "DeltaNetBwdOp",
+    "DeltaNetDecodeOp",
+    "DeltaNetFwdOp",
+    "DeltaNetOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeOp",
     "GatedDeltaNetFwdOp",
