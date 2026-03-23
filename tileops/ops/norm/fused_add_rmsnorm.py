@@ -28,7 +28,7 @@ class FusedAddRmsNormOp(Op):
         r &= x + \\mathrm{residual} \\\\
         y &= \\frac{r}{\\sqrt{\\mathrm{mean}(r^2) + \\epsilon}} \\cdot w
 
-    Returns dual outputs ``(y, r)`` so downstream residual connections can
+    Returns dual outputs ``(y, residual_out)`` so downstream residual connections can
     reuse the pre-norm sum without recomputation.
 
     Supported dtypes:

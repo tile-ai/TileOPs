@@ -29,7 +29,7 @@ class FusedAddLayerNormOp(Op):
         y &= \\frac{r - \\mathrm{E}[r]}{\\sqrt{\\mathrm{Var}[r] + \\epsilon}}
             \\cdot w + b
 
-    Returns dual outputs ``(y, r)`` so downstream residual connections can
+    Returns dual outputs ``(y, residual_out)`` so downstream residual connections can
     reuse the pre-norm sum without recomputation.
 
     Supported dtypes:
