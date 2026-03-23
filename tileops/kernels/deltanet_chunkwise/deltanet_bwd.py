@@ -308,8 +308,6 @@ def _deltanet_bwd_wrapped_kernel(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     from .compute_w_u_bwd import compute_w_u_bwd_tl
 
-    NC = seq_len // chunk_size
-
     bwd_parallel_fn = _bwd_parallel_tl(
         batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
     )(parallel_threads)
@@ -325,17 +323,10 @@ def _deltanet_bwd_wrapped_kernel(
     dk_corr, du_corr = \
         dh_recurrence_bwd_fn(k, w, v_new, dh_local)
 
-    # dw_corr = -(du_corr @ S^T) per chunk — batched matmul (parallel)
-    du_corr_c = du_corr.float().reshape(batch, head, NC, chunk_size, dim_v)
-    S_c = S[:, :, :NC, :, :].float()
-    dw_corr = -(du_corr_c @ S_c.transpose(-2, -1))
-    dw_corr = dw_corr.reshape(batch, head, seq_len, dim_k).to(k.dtype)
-
-    du = du_partial + du_corr
-    dw_total = dw + dw_corr
-    dk_wu, dv, dbeta = wu_bwd_fn(dw_total, du, Aw, Au, k, v, beta)
-
-    dk = dk_partial + dk_corr + dk_wu
+    # Fused: dw_corr + du merge + wu_bwd + A_inv backward + dk merge
+    dk, dv, dbeta = wu_bwd_fn(
+        dw, du_partial, du_corr, S, Aw, Au, k, v, beta, dk_partial, dk_corr,
+    )
     return dq, dk, dv, dbeta
 
 
