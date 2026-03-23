@@ -329,6 +329,7 @@ def _deltanet_bwd_wrapped_kernel(
         dh_recurrence_bwd_fn(k, w, v_new, dh_local)
 
     # dw_corr = -(du_corr @ S^T) per chunk — batched matmul (parallel)
+    NC = seq_len // chunk_size
     du_corr_c = du_corr.float().reshape(batch, head, NC, chunk_size, dim_v)
     S_c = S[:, :, :NC, :, :].float()
     dw_corr = -(du_corr_c @ S_c.transpose(-2, -1))
@@ -336,26 +337,11 @@ def _deltanet_bwd_wrapped_kernel(
 
     du = du_partial + du_corr
     dw_total = dw + dw_corr
-    dAw, dAu, dk_wu, dv, dbeta = wu_bwd_fn(dw_total, du, Aw, Au, k, v, beta)
+    # compute_w_u_bwd with fused A_inv backward: outputs dk, dv, dbeta
+    # (A_inv gradient through KK^T already included in dk and dbeta)
+    dk_wu, dv, dbeta = wu_bwd_fn(dw_total, du, Aw, Au, k, v, beta)
 
-    # A_inv backward: dAw/dAu → dA → dP → dk_A, dbeta_A
-    # dA = -(A_inv^T @ dA_inv @ A_inv^T), dP = strictLower(dA)
-    dA_inv = (dAw + dAu).float().reshape(batch, head, NC, chunk_size, chunk_size)
-    A_inv = Aw.float().reshape(batch, head, NC, chunk_size, chunk_size)
-    dP = torch.tril(
-        -(A_inv.transpose(-2, -1) @ dA_inv @ A_inv.transpose(-2, -1)),
-        diagonal=-1,
-    )
-    k_c = k.float().reshape(batch, head, NC, chunk_size, dim_k)
-    beta_c = beta.float().reshape(batch, head, NC, chunk_size)
-    dk_A = (beta_c.unsqueeze(-1) * (dP @ k_c)
-            + (dP.transpose(-2, -1) * beta_c.unsqueeze(-2)) @ k_c)
-    dk_A = dk_A.reshape(batch, head, seq_len, dim_k).to(k.dtype)
-    dbeta_A = (dP * (k_c @ k_c.transpose(-2, -1))).sum(-1)
-    dbeta_A = dbeta_A.reshape(batch, head, seq_len).to(beta.dtype)
-
-    dk = dk_partial + dk_corr + dk_wu + dk_A
-    dbeta = dbeta + dbeta_A
+    dk = dk_partial + dk_corr + dk_wu
     return dq, dk, dv, dbeta
 
 
