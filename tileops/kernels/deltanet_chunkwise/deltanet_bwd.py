@@ -209,25 +209,23 @@ def _dh_recurrence_bwd_tl(
 
     Grid: (batch, head) -- sequential over chunks (backward).
     Reads dh_local from bwd_parallel, propagates dh backward, and computes
-    corrections for dk, du, dw that depend on dh_buf from other chunks.
+    corrections for dk, du that depend on dh_buf from other chunks.
 
     The correct recurrence for ungated DeltaNet is:
         dh_c = dh_local[c] + (I - W_c^T @ K_c) @ dh_{c+1}
     because h_{c+1} = h_c + k^T @ v_new and v_new = u - w @ h_c,
     so dh_{c+1}/dh_c = I - k^T @ w (not I).
 
-    Also outputs dw_corr: the cross-chunk dw contribution from du_corr
-    flowing through v_new = u - w @ h:
-        dw_corr[c] = -(du_corr[c] @ h_c^T)
+    dw_corr is computed outside this kernel as a batched matmul for efficiency.
 
-    Outputs: dk_correction, du_correction, dw_correction
+    Outputs: dk_correction, du_correction
     """
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
 
     @tilelang.jit(
-        out_idx=[-3, -2, -1],
+        out_idx=[-2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
@@ -239,72 +237,53 @@ def _dh_recurrence_bwd_tl(
             k: T.Tensor([batch, head, seq_len, dim_k], dtype),
             w: T.Tensor([batch, head, seq_len, dim_k], dtype),
             v_new: T.Tensor([batch, head, seq_len, dim_v], dtype),
-            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], accum_dtype),
             dh_local: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
             # Outputs
             dk_corr: T.Tensor([batch, head, seq_len, dim_k], dtype),
             du_corr: T.Tensor([batch, head, seq_len, dim_v], dtype),
-            dw_corr: T.Tensor([batch, head, seq_len, dim_k], dtype),
         ):
             with T.Kernel(batch, head, threads=threads) as (bid, hid):
                 # Shared buffers
                 k_c = T.alloc_shared([block_C, dim_k], dtype)
                 w_c = T.alloc_shared([block_C, dim_k], dtype)
                 v_new_c = T.alloc_shared([block_C, dim_v], dtype)
-                h_c = T.alloc_shared([dim_k, dim_v], dtype)
                 dh_loc = T.alloc_shared([dim_k, dim_v], accum_dtype)
                 dP = T.alloc_shared([block_C, dim_k], dtype)
-                # dh_buf (dtype) is the gemm-input cast of the precise accumulator
                 dh_buf = T.alloc_shared([dim_k, dim_v], dtype)
                 # Fragments
-                # Precise fp32 accumulator for dh (avoids compounding
-                # quantization error when propagating backward over chunks)
                 dh_fp32 = T.alloc_fragment([dim_k, dim_v], accum_dtype)
                 du_corr_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
                 dP_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 wk_dh_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
                 k_dh_shared = T.alloc_shared([block_C, dim_v], dtype)
 
-                # Zero fp32 accumulator (last chunk has no successor)
                 for i, j in T.Parallel(dim_k, dim_v):
                     dh_fp32[i, j] = T.float32(0.0)
 
                 for t in T.Pipelined(num_chunks, num_stages=num_stages):
                     t_bwd = num_chunks - 1 - t
-                    # Load data
                     T.copy(k[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :], k_c, disable_tma=True)
                     T.copy(w[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :], w_c, disable_tma=True)
                     T.copy(v_new[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :], v_new_c, disable_tma=True)
-                    T.copy(S[bid, hid, t_bwd, :, :], h_c, disable_tma=True)
                     T.copy(dh_local[bid, hid, t_bwd, :, :], dh_loc, disable_tma=True)
 
-                    # Cast precise dh to dtype for gemm input
                     T.copy(dh_fp32, dh_buf)
 
-                    # du_correction = k @ dh_buf
+                    # du_corr = k @ dh_buf; also save for wk_dh
                     T.clear(du_corr_frag)
                     T.gemm(k_c, dh_buf, du_corr_frag)
                     T.copy(du_corr_frag, du_corr[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :], disable_tma=True)
-                    # Save k @ dh_buf for wk_dh computation below
                     T.copy(du_corr_frag, k_dh_shared)
 
-                    # dk_correction = v_new @ dh_buf^T
+                    # dk_corr = v_new @ dh_buf^T
                     T.clear(dP_frag)
                     T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
                     T.copy(dP_frag, dP)
                     for n, kk in T.Parallel(block_C, dim_k):
                         dk_corr[bid, hid, t_bwd * block_C + n, kk] = dP[n, kk]
 
-                    # dw_correction = -(du_corr @ h_c^T) = -(k @ dh_buf) @ h_c^T
-                    T.clear(dP_frag)
-                    T.gemm(k_dh_shared, h_c, dP_frag, transpose_B=True)
-                    for n, kk in T.Parallel(block_C, dim_k):
-                        dw_corr[bid, hid, t_bwd * block_C + n, kk] = -dP_frag[n, kk]
-
-                    # Corrected dh accumulation:
-                    # dh_c = dh_local[c] + (I - W^T @ K) @ dh_{c+1}
-                    #       = dh_local[c] + dh_{c+1} - W^T @ (K @ dh_{c+1})
-                    # W^T @ k_dh_shared: [DK, BC] @ [BC, DV] -> [DK, DV]
+                    # dh = dh_local + (I - W^T @ K) @ dh_future
+                    #    = dh_local + dh_future - W^T @ (K @ dh_future)
                     T.clear(wk_dh_frag)
                     T.gemm(w_c, k_dh_shared, wk_dh_frag, transpose_A=True)
                     for i, j in T.Parallel(dim_k, dim_v):
@@ -313,59 +292,6 @@ def _dh_recurrence_bwd_tl(
         return dh_recurrence_bwd_kernel
 
     return _func
-
-
-def _backward_through_A_inv(
-    dAw: torch.Tensor,
-    dAu: torch.Tensor,
-    Aw: torch.Tensor,
-    k: torch.Tensor,
-    beta: torch.Tensor,
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Backward through the WY matrix inverse A_inv.
-
-    A = I + strictLower(diag(beta) * KK^T)
-    A_inv is computed via Neumann series in the forward pass.
-
-    dAw and dAu carry dL/d(A_inv) from the w and u paths respectively.
-    This function computes the additional dk and dbeta contributions from
-    the dependency of A_inv on k and beta through the Gram matrix.
-
-    Returns (dk_A, dbeta_A) — corrections to add to dk and dbeta.
-    """
-    NC = seq_len // chunk_size
-    orig_dtype = k.dtype
-
-    # dL/d(A_inv) = dAw + dAu  [B, H, NC, BC, BC]
-    dA_inv = (dAw + dAu).float().reshape(batch, head, NC, chunk_size, chunk_size)
-    A_inv_mat = Aw.float().reshape(batch, head, NC, chunk_size, chunk_size)
-
-    # Standard matrix inverse adjoint: dL/dA = -(A_inv)^T @ dL/d(A_inv) @ (A_inv)^T
-    dA = -(A_inv_mat.transpose(-2, -1) @ dA_inv @ A_inv_mat.transpose(-2, -1))
-
-    # A = I + strictLower(P) where P = diag(beta) * KK^T
-    # Only the strictly lower triangular part depends on k, beta.
-    dP = torch.tril(dA, diagonal=-1)
-
-    # P[i,j] = beta[i] * sum_d k[i,d]*k[j,d]
-    # dk[n,d] = beta[n] * (dP @ k)[n,d] + ((dP^T * diag(beta)) @ k)[n,d]
-    k_c = k.float().reshape(batch, head, NC, chunk_size, dim_k)
-    beta_c = beta.float().reshape(batch, head, NC, chunk_size)
-
-    dk_A = (beta_c.unsqueeze(-1) * (dP @ k_c)
-            + (dP.transpose(-2, -1) * beta_c.unsqueeze(-2)) @ k_c)
-    dk_A = dk_A.reshape(batch, head, seq_len, dim_k).to(orig_dtype)
-
-    # dbeta[n] = sum_j dP[n,j] * KK^T[n,j]
-    KKT = k_c @ k_c.transpose(-2, -1)
-    dbeta_A = (dP * KKT).sum(-1).reshape(batch, head, seq_len).to(orig_dtype)
-
-    return dk_A, dbeta_A
 
 
 @torch.library.custom_op("tileops::deltanet_bwd_kernel", mutates_args=())
@@ -380,6 +306,8 @@ def _deltanet_bwd_wrapped_kernel(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     from .compute_w_u_bwd import compute_w_u_bwd_tl
     from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
+
+    NC = seq_len // chunk_size
 
     fused_fn = fused_prepare_compute_w_u_tl(
         batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
@@ -397,19 +325,34 @@ def _deltanet_bwd_wrapped_kernel(
     Aw, Au, w, u = fused_fn(k, v, beta)
     dq, dk_partial, dw, du_partial, v_new, dh_local = \
         bwd_parallel_fn(do, q, k, w, u, S)
-    dk_corr, du_corr, dw_corr = \
-        dh_recurrence_bwd_fn(k, w, v_new, S, dh_local)
+    dk_corr, du_corr = \
+        dh_recurrence_bwd_fn(k, w, v_new, dh_local)
+
+    # dw_corr = -(du_corr @ S^T) per chunk — batched matmul (parallel)
+    du_corr_c = du_corr.float().reshape(batch, head, NC, chunk_size, dim_v)
+    S_c = S[:, :, :NC, :, :].float()
+    dw_corr = -(du_corr_c @ S_c.transpose(-2, -1))
+    dw_corr = dw_corr.reshape(batch, head, seq_len, dim_k).to(k.dtype)
 
     du = du_partial + du_corr
     dw_total = dw + dw_corr
     dAw, dAu, dk_wu, dv, dbeta = wu_bwd_fn(dw_total, du, Aw, Au, k, v, beta)
 
-    # Backward through A_inv: the WY matrix A_inv depends on k and beta
-    # through A = I + strictLower(diag(beta) * KK^T).
-    # dAw/dAu carry dL/d(A_inv) which must flow back to dk and dbeta.
-    dk_A, dbeta_A = _backward_through_A_inv(
-        dAw, dAu, Aw, k, beta, batch, head, seq_len, chunk_size, dim_k,
+    # A_inv backward: dAw/dAu → dA → dP → dk_A, dbeta_A
+    # dA = -(A_inv^T @ dA_inv @ A_inv^T), dP = strictLower(dA)
+    dA_inv = (dAw + dAu).float().reshape(batch, head, NC, chunk_size, chunk_size)
+    A_inv = Aw.float().reshape(batch, head, NC, chunk_size, chunk_size)
+    dP = torch.tril(
+        -(A_inv.transpose(-2, -1) @ dA_inv @ A_inv.transpose(-2, -1)),
+        diagonal=-1,
     )
+    k_c = k.float().reshape(batch, head, NC, chunk_size, dim_k)
+    beta_c = beta.float().reshape(batch, head, NC, chunk_size)
+    dk_A = (beta_c.unsqueeze(-1) * (dP @ k_c)
+            + (dP.transpose(-2, -1) * beta_c.unsqueeze(-2)) @ k_c)
+    dk_A = dk_A.reshape(batch, head, seq_len, dim_k).to(k.dtype)
+    dbeta_A = (dP * (k_c @ k_c.transpose(-2, -1))).sum(-1)
+    dbeta_A = dbeta_A.reshape(batch, head, seq_len).to(beta.dtype)
 
     dk = dk_partial + dk_corr + dk_wu + dk_A
     dbeta = dbeta + dbeta_A
