@@ -29,6 +29,16 @@ NOISE_FLOOR = 0.05  # ignore <=5% fluctuations (measurement noise)
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 HISTORY_RETENTION_DAYS = 14
 
+# ── Emoji constants ───────────────────────────────────────────────────────
+_PASS = "\u2705"          # ✅
+_FAIL = "\u274c"          # ❌
+_WARN = "\u26a0\ufe0f"   # ⚠️
+_PARTY = "\U0001f389"     # 🎉
+_RED = "\U0001f534"       # 🔴
+_YELLOW = "\U0001f7e1"    # 🟡
+_BLUE = "\U0001f535"      # 🔵
+_GREEN = "\U0001f7e2"     # 🟢
+
 # ---------------------------------------------------------------------------
 # JUnit XML parsing
 # ---------------------------------------------------------------------------
@@ -96,6 +106,7 @@ def parse_bench_xml(path: str) -> list[dict]:
         }
         # Perf data
         for key in ("tileops_latency_ms", "tileops_tflops", "tileops_bandwidth_tbs",
+                     "tileops_variant",
                      "baseline_tag", "baseline_latency_ms", "baseline_tflops",
                      "baseline_ratio"):
             if key in props:
@@ -147,6 +158,7 @@ def aggregate_bench_results(results: list[dict]) -> dict:
             d["module"] = r.get("op_module")
         config_entry = {"name": r["name"]}
         for key in ("tileops_latency_ms", "tileops_tflops", "tileops_bandwidth_tbs",
+                     "tileops_variant",
                      "baseline_tag", "baseline_latency_ms", "baseline_tflops",
                      "baseline_ratio"):
             if key in r:
@@ -322,6 +334,17 @@ def _get_gpu_name() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _ratio_emoji(ratio: float) -> str:
+    """Return an emoji indicator for a baseline ratio value."""
+    if ratio >= 1.5:
+        return _GREEN
+    if ratio >= 1.0:
+        return _BLUE
+    if ratio >= BASELINE_RATIO_ALERT:
+        return _YELLOW
+    return _RED
+
+
 def generate_report(
     test_ops: dict | None,
     bench_ops: dict | None,
@@ -335,120 +358,157 @@ def generate_report(
     gpu = _get_gpu_name()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    lines.append("# TileOPs Nightly Report")
-    lines.append(f"Date: {now} | Commit: {commit} | GPU: {gpu}")
-    lines.append("")
-
-    # Summary
+    # ── Header ────────────────────────────────────────────────────────────
     n_test_ops = len(test_ops) if test_ops else 0
     n_bench_ops = len(bench_ops) if bench_ops else 0
     n_failures = sum(1 for d in (test_ops or {}).values() if d["failed"] > 0)
-    lines.append("## Summary")
+    total_tests = sum(d["passed"] + d["failed"] + d["skipped"]
+                      for d in (test_ops or {}).values())
+    total_passed = sum(d["passed"] for d in (test_ops or {}).values())
+
+    health = _PASS if (n_failures == 0 and not regressions) else _FAIL
+    lines.append(f"# {health} TileOPs Nightly Report")
     lines.append("")
-    lines.append("| Metric | Count |")
-    lines.append("|--------|-------|")
-    lines.append(f"| Ops tested (correctness) | {n_test_ops} |")
-    lines.append(f"| Ops benchmarked | {n_bench_ops} |")
-    lines.append(f"| Test failures | {n_failures} |")
-    lines.append(f"| Benchmark regressions (vs 14-day best) | {len(regressions)} |")
-    lines.append(f"| Baseline alerts (< 80%) | {len(baseline_alerts)} |")
+    lines.append(f"> **{now}** &ensp;|&ensp; `{commit}` &ensp;|&ensp; {gpu}")
     lines.append("")
 
-    # Test failures
+    # ── Summary ───────────────────────────────────────────────────────────
+    corr_icon = _PASS if n_failures == 0 else f"{_FAIL} {n_failures} failed"
+    reg_icon = f"{_PASS} None" if not regressions else f"{_WARN} {len(regressions)}"
+    alert_icon = (f"{_WARN} {len(baseline_alerts)}"
+                  if baseline_alerts else f"{_PASS} None")
+
+    lines.append("| | |")
+    lines.append("|---|---|")
+    lines.append(f"| **Correctness** | {corr_icon}"
+                 f" &ensp; ({total_passed}/{total_tests} tests across"
+                 f" {n_test_ops} ops) |")
+    lines.append(f"| **Benchmarked Ops** | {n_bench_ops} |")
+    lines.append(f"| **Regressions** (vs 14-day best) | {reg_icon} |")
+    lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) |"
+                 f" {alert_icon} |")
+    if improvements:
+        lines.append(f"| **Improvements** (vs 14-day best) |"
+                     f" {_PARTY} {len(improvements)} |")
+    lines.append("")
+
+    # ── Test Failures (only if any) ───────────────────────────────────────
     if test_ops:
         failed_ops = {op: d for op, d in test_ops.items() if d["failed"] > 0}
         if failed_ops:
-            lines.append("## Test Failures")
+            lines.append(f"## {_FAIL} Test Failures")
             lines.append("")
-            lines.append("| Op | Module | Failed/Total | Failing Tests |")
-            lines.append("|----|--------|-------------|---------------|")
+            lines.append("| Op | Module | Failed / Total | Failing Tests |")
+            lines.append("|:---|:-------|:--------------:|:--------------|")
             for op, d in sorted(failed_ops.items()):
                 total = d["passed"] + d["failed"] + d["skipped"]
                 tests_str = ", ".join(d["failing_tests"][:3])
                 if len(d["failing_tests"]) > 3:
                     tests_str += f", ... (+{len(d['failing_tests']) - 3})"
-                lines.append(f"| {op} | {d['module'] or 'N/A'} "
+                lines.append(f"| **{op}** | `{d['module'] or 'N/A'}` "
                              f"| {d['failed']}/{total} | {tests_str} |")
             lines.append("")
 
-    # Baseline alerts
-    if baseline_alerts:
-        lines.append("## Baseline Performance Alerts")
-        lines.append("")
-        lines.append("| Op | Config | TileOPs (ms) | Baseline (ms) | Ratio | Baseline |")
-        lines.append("|----|--------|-------------|---------------|-------|----------|")
-        for a in sorted(baseline_alerts, key=lambda x: x.get("ratio", 1)):
-            lines.append(f"| {a['op']} | {a['config']} "
-                         f"| {a['tileops_ms']:.4f} | {a['baseline_ms']:.4f} "
-                         f"| {a['ratio']:.1%} | {a['baseline_tag']} |")
-        lines.append("")
-        lines.append("> Ratio = baseline_latency / tileops_latency. "
-                     "< 80% means TileOPs is significantly slower than baseline.")
-        lines.append("")
-
-    # Regressions
+    # ── Regressions ───────────────────────────────────────────────────────
     if regressions:
-        lines.append("## Benchmark Regressions (vs 14-day best)")
+        lines.append(f"## {_WARN} Performance Regressions (vs 14-day best)")
         lines.append("")
-        lines.append("| Op | Config | Best (ms) | Curr (ms) | Delta | TFLOPS |")
-        lines.append("|----|--------|-----------|-----------|-------|--------|")
+        lines.append("| Op | Config | Best (ms) | Current (ms) | Delta | TFLOPS |")
+        lines.append("|:---|:-------|----------:|-----------:|------:|-------:|")
         for r in sorted(regressions, key=lambda x: -x["delta_pct"]):
-            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "N/A"
-            lines.append(f"| {r['op']} | {r['config']} "
+            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
+            lines.append(f"| **{r['op']}** | {r['config']} "
                          f"| {r['best_ms']:.4f} | {r['curr_ms']:.4f} "
                          f"| +{r['delta_pct']:.1f}% | {tflops_str} |")
         lines.append("")
 
-    # Improvements
+    # ── Improvements ──────────────────────────────────────────────────────
     if improvements:
-        lines.append("## Benchmark Improvements (vs 14-day best)")
+        lines.append(f"## {_PARTY} Performance Improvements (vs 14-day best)")
         lines.append("")
-        lines.append("| Op | Config | Prev Best (ms) | Curr (ms) | Delta | TFLOPS |")
-        lines.append("|----|--------|----------------|-----------|-------|--------|")
+        lines.append("| Op | Config | Prev Best (ms) | Current (ms) | Delta | TFLOPS |")
+        lines.append("|:---|:-------|---------------:|-----------:|------:|-------:|")
         for r in sorted(improvements, key=lambda x: x["delta_pct"]):
-            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "N/A"
-            lines.append(f"| {r['op']} | {r['config']} "
+            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
+            lines.append(f"| **{r['op']}** | {r['config']} "
                          f"| {r['best_ms']:.4f} | {r['curr_ms']:.4f} "
                          f"| {r['delta_pct']:.1f}% | {tflops_str} |")
         lines.append("")
 
-    # Full correctness results
-    if test_ops:
-        lines.append("## Full Correctness Results")
+    # ── Baseline Alerts ───────────────────────────────────────────────────
+    if baseline_alerts:
+        lines.append(f"## {_RED} Baseline Performance Alerts")
         lines.append("")
-        lines.append("| Op | Module | Pass | Fail | Skip | Max Error |")
-        lines.append("|----|--------|------|------|------|-----------|")
+        lines.append("> TileOPs is slower than baseline"
+                     f" (ratio < {BASELINE_RATIO_ALERT:.0%})."
+                     " Ratio = baseline_latency / tileops_latency.")
+        lines.append("")
+        lines.append("| | Op | Config | TileOPs (ms) | Baseline (ms)"
+                     " | Ratio | Via |")
+        lines.append("|:-|:---|:-------|------------:|-------------:"
+                     "|------:|:----|")
+        for a in sorted(baseline_alerts, key=lambda x: x.get("ratio", 1)):
+            emoji = _ratio_emoji(a["ratio"])
+            lines.append(f"| {emoji} | **{a['op']}** | {a['config']} "
+                         f"| {a['tileops_ms']:.4f} | {a['baseline_ms']:.4f} "
+                         f"| {a['ratio']:.1%} | {a['baseline_tag']} |")
+        lines.append("")
+
+    # ── Full Correctness Results (collapsible) ────────────────────────────
+    if test_ops:
+        lines.append("<details>")
+        lines.append(f"<summary><strong>Full Correctness Results"
+                     f" ({n_test_ops} ops)</strong></summary>")
+        lines.append("")
+        lines.append("| | Op | Module | Pass | Fail | Skip | Max Error |")
+        lines.append("|:-|:---|:-------|-----:|-----:|-----:|----------:|")
         for op in sorted(test_ops):
             d = test_ops[op]
-            err_str = f"{d['max_abs_err']:.2e}" if d["max_abs_err"] else "N/A"
-            lines.append(f"| {op} | {d['module'] or 'N/A'} "
+            err_str = f"{d['max_abs_err']:.2e}" if d["max_abs_err"] else "-"
+            icon = _PASS if d["failed"] == 0 else _FAIL
+            lines.append(f"| {icon} | {op} | `{d['module'] or 'N/A'}` "
                          f"| {d['passed']} | {d['failed']} | {d['skipped']} "
                          f"| {err_str} |")
         lines.append("")
-
-    # Full benchmark results
-    if bench_ops:
-        lines.append("## Full Benchmark Results")
+        lines.append("</details>")
         lines.append("")
-        lines.append("| Op | Config | Latency (ms) | TFLOPS | BW (TB/s) "
-                     "| Baseline | Ratio |")
-        lines.append("|----|--------|-------------|--------|---------- "
-                     "|----------|-------|")
+
+    # ── Full Benchmark Results (collapsible) ──────────────────────────────
+    if bench_ops:
+        n_configs = sum(len(d["configs"]) for d in bench_ops.values())
+        lines.append("<details>")
+        lines.append(f"<summary><strong>Full Benchmark Results"
+                     f" ({n_configs} configs across"
+                     f" {n_bench_ops} ops)</strong></summary>")
+        lines.append("")
+        lines.append("| | Op | Config | Latency (ms) | TFLOPS | BW (TB/s)"
+                     " | Via | Ratio |")
+        lines.append("|:-|:---|:-------|------------:|-------:|----------:"
+                     "|:----|------:|")
         for op in sorted(bench_ops):
             for cfg in bench_ops[op]["configs"]:
                 lat = cfg.get("tileops_latency_ms")
                 tflops = cfg.get("tileops_tflops")
                 bw = cfg.get("tileops_bandwidth_tbs")
                 bl_tag = cfg.get("baseline_tag", "")
+                variant = cfg.get("tileops_variant")
                 ratio = cfg.get("baseline_ratio")
-                lat_str = f"{lat:.4f}" if lat else "N/A"
-                tflops_str = f"{tflops:.2f}" if tflops else "N/A"
-                bw_str = f"{bw:.2f}" if bw else "N/A"
-                bl_str = str(bl_tag) if bl_tag else "-"
+                lat_str = f"{lat:.4f}" if lat else "-"
+                tflops_str = f"{tflops:.2f}" if tflops else "-"
+                bw_str = f"{bw:.2f}" if bw else "-"
+                if bl_tag:
+                    bl_str = str(bl_tag)
+                elif variant:
+                    bl_str = f"strategy: {variant}"
+                else:
+                    bl_str = "-"
                 ratio_str = f"{ratio:.1%}" if ratio else "-"
-                lines.append(f"| {op} | {cfg['name']} "
+                emoji = _ratio_emoji(ratio) if ratio else ""
+                lines.append(f"| {emoji} | {op} | {cfg['name']} "
                              f"| {lat_str} | {tflops_str} | {bw_str} "
                              f"| {bl_str} | {ratio_str} |")
+        lines.append("")
+        lines.append("</details>")
         lines.append("")
 
     return "\n".join(lines)
