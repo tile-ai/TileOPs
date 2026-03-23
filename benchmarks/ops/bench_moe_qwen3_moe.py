@@ -36,7 +36,6 @@ from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import FusedTopKOp, Qwen3MoEOp
 
-
 # ---------------------------------------------------------------------------
 # CUPTI warmup
 # ---------------------------------------------------------------------------
