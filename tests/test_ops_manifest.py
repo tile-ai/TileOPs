@@ -1,5 +1,6 @@
 """Validation tests for ops_manifest.yaml."""
 
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
@@ -161,7 +162,6 @@ class TestWorkloads:
     def test_each_hidden_dim_has_both_phases(self, manifest):
         wl = manifest["ops"]["rmsnorm_fwd"]["workloads"]
         # Group by hidden dim
-        from collections import defaultdict
         dim_phases = defaultdict(set)
         for entry in wl:
             h = entry["hidden"]
