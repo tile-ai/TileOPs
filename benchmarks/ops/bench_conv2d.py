@@ -30,6 +30,11 @@ class Conv2dBenchmark(BenchmarkBase):
 
 _CONV2D_BENCH_PARAMS = [
     pytest.param(2, 64, 56, 56, 64, (3, 3), (1, 1), (1, 1), torch.float16, True, id="resnet-3x3-fp16"),
+    pytest.param(1, 3, 112, 112, 64, (3, 3), (2, 2), (1, 1), torch.float16, True, id="stem-3x3-s2-fp16"),
+    pytest.param(1, 128, 56, 56, 256, (3, 3), (2, 2), (1, 1), torch.float16, True, id="stage-transition-3x3-s2-fp16"),
+    pytest.param(1, 64, 56, 56, 128, (5, 5), (1, 1), (2, 2), torch.float16, True, id="inception-5x5-s1-fp16"),
+    pytest.param(1, 128, 56, 56, 256, (5, 5), (2, 2), (2, 2), torch.float16, True, id="downsample-5x5-s2-fp16"),
+    pytest.param(1, 256, 112, 112, 512, (3, 3), (1, 1), (1, 1), torch.float16, True, id="highres-3x3-s1-fp16"),
     pytest.param(1, 128, 28, 28, 128, (3, 3), (2, 2), (1, 1), torch.bfloat16, True, id="stride2-bf16"),
     pytest.param(2, 64, 56, 56, 256, (1, 1), (1, 1), (0, 0), torch.float16, True, id="resnet-1x1-fp16"),
     pytest.param(2, 128, 28, 28, 512, (1, 1), (1, 1), (0, 0), torch.float16, True, id="bottleneck-expand-1x1-fp16"),

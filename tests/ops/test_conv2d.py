@@ -18,6 +18,31 @@ class Conv2dFixture(FixtureBase):
                 id="smoke-fp16-3x3",
             ),
             pytest.param(
+                1, 3, 112, 112, 64, (3, 3), (2, 2), (1, 1), torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-stem-3x3-s2-fp16",
+            ),
+            pytest.param(
+                1, 64, 56, 56, 64, (3, 3), (1, 1), (1, 1), torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-resblock-3x3-s1-fp16",
+            ),
+            pytest.param(
+                1, 128, 56, 56, 256, (3, 3), (2, 2), (1, 1), torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-stage-transition-3x3-s2-fp16",
+            ),
+            pytest.param(
+                1, 64, 56, 56, 128, (5, 5), (1, 1), (2, 2), torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-inception-5x5-s1-fp16",
+            ),
+            pytest.param(
+                1, 128, 56, 56, 256, (5, 5), (2, 2), (2, 2), torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-downsample-5x5-s2-fp16",
+            ),
+            pytest.param(
                 2, 32, 32, 32, 64, (1, 1), (1, 1), (0, 0), torch.float16, True,
                 marks=pytest.mark.full,
                 id="full-fp16-1x1-tuned",
