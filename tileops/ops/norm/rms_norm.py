@@ -18,18 +18,31 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 class RmsNormOp(Op):
-    """Standalone RMS Norm operator.
+    """Root Mean Square Layer Normalization operator.
 
-    y = x * rsqrt(mean(x^2, dim=-1) + eps) * weight
+    Computes RMS normalization over the last dimension:
 
-    Supports arbitrary leading dimensions (3D+) via flatten/unflatten.
-    Handles non-contiguous inputs and non-power-of-two hidden dims.
+    .. math::
+
+        y = \\frac{x}{\\sqrt{\\mathrm{mean}(x^2) + \\epsilon}} \\cdot w
+
+    where the mean is taken over the last dimension.
+
+    Supported dtypes:
+        ``torch.float16``, ``torch.bfloat16``.
+
+    Note:
+        Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
+        Handles non-contiguous inputs and non-power-of-two hidden dims
+        by padding to 256-element alignment.
 
     Args:
-        M: Number of rows (product of all dims except last).
+        M: Number of rows (product of all dims except the last).
         N: Hidden dimension (last dim).
-        dtype: Data type (float16 or bfloat16).
-        eps: Epsilon for numerical stability (default 1e-6).
+        dtype: Data type (``torch.float16`` or ``torch.bfloat16``).
+        eps: Epsilon for numerical stability.
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
@@ -56,6 +69,19 @@ class RmsNormOp(Op):
         return {"rms_norm": RmsNormKernel}
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        """Apply RMS normalization.
+
+        Args:
+            x: Input tensor of shape ``(*leading, N)`` on CUDA.
+            weight: Affine scale of shape ``(N,)`` on CUDA.
+
+        Returns:
+            Normalized tensor of the same shape as *x*.
+
+        Raises:
+            ValueError: If tensors are not on CUDA, dtypes mismatch,
+                or shapes are incompatible with the configured dimensions.
+        """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if not weight.is_cuda:
