@@ -18,7 +18,7 @@ from tileops.ops.reduction.logsumexp import LogSumExpOp
 from tileops.ops.reduction.softmax import SoftmaxOp
 
 # ---------------------------------------------------------------------------
-# Tolerances (from DEVELOPMENT.md)
+# Tolerances (from docs/testing.md)
 # ---------------------------------------------------------------------------
 
 
