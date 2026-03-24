@@ -8,7 +8,7 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.utils import get_sm_version
 
-__all__ = ["Conv2d1x1Kernel", "Conv2d3x3Kernel"]
+__all__ = ["Conv2d1x1Kernel", "Conv2dKernel"]
 
 _HOPPER_SHARED_MEMORY_LIMIT_BYTES = 227 * 1024
 
@@ -108,12 +108,14 @@ def _conv2d_1x1_kernel(
     return _conv2d_1x1_func
 
 
-def _conv2d_3x3_kernel(
+def _conv2d_kernel(
     n: int,
     c_in: int,
     h: int,
     w: int,
     c_out: int,
+    kernel_h: int,
+    kernel_w: int,
     stride_h: int,
     stride_w: int,
     pad_h: int,
@@ -122,13 +124,12 @@ def _conv2d_3x3_kernel(
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    kernel_size = 3
-    out_h = (h + 2 * pad_h - kernel_size) // stride_h + 1
-    out_w = (w + 2 * pad_w - kernel_size) // stride_w + 1
-    k_total = kernel_size * kernel_size * c_in
+    out_h = (h + 2 * pad_h - kernel_h) // stride_h + 1
+    out_w = (w + 2 * pad_w - kernel_w) // stride_w + 1
+    k_total = kernel_h * kernel_w * c_in
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _conv2d_3x3_func(
+    def _conv2d_func(
         block_m: int,
         block_n: int,
         block_k: int,
@@ -137,9 +138,9 @@ def _conv2d_3x3_kernel(
         enable_rasteration: bool,
     ):
         @T.prim_func
-        def _conv2d_3x3_main(
+        def _conv2d_main(
             x: T.Tensor((n, h, w, c_in), dtype),  # type: ignore
-            weight: T.Tensor((kernel_size, kernel_size, c_in, c_out), dtype),  # type: ignore
+            weight: T.Tensor((kernel_h, kernel_w, c_in, c_out), dtype),  # type: ignore
             out: T.Tensor((n, out_h, out_w, c_out), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
@@ -147,6 +148,7 @@ def _conv2d_3x3_kernel(
                 get_sm_version() == 90
                 and stride_h == stride_w
                 and pad_h == pad_w
+                and kernel_h == kernel_w
                 and c_in % block_k == 0
             )
             with T.Kernel(
@@ -167,13 +169,13 @@ def _conv2d_3x3_kernel(
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
                     if use_hopper_im2col:
-                        T.c2d_im2col(x, data_shared, by, k_iter, kernel_size, stride_h, 1, pad_h)
+                        T.c2d_im2col(x, data_shared, by, k_iter, kernel_h, stride_h, 1, pad_h)
                     else:
                         for i, j in T.Parallel(block_m, block_k):
                             m_idx = by * block_m + i
                             k_idx = k_iter * block_k + j
-                            kh = k_idx // (kernel_size * c_in)
-                            kw = (k_idx // c_in) % kernel_size
+                            kh = k_idx // (kernel_w * c_in)
+                            kw = (k_idx // c_in) % kernel_w
                             ci = k_idx % c_in
                             out_idx = m_idx % (out_h * out_w)
                             batch = m_idx // (out_h * out_w)
@@ -216,7 +218,7 @@ def _conv2d_3x3_kernel(
                             dtype,
                         ),
                         T.cast(0.0, dtype),
-                    )
+                            )
 
                 if use_hopper_im2col:
                     T.copy(out_shared, out_flat[by * block_m, bx * block_n])
@@ -227,9 +229,9 @@ def _conv2d_3x3_kernel(
                         if m_idx < n * out_h * out_w and oc < c_out:
                             out_flat[m_idx, oc] = out_shared[i, j]
 
-        return _conv2d_3x3_main
+        return _conv2d_main
 
-    return _conv2d_3x3_func
+    return _conv2d_func
 
 
 @torch.library.custom_op("top::conv2d_1x1_wrapped_kernel", mutates_args=())
@@ -274,13 +276,15 @@ def _(
     return torch.empty((n, h, w, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
-@torch.library.custom_op("top::conv2d_3x3_wrapped_kernel", mutates_args=())
-def _conv2d_3x3_wrapped_kernel(
+@torch.library.custom_op("top::conv2d_wrapped_kernel", mutates_args=())
+def _conv2d_wrapped_kernel(
     n: int,
     c_in: int,
     h: int,
     w: int,
     c_out: int,
+    kernel_h: int,
+    kernel_w: int,
     stride_h: int,
     stride_w: int,
     pad_h: int,
@@ -297,18 +301,20 @@ def _conv2d_3x3_wrapped_kernel(
     weight: torch.Tensor,
     bias: torch.Tensor,
 ) -> torch.Tensor:
-    return _conv2d_3x3_kernel(
-        n, c_in, h, w, c_out, stride_h, stride_w, pad_h, pad_w, has_bias, dtype
+    return _conv2d_kernel(
+        n, c_in, h, w, c_out, kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w, has_bias, dtype
     )(block_m, block_n, block_k, num_stages, threads, enable_rasteration)(x, weight, bias)
 
 
-@_conv2d_3x3_wrapped_kernel.register_fake
+@_conv2d_wrapped_kernel.register_fake
 def _(
     n: int,
     c_in: int,
     h: int,
     w: int,
     c_out: int,
+    kernel_h: int,
+    kernel_w: int,
     stride_h: int,
     stride_w: int,
     pad_h: int,
@@ -323,12 +329,12 @@ def _(
     enable_rasteration: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    out_h = (h + 2 * pad_h - 3) // stride_h + 1
-    out_w = (w + 2 * pad_w - 3) // stride_w + 1
+    out_h = (h + 2 * pad_h - kernel_h) // stride_h + 1
+    out_w = (w + 2 * pad_w - kernel_w) // stride_w + 1
     return torch.empty((n, out_h, out_w, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
-def _conv2d_3x3_shared_memory_bytes(
+def _conv2d_shared_memory_for_nxn(
     block_m: int,
     block_n: int,
     block_k: int,
@@ -338,7 +344,7 @@ def _conv2d_3x3_shared_memory_bytes(
     return _conv2d_shared_memory_bytes(block_m, block_n, block_k, num_stages, dtype)
 
 
-class Conv2d3x3Kernel(Kernel):
+class Conv2dKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     def __init__(
@@ -348,6 +354,8 @@ class Conv2d3x3Kernel(Kernel):
         h: int,
         w: int,
         c_out: int,
+        kernel_h: int,
+        kernel_w: int,
         stride_h: int,
         stride_w: int,
         pad_h: int,
@@ -363,23 +371,27 @@ class Conv2d3x3Kernel(Kernel):
         self.h = h
         self.w = w
         self.c_out = c_out
+        self.kernel_h = kernel_h
+        self.kernel_w = kernel_w
         self.stride_h = stride_h
         self.stride_w = stride_w
         self.pad_h = pad_h
         self.pad_w = pad_w
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_h = (h + 2 * pad_h - 3) // stride_h + 1
-        self.out_w = (w + 2 * pad_w - 3) // stride_w + 1
+        self.out_h = (h + 2 * pad_h - kernel_h) // stride_h + 1
+        self.out_w = (w + 2 * pad_w - kernel_w) // stride_w + 1
         self.m = n * self.out_h * self.out_w
-        self.k_total = c_in * 9
+        self.k_total = c_in * kernel_h * kernel_w
 
-        self.kernel = _conv2d_3x3_kernel(
+        self.kernel = _conv2d_kernel(
             n,
             c_in,
             h,
             w,
             c_out,
+            kernel_h,
+            kernel_w,
             stride_h,
             stride_w,
             pad_h,
@@ -431,7 +443,7 @@ class Conv2d3x3Kernel(Kernel):
         )
         valid_configs = []
         for block_m, block_n, block_k, num_stages, threads, enable_rasteration in configs:
-            shared_memory_bytes = _conv2d_3x3_shared_memory_bytes(
+            shared_memory_bytes = _conv2d_shared_memory_for_nxn(
                 block_m, block_n, block_k, num_stages, self.dtype)
             if shared_memory_bytes > _HOPPER_SHARED_MEMORY_LIMIT_BYTES:
                 continue
@@ -454,12 +466,14 @@ class Conv2d3x3Kernel(Kernel):
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
         weight_hwcf = weight.permute(2, 3, 1, 0).contiguous()
-        return _conv2d_3x3_wrapped_kernel(
+        return _conv2d_wrapped_kernel(
             self.n,
             self.c_in,
             self.h,
             self.w,
             self.c_out,
+            self.kernel_h,
+            self.kernel_w,
             self.stride_h,
             self.stride_w,
             self.pad_h,

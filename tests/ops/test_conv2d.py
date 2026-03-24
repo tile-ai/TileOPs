@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.conv2d import Conv2d1x1Kernel, Conv2d3x3Kernel
+from tileops.kernels.conv2d import Conv2d1x1Kernel, Conv2dKernel
 from tileops.ops import Conv2dOp
 
 
@@ -31,6 +31,16 @@ class Conv2dFixture(FixtureBase):
                 1, 128, 56, 56, 256, (3, 3), (2, 2), (1, 1), torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-stage-transition-3x3-s2-fp16",
+            ),
+            pytest.param(
+                1, 32, 28, 28, 64, (5, 5), (1, 1), (2, 2), torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-small-5x5-s1-fp16",
+            ),
+            pytest.param(
+                1, 64, 28, 28, 128, (5, 5), (2, 2), (2, 2), torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-small-5x5-s2-fp16",
             ),
             pytest.param(
                 2, 32, 32, 32, 64, (1, 1), (1, 1), (0, 0), torch.float16, True,
@@ -130,55 +140,12 @@ def test_conv2d(
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
-        dilation=1,
-        groups=1,
         bias=True,
         dtype=dtype,
         tune=tune,
     )
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-@pytest.mark.smoke
-def test_conv2d_rejects_dilation() -> None:
-    with pytest.raises(NotImplementedError, match="dilation=1"):
-        Conv2dOp(
-            n=1,
-            c_in=32,
-            h=16,
-            w=16,
-            c_out=32,
-            kernel_size=3,
-            dilation=2,
-        )
-
-
-@pytest.mark.smoke
-def test_conv2d_rejects_groups() -> None:
-    with pytest.raises(NotImplementedError, match="groups=1"):
-        Conv2dOp(
-            n=1,
-            c_in=32,
-            h=16,
-            w=16,
-            c_out=32,
-            kernel_size=3,
-            groups=2,
-        )
-
-
-@pytest.mark.smoke
-def test_conv2d_rejects_unsupported_kernel_size() -> None:
-    with pytest.raises(NotImplementedError, match="kernel_size 1x1 or 3x3 only"):
-        Conv2dOp(
-            n=1,
-            c_in=32,
-            h=16,
-            w=16,
-            c_out=32,
-            kernel_size=5,
-        )
 
 
 @pytest.mark.smoke
@@ -218,17 +185,17 @@ def test_conv2d_dispatches_1x1_kernel() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
-    with pytest.raises(NotImplementedError, match="kernel_size 1x1 or 3x3 only"):
-        Conv2dOp(
-            n=1,
-            c_in=32,
-            h=16,
-            w=16,
-            c_out=64,
-            kernel_size=1,
-            padding=1,
-            bias=True,
-        )
+    op = Conv2dOp(
+        n=1,
+        c_in=32,
+        h=16,
+        w=16,
+        c_out=64,
+        kernel_size=1,
+        padding=1,
+        bias=True,
+    )
+    assert isinstance(op.kernel, Conv2dKernel)
 
 
 @pytest.mark.smoke
@@ -243,7 +210,22 @@ def test_conv2d_dispatches_3x3_kernel() -> None:
         padding=1,
         bias=True,
     )
-    assert isinstance(op.kernel, Conv2d3x3Kernel)
+    assert isinstance(op.kernel, Conv2dKernel)
+
+
+@pytest.mark.smoke
+def test_conv2d_dispatches_5x5_kernel() -> None:
+    op = Conv2dOp(
+        n=1,
+        c_in=32,
+        h=16,
+        w=16,
+        c_out=64,
+        kernel_size=5,
+        padding=2,
+        bias=True,
+    )
+    assert isinstance(op.kernel, Conv2dKernel)
 
 
 if __name__ == "__main__":
