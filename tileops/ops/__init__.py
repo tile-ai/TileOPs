@@ -40,7 +40,11 @@ from .norm import (
     LayerNormOp,
     RmsNormOp,
 )
+from .ssd_chunk_scan_fwd import SsdChunkScanFwdOp
+from .ssd_chunk_state_fwd import SsdChunkStateFwdOp
+from .ssd_state_passing_fwd import SsdStatePassingFwdOp
 from .op import Op
+
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
 from .reduction import (
@@ -124,6 +128,9 @@ __all__ = [
     "Op",
     "MoePermuteAlignOp",
     "RmsNormOp",
+    "SsdChunkScanFwdOp",
+    "SsdChunkStateFwdOp",
+    "SsdStatePassingFwdOp",
     "RopeLlama31Op",
     "RopeLongRopeOp",
     "RopeNeoxOp",
