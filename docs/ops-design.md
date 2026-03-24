@@ -29,41 +29,22 @@ Counter-example: `GroupNormOp` and `BatchNormOp` are both "normalization" but ha
 
 **Create a new intermediate base class when:**
 
-- 3+ ops share the same validate/reshape/pad/kernel/trim/reshape sequence
+- Multiple ops share the same validate/reshape/pad/kernel/trim/reshape sequence
+- The shared boilerplate is substantial (e.g., duplicated across many ops)
 - The pattern is stable and unlikely to diverge
-- Per-op differences fit into class variables and abstract hooks
+- Per-op differences can be captured by class variables or abstract hooks
 
 **Do NOT create one when:**
 
-- Only 1-2 ops share the pattern
+- Only 1 op uses the pattern (no evidence of reuse)
 - Ops share math similarity but differ in forward() flow
 - A common base would require excessive `if/else` or optional hooks
 
 ## Principle 3: Concrete Ops Are Declarations
 
-A well-designed concrete Op reads like configuration:
+A well-designed concrete Op should be short and declarative — specifying which kernel to use, which dtypes to accept, and how to wire inputs to the kernel. Shared mechanics (validation, reshape, padding, trimming) are inherited from the base class.
 
-```python
-class RmsNormOp(RowNormOp):
-    """y = x * rsqrt(mean(x², dim=-1) + eps) * weight"""
-
-    _op_name = "rmsnorm"
-    kernel_cls = RmsNormKernel
-    SUPPORTED_DTYPES = (torch.float16, torch.bfloat16)
-
-    def _init_kernel(self, tune):
-        self.kernel = self.kernel_map["rms_norm"](
-            self.M, self.N, self.eps, self.dtype, tune=tune
-        )
-
-    def _get_input_tensors(self, x, weight):
-        return [x, weight]
-
-    def _call_kernel(self, x, weight):
-        return self.kernel(x, weight)
-```
-
-The per-op logic is: which kernel, which dtypes, how to wire inputs. Everything else is inherited.
+The exact interface between base class and concrete op (template method with hooks vs. helper methods called by the subclass) varies by op family and is determined during base class extraction. The goal is minimal per-op code, but the mechanism depends on the family's input signature diversity.
 
 ## Principle 4: Conventions in Code, Not Documentation
 
@@ -75,7 +56,7 @@ If a convention applies to all ops (or all ops in a family), it lives in the cor
 | 256-element alignment padding          | Per-family base `forward()` or family-specific helper |
 | CUDA device check                      | Per-family base `forward()` or per-op implementation  |
 | dtype validation                       | Per-family base `forward()` via `SUPPORTED_DTYPES`    |
-| `torch.library.custom_op` registration | Base class or shared utility                          |
+| `torch.library.custom_op` registration | Per-op module or shared registration utility          |
 | Docstring format (Google style)        | Linter / CI check                                     |
 
 Non-contiguous tensors: for op families that require contiguous inputs, the family base class or shared helper is responsible for calling `.contiguous()`. Individual concrete ops should not implement their own stride or memory-layout handling unless they have a documented exception.
@@ -89,7 +70,8 @@ Every Op declares capabilities through class variables for both runtime behavior
 | `SUPPORTED_DTYPES` | Yes        | Every concrete Op       | Runtime dtype check + manifest validation          |
 | `ALIGNMENT`        | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm) |
 | `_op_name`         | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging    |
-| `kernel_cls`       | Yes        | Every concrete Op       | Maps Op to its Kernel implementation               |
+
+Ops that use a single kernel typically declare a `_kernel_key` and `_kernel_cls` class variable. Ops with multiple kernels (e.g., BatchNorm with train/infer/bwd) define a `default_kernel_map` property returning a dict. The dispatch mechanism is determined by the family base class.
 
 Adding a new class variable requires updating: (1) the base class that reads it, (2) all existing concrete ops, (3) the manifest schema if applicable.
 
@@ -112,9 +94,8 @@ Op (ABC)                                 # tileops/ops/op.py
  │   └── CumsumOp, CumprodOp           #   cumulative
  │
  ├── RowNormOp                           # normalize along last dim
- │   ├── RmsNormOp, LayerNormOp
- │   ├── FusedAddRmsNormOp, ...         #   multi-output variant
- │   └── AdaLayerNormOp, ...
+ │   ├── RmsNormOp, LayerNormOp         #   confirmed: same forward() flow
+ │   └── (FusedAdd*, AdaLayerNorm*)     #   candidates — multi-IO, needs design
  │
  └── (ops with unique patterns inherit Op directly)
      ├── GroupNormOp                     # spatial reduction
