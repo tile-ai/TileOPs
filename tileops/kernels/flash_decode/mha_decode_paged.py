@@ -533,7 +533,7 @@ class mha_decode_paged_kernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         block_M = [64, 128]
         block_N = [64, 128]
-        num_split = [2, 4]
+        num_split = [2, 4, 8]
         num_stages = [2, 3]
         threads = [128, 256]
         _configs = list(itertools.product(block_M, block_N, num_split, num_stages, threads))
