@@ -36,6 +36,7 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.kernels.grouped_gemm.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
 from tileops.kernels.kernel import Kernel
 from tileops.ops.elementwise import SiluAndMulOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
@@ -47,9 +48,10 @@ from ..op import Op
 
 __all__ = ["Qwen3MoEOp"]
 
-# NT kernel default block_m (grouped_gemm.py: (False, True): {"block_m": 64, ...}).
+# block_m for the NT layout (transpose_a=False, transpose_b=True).
 # Each expert's row slice must start on this boundary for correct tile→expert mapping.
-_BLOCK_M_NT = 64
+# Sourced directly from the kernel default config to stay in sync automatically.
+_BLOCK_M_NT: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
 
 
 class Qwen3MoEOp(Op):
