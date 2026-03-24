@@ -82,7 +82,7 @@ Each op defines a `TestBase` subclass with `gen_inputs()` and `ref_program()`.
 ### Metrics (all required)
 
 - Latency (ms)
-- TFLOPS (Terra Floating-point Operations Per Second)
+- TFLOPS (Tera Floating-point Operations Per Second)
 - DRAM Bandwidth (GB/s)
 
 ### Reporting Rules
@@ -91,6 +91,6 @@ Each op defines a `TestBase` subclass with `gen_inputs()` and `ref_program()`.
 - Include small, medium, and large representative shapes.
 - Do not cherry-pick favorable shapes; report regressions as-is.
 - Run the targeted correctness suite on the same GPU before reporting benchmark numbers.
-- `BenchmarkReport.record()` first argument must be the Op object, not a string literal.
-- `calculate_flops()` and `calculate_memory()` must return non-None values.
-- Every benchmark must record at least one baseline with a tag other than `"tileops"`. Use specific tags (`"torch"`, `"FA3"`, `"fla"`, `"triton"`), not generic `"baseline"`.
+- `BenchmarkReport.record()` first argument may be the Op instance or a string name; stay consistent within a given benchmark file.
+- `calculate_flops()` and `calculate_memory()` should return numeric values when the metric is available; return `None` only if the metric is not applicable, in which case it will be omitted from the report.
+- Every benchmark must record at least one non-`"tileops"` baseline. Use existing tags (`"baseline"`, `"torch"`, `"FA3"`, `"fla"`, `"triton"`) and avoid introducing ad-hoc tags without updating downstream consumers.

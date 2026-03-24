@@ -67,18 +67,18 @@ The per-op logic is: which kernel, which dtypes, how to wire inputs. Everything 
 
 ## Principle 4: Conventions in Code, Not Documentation
 
-If a convention applies to all ops (or all ops in a family), it lives in the base class:
+If a convention applies to all ops (or all ops in a family), it lives in the corresponding base class or family-specific helper:
 
-| Convention                             | Enforced By                                   |
-| -------------------------------------- | --------------------------------------------- |
-| Non-contiguous → `.contiguous()`       | Base class `forward()`                        |
-| 256-element alignment padding          | Base class `forward()`                        |
-| CUDA device check                      | Base class `forward()`                        |
-| dtype validation                       | Base class `forward()` via `SUPPORTED_DTYPES` |
-| `torch.library.custom_op` registration | Base class or shared utility                  |
-| Docstring format (Google style)        | Linter / CI check                             |
+| Convention                             | Enforced By                                           |
+| -------------------------------------- | ----------------------------------------------------- |
+| Non-contiguous → `.contiguous()`       | Per-family base `forward()` or family-specific helper |
+| 256-element alignment padding          | Per-family base `forward()` or family-specific helper |
+| CUDA device check                      | Per-family base `forward()` or per-op implementation  |
+| dtype validation                       | Per-family base `forward()` via `SUPPORTED_DTYPES`    |
+| `torch.library.custom_op` registration | Base class or shared utility                          |
+| Docstring format (Google style)        | Linter / CI check                                     |
 
-Non-contiguous tensors: all ops silently convert via `.contiguous()` in the base class `forward()`. Individual ops do not handle stride or memory layout.
+Non-contiguous tensors: for op families that require contiguous inputs, the family base class or shared helper is responsible for calling `.contiguous()`. Individual concrete ops should not implement their own stride or memory-layout handling unless they have a documented exception.
 
 ## Principle 5: Class Variable Protocol
 
@@ -93,7 +93,9 @@ Every Op declares capabilities through class variables for both runtime behavior
 
 Adding a new class variable requires updating: (1) the base class that reads it, (2) all existing concrete ops, (3) the manifest schema if applicable.
 
-## Inheritance Hierarchy
+## Inheritance Hierarchy (Target)
+
+The target hierarchy below is being incrementally adopted. Current codebase uses `_SimpleReduceOp`/`_WelfordReduceOp` for reductions; norm ops inherit `Op` directly. The names below represent the convergence target as intermediate base classes are extracted per the process in "Adding a New Intermediate Base Class."
 
 ```
 Op (ABC)                                 # tileops/ops/op.py

@@ -11,14 +11,14 @@ Bottom-up development flow: Kernel → Op → Test → Benchmark → PR.
 
 ## Step 1: Kernel Implementation (L1)
 
-- **Location**: `tileops/kernels/{operator_name}/`
+- **Location**: under `tileops/kernels/`, e.g. `{family}/{op}.py` or `{op}/` depending on complexity.
 - Implement core logic using TileLang.
 - Detailed docstrings for arguments and return values.
 - **Done when**: kernel compiles and runs correctly.
 
 ## Step 2: Op Definition and Verification (L2)
 
-- **Location**: `tileops/ops/{operator_name}.py`
+- **Location**: under `tileops/ops/`, e.g. `{family}/{op}.py` or `{op}.py` depending on whether the op belongs to an existing family subpackage.
 - Wrap the kernel in a Python function.
 - Google-style docstrings (Args, Returns, Example).
 - Unit test comparing output against a pure PyTorch reference.
