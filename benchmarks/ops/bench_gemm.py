@@ -39,7 +39,7 @@ def test_gemm_bench(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, t
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-cublas")
 
 
 if __name__ == "__main__":

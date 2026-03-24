@@ -125,7 +125,7 @@ def test_fp8_unary_bench(op_name, n_total, dtype, op_cls, baseline_fn):
         return baseline_fn(args[0].to(torch.float16)).to(dtype)
 
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ def test_fp8_binary_bench(op_name, n_total, dtype):
         return (a.to(torch.float16) + b.to(torch.float16)).to(dtype)
 
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ def test_fp8_fused_gated_bench(op_name, M, N, dtype):
         return (F.silu(gate) * value).to(dtype)
 
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

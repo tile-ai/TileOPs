@@ -196,7 +196,7 @@ def test_binary_arith_bench(
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ def test_comparison_bench(
     BenchmarkReport.record(f"cmp_{op_name}", locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(f"cmp_{op_name}", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(f"cmp_{op_name}", locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +281,7 @@ def test_logical_bench(
     # Baseline uses bool tensors
     a_bool, b_bool = inputs[0].bool(), inputs[1].bool()
     result_bl = bm.profile(baseline_fn, a_bool, b_bool)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +317,7 @@ def test_bitwise_bench(
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +372,7 @@ def test_fused_gated_bench(
 
     baseline_fn = _FUSED_BASELINES[op_name]
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +423,7 @@ def test_fused_gated_strategy_bench(
     op = op_cls(M=M, N=N, dtype=dtype, strategy=strategy)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
-        f"{op_name}_strategy", locals(), result, tag=f"tileops_{strategy}",
+        f"{op_name}_strategy", locals(), result, tag=f"tileops-{strategy}",
     )
 
 
@@ -525,7 +525,7 @@ def test_broadcast_bench(
     BenchmarkReport.record(f"{op_name}_bcast", locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(f"{op_name}_bcast", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(f"{op_name}_bcast", locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

@@ -136,7 +136,7 @@ def test_gla_fwd_bench(
     else:
         # --- Torch reference baseline ---
         result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 # =============================================================================
@@ -223,13 +223,13 @@ def test_gla_bwd_bench(
             return q_fla.grad, k_fla.grad, v_fla.grad
 
         result_fla = _profile_manual(fla_bwd, bm)
-        BenchmarkReport.record(bwd_op, locals(), result_fla, tag="fla_bwd_with_recompute")
+        BenchmarkReport.record(bwd_op, locals(), result_fla, tag="fla")
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
             return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
         result_bl = _profile_manual(torch_bwd, bm)
-        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch-ref")
 
 
 # =============================================================================
@@ -321,7 +321,7 @@ def test_gla_fwdbwd_bench(
         def ref_autograd_fwdbwd():
             return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
         result_bl = _profile_manual(ref_autograd_fwdbwd, bm, warmup=50)
-        BenchmarkReport.record(fwd_op, locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(fwd_op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

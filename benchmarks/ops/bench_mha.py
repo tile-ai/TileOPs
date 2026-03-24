@@ -93,7 +93,7 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     baseline_fn = _baseline_mha_fwd(test)
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="FA3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
 
 
 _MHA_BWD_BENCH_PARAMS = _MHA_FWD_BENCH_PARAMS
@@ -113,7 +113,7 @@ def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     baseline_fn = _baseline_mha_bwd(test)
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="FA3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
 
 
 if __name__ == "__main__":

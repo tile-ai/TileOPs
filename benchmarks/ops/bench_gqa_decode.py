@@ -44,7 +44,7 @@ def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 
 if __name__ == "__main__":

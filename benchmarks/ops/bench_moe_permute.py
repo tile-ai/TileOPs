@@ -127,7 +127,7 @@ def test_moe_permute_bench(
     torch.cuda.synchronize()
 
     result_ref = bm.profile(_ref_fn, hidden_states, topk_ids)
-    BenchmarkReport.record("moe_permute", locals(), result_ref, tag="pytorch-ref")
+    BenchmarkReport.record("moe_permute", locals(), result_ref, tag="torch-ref")
 
     # vLLM baseline (optional)
     if _VLLM_AVAILABLE:
