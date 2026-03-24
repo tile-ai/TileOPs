@@ -9,24 +9,27 @@
 #       outputs:  [{name, dtype, shape}]   # Output tensors
 #       params:   [{name, type, default}]  # Scalar / config parameters
 #       shape_rules: [str]                 # Optional Python expressions relating dimensions
-#     workloads:  [{label, ...dims}]       # Representative shapes for benchmarking
+#     workloads:  [{x_shape, dtypes, label?}]  # Representative shapes for benchmarking
 #     roofline:                            # Analytical cost model
 #       flops: <expr>                      # Inline Python expression  -OR-
-#       memory: <expr>                     #   both flops and memory expressions
+#       bytes: <expr>                      #   both flops and bytes expressions
 #       func: <module:function>            # Alternative: reference to Python function
 #     source:
 #       kernel: <path>                     # Path to kernel implementation
 #       op:     <path>                     # Path to op wrapper
 #       test:   <path>                     # Path to test file
 #       bench:  <path>                     # Path to benchmark file
+#     family: <str>                     # Op family for grouping (e.g. norm, attention)
 #
 # Notes:
 # - Backward ops are registered as independent entries (e.g. rmsnorm_bwd).
 # - shape_rules use Python expression syntax and are optional.
-# - roofline supports two modes: inline expressions (flops/memory) or func.
+# - roofline supports two modes: inline expressions (flops/bytes) or func.
 
 ops:
   rmsnorm_fwd:
+    family: norm
+
     signature:
       inputs:
         - name: x
@@ -40,6 +43,9 @@ ops:
           dtype: "{float16, bfloat16}"
           shape: "[M, N]"
       params:
+        - name: dim
+          type: int
+          default: -1
         - name: eps
           type: float
           default: 1.0e-6
@@ -48,53 +54,21 @@ ops:
         - "y.shape == x.shape"
 
     workloads:
-      # Llama-3.1-8B  (hidden_dim=4096)
-      - label: "llama-3.1-8b-prefill"
-        phase: prefill
-        hidden: 4096
-        seq_len: 2048
-        M: 2048
-        N: 4096
-      - label: "llama-3.1-8b-decode"
-        phase: decode
-        hidden: 4096
-        seq_len: 1
-        M: 1
-        N: 4096
-
+      # Llama-3.1-8B (hidden_dim=4096)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+      - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
       # Llama-3.1-70B (hidden_dim=8192)
-      - label: "llama-3.1-70b-prefill"
-        phase: prefill
-        hidden: 8192
-        seq_len: 2048
-        M: 2048
-        N: 8192
-      - label: "llama-3.1-70b-decode"
-        phase: decode
-        hidden: 8192
-        seq_len: 1
-        M: 1
-        N: 8192
-
+      - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+      - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
       # Llama-3.1-405B (hidden_dim=16384)
-      - label: "llama-3.1-405b-prefill"
-        phase: prefill
-        hidden: 16384
-        seq_len: 2048
-        M: 2048
-        N: 16384
-      - label: "llama-3.1-405b-decode"
-        phase: decode
-        hidden: 16384
-        seq_len: 1
-        M: 1
-        N: 16384
+      - {x_shape: [2048, 16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
+      - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
 
     roofline:
       # Per row: N squares + (N-1) adds + div + add + rsqrt + N muls (normalize) + N muls (weight) ≈ 4N
       flops: "4 * M * N"
       # Bytes: read x (M*N) + read weight (N) + write y (M*N), x2 for fp16/bf16 elem_size
-      memory: "2 * (M * N + N + M * N)"
+      bytes: "2 * (M * N + N + M * N)"
 
     source:
       kernel: tileops/kernels/norm/rms_norm.py

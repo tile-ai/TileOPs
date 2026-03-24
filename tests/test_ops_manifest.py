@@ -50,7 +50,7 @@ class TestManifestStructure:
 class TestOpSchema:
     """Every op entry has the required fields and valid sub-structure."""
 
-    REQUIRED_TOP_FIELDS = {"signature", "workloads", "roofline", "source"}
+    REQUIRED_TOP_FIELDS = {"family", "signature", "workloads", "roofline", "source"}
 
     def test_every_op_has_required_fields(self, all_ops):
         for op_name, entry in all_ops.items():
@@ -69,10 +69,10 @@ class TestOpSchema:
     def test_every_roofline_has_valid_mode(self, all_ops):
         for op_name, entry in all_ops.items():
             roofline = entry["roofline"]
-            has_inline = "flops" in roofline and "memory" in roofline
+            has_inline = "flops" in roofline and "bytes" in roofline
             has_func = "func" in roofline
             assert has_inline or has_func, (
-                f"{op_name}: roofline must have (flops + memory) or func"
+                f"{op_name}: roofline must have (flops + bytes) or func"
             )
 
     def test_shape_rules_are_valid_expressions(self, all_ops):
