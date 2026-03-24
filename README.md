@@ -8,7 +8,6 @@
   <p>
     <a href="#installation"><b>Installation</b></a> |
     <a href="#quick-start"><b>Quick Start</b></a> |
-    <a href="#operator-families"><b>Operators</b></a> |
     <a href="#documentation"><b>Docs</b></a>
   </p>
 </div>
@@ -17,7 +16,7 @@
 
 ## Overview
 
-TileOPs provides ~160 GPU operators across the op families listed below, targeting LLM training and inference workloads. All operators follow a two-layer design:
+TileOPs provides a growing collection of GPU operators for LLM training and inference. All operators follow a two-layer design:
 
 - **Op** (L2) — stateless Python entry point. Handles validation, dtype casting, and memory layout. Compatible with CUDA-Graph and `torch.compile`.
 - **Kernel** (L1) — TileLang GPU implementation with hardware-specific optimizations (Ampere, Hopper).
@@ -27,21 +26,6 @@ Key properties:
 - **Auto-tuning** — built-in search over tile sizes, pipelines, and scheduling parameters
 - **Lightweight** — depends only on TileLang, PyTorch, and einops
 - **Reference for TileLang** — demonstrates tiling strategies, memory hierarchy usage, and warp-/block-level coordination
-
-## Operator Families
-
-| Family               | Examples                                                          |
-| -------------------- | ----------------------------------------------------------------- |
-| **Attention**        | MHA, GQA (FA2/FA3), sliding-window, varlen, paged KV-cache decode |
-| **DeepSeek**         | MLA, NSA, DSA                                                     |
-| **Linear Attention** | GLA, DeltaNet, Gated DeltaNet (fwd/bwd/decode)                    |
-| **State Space**      | Mamba, SSD (chunk scan, chunk state, state passing)               |
-| **Normalization**    | RMSNorm, LayerNorm, GroupNorm, BatchNorm, fused variants          |
-| **Reduction**        | Sum, Mean, Softmax, LogSumExp, Argmax, cumulative ops             |
-| **Elementwise**      | Unary, binary, fused gated (SiLU-gate, GeGLU, etc.)               |
-| **MoE**              | Qwen3MoE, permute/unpermute, TopK routing                         |
-| **GEMM**             | FP16/BF16 matrix multiply                                         |
-| **Other**            | FFT, Engram, MHC                                                  |
 
 ## Installation
 
@@ -96,14 +80,7 @@ C = gemm(A, B)
 
 ## Documentation
 
-| Document                                | Description                                          |
-| --------------------------------------- | ---------------------------------------------------- |
-| [architecture.md](docs/architecture.md) | System modules, data flow, directory structure       |
-| [ops-design.md](docs/ops-design.md)     | Op/Kernel interface design and inheritance hierarchy |
-| [manifest.md](docs/manifest.md)         | `ops_manifest.yaml` spec format                      |
-| [roofline.md](docs/roofline.md)         | Performance evaluation methodology                   |
-| [testing.md](docs/testing.md)           | Test/benchmark framework and tolerances              |
-| [workflow.md](docs/workflow.md)         | Development workflow, coding standards, PR process   |
+Design docs and development guides are in [`docs/`](docs/). The full API reference and performance tables are published at [TileOPs.github.io](https://github.com/tile-ai/TileOPs.github.io).
 
 ## Contributing
 
@@ -111,4 +88,4 @@ See [workflow.md](docs/workflow.md) for branch naming, commit conventions, and t
 
 ## License
 
-TileOPs is released under the [Apache 2.0 License](LICENSE).
+TileOPs is released under the [MIT License](LICENSE).
