@@ -1,5 +1,5 @@
 import itertools
-from typing import Callable, Optional
+from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -41,8 +41,6 @@ def _conv2d_1x1_kernel(
     accum_dtype = "float"
     if stride_h != 1 or stride_w != 1 or pad_h != 0 or pad_w != 0:
         raise ValueError("Conv2d1x1Kernel requires stride=1 and padding=0")
-    out_h = h
-    out_w = w
     hw = h * w
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
