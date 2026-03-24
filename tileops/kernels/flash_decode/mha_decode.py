@@ -11,9 +11,13 @@ from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax
 
 __all__ = ["mha_decode_kernel"]
 
+# ---------------------------------------------------------------------------
+# JIT kernel: no-split variant
+# ---------------------------------------------------------------------------
+
 
 @functools.lru_cache(maxsize=32)
-def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype):
+def _mha_decode_no_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype):
     scale = make_log2e_scale(dim)
     accum_dtype = "float"
 
@@ -23,17 +27,16 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype)
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
-    def _mha_decode_func(block_M, block_N, num_split, num_stages, threads):
+    def _func(block_M, block_N, num_stages, threads):
 
         shape_q = [batch, seqlen_q, heads, dim]
         shape_kv = [batch, seqlen_kv, heads, dim]
-        part_shape = [batch, seqlen_q, heads, num_split, dim]
 
         online_softmax = make_online_softmax(scale, accum_dtype, block_M, block_N)
         rescale = make_rescale(block_M, dim)
 
-        @T.macro
-        def _mha_decode_no_split(
+        @T.prim_func
+        def mha_decode_no_split(
                 Q: T.Tensor(shape_q, dtype),
                 K: T.Tensor(shape_kv, dtype),
                 V: T.Tensor(shape_kv, dtype),
@@ -91,6 +94,36 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype)
                 T.copy(acc_o, Output[bz, bx * block_M:(bx + 1) * block_M, by, :])
                 for i in T.Parallel(block_M):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
+
+        return mha_decode_no_split
+
+    return _func
+
+
+# ---------------------------------------------------------------------------
+# JIT kernel: split variant (split + combine)
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=32)
+def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype):
+    scale = make_log2e_scale(dim)
+    accum_dtype = "float"
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"])
+    def _func(block_M, block_N, num_split, num_stages, threads):
+
+        shape_q = [batch, seqlen_q, heads, dim]
+        shape_kv = [batch, seqlen_kv, heads, dim]
+        part_shape = [batch, seqlen_q, heads, num_split, dim]
+
+        online_softmax = make_online_softmax(scale, accum_dtype, block_M, block_N)
+        rescale = make_rescale(block_M, dim)
 
         @T.macro
         def MMA0(
@@ -186,12 +219,6 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
-
-                # TODO: Handle causal split case
-                # loop_range = (
-                #     T.min(T.ceildiv(seqlen_kv, block_N), T.ceildiv(
-                #         (mid + 1) * block_M, block_N)) if is_causal else T.ceildiv(
-                #             (seqlen_kv // num_split), block_N))
 
                 loop_range = T.ceildiv(split_length_shared[sid], block_N)
                 # move it to input var...
@@ -291,71 +318,58 @@ def _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype)
             _mha_decode_split(Q, K, V, real_seqlen_kv, glse, Output_partial, split_length)
             combine(glse, Output_partial, Output)
 
-        @T.prim_func
-        def mha_decode_no_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_kv, dtype),
-                V: T.Tensor(shape_kv, dtype),
-                real_seqlen_kv: T.int32,
-                Output: T.Tensor(shape_q, dtype),
-        ):
-            _mha_decode_no_split(Q, K, V, real_seqlen_kv, Output)
+        return mha_decode_split
 
-        #num_split = 1
-        if num_split > 1:
-
-            return mha_decode_split
-        else:
-            return mha_decode_no_split
-
-    return _mha_decode_func
+    return _func
 
 
-@torch.library.custom_op("top::mha_decode_wrapped_kernel", mutates_args=())
-def _mha_decode_wrapped_kernel(batch: int, heads: int, seqlen_q: int, seqlen_kv: int,
-                               real_seqlen_kv: int, dim: int, is_causal: bool, dtype: str,
-                               block_M: int, block_N: int, num_stages: int, threads: int,
-                               num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                               glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
-
-    if not (K.shape[1] == V.shape[1] == seqlen_kv):
-        raise ValueError("error: dimension mismatch!")
-    if real_seqlen_kv > seqlen_kv:
-        raise ValueError("error: seqlen_kv mismatch!")
-    split_length = torch.zeros(num_split, dtype=torch.int32, device=Q.device)
-    for k in range(num_split):
-        split_length[k] = real_seqlen_kv // (num_split * block_N) * block_N
-    split_length[-1] = real_seqlen_kv - (num_split - 1) * (
-        real_seqlen_kv // (num_split * block_N) * block_N)
-
-    if num_split == 1:
-        return _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal,
-                                  dtype)(block_M, block_N, num_split, num_stages,
-                                         threads)(Q, K, V, real_seqlen_kv)
-
-    return _mha_decode_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal,
-                              dtype)(block_M, block_N, num_split, num_stages,
-                                     threads)(Q, K, V, real_seqlen_kv, glse, Output_partial,
-                                              split_length)
+# ---------------------------------------------------------------------------
+# Custom ops (torch.compile compatible wrappers)
+# ---------------------------------------------------------------------------
 
 
-@_mha_decode_wrapped_kernel.register_fake
-def _(
-        batch: int,
-        heads: int,
-        seqlen_q: int,
-        seqlen_kv: int,
-        dim: int,
-        is_causal: bool,
-        dtype: str,
-        block_M: int,
-        block_N: int,
-        num_stages: int,
-        threads: int,
-        num_split: int,
-        *inputs
-) -> torch.Tensor:
-    return torch.empty_like(inputs[0])
+@torch.library.custom_op("top::mha_decode_no_split_op", mutates_args=())
+def _mha_decode_no_split_op(batch: int, heads: int, seqlen_q: int, seqlen_kv: int,
+                             real_seqlen_kv: int, dim: int, is_causal: bool, dtype: str,
+                             block_M: int, block_N: int, num_stages: int, threads: int,
+                             Q: torch.Tensor, K: torch.Tensor,
+                             V: torch.Tensor) -> torch.Tensor:
+    return _mha_decode_no_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal,
+                                       dtype)(block_M, block_N, num_stages,
+                                              threads)(Q, K, V, real_seqlen_kv)
+
+
+@_mha_decode_no_split_op.register_fake
+def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, real_seqlen_kv: int, dim: int,
+      is_causal: bool, dtype: str, block_M: int, block_N: int, num_stages: int, threads: int,
+      Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+    return torch.empty_like(Q)
+
+
+@torch.library.custom_op("top::mha_decode_split_op", mutates_args=())
+def _mha_decode_split_op(batch: int, heads: int, seqlen_q: int, seqlen_kv: int,
+                          real_seqlen_kv: int, dim: int, is_causal: bool, dtype: str,
+                          block_M: int, block_N: int, num_stages: int, threads: int,
+                          num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+                          glse: torch.Tensor, Output_partial: torch.Tensor,
+                          split_length: torch.Tensor) -> torch.Tensor:
+    return _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal,
+                                    dtype)(block_M, block_N, num_split, num_stages,
+                                           threads)(Q, K, V, real_seqlen_kv, glse, Output_partial,
+                                                    split_length)
+
+
+@_mha_decode_split_op.register_fake
+def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, real_seqlen_kv: int, dim: int,
+      is_causal: bool, dtype: str, block_M: int, block_N: int, num_stages: int, threads: int,
+      num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, glse: torch.Tensor,
+      Output_partial: torch.Tensor, split_length: torch.Tensor) -> torch.Tensor:
+    return torch.empty_like(Q)
+
+
+# ---------------------------------------------------------------------------
+# Kernel class
+# ---------------------------------------------------------------------------
 
 
 class mha_decode_kernel(Kernel):
@@ -380,14 +394,20 @@ class mha_decode_kernel(Kernel):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.kernel = _mha_decode_kernel(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
-                                         self.dim, self.is_causal, self.dtype_str)
+        self.no_split_jit = _mha_decode_no_split_kernel(
+            self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.is_causal,
+            self.dtype_str)
+        self.split_jit = _mha_decode_split_kernel(
+            self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.is_causal,
+            self.dtype_str)
 
+        # autotune targets the split kernel
+        self.kernel = self.split_jit
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
 
     def _make_supply_prog(self):
-        """Create a supply_prog that handles the scalar real_seqlen_kv parameter."""
+        """Create a supply_prog that handles scalar and int32 tensor parameters."""
         from tilelang.utils.tensor import get_tensor_supply as _get_tensor_supply
 
         default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
@@ -398,6 +418,13 @@ class mha_decode_kernel(Kernel):
             for param in params:
                 if param.is_scalar():
                     inputs.append(seqlen_kv)
+                elif str(param.dtype) == "int32":
+                    # split_length: fill with evenly divided lengths
+                    num_split = param.shape[0]
+                    base = seqlen_kv // num_split
+                    t = torch.full((num_split,), base, dtype=torch.int32, device="cuda")
+                    t[-1] += seqlen_kv % num_split
+                    inputs.append(t)
                 else:
                     inputs.append(default_supply(param))
             return inputs
@@ -422,7 +449,7 @@ class mha_decode_kernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         block_M = [64, 128]
         block_N = [64, 128]
-        num_split = [1, 2, 4]
+        num_split = [2, 4]
         num_stages = [2, 3]
         threads = [128, 256]
         _configs = list(itertools.product(block_M, block_N, num_split, num_stages, threads))
@@ -437,16 +464,33 @@ class mha_decode_kernel(Kernel):
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int):
-        #real_seqlen_kv = K.shape[1]
-        glse = torch.empty((self.batch, self.heads, self.config["num_split"], self.seqlen_q),
+        block_M = self.config["block_M"]
+        block_N = self.config["block_N"]
+        num_split = self.config["num_split"]
+        num_stages = self.config["num_stages"]
+        threads = self.config["threads"]
+
+        # Dispatch: use no-split for short sequences where splitting is not beneficial
+        threshold = num_split * block_N
+        if real_seqlen_kv < threshold:
+            return _mha_decode_no_split_op(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
+                                           real_seqlen_kv, self.dim, self.is_causal, self.dtype_str,
+                                           block_M, block_N, num_stages, threads, Q, K, V)
+
+        # Split path: compute per-split lengths
+        base_len = real_seqlen_kv // (num_split * block_N) * block_N
+        split_length = torch.full((num_split,), base_len, dtype=torch.int32, device=Q.device)
+        split_length[-1] = real_seqlen_kv - (num_split - 1) * base_len
+
+        glse = torch.empty((self.batch, self.heads, num_split, self.seqlen_q),
                            dtype=self.dtype,
                            device=Q.device)
         Output_partial = torch.empty(
-            (self.batch, self.seqlen_q, self.heads, self.config["num_split"], self.dim),
+            (self.batch, self.seqlen_q, self.heads, num_split, self.dim),
             dtype=self.dtype,
             device=Q.device)
-        return _mha_decode_wrapped_kernel(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
-                                          real_seqlen_kv, self.dim, self.is_causal, self.dtype_str,
-                                          self.config["block_M"], self.config["block_N"],
-                                          self.config["num_stages"], self.config["threads"],
-                                          self.config["num_split"], Q, K, V, glse, Output_partial)
+
+        return _mha_decode_split_op(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
+                                    real_seqlen_kv, self.dim, self.is_causal, self.dtype_str,
+                                    block_M, block_N, num_stages, threads, num_split, Q, K, V,
+                                    glse, Output_partial, split_length)
