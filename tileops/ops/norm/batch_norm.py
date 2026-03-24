@@ -135,12 +135,16 @@ class BatchNormFwdOp(Op):
 
         Args:
             x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
-            weight: Affine scale (gamma) of shape ``(C,)``.
-            bias: Affine shift (beta) of shape ``(C,)``.
-            running_mean: Running mean of shape ``(C,)``, updated in-place
-                during training.
-            running_var: Running variance of shape ``(C,)``, updated in-place
-                during training.
+            weight: Affine scale (gamma) of shape ``(C,)`` on the same CUDA
+                device as ``x``.
+            bias: Affine shift (beta) of shape ``(C,)`` on the same CUDA
+                device as ``x``.
+            running_mean: Running mean of shape ``(C,)`` on the same CUDA
+                device as ``x``, with dtype ``torch.float32``. Updated
+                in-place during training.
+            running_var: Running variance of shape ``(C,)`` on the same CUDA
+                device as ``x``, with dtype ``torch.float32``. Updated
+                in-place during training.
             training: If ``True``, compute batch statistics and update
                 running stats; otherwise use running stats directly.
 
@@ -237,7 +241,8 @@ class BatchNormBwdOp(Op):
         Args:
             grad_out: Upstream gradient of shape ``(N, C, *spatial)``.
             x: Original input tensor of shape ``(N, C, *spatial)``.
-            weight: Affine scale (gamma) of shape ``(C,)``. Internally
+            weight: Affine scale (gamma) of shape ``(C,)`` on the same CUDA
+                device as ``x``. Internally
                 cast to ``torch.float32`` for the backward kernel.
             mean: Per-channel batch mean from the forward pass, shape
                 ``(C,)``. Expected as ``torch.float32`` (produced by
