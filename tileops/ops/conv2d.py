@@ -45,7 +45,6 @@ class Conv2dOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        kernel_name = ""
         kernel_kwargs = dict(
             n=n,
             c_in=c_in,
@@ -66,13 +65,17 @@ class Conv2dOp(Op):
             and self.padding == (0, 0)
             and "conv2d_1x1_kernel" in self.kernel_map
         ):
-            kernel_name = "conv2d_1x1_kernel"
+            self.kernel = self.kernel_map["conv2d_1x1_kernel"](**kernel_kwargs)
         elif "conv2d_kernel" in self.kernel_map:
-            kernel_name = "conv2d_kernel"
-        if kernel_name == "conv2d_kernel":
-            kernel_kwargs["kernel_h"] = self.kernel_size[0]
-            kernel_kwargs["kernel_w"] = self.kernel_size[1]
-        self.kernel = self.kernel_map[kernel_name](**kernel_kwargs)
+            self.kernel = self.kernel_map["conv2d_kernel"](
+                **kernel_kwargs,
+                kernel_h=self.kernel_size[0],
+                kernel_w=self.kernel_size[1],
+            )
+        else:
+            raise NotImplementedError(
+                "Conv2dOp requires 'conv2d_1x1_kernel' or 'conv2d_kernel' in kernel_map"
+            )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
