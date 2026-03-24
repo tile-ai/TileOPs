@@ -2,7 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.conv2d import Conv2d1x1Kernel, Conv2d3x3Kernel, Conv2dKernel
+from tileops.kernels.conv2d import Conv2d1x1Kernel, Conv2d3x3Kernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
@@ -54,7 +54,7 @@ class Conv2dOp(Op):
             raise NotImplementedError("Conv2dOp currently supports dilation=1 only")
 
         self.dispatch_kernel(kernel_map)
-        kernel_name = "conv2d_kernel"
+        kernel_name = ""
         kernel_kwargs = dict(
             n=n,
             c_in=c_in,
@@ -79,8 +79,8 @@ class Conv2dOp(Op):
         elif self.kernel_size == (3, 3) and "conv2d_3x3_kernel" in self.kernel_map:
             kernel_name = "conv2d_3x3_kernel"
         else:
-            kernel_kwargs["k_h"] = self.kernel_size[0]
-            kernel_kwargs["k_w"] = self.kernel_size[1]
+            raise NotImplementedError(
+                f"Conv2dOp currently supports kernel_size 1x1 or 3x3 only, got {self.kernel_size}")
         self.kernel = self.kernel_map[kernel_name](**kernel_kwargs)
 
     @property
@@ -88,7 +88,6 @@ class Conv2dOp(Op):
         return {
             "conv2d_1x1_kernel": Conv2d1x1Kernel,
             "conv2d_3x3_kernel": Conv2d3x3Kernel,
-            "conv2d_kernel": Conv2dKernel,
         }
 
     def forward(

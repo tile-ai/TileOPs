@@ -33,16 +33,6 @@ class Conv2dFixture(FixtureBase):
                 id="full-stage-transition-3x3-s2-fp16",
             ),
             pytest.param(
-                1, 64, 56, 56, 128, (5, 5), (1, 1), (2, 2), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-inception-5x5-s1-fp16",
-            ),
-            pytest.param(
-                1, 128, 56, 56, 256, (5, 5), (2, 2), (2, 2), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-downsample-5x5-s2-fp16",
-            ),
-            pytest.param(
                 2, 32, 32, 32, 64, (1, 1), (1, 1), (0, 0), torch.float16, True,
                 marks=pytest.mark.full,
                 id="full-fp16-1x1-tuned",
@@ -91,7 +81,7 @@ class Conv2dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.c_in, self.h, self.w, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.h, self.w, self.c_in, device="cuda", dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1],
             device="cuda", dtype=self.dtype,
@@ -105,8 +95,8 @@ class Conv2dTest(TestBase):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        return F.conv2d(
-            x,
+        out = F.conv2d(
+            x.permute(0, 3, 1, 2).contiguous(),
             weight,
             bias=bias,
             stride=self.stride,
@@ -114,6 +104,7 @@ class Conv2dTest(TestBase):
             dilation=1,
             groups=1,
         )
+        return out.permute(0, 2, 3, 1).contiguous()
 
 
 @Conv2dFixture
@@ -178,6 +169,19 @@ def test_conv2d_rejects_groups() -> None:
 
 
 @pytest.mark.smoke
+def test_conv2d_rejects_unsupported_kernel_size() -> None:
+    with pytest.raises(NotImplementedError, match="kernel_size 1x1 or 3x3 only"):
+        Conv2dOp(
+            n=1,
+            c_in=32,
+            h=16,
+            w=16,
+            c_out=32,
+            kernel_size=5,
+        )
+
+
+@pytest.mark.smoke
 def test_conv2d_accepts_zero_bias() -> None:
     op = Conv2dOp(
         n=1,
@@ -189,11 +193,12 @@ def test_conv2d_accepts_zero_bias() -> None:
         padding=1,
         bias=True,
     )
-    x = torch.randn(1, 32, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 16, 16, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(32, 32, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     bias = torch.zeros(32, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight, bias)
-    ref = F.conv2d(x, weight, bias=bias, padding=1)
+    ref = F.conv2d(x.permute(0, 3, 1, 2).contiguous(), weight, bias=bias, padding=1)
+    ref = ref.permute(0, 2, 3, 1).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
@@ -213,17 +218,17 @@ def test_conv2d_dispatches_1x1_kernel() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
-    op = Conv2dOp(
-        n=1,
-        c_in=32,
-        h=16,
-        w=16,
-        c_out=64,
-        kernel_size=1,
-        padding=1,
-        bias=True,
-    )
-    assert not isinstance(op.kernel, Conv2d1x1Kernel)
+    with pytest.raises(NotImplementedError, match="kernel_size 1x1 or 3x3 only"):
+        Conv2dOp(
+            n=1,
+            c_in=32,
+            h=16,
+            w=16,
+            c_out=64,
+            kernel_size=1,
+            padding=1,
+            bias=True,
+        )
 
 
 @pytest.mark.smoke

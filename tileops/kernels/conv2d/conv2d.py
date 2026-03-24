@@ -1,5 +1,5 @@
 import itertools
-from typing import Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -8,7 +8,7 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.utils import get_sm_version
 
-__all__ = ["Conv2d1x1Kernel", "Conv2d3x3Kernel", "Conv2dKernel"]
+__all__ = ["Conv2d1x1Kernel", "Conv2d3x3Kernel"]
 
 _HOPPER_SHARED_MEMORY_LIMIT_BYTES = 227 * 1024
 
@@ -56,19 +56,21 @@ def _conv2d_1x1_kernel(
     ):
         @T.prim_func
         def _conv2d_1x1_main(
-            x: T.Tensor((n, c_in, hw), dtype),  # type: ignore
+            x: T.Tensor((n, h, w, c_in), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, hw), dtype),  # type: ignore
+            out: T.Tensor((n, h, w, c_out), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
+            x_flat = T.Tensor((n, hw, c_in), dtype, x.data)
+            out_flat = T.Tensor((n, hw, c_out), dtype, out.data)
             with T.Kernel(
-                T.ceildiv(hw, block_n),
-                T.ceildiv(c_out, block_m),
+                T.ceildiv(c_out, block_n),
+                T.ceildiv(hw, block_m),
                 n,
                 threads=threads,
             ) as (bx, by, bz):
-                weight_shared = T.alloc_shared((block_m, block_k), dtype)
-                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                data_shared = T.alloc_shared((block_m, block_k), dtype)
+                weight_shared = T.alloc_shared((block_n, block_k), dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
@@ -76,33 +78,42 @@ def _conv2d_1x1_kernel(
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
-                    T.copy(weight[by * block_m, k_iter * block_k], weight_shared)
-                    T.copy(x[bz, k_iter * block_k, bx * block_n], data_shared)
-                    T.gemm(weight_shared, data_shared, out_local)
+                    T.copy(x_flat[bz, by * block_m, k_iter * block_k], data_shared)
+                    T.copy(weight[bx * block_n, k_iter * block_k], weight_shared)
+                    T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
 
                 for i, j in T.Parallel(block_m, block_n):
-                    oc = by * block_m + i
-                    if has_bias:
-                        out_shared[i, j] = T.cast(
-                            out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype)
-                    else:
-                        out_shared[i, j] = T.cast(out_local[i, j], dtype)
+                    m_idx = by * block_m + i
+                    oc = bx * block_n + j
+                    out_shared[i, j] = T.if_then_else(
+                        (m_idx < hw) & (oc < c_out),
+                        T.cast(
+                            out_local[i, j] + T.if_then_else(
+                                has_bias,
+                                T.cast(
+                                    T.if_then_else(oc < c_out, bias[oc], T.cast(0.0, dtype)),
+                                    accum_dtype,
+                                ),
+                                T.cast(0.0, accum_dtype),
+                            ),
+                            dtype,
+                        ),
+                        T.cast(0.0, dtype),
+                    )
 
-                T.copy(out_shared, out[bz, by * block_m, bx * block_n])
+                T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
         return _conv2d_1x1_main
 
     return _conv2d_1x1_func
 
 
-def _conv2d_nxn_kernel(
+def _conv2d_3x3_kernel(
     n: int,
     c_in: int,
     h: int,
     w: int,
     c_out: int,
-    k_h: int,
-    k_w: int,
     stride_h: int,
     stride_w: int,
     pad_h: int,
@@ -111,12 +122,13 @@ def _conv2d_nxn_kernel(
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    out_h = (h + 2 * pad_h - k_h) // stride_h + 1
-    out_w = (w + 2 * pad_w - k_w) // stride_w + 1
-    k_total = k_h * k_w * c_in
+    kernel_size = 3
+    out_h = (h + 2 * pad_h - kernel_size) // stride_h + 1
+    out_w = (w + 2 * pad_w - kernel_size) // stride_w + 1
+    k_total = kernel_size * kernel_size * c_in
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _conv2d_nxn_func(
+    def _conv2d_3x3_func(
         block_m: int,
         block_n: int,
         block_k: int,
@@ -125,15 +137,14 @@ def _conv2d_nxn_kernel(
         enable_rasteration: bool,
     ):
         @T.prim_func
-        def _conv2d_nxn_main(
+        def _conv2d_3x3_main(
             x: T.Tensor((n, h, w, c_in), dtype),  # type: ignore
-            weight: T.Tensor((k_h, k_w, c_in, c_out), dtype),  # type: ignore
+            weight: T.Tensor((kernel_size, kernel_size, c_in, c_out), dtype),  # type: ignore
             out: T.Tensor((n, out_h, out_w, c_out), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
             use_hopper_im2col = (
                 get_sm_version() == 90
-                and k_h == k_w
                 and stride_h == stride_w
                 and pad_h == pad_w
                 and c_in % block_k == 0
@@ -156,13 +167,13 @@ def _conv2d_nxn_kernel(
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
                     if use_hopper_im2col:
-                        T.c2d_im2col(x, data_shared, by, k_iter, k_h, stride_h, 1, pad_h)
+                        T.c2d_im2col(x, data_shared, by, k_iter, kernel_size, stride_h, 1, pad_h)
                     else:
                         for i, j in T.Parallel(block_m, block_k):
                             m_idx = by * block_m + i
                             k_idx = k_iter * block_k + j
-                            kh = k_idx // (k_w * c_in)
-                            kw = (k_idx // c_in) % k_w
+                            kh = k_idx // (kernel_size * c_in)
+                            kw = (k_idx // c_in) % kernel_size
                             ci = k_idx % c_in
                             out_idx = m_idx % (out_h * out_w)
                             batch = m_idx // (out_h * out_w)
@@ -216,44 +227,55 @@ def _conv2d_nxn_kernel(
                         if m_idx < n * out_h * out_w and oc < c_out:
                             out_flat[m_idx, oc] = out_shared[i, j]
 
-        return _conv2d_nxn_main
+        return _conv2d_3x3_main
 
-    return _conv2d_nxn_func
+    return _conv2d_3x3_func
 
 
-def _conv2d_kernel(
+@torch.library.custom_op("top::conv2d_1x1_wrapped_kernel", mutates_args=())
+def _conv2d_1x1_wrapped_kernel(
     n: int,
     c_in: int,
     h: int,
     w: int,
     c_out: int,
-    k_h: int,
-    k_w: int,
-    stride_h: int,
-    stride_w: int,
-    pad_h: int,
-    pad_w: int,
-    has_bias: bool,
-    dtype: str = "float16",
-):
-    return _conv2d_nxn_kernel(
-        n,
-        c_in,
-        h,
-        w,
-        c_out,
-        k_h,
-        k_w,
-        stride_h,
-        stride_w,
-        pad_h,
-        pad_w,
-        has_bias,
-        dtype,
-    )
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasteration: bool,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    return _conv2d_1x1_kernel(
+        n, c_in, h, w, c_out, 1, 1, 0, 0, True, dtype
+    )(block_m, block_n, block_k, num_stages, threads, enable_rasteration)(x, weight, bias)
 
 
-def _conv2d_3x3_kernel(
+@_conv2d_1x1_wrapped_kernel.register_fake
+def _(
+    n: int,
+    c_in: int,
+    h: int,
+    w: int,
+    c_out: int,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasteration: bool,
+    *inputs: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    return torch.empty((n, h, w, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
+
+
+@torch.library.custom_op("top::conv2d_3x3_wrapped_kernel", mutates_args=())
+def _conv2d_3x3_wrapped_kernel(
     n: int,
     c_in: int,
     h: int,
@@ -264,23 +286,46 @@ def _conv2d_3x3_kernel(
     pad_h: int,
     pad_w: int,
     has_bias: bool,
-    dtype: str = "float16",
-):
-    return _conv2d_nxn_kernel(
-        n,
-        c_in,
-        h,
-        w,
-        c_out,
-        3,
-        3,
-        stride_h,
-        stride_w,
-        pad_h,
-        pad_w,
-        has_bias,
-        dtype,
-    )
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasteration: bool,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    return _conv2d_3x3_kernel(
+        n, c_in, h, w, c_out, stride_h, stride_w, pad_h, pad_w, has_bias, dtype
+    )(block_m, block_n, block_k, num_stages, threads, enable_rasteration)(x, weight, bias)
+
+
+@_conv2d_3x3_wrapped_kernel.register_fake
+def _(
+    n: int,
+    c_in: int,
+    h: int,
+    w: int,
+    c_out: int,
+    stride_h: int,
+    stride_w: int,
+    pad_h: int,
+    pad_w: int,
+    has_bias: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasteration: bool,
+    *inputs: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    out_h = (h + 2 * pad_h - 3) // stride_h + 1
+    out_w = (w + 2 * pad_w - 3) // stride_w + 1
+    return torch.empty((n, out_h, out_w, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
 def _conv2d_3x3_shared_memory_bytes(
@@ -291,136 +336,6 @@ def _conv2d_3x3_shared_memory_bytes(
     dtype: torch.dtype,
 ) -> int:
     return _conv2d_shared_memory_bytes(block_m, block_n, block_k, num_stages, dtype)
-
-
-class Conv2dKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h: int,
-        w: int,
-        c_out: int,
-        k_h: int,
-        k_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dtype: torch.dtype,
-        has_bias: bool = False,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        self.n = n
-        self.c_in = c_in
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.k_h = k_h
-        self.k_w = k_w
-        self.stride_h = stride_h
-        self.stride_w = stride_w
-        self.pad_h = pad_h
-        self.pad_w = pad_w
-        self.dtype = dtype
-        self.has_bias = has_bias
-
-        self.kernel = _conv2d_kernel(
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            k_h,
-            k_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            has_bias,
-            self.dtype_str,
-        )
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self) -> dict:
-        sm_version = get_sm_version()
-        if sm_version in {90}:
-            return {
-                "block_m": 64,
-                "block_n": 64,
-                "block_k": 64,
-                "num_stages": 3,
-                "threads": 128,
-                "enable_rasteration": False,
-            }
-        if sm_version in {80}:
-            return {
-                "block_m": 64,
-                "block_n": 64,
-                "block_k": 64,
-                "num_stages": 2,
-                "threads": 128,
-                "enable_rasteration": True,
-            }
-        return {
-            "block_m": 64,
-            "block_n": 64,
-            "block_k": 64,
-            "num_stages": 2,
-            "threads": 128,
-            "enable_rasteration": True,
-        }
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        configs = itertools.product(
-            [64, 128],
-            [64, 128, 256],
-            [64, 128],
-            [2, 3],
-            [128, 256],
-            [True, False],
-        )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasteration in configs:
-            shared_memory_bytes = _conv2d_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > _HOPPER_SHARED_MEMORY_LIMIT_BYTES:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasteration": enable_rasteration,
-            })
-        return valid_configs
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        x_nhwc = x.permute(0, 2, 3, 1).contiguous()
-        weight_hwcf = weight.permute(2, 3, 1, 0).contiguous()
-        out = self.kernel(
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasteration"],
-        )(x_nhwc, weight_hwcf, bias)
-        return out.permute(0, 3, 1, 2).contiguous()
 
 
 class Conv2d3x3Kernel(Kernel):
@@ -538,17 +453,29 @@ class Conv2d3x3Kernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        x_nhwc = x.permute(0, 2, 3, 1).contiguous()
         weight_hwcf = weight.permute(2, 3, 1, 0).contiguous()
-        out = self.kernel(
+        return _conv2d_3x3_wrapped_kernel(
+            self.n,
+            self.c_in,
+            self.h,
+            self.w,
+            self.c_out,
+            self.stride_h,
+            self.stride_w,
+            self.pad_h,
+            self.pad_w,
+            self.has_bias,
+            self.dtype_str,
             self.config["block_m"],
             self.config["block_n"],
             self.config["block_k"],
             self.config["num_stages"],
             self.config["threads"],
             self.config["enable_rasteration"],
-        )(x_nhwc, weight_hwcf, bias)
-        return out.permute(0, 3, 1, 2).contiguous()
+            x,
+            weight_hwcf,
+            bias,
+        )
 
 
 class Conv2d1x1Kernel(Kernel):
@@ -660,16 +587,23 @@ class Conv2d1x1Kernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        out = self.kernel(
+        if bias is None:
+            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
+        weight_oc_ci = weight.view(self.c_out, self.c_in).contiguous()
+        return _conv2d_1x1_wrapped_kernel(
+            self.n,
+            self.c_in,
+            self.h,
+            self.w,
+            self.c_out,
+            self.dtype_str,
             self.config["block_m"],
             self.config["block_n"],
             self.config["block_k"],
             self.config["num_stages"],
             self.config["threads"],
             self.config["enable_rasteration"],
-        )(
-            x.view(self.n, self.c_in, self.h * self.w),
-            weight.view(self.c_out, self.c_in),
+            x,
+            weight_oc_ci,
             bias,
         )
-        return out.view(self.n, self.c_out, self.h, self.w)
