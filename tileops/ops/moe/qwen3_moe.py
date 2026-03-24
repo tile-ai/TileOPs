@@ -73,10 +73,8 @@ class Qwen3MoEOp(Op):
         dtype: Activation and weight dtype (bf16 or fp16).
         expert_map: Optional [E] int32 tensor mapping global expert ids to
             local ids (-1 = not on this rank).  None means all experts are
-            local.  Stored for future multi-GPU EP support; All-to-All
-            dispatch is not yet implemented.
-        kernel_map: Optional kernel override dict.
-        config: Optional sub-op config overrides.
+            local.  Multi-GPU EP dispatch (All-to-All) is not yet implemented;
+            passing a non-None value raises NotImplementedError.
 
     Example:
         >>> op = Qwen3MoEOp(num_tokens=512, num_experts=128, top_k=8,
@@ -96,8 +94,6 @@ class Qwen3MoEOp(Op):
         renormalize: bool = False,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        config: Optional[dict] = None,
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -107,8 +103,12 @@ class Qwen3MoEOp(Op):
         self.scoring_func = scoring_func
         self.renormalize = renormalize
         self.dtype = dtype
-        # Stored for future EP dispatch; not yet applied in kernel path.
-        self.expert_map = expert_map
+        if expert_map is not None:
+            raise NotImplementedError(
+                "expert_map is reserved for future multi-GPU EP dispatch "
+                "(All-to-All) which is not yet implemented. Pass None for "
+                "single-GPU or TP-only usage."
+            )
 
         batch_sum = num_tokens * top_k
         # Padded batch sum: upper bound for the block_m-aligned layout.
