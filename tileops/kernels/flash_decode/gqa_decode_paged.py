@@ -11,9 +11,13 @@ from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax
 
 __all__ = ["gqa_decode_paged_kernel"]
 
+# ---------------------------------------------------------------------------
+# JIT kernel: no-split variant (paged)
+# ---------------------------------------------------------------------------
+
 
 @functools.lru_cache(maxsize=32)
-def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
+def _gqa_decode_no_split_paged_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
     scale = make_log2e_scale(dim)
     accum_dtype = "float"
 
@@ -23,21 +27,19 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
         compile_flags=["-O3", "-DENABLE_BF16"])
-    def _gqa_decode_func(block_H, block_N, num_split, num_stages, threads):
+    def _func(block_H, block_N, num_stages, threads):
 
         shape_q = [batch, heads, dim]
         shape_kv = [seqlen_kv, groups, dim]
-        shape_o = [batch, heads, dim]
         kv_group_num = heads // groups
 
-        part_shape = [batch, heads, num_split, dim]
         valid_block_H = min(block_H, kv_group_num)
 
         online_softmax = make_online_softmax(scale, accum_dtype, block_H, block_N)
         rescale = make_rescale(block_H, dim)
 
-        @T.macro
-        def _gqa_decode_no_split(
+        @T.prim_func
+        def gqa_decode_no_split(
                 Q: T.Tensor(shape_q, dtype),
                 K: T.Tensor(shape_kv, dtype),
                 V: T.Tensor(shape_kv, dtype),
@@ -46,7 +48,7 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
                 Output: T.Tensor([batch, heads, dim], dtype),
         ):
             with T.Kernel(
-                    batch, heads // valid_block_H, num_split, threads=threads) as (bx, by, bz):
+                    batch, heads // valid_block_H, 1, threads=threads) as (bx, by, bz):
 
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
@@ -108,6 +110,40 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
 
                 T.copy(acc_o[:valid_block_H, :], O_shared)
                 T.copy(O_shared, Output[bid, hid * valid_block_H:(hid + 1) * valid_block_H, :])
+
+        return gqa_decode_no_split
+
+    return _func
+
+
+# ---------------------------------------------------------------------------
+# JIT kernel: split variant (paged, split + combine)
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=32)
+def _gqa_decode_split_paged_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
+    scale = make_log2e_scale(dim)
+    accum_dtype = "float"
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"])
+    def _func(block_H, block_N, num_split, num_stages, threads):
+
+        shape_q = [batch, heads, dim]
+        shape_kv = [seqlen_kv, groups, dim]
+        shape_o = [batch, heads, dim]
+        kv_group_num = heads // groups
+
+        part_shape = [batch, heads, num_split, dim]
+        valid_block_H = min(block_H, kv_group_num)
+
+        online_softmax = make_online_softmax(scale, accum_dtype, block_H, block_N)
+        rescale = make_rescale(block_H, dim)
 
         @T.macro
         def _gqa_decode_split(
@@ -264,71 +300,61 @@ def _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size, dtype):
                               split_length)
             combine(glse, Output_partial, Output)
 
-        @T.prim_func
-        def gqa_decode_no_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_kv, dtype),
-                V: T.Tensor(shape_kv, dtype),
-                real_seqlen_kv: T.Tensor([batch], T.int32),
-                block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
-                Output: T.Tensor(shape_o, dtype),
-        ):
-            _gqa_decode_no_split(Q, K, V, real_seqlen_kv, block_table, Output)
+        return gqa_decode_split
 
-        if num_split > 1:
-            return gqa_decode_split
-        else:
-            return gqa_decode_no_split
-
-    return _gqa_decode_func
+    return _func
 
 
-# Use a distinct op name so paged and non-paged (gqa_decode.py) do not overwrite each other.
-@torch.library.custom_op("top::gqa_decode_paged_wrapped_kernel", mutates_args=())
-def _gqa_decode_wrapped_kernel(batch: int, heads: int, groups: int, seqlen_kv: int, dim: int,
-                               page_size: int, dtype: str, block_H: int, block_N: int,
-                               num_stages: int, threads: int, num_split: int, Q: torch.Tensor,
-                               K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: torch.Tensor,
-                               block_table: torch.Tensor, glse: torch.Tensor,
-                               Output_partial: torch.Tensor) -> torch.Tensor:
-
-    if not (K.shape[0] == V.shape[0] == seqlen_kv):
-        raise ValueError("error: dimension mismatch!")
-    if not (K.shape[1] == V.shape[1] == groups):
-        raise ValueError("error: groups mismatch!")
-    real_max = real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
-    chunk_size = real_max // (num_split * block_N) * block_N
-    split_length = torch.full((batch, num_split), chunk_size, dtype=torch.int32, device=Q.device)
-    split_length[:, -1] = int(real_max - (num_split - 1) * chunk_size)
-    acc_split_length = torch.cumsum(split_length, dim=1).to(torch.int32)
-
-    if num_split == 1:
-        return _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size,
-                                  dtype)(block_H, block_N, num_split, num_stages,
-                                         threads)(Q, K, V, real_seqlen_kv, block_table)
-
-    return _gqa_decode_kernel(batch, heads, groups, seqlen_kv, dim, page_size,
-                              dtype)(block_H, block_N, num_split, num_stages,
-                                     threads)(Q, K, V, real_seqlen_kv, block_table, glse,
-                                              Output_partial, acc_split_length)
+# ---------------------------------------------------------------------------
+# Custom ops (torch.compile compatible wrappers)
+# ---------------------------------------------------------------------------
 
 
-@_gqa_decode_wrapped_kernel.register_fake
-def _(
-        batch: int,
-        heads: int,
-        groups: int,
-        seqlen_kv: int,
-        dim: int,
-        page_size: int,
-        block_H: int,
-        block_N: int,
-        num_stages: int,
-        threads: int,
-        num_split: int,
-        *inputs
-) -> torch.Tensor:
-    return torch.empty_like(inputs[0])
+@torch.library.custom_op("top::gqa_decode_paged_no_split_op", mutates_args=())
+def _gqa_decode_paged_no_split_op(
+        batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: int,
+        dtype: str, block_H: int, block_N: int, num_stages: int, threads: int,
+        Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: torch.Tensor,
+        block_table: torch.Tensor) -> torch.Tensor:
+    return _gqa_decode_no_split_paged_kernel(batch, heads, groups, seqlen_kv, dim, page_size,
+                                             dtype)(block_H, block_N, num_stages,
+                                                    threads)(Q, K, V, real_seqlen_kv, block_table)
+
+
+@_gqa_decode_paged_no_split_op.register_fake
+def _(batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: int,
+      dtype: str, block_H: int, block_N: int, num_stages: int, threads: int,
+      Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: torch.Tensor,
+      block_table: torch.Tensor) -> torch.Tensor:
+    return torch.empty_like(Q)
+
+
+@torch.library.custom_op("top::gqa_decode_paged_split_op", mutates_args=())
+def _gqa_decode_paged_split_op(
+        batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: int,
+        dtype: str, block_H: int, block_N: int, num_stages: int, threads: int,
+        num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+        real_seqlen_kv: torch.Tensor, block_table: torch.Tensor, glse: torch.Tensor,
+        Output_partial: torch.Tensor,
+        acc_split_length: torch.Tensor) -> torch.Tensor:
+    return _gqa_decode_split_paged_kernel(batch, heads, groups, seqlen_kv, dim, page_size,
+                                          dtype)(block_H, block_N, num_split, num_stages,
+                                                 threads)(Q, K, V, real_seqlen_kv, block_table,
+                                                          glse, Output_partial, acc_split_length)
+
+
+@_gqa_decode_paged_split_op.register_fake
+def _(batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: int,
+      dtype: str, block_H: int, block_N: int, num_stages: int, threads: int,
+      num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+      real_seqlen_kv: torch.Tensor, block_table: torch.Tensor, glse: torch.Tensor,
+      Output_partial: torch.Tensor, acc_split_length: torch.Tensor) -> torch.Tensor:
+    return torch.empty_like(Q)
+
+
+# ---------------------------------------------------------------------------
+# Kernel class
+# ---------------------------------------------------------------------------
 
 
 class gqa_decode_paged_kernel(Kernel):
@@ -353,10 +379,62 @@ class gqa_decode_paged_kernel(Kernel):
         self.page_size = page_size
         self.dtype = dtype
 
-        self.kernel = _gqa_decode_kernel(self.batch, self.heads, self.groups, self.seqlen_kv,
-                                         self.dim, self.page_size, self.dtype_str)
+        self.no_split_jit = _gqa_decode_no_split_paged_kernel(
+            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
+            self.dtype_str)
+        self.split_jit = _gqa_decode_split_paged_kernel(
+            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
+            self.dtype_str)
 
+        # autotune targets the split kernel
+        self.kernel = self.split_jit
+        self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
+
+    def _make_supply_prog(self):
+        """Create a supply_prog that handles int32 tensor parameters for paged attention."""
+        from tilelang.utils.tensor import get_tensor_supply as _get_tensor_supply
+
+        default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
+        seqlen_kv = self.seqlen_kv
+        batch = self.batch
+        page_size = self.page_size
+        num_pages = seqlen_kv // page_size
+
+        def supply_prog(params):
+            inputs = []
+            for param in params:
+                if str(param.dtype) == "int32":
+                    shape = param.shape
+                    if len(shape) == 1 and shape[0] == batch:
+                        # real_seqlen_kv: [batch]
+                        inputs.append(
+                            torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda"))
+                    elif len(shape) == 2 and shape[1] == num_pages:
+                        # block_table: [batch, num_pages] — sequential page indices
+                        t = torch.arange(
+                            num_pages, dtype=torch.int32,
+                            device="cuda").unsqueeze(0).expand(batch, -1).contiguous()
+                        inputs.append(t)
+                    elif len(shape) == 2:
+                        # acc_split_length (cumulative): [batch, num_split]
+                        num_split = shape[1]
+                        base = seqlen_kv // num_split
+                        t = torch.full(shape, base, dtype=torch.int32, device="cuda")
+                        t[:, -1] += seqlen_kv % num_split
+                        t = torch.cumsum(t, dim=1).to(torch.int32)
+                        inputs.append(t)
+                    else:
+                        inputs.append(default_supply(param))
+                else:
+                    inputs.append(default_supply(param))
+            return inputs
+
+        return supply_prog
+
+    @property
+    def autotune_supply_prog(self):
+        return self._supply_prog
 
     @property
     def default_config(self) -> dict:
@@ -384,15 +462,36 @@ class gqa_decode_paged_kernel(Kernel):
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor):
-        glse = torch.empty((self.batch, self.heads, self.config["num_split"]),
+        block_H = self.config["block_H"]
+        block_N = self.config["block_N"]
+        num_split = self.config["num_split"]
+        num_stages = self.config["num_stages"]
+        threads = self.config["threads"]
+
+        # Dispatch: use no-split for short sequences where splitting is not beneficial
+        real_max = real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
+        threshold = num_split * block_N
+        if real_max < threshold:
+            return _gqa_decode_paged_no_split_op(
+                self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
+                self.dtype_str, block_H, block_N, num_stages, threads, Q, K, V,
+                real_seqlen_kv, block_table)
+
+        # Split path: compute cumulative per-split lengths
+        chunk_size = real_max // (num_split * block_N) * block_N
+        split_length = torch.full((self.batch, num_split), chunk_size, dtype=torch.int32,
+                                  device=Q.device)
+        split_length[:, -1] = int(real_max - (num_split - 1) * chunk_size)
+        acc_split_length = torch.cumsum(split_length, dim=1).to(torch.int32)
+
+        glse = torch.empty((self.batch, self.heads, num_split),
                            dtype=self.dtype,
                            device=Q.device)
-        Output_partial = torch.empty((self.batch, self.heads, self.config["num_split"], self.dim),
+        Output_partial = torch.empty((self.batch, self.heads, num_split, self.dim),
                                      dtype=self.dtype,
                                      device=Q.device)
-        return _gqa_decode_wrapped_kernel(self.batch, self.heads, self.groups, self.seqlen_kv,
-                                          self.dim, self.page_size, self.dtype_str,
-                                          self.config["block_H"], self.config["block_N"],
-                                          self.config["num_stages"], self.config["threads"],
-                                          self.config["num_split"], Q, K, V, real_seqlen_kv,
-                                          block_table, glse, Output_partial)
+
+        return _gqa_decode_paged_split_op(
+            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
+            self.dtype_str, block_H, block_N, num_stages, threads, num_split, Q, K, V,
+            real_seqlen_kv, block_table, glse, Output_partial, acc_split_length)
