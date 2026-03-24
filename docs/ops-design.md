@@ -1,10 +1,8 @@
 # Op Interface Design
 
-This document defines how TileOPs operators are structured. The design ensures agents and developers can reason about any op by following consistent patterns.
-
 ## Principle 1: Two-Layer Boundary
 
-Every operator is split into Op (L2) and Kernel (L1) with a strict responsibility boundary:
+Every operator splits into Op (L2) and Kernel (L1):
 
 | Concern                   | Owner  | Examples                                    |
 | ------------------------- | ------ | ------------------------------------------- |
@@ -17,57 +15,19 @@ Every operator is split into Op (L2) and Kernel (L1) with a strict responsibilit
 | Autotuning                | Kernel | Config search space, `tilelang.autotuner`   |
 | JIT compilation + caching | Kernel | `@functools.lru_cache`                      |
 
-An agent can modify a kernel's GPU strategy without touching user-facing behavior, and vice versa.
+Either layer can be modified independently.
 
-## Principle 2: Base Classes Follow Forward Flow, Not Math Taxonomy
+## Principle 2: Base Classes Follow Forward Flow, Not Math
 
-The criterion for creating an intermediate base class: **do N ops share the same `forward()` control flow?**
+Create an intermediate base class when **multiple ops share the same `forward()` control flow**, the shared boilerplate is substantial, and per-op differences fit into class variables or hooks.
 
-Example: `RowNormOp` and `RowReductionOp` share validate → reshape to `(M, N)` → pad to 256-alignment → kernel → trim → reshape. Different math, same Op-layer structure — they share a base class.
-
-Counter-example: `GroupNormOp` and `BatchNormOp` are both "normalization" but have different forward() flows (spatial dimensions, reduction axes, padding). They do NOT share a base class.
-
-**Create a new intermediate base class when:**
-
-- 3+ ops share the same validate/reshape/pad/kernel/trim/reshape sequence
-- The pattern is stable and unlikely to diverge
-- Per-op differences fit into class variables and abstract hooks
-
-**Do NOT create one when:**
-
-- Only 1-2 ops share the pattern
-- Ops share math similarity but differ in forward() flow
-- A common base would require excessive `if/else` or optional hooks
+Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
 
 ## Principle 3: Concrete Ops Are Declarations
 
-A well-designed concrete Op reads like configuration:
-
-```python
-class RmsNormOp(RowNormOp):
-    """y = x * rsqrt(mean(x², dim=-1) + eps) * weight"""
-
-    _op_name = "rmsnorm"
-    kernel_cls = RmsNormKernel
-    SUPPORTED_DTYPES = (torch.float16, torch.bfloat16)
-
-    def _init_kernel(self, tune):
-        self.kernel = self.kernel_map["rms_norm"](
-            self.M, self.N, self.eps, self.dtype, tune=tune
-        )
-
-    def _get_input_tensors(self, x, weight):
-        return [x, weight]
-
-    def _call_kernel(self, x, weight):
-        return self.kernel(x, weight)
-```
-
-The per-op logic is: which kernel, which dtypes, how to wire inputs. Everything else is inherited.
+A concrete Op should be short and declarative: which kernel, which dtypes, how to wire inputs. Shared mechanics (validation, reshape, padding, trimming) are inherited from the base class.
 
 ## Principle 4: Conventions in Code, Not Documentation
-
-If a convention applies to all ops (or all ops in a family), it lives in the corresponding base class or family-specific helper:
 
 | Convention                             | Enforced By                                           |
 | -------------------------------------- | ----------------------------------------------------- |
@@ -75,64 +35,29 @@ If a convention applies to all ops (or all ops in a family), it lives in the cor
 | 256-element alignment padding          | Per-family base `forward()` or family-specific helper |
 | CUDA device check                      | Per-family base `forward()` or per-op implementation  |
 | dtype validation                       | Per-family base `forward()` via `SUPPORTED_DTYPES`    |
-| `torch.library.custom_op` registration | Base class or shared utility                          |
+| `torch.library.custom_op` registration | Per-op module or shared registration utility          |
 | Docstring format (Google style)        | Linter / CI check                                     |
 
-Non-contiguous tensors: for op families that require contiguous inputs, the family base class or shared helper is responsible for calling `.contiguous()`. Individual concrete ops should not implement their own stride or memory-layout handling unless they have a documented exception.
+Contiguous conversion is the family base class's responsibility. Concrete ops should not handle stride or memory layout unless explicitly documented.
 
 ## Principle 5: Class Variable Protocol
-
-Every Op declares capabilities through class variables for both runtime behavior and static analysis:
 
 | Variable           | Required?  | Defined At              | Purpose                                            |
 | ------------------ | ---------- | ----------------------- | -------------------------------------------------- |
 | `SUPPORTED_DTYPES` | Yes        | Every concrete Op       | Runtime dtype check + manifest validation          |
 | `ALIGNMENT`        | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm) |
 | `_op_name`         | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging    |
-| `kernel_cls`       | Yes        | Every concrete Op       | Maps Op to its Kernel implementation               |
 
-Adding a new class variable requires updating: (1) the base class that reads it, (2) all existing concrete ops, (3) the manifest schema if applicable.
+Single-kernel ops declare `_kernel_key` and `_kernel_cls`. Multi-kernel ops define `default_kernel_map` returning a dict. Dispatch is determined by the family base class.
 
-## Inheritance Hierarchy (Target)
-
-The target hierarchy below is being incrementally adopted. Current codebase uses `_SimpleReduceOp`/`_WelfordReduceOp` for reductions; norm ops inherit `Op` directly. The names below represent the convergence target as intermediate base classes are extracted per the process in "Adding a New Intermediate Base Class."
-
-```
-Op (ABC)                                 # tileops/ops/op.py
- │
- ├── PointwiseOp                         # elementwise family
- │   ├── UnaryOp
- │   ├── BinaryOp
- │   └── FusedGatedOp
- │
- ├── RowReductionOp                      # reduce along last dim
- │   ├── SumOp, MeanOp, AmaxOp, ...     #   simple reduce
- │   ├── SoftmaxOp, LogSoftmaxOp        #   shape-preserving
- │   ├── ArgmaxOp, ArgminOp             #   output dtype differs
- │   └── CumsumOp, CumprodOp           #   cumulative
- │
- ├── RowNormOp                           # normalize along last dim
- │   ├── RmsNormOp, LayerNormOp
- │   ├── FusedAddRmsNormOp, ...         #   multi-output variant
- │   └── AdaLayerNormOp, ...
- │
- └── (ops with unique patterns inherit Op directly)
-     ├── GroupNormOp                     # spatial reduction
-     ├── BatchNormFwdOp / BwdOp          # spatial + running stats
-     ├── FlashAttention variants         # complex multi-tensor
-     └── fused_moe                       # routing + compute
-```
-
-This is a taxonomy of `forward()` control flow, not mathematics. Ops that don't fit any shared pattern inherit `Op` directly.
+Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
 
 ## Adding a New Intermediate Base Class
 
-When a new op family emerges (e.g., SSM ops with shared scan patterns):
-
-1. **Implement 2-3 concrete ops inheriting `Op` directly** — understand the actual forward() pattern before abstracting
+1. **Implement 2-3 concrete ops inheriting `Op` directly** — understand the pattern before abstracting
 1. **Identify shared steps** — which parts of forward() are identical?
-1. **Extract the base class** — shared steps into base, per-op differences as abstract hooks
-1. **Migrate existing ops** — rewrite to inherit the new base, verify tests pass unchanged
-1. **Register the pattern** — add the base class to this hierarchy
+1. **Extract the base class** — shared steps into base, per-op differences as hooks
+1. **Migrate existing ops** — verify tests pass unchanged
+1. **Register the pattern** — update this hierarchy
 
 **Abstraction follows implementation, never the reverse.**
