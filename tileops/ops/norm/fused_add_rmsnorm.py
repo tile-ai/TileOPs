@@ -18,21 +18,36 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 class FusedAddRmsNormOp(Op):
-    """Fused Add + RmsNorm forward operator.
+    """Fused residual addition and RMS Normalization operator.
 
-    y = RmsNorm(x + residual)
+    Computes the residual sum followed by RMS normalization in a single
+    fused kernel:
 
-    Returns dual outputs ``(y, x + residual)`` so downstream residual
-    connections can reuse the pre-norm sum without recomputation.
+    .. math::
 
-    Supports arbitrary leading dimensions (3D+) via flatten/unflatten.
-    Handles non-contiguous inputs and non-power-of-two hidden dims.
+        \\begin{aligned}
+        r &= x + \\mathrm{residual} \\\\
+        y &= \\frac{r}{\\sqrt{\\mathrm{mean}(r^2) + \\epsilon}} \\cdot w
+        \\end{aligned}
+
+    Returns dual outputs ``(y, residual_out)`` so downstream residual connections can
+    reuse the pre-norm sum without recomputation.
+
+    Supported dtypes:
+        ``torch.float16``, ``torch.bfloat16``.
+
+    Note:
+        Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
+        Handles non-contiguous inputs and non-power-of-two hidden dims
+        by padding to 256-element alignment.
 
     Args:
-        M: Number of rows (product of all dims except last).
+        M: Number of rows (product of all dims except the last).
         N: Hidden dimension (last dim).
-        dtype: Data type (float16 or bfloat16).
-        eps: Epsilon for numerical stability (default 1e-6).
+        dtype: Data type (``torch.float16`` or ``torch.bfloat16``).
+        eps: Epsilon for numerical stability.
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
@@ -64,6 +79,22 @@ class FusedAddRmsNormOp(Op):
         residual: torch.Tensor,
         weight: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply fused residual addition and RMS normalization.
+
+        Args:
+            x: Input tensor of shape ``(*leading, N)`` on CUDA.
+            residual: Residual tensor of the same shape as *x* on CUDA.
+            weight: Affine scale of shape ``(N,)`` on CUDA.
+
+        Returns:
+            Tuple of ``(y, residual_out)`` where *y* is the normalized
+            output and *residual_out* is ``x + residual``, both of the
+            same shape as *x*.
+
+        Raises:
+            ValueError: If tensors are not on CUDA, dtypes mismatch,
+                or shapes are incompatible with the configured dimensions.
+        """
         for name, tensor in [("x", x), ("residual", residual), ("weight", weight)]:
             if not tensor.is_cuda:
                 raise ValueError(f"{name} must be a CUDA tensor")

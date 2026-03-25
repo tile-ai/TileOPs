@@ -92,14 +92,14 @@ __all__ = [
     "LerpKernel",
     "MaximumKernel",
     "MinimumKernel",
-    # --- comparison (OUTPUT_DTYPE = "int8", cast to bool by Op layer) ---
+    # --- comparison (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
     "EqKernel",
     "NeKernel",
     "GtKernel",
     "LtKernel",
     "GeKernel",
     "LeKernel",
-    # --- logical (OUTPUT_DTYPE = "int8", cast to bool by Op layer) ---
+    # --- logical (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
     "LogicalAndKernel",
     "LogicalOrKernel",
     # --- bitwise ---
@@ -783,7 +783,7 @@ class BinaryKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     DEFAULT_STRATEGY = "explicit_parallel"
-    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., "int8")
+    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
     @staticmethod
@@ -806,6 +806,9 @@ class BinaryKernel(Kernel):
         self._fp8_output_dtype = None
         if _is_fp8(dtype) and self.OUTPUT_DTYPE is None and _fp8_needs_nonsaturating_cast(dtype):
             self._fp8_output_dtype = dtype
+            self.output_dtype = torch.float16
+        else:
+            self.output_dtype = self.OUTPUT_DTYPE or dtype
         self.coalesced_shape = coalesced_shape
         self.a_strides = a_strides
         self.b_strides = b_strides
@@ -850,7 +853,9 @@ class BinaryKernel(Kernel):
         cfg = self.default_config
         effective_op = self._get_effective_op_func()
         # For e5m2: kernel output is fp16 (non-saturating path)
-        kernel_output_dtype = self.OUTPUT_DTYPE
+        kernel_output_dtype = (
+            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
+        )
         if self._fp8_output_dtype is not None:
             kernel_output_dtype = _fp8_accum_dtype_str()
         if strategy == "direct":
@@ -990,6 +995,9 @@ class FusedGatedKernel(Kernel):
         if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
             self._kernel_output_dtype = _fp8_accum_dtype_str()
             self._fp8_output_dtype = dtype
+            self.output_dtype = torch.float16
+        else:
+            self.output_dtype = dtype
         self.strategy = strategy or self.DEFAULT_STRATEGY
         if self.strategy not in self.STRATEGIES:
             raise ValueError(
@@ -1259,7 +1267,9 @@ class LerpKernel(BinaryKernel):
         )
 
         # For e5m2: kernel output is fp16 (non-saturating path)
-        kernel_output_dtype = self.OUTPUT_DTYPE
+        kernel_output_dtype = (
+            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
+        )
         if self._fp8_output_dtype is not None:
             kernel_output_dtype = _fp8_accum_dtype_str()
 
@@ -1352,7 +1362,7 @@ class EqKernel(BinaryKernel):
     """Element-wise equality: y = (a == b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1365,7 +1375,7 @@ class NeKernel(BinaryKernel):
     """Element-wise not-equal: y = (a != b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1378,7 +1388,7 @@ class GtKernel(BinaryKernel):
     """Element-wise greater-than: y = (a > b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1391,7 +1401,7 @@ class LtKernel(BinaryKernel):
     """Element-wise less-than: y = (a < b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1404,7 +1414,7 @@ class GeKernel(BinaryKernel):
     """Element-wise greater-equal: y = (a >= b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1417,7 +1427,7 @@ class LeKernel(BinaryKernel):
     """Element-wise less-equal: y = (a <= b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1435,7 +1445,7 @@ class LogicalAndKernel(BinaryKernel):
     """Element-wise logical AND with non-zero truthiness, stored as int8."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1450,7 +1460,7 @@ class LogicalOrKernel(BinaryKernel):
     """Element-wise logical OR with non-zero truthiness, stored as int8."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1877,6 +1887,110 @@ class IsfiniteKernel(FloatPredicateKernel):
 # ---------------------------------------------------------------------------
 
 
+class ParametricUnaryKernel(Kernel):
+    """Shared base for independent parametric elementwise kernels.
+
+    Subclasses must define:
+    - ``_builder_fn``: a ``@staticmethod`` returning the ``@lru_cache``-d
+      builder function (e.g. ``_make_leaky_relu_kernel``).
+    - ``_builder_args(self) -> tuple``: positional args for the builder
+      *between* ``N_total`` and the common ``output_dtype, is_fp8, threads,
+      npt`` suffix.
+
+    Optional overrides:
+    - ``_DEFAULT_THREADS``: class-level default thread count (default 256).
+    - ``_NPT_FP8``: npt when dtype is fp8 but not fp32 (default 16).
+    - ``_NPT_NON_FP32``: npt for non-fp32, non-fp8 (default 8).
+    - ``_skip_fp8_output``: set to ``True`` if the kernel should *not*
+      use ``_get_fp8_output_dtypes`` (e.g. Where, which is a pure selection
+      op). When True, ``_fp8_output_dtype`` is ``None``.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    _DEFAULT_THREADS: int = 256
+    _NPT_FP8: int = 16
+    _NPT_NON_FP32: int = 8
+    _skip_fp8_output: bool = False
+
+    def __init__(self, N_total, dtype, config=None, tune=False):
+        super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
+        self.N_total = N_total
+        self.dtype = dtype
+        # fp8 output handling
+        if self._skip_fp8_output:
+            self._fp8_output_dtype = None
+        else:
+            self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
+        # Post-fp8 parameter processing (e.g. clamping scalars to output dtype range)
+        self._post_init_params()
+        # Build the kernel via the subclass-provided builder
+        cfg = self.default_config
+        builder_kwargs = {
+            "is_fp8": _is_fp8(dtype),
+            "threads": cfg["threads"],
+            "npt": cfg["num_per_thread"],
+        }
+        if not self._skip_fp8_output:
+            builder_kwargs["output_dtype"] = self.dtype_to_str(self.output_dtype)
+        self.kernel = self._builder_fn()(
+            *self._builder_positional_args(), **builder_kwargs,
+        )
+        self.init_config(config, tune)
+
+    @staticmethod
+    def _builder_fn():
+        """Return the @lru_cache builder function for this kernel."""
+        raise NotImplementedError
+
+    def _builder_positional_args(self) -> tuple:
+        """Return all positional args for the builder function.
+
+        Default: ``(N_total, dtype_str, *_builder_args())``.
+        Override if the builder has a different parameter order (e.g. PReLU).
+        """
+        return (self.N_total, self.dtype_str, *self._builder_args())
+
+    def _builder_args(self) -> tuple:
+        """Return op-specific positional args (after N_total, dtype_str)."""
+        return ()
+
+    def _post_init_params(self):
+        """Hook called after fp8 output dtypes are set, before kernel build.
+
+        Override to clamp scalar parameters to the output dtype range (e.g.
+        MaskedFill, NanToNum).
+        """
+
+    @property
+    def default_config(self):
+        if self.dtype == torch.float32:
+            npt = 4
+        elif _is_fp8(self.dtype):
+            npt = self._NPT_FP8
+        else:
+            npt = self._NPT_NON_FP32
+        return {"threads": self._DEFAULT_THREADS, "num_per_thread": npt}
+
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
+        cfg = self.config
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        result = self._compiled_fn(x)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
+
+
 @functools.lru_cache(maxsize=32)
 def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None,
                             is_fp8=False, threads=256, npt=8):
@@ -1932,45 +2046,19 @@ def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None,
     return kernel
 
 
-class LeakyReluKernel(Kernel):
+class LeakyReluKernel(ParametricUnaryKernel):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
     def __init__(self, N_total, dtype, negative_slope=0.01, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.negative_slope = negative_slope
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_leaky_relu_kernel(
-            N_total, self.dtype_str, negative_slope,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_leaky_relu_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.negative_slope,)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2031,45 +2119,19 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
     return kernel
 
 
-class EluKernel(Kernel):
+class EluKernel(ParametricUnaryKernel):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
     def __init__(self, N_total, dtype, alpha=1.0, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.alpha = alpha
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_elu_kernel(
-            N_total, self.dtype_str, alpha,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_elu_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.alpha,)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2126,46 +2188,20 @@ def _make_hardtanh_kernel(N, dtype, min_val, max_val, output_dtype=None,
     return kernel
 
 
-class HardtanhKernel(Kernel):
+class HardtanhKernel(ParametricUnaryKernel):
     """Hardtanh: y = clamp(x, min_val, max_val)."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
     def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.min_val = min_val
         self.max_val = max_val
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_hardtanh_kernel(
-            N_total, self.dtype_str, min_val, max_val,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_hardtanh_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.min_val, self.max_val)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2230,46 +2266,20 @@ def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
     return kernel
 
 
-class SoftplusKernel(Kernel):
+class SoftplusKernel(ParametricUnaryKernel):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
     def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.beta = beta
         self.threshold = threshold
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_softplus_kernel(
-            N_total, self.dtype_str, beta, threshold,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_softplus_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.beta, self.threshold)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2344,58 +2354,20 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
     return kernel
 
 
-class PreluKernel(Kernel):
-    """PReLU: y = x if x > 0 else weight[channel] * x.
-
-    Channel index follows PyTorch convention: channels live at
-    dimension 1 (or dimension 0 for 1-D inputs). The ``inner_size``
-    parameter is the product of all dimensions after the channel
-    dimension.
-
-    Args:
-        N_total: Total number of elements (flattened).
-        C: Number of channels (weight length).
-        inner_size: Product of dimensions after the channel dim.
-        dtype: Torch dtype.
-        config: Optional config dict.
-        tune: Whether to autotune.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+class PreluKernel(ParametricUnaryKernel):
+    """PReLU: y = x if x > 0 else weight[channel] * x."""
 
     def __init__(self, N_total, C, inner_size, dtype, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
         self.C = C
         self.inner_size = inner_size
-        self.dtype = dtype
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_prelu_kernel(
-            N_total, C, inner_size, self.dtype_str,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_prelu_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+    def _builder_positional_args(self):
+        return (self.N_total, self.C, self.inner_size, self.dtype_str)
 
     def forward(self, x, weight):
         return self._compiled_fn(x, weight)
@@ -2469,50 +2441,15 @@ def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
     return kernel
 
 
-class WhereKernel(Kernel):
-    """Where: out = cond ? x : y.
+class WhereKernel(ParametricUnaryKernel):
+    """Where: out = cond ? x : y."""
 
-    Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype for x and y.
-        config: Optional config dict.
-        tune: Whether to autotune.
-    """
+    _DEFAULT_THREADS = 512
+    _skip_fp8_output = True
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
-    def __init__(self, N_total, dtype, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
-        # Where is a pure selection op (out = cond ? x : y): no arithmetic,
-        # no type conversion needed.  _fp8_output_dtype is explicitly None
-        # so _apply_fp8_post_cast is a no-op.
-        self._fp8_output_dtype = None
-        cfg = self.default_config
-        self.kernel = _make_where_kernel(
-            N_total, self.dtype_str, is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 512, "num_per_thread": npt}
-
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+    @staticmethod
+    def _builder_fn():
+        return _make_where_kernel
 
     def forward(self, cond, x, y):
         return self._compiled_fn(cond, x, y)
@@ -2580,60 +2517,25 @@ def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
     return kernel
 
 
-class ClampKernel(Kernel):
-    """Clamp: y = clamp(x, min, max) with optional bounds.
-
-    Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
-        min_val: Lower bound (None = no lower bound).
-        max_val: Upper bound (None = no upper bound).
-        config: Optional config dict.
-        tune: Whether to autotune.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+class ClampKernel(ParametricUnaryKernel):
+    """Clamp: y = clamp(x, min, max) with optional bounds."""
 
     def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.min_val = min_val
         self.max_val = max_val
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_clamp_kernel(
-            N_total, self.dtype_str,
-            has_min=min_val is not None,
-            has_max=max_val is not None,
-            min_val=min_val if min_val is not None else 0.0,
-            max_val=max_val if max_val is not None else 0.0,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
+        super().__init__(N_total, dtype, config=config, tune=tune)
+
+    @staticmethod
+    def _builder_fn():
+        return _make_clamp_kernel
+
+    def _builder_args(self):
+        return (
+            self.min_val is not None,
+            self.max_val is not None,
+            self.min_val if self.min_val is not None else 0.0,
+            self.max_val if self.max_val is not None else 0.0,
         )
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
-
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2706,51 +2608,24 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
     return kernel
 
 
-class MaskedFillKernel(Kernel):
-    """MaskedFill: out = mask ? fill_value : x.
+class MaskedFillKernel(ParametricUnaryKernel):
+    """MaskedFill: out = mask ? fill_value : x."""
 
-    Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
-        fill_value: Scalar value to fill where mask is True.
-        config: Optional config dict.
-        tune: Whether to autotune.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    _DEFAULT_THREADS = 512
 
     def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        self.fill_value = _clamp_to_dtype_range(fill_value, self.output_dtype)
-        cfg = self.default_config
-        self.kernel = _make_masked_fill_kernel(
-            N_total, self.dtype_str, self.fill_value,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        self._raw_fill_value = fill_value
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 512, "num_per_thread": npt}
+    def _post_init_params(self):
+        self.fill_value = _clamp_to_dtype_range(self._raw_fill_value, self.output_dtype)
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+    @staticmethod
+    def _builder_fn():
+        return _make_masked_fill_kernel
+
+    def _builder_args(self):
+        return (self.fill_value,)
 
     def forward(self, x, mask):
         return self._compiled_fn(x, mask)
@@ -2832,63 +2707,27 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
     return kernel
 
 
-class NanToNumKernel(Kernel):
-    """NanToNum: replace NaN, +Inf, -Inf with specified values.
-
-    Note: For e4m3fn this is effectively a no-op because e4m3fn has no Inf
-    or NaN representation — all values are finite by construction.  The
-    kernel still runs but no replacements will occur.
-
-    Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
-        nan_val: Replacement for NaN (default 0.0).
-        posinf_val: Replacement for +Inf (default 1e4).
-        neginf_val: Replacement for -Inf (default -1e4).
-        config: Optional config dict.
-        tune: Whether to autotune.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+class NanToNumKernel(ParametricUnaryKernel):
+    """NanToNum: replace NaN, +Inf, -Inf with specified values."""
 
     def __init__(self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4,
                  config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        self.nan_val = _clamp_to_dtype_range(nan_val, self.output_dtype)
-        self.posinf_val = _clamp_to_dtype_range(posinf_val, self.output_dtype)
-        self.neginf_val = _clamp_to_dtype_range(neginf_val, self.output_dtype)
-        cfg = self.default_config
-        self.kernel = _make_nan_to_num_kernel(
-            N_total, self.dtype_str, self.nan_val, self.posinf_val, self.neginf_val,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        self._raw_nan_val = nan_val
+        self._raw_posinf_val = posinf_val
+        self._raw_neginf_val = neginf_val
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
+    def _post_init_params(self):
+        self.nan_val = _clamp_to_dtype_range(self._raw_nan_val, self.output_dtype)
+        self.posinf_val = _clamp_to_dtype_range(self._raw_posinf_val, self.output_dtype)
+        self.neginf_val = _clamp_to_dtype_range(self._raw_neginf_val, self.output_dtype)
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+    @staticmethod
+    def _builder_fn():
+        return _make_nan_to_num_kernel
 
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.nan_val, self.posinf_val, self.neginf_val)
 
 
 @functools.lru_cache(maxsize=32)

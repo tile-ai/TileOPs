@@ -105,7 +105,7 @@ def test_r2_small_tensor_unary(n_total: int, dtype: torch.dtype) -> None:
         return torch.relu(x)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +460,7 @@ def test_relu_bench(n_total: int, dtype: torch.dtype) -> None:
         return torch.relu(x)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

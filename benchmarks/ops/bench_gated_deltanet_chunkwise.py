@@ -138,7 +138,7 @@ def test_gated_deltanet_vs_fla_fwd(
     else:
         # --- Torch reference baseline ---
         result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 # =============================================================================
@@ -244,7 +244,7 @@ def test_gated_deltanet_vs_fla_bwd(
         def torch_bwd():
             return _autograd_bwd_ref(do, q, k, v, g, beta, BC)
         result_bl = _profile_manual(torch_bwd, bm)
-        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch-ref")
 
 
 # =============================================================================
@@ -351,7 +351,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
         def torch_fwdbwd():
             return _autograd_bwd_ref(do, q.data, k.data, v.data, g.data, beta.data, BC)
         result_bl = _profile_manual(torch_fwdbwd, bm, warmup=50)
-        BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

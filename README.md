@@ -1,95 +1,101 @@
 <div align="center">
   <img src="https://raw.githubusercontent.com/tile-ai/TileOPs/main/assets/logo.png" width="350"/>
-  <h1>TileOPs: Operator Library for LLMs Built on TileLang</h1>
+  <h1>TileOPs</h1>
+  <p><strong>Spec-driven GPU operator library for LLMs — designed for AI agents to build, evaluate, and optimize</strong></p>
+  <p>Built on <a href="https://github.com/tile-ai/tilelang">TileLang</a></p>
   <!-- <p>
     <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version" height="20"></a>
   </p> -->
   <p>
-    <a href="#-install-with-pip"><b>Installation</b></a> |
-    <a href="#-quick-start"><b>Getting Started</b></a> |
-    <a href="#documents"><b>Documents</b></a>
+    <a href="#installation"><b>Installation</b></a> |
+    <a href="#quick-start"><b>Quick Start</b></a> |
+    <a href="#documentation"><b>Docs</b></a>
   </p>
 </div>
 
-**TileOPs** is a high-performance operator library for large language models (LLMs) built on **[TileLang](https://github.com/tile-ai/tilelang)**. It offers efficient, modular, and composable implementations for AI workloads, especially for LLMs.
+> **Status**: TileOPs is under active development. APIs may change.
 
-> ⚠️ **Status**: TileOPs is under active and rapid development. APIs and features may change.
+## Overview
 
-What TileOPs is for:
+TileOPs is a GPU operator library for LLM training and inference, built on [TileLang](https://github.com/tile-ai/tilelang). Beyond providing a growing collection of production-quality operators, TileOPs explores a **spec-driven development model** where AI agents can read declarative operator specifications, generate kernel implementations, and evaluate them against hardware-theoretical performance bounds — with minimal human scaffolding.
 
-- **Out-of-the-box Operator Library**: A growing collection of production-ready operators commonly used in LLM workloads, designed with clear abstractions and modular building blocks. These operators can be used directly or easily extended for custom research and system integration.
-- **Efficient Attention Kernels for LLMs**: Highly optimized attention implementations, including MHA/GQA (implemented FA2 on Ampere-like GPUs and FA3 on Hopper), DeepSeek-MLA, and DeepSeek-DSA.
-- **Reference Implementation for TileLang**: TileOPs acts as a **canonical reference implementation** for writing performant and maintainable kernels in **TileLang**. It demonstrates best practices in tiling strategies, memory hierarchy utilization, and warp-/block-level coordination, making it a practical learning resource for compiler and kernel developers.
+### Architecture
 
-The core features of TileOPs include:
+Every operator is split into two layers with a strict boundary:
 
-- **Auto-Tuning**: Built-in auto-tuning support to explore tile sizes, pipelines, and scheduling parameters, enabling kernels to adapt efficiently to different GPU architectures and workload characteristics with minimal manual effort.
-- **CUDA-Graph and torch.compile Compatibility**: TileOPs APIs are fully compatible with CUDA-Graph capture and PyTorch `torch.compile`, allowing seamless integration into modern training and inference pipelines with reduced launch overhead and improved end-to-end performance.
-- **Lightweight Dependencies**: TileOPs depends only on TileLang, PyTorch, and einops, keeping the software stack minimal and easy to integrate.
+- **Op** (L2) — stateless Python entry point. Handles validation, dtype casting, and memory layout. Compatible with CUDA-Graph and `torch.compile`.
+- **Kernel** (L1) — TileLang GPU implementation with hardware-specific optimizations (Ampere, Hopper).
 
-## 📦 Install with pip
+This separation keeps user-facing behavior independent of GPU strategy, allowing agents and developers to modify either layer without side effects on the other.
+
+### Key Properties
+
+- **Spec-driven** — each operator is declared in a machine-readable manifest (`ops_manifest.yaml`) that specifies signatures, workloads, and roofline formulas, serving as the entry point for both agent code generation and automated validation
+- **Roofline-evaluated** — kernel performance is measured against Speed-of-Light hardware bounds, not relative baselines
+- **Auto-tuning** — built-in search over tile sizes, pipelines, and scheduling parameters
+- **Lightweight** — depends only on TileLang, PyTorch, and einops
+
+## Installation
+
+TileOPs can be installed from PyPI or built from source. A CUDA-capable GPU is required.
 
 ### Prerequisites
 
 - Python >= 3.10
 - PyTorch >= 2.1
-- CUDA Toolkit (required — this is a GPU kernel project)
-- A CUDA-capable NVIDIA GPU
-  - Tested architectures: **Ampere** (SM_80, SM_86) and **Hopper** (SM_90)
-  - Other architectures may work but are not tested
+- CUDA Toolkit
+- NVIDIA GPU: **Hopper** (SM_90)
 - [TileLang](https://github.com/tile-ai/tilelang) == 0.1.8
 
-### Method 1: Install from PyPI
+### From PyPI
 
 ```bash
 pip install tileops
 ```
 
-### Method 2: Install from source (for development)
+### From source
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
-make install                # installs dev dependencies and pre-commit hooks
+make install    # dev dependencies + pre-commit hooks
 ```
 
 > [!NOTE]
-> If you have CUDA and TileLang already installed system-wide and encounter build issues, try:
+> If CUDA and TileLang are already installed system-wide and you encounter build issues:
 > `PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -v && pre-commit install`
-> This disables pip's build isolation so it can find your existing CUDA/TileLang installation.
 
-After installing, verify with a test run:
+Verify:
 
 ```bash
-python -m pytest tests/ -q  # run the test suite (requires a CUDA GPU)
+python -m pytest tests/ -q    # requires a CUDA GPU
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ```python
 import torch
 from tileops.ops import GemmOp
 
-# Define matrix dimensions: C = A @ B, where A is (M, K) and B is (K, N)
 M, N, K = 1024, 1024, 512
 dtype = torch.float16
 
-# Instantiate the op
 gemm = GemmOp(M, N, K, dtype=dtype)
 
-# Generate inputs
 A = torch.randn(M, K, device="cuda", dtype=dtype)
 B = torch.randn(K, N, device="cuda", dtype=dtype)
 
-# Run the operator
 C = gemm(A, B)
 ```
 
-## Documents
+## Documentation
 
-### Hierarchical APIs
+Design docs and development guides are in [`docs/`](docs/). The full API reference and performance tables are published at [TileOPs.github.io](https://github.com/tile-ai/TileOPs.github.io).
 
-TileOPs is structured around two hierarchical key concepts, each representing a distinct level of abstraction. Higher-level components are composed from, or delegate execution to, the next lower level.
+## Contributing
 
-- **Op**: determines the implementation for a given shape and hardware, dispatching to the correct **Kernel** and providing unit test and benchmark. Ops are fully compatible with CUDA-Graph capture and `torch.compile`.
-- **Kernel**: TileLang-based kernels with hardware-specific optimizations.
+See [workflow.md](docs/workflow.md) for branch naming, commit conventions, and the PR process.
+
+## License
+
+TileOPs is released under the [MIT License](LICENSE).

@@ -92,7 +92,7 @@ def test_rope_bench(seq_len: int, head_dim: int, dtype: torch.dtype) -> None:
         return _rope_neox_apply(x, cos, sin)
 
     result_bl = bm.profile(baseline_fn, x)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

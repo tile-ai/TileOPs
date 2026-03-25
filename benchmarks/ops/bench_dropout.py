@@ -68,7 +68,7 @@ def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
         return F.dropout(x, p=_P, training=True)
 
     result_bl = bm.profile(baseline_fn, x)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

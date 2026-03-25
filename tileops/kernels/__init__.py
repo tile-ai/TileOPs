@@ -16,6 +16,8 @@ from .deepseek_nsa import (
     NSAFwdVarlenKernel,
     NSATopkVarlenKernel,
 )
+from .deltanet_chunkwise import DeltaNetBwdKernel, DeltaNetFwdKernel
+from .deltanet_recurrence import DeltaNetDecodeFP32Kernel, DeltaNetDecodeKernel
 from .dropout import DropoutKernel
 from .elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
 from .engram import EngramDecodeKernel, EngramGateConvBwdKernel, EngramGateConvFwdKernel
@@ -83,6 +85,10 @@ __all__ = [
     "GqaSlidingWindowFwdWgmmaPipelinedKernel",
     "GqaSlidingWindowVarlenFwdKernel",
     "GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel",
+    "DeltaNetBwdKernel",
+    "DeltaNetDecodeFP32Kernel",
+    "DeltaNetDecodeKernel",
+    "DeltaNetFwdKernel",
     "GatedDeltaNetBwdKernel",
     "GatedDeltaNetDecodeFP32Kernel",
     "GatedDeltaNetDecodeKernel",

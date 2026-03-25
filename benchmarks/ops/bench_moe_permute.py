@@ -126,7 +126,7 @@ def test_moe_permute_bench(
     torch.cuda.synchronize()
 
     result_ref = bm.profile(_ref_fn, hidden_states, topk_ids)
-    BenchmarkReport.record(op, locals(), result_ref, tag="pytorch-ref")
+    BenchmarkReport.record(op, locals(), result_ref, tag="torch-ref")
 
 
 if __name__ == "__main__":

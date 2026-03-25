@@ -12,8 +12,21 @@ TileOPs is a high-performance LLM operator library built on TileLang. The goal i
 
 ## Key References
 
-- [DEVELOPMENT.md](docs/DEVELOPMENT.md) — architecture (2-layer stack), development workflow, coding standards, testing strategy, and PR process
-- [CONTRIBUTING.md](docs/CONTRIBUTING.md) — "2+1 Review" policy, branch naming, and commit message conventions
+### Design
+
+- [architecture.md](docs/architecture.md) — system modules (M1-M8), data flow, agent production loop, directory structure
+- [ops-design.md](docs/ops-design.md) — Op/Kernel interface design principles, inheritance hierarchy, class variable protocol
+- [manifest.md](docs/manifest.md) — `ops_manifest.yaml` spec format (signature, workloads, roofline, source)
+- [roofline.md](docs/roofline.md) — performance evaluation methodology (SOL bound, efficiency ratio, GPU profiles)
+
+### Process
+
+- [workflow.md](docs/workflow.md) — development flow (Step 0→4), branch/commit conventions, coding standards, PR process, CI/CD
+- [testing.md](docs/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
+
+### External
+
+- [TileOPs.github.io](https://github.com/tile-ai/TileOPs.github.io) — auto-generated documentation site (API reference, perf tables, support matrix)
 
 ## Collaboration Rules for Claude
 

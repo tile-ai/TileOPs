@@ -89,7 +89,7 @@ def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
         return F.softmax(x, dim=-1)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ===================================================================
@@ -114,7 +114,7 @@ def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> No
         return F.log_softmax(x, dim=-1)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ===================================================================
@@ -139,7 +139,7 @@ def test_logsumexp_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None
         return torch.logsumexp(x, dim=-1)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":
