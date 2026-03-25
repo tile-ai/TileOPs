@@ -45,7 +45,7 @@ Benchmark (M4) produces raw time (JSON/CSV). Roofline (M5) is a separate tool th
 
 - Re-analyzing historical data when GPU profiles are updated
 - Multiple consumers of raw benchmark data (roofline, regression detection, dashboards)
-- Benchmark module has zero external dependencies
+- Benchmark module has no third-party dependencies beyond the project itself
 
 ## Roofline Formulas
 
