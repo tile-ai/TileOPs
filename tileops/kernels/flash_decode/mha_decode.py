@@ -473,9 +473,15 @@ class mha_decode_kernel(Kernel):
         # Dispatch: use no-split for short sequences where splitting is not beneficial
         threshold = num_split * block_N
         if real_seqlen_kv < threshold:
+            # The no-split kernel does not support all thread counts that the
+            # split kernel accepts.  With threads=256 the LayoutInference pass
+            # hits a fragment conflict between acc_s (float32) and acc_s_cast
+            # (float16/bfloat16) whose MMA layouts differ in replicate count.
+            # Cap to the default thread count which is always safe for the no-split variant.
+            no_split_threads = min(threads, self.default_config["threads"])
             return _mha_decode_no_split_op(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
                                            real_seqlen_kv, self.dim, self.is_causal, self.dtype_str,
-                                           block_M, block_N, num_stages, threads, Q, K, V)
+                                           block_M, block_N, num_stages, no_split_threads, Q, K, V)
 
         # Split path: compute per-split lengths
         base_len = real_seqlen_kv // (num_split * block_N) * block_N
