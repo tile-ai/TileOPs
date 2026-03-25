@@ -22,7 +22,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase
-from tileops.ops.moe import FusedTopKOp, Qwen3MoEOp
+from tileops.ops.moe import FusedTopKOp, Qwen3MoENopadOp
 
 # ---------------------------------------------------------------------------
 # vLLM optional import
@@ -184,7 +184,7 @@ class Qwen3MoEFixture(FixtureBase):
 def _check(test: Qwen3MoETest) -> None:
     hidden, gating, w_gate_up, w_down = test.gen_inputs()
 
-    op = Qwen3MoEOp(
+    op = Qwen3MoENopadOp(
         num_tokens=test.num_tokens,
         num_experts=test.num_experts,
         top_k=test.top_k,

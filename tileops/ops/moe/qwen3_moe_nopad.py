@@ -16,14 +16,12 @@ Inputs:
 Output:
   output         [T, H]       same dtype as hidden_states
 
-Padded layout note:
-  The NT grouped-GEMM kernel maps each M-tile to an expert by checking
-  whether the tile's row-start falls within that expert's row range.
-  For correctness, every expert's token block must start on a block_m
-  boundary.  MoePermuteOp computes block_m-aligned padded_sizes and
-  padded_offsets on the GPU and scatters tokens into perm_h_pad.
-  The fwd_idx mapping (flat_idx → padded slot) is passed directly to
-  MoeUnpermuteOp to gather the GEMM outputs back to token order.
+Tight layout note:
+  MoePermuteNopadOp outputs perm_h with exactly T*K rows — no block_m-aligned
+  padding between experts. MoeGroupedGemmNopadOp uses a GPU tile scheduler to map
+  each CTA to its (expert, row_offset) in O(1) via a precomputed table.
+  fwd_idx[flat_idx] = tight_slot is passed to MoeUnpermuteOp to gather GEMM
+  outputs back to token order.
 
 EP note:
   expert_map [E] int32 maps global expert ids to local ids (-1 = remote).
@@ -36,31 +34,28 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.grouped_gemm.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
 from tileops.kernels.kernel import Kernel
 from tileops.ops.elementwise import SiluAndMulOp
-from tileops.ops.grouped_gemm import GroupedGemmOp
 from tileops.ops.moe.fused_topk import FusedTopKOp
-from tileops.ops.moe.permute import MoePermuteOp
+from tileops.ops.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadOp
+from tileops.ops.moe.permute_nopad import MoePermuteNopadOp
 from tileops.ops.moe.unpermute import MoeUnpermuteOp
 
 from ..op import Op
 
-__all__ = ["Qwen3MoEOp"]
-
-# block_m for the NT layout (transpose_a=False, transpose_b=True).
-# Each expert's row slice must start on this boundary for correct tile→expert mapping.
-# Sourced directly from the kernel default config to stay in sync automatically.
-_BLOCK_M_NT: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
+__all__ = ["Qwen3MoENopadOp"]
 
 
-class Qwen3MoEOp(Op):
+class Qwen3MoENopadOp(Op):
     """Qwen3-style MoE FFN: softmax/sigmoid routing + SwiGLU experts.
 
-    Combines FusedTopKOp → MoePermuteOp → GroupedGemmOp (gate+up) →
-    SiluAndMulOp → GroupedGemmOp (down) → MoeUnpermuteOp into a single
+    Combines FusedTopKOp → MoePermuteNopadOp → MoeGroupedGemmNopadOp (gate+up) →
+    SiluAndMulOp → MoeGroupedGemmNopadOp (down) → MoeUnpermuteOp into a single
     forward pass.  All kernels are TileLang-compiled; no CPU loops or
     host–device syncs in the forward path.
+
+    Uses tight (non-padded) layout: intermediate tensors have exactly T*K rows,
+    eliminating the conservative T*K + E*block_m allocation overhead.
 
     Args:
         num_tokens: Number of input tokens T.
@@ -110,10 +105,8 @@ class Qwen3MoEOp(Op):
                 "single-GPU or TP-only usage."
             )
 
-        batch_sum = num_tokens * top_k
-        # Padded batch sum: upper bound for the block_m-aligned layout.
-        # actual_padded = Σ ⌈count_i/block_m⌉×block_m ≤ batch_sum + E×block_m.
-        self._padded_batch_sum = batch_sum + num_experts * _BLOCK_M_NT
+        # Tight batch sum: exactly T*K rows, no block_m padding
+        numel = num_tokens * top_k
 
         self._fused_topk = FusedTopKOp(
             num_tokens=num_tokens,
@@ -122,46 +115,41 @@ class Qwen3MoEOp(Op):
             scoring_func=scoring_func,
             renormalize=renormalize,
         )
-        self._permute = MoePermuteOp(
+        self._permute = MoePermuteNopadOp(
             num_tokens=num_tokens,
             top_k=top_k,
             num_experts=num_experts,
             hidden_size=hidden_size,
             dtype=dtype,
-            block_m=_BLOCK_M_NT,
         )
-        # NT: A[padded_batch_sum, H] @ B[E, 2*F, H]^T → C[padded_batch_sum, 2*F]
-        self._gemm_gate_up = GroupedGemmOp(
-            batch_sum=self._padded_batch_sum,
-            batch_count=num_experts,
+        # NT: A[numel, H] @ B[E, 2*F, H]^T → C[numel, 2*F]
+        self._gemm_gate_up = MoeGroupedGemmNopadOp(
+            numel=numel,
+            num_experts=num_experts,
             n=ffn_size * 2,
             k=hidden_size,
             dtype=dtype,
-            transpose_a=False,
-            transpose_b=True,
         )
-        # silu(gate) * up: [padded_batch_sum, 2*F] → [padded_batch_sum, F]
+        # silu(gate) * up: [numel, 2*F] → [numel, F]
         self._silu_and_mul = SiluAndMulOp(
-            M=self._padded_batch_sum,
+            M=numel,
             N=ffn_size,
             dtype=dtype,
         )
-        # NT: A[padded_batch_sum, F] @ B[E, H, F]^T → C[padded_batch_sum, H]
-        self._gemm_down = GroupedGemmOp(
-            batch_sum=self._padded_batch_sum,
-            batch_count=num_experts,
+        # NT: A[numel, F] @ B[E, H, F]^T → C[numel, H]
+        self._gemm_down = MoeGroupedGemmNopadOp(
+            numel=numel,
+            num_experts=num_experts,
             n=hidden_size,
             k=ffn_size,
             dtype=dtype,
-            transpose_a=False,
-            transpose_b=True,
         )
         self._unpermute = MoeUnpermuteOp(
             num_tokens=num_tokens,
             top_k=top_k,
             hidden_size=hidden_size,
             dtype=dtype,
-            padded_batch_sum=self._padded_batch_sum,
+            padded_batch_sum=numel,  # tight: no padding
         )
 
     @property
@@ -189,31 +177,23 @@ class Qwen3MoEOp(Op):
         # Step 1: Routing — softmax/sigmoid + top-k selection
         topk_weights, topk_ids = self._fused_topk(gating_output)
 
-        # Step 2: Permute tokens into padded expert-contiguous layout.
-        #   perm_h_pad:     [padded_batch_sum, H]
-        #   padded_offsets: [E] int32  padded start per expert
-        #   padded_sizes:   [E] int32  block_m-aligned sizes
-        #   expert_offset:  [E+1] int64  non-padded prefix-sum (unused here)
-        #   fwd_idx:        [T*K] int32  flat_idx → padded slot
-        perm_h_pad, padded_offsets, padded_sizes, _, fwd_idx = self._permute(
+        # Step 2: Permute tokens into tight expert-contiguous layout.
+        #   perm_h:       [T*K, H]  tight hidden states (no inter-expert gaps)
+        #   true_offsets: [E] int32  tight start per expert
+        #   true_sizes:   [E] int32  true token count per expert
+        #   fwd_idx:      [T*K] int32  flat_idx → tight slot
+        perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(
             hidden_states, topk_ids
         )
 
-        # Step 3: Gate+up projection — [padded, H] × [E, 2*F, H]^T → [padded, 2*F]
-        # Both batch_offsets and batch_padded_offsets are padded_offsets: the NT kernel
-        # uses batch_offsets to locate expert boundaries (m_start), and the padded layout
-        # already aligns those boundaries to block_m, so both arguments are identical.
-        gate_up_pad = self._gemm_gate_up(
-            perm_h_pad, w_gate_up, padded_sizes, padded_offsets, padded_offsets
-        )
+        # Step 3: Gate+up projection — [tight, H] × [E, 2*F, H]^T → [tight, 2*F]
+        gate_up = self._gemm_gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
 
-        # Step 4: SwiGLU — silu(gate) * up → [padded, F]
-        act_pad = self._silu_and_mul(gate_up_pad)
+        # Step 4: SwiGLU — silu(gate) * up → [tight, F]
+        act = self._silu_and_mul(gate_up)
 
-        # Step 5: Down projection — [padded, F] × [E, H, F]^T → [padded, H]
-        mm2_pad = self._gemm_down(
-            act_pad, w_down, padded_sizes, padded_offsets, padded_offsets
-        )
+        # Step 5: Down projection — [tight, F] × [E, H, F]^T → [tight, H]
+        mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
 
         # Step 6: Weighted sum back to token order → [T, H]
-        return self._unpermute(mm2_pad, fwd_idx, topk_weights)
+        return self._unpermute(mm2, fwd_idx, topk_weights)
