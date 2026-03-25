@@ -1,121 +1,100 @@
-"""HBM Bandwidth Benchmark.
+"""HBM Bandwidth Benchmark — Python wrapper for hbm_saturation.cu.
 
-Measures read, write, and copy bandwidth across sizes and dtypes.
-Compares against theoretical peak from GPU profile (single source of truth).
+Compiles and runs the CUDA microbenchmark, parses output, and prints
+the calibration factor for tileops/perf/profiles/.
+
+Usage:
+    python benchmarks/hardware/memory/hbm_bandwidth.py [--profile h200] [--size-mb 2048]
 """
 
-import torch
+import argparse
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 
-from benchmarks.hardware.utils import achieved_pct, bench, calc_bandwidth_gbs
 from tileops.perf import load_profile
 
-WARMUP = 100
-REP = 200
-
-SIZES_BYTES = {
-    "1MB": 1 * 1024 * 1024,
-    "8MB": 8 * 1024 * 1024,
-    "64MB": 64 * 1024 * 1024,
-    "256MB": 256 * 1024 * 1024,
-    "1GB": 1024 * 1024 * 1024,
-    "2GB": 2 * 1024 * 1024 * 1024,
-}
-
-DTYPES = [
-    ("fp16", torch.float16, 2),
-    ("bf16", torch.bfloat16, 2),
-    ("fp32", torch.float32, 4),
-]
+_CU_SRC = Path(__file__).parent / "hbm_saturation.cu"
 
 
-def measure_peak_copy_bw():
-    """Measure peak copy bandwidth at 2GB. Returns bandwidth in GB/s."""
-    nbytes = 2 * 1024 * 1024 * 1024
-    n = nbytes // 4
-    src = torch.randn(n, device="cuda", dtype=torch.float32)
-    dst = torch.empty_like(src)
-    latency = bench(lambda _d=dst, _s=src: _d.copy_(_s), warmup=WARMUP, rep=REP)
-    bw = calc_bandwidth_gbs(2 * nbytes, latency)
-    del src, dst
-    torch.cuda.empty_cache()
-    return bw
+def _compile(cu_path, binary_path, arch="sm_90"):
+    """Compile the CUDA source. Raises on failure."""
+    cmd = [
+        "nvcc", "-O3", f"-arch={arch}",
+        "-Wno-deprecated-gpu-targets",
+        "-o", str(binary_path), str(cu_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"nvcc compilation failed:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
 
 
-def benchmark_bandwidth(profile_name="h200"):
-    """Run full HBM bandwidth benchmark. Returns measured peak BW in GB/s."""
-    profile = load_profile(profile_name)
-    theo_bw = profile["hbm"]["theoretical"] / 1e9  # bytes/s → GB/s
+def _run(binary_path, size_mb, theo_peak_gbs):
+    """Run the benchmark binary and return stdout lines."""
+    cmd = [str(binary_path), str(size_mb), str(theo_peak_gbs)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        print(f"Benchmark failed:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    return result.stdout.strip().splitlines()
 
-    measured_bw = measure_peak_copy_bw()
 
-    print(f"\nTheoretical peak HBM BW: {theo_bw} GB/s" if theo_bw else "\nTheoretical peak: unknown")
-    print(f"Measured peak copy BW (2GB fp32): {measured_bw:.2f} GB/s")
-    if theo_bw:
-        print(f"Calibration factor: {measured_bw / theo_bw:.4f}")
+def _parse_peak_bandwidth(lines):
+    """Extract the best bandwidth (GB/s) from CSV output lines."""
+    best_gbs = 0.0
+    for line in lines:
+        parts = line.split(",")
+        if len(parts) >= 8:
+            try:
+                gbs = float(parts[7])  # best_gbs column
+                best_gbs = max(best_gbs, gbs)
+            except ValueError:
+                continue
+    return best_gbs
+
+
+def main():
+    parser = argparse.ArgumentParser(description="HBM bandwidth microbenchmark")
+    parser.add_argument("--profile", default="h200", help="GPU profile name")
+    parser.add_argument("--size-mb", type=int, default=2048, help="Working set size in MB")
+    parser.add_argument("--arch", default="sm_90", help="CUDA architecture")
+    args = parser.parse_args()
+
+    profile = load_profile(args.profile)
+    theo_peak_gbs = profile["hbm"]["theoretical"] / 1e9
+
+    print(f"Profile: {args.profile}")
+    print(f"Theoretical HBM BW: {theo_peak_gbs:.1f} GB/s")
+    print(f"Working set: {args.size_mb} MB")
     print()
 
-    peak_bw = theo_bw or measured_bw
+    with tempfile.TemporaryDirectory() as tmpdir:
+        binary = Path(tmpdir) / "hbm_saturation"
 
-    print("[HBM Bandwidth: Read / Write / Copy]")
-    print(f"{'Op':>6} {'Dtype':>5} {'Size':>6} {'BW (GB/s)':>12} {'%Theo':>8} {'%Meas':>8}")
-    print("-" * 50)
+        print("Compiling hbm_saturation.cu ...")
+        _compile(_CU_SRC, binary, arch=args.arch)
 
-    for dtype_name, dtype, itemsize in DTYPES:
-        for size_label, size_bytes in SIZES_BYTES.items():
-            n = size_bytes // itemsize
-            actual_bytes = n * itemsize
+        print("Running benchmark ...\n")
+        lines = _run(binary, args.size_mb, theo_peak_gbs)
 
-            src = torch.randn(n, device="cuda", dtype=dtype)
-            dst = torch.empty_like(src)
+    # Print raw output
+    for line in lines:
+        print(line)
 
-            for op_name, op_fn, bw_bytes in [
-                ("read", lambda _s=src: _s.sum(), actual_bytes),
-                ("write", lambda _d=dst: _d.zero_(), actual_bytes),
-                ("copy", lambda _d=dst, _s=src: _d.copy_(_s), 2 * actual_bytes),
-            ]:
-                lat = bench(op_fn, warmup=WARMUP, rep=REP)
-                bw = calc_bandwidth_gbs(bw_bytes, lat)
-                pct_theo = achieved_pct(bw, theo_bw)
-                pct_meas = achieved_pct(bw, measured_bw)
-                pct_theo_str = f"{pct_theo:.1f}%" if pct_theo else "N/A"
-                pct_meas_str = f"{pct_meas:.1f}%" if pct_meas else "N/A"
-
-                print(f"{op_name:>6} {dtype_name:>5} {size_label:>6} "
-                      f"{bw:>12.2f} {pct_theo_str:>8} {pct_meas_str:>8}")
-
-            del src, dst
-            torch.cuda.empty_cache()
-
-        print()
-
-    print("\n[HBM Strided Read Bandwidth]")
-    print(f"{'Dtype':>5} {'Stride(B)':>10} {'BW (GB/s)':>12} {'%Theo':>8}")
-    print("-" * 40)
-
-    strides_bytes = [32, 128, 512]
-    base_size = 256 * 1024 * 1024
-
-    for dtype_name, dtype, itemsize in DTYPES:
-        for stride_bytes in strides_bytes:
-            stride_elements = max(stride_bytes // itemsize, 1)
-            n_total = base_size // itemsize
-            data = torch.randn(n_total, device="cuda", dtype=dtype)
-            strided = data[::stride_elements]
-            accessed_bytes = strided.numel() * itemsize
-
-            lat = bench(lambda _s=strided: _s.sum(), warmup=WARMUP, rep=REP)
-            bw = calc_bandwidth_gbs(accessed_bytes, lat)
-            pct = achieved_pct(bw, peak_bw)
-            pct_str = f"{pct:.1f}%" if pct else "N/A"
-            print(f"{dtype_name:>5} {stride_bytes:>10} {bw:>12.2f} {pct_str:>8}")
-
-            del data, strided
-            torch.cuda.empty_cache()
-
-        print()
-
-    return measured_bw
+    # Extract peak and compute calibration
+    measured_peak = _parse_peak_bandwidth(lines)
+    if measured_peak > 0 and theo_peak_gbs > 0:
+        calibration = measured_peak / theo_peak_gbs
+        print(f"\n{'='*60}")
+        print(f"Measured peak:  {measured_peak:.2f} GB/s")
+        print(f"Theoretical:    {theo_peak_gbs:.1f} GB/s")
+        print(f"Calibration:    {calibration:.4f}")
+        print(f"\nUpdate tileops/perf/profiles/{args.profile}.yaml:")
+        print(f"  hbm.calibration: {calibration:.4f}")
+        print(f"{'='*60}")
 
 
 if __name__ == "__main__":
-    benchmark_bandwidth()
+    main()
