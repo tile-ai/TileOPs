@@ -25,7 +25,8 @@ class SsdDecodeBenchmark(BenchmarkBase):
     def calculate_memory(self) -> Optional[float]:
         t = self.test
         b, h, p, n, g = t.batch, t.n_heads, t.d_head, t.d_state, t.n_groups
-        f32, dtype_bytes = 4, 2  # float32 and float16/bfloat16
+        f32 = torch.float32.itemsize
+        dtype_bytes = self.test.dtype.itemsize
         # Reads: A(h) + dt(b,h) + x(b,h,p) + B_in(b,g,n) + C_in(b,g,n) + state(b,h,p,n)
         reads = (
             h * f32
@@ -45,11 +46,14 @@ def test_ssd_decode_bench(batch, n_heads, d_head, d_state, n_groups, dtype, tune
     bm = SsdDecodeBenchmark(test)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
 
-    op = SsdDecodeOp(batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
-    result = bm.profile(op, A, dt, x, B_in, C_in, state)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
+    # Clone state before each profile run so both start from identical initial
+    # conditions (op mutates state in-place across iterations).
+    state_for_op = state.clone()
     state_bl = state.clone()
+
+    op = SsdDecodeOp(batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
+    result = bm.profile(op, A, dt, x, B_in, C_in, state_for_op)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(A, dt, x, B_in, C_in, state):
         return ssd_decode_ref(A, dt, x, B_in, C_in, state)

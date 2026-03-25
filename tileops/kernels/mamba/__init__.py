@@ -5,9 +5,9 @@ from .ssd_decode import SsdDecodeKernel
 from .ssd_state_passing_fwd import SsdStatePassingFwdKernel
 
 __all__ = [
+    "DaCumsumFwdKernel",
     "SsdChunkScanFwdKernel",
     "SsdChunkStateFwdKernel",
     "SsdDecodeKernel",
     "SsdStatePassingFwdKernel",
-    "DaCumsumFwdKernel",
 ]

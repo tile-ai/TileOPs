@@ -51,6 +51,10 @@ class SsdDecodeOp(Op):
         self.d_head = d_head
         self.d_state = d_state
         self.n_groups = n_groups
+        if n_heads % n_groups != 0:
+            raise ValueError(
+                f"n_heads ({n_heads}) must be divisible by n_groups ({n_groups})"
+            )
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["ssd_decode"](
