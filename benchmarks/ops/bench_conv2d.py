@@ -2,10 +2,61 @@ from typing import Optional, Tuple
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_conv2d import Conv2dTest
 from tileops.ops import Conv2dOp
+
+
+class Conv2dBenchCase:
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h: int,
+        w: int,
+        c_out: int,
+        kernel_size: Tuple[int, int],
+        stride: Tuple[int, int],
+        padding: Tuple[int, int],
+        dtype: torch.dtype,
+    ) -> None:
+        self.n = n
+        self.c_in = c_in
+        self.h = h
+        self.w = w
+        self.c_out = c_out
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.dtype = dtype
+
+    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        x = torch.randn(self.n, self.h, self.w, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        weight = torch.randn(
+            self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1],
+            device="cuda", dtype=self.dtype,
+        ).contiguous()
+        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
+        return x, weight, bias
+
+    def ref_program(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        out = F.conv2d(
+            x.permute(0, 3, 1, 2).contiguous(),
+            weight,
+            bias=bias,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=1,
+            groups=1,
+        )
+        return out.permute(0, 2, 3, 1).contiguous()
 
 
 class Conv2dBenchmark(BenchmarkBase):
@@ -61,7 +112,7 @@ def test_conv2d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dtype)
+    test = Conv2dBenchCase(n, c_in, h, w, c_out, kernel_size, stride, padding, dtype)
     bm = Conv2dBenchmark(test)
     inputs = test.gen_inputs()
 
