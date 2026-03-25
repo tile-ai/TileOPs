@@ -189,7 +189,7 @@ def test_r1_vectorization(
         "r1_vectorization",
         {"pattern_name": pattern_name, "n_total": test.n_total},
         result_bl,
-        tag=f"baseline_{pattern_name}",
+        tag=f"torch-{pattern_name}",
     )
 
 
@@ -241,7 +241,7 @@ def test_r2_small_tensor_binary(
         "r2_small_tensor_binary",
         {"pattern_name": pattern_name, "n_total": test.n_total},
         result_bl,
-        tag=f"baseline_{pattern_name}",
+        tag=f"torch-{pattern_name}",
     )
 
 
@@ -351,7 +351,7 @@ def test_r4_where_bench(
         "r4_where",
         {"n_total": n_total, "size_label": size_label},
         result,
-        tag="tileops_where",
+        tag="tileops-where",
     )
 
     cond, x, y = inputs
@@ -364,7 +364,7 @@ def test_r4_where_bench(
         "r4_where",
         {"n_total": n_total, "size_label": size_label},
         result_bl,
-        tag="baseline_where",
+        tag="torch",
     )
 
 
@@ -389,13 +389,13 @@ def test_add_bench(n_total: int, dtype: torch.dtype) -> None:
     shape = (n_total,)
     op = AddOp(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("add", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(a, b):
         return a + b
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("add", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

@@ -46,10 +46,10 @@ def test_fft_bench(n: int, dtype: torch.dtype, tune: bool) -> None:
 
     op = FFTC2COp(n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("fft_c2c", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("fft_c2c", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-cufft")
 
 
 if __name__ == "__main__":

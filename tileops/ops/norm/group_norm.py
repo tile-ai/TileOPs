@@ -32,24 +32,36 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 class GroupNormOp(Op):
-    """GroupNorm forward operator.
+    """Group Normalization forward operator.
 
-    y = (x - mean) / sqrt(var + eps) * weight + bias
+    Computes group normalization over ``(C/G, *spatial)`` slices:
 
-    where mean and var are computed over (C/G, *spatial) for each group.
+    .. math::
 
-    Supports arbitrary spatial dimensions (1D, 2D, 3D+).
-    Handles non-contiguous inputs via explicit contiguous() call.
+        y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
+            \\cdot w + b
+
+    where the mean and variance are computed per group over
+    ``(C/G, *spatial)`` elements.
+
+    Supported dtypes:
+        ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
+
+    Note:
+        Supports arbitrary spatial dimensions (1-D, 2-D, 3-D+).
+        Handles non-contiguous inputs via explicit ``contiguous()`` call.
+        Hidden dimension is padded to 256-element alignment internally.
 
     Args:
         N: Batch size.
         C: Number of channels.
-        spatial: Spatial dimensions tuple (H, W, ...).
-        G: Number of groups. Must divide C evenly.
-        dtype: Data type (float32, float16, or bfloat16).
-        eps: Epsilon for numerical stability (default 1e-5).
-        kernel_map: Optional kernel override dict.
-        tune: If True, autotune tile configs.
+        spatial: Spatial dimensions tuple ``(H, W, ...)``.
+        G: Number of groups. Must divide *C* evenly.
+        dtype: Data type (``torch.float32``, ``torch.float16``, or
+            ``torch.bfloat16``).
+        eps: Epsilon for numerical stability.
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
@@ -85,15 +97,19 @@ class GroupNormOp(Op):
         return {"group_norm": GroupNormKernel}
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
-        """Run GroupNorm forward.
+        """Apply group normalization.
 
         Args:
-            x: Input tensor of shape (N, C, *spatial).
-            weight: Affine scale of shape (C,).
-            bias: Affine shift of shape (C,).
+            x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
+            weight: Affine scale of shape ``(C,)`` on CUDA.
+            bias: Affine shift of shape ``(C,)`` on CUDA.
 
         Returns:
-            Normalized output of the same shape as x.
+            Normalized tensor of the same shape as *x*.
+
+        Raises:
+            ValueError: If tensors are not on CUDA, dtypes mismatch,
+                or shapes are incompatible with the configured dimensions.
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")

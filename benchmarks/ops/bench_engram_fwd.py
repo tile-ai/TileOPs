@@ -51,12 +51,12 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype, tune):
 
     op = EngramGateConvFwdOp(M, seq_len, d, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("engram_gate_conv_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(*args):
         return ref_engram_gate_conv_fwd(*args)
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record("engram_gate_conv_fwd", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

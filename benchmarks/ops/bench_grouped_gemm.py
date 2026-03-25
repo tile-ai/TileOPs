@@ -77,7 +77,7 @@ def _run_variant_bench(name: str, batch_sum: int, batch_count: int, N: int, K: i
     BenchmarkReport.record(name, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(name, locals(), result_bl, tag="torch-ref")
 
 
 # ---------------------------------------------------------------------------
@@ -151,10 +151,10 @@ def test_grouped_gemm_complete_bench(batch_sum: int, batch_count: int, N: int, K
         baseline_results.append(bm.profile(variant_test.ref_program, *inputs))
 
     result = _combine_results(bm, *tileops_results)
-    BenchmarkReport.record("grouped_gemm_complete", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = _combine_results(bm, *baseline_results)
-    BenchmarkReport.record("grouped_gemm_complete", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

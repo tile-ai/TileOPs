@@ -1,4 +1,6 @@
+import logging
 import subprocess
+import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Optional, Tuple
@@ -7,6 +9,12 @@ import torch
 from tilelang.profiler import do_bench
 
 from tests.test_base import TestBase
+
+_logger = logging.getLogger("tileops.bench")
+
+# Thread-local storage for conftest hook to pick up per-test bench results.
+# A single test function may call record() multiple times (tileops + baseline).
+_bench_results = threading.local()
 
 
 def _patch_cupti_filter():
@@ -163,15 +171,23 @@ class BenchmarkReport:
     _records: dict = {}
 
     @staticmethod
-    def record(name: str, params: dict, result: dict, tag: str = "tileops") -> None:
+    def record(op_or_name, params: dict, result: dict, tag: str = "tileops") -> None:
         """Record a benchmark result.
 
         Args:
-            name: Benchmark group name (e.g. "gemm", "mha_fwd")
+            op_or_name: Op instance or benchmark group name string.
+                If an Op instance, class name and module are extracted automatically.
             params: Parameter dict (typically from locals())
             result: Dict with latency_ms, tflops, bandwidth_tbs
-            tag: Label to distinguish implementations (e.g. "tileops", "baseline")
+            tag: Label to distinguish implementations (e.g. "tileops", "FA3", "fla")
         """
+        if isinstance(op_or_name, str):
+            name = op_or_name
+            op_module = None
+        else:
+            name = op_or_name.__class__.__name__
+            op_module = op_or_name.__class__.__module__
+
         # Filter params to only include serializable benchmark parameters
         filtered_params = {
             k: v for k, v in params.items()
@@ -185,6 +201,19 @@ class BenchmarkReport:
             "result": result,
             "tag": tag,
         })
+
+        # Accumulate in thread-local for conftest hook.
+        if not hasattr(_bench_results, "entries"):
+            _bench_results.entries = []
+        entry = {"tag": tag, "op": name, **result}
+        if op_module:
+            entry["op_module"] = op_module
+        _bench_results.entries.append(entry)
+
+        _logger.info("op=%s module=%s tag=%s latency_ms=%.4f tflops=%.2f",
+                      name, op_module or "N/A", tag,
+                      result.get("latency_ms", 0),
+                      result.get("tflops", 0))
 
     @staticmethod
     def dump(path: str) -> None:

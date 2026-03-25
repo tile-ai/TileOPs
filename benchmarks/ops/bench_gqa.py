@@ -2,6 +2,7 @@ from typing import Optional
 
 import pytest
 import torch
+from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gqa import (
@@ -75,6 +76,31 @@ def _baseline_gqa_bwd(test: GqaBwdTest):
     return baseline_fn
 
 
+def _torch_gqa_fwd(test):
+    """Torch SDPA forward baseline."""
+    def fn(q, k, v):
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+            is_causal=test.is_causal, enable_gqa=True)
+        return out.transpose(1, 2)
+    return fn
+
+
+def _torch_gqa_bwd(test):
+    """Torch SDPA backward baseline (includes forward recompute)."""
+    @torch.enable_grad()
+    def fn(q, k, v, o, grad_output, lse):
+        q = q.detach().requires_grad_(True)
+        k = k.detach().requires_grad_(True)
+        v = v.detach().requires_grad_(True)
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+            is_causal=test.is_causal, enable_gqa=True)
+        out.transpose(1, 2).contiguous().backward(grad_output)
+        return q.grad, k.grad, v.grad
+    return fn
+
+
 _GQA_FWD_BENCH_PARAMS = [
     pytest.param(1, 1024, 8, 4, 64, False, torch.float16, True, id="prefill-fp16"),
     pytest.param(4, 2048, 64, 4, 128, False, torch.float16, True, id="throughput-fp16"),
@@ -94,12 +120,15 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
 
     op = GroupQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gqa_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     baseline_fn = _baseline_gqa_fwd(test)
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
-        BenchmarkReport.record("gqa_fwd", locals(), result_bl, tag="FA3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+    else:
+        result_bl = bm.profile(_torch_gqa_fwd(test), *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 
 _GQA_BWD_BENCH_PARAMS = _GQA_FWD_BENCH_PARAMS
@@ -117,12 +146,15 @@ def test_gqa_bwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
 
     op = GroupQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gqa_bwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     baseline_fn = _baseline_gqa_bwd(test)
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
-        BenchmarkReport.record("gqa_bwd", locals(), result_bl, tag="FA3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+    else:
+        result_bl = bm.profile(_torch_gqa_bwd(test), *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 
 if __name__ == "__main__":

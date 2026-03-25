@@ -56,10 +56,10 @@ def test_nsa_topk_bench(seq_num: int, c_seq_len: int, heads: int, dim: int, grou
         selected_block_num=selected_block_num, bc=bc, bs=bs, bk=bk,
         dtype=dtype, accum_dtype=accum_dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("nsa_topk", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("nsa_topk", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

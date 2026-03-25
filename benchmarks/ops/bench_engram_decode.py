@@ -57,12 +57,12 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
         batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune=tune,
     )
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("engram_decode", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(*args):
         return _ref_engram_decode_step(*args, max_conv_len=max_conv_len, dilation=dilation)
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record("engram_decode", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

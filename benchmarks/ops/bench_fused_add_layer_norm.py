@@ -42,7 +42,7 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
 
     op = FusedAddLayerNormOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("fused_add_layer_norm", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: add + F.layer_norm (separate ops)
     def baseline_fn(x, residual, weight, bias):
@@ -50,7 +50,7 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
         return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=test.eps), add_result
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("fused_add_layer_norm", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

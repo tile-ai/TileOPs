@@ -58,11 +58,11 @@ def test_nsa_fwd_bench(batch: int, heads: int, c_seq_len: int, dim: int, is_caus
         groups=groups, selected_blocks=selected_blocks, dtype=dtype,
         accum_dtype=accum_dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("nsa_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Use reduced warmup/rep for the slow Python-loop baseline to avoid timeouts.
     result_bl = bm.profile(test.ref_program, *inputs, warmup=5, rep=10)
-    BenchmarkReport.record("nsa_fwd", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

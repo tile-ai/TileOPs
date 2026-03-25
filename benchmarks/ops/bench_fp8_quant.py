@@ -43,10 +43,10 @@ def test_fp8_quant_bench(batch: int, seq_len_kv: int, kv_group: int, index_dim: 
                     in_dtype=in_dtype,
                     tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("fp8_quant", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("fp8_quant", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

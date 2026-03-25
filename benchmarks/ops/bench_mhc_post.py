@@ -38,10 +38,10 @@ def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
     op = ManifoldConstrainedHyperConnectionPostOp(
         batch, n_expand, c_x, dtype=str(dtype).split('.')[-1], tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("mhc_post", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("mhc_post", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from typing import Optional
 
 import pytest
 import torch
+from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gqa_sliding_window_fwd import GqaSlidingWindowFwdTest
@@ -28,6 +29,28 @@ class GqaSlidingWindowFwdBenchmark(BenchmarkBase):
         t = self.test
         elem = torch.tensor([], dtype=t.dtype).element_size()
         return 2 * t.batch * t.seq * (t.heads + t.heads_kv) * t.dim * elem
+
+
+def _torch_sliding_window_fwd(test):
+    """Torch SDPA forward baseline with explicit sliding window mask."""
+    def fn(q, k, v):
+        S = test.seq
+        q_idx = torch.arange(S, device=q.device).unsqueeze(1)
+        k_idx = torch.arange(S, device=q.device).unsqueeze(0)
+        mask = torch.zeros(S, S, dtype=torch.bool, device=q.device)
+        if test.is_causal:
+            mask |= (k_idx > q_idx)
+        if test.wl >= 0:
+            mask |= (k_idx < q_idx - test.wl)
+        if test.wr >= 0:
+            mask |= (k_idx > q_idx + test.wr)
+        attn_mask = torch.zeros(S, S, dtype=q.dtype, device=q.device)
+        attn_mask.masked_fill_(mask, float('-inf'))
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+            attn_mask=attn_mask, enable_gqa=True)
+        return out.transpose(1, 2)
+    return fn
 
 
 def _fa3_baseline(q, k, v, is_causal, wl, wr):
@@ -78,7 +101,7 @@ def test_gqa_sliding_window_fwd_bench(
     torch.cuda.synchronize()
 
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gqa_sliding_window_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # FA3 baseline
     q, k, v = inputs
@@ -86,7 +109,10 @@ def test_gqa_sliding_window_fwd_bench(
     if fa3_out is not None:
         result_bl = bm.profile(
             lambda q, k, v: _fa3_baseline(q, k, v, is_causal, wl, wr), *inputs)
-        BenchmarkReport.record("gqa_sliding_window_fwd", locals(), result_bl, tag="fa3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+    else:
+        result_bl = bm.profile(_torch_sliding_window_fwd(test), *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

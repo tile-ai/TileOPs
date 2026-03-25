@@ -3,6 +3,7 @@ from typing import Optional
 
 import pytest
 import torch
+from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdTest
@@ -69,6 +70,59 @@ class GqaSlidingWindowVarlenFwdBenchmark(BenchmarkBase):
                 total_q * t.heads * t.dim) * elem
 
 
+def _torch_sliding_window_varlen_fwd(test):
+    """Torch SDPA forward baseline: unpack varlen to padded batch, single SDPA call."""
+    def fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
+        B = test.batch
+        seqlens_q = test.seqlens_q
+        seqlens_k = test.seqlens_k
+        max_sq = max(seqlens_q)
+        max_sk = max(seqlens_k)
+        H, Hkv, D = test.heads, test.heads_kv, test.dim
+
+        # Unpack packed varlen tensors to padded [B, max_s, H, D]
+        q_pad = q.new_zeros(B, max_sq, H, D)
+        k_pad = k.new_zeros(B, max_sk, Hkv, D)
+        v_pad = v.new_zeros(B, max_sk, Hkv, D)
+        for i in range(B):
+            qs, qe = cu_seqlens_q[i].item(), cu_seqlens_q[i + 1].item()
+            ks, ke = cu_seqlens_k[i].item(), cu_seqlens_k[i + 1].item()
+            q_pad[i, :qe - qs] = q[qs:qe]
+            k_pad[i, :ke - ks] = k[ks:ke]
+            v_pad[i, :ke - ks] = v[ks:ke]
+
+        # Build combined mask [B, max_sq, max_sk]
+        q_idx = torch.arange(max_sq, device=q.device).view(1, -1, 1)
+        k_idx = torch.arange(max_sk, device=q.device).view(1, 1, -1)
+        sq_t = torch.tensor(seqlens_q, device=q.device, dtype=torch.long).view(B, 1, 1)
+        sk_t = torch.tensor(seqlens_k, device=q.device, dtype=torch.long).view(B, 1, 1)
+        offsets = sk_t - sq_t  # per-sample offset [B, 1, 1]
+
+        # Padding positions
+        mask = (q_idx >= sq_t) | (k_idx >= sk_t)
+        # Sliding window + causal constraints
+        if test.is_causal:
+            mask = mask | (k_idx > q_idx + offsets)
+        if test.wl >= 0:
+            mask = mask | (k_idx < q_idx + offsets - test.wl)
+        if test.wr >= 0:
+            mask = mask | (k_idx > q_idx + offsets + test.wr)
+
+        attn_mask = torch.zeros(B, max_sq, max_sk, dtype=q.dtype, device=q.device)
+        attn_mask.masked_fill_(mask, float('-inf'))
+
+        # SDPA call: transpose to [B, H, S, D], mask broadcasts as [B, 1, max_sq, max_sk]
+        out = F.scaled_dot_product_attention(
+            q_pad.transpose(1, 2), k_pad.transpose(1, 2), v_pad.transpose(1, 2),
+            attn_mask=attn_mask.unsqueeze(1), enable_gqa=True)
+        out = out.transpose(1, 2)  # [B, max_sq, H, D]
+
+        # Repack valid positions to [total_q, H, D]
+        parts = [out[i, :seqlens_q[i]] for i in range(B)]
+        return torch.cat(parts, dim=0)
+    return fn
+
+
 def _fa3_varlen_baseline(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q,
                          max_seqlen_k, is_causal, wl, wr):
     """FA3 varlen reference baseline."""
@@ -120,7 +174,7 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     torch.cuda.synchronize()
 
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("gqa_sliding_window_varlen_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # FA3 baseline
     max_seqlen_k = max(seqlens_k)
@@ -132,8 +186,10 @@ def test_gqa_sliding_window_varlen_fwd_bench(
             lambda q, k, v, csq, csk, msq: _fa3_varlen_baseline(
                 q, k, v, csq, csk, msq, max_seqlen_k, is_causal, wl, wr),
             *inputs)
-        BenchmarkReport.record(
-            "gqa_sliding_window_varlen_fwd", locals(), result_bl, tag="fa3")
+        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+    else:
+        result_bl = bm.profile(_torch_sliding_window_varlen_fwd(test), *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

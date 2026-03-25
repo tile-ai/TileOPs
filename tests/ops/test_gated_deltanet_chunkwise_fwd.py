@@ -119,7 +119,7 @@ def _kernel2_torch_ref(
 # =============================================================================
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
-    # Tolerances are looser than DEVELOPMENT.md defaults (fp16: 1e-3, bf16: 1.6e-2)
+    # Tolerances are looser than docs/testing.md defaults (fp16: 1e-3, bf16: 1.6e-2)
     # because Gated DeltaNet uses sequential chunk recurrence: each chunk's hidden
     # state h depends on all prior chunks, so fp32 rounding errors accumulate across
     # the chunk chain. With seq_len=128 and chunk_size=32 that is 4 serial steps of

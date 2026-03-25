@@ -41,7 +41,7 @@ def test_fused_add_rmsnorm_bench(m: int, n: int, dtype: torch.dtype, tune: bool)
 
     op = FusedAddRmsNormOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("fused_add_rmsnorm", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: add + manual rmsnorm (separate ops)
     def baseline_fn(x, residual, weight):
@@ -51,7 +51,7 @@ def test_fused_add_rmsnorm_bench(m: int, n: int, dtype: torch.dtype, tune: bool)
         return y, add_result
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("fused_add_rmsnorm", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

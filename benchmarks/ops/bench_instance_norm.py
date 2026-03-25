@@ -46,14 +46,14 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
 
     op = InstanceNormOp(N=n, C=c, spatial=spatial, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("instance_norm", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: torch.nn.functional.instance_norm
     def baseline_fn(x, weight, bias):
         return F.instance_norm(x, weight=weight, bias=bias, eps=1e-5)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("instance_norm", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

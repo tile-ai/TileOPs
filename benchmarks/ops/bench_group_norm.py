@@ -46,14 +46,14 @@ def test_group_norm_bench(n: int, c: int, spatial: tuple, g: int,
 
     op = GroupNormOp(N=n, C=c, spatial=spatial, G=g, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("group_norm", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: torch.nn.functional.group_norm
     def baseline_fn(x, weight, bias):
         return F.group_norm(x, g, weight=weight, bias=bias, eps=1e-5)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("group_norm", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

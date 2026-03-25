@@ -82,10 +82,10 @@ def test_cumulative_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> N
 
     op = _make_op(m, n, dtype, op_kind)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("cumulative", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("cumulative", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

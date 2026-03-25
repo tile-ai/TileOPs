@@ -99,13 +99,13 @@ def test_r2_small_tensor_unary(n_total: int, dtype: torch.dtype) -> None:
 
     op = ReluOp(N_total=n_total, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("r2_small_tensor_unary", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
         return torch.relu(x)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("r2_small_tensor_unary", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -454,13 +454,13 @@ def test_relu_bench(n_total: int, dtype: torch.dtype) -> None:
 
     op = ReluOp(N_total=n_total, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("relu", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
         return torch.relu(x)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("relu", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

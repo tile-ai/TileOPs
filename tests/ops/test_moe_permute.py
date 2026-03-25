@@ -1,11 +1,13 @@
 """Op-level tests for MoePermuteOp (cutlass path).
 
 Verifies:
-  - permuted_hidden_states: correct gather of hidden_states rows
+  - perm_h_pad: correct gather of hidden_states rows into padded expert layout
   - expert_first_token_offset: correct exclusive prefix-sum (int64)
-  - inv_permuted_idx: correct inverse mapping (permuted pos → original flat pos)
+  - padded_offsets / padded_sizes: correct block_m-aligned padding layout
+  - fwd_idx consistency: perm_h_pad[fwd_idx[flat_idx]] == hidden_states[flat_idx // K]
 """
 
+import math
 from typing import Tuple
 
 import pytest
@@ -23,23 +25,28 @@ def _ref_moe_permute(
     hidden_states: torch.Tensor,
     topk_ids: torch.Tensor,
     num_experts: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    block_m: int = 64,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Pure-PyTorch reference for moe_permute.
 
     Args:
         hidden_states: [T, H]
         topk_ids: [T, K] int32
         num_experts: E
+        block_m: alignment for padded sizes
 
     Returns:
-        permuted_hidden_states:    [T*K, H]
+        perm_h_pad:                [padded_batch_sum, H]
+        padded_offsets:            [E] int32
+        padded_sizes:              [E] int32
         expert_first_token_offset: [E+1] int64
-        inv_permuted_idx:          [T*K] int32
+        fwd_idx:                   [T*K] int32
     """
     T, H = hidden_states.shape
     K = topk_ids.shape[1]
     numel = T * K
     flat_ids = topk_ids.flatten().cpu().tolist()
+    dev = hidden_states.device
 
     # Count tokens per expert
     counts = [0] * num_experts
@@ -51,26 +58,43 @@ def _ref_moe_permute(
     for e in range(num_experts):
         offsets[e + 1] = offsets[e] + counts[e]
 
-    # Scatter: assign each flat index to its expert slot
+    # Padded layout
+    padded_offsets_list = []
+    padded_sizes_list = []
+    padded_start = 0
+    for e in range(num_experts):
+        padded_offsets_list.append(padded_start)
+        ps = math.ceil(counts[e] / block_m) * block_m if counts[e] > 0 else 0
+        padded_sizes_list.append(ps)
+        padded_start += ps
+    padded_batch_sum = max(padded_start, 1)
+
+    # Scatter: assign each flat_idx to its expert slot
     write_ptr = list(offsets[:-1])
-    permuted_idx = [0] * numel      # permuted pos → flat index
-    inv_permuted_idx = [0] * numel  # same in reference (slot → flat_idx)
+    slot_to_padded_list = [0] * numel
+    slot_to_row = [0] * numel      # non-padded slot → token row
+    fwd_idx_list = [0] * numel
+
     for flat_idx, eid in enumerate(flat_ids):
         slot = write_ptr[eid]
-        permuted_idx[slot] = flat_idx
-        inv_permuted_idx[slot] = flat_idx
+        within_expert = slot - offsets[eid]
+        padded_slot = padded_offsets_list[eid] + within_expert
+        slot_to_padded_list[slot] = padded_slot
+        slot_to_row[slot] = flat_idx // K
+        fwd_idx_list[flat_idx] = padded_slot
         write_ptr[eid] += 1
 
-    # Gather: hidden_states row for flat_idx is flat_idx // K
-    dev = hidden_states.device
-    perm_idx_t = torch.tensor(permuted_idx, dtype=torch.int64, device=dev)
-    src_rows = perm_idx_t // K
-    permuted_hidden = hidden_states[src_rows]  # [T*K, H]
+    # Build perm_h_pad (zeros, write at padded positions)
+    perm_h_pad = torch.zeros(padded_batch_sum, H, dtype=hidden_states.dtype, device=dev)
+    for slot in range(numel):
+        perm_h_pad[slot_to_padded_list[slot]] = hidden_states[slot_to_row[slot]]
 
     expert_first_token_offset = torch.tensor(offsets, dtype=torch.int64, device=dev)
-    inv_perm = torch.tensor(inv_permuted_idx, dtype=torch.int32, device=dev)
+    padded_offsets_t = torch.tensor(padded_offsets_list, dtype=torch.int32, device=dev)
+    padded_sizes_t = torch.tensor(padded_sizes_list, dtype=torch.int32, device=dev)
+    fwd_idx_t = torch.tensor(fwd_idx_list, dtype=torch.int32, device=dev)
 
-    return permuted_hidden, expert_first_token_offset, inv_perm
+    return perm_h_pad, padded_offsets_t, padded_sizes_t, expert_first_token_offset, fwd_idx_t
 
 
 # ---------------------------------------------------------------------------
@@ -128,39 +152,45 @@ class MoePermuteTest(TestBase):
 # ---------------------------------------------------------------------------
 
 
-def _compare(outputs, outputs_ref, num_experts):
-    perm_h, offsets, inv_idx = outputs
-    ref_perm_h, ref_offsets, ref_inv_idx = outputs_ref
+def _compare(hidden_states, topk_ids, outputs, outputs_ref, num_experts):
+    perm_h_pad, padded_offsets, padded_sizes, offsets, fwd_idx = outputs
+    _, ref_p_offsets, ref_p_sizes, ref_offsets, _ = outputs_ref
+
+    K = topk_ids.shape[1]
+    numel = topk_ids.numel()
 
     # expert_first_token_offset must match exactly
     assert torch.equal(offsets.cpu(), ref_offsets.cpu()), (
         f"expert_first_token_offset mismatch:\n  got: {offsets.cpu()}\n  ref: {ref_offsets.cpu()}"
     )
 
-    # For each expert slot range, the set of gathered rows must match
-    # (intra-expert order may differ due to atomic scatter)
-    for e in range(num_experts):
-        start = ref_offsets[e].item()
-        end = ref_offsets[e + 1].item()
-        if start == end:
-            continue
-        got_rows = torch.sort(perm_h[start:end].cpu().float(), dim=0).values
-        ref_rows = torch.sort(ref_perm_h[start:end].cpu().float(), dim=0).values
-        assert torch.allclose(got_rows, ref_rows, atol=0), (
-            f"Expert {e} permuted_hidden_states mismatch"
-        )
+    # padded_sizes and padded_offsets must match exactly (deterministic arithmetic)
+    assert torch.equal(padded_sizes.cpu(), ref_p_sizes.cpu()), (
+        f"padded_sizes mismatch:\n  got: {padded_sizes.cpu()}\n  ref: {ref_p_sizes.cpu()}"
+    )
+    assert torch.equal(padded_offsets.cpu(), ref_p_offsets.cpu()), (
+        f"padded_offsets mismatch:\n  got: {padded_offsets.cpu()}\n  ref: {ref_p_offsets.cpu()}"
+    )
 
-    # inv_permuted_idx: per-expert slot sets must match (order-insensitive)
+    # Key consistency check: perm_h_pad[fwd_idx[flat_idx]] == hidden_states[flat_idx // K]
+    # This validates both perm_h_pad layout and fwd_idx regardless of intra-expert ordering.
+    token_rows = torch.arange(numel, device=hidden_states.device) // K  # [T*K]
+    gathered = perm_h_pad[fwd_idx.long()]                                # [T*K, H]
+    assert torch.equal(gathered, hidden_states[token_rows]), (
+        "fwd_idx/perm_h_pad mismatch: perm_h_pad[fwd_idx] != hidden_states[flat_idx // K]"
+    )
+
+    # Padding rows within each expert's block must be zero
     for e in range(num_experts):
-        start = ref_offsets[e].item()
-        end = ref_offsets[e + 1].item()
-        if start == end:
-            continue
-        got_set = sorted(inv_idx[start:end].cpu().tolist())
-        ref_set = sorted(ref_inv_idx[start:end].cpu().tolist())
-        assert got_set == ref_set, (
-            f"Expert {e} inv_permuted_idx mismatch:\n  got: {got_set}\n  ref: {ref_set}"
-        )
+        p_start = padded_offsets[e].item()
+        count = offsets[e + 1].item() - offsets[e].item()
+        p_size = padded_sizes[e].item()
+        pad_start = p_start + count
+        pad_end = p_start + p_size
+        if pad_start < pad_end:
+            assert torch.all(perm_h_pad[pad_start:pad_end] == 0), (
+                f"Expert {e} padding rows are not zero"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +207,7 @@ def test_moe_permute_op(total_tokens, top_k, num_experts, hidden_size, dtype):
     outputs = op(hidden_states, topk_ids)
     outputs_ref = test.ref_program(hidden_states, topk_ids)
 
-    _compare(outputs, outputs_ref, num_experts)
+    _compare(hidden_states, topk_ids, outputs, outputs_ref, num_experts)
     print(f"PASS [{total_tokens}tok, top{top_k}, E={num_experts}, H={hidden_size}, {dtype}]")
 
 
@@ -192,7 +222,7 @@ def test_moe_permute_skewed():
     outputs = op(hidden_states, topk_ids)
     outputs_ref = _ref_moe_permute(hidden_states, topk_ids, E)
 
-    _compare(outputs, outputs_ref, E)
+    _compare(hidden_states, topk_ids, outputs, outputs_ref, E)
     print("PASS skewed (all tokens → expert 0)")
 
 

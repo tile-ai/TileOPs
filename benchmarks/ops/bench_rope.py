@@ -84,7 +84,7 @@ def test_rope_bench(seq_len: int, head_dim: int, dtype: torch.dtype) -> None:
 
     op = RopeNeoxOp(seq_len=seq_len, head_dim=head_dim, dtype=dtype)
     result = bm.profile(op, x)
-    BenchmarkReport.record("rope_neox", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     cos, sin = _precompute_rope_neox_cos_sin(seq_len, head_dim, dtype)
 
@@ -92,7 +92,7 @@ def test_rope_bench(seq_len: int, head_dim: int, dtype: torch.dtype) -> None:
         return _rope_neox_apply(x, cos, sin)
 
     result_bl = bm.profile(baseline_fn, x)
-    BenchmarkReport.record("rope_neox", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

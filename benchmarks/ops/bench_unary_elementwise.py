@@ -194,7 +194,7 @@ def test_unary_elementwise_bench(
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

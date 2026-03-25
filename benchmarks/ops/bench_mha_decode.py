@@ -41,10 +41,10 @@ def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: to
 
     op = MultiHeadAttentionDecodeWithKVCacheOp(b, h, s_q, s_kv, d, dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("mha_decode", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("mha_decode", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 
 if __name__ == "__main__":

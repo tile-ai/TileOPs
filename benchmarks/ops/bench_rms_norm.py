@@ -40,10 +40,10 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 
     op = RmsNormOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("rms_norm", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("rms_norm", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

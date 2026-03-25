@@ -35,6 +35,7 @@ dev = [
     "codespell==2.4.1",
     "pytest>=8.0",
     "pytest-xdist>=3.0",
+    "pyyaml>=6.0",
 ]
 
 [build-system]
@@ -44,6 +45,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
+
+[tool.setuptools.package-data]
+tileops = ["kernels/moe/_atomic_helper.h"]
 
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"

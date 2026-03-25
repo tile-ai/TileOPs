@@ -83,13 +83,13 @@ def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 
     op = SoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("softmax", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
         return F.softmax(x, dim=-1)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("softmax", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ===================================================================
@@ -108,13 +108,13 @@ def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> No
 
     op = LogSoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("log_softmax", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
         return F.log_softmax(x, dim=-1)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("log_softmax", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ===================================================================
@@ -133,13 +133,13 @@ def test_logsumexp_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None
 
     op = LogSumExpOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("logsumexp", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
         return torch.logsumexp(x, dim=-1)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("logsumexp", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":
