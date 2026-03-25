@@ -6,15 +6,8 @@ Compares against theoretical peak from GPU profile (single source of truth).
 
 import torch
 
-from benchmarks.hardware.utils import (
-    achieved_pct,
-    bench,
-    calc_bandwidth_gbs,
-    get_theoretical_peaks,
-    make_csv,
-    make_row,
-    print_env_header,
-)
+from benchmarks.hardware.utils import achieved_pct, bench, calc_bandwidth_gbs
+from tileops.perf import load_profile
 
 WARMUP = 100
 REP = 200
@@ -48,13 +41,10 @@ def measure_peak_copy_bw():
     return bw
 
 
-def benchmark_bandwidth():
+def benchmark_bandwidth(profile_name="h200"):
     """Run full HBM bandwidth benchmark. Returns measured peak BW in GB/s."""
-    env = print_env_header()
-    csv = make_csv("bandwidth")
-
-    peaks = get_theoretical_peaks()
-    theo_bw = peaks["hbm_bw_gbs"] if peaks else None
+    profile = load_profile(profile_name)
+    theo_bw = profile["hbm"]["theoretical"] / 1e9  # bytes/s → GB/s
 
     measured_bw = measure_peak_copy_bw()
 
@@ -92,13 +82,6 @@ def benchmark_bandwidth():
 
                 print(f"{op_name:>6} {dtype_name:>5} {size_label:>6} "
                       f"{bw:>12.2f} {pct_theo_str:>8} {pct_meas_str:>8}")
-                csv.writerow(make_row(env, benchmark="bandwidth", backend="pytorch",
-                                      dtype=dtype_name, shape=f"{n}", size_bytes=actual_bytes,
-                                      warmup=WARMUP, rep=REP,
-                                      latency_ms=lat, latency_us=lat * 1000,
-                                      bandwidth_gbs=bw, bandwidth_tbs=bw / 1000,
-                                      achieved_pct_of_peak=pct_theo,
-                                      notes=f"{op_name}, theo_peak={theo_bw}GB/s"))
 
             del src, dst
             torch.cuda.empty_cache()
@@ -125,22 +108,12 @@ def benchmark_bandwidth():
             pct = achieved_pct(bw, peak_bw)
             pct_str = f"{pct:.1f}%" if pct else "N/A"
             print(f"{dtype_name:>5} {stride_bytes:>10} {bw:>12.2f} {pct_str:>8}")
-            csv.writerow(make_row(env, benchmark="bandwidth_strided", backend="pytorch",
-                                  dtype=dtype_name, size_bytes=base_size,
-                                  stride_bytes=stride_bytes,
-                                  warmup=WARMUP, rep=REP,
-                                  latency_ms=lat, latency_us=lat * 1000,
-                                  bandwidth_gbs=bw, bandwidth_tbs=bw / 1000,
-                                  achieved_pct_of_peak=pct,
-                                  notes=f"strided read, stride={stride_bytes}B"))
 
             del data, strided
             torch.cuda.empty_cache()
 
         print()
 
-    csv.close()
-    print(f"CSV saved: {csv.path}")
     return measured_bw
 
 

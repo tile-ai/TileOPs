@@ -18,13 +18,6 @@ def calc_bandwidth_gbs(bytes_total, latency_ms):
     return bytes_total / latency_ms * 1e-6
 
 
-def calc_tflops(flops_total, latency_ms):
-    """Calculate throughput in TFLOPS."""
-    if latency_ms <= 0:
-        return 0.0
-    return flops_total / latency_ms * 1e-9
-
-
 def achieved_pct(value, peak):
     """Calculate achieved percentage of peak."""
     if peak is None or peak <= 0:
