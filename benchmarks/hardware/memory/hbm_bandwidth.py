@@ -3,6 +3,16 @@
 Compiles and runs the CUDA microbenchmark, parses output, and prints
 the calibration factor for tileops/perf/profiles/.
 
+Calibration is derived from the STREAM Triad kernel (a = b + s*c, 2 reads +
+1 write).  Triad is the industry standard for roofline bandwidth calibration:
+
+    McCalpin, J.D., 1995. "Memory Bandwidth and Machine Balance in Current
+    High Performance Computers." IEEE TCCA Newsletter.
+    https://www.cs.virginia.edu/stream/
+
+    Williams, S., Waterman, A. & Patterson, D., 2009. "Roofline: An Insightful
+    Visual Performance Model for Multicore Architectures." CACM 52(4).
+
 Usage:
     python benchmarks/hardware/memory/hbm_bandwidth.py [--profile h200] [--size-mb 2048]
 """
@@ -41,16 +51,17 @@ def _run(binary_path, size_mb, theo_peak_gbs):
     return result.stdout.strip().splitlines()
 
 
-def _parse_copy_peak(lines):
-    """Extract the best copy bandwidth (GB/s) from CSV output.
+def _parse_triad_peak(lines):
+    """Extract the best Triad bandwidth (GB/s) from CSV output.
 
-    Only considers lines starting with 'copy,' — this is the correct
-    measurement for calibration because copy exercises both read and write
-    paths, matching roofline semantics (bytes_moved = reads + writes).
+    Only considers lines starting with 'triad,' — STREAM Triad (2 reads +
+    1 write) is the standard calibration kernel for roofline analysis.
+    Its 2:1 read:write ratio is closer to real compute kernels than pure
+    copy (1:1), which suffers worst-case HBM bus turnaround overhead.
     """
     best_gbs = 0.0
     for line in lines:
-        if not line.startswith("copy,"):
+        if not line.startswith("triad,"):
             continue
         parts = line.split(",")
         if len(parts) >= 6:
@@ -90,14 +101,14 @@ def main():
     for line in lines:
         print(line)
 
-    # Extract calibration from copy results only
-    measured_peak = _parse_copy_peak(lines)
+    # Extract calibration from STREAM Triad results
+    measured_peak = _parse_triad_peak(lines)
     if measured_peak > 0 and theo_peak_gbs > 0:
         calibration = measured_peak / theo_peak_gbs
         print(f"\n{'='*60}")
-        print(f"Measured peak (copy vec4): {measured_peak:.2f} GB/s")
-        print(f"Theoretical:              {theo_peak_gbs:.1f} GB/s")
-        print(f"Calibration:              {calibration:.4f}")
+        print(f"Measured peak (triad vec4): {measured_peak:.2f} GB/s")
+        print(f"Theoretical:               {theo_peak_gbs:.1f} GB/s")
+        print(f"Calibration:               {calibration:.4f}")
         print(f"\nUpdate tileops/perf/profiles/{args.profile}.yaml:")
         print(f"  hbm.calibration: {calibration:.4f}")
         print(f"{'='*60}")

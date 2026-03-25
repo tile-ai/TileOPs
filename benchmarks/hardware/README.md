@@ -10,7 +10,15 @@ GPU hardware characterization benchmarks that produce calibration factors for `t
 
 ## HBM Bandwidth
 
-Measures peak HBM bandwidth using vectorized CUDA copy kernels (float4 load/store) with cudaEvent timing. The calibration factor is derived from copy bandwidth only, which exercises both read and write paths — matching roofline `bytes_moved` semantics.
+Measures peak HBM bandwidth using vectorized CUDA kernels (float4 load/store) with cudaEvent timing. The calibration factor is derived from the **STREAM Triad** kernel (`a[i] = b[i] + s*c[i]`, 2 reads + 1 write), the industry-standard pattern for roofline bandwidth calibration.
+
+Triad's 2:1 read:write ratio is closer to real compute kernels than pure copy (1:1), which suffers worst-case HBM bus turnaround overhead. Copy, read-only, and write-only results are included as reference measurements.
+
+**References:**
+
+- McCalpin, J.D., 1995. "[Memory Bandwidth and Machine Balance in Current High Performance Computers](https://www.cs.virginia.edu/stream/)." IEEE TCCA Newsletter, pp.19-25.
+- Williams, S., Waterman, A. & Patterson, D., 2009. "[Roofline: An Insightful Visual Performance Model for Multicore Architectures](https://doi.org/10.1145/1498765.1498785)." Communications of the ACM, 52(4), pp.65-76.
+- Deakin, T. et al., 2018. "[Evaluating attainable memory bandwidth of parallel programming models via BabelStream](https://github.com/UoB-HPC/BabelStream)." IJCSE, 17(3), pp.247-262.
 
 ### Lock GPU clocks (recommended)
 
@@ -31,8 +39,9 @@ sudo nvidia-smi -rmc
 
 ### Run
 
+Run from project root:
+
 ```bash
-# Run from project root
 python benchmarks/hardware/memory/hbm_bandwidth.py --profile h200 --arch sm_90
 ```
 
@@ -47,22 +56,23 @@ Options:
 ### Output
 
 ```
-Measured peak (copy vec4): 4512.00 GB/s
-Theoretical:              4800.0 GB/s
-Calibration:              0.9400
+Measured peak (triad vec4): 4070.44 GB/s
+Theoretical:               4800.0 GB/s
+Calibration:               0.8480
 
 Update tileops/perf/profiles/h200.yaml:
-  hbm.calibration: 0.9400
+  hbm.calibration: 0.8480
 ```
 
 ### Methodology
 
-- **Kernel:** `float4` vectorized copy (16 bytes per thread per iteration)
+- **Calibration kernel:** STREAM Triad `a[i] = b[i] + s*c[i]` (2 reads + 1 write, `float4` vectorized)
+- **Reference kernels:** Copy (1:1 read:write), Read-only, Write-only
 - **Timing:** `cudaEvent` (GPU-side, no host overhead)
-- **Warmup:** 100 iterations (ensures boost clocks stabilize)
+- **Warmup:** 100 iterations per config (ensures boost clocks stabilize)
 - **Measurement:** 200 iterations × 5 runs, report best and median
 - **Working set:** 2 GB default (>> L2 cache, ensures HBM is measured)
-- **Calibration source:** best copy bandwidth across block size sweep (128/256/512)
+- **Calibration source:** best Triad bandwidth across block size sweep (128/256/512)
 
 ## Adding a new GPU profile
 
