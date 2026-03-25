@@ -24,19 +24,17 @@ Whichever of `memory_time` or `compute_time` is larger determines the bound type
 
 ## GPU Profile
 
-Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements:
+Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. YAML files store only `theoretical` and `calibration`; `effective = theoretical × calibration` is computed by `load_profile()`:
 
 ```yaml
 # tileops/perf/profiles/h200.yaml
 hbm:
   theoretical: 4800e9       # bytes/s, from spec sheet
   calibration: 0.94         # from microbench
-  effective: 4512e9         # theoretical × calibration
 tensor_core:
   fp16:
     theoretical: 989.5e12   # FLOPS, from spec sheet
     calibration: 0.75       # from microbench (cuBLAS peak)
-    effective: 742.1e12
 ```
 
 Profiles are stored in `tileops/perf/profiles/`. Microbenchmarks for calibration live in `benchmarks/hardware/`.
