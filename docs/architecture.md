@@ -7,26 +7,22 @@ TileOPs is a spec-driven GPU operator platform built on TileLang. Every operator
 The platform consists of 8 modules:
 
 ```mermaid
-graph TD
+graph LR
     M1["M1: Spec<br/>ops_manifest.yaml"]
-    M2["M2: Op + Kernel<br/>user-facing API + TileLang GPU kernels"]
-    M3["M3: Correctness<br/>tests/"]
-    M4["M4: Benchmark<br/>raw time"]
-    M5["M5: Roofline<br/>efficiency"]
-    M6["M6: HW Profile<br/>GPU parameters"]
-    M7["M7: CI Gate<br/>correctness + perf regression"]
-    M8["M8: Docs<br/>auto-generated"]
+    M2["M2: Op + Kernel"]
+    M3["M3: Correctness"]
+    M4["M4: Benchmark"]
+    M5["M5: Roofline"]
+    M6["M6: HW Profile"]
+    M7["M7: CI Gate"]
+    M8["M8: Docs"]
 
     M1 -- defines --> M2
-    M2 --> M3
-    M2 --> M4
-    M2 -- docstring --> M8
+    M2 --> M3 & M4
+    M3 & M4 --> M7
     M4 -- raw time --> M5
     M6 --> M5
-    M5 --> M8
-    M1 --> M8
-    M3 --> M7
-    M4 --> M7
+    M1 & M2 & M5 & M7 --> M8
 ```
 
 | Module              | Responsibility                                            | Key Artifact                       |
