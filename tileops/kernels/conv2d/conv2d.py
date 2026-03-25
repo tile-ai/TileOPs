@@ -85,21 +85,18 @@ def _conv2d_1x1_kernel(
                 for i, j in T.Parallel(block_m, block_n):
                     m_idx = by * block_m + i
                     oc = bx * block_n + j
-                    out_shared[i, j] = T.if_then_else(
-                        (m_idx < hw) & (oc < c_out),
-                        T.cast(
-                            out_local[i, j] + T.if_then_else(
-                                has_bias,
-                                T.cast(
-                                    T.if_then_else(oc < c_out, bias[oc], T.cast(0.0, dtype)),
-                                    accum_dtype,
-                                ),
-                                T.cast(0.0, accum_dtype),
-                            ),
-                            dtype,
-                        ),
-                        T.cast(0.0, dtype),
-                    )
+                    if has_bias:
+                        out_shared[i, j] = T.if_then_else(
+                            (m_idx < hw) & (oc < c_out),
+                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                            T.cast(0.0, dtype),
+                        )
+                    else:
+                        out_shared[i, j] = T.if_then_else(
+                            (m_idx < hw) & (oc < c_out),
+                            T.cast(out_local[i, j], dtype),
+                            T.cast(0.0, dtype),
+                        )
 
                 T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
@@ -205,21 +202,18 @@ def _conv2d_kernel(
                 for i, j in T.Parallel(block_m, block_n):
                     m_idx = by * block_m + i
                     oc = bx * block_n + j
-                    out_shared[i, j] = T.if_then_else(
-                        (m_idx < n * out_h * out_w) & (oc < c_out),
-                        T.cast(
-                            out_local[i, j] + T.if_then_else(
-                                has_bias,
-                                T.cast(
-                                    T.if_then_else(oc < c_out, bias[oc], T.cast(0.0, dtype)),
-                                    accum_dtype,
-                                ),
-                                T.cast(0.0, accum_dtype),
-                            ),
-                            dtype,
-                        ),
-                        T.cast(0.0, dtype),
-                            )
+                    if has_bias:
+                        out_shared[i, j] = T.if_then_else(
+                            (m_idx < n * out_h * out_w) & (oc < c_out),
+                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                            T.cast(0.0, dtype),
+                        )
+                    else:
+                        out_shared[i, j] = T.if_then_else(
+                            (m_idx < n * out_h * out_w) & (oc < c_out),
+                            T.cast(out_local[i, j], dtype),
+                            T.cast(0.0, dtype),
+                        )
 
                 if use_hopper_im2col:
                     T.copy(out_shared, out_flat[by * block_m, bx * block_n])
@@ -334,17 +328,6 @@ def _(
     out_w = (w + 2 * pad_w - kernel_w) // stride_w + 1
     return torch.empty((n, out_h, out_w, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
 
-
-def _conv2d_shared_memory_for_nxn(
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    dtype: torch.dtype,
-) -> int:
-    return _conv2d_shared_memory_bytes(block_m, block_n, block_k, num_stages, dtype)
-
-
 class Conv2dKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
@@ -444,7 +427,7 @@ class Conv2dKernel(Kernel):
         )
         valid_configs = []
         for block_m, block_n, block_k, num_stages, threads, enable_rasteration in configs:
-            shared_memory_bytes = _conv2d_shared_memory_for_nxn(
+            shared_memory_bytes = _conv2d_shared_memory_bytes(
                 block_m, block_n, block_k, num_stages, self.dtype)
             if shared_memory_bytes > _HOPPER_SHARED_MEMORY_LIMIT_BYTES:
                 continue
@@ -466,6 +449,7 @@ class Conv2dKernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
+        # OIHW -> HWIO to match the kernel layout (kernel_h, kernel_w, c_in, c_out).
         weight_hwcf = weight.permute(2, 3, 1, 0).contiguous()
         return _conv2d_wrapped_kernel(
             self.n,
