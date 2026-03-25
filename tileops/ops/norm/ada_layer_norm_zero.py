@@ -18,22 +18,37 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 class AdaLayerNormZeroOp(Op):
-    """Adaptive LayerNorm-Zero (AdaLN-Zero) operator.
+    """Adaptive Layer Normalization-Zero (AdaLN-Zero) operator.
 
-    y = gate * (scale * LayerNorm(x) + shift)
+    Applies layer normalization with per-token adaptive scale, shift, and
+    gating:
 
-    scale, shift, and gate are per-token tensors of shape (M, N),
-    pre-computed by the caller from a conditioning signal. Linear projection
-    from conditioning input to scale/shift/gate is the caller's responsibility.
+    .. math::
 
-    Supports arbitrary leading dimensions (3D+) via flatten/unflatten.
-    Handles non-contiguous inputs and non-power-of-two hidden dims.
+        y = g \\cdot \\left( s \\cdot \\frac{x - \\mathrm{E}[x]}
+            {\\sqrt{\\mathrm{Var}[x] + \\epsilon}} + d \\right)
+
+    where *s* (scale), *d* (shift), and *g* (gate) are per-token tensors of
+    shape ``(M, N)``, pre-computed by the caller from a conditioning signal.
+    Linear projection from the conditioning input to scale/shift/gate is the
+    caller's responsibility.
+
+    Supported dtypes:
+        ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
+
+    Note:
+        Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
+        Handles non-contiguous inputs and non-power-of-two hidden dims
+        by padding to 256-element alignment.
 
     Args:
-        M: Number of rows (product of all dims except last).
+        M: Number of rows (product of all dims except the last).
         N: Hidden dimension (last dim).
-        dtype: Data type (float32, float16, or bfloat16).
-        eps: Epsilon for numerical stability (default 1e-5).
+        dtype: Data type (``torch.float32``, ``torch.float16``, or
+            ``torch.bfloat16``).
+        eps: Epsilon for numerical stability.
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
@@ -66,6 +81,21 @@ class AdaLayerNormZeroOp(Op):
         shift: torch.Tensor,
         gate: torch.Tensor,
     ) -> torch.Tensor:
+        """Apply adaptive layer normalization with zero-init gating.
+
+        Args:
+            x: Input tensor of shape ``(*leading, N)`` on CUDA.
+            scale: Per-token scale tensor of shape ``(*leading, N)`` on CUDA.
+            shift: Per-token shift tensor of shape ``(*leading, N)`` on CUDA.
+            gate: Per-token gate tensor of shape ``(*leading, N)`` on CUDA.
+
+        Returns:
+            Normalized, modulated, and gated tensor of the same shape as *x*.
+
+        Raises:
+            ValueError: If tensors are not on CUDA, dtypes mismatch,
+                or shapes are incompatible with the configured dimensions.
+        """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if not scale.is_cuda:

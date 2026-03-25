@@ -45,6 +45,13 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype, tune):
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    @torch.enable_grad()
+    def ref_with_grad(*args):
+        return test.ref_program(*args)
+
+    result_bl = bm.profile(ref_with_grad, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

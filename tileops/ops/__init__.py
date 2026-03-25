@@ -6,6 +6,8 @@ from .deepseek_nsa import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
+from .deltanet_chunkwise import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
+from .deltanet_recurrence import DeltaNetDecodeOp
 from .dropout import DropoutOp
 from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2CLUTOp, FFTC2COp
@@ -75,6 +77,9 @@ from .rope import (
     RopeNonNeoxOp,
     RopeYarnOp,
 )
+from .ssd_chunk_scan_fwd import SsdChunkScanFwdOp
+from .ssd_chunk_state_fwd import SsdChunkStateFwdOp
+from .ssd_state_passing_fwd import SsdStatePassingFwdOp
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
@@ -92,6 +97,10 @@ __all__ = [
     "FusedAddLayerNormOp",
     "FusedAddRmsNormOp",
     "FusedGatedOp",
+    "DeltaNetBwdOp",
+    "DeltaNetDecodeOp",
+    "DeltaNetFwdOp",
+    "DeltaNetOp",
     "GatedDeltaNetBwdOp",
     "GatedDeltaNetDecodeOp",
     "GatedDeltaNetFwdOp",
@@ -124,6 +133,9 @@ __all__ = [
     "Op",
     "MoePermuteAlignOp",
     "RmsNormOp",
+    "SsdChunkScanFwdOp",
+    "SsdChunkStateFwdOp",
+    "SsdStatePassingFwdOp",
     "RopeLlama31Op",
     "RopeLongRopeOp",
     "RopeNeoxOp",

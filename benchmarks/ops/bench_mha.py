@@ -2,6 +2,7 @@ from typing import Optional
 
 import pytest
 import torch
+from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_mha import (
@@ -72,6 +73,31 @@ def _baseline_mha_bwd(test: MhaBwdTest):
     return baseline_fn
 
 
+def _torch_mha_fwd(test):
+    """Torch SDPA forward baseline."""
+    def fn(q, k, v):
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+            is_causal=test.is_causal)
+        return out.transpose(1, 2)
+    return fn
+
+
+def _torch_mha_bwd(test):
+    """Torch SDPA backward baseline (includes forward recompute)."""
+    @torch.enable_grad()
+    def fn(q, k, v, o, grad_output, lse):
+        q = q.detach().requires_grad_(True)
+        k = k.detach().requires_grad_(True)
+        v = v.detach().requires_grad_(True)
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+            is_causal=test.is_causal)
+        out.transpose(1, 2).contiguous().backward(grad_output)
+        return q.grad, k.grad, v.grad
+    return fn
+
+
 _MHA_FWD_BENCH_PARAMS = [
     pytest.param(1, 1024, 8, 64, False, torch.float16, True, id="prefill-fp16"),
     pytest.param(16, 2048, 16, 128, False, torch.float16, True, id="throughput-fp16"),
@@ -94,6 +120,9 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+    else:
+        result_bl = bm.profile(_torch_mha_fwd(test), *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 
 _MHA_BWD_BENCH_PARAMS = _MHA_FWD_BENCH_PARAMS
@@ -114,6 +143,9 @@ def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     if baseline_fn is not None:
         result_bl = bm.profile(baseline_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+    else:
+        result_bl = bm.profile(_torch_mha_bwd(test), *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 
 if __name__ == "__main__":

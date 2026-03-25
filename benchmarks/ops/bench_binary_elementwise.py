@@ -372,7 +372,7 @@ def test_fused_gated_bench(
 
     baseline_fn = _FUSED_BASELINES[op_name]
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch-ref")
 
 
 # ---------------------------------------------------------------------------

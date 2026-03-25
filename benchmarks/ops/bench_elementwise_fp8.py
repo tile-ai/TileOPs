@@ -205,7 +205,7 @@ def test_fp8_fused_gated_bench(op_name, M, N, dtype):
         return (F.silu(gate) * value).to(dtype)
 
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

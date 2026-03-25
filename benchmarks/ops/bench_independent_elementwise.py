@@ -342,7 +342,7 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch-ref")
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +417,7 @@ def test_fp8_unary_independent_bench(
         return baseline_fn(x.to(torch.float16)).to(dtype)
 
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(f"{op_name}_fp8", locals(), result_bl, tag="torch")
+    BenchmarkReport.record(f"{op_name}_fp8", locals(), result_bl, tag="torch-ref")
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +526,7 @@ def test_fp8_selection_bench(
             return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
 
         result_bl = bm.profile(baseline, x, mask)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":
