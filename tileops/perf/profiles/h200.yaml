@@ -1,0 +1,29 @@
+# GPU Profile: NVIDIA H200 (SXM, 141GB HBM3e)
+# Source: NVIDIA H200 datasheet (dense, no sparsity)
+# Calibration: benchmarks/hardware/ microbenchmarks
+
+gpu: NVIDIA H200
+compute_capability: "9.0"
+
+hbm:
+  theoretical: 4800e9        # bytes/s, spec sheet
+  calibration: 0.94          # from benchmarks/hardware/memory/hbm_bandwidth.py
+  effective: 4512e9          # theoretical × calibration
+
+tensor_core:
+  fp16:
+    theoretical: 989.5e12    # FLOPS, spec sheet (dense)
+    calibration: 0.75        # from benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak)
+    effective: 742.1e12      # theoretical × calibration
+  bf16:
+    theoretical: 989.5e12
+    calibration: 0.75
+    effective: 742.1e12
+  tf32:
+    theoretical: 494.7e12
+    calibration: 0.75        # placeholder — not yet measured
+    effective: 371.0e12
+  fp8:
+    theoretical: 1979.0e12
+    calibration: 0.75        # placeholder — not yet measured
+    effective: 1484.3e12
