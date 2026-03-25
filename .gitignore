@@ -49,6 +49,9 @@ profile_out/
 tmp/
 debug/
 
+# Benchmark results (regenerated on each run)
+benchmarks/hardware/results/*.csv
+
 # Exception: keep the debug folder for tests
 !testing/python/debug
 
