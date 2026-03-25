@@ -41,14 +41,14 @@ class Conv2dBenchCase:
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
         return x, weight, bias
 
-    def ref_program(
+    def ref_program_nchw(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
         bias: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        out = F.conv2d(
-            x.permute(0, 3, 1, 2).contiguous(),
+        return F.conv2d(
+            x,
             weight,
             bias=bias,
             stride=self.stride,
@@ -56,7 +56,22 @@ class Conv2dBenchCase:
             dilation=1,
             groups=1,
         )
-        return out.permute(0, 2, 3, 1).contiguous()
+
+    def ref_program_nhwc(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        return F.conv2d(
+            x,
+            weight,
+            bias=bias,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=1,
+            groups=1,
+        )
 
 
 class Conv2dBenchmark(BenchmarkBase):
@@ -115,6 +130,9 @@ def test_conv2d_bench(
     test = Conv2dBenchCase(n, c_in, h, w, c_out, kernel_size, stride, padding, dtype)
     bm = Conv2dBenchmark(test)
     inputs = test.gen_inputs()
+    x, weight, bias = inputs
+    x_nchw = x.permute(0, 3, 1, 2).contiguous()
+    x_nhwc = x_nchw.contiguous(memory_format=torch.channels_last)
 
     op = Conv2dOp(
         n=n,
@@ -132,8 +150,11 @@ def test_conv2d_bench(
     result = bm.profile(op, *inputs, warmup=5, rep=10)
     BenchmarkReport.record("conv2d", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs, warmup=5, rep=10)
-    BenchmarkReport.record("conv2d", locals(), result_bl, tag="baseline")
+    result_bl = bm.profile(test.ref_program_nchw, x_nchw, weight, bias, warmup=5, rep=10)
+    BenchmarkReport.record("conv2d", locals(), result_bl, tag="torch-nchw")
+
+    result_bl = bm.profile(test.ref_program_nhwc, x_nhwc, weight, bias, warmup=5, rep=10)
+    BenchmarkReport.record("conv2d", locals(), result_bl, tag="torch-nhwc")
 
 
 if __name__ == "__main__":

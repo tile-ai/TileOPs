@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -25,6 +26,7 @@ def _conv2d_shared_memory_bytes(
     return per_stage_bytes * max(1, num_stages)
 
 
+@functools.lru_cache(maxsize=32)
 def _conv2d_1x1_kernel(
     n: int,
     c_in: int,
@@ -106,6 +108,7 @@ def _conv2d_1x1_kernel(
     return _conv2d_1x1_func
 
 
+@functools.lru_cache(maxsize=32)
 def _conv2d_kernel(
     n: int,
     c_in: int,
