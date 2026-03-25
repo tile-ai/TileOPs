@@ -1,42 +1,73 @@
 # Architecture
 
-TileOPs is a spec-driven GPU operator platform built on TileLang. Every operator has a declarative specification in `ops_manifest.yaml` before code is written. The spec drives code generation, test validation, performance evaluation, and documentation — but the runtime interface remains plain Python (`from tileops.ops import RmsNormOp`).
+TileOPs is a spec-driven GPU operator platform built on TileLang. Every operator has a declarative specification in `ops_manifest.yaml` before code is written. The spec drives code generation, test validation, performance evaluation, and documentation — but the runtime interface remains plain Python imports.
 
 ## Modules
 
 The platform consists of 8 modules:
 
 ```mermaid
-graph LR
+graph TD
     M1["M1: Spec<br/>ops_manifest.yaml"]
     M2["M2: Op + Kernel"]
-    M3["M3: Correctness"]
-    M4["M4: Benchmark"]
-    M5["M5: Roofline"]
     M6["M6: HW Profile"]
+
+    subgraph Validate
+        M3["M3: Correctness"]
+        M4["M4: Benchmark"]
+    end
+
+    M5["M5: Roofline"]
     M7["M7: CI Gate"]
     M8["M8: Docs"]
 
-    M1 -- defines --> M2
-    M2 --> M3 & M4
-    M3 & M4 --> M7
-    M4 -- raw time --> M5
-    M6 --> M5
-    M1 & M2 & M5 & M7 --> M8
+    M1 -- "signature<br/>workloads" --> M2
+    M1 -- "workloads<br/>(shapes, dtypes)" --> M4
+    M1 -- "roofline formulas<br/>(flops, bytes)" --> M5
+    M2 -- "Op callable" --> M3
+    M2 -- "Op callable" --> M4
+    M2 -- "docstring" --> M8
+    M3 -- "pass/fail" --> M7
+    M4 -- "raw time<br/>(JSON/CSV)" --> M5
+    M4 -- "pass/fail<br/>latency delta" --> M7
+    M5 -- "SOL%<br/>bound type" --> M8
+    M6 -- "GPU profile<br/>(YAML)" --> M5
+    M7 -- "gate status<br/>benchmark results" --> M8
 ```
 
-| Module              | Responsibility                                            | Key Artifact                       |
-| ------------------- | --------------------------------------------------------- | ---------------------------------- |
-| **M1: Spec**        | Declare op interface, workloads, roofline formulas        | `ops_manifest.yaml`                |
-| **M2: Kernel + Op** | GPU kernel implementations and user-facing Python API     | `tileops/kernels/`, `tileops/ops/` |
-| **M3: Correctness** | Numerical correctness against PyTorch reference           | `tests/`                           |
-| **M4: Benchmark**   | Raw execution time measurement                            | `benchmarks/`                      |
-| **M5: Roofline**    | Hardware efficiency from raw time + formulas + HW profile | `tileops/perf/`                    |
-| **M6: HW Profile**  | GPU hardware parameters (bandwidth, FLOPS)                | `tileops/perf/profiles/`           |
-| **M7: CI Gate**     | Correctness and performance regression guard per PR       | CI pipeline                        |
-| **M8: Docs**        | Auto-generated API reference, perf tables, support matrix | TileOPs.github.io                  |
+| Module              | Responsibility                                                         | Key Artifact                       |
+| ------------------- | ---------------------------------------------------------------------- | ---------------------------------- |
+| **M1: Spec**        | Declare op interface, workloads, roofline formulas                     | `ops_manifest.yaml`                |
+| **M2: Kernel + Op** | GPU kernel implementations and user-facing Python API                  | `tileops/kernels/`, `tileops/ops/` |
+| **M3: Correctness** | Numerical correctness against PyTorch reference                        | `tests/`                           |
+| **M4: Benchmark**   | Performance guard — CI benchmarks to detect regression on existing ops | `benchmarks/`                      |
+| **M5: Roofline**    | Hardware efficiency from raw time + formulas + HW profile              | `tileops/perf/`                    |
+| **M6: HW Profile**  | GPU hardware parameters (bandwidth, FLOPS) from offline calibration    | `tileops/perf/profiles/`           |
+| **M7: CI Gate**     | Correctness and performance regression guard per PR                    | CI pipeline                        |
+| **M8: Docs**        | Auto-generated API reference, perf tables, support matrix              | TileOPs.github.io                  |
 
-## Two-Layer Separation
+## Data Contracts
+
+Modules communicate through **data contracts** — explicit, versioned agreements on what artifact one module produces and another consumes. Every arrow in the module graph corresponds to exactly one row in the table below. If an edge has no contract, it does not exist. No implicit dependencies.
+
+| From | To  | Artifact                         | Format                                |
+| ---- | --- | -------------------------------- | ------------------------------------- |
+| M1   | M2  | signature, workloads             | `ops_manifest.yaml`                   |
+| M1   | M4  | workloads (shapes, dtypes)       | `ops_manifest.yaml`                   |
+| M1   | M5  | roofline formulas (flops, bytes) | `ops_manifest.yaml`                   |
+| M2   | M3  | Op callable                      | Python import                         |
+| M2   | M4  | Op callable                      | Python import                         |
+| M2   | M8  | docstring                        | Google-style in source                |
+| M3   | M7  | pass/fail                        | pytest exit code                      |
+| M4   | M5  | raw time per workload            | JSON/CSV                              |
+| M4   | M7  | pass/fail, latency delta         | pytest exit code + JUnit properties   |
+| M5   | M8  | SOL%, bound type per workload    | structured output                     |
+| M6   | M5  | GPU profile                      | YAML (`tileops/perf/profiles/`)       |
+| M7   | M8  | gate status, benchmark results   | CI scheduled job → perf tables update |
+
+Note: M3 (Correctness) and M4 (Benchmark) have no data dependency. The development workflow runs correctness first, but this is a process convention, not a data contract.
+
+## Two-Layer Separation (M2)
 
 Every operator is split into exactly two layers:
 
@@ -46,19 +77,6 @@ Every operator is split into exactly two layers:
 | **L1** | **Kernel** | TileLang implementation optimized for specific hardware (Hopper, Ampere, etc.).                      |
 
 The Op layer never contains TileLang code. The Kernel layer never validates user input. See [ops-design.md](ops-design.md) for the full boundary specification.
-
-## Data Flow
-
-```mermaid
-graph LR
-    M1["M1: Spec"] --> M2["M2: Code"]
-    M2 --> M3["M3: Test"]
-    M3 --> M4["M4: Benchmark"]
-    M2 -- docstring --> M8["M8: Docs"]
-    M4 -- raw time --> M5["M5: Roofline"]
-    M6["M6: HW Profile"] --> M5
-    M5 --> M8
-```
 
 ## Agent Production Loop
 
