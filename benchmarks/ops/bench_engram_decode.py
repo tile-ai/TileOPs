@@ -62,7 +62,7 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
     def baseline(*args):
         return _ref_engram_decode_step(*args, max_conv_len=max_conv_len, dilation=dilation)
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

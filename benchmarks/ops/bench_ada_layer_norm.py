@@ -67,7 +67,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
         return scale * normed + shift
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 _ADA_LAYER_NORM_ZERO_BENCH_PARAMS = _ADA_LAYER_NORM_BENCH_PARAMS
@@ -89,7 +89,7 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
         return gate * (scale * normed + shift)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

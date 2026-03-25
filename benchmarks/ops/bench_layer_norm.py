@@ -48,7 +48,7 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
         return F.layer_norm(x, (n,), weight=weight, bias=bias, eps=1e-5)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

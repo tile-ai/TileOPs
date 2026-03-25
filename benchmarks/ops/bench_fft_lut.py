@@ -55,7 +55,7 @@ def test_fft_lut_bench(n: int, dtype: torch.dtype, tune: bool) -> None:
     BenchmarkReport.record(op_base, locals(), result_base, tag="tileops-base")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op_lut, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_lut, locals(), result_bl, tag="torch-cufft")
 
 
 if __name__ == "__main__":

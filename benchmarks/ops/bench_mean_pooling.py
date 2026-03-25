@@ -95,7 +95,7 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

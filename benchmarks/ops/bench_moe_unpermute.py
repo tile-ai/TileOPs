@@ -132,7 +132,7 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
     torch.cuda.synchronize()
 
     result_torch = bm.profile(_torch_fn, mm2_pad, fwd_idx, topk_weights)
-    BenchmarkReport.record("moe_unpermute", locals(), result_torch, tag="pytorch-vec")
+    BenchmarkReport.record("moe_unpermute", locals(), result_torch, tag="torch-ref")
 
 
 if __name__ == "__main__":
