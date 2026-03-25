@@ -1,3 +1,4 @@
+from .da_cumsum_fwd import DaCumsumFwdOp
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_nsa import (
@@ -40,11 +41,7 @@ from .norm import (
     LayerNormOp,
     RmsNormOp,
 )
-from .ssd_chunk_scan_fwd import SsdChunkScanFwdOp
-from .ssd_chunk_state_fwd import SsdChunkStateFwdOp
-from .ssd_state_passing_fwd import SsdStatePassingFwdOp
 from .op import Op
-
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
 from .reduction import (
@@ -79,6 +76,10 @@ from .rope import (
     RopeNonNeoxOp,
     RopeYarnOp,
 )
+from .ssd_chunk_scan_fwd import SsdChunkScanFwdOp
+from .ssd_chunk_state_fwd import SsdChunkStateFwdOp
+from .ssd_decode import SsdDecodeOp
+from .ssd_state_passing_fwd import SsdStatePassingFwdOp
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
@@ -130,7 +131,9 @@ __all__ = [
     "RmsNormOp",
     "SsdChunkScanFwdOp",
     "SsdChunkStateFwdOp",
+    "SsdDecodeOp",
     "SsdStatePassingFwdOp",
+    "DaCumsumFwdOp",
     "RopeLlama31Op",
     "RopeLongRopeOp",
     "RopeNeoxOp",
