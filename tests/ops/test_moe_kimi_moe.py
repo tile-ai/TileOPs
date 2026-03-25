@@ -379,3 +379,109 @@ def test_kimi_moe(
         routed_scaling_factor, with_correction_bias, with_shared_expert, dtype,
     )
     _check(test)
+
+
+# ---------------------------------------------------------------------------
+# vLLM correctness test (skipped when vLLM is not installed)
+# ---------------------------------------------------------------------------
+#
+# Routing alignment: both sides use the same FusedTopKOp result so only the
+# GEMM + SwiGLU + unpermute paths differ.
+# routed_scaling_factor: applied manually to the vLLM output before comparison
+# (vLLM fused_experts has no such concept).
+
+
+class KimiVllmFixture(FixtureBase):
+    PARAMS = [
+        (
+            "num_tokens, num_experts, top_k, hidden_size, ffn_size,"
+            " routed_scaling_factor, dtype",
+            [
+                pytest.param(
+                    32, 8, 2, 64, 32, 1.0, torch.bfloat16,
+                    marks=pytest.mark.smoke, id="smoke-bf16",
+                ),
+                pytest.param(
+                    32, 8, 2, 64, 32, 2.872, torch.bfloat16,
+                    marks=pytest.mark.smoke, id="smoke-scale-bf16",
+                ),
+                pytest.param(
+                    32, 8, 2, 64, 32, 2.872, torch.float16,
+                    marks=pytest.mark.smoke, id="smoke-scale-fp16",
+                ),
+                pytest.param(
+                    64, 384, 6, 64, 32, 2.872, torch.bfloat16,
+                    marks=pytest.mark.smoke, id="kimi-k2-smoke-bf16",
+                ),
+                pytest.param(
+                    512, 384, 6, 256, 128, 2.872, torch.bfloat16,
+                    marks=pytest.mark.full, id="kimi-k2-small-bf16",
+                ),
+                pytest.param(
+                    2048, 384, 6, 256, 128, 2.872, torch.bfloat16,
+                    marks=pytest.mark.full, id="kimi-k2-medium-bf16",
+                ),
+            ],
+        )
+    ]
+
+
+@KimiVllmFixture
+def test_kimi_moe_vs_vllm(
+    num_tokens, num_experts, top_k, hidden_size, ffn_size,
+    routed_scaling_factor, dtype,
+) -> None:
+    vllm_fused_experts = pytest.importorskip(
+        "vllm.model_executor.layers.fused_moe.fused_moe",
+        reason="vllm not installed",
+    ).fused_experts
+
+    torch.manual_seed(42)
+    dev = "cuda"
+    hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
+    gating = torch.randn(num_tokens, num_experts, dtype=dtype, device=dev)
+    correction_bias = torch.randn(num_experts, dtype=torch.float32, device=dev) * 0.1
+    w_gate_up = torch.randn(
+        num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev
+    ) * 0.02
+    w_down = torch.randn(
+        num_experts, hidden_size, ffn_size, dtype=dtype, device=dev
+    ) * 0.02
+
+    fk = FusedTopKOp(
+        num_tokens=num_tokens,
+        num_experts=num_experts,
+        top_k=top_k,
+        scoring_func="sigmoid",
+        renormalize=True,
+        with_correction_bias=True,
+    )
+    topk_weights, topk_ids = fk(gating, correction_bias)
+
+    op = KimiMoENopadOp(
+        num_tokens=num_tokens,
+        num_experts=num_experts,
+        top_k=top_k,
+        hidden_size=hidden_size,
+        ffn_size=ffn_size,
+        routed_scaling_factor=routed_scaling_factor,
+        with_correction_bias=True,
+        dtype=dtype,
+    )
+    out_tileops = op(hidden, gating, correction_bias, w_gate_up, w_down)
+
+    out_vllm = vllm_fused_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids)
+    if routed_scaling_factor != 1.0:
+        out_vllm = out_vllm * routed_scaling_factor
+
+    torch.testing.assert_close(
+        out_tileops.float(), out_vllm.float(),
+        rtol=1e-2, atol=1e-2,
+        msg=f"TileOPs vs vLLM mismatch "
+            f"[T={num_tokens}, E={num_experts}, K={top_k}, "
+            f"H={hidden_size}, F={ffn_size}, scale={routed_scaling_factor}, {dtype}]",
+    )
+    print(
+        f"PASS [T={num_tokens}, E={num_experts}, K={top_k}, "
+        f"H={hidden_size}, F={ffn_size}, scale={routed_scaling_factor}, {dtype}]"
+    )
