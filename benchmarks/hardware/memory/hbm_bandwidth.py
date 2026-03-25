@@ -34,21 +34,28 @@ def _compile(cu_path, binary_path, arch="sm_90"):
 def _run(binary_path, size_mb, theo_peak_gbs):
     """Run the benchmark binary and return stdout lines."""
     cmd = [str(binary_path), str(size_mb), str(theo_peak_gbs)]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         print(f"Benchmark failed:\n{result.stderr}", file=sys.stderr)
         sys.exit(1)
     return result.stdout.strip().splitlines()
 
 
-def _parse_peak_bandwidth(lines):
-    """Extract the best bandwidth (GB/s) from CSV output lines."""
+def _parse_copy_peak(lines):
+    """Extract the best copy bandwidth (GB/s) from CSV output.
+
+    Only considers lines starting with 'copy,' — this is the correct
+    measurement for calibration because copy exercises both read and write
+    paths, matching roofline semantics (bytes_moved = reads + writes).
+    """
     best_gbs = 0.0
     for line in lines:
+        if not line.startswith("copy,"):
+            continue
         parts = line.split(",")
-        if len(parts) >= 8:
+        if len(parts) >= 6:
             try:
-                gbs = float(parts[7])  # best_gbs column
+                gbs = float(parts[5])  # best_gbs column
                 best_gbs = max(best_gbs, gbs)
             except ValueError:
                 continue
@@ -76,21 +83,21 @@ def main():
         print("Compiling hbm_saturation.cu ...")
         _compile(_CU_SRC, binary, arch=args.arch)
 
-        print("Running benchmark ...\n")
+        print("Running benchmark (5 runs x 200 reps, this may take a few minutes) ...\n")
         lines = _run(binary, args.size_mb, theo_peak_gbs)
 
     # Print raw output
     for line in lines:
         print(line)
 
-    # Extract peak and compute calibration
-    measured_peak = _parse_peak_bandwidth(lines)
+    # Extract calibration from copy results only
+    measured_peak = _parse_copy_peak(lines)
     if measured_peak > 0 and theo_peak_gbs > 0:
         calibration = measured_peak / theo_peak_gbs
         print(f"\n{'='*60}")
-        print(f"Measured peak:  {measured_peak:.2f} GB/s")
-        print(f"Theoretical:    {theo_peak_gbs:.1f} GB/s")
-        print(f"Calibration:    {calibration:.4f}")
+        print(f"Measured peak (copy vec4): {measured_peak:.2f} GB/s")
+        print(f"Theoretical:              {theo_peak_gbs:.1f} GB/s")
+        print(f"Calibration:              {calibration:.4f}")
         print(f"\nUpdate tileops/perf/profiles/{args.profile}.yaml:")
         print(f"  hbm.calibration: {calibration:.4f}")
         print(f"{'='*60}")
