@@ -17,6 +17,7 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.kernels.grouped_gemm.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
 from tileops.kernels.kernel import Kernel
 from tileops.ops.elementwise import SiluAndMulOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
@@ -28,7 +29,7 @@ from ..op import Op
 
 __all__ = ["Qwen3MoEPaddedOp"]
 
-_BLOCK_M = 64  # must match GroupedGemmOp NT default block_m
+_BLOCK_M: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
 
 
 class Qwen3MoEPaddedOp(Op):

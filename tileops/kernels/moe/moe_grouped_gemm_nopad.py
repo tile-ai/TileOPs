@@ -185,16 +185,21 @@ def _moe_grouped_gemm_kernel(numel: int, max_tiles: int, num_experts: int,
                     B_shared = T.alloc_shared(B_shared_shape, dtype)
                     C_local = T.alloc_fragment([block_m, block_n], accum_dtype)
 
-                    # GROUP_SIZE_M tile reordering: group_size_m M-tiles × all
-                    # N-tiles form one group.  Compile-time constants avoid
-                    # variable-divisor division in the common aligned case.
-                    pid_in_group = pid % T.int32(_num_pid_in_group)
-                    group_id    = pid // T.int32(_num_pid_in_group)
-                    first_pid_m = group_id * T.int32(group_size_m)
-                    actual_gsm  = T.min(T.int32(max_tiles) - first_pid_m,
-                                        T.int32(group_size_m))
-                    bx = first_pid_m + pid_in_group % actual_gsm
-                    by = pid_in_group // actual_gsm
+                    # M-major tile ordering: each M-tile processes all N-tiles
+                    # before moving to the next M-tile, maximising A-tile reuse.
+                    # For group_size_m=1 (default) this simplifies to a direct
+                    # pid → (bx, by) mapping with compile-time constant divisor.
+                    if group_size_m == 1:
+                        bx = pid // T.int32(_num_pid_n)
+                        by = pid % T.int32(_num_pid_n)
+                    else:
+                        pid_in_group = pid % T.int32(_num_pid_in_group)
+                        group_id    = pid // T.int32(_num_pid_in_group)
+                        first_pid_m = group_id * T.int32(group_size_m)
+                        actual_gsm  = T.min(T.int32(max_tiles) - first_pid_m,
+                                            T.int32(group_size_m))
+                        bx = first_pid_m + pid_in_group % actual_gsm
+                        by = pid_in_group // actual_gsm
 
                     if bx < total_tiles[0]:
                         expert_id    = tile_expert_ids[bx]
@@ -235,13 +240,17 @@ def _moe_grouped_gemm_kernel(numel: int, max_tiles: int, num_experts: int,
                     B_shared = T.alloc_shared(B_shared_shape, dtype)
                     C_local = T.alloc_fragment([block_m, block_n], accum_dtype)
 
-                    pid_in_group = pid % T.int32(_num_pid_in_group)
-                    group_id    = pid // T.int32(_num_pid_in_group)
-                    first_pid_m = group_id * T.int32(group_size_m)
-                    actual_gsm  = T.min(T.int32(max_tiles) - first_pid_m,
-                                        T.int32(group_size_m))
-                    bx = first_pid_m + pid_in_group % actual_gsm
-                    by = pid_in_group // actual_gsm
+                    if group_size_m == 1:
+                        bx = pid // T.int32(_num_pid_n)
+                        by = pid % T.int32(_num_pid_n)
+                    else:
+                        pid_in_group = pid % T.int32(_num_pid_in_group)
+                        group_id    = pid // T.int32(_num_pid_in_group)
+                        first_pid_m = group_id * T.int32(group_size_m)
+                        actual_gsm  = T.min(T.int32(max_tiles) - first_pid_m,
+                                            T.int32(group_size_m))
+                        bx = first_pid_m + pid_in_group % actual_gsm
+                        by = pid_in_group // actual_gsm
 
                     if bx < total_tiles[0]:
                         expert_id    = tile_expert_ids[bx]

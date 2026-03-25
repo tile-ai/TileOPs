@@ -245,7 +245,7 @@ def test_qwen3_moe_bench(
     torch.cuda.synchronize()
 
     result_pad = bm.profile(op_pad, hidden, gating, w_gate_up, w_down)
-    BenchmarkReport.record(op, locals(), result_pad, tag="tileops-padded")
+    BenchmarkReport.record(op_pad, locals(), result_pad, tag="tileops-padded")
 
     # ── PyTorch per-expert baseline ───────────────────────────────────────────
     def _ref_fn(hidden, gating, w_gate_up, w_down):
