@@ -14,12 +14,6 @@ Measures peak HBM bandwidth using vectorized CUDA kernels (float4 load/store) wi
 
 Triad's 2:1 read:write ratio is closer to real compute kernels than pure copy (1:1), which suffers worst-case HBM bus turnaround overhead. Copy, read-only, and write-only results are included as reference measurements.
 
-**References:**
-
-- McCalpin, J.D., 1995. "[Memory Bandwidth and Machine Balance in Current High Performance Computers](https://www.cs.virginia.edu/stream/)." IEEE TCCA Newsletter, pp.19-25.
-- Williams, S., Waterman, A. & Patterson, D., 2009. "[Roofline: An Insightful Visual Performance Model for Multicore Architectures](https://doi.org/10.1145/1498765.1498785)." Communications of the ACM, 52(4), pp.65-76.
-- Deakin, T. et al., 2018. "[Evaluating attainable memory bandwidth of parallel programming models via BabelStream](https://github.com/UoB-HPC/BabelStream)." IJCSE, 17(3), pp.247-262.
-
 ### Lock GPU clocks (recommended)
 
 GPU boost clocks fluctuate during benchmarks. Lock memory and SM clocks to their maximum for stable, reproducible results:
