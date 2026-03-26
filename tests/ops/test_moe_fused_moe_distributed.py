@@ -367,6 +367,7 @@ def test_fused_moe_vs_vllm_ep_layer(T, E_global, K, H, F, world_size):
         topk_weights, topk_ids,
         inplace=False,
         expert_map=expert_map,
+        global_num_experts=E_global,
     ) * 2.827
 
     # All-reduce both outputs
