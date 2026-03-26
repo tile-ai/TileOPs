@@ -5,8 +5,7 @@ install:
 	pre-commit install
 
 install-bench:
-	PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev,bench]' -v
-	pip install git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd
+	PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev,bench]' 'git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd' -v
 	pre-commit install
 
 lint:
