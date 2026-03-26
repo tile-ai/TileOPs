@@ -1,4 +1,4 @@
-"""Op-level tests for MoePermuteOp (cutlass path).
+"""Op-level tests for MoePermutePaddedOp (cutlass path).
 
 Verifies:
   - perm_h_pad: correct gather of hidden_states rows into padded expert layout
@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.moe import MoePermuteOp
+from tileops.ops.moe import MoePermutePaddedOp
 
 # ---------------------------------------------------------------------------
 # Reference implementation
@@ -201,7 +201,7 @@ def _compare(hidden_states, topk_ids, outputs, outputs_ref, num_experts):
 @MoePermuteFixture
 def test_moe_permute_op(total_tokens, top_k, num_experts, hidden_size, dtype):
     test = MoePermuteTest(total_tokens, top_k, num_experts, hidden_size, dtype)
-    op = MoePermuteOp(total_tokens, top_k, num_experts, hidden_size, dtype)
+    op = MoePermutePaddedOp(total_tokens, top_k, num_experts, hidden_size, dtype)
     hidden_states, topk_ids = test.gen_inputs()
 
     outputs = op(hidden_states, topk_ids)
@@ -218,7 +218,7 @@ def test_moe_permute_skewed():
     hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
     topk_ids = torch.zeros((T, K), dtype=torch.int32, device="cuda")
 
-    op = MoePermuteOp(T, K, E, H, torch.bfloat16)
+    op = MoePermutePaddedOp(T, K, E, H, torch.bfloat16)
     outputs = op(hidden_states, topk_ids)
     outputs_ref = _ref_moe_permute(hidden_states, topk_ids, E)
 

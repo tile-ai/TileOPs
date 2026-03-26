@@ -34,7 +34,7 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.moe import FusedTopKOp, Qwen3MoEOp
+from tileops.ops.moe import FusedTopKOp, Qwen3MoENopadOp, Qwen3MoEPaddedOp
 
 # ---------------------------------------------------------------------------
 # CUPTI warmup
@@ -214,7 +214,7 @@ def test_qwen3_moe_bench(
     topk_weights, topk_ids = fk(gating)
 
     # ── TileOPs ──────────────────────────────────────────────────────────────
-    op = Qwen3MoEOp(
+    op = Qwen3MoENopadOp(
         num_tokens=num_tokens,
         num_experts=num_experts,
         top_k=top_k,
@@ -229,6 +229,23 @@ def test_qwen3_moe_bench(
 
     result = bm.profile(op, hidden, gating, w_gate_up, w_down)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    # ── TileOPs padded (block_m-aligned) ─────────────────────────────────────
+    op_pad = Qwen3MoEPaddedOp(
+        num_tokens=num_tokens,
+        num_experts=num_experts,
+        top_k=top_k,
+        hidden_size=hidden_size,
+        ffn_size=ffn_size,
+        scoring_func=scoring_func,
+        renormalize=renormalize,
+        dtype=dtype,
+    )
+    op_pad(hidden, gating, w_gate_up, w_down)  # warmup / JIT compile
+    torch.cuda.synchronize()
+
+    result_pad = bm.profile(op_pad, hidden, gating, w_gate_up, w_down)
+    BenchmarkReport.record(op_pad, locals(), result_pad, tag="tileops-padded")
 
     # ── PyTorch per-expert baseline ───────────────────────────────────────────
     def _ref_fn(hidden, gating, w_gate_up, w_down):
