@@ -1,4 +1,6 @@
+from .conv1d import Conv1dOp
 from .conv2d import Conv2dOp
+from .conv3d import Conv3dOp
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_nsa import (
@@ -89,7 +91,9 @@ __all__ = [
     "AdaLayerNormZeroOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
+    "Conv1dOp",
     "Conv2dOp",
+    "Conv3dOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
     "DropoutOp",
     "FFTC2CLUTOp",
