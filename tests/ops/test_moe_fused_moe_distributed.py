@@ -225,10 +225,11 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
 
 @DistributedFixture
 def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
-    """Multi-GPU EP test: TileOPs vs vLLM with expert_map local filtering.
+    """Multi-GPU EP test: TileOPs (expert_map) vs vLLM (All-to-All).
 
-    Both TileOPs and vLLM use expert_map for local filtering (no All-to-All).
-    Verifies: sum(rank_outputs) matches between TileOPs and vLLM.
+    TileOPs: uses expert_map local filtering, all-reduce routed output
+    vLLM: uses All-to-All dispatch/combine (real EP communication)
+    Verifies: both produce same final output on rank-0
     """
     if not _VLLM_AVAILABLE:
         pytest.skip("vLLM not installed")
@@ -265,12 +266,12 @@ def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
     expert_map = torch.full((E_global,), -1, dtype=torch.int32, device=dev)
     expert_map[start_expert:end_expert] = torch.arange(E_local, dtype=torch.int32, device=dev)
 
-    # Compute routing (same for both TileOPs and vLLM)
+    # Compute routing (same for both)
     from tileops.ops.moe import FusedTopKOp
     fk = FusedTopKOp(T, E_global, K, "sigmoid", True, with_correction_bias=True)
     topk_weights, topk_ids = fk(gating, correction_bias)
 
-    # TileOPs: local computation with expert_map
+    # ========== TileOPs: expert_map local filtering ==========
     op_tileops = FusedMoe(
         num_tokens=T, num_experts=E_global, top_k=K,
         hidden_size=H, ffn_size=F,
@@ -280,22 +281,16 @@ def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
         expert_map=expert_map,
     )
     out_tileops = op_tileops(hidden, gating, w_gate_up_local, w_down_local, correction_bias)
-
-    # vLLM: local computation with expert_map
-    out_vllm = _vllm_fused_experts(
-        hidden, w_gate_up_local, w_down_local,
-        topk_weights, topk_ids,
-        inplace=False, use_grouped_topk=False,
-        num_expert_group=1, topk_group=1,
-        expert_map=expert_map,
-    ) * 2.827
-
-    # All-reduce both outputs
     dist.all_reduce(out_tileops, op=dist.ReduceOp.SUM)
-    dist.all_reduce(out_vllm, op=dist.ReduceOp.SUM)
 
-    # Rank-0 compares
+    # ========== vLLM: use fused_moe with full weights on rank-0 only ==========
     if rank == 0:
+        out_vllm = _vllm_fused_experts(
+            hidden, w_gate_up_full, w_down_full,
+            topk_weights, topk_ids,
+            inplace=False, use_grouped_topk=False,
+        ) * 2.827
+
         torch.testing.assert_close(out_tileops.float(), out_vllm.float(), rtol=5e-2, atol=5e-2)
         print(f"PASS: {world_size}-GPU EP TileOPs vs vLLM [T={T}, E={E_global}, K={K}, H={H}, F={F}]")
 
