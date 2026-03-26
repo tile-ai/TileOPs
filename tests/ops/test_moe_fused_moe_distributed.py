@@ -1,16 +1,20 @@
-"""Distributed tests for FusedMoe — 8-GPU Expert Parallelism.
+"""Distributed tests for FusedMoe — Multi-GPU Expert Parallelism.
 
 Run with:
-    torchrun --nproc_per_node=8 -m pytest tests/ops/test_moe_fused_moe_distributed.py -vvs
+    torchrun --nproc_per_node=2 -m pytest tests/ops/test_moe_fused_moe_distributed.py -m smoke -vvs
+    torchrun --nproc_per_node=8 -m pytest tests/ops/test_moe_fused_moe_distributed.py -m full -vvs
+
+Note: These tests require multiple GPUs and will be skipped in CI environments.
 
 Verifies:
   - TileOPs expert_map local filtering correctness in real multi-GPU setup
-  - Each rank owns E_global/8 experts, computes partial output
+  - Each rank owns E_global/world_size experts, computes partial output
   - All-reduce sum matches single-GPU full computation
-  - SharedFusedMoE with shared expert in 8-GPU EP mode
+  - SharedFusedMoE with shared expert in multi-GPU EP mode
   - TileOPs vs vLLM multi-GPU EP correctness
 """
 
+import os
 import pytest
 import torch
 import torch.distributed as dist
@@ -19,16 +23,19 @@ import torch.nn as nn
 from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedMoe, SharedFusedMoE
 
+# Skip all tests in this module if not enough GPUs
+pytestmark = pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Distributed tests require at least 2 GPUs"
+)
+
 # vLLM optional import
 try:
     from vllm.model_executor.layers.fused_moe.fused_moe import fused_experts as _vllm_fused_experts
-    from vllm.model_executor.layers.fused_moe import FusedMoE as _VllmFusedMoE
     _VLLM_AVAILABLE = True
-    _VLLM_LAYER_AVAILABLE = True
 except ImportError:
     _VLLM_AVAILABLE = False
-    _VLLM_LAYER_AVAILABLE = False
-    _VllmFusedMoE = None
+    _vllm_fused_experts = None
 
 
 def setup_distributed():
@@ -36,11 +43,18 @@ def setup_distributed():
     if not dist.is_available():
         pytest.skip("torch.distributed not available")
 
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
     if not dist.is_initialized():
         dist.init_process_group(backend="nccl")
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+
+    if rank >= torch.cuda.device_count():
+        pytest.skip(f"Rank {rank} exceeds available GPUs ({torch.cuda.device_count()})")
+
     torch.cuda.set_device(rank)
 
     return rank, world_size
