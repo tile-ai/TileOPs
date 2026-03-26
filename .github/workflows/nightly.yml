@@ -127,6 +127,16 @@ jobs:
           pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
         shell: bash
 
+      - name: Install benchmark baseline libraries
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[bench]'
+          pip install git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd \
+            || echo "::warning::native-sparse-attention installation failed (GitHub unreachable?); skipping"
+        shell: bash
+
       - name: Pre-compile all benchmark kernel variants
         continue-on-error: true
         run: |
@@ -291,6 +301,16 @@ jobs:
           # shellcheck disable=SC2086
           PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
           pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
+        shell: bash
+
+      - name: Install benchmark baseline libraries
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[bench]'
+          pip install git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd \
+            || echo "::warning::native-sparse-attention installation failed (GitHub unreachable?); skipping"
         shell: bash
 
       - name: Run benchmark ops

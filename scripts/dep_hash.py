@@ -12,9 +12,11 @@ import pathlib
 import tomllib
 
 d = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+optional_deps = d.get("project", {}).get("optional-dependencies", {})
+optional_deps_filtered = {k: v for k, v in optional_deps.items() if k != "bench"}
 deps = {
     "dependencies": d.get("project", {}).get("dependencies", []),
-    "optional": d.get("project", {}).get("optional-dependencies", {}),
+    "optional": optional_deps_filtered,
     "requires-python": d.get("project", {}).get("requires-python", ""),
     "build-requires": d.get("build-system", {}).get("requires", []),
 }
