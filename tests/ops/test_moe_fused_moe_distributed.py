@@ -292,7 +292,7 @@ def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
         out_vllm = _vllm_fused_experts(
             hidden, w_gate_up_full, w_down_full,
             topk_weights, topk_ids,
-            inplace=False, use_grouped_topk=False,
+            inplace=False,
         ) * 2.827
 
         torch.testing.assert_close(out_tileops.float(), out_vllm.float(), rtol=5e-2, atol=5e-2)
