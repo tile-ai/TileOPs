@@ -132,8 +132,8 @@ jobs:
           set -euo pipefail
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
-          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[bench]'
-          pip install git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd \
+          MAX_JOBS=32 PIP_NO_BUILD_ISOLATION=1 pip install -e '.[bench]'
+          MAX_JOBS=32 pip install git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd \
             || echo "::warning::native-sparse-attention installation failed (GitHub unreachable?); skipping"
         shell: bash
 
@@ -308,8 +308,8 @@ jobs:
           set -euo pipefail
           # shellcheck source=/dev/null
           source "${VENV_PATH}/bin/activate"
-          PIP_NO_BUILD_ISOLATION=1 pip install -e '.[bench]'
-          pip install git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd \
+          MAX_JOBS=32 PIP_NO_BUILD_ISOLATION=1 pip install -e '.[bench]'
+          MAX_JOBS=32 pip install git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd \
             || echo "::warning::native-sparse-attention installation failed (GitHub unreachable?); skipping"
         shell: bash
 
