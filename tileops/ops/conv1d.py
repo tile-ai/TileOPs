@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.conv1d import Conv1dKernel
+from tileops.kernels.conv import Conv1dKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
