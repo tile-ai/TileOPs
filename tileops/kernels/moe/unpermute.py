@@ -70,9 +70,17 @@ def _make_unpermute_kernel(
                 # accumulate K expert contributions
                 for k in T.serial(top_k):
                     flat_idx = token_idx * T.int32(top_k) + k
-                    padded_slot = fwd_idx[flat_idx]
-                    weight = topk_weights[token_idx, k]
-                    T.copy(mm2_pad[padded_slot, 0:hidden_size], src)
+                    raw_slot = fwd_idx[flat_idx]
+                    # EP mode: fwd_idx == -1 marks non-local expert → zero contribution.
+                    # Use slot 0 as a safe dummy read; zero the weight to suppress output.
+                    safe_slot = T.if_then_else(
+                        raw_slot >= T.int32(0), raw_slot, T.int32(0)
+                    )
+                    weight = topk_weights[token_idx, k] * T.Cast(
+                        "float32",
+                        T.if_then_else(raw_slot >= T.int32(0), T.int32(1), T.int32(0)),
+                    )
+                    T.copy(mm2_pad[safe_slot, 0:hidden_size], src)
                     for j in T.Parallel(hidden_size):
                         acc[j] = acc[j] + T.Cast("float32", src[j]) * weight
 
