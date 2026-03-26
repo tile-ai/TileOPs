@@ -515,12 +515,7 @@ jobs:
             source "${VENV_PATH}/bin/activate"
             python --version
             python -m pip --version
-            python - <<'PY'
-            import tileops
-            import torch
-
-            print("Copied fork venv import check ok")
-            PY
+            python -c "import tileops, torch; print('Copied fork venv import check ok')"
             exit 0
           fi
 
