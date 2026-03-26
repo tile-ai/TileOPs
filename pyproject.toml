@@ -5,7 +5,7 @@ description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
-    "torch>=2.1.0,<2.10.0",
+    "torch>=2.1.0,<2.11.0",
     "tilelang==0.1.8",
     "einops",
 ]
@@ -36,6 +36,12 @@ dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.0",
     "pyyaml>=6.0",
+]
+bench = [
+    "flash-attn==2.8.3",
+    "flash-linear-attention==0.4.2",
+    "vllm==0.18.0",
+    "sgl-kernel==0.3.21",
 ]
 
 [build-system]
