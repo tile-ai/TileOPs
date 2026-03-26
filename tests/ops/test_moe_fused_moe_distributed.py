@@ -8,6 +8,7 @@ Verifies:
   - Each rank owns E_global/8 experts, computes partial output
   - All-reduce sum matches single-GPU full computation
   - SharedFusedMoE with shared expert in 8-GPU EP mode
+  - TileOPs vs vLLM multi-GPU EP correctness
 """
 
 import pytest
@@ -17,6 +18,13 @@ import torch.nn as nn
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedMoe, SharedFusedMoE
+
+# vLLM optional import
+try:
+    from vllm.model_executor.layers.fused_moe.fused_moe import fused_experts as _vllm_fused_experts
+    _VLLM_AVAILABLE = True
+except ImportError:
+    _VLLM_AVAILABLE = False
 
 
 def setup_distributed():
@@ -210,6 +218,86 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
         torch.testing.assert_close(routed_out_local.float(), routed_out_full.float(), rtol=5e-2, atol=5e-2)
 
         print(f"PASS: 8-GPU EP SharedFusedMoE [T={T}, E={E_global}, K={K}, H={H}, F={F}, shared_F={shared_F}]")
+
+    dist.barrier()
+    dist.destroy_process_group()
+
+
+@DistributedFixture
+def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
+    """Multi-GPU EP test: TileOPs vs vLLM with expert_map local filtering.
+
+    Both TileOPs and vLLM use expert_map for local filtering (no All-to-All).
+    Verifies: sum(rank_outputs) matches between TileOPs and vLLM.
+    """
+    if not _VLLM_AVAILABLE:
+        pytest.skip("vLLM not installed")
+
+    rank, actual_world_size = setup_distributed()
+
+    if actual_world_size != world_size:
+        pytest.skip(f"This test requires {world_size} GPUs, got {actual_world_size}")
+
+    dtype = torch.bfloat16
+    dev = f"cuda:{rank}"
+
+    # All ranks use same seed
+    torch.manual_seed(42)
+    hidden = torch.randn(T, H, dtype=dtype, device=dev)
+    gating = torch.randn(T, E_global, dtype=dtype, device=dev)
+    correction_bias = torch.randn(E_global, dtype=torch.float32, device=dev) * 0.1
+
+    # Each rank owns E_local experts
+    E_local = E_global // world_size
+    assert E_global % world_size == 0
+
+    # All ranks generate same full weights, then slice
+    w_gate_up_full = torch.randn(E_global, F * 2, H, dtype=dtype, device=dev) * 0.02
+    w_down_full = torch.randn(E_global, H, F, dtype=dtype, device=dev) * 0.02
+
+    # Slice local weights
+    start_expert = rank * E_local
+    end_expert = (rank + 1) * E_local
+    w_gate_up_local = w_gate_up_full[start_expert:end_expert].clone()
+    w_down_local = w_down_full[start_expert:end_expert].clone()
+
+    # Build expert_map
+    expert_map = torch.full((E_global,), -1, dtype=torch.int32, device=dev)
+    expert_map[start_expert:end_expert] = torch.arange(E_local, dtype=torch.int32, device=dev)
+
+    # Compute routing (same for both TileOPs and vLLM)
+    from tileops.ops.moe import FusedTopKOp
+    fk = FusedTopKOp(T, E_global, K, "sigmoid", True, with_correction_bias=True)
+    topk_weights, topk_ids = fk(gating, correction_bias)
+
+    # TileOPs: local computation with expert_map
+    op_tileops = FusedMoe(
+        num_tokens=T, num_experts=E_global, top_k=K,
+        hidden_size=H, ffn_size=F,
+        scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+        routed_scaling_factor=2.827,
+        layout="nopad", dtype=dtype,
+        expert_map=expert_map,
+    )
+    out_tileops = op_tileops(hidden, gating, w_gate_up_local, w_down_local, correction_bias)
+
+    # vLLM: local computation with expert_map
+    out_vllm = _vllm_fused_experts(
+        hidden, w_gate_up_local, w_down_local,
+        topk_weights, topk_ids,
+        inplace=False, use_grouped_topk=False,
+        num_expert_group=1, topk_group=1,
+        expert_map=expert_map,
+    ) * 2.827
+
+    # All-reduce both outputs
+    dist.all_reduce(out_tileops, op=dist.ReduceOp.SUM)
+    dist.all_reduce(out_vllm, op=dist.ReduceOp.SUM)
+
+    # Rank-0 compares
+    if rank == 0:
+        torch.testing.assert_close(out_tileops.float(), out_vllm.float(), rtol=5e-2, atol=5e-2)
+        print(f"PASS: {world_size}-GPU EP TileOPs vs vLLM [T={T}, E={E_global}, K={K}, H={H}, F={F}]")
 
     dist.barrier()
     dist.destroy_process_group()
