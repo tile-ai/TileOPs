@@ -116,10 +116,10 @@ def test_conv1d_bench(
         dtype=dtype,
         tune=tune,
     )
-    result = bm.profile(op, *inputs, warmup=5, rep=10)
+    result = bm.profile(op, *inputs)
     BenchmarkReport.record("conv1d", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, x_ncl, weight, bias, warmup=5, rep=10)
+    result_bl = bm.profile(test.ref_program, x_ncl, weight, bias)
     BenchmarkReport.record("conv1d", locals(), result_bl, tag="torch")
 
 
