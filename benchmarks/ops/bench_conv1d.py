@@ -78,6 +78,7 @@ _CONV1D_BENCH_PARAMS = [
     pytest.param(4, 256, 32000, 512, 1, 1, 0, torch.float16, True, id="convtasnet-pointwise-k1-s1-fp16"),
     pytest.param(4, 128, 4096, 256, 3, 1, 1, torch.float16, True, id="seanet-k3-s1-fp16"),
     pytest.param(4, 64, 16000, 128, 5, 2, 2, torch.float16, True, id="audio-downsample-k5-s2-fp16"),
+    pytest.param(4, 128, 8192, 256, 7, 1, 3, torch.float16, True, id="seanet-stem-k7-s1-fp16"),
     pytest.param(2, 128, 4096, 256, 3, 2, 1, torch.bfloat16, True, id="sequence-downsample-k3-s2-bf16"),
 ]
 

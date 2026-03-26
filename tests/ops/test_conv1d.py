@@ -33,6 +33,11 @@ class Conv1dFixture(FixtureBase):
                 id="full-audio-downsample-k5-s2-fp16",
             ),
             pytest.param(
+                1, 32, 256, 64, 7, 1, 3, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-small-seanet-stem-k7-s1-fp16",
+            ),
+            pytest.param(
                 2, 128, 4096, 256, 3, 2, 1, torch.bfloat16, False,
                 marks=pytest.mark.full,
                 id="full-sequence-downsample-k3-s2-bf16",
