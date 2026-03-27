@@ -1,8 +1,12 @@
 import torch
 
-__all__ = ["HOPPER_SHARED_MEMORY_LIMIT_BYTES", "conv_shared_memory_bytes"]
+__all__ = ["conv_shared_memory_bytes", "get_shared_memory_limit_bytes"]
 
-HOPPER_SHARED_MEMORY_LIMIT_BYTES = 227 * 1024
+
+def get_shared_memory_limit_bytes() -> int:
+    return torch.cuda.get_device_properties(
+        torch.cuda.current_device()
+    ).shared_memory_per_block_optin
 
 
 def conv_shared_memory_bytes(

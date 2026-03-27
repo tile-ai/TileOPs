@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.conv.common import HOPPER_SHARED_MEMORY_LIMIT_BYTES, conv_shared_memory_bytes
+from tileops.kernels.conv.common import conv_shared_memory_bytes, get_shared_memory_limit_bytes
 from tileops.kernels.kernel import Kernel
 from tileops.utils import get_sm_version
 
@@ -296,7 +296,7 @@ class Conv3dKernel(Kernel):
                 "block_k": 64,
                 "num_stages": 3,
                 "threads": 128,
-                "enable_rasteration": False,
+                "enable_rasteration": True,
             }
         return {
             "block_m": 64,
@@ -309,6 +309,7 @@ class Conv3dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
         configs = itertools.product(
             [32, 64, 128],
             [32, 64, 128],
@@ -321,7 +322,7 @@ class Conv3dKernel(Kernel):
         for block_m, block_n, block_k, num_stages, threads, enable_rasteration in configs:
             shared_memory_bytes = conv_shared_memory_bytes(
                 block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > HOPPER_SHARED_MEMORY_LIMIT_BYTES:
+            if shared_memory_bytes > shared_memory_limit_bytes:
                 continue
             valid_configs.append({
                 "block_m": block_m,
@@ -341,7 +342,7 @@ class Conv3dKernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        # OIDHW -> KDHWIO so the kernel can flatten weights into [K_total, C_out].
+        # OIDHW -> DHWIO so the kernel can flatten weights into [K_total, C_out].
         weight_kdhwio = weight.permute(2, 3, 4, 1, 0).contiguous()
         return _conv3d_wrapped_kernel(
             self.n,

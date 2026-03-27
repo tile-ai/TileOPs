@@ -46,23 +46,7 @@ class Conv3dBenchCase:
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
         return x, weight, bias
 
-    def ref_program_ncdhw(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        return F.conv3d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=1,
-            groups=1,
-        )
-
-    def ref_program_ndhwc(
+    def ref_program(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
@@ -149,10 +133,10 @@ def test_conv3d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("conv3d", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program_ncdhw, x_ncdhw, weight, bias)
+    result_bl = bm.profile(test.ref_program, x_ncdhw, weight, bias)
     BenchmarkReport.record("conv3d", locals(), result_bl, tag="torch-ncdhw")
 
-    result_bl = bm.profile(test.ref_program_ndhwc, x_ndhwc, weight, bias)
+    result_bl = bm.profile(test.ref_program, x_ndhwc, weight, bias)
     BenchmarkReport.record("conv3d", locals(), result_bl, tag="torch-ndhwc")
 
 
