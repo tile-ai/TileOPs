@@ -1,16 +1,45 @@
 # Op Manifest Specification
 
-`ops_manifest.yaml` is the central op registry and the agent entry point. The manifest is the **source of truth** — runtime code (including `Op.infer_shape()`) is generated from it, not the other way around.
+`ops_manifest.yaml` is the central op registry, the agent entry point, and the **source of truth** for op interfaces. Runtime code (including `Op.infer_shape()`) is generated from the manifest, not the other way around.
 
 ```
 ops_manifest.yaml (spec)
        │
-       ├──→ Agent generates Op code + Op.infer_shape() from signature + shape_rules
+       ├──→ Agent generates Op code + Op.infer_shape()
        ├──→ Test generator reads workloads + tolerance
        ├──→ Benchmark reads workloads
        ├──→ Roofline reads flops/bytes formulas
        └──→ Docs generator reads signatures
 ```
+
+## Trust Model
+
+The manifest separates specification from implementation. Op interfaces are declared in the manifest and reviewed by humans; code is generated from the manifest and validated programmatically.
+
+**Motivation.** When the same agent produces both kernel code and test code, test inputs and tolerances may inadvertently align with implementation behavior rather than mathematical correctness. A human-reviewed spec with automated validation reduces this coupling.
+
+```
+Human reviews manifest (source of truth)
+  │
+  ├──→ Parser derives programmatic checks (CI enforces)
+  │     ├─ Op.forward() signature matches manifest
+  │     ├─ Tests cover all declared dtypes/shapes
+  │     ├─ Benchmarks use declared workloads
+  │     ├─ infer_shape() is consistent with shape_rules
+  │     └─ constraints are respected
+  │
+  └──→ Agent generates code within spec constraints
+        ├─ Manifest changes require human approval
+        ├─ Generated code must pass parser validation
+        └─ CI enforces validation
+```
+
+**Invariants:**
+
+1. The manifest is the sole source of truth for op interfaces. Changes require human review.
+1. Programmatic validation is derived from the manifest, not from the generating agent.
+1. Test coverage (shapes, dtypes, workloads) is determined by the manifest, not by the agent.
+1. Reference implementations are provided independently of kernel implementations. The spec defines *what*, the kernel implements *how*, the reference independently verifies *whether*.
 
 ## Fields
 
@@ -26,13 +55,13 @@ Each entry lives under the top-level `ops:` key:
 
 ### Signature
 
-| Field          | Type | Required | Description                                                                            |
-| -------------- | ---- | -------- | -------------------------------------------------------------------------------------- |
-| `inputs`       | list | yes      | Input tensors, positional order.                                                       |
-| `outputs`      | list | yes      | Output tensors, positional order.                                                      |
-| `params`       | list | no       | Scalar / config parameters.                                                            |
-| `shape_rules`  | list | no       | Python expressions for shape inference. Agent generates `Op.infer_shape()` from these. |
-| `dtype_combos` | list | no       | Valid dtype combinations. Overrides per-tensor `dtype` when present.                   |
+| Field          | Type | Required | Description                                                               |
+| -------------- | ---- | -------- | ------------------------------------------------------------------------- |
+| `inputs`       | list | yes      | Input tensors, positional order.                                          |
+| `outputs`      | list | yes      | Output tensors, positional order.                                         |
+| `params`       | list | no       | Scalar / config parameters.                                               |
+| `shape_rules`  | list | no       | Python expressions for shape inference. Used to generate `infer_shape()`. |
+| `dtype_combos` | list | no       | Valid dtype combinations. Overrides per-tensor `dtype` when present.      |
 
 **Tensor fields** (`inputs` / `outputs`):
 
@@ -68,7 +97,7 @@ dtype_combos:
   - {x: bfloat16, weight: bfloat16}
 ```
 
-**R5. Output shape completeness.** Every output's shape must be fully specified via `shape`, `same_as(ref)`, and/or `shape_rules`. No fallback — the manifest must be sufficient for generating `Op.infer_shape()`.
+**R5. Output shape completeness.** Every output's shape must be fully specified via `shape`, `same_as(ref)`, and/or `shape_rules`. The manifest must be sufficient for generating `Op.infer_shape()`.
 
 **R6. `shape` present = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). Names become variables in `roofline` and `constraints`. No ellipsis or wildcards.
 
@@ -84,9 +113,9 @@ dtype_combos:
 
 **R12. Manifest → `infer_shape()`.** Agent generates `Op.infer_shape()` from `shape`, `same_as(ref)`, and `shape_rules`. Manifest and code must be consistent.
 
-#### Shape decision tree
+#### Shape Decision Tree
 
-Agent flow: (1) declare output shape in manifest, (2) generate `Op.infer_shape()` from declaration.
+Step 1 — declare output shape in the manifest. Step 2 — generate `Op.infer_shape()` from that declaration.
 
 **Step 1 — Declare:**
 
@@ -245,6 +274,5 @@ Functions live in `tileops/perf/formulas.py`, return `{"flops": int, "bytes": in
 
 ## What Is NOT in the Manifest
 
-- **Reference implementations** — stay in test files as PyTorch code.
 - **Kernel implementation details** — tile sizes, memory strategies, `num_per_thread`.
 - **Autotuning configuration** — handled by the kernel layer.

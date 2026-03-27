@@ -4,8 +4,8 @@
 #
 # Notes:
 # - Backward ops are registered as independent entries (e.g. rmsnorm_bwd).
-# - shape_rules use Python expression syntax and are optional.
-#   When absent, tools fall back to Op.infer_shape() via source.op.
+# - shape_rules use Python expression syntax. Agent generates Op.infer_shape()
+#   from shape, same_as(ref), and shape_rules declared in the manifest.
 # - roofline supports two modes: inline expressions (flops/bytes) or func.
 
 ops:
