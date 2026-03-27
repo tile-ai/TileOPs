@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Pre-compile all benchmark kernel variants to warm the tilelang cache.
+"""Pre-compile and autotune all benchmark kernel variants.
 
-Patches tilelang.profiler.do_bench to return a dummy value so that kernel
-compilation happens normally (populating the disk cache) while GPU profiling
-is effectively skipped.
+Runs every benchmark test to trigger kernel compilation and autotuning,
+populating both:
+  - tilelang kernel compilation cache  (compiled .so binaries)
+  - tilelang autotuner result cache    (best config per kernel)
 
-The autotuner result cache is disabled (TILELANG_AUTO_TUNING_DISABLE_CACHE=1)
-so that dummy profiling results are never persisted — the real benchmark run
-will re-profile from compiled-kernel cache hits and store genuine best configs.
+On subsequent runs, both caches are hit and warmup completes quickly.
+The benchmark job then loads cached autotuner results directly instead
+of re-profiling all configurations (~2ms vs minutes per kernel).
+
+Profiling runs with real GPU measurements (not dummy values) so that
+the cached best-config choices are meaningful.  Parallel pytest-xdist
+workers introduce some measurement noise, but the relative config
+ranking is preserved well enough for cache seeding.
 
 Uses pytest-xdist to run benchmark test cases in parallel across multiple
 workers, while the autotuner's ThreadPoolExecutor parallelizes config
@@ -41,13 +47,12 @@ def main():
         "--max-workers", type=int, default=64,
         help="Max parallel compilation threads per autotune call (default: 64)")
     parser.add_argument(
-        "-n", "--num-pytest-workers", type=int, default=8,
-        help="Number of pytest-xdist workers for parallel test execution (default: 8)")
+        "-n", "--num-pytest-workers", type=int, default=16,
+        help="Number of pytest-xdist workers for parallel test execution (default: 16)")
     args = parser.parse_args()
 
     # Communicate settings to worker processes via environment variables.
     # The conftest plugin (conftest_warmup) reads these in each worker.
-    os.environ["TILELANG_AUTO_TUNING_DISABLE_CACHE"] = "1"
     os.environ["TILEOPS_WARMUP_MODE"] = "1"
     os.environ["TILEOPS_WARMUP_MAX_WORKERS"] = str(args.max_workers)
 
