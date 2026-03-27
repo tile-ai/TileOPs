@@ -184,6 +184,10 @@ def _moe_grouped_gemm_kernel(numel: int, max_tiles: int, num_experts: int,
                     A_shared = T.alloc_shared(A_shared_shape, dtype)
                     B_shared = T.alloc_shared(B_shared_shape, dtype)
                     C_local = T.alloc_fragment([block_m, block_n], accum_dtype)
+                    T.annotate_layout({
+                        A_shared: tilelang.layout.make_swizzled_layout(A_shared),
+                        B_shared: tilelang.layout.make_swizzled_layout(B_shared),
+                    })
 
                     # M-major tile ordering: each M-tile processes all N-tiles
                     # before moving to the next M-tile, maximising A-tile reuse.
@@ -239,6 +243,10 @@ def _moe_grouped_gemm_kernel(numel: int, max_tiles: int, num_experts: int,
                     A_shared = T.alloc_shared(A_shared_shape, dtype)
                     B_shared = T.alloc_shared(B_shared_shape, dtype)
                     C_local = T.alloc_fragment([block_m, block_n], accum_dtype)
+                    T.annotate_layout({
+                        A_shared: tilelang.layout.make_swizzled_layout(A_shared),
+                        B_shared: tilelang.layout.make_swizzled_layout(B_shared),
+                    })
 
                     if group_size_m == 1:
                         bx = pid // T.int32(_num_pid_n)
