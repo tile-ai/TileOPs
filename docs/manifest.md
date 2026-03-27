@@ -28,12 +28,13 @@ Each manifest entry lives under the top-level `ops:` key. Structure:
 
 Declares the op's interface. Contains the following fields:
 
-| Field         | Type | Required | Description                                                           |
-| ------------- | ---- | -------- | --------------------------------------------------------------------- |
-| `inputs`      | list | yes      | Input tensors, in positional order.                                   |
-| `outputs`     | list | yes      | Output tensors, in positional order.                                  |
-| `params`      | list | no       | Scalar / config parameters (e.g., `dim`, `eps`).                      |
-| `shape_rules` | list | no       | Inter-tensor shape relationships (list of Python expression strings). |
+| Field          | Type | Required | Description                                                                                                                      |
+| -------------- | ---- | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `inputs`       | list | yes      | Input tensors, in positional order.                                                                                              |
+| `outputs`      | list | yes      | Output tensors, in positional order.                                                                                             |
+| `params`       | list | no       | Scalar / config parameters (e.g., `dim`, `eps`).                                                                                 |
+| `shape_rules`  | list | no       | Inter-tensor shape relationships (list of Python expression strings).                                                            |
+| `dtype_combos` | list | no       | Explicit list of valid dtype combinations across tensors. When present, overrides per-tensor `dtype` for combination validation. |
 
 Each tensor entry (`inputs` / `outputs`) has:
 
@@ -62,6 +63,15 @@ Each param entry has:
 **dtype**
 
 3. **`dtype`** uses `|` for alternatives, `same_as(ref)` for dependent types. Concrete entries may list dtypes explicitly.
+1. **`dtype_combos`** — when not all dtype combinations across tensors are valid, enumerate the legal combinations explicitly. Each entry is a map of tensor name to dtype. When present, `dtype_combos` is the source of truth; per-tensor `dtype` fields are still written for documentation but are not used for combination validation.
+
+```yaml
+# Only 3 of the 4 possible combinations are supported
+dtype_combos:
+  - {x: float16, weight: float16}
+  - {x: float16, weight: float8_e4m3}
+  - {x: bfloat16, weight: bfloat16}
+```
 
 **Shape**
 
