@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          clean: false
 
       - name: Warm kernel compilation cache
         continue-on-error: true
@@ -75,6 +76,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          clean: false
 
       - name: Run benchmark ops
         id: benchmark_tests
@@ -165,6 +167,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          clean: false
 
       - name: Run full op tests
         id: op_tests
@@ -290,6 +293,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       - name: Build and test wheel package
         run: |
