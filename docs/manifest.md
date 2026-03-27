@@ -1,10 +1,11 @@
 # Op Manifest Specification
 
-`ops_manifest.yaml` is the central op registry and the agent entry point. Every operator has a declarative spec here before code is written. The spec drives code generation, test validation, performance evaluation, and documentation — but does not affect runtime. The user-facing API remains plain Python classes.
+`ops_manifest.yaml` is the central op registry and the agent entry point. Every operator has a declarative spec here before code is written. The manifest is the **source of truth** — it drives code generation, test validation, performance evaluation, and documentation. Runtime code (including `Op.infer_shape()`) is generated from the manifest, not the other way around.
 
 ```
 ops_manifest.yaml (spec)
        │
+       ├──→ Agent reads signature + shape_rules, generates Op.infer_shape()
        ├──→ Agent reads spec, generates minimal Python code
        ├──→ Test generator reads workloads + tolerance
        ├──→ Benchmark reads workloads
@@ -33,7 +34,7 @@ Declares the op's interface. Contains the following fields:
 | `inputs`       | list | yes      | Input tensors, in positional order.                                                                                              |
 | `outputs`      | list | yes      | Output tensors, in positional order.                                                                                             |
 | `params`       | list | no       | Scalar / config parameters (e.g., `dim`, `eps`).                                                                                 |
-| `shape_rules`  | list | no       | Inter-tensor shape relationships (list of Python expression strings).                                                            |
+| `shape_rules`  | list | no       | Shape inference rules (list of Python expression strings). Agent uses these to generate `Op.infer_shape()`.                      |
 | `dtype_combos` | list | no       | Explicit list of valid dtype combinations across tensors. When present, overrides per-tensor `dtype` for combination validation. |
 
 Each tensor entry (`inputs` / `outputs`) has:
@@ -75,7 +76,7 @@ dtype_combos:
 
 **Shape**
 
-4. **Every output tensor must have an explicit shape declaration.** There is no implicit default. Use one of the mechanisms below.
+5. **Every output tensor's shape must be fully specified in the manifest.** The combination of `shape`, `same_as(ref)`, and `shape_rules` must be sufficient for an agent to generate a complete `Op.infer_shape()` implementation. There is no fallback — the manifest is the source of truth.
 1. **`shape` present = fixed rank.** The value is a list of dimension names (e.g., `"[M, K]"`), declaring the exact number of dimensions. Each name becomes a variable available in `roofline` expressions and `constraints`. There is no intermediate form — do not use ellipsis or wildcards to partially constrain rank.
 1. **`shape` absent = arbitrary rank.** The tensor accepts any number of dimensions. Constraints on specific axes are expressed through `params` (e.g., `dim`) and `shape_rules`.
 1. **`same_as(ref)`** — shorthand for "identical shape (rank and sizes) to the referenced tensor". Valid for both fixed-rank and arbitrary-rank tensors. When the referenced tensor has no `shape` (arbitrary rank), `same_as(ref)` means the output inherits whatever rank and sizes the reference has at runtime.
@@ -83,29 +84,43 @@ dtype_combos:
 1. **`constraints`** — an optional map on a tensor with `shape`, restricting specific dimensions beyond "any positive integer". Two forms:
    - Enumerated values: `"64 | 128 | 256"`
    - Predicate: `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"`
-1. **`shape_rules`** — a list of Python expression strings for inter-tensor shape relationships that `shape` fields and `same_as` cannot express (e.g., `"weight.shape == (x.shape[dim],)"`). When `shape_rules` is absent or insufficient, tools fall back to calling `Op.infer_shape()` via `source.op`. The `Op` base class defines this interface; all subclasses must implement it.
+1. **`shape_rules`** — a list of Python expression strings that fully describe inter-tensor shape relationships. The agent reads these rules and generates `Op.infer_shape()` from them. Required when `shape` fields and `same_as` alone cannot fully specify the output shape. All `Op` subclasses must implement `infer_shape()`; the implementation is derived from the manifest.
+
+**Code generation**
+
+12. **The manifest drives `Op.infer_shape()`.** The agent generates the `infer_shape()` method from the combination of `shape`, `same_as(ref)`, and `shape_rules` declared in the manifest. Human and machine must be consistent — the manifest spec and the generated code describe the same logic.
 
 #### Shape decision tree
 
-When declaring shape for an output tensor, follow this flow:
+The agent uses this flow to: (1) declare output shape in the manifest, (2) generate `Op.infer_shape()` from that declaration.
+
+**Step 1 — Declare shape in the manifest:**
 
 ```
 Is the output shape identical to an input?
-├─ YES → shape: "same_as(ref)"                              (Rule 7)
+├─ YES → shape: "same_as(ref)"                              (Rule 8)
 └─ NO
    Does the output have a fixed rank expressible with dimension names?
-   ├─ YES → shape: "[D1, D2, ...]"                          (Rule 5)
+   ├─ YES → shape: "[D1, D2, ...]"                          (Rule 6)
    │   Need inter-tensor relationships beyond shared names?
-   │   └─ YES → add shape_rules                             (Rule 10)
+   │   └─ YES → add shape_rules                             (Rule 11)
    └─ NO (arbitrary rank, output shape depends on params)
-      Can the relationship be expressed as inline expressions?
-      ├─ YES → add shape_rules                              (Rule 10)
-      └─ NO  → omit shape_rules; tools call Op.infer_shape()
+      └─ write shape_rules that fully describe the output    (Rule 11)
 ```
+
+Every leaf produces a complete shape specification — there is no "omit and fallback" path.
+
+**Step 2 — Generate `Op.infer_shape()` from the declaration:**
+
+| Manifest declaration                        | Generated `infer_shape()` logic                     |
+| ------------------------------------------- | --------------------------------------------------- |
+| `shape: "same_as(ref)"`                     | `return ref.shape`                                  |
+| `shape: "[D1, D2, ...]"` (shared dim names) | Return shape with matched dimensions from inputs    |
+| `shape_rules` (inline expressions)          | Translate expressions into Python shape computation |
 
 #### Examples
 
-**Fixed rank — GEMM** (Rules 1, 5, 8):
+**Fixed rank — GEMM** (Rules 1, 6, 9):
 
 ```yaml
 inputs:
@@ -123,7 +138,7 @@ outputs:
 
 `K` appears in both `a` and `b` — sizes must match. Output dimensions `M`, `N` are derived from inputs.
 
-**Fixed rank with constraints — FFT** (Rules 5, 7, 9):
+**Fixed rank with constraints — FFT** (Rules 6, 8, 10):
 
 ```yaml
 inputs:
@@ -138,7 +153,7 @@ outputs:
     shape: "same_as(x)"
 ```
 
-**Arbitrary rank, output same as input — RMSNorm** (Rules 6, 7, 10):
+**Arbitrary rank, output same as input — RMSNorm** (Rules 7, 8, 11):
 
 ```yaml
 inputs:
@@ -163,7 +178,7 @@ shape_rules:
 
 No `shape` on `x` — any rank accepted. `dim` selects the normalization axis. Output shape mirrors input via `same_as(x)`. The only non-trivial relationship (`weight` is 1-D matching the target axis) goes in `shape_rules`.
 
-**Arbitrary rank, output shape depends on params — Reduce** (Rule 6):
+**Arbitrary rank, output shape depends on params — Reduce** (Rules 7, 11):
 
 ```yaml
 inputs:
@@ -178,11 +193,14 @@ params:
   - name: keepdim
     type: bool
     default: false
+shape_rules:
+  - "y.ndim == x.ndim if keepdim else x.ndim - len(dim)"
+  - "y.shape[i] == 1 if i in dim and keepdim else x.shape[i]"
 ```
 
-Output rank depends on `dim` and `keepdim` — cannot be expressed as inline expressions. No `shape_rules`; tools call `SumOp.infer_shape()` via `source.op`.
+Output rank depends on `dim` and `keepdim`. The `shape_rules` fully describe the relationship so the agent can generate `SumOp.infer_shape()`.
 
-**Arbitrary rank, shape transformation — Transpose** (Rule 6):
+**Arbitrary rank, shape transformation — Transpose** (Rules 7, 11):
 
 ```yaml
 inputs:
@@ -194,9 +212,12 @@ outputs:
 params:
   - name: dims
     type: "list[int]"
+shape_rules:
+  - "y.ndim == x.ndim"
+  - "y.shape[i] == x.shape[dims[i]]"
 ```
 
-Output has the same rank as input but permuted dimensions — no inline expression can capture this. Tools call `TransposeOp.infer_shape()` via `source.op`.
+Output has the same rank as input but permuted dimensions. The `shape_rules` describe the permutation logic.
 
 **Full entry — RMSNorm** (all sections):
 
