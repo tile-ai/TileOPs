@@ -62,6 +62,10 @@ RUN MAX_JOBS=64 NVCC_THREADS=64 pip install --no-cache-dir --no-build-isolation 
         "sgl-kernel==0.3.21" \
     || echo "WARNING: Some bench deps failed to install -- non-fatal for runner image"
 
+RUN MAX_JOBS=32 pip install --no-cache-dir \
+        "git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd" \
+    || echo "WARNING: native-sparse-attention failed to install -- non-fatal"
+
 # ── Install TileOPs (editable) ───────────────────────────────────────────────
 WORKDIR /home/ci-runner/tileops
 COPY --chown=ci-runner:ci-runner . .
