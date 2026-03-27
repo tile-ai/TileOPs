@@ -28,7 +28,7 @@ jobs:
     runs-on: [self-hosted, tile-ops, nightly]
     container:
       image: ghcr.io/tile-ai/tileops-runner:latest
-      options: --gpus all
+      options: --gpus '"device=1"'
       volumes:
         - /data/ci-cache/tilelang:/cache/tilelang
         - /data/ci-cache/triton:/cache/triton
@@ -157,7 +157,7 @@ jobs:
     runs-on: [self-hosted, tile-ops, nightly]
     container:
       image: ghcr.io/tile-ai/tileops-runner:latest
-      options: --gpus all
+      options: --gpus '"device=1"'
       volumes:
         - /data/ci-cache/tilelang:/cache/tilelang
         - /data/ci-cache/triton:/cache/triton
@@ -369,7 +369,7 @@ jobs:
     runs-on: [self-hosted, tile-ops, nightly]
     container:
       image: ghcr.io/tile-ai/tileops-runner:latest
-      options: --gpus all
+      options: --gpus '"device=1"'
       volumes:
         - /data/ci-cache/tilelang:/cache/tilelang
         - /data/ci-cache/triton:/cache/triton
@@ -566,7 +566,7 @@ jobs:
     runs-on: [self-hosted, tile-ops, nightly]
     container:
       image: ghcr.io/tile-ai/tileops-runner:latest
-      options: --gpus all
+      options: --gpus '"device=1"'
       volumes:
         - /data/ci-cache/tilelang:/cache/tilelang
         - /data/ci-cache/triton:/cache/triton
