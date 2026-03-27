@@ -28,12 +28,12 @@ Each manifest entry lives under the top-level `ops:` key. Structure:
 
 Declares the op's interface. Contains the following fields:
 
-| Field         | Type        | Required | Description                                      |
-| ------------- | ----------- | -------- | ------------------------------------------------ |
-| `inputs`      | list        | yes      | Input tensors, in positional order.              |
-| `outputs`     | list        | yes      | Output tensors, in positional order.             |
-| `params`      | list        | no       | Scalar / config parameters (e.g., `dim`, `eps`). |
-| `shape_rules` | list or map | no       | Inter-tensor shape relationships.                |
+| Field         | Type | Required | Description                                                           |
+| ------------- | ---- | -------- | --------------------------------------------------------------------- |
+| `inputs`      | list | yes      | Input tensors, in positional order.                                   |
+| `outputs`     | list | yes      | Output tensors, in positional order.                                  |
+| `params`      | list | no       | Scalar / config parameters (e.g., `dim`, `eps`).                      |
+| `shape_rules` | list | no       | Inter-tensor shape relationships (list of Python expression strings). |
 
 Each tensor entry (`inputs` / `outputs`) has:
 
@@ -73,9 +73,7 @@ Each param entry has:
 1. **`constraints`** — an optional map on a tensor with `shape`, restricting specific dimensions beyond "any positive integer". Two forms:
    - Enumerated values: `"64 | 128 | 256"`
    - Predicate: `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"`
-1. **`shape_rules`** — for relationships that `shape` fields and `same_as` cannot express. Two modes:
-   - **Inline** (list of strings): Python expressions, e.g., `"weight.shape == (x.shape[dim],)"`.
-   - **Op class reference** (`func: <Op class path>`): for ops whose output shape depends on parameters in non-trivial ways. Tools call the class's `infer_shape()` method. The `Op` base class defines this interface; all subclasses must implement it.
+1. **`shape_rules`** — a list of Python expression strings for inter-tensor shape relationships that `shape` fields and `same_as` cannot express (e.g., `"weight.shape == (x.shape[dim],)"`). When `shape_rules` is absent or insufficient, tools fall back to calling `Op.infer_shape()` via `source.op`. The `Op` base class defines this interface; all subclasses must implement it.
 
 #### Shape decision tree
 
@@ -83,16 +81,16 @@ When declaring shape for an output tensor, follow this flow:
 
 ```
 Is the output shape identical to an input?
-├─ YES → shape: "same_as(ref)"                         (Rule 7)
+├─ YES → shape: "same_as(ref)"                              (Rule 7)
 └─ NO
    Does the output have a fixed rank expressible with dimension names?
-   ├─ YES → shape: "[D1, D2, ...]"                     (Rule 5)
+   ├─ YES → shape: "[D1, D2, ...]"                          (Rule 5)
    │   Need inter-tensor relationships beyond shared names?
-   │   └─ YES → add shape_rules (inline)                (Rule 10)
-   └─ NO
-      Can the output shape be expressed as a simple inline expression?
-      ├─ YES → shape_rules: ["expression"]              (Rule 10)
-      └─ NO  → shape_rules: func: "OpClass"             (Rule 10)
+   │   └─ YES → add shape_rules                             (Rule 10)
+   └─ NO (arbitrary rank, output shape depends on params)
+      Can the relationship be expressed as inline expressions?
+      ├─ YES → add shape_rules                              (Rule 10)
+      └─ NO  → omit shape_rules; tools call Op.infer_shape()
 ```
 
 #### Examples
@@ -155,7 +153,7 @@ shape_rules:
 
 No `shape` on `x` — any rank accepted. `dim` selects the normalization axis. Output shape mirrors input via `same_as(x)`. The only non-trivial relationship (`weight` is 1-D matching the target axis) goes in `shape_rules`.
 
-**Arbitrary rank, output shape depends on params — Reduce** (Rules 6, 10):
+**Arbitrary rank, output shape depends on params — Reduce** (Rule 6):
 
 ```yaml
 inputs:
@@ -170,13 +168,11 @@ params:
   - name: keepdim
     type: bool
     default: false
-shape_rules:
-  func: "tileops.ops.reduction.reduce.SumOp"
 ```
 
-Output rank depends on `dim` and `keepdim` — cannot be expressed as a static declaration or simple expression. `func` delegates to the Op's `infer_shape()` method.
+Output rank depends on `dim` and `keepdim` — cannot be expressed as inline expressions. No `shape_rules`; tools call `SumOp.infer_shape()` via `source.op`.
 
-**Arbitrary rank, shape transformation — Transpose** (Rules 6, 10):
+**Arbitrary rank, shape transformation — Transpose** (Rule 6):
 
 ```yaml
 inputs:
@@ -188,11 +184,9 @@ outputs:
 params:
   - name: dims
     type: "list[int]"
-shape_rules:
-  func: "tileops.ops.transpose.TransposeOp"
 ```
 
-Output has the same rank as input but permuted dimensions — a `func` reference handles this.
+Output has the same rank as input but permuted dimensions — no inline expression can capture this. Tools call `TransposeOp.infer_shape()` via `source.op`.
 
 **Full entry — RMSNorm** (all sections):
 
