@@ -14,13 +14,187 @@ ops_manifest.yaml (spec)
 
 ## Fields
 
-Each manifest entry lives under the top-level `ops:` key and has a `family` field plus four sections: signature, workloads, roofline, and source.
+Each manifest entry lives under the top-level `ops:` key. Structure:
 
-`family` is an explicit, machine-readable field for doc generation, API grouping, and tooling — not derived from source paths, which can change.
+| Field       | Required | Description                                                                                                   |
+| ----------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| `family`    | yes      | Op family for grouping (e.g., `norm`, `attention`, `gemm`). Machine-readable — not derived from source paths. |
+| `signature` | yes      | Op interface: inputs, outputs, params, shape_rules. See [Signature](#signature).                              |
+| `workloads` | yes      | Representative shapes/dtypes for benchmarks. See [Workloads](#workloads).                                     |
+| `roofline`  | yes      | FLOPs and bytes formulas for performance evaluation. See [Roofline](#roofline).                               |
+| `source`    | yes      | Pointers to implementation files. See [Source](#source).                                                      |
 
 ### Signature
 
-Declares inputs, outputs, parameters, and optional shape rules:
+Declares the op's interface. Contains the following fields:
+
+| Field         | Type        | Required | Description                                      |
+| ------------- | ----------- | -------- | ------------------------------------------------ |
+| `inputs`      | list        | yes      | Input tensors, in positional order.              |
+| `outputs`     | list        | yes      | Output tensors, in positional order.             |
+| `params`      | list        | no       | Scalar / config parameters (e.g., `dim`, `eps`). |
+| `shape_rules` | list or map | no       | Inter-tensor shape relationships.                |
+
+Each tensor entry (`inputs` / `outputs`) has:
+
+| Field         | Type   | Required | Description                                                                                            |
+| ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------ |
+| `name`        | string | yes      | Tensor identifier, used in `shape_rules` and `same_as(ref)` references.                                |
+| `dtype`       | string | yes      | Data type. `\|` for alternatives, `same_as(ref)` for dependent types.                                  |
+| `shape`       | string | no       | Dimension names (e.g., `"[M, K]"`) or `"same_as(ref)"`. Present = fixed rank; absent = arbitrary rank. |
+| `constraints` | map    | no       | Dimension restrictions. Only valid when `shape` is present.                                            |
+
+Each param entry has:
+
+| Field     | Type   | Required | Description                                                                      |
+| --------- | ------ | -------- | -------------------------------------------------------------------------------- |
+| `name`    | string | yes      | Parameter identifier.                                                            |
+| `type`    | string | yes      | Python type (e.g., `int`, `float`, `bool`, `"list[int]"`, `"int \| list[int]"`). |
+| `default` | any    | no       | Default value. Omit if the parameter is required.                                |
+
+#### Rules
+
+**Structure**
+
+1. **Signature uses list, not dict.** Function signatures have positional semantics — list preserves parameter order without relying on YAML mapping order (which the spec does not guarantee).
+1. **Params declare the full interface.** If an op mathematically supports a parameter (e.g., `dim` for norm), it belongs in the manifest even if the current kernel only supports the default value.
+
+**dtype**
+
+3. **`dtype`** uses `|` for alternatives, `same_as(ref)` for dependent types. Concrete entries may list dtypes explicitly.
+
+**Shape**
+
+4. **Every output tensor must have an explicit shape declaration.** There is no implicit default. Use one of the mechanisms below.
+1. **`shape` present = fixed rank.** The value is a list of dimension names (e.g., `"[M, K]"`), declaring the exact number of dimensions. Each name becomes a variable available in `roofline` expressions and `constraints`. There is no intermediate form — do not use ellipsis or wildcards to partially constrain rank.
+1. **`shape` absent = arbitrary rank.** The tensor accepts any number of dimensions. Constraints on specific axes are expressed through `params` (e.g., `dim`) and `shape_rules`.
+1. **`same_as(ref)`** — shorthand for "identical shape (rank and sizes) to the referenced tensor". Valid for both fixed-rank and arbitrary-rank tensors. When the referenced tensor has no `shape` (arbitrary rank), `same_as(ref)` means the output inherits whatever rank and sizes the reference has at runtime.
+1. **Shared dimension names imply equality.** If two tensors both use `K` in their `shape`, the sizes must match. This is the primary mechanism for expressing inter-tensor shape relationships in fixed-rank ops.
+1. **`constraints`** — an optional map on a tensor with `shape`, restricting specific dimensions beyond "any positive integer". Two forms:
+   - Enumerated values: `"64 | 128 | 256"`
+   - Predicate: `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"`
+1. **`shape_rules`** — for relationships that `shape` fields and `same_as` cannot express. Two modes:
+   - **Inline** (list of strings): Python expressions, e.g., `"weight.shape == (x.shape[dim],)"`.
+   - **Op class reference** (`func: <Op class path>`): for ops whose output shape depends on parameters in non-trivial ways. Tools call the class's `infer_shape()` method. The `Op` base class defines this interface; all subclasses must implement it.
+
+#### Shape decision tree
+
+When declaring shape for an output tensor, follow this flow:
+
+```
+Is the output shape identical to an input?
+├─ YES → shape: "same_as(ref)"                         (Rule 7)
+└─ NO
+   Does the output have a fixed rank expressible with dimension names?
+   ├─ YES → shape: "[D1, D2, ...]"                     (Rule 5)
+   │   Need inter-tensor relationships beyond shared names?
+   │   └─ YES → add shape_rules (inline)                (Rule 10)
+   └─ NO
+      Can the output shape be expressed as a simple inline expression?
+      ├─ YES → shape_rules: ["expression"]              (Rule 10)
+      └─ NO  → shape_rules: func: "OpClass"             (Rule 10)
+```
+
+#### Examples
+
+**Fixed rank — GEMM** (Rules 1, 5, 8):
+
+```yaml
+inputs:
+  - name: a
+    dtype: "float16 | bfloat16"
+    shape: "[M, K]"
+  - name: b
+    dtype: "same_as(a)"
+    shape: "[K, N]"
+outputs:
+  - name: c
+    dtype: "same_as(a)"
+    shape: "[M, N]"
+```
+
+`K` appears in both `a` and `b` — sizes must match. Output dimensions `M`, `N` are derived from inputs.
+
+**Fixed rank with constraints — FFT** (Rules 5, 7, 9):
+
+```yaml
+inputs:
+  - name: x
+    dtype: "complex64"
+    shape: "[M, N]"
+    constraints:
+      N: "power_of_2"
+outputs:
+  - name: y
+    dtype: "same_as(x)"
+    shape: "same_as(x)"
+```
+
+**Arbitrary rank, output same as input — RMSNorm** (Rules 6, 7, 10):
+
+```yaml
+inputs:
+  - name: x
+    dtype: "float16 | bfloat16"
+  - name: weight
+    dtype: "same_as(x)"
+outputs:
+  - name: y
+    dtype: "same_as(x)"
+    shape: "same_as(x)"
+params:
+  - name: dim
+    type: int
+    default: -1
+  - name: eps
+    type: float
+    default: 1e-6
+shape_rules:
+  - "weight.shape == (x.shape[dim],)"
+```
+
+No `shape` on `x` — any rank accepted. `dim` selects the normalization axis. Output shape mirrors input via `same_as(x)`. The only non-trivial relationship (`weight` is 1-D matching the target axis) goes in `shape_rules`.
+
+**Arbitrary rank, output shape depends on params — Reduce** (Rules 6, 10):
+
+```yaml
+inputs:
+  - name: x
+    dtype: "float16 | bfloat16"
+outputs:
+  - name: y
+    dtype: "same_as(x)"
+params:
+  - name: dim
+    type: "int | list[int]"
+  - name: keepdim
+    type: bool
+    default: false
+shape_rules:
+  func: "tileops.ops.reduction.reduce.SumOp"
+```
+
+Output rank depends on `dim` and `keepdim` — cannot be expressed as a static declaration or simple expression. `func` delegates to the Op's `infer_shape()` method.
+
+**Arbitrary rank, shape transformation — Transpose** (Rules 6, 10):
+
+```yaml
+inputs:
+  - name: x
+    dtype: "float16 | bfloat16"
+outputs:
+  - name: y
+    dtype: "same_as(x)"
+params:
+  - name: dims
+    type: "list[int]"
+shape_rules:
+  func: "tileops.ops.transpose.TransposeOp"
+```
+
+Output has the same rank as input but permuted dimensions — a `func` reference handles this.
+
+**Full entry — RMSNorm** (all sections):
 
 ```yaml
 ops:
@@ -29,60 +203,63 @@ ops:
 
     signature:
       inputs:
-        x: {dtype: "float16 | bfloat16"}
-        weight: {dtype: "same_as(x)"}
+        - name: x
+          dtype: "float16 | bfloat16"
+        - name: weight
+          dtype: "same_as(x)"
       outputs:
-        y: {dtype: "same_as(x)"}
+        - name: y
+          dtype: "same_as(x)"
+          shape: "same_as(x)"
       params:
-        dim: {type: int, default: -1}
-        eps: {type: float, default: 1e-6}
+        - name: dim
+          type: int
+          default: -1
+        - name: eps
+          type: float
+          default: 1e-6
       shape_rules:
         - "weight.shape == (x.shape[dim],)"
-        - "y.shape == x.shape"
+
+    workloads:
+      - x_shape: [2048, 4096]
+        dtypes: [float16, bfloat16]
+        label: "llama-3.1-8b-prefill"
+      - x_shape: [1, 4096]
+        dtypes: [bfloat16]
+        label: "llama-3.1-8b-decode"
+
+    roofline:
+      flops: "4 * M * N"
+      bytes: "2 * (M * N + N + M * N)"
+
+    source:
+      kernel: tileops/kernels/norm/rms_norm.py
+      op: tileops/ops/norm/rms_norm.py
+      test: tests/ops/test_rms_norm.py
+      bench: benchmarks/ops/bench_rms_norm.py
 ```
-
-Conventions:
-
-- **Signature uses dict, not list.** Name is identity — making it a key (`x: {dtype: ...}`) is more concise than list items (`- name: x`).
-- **No per-tensor shape.** Tensor rank is intentionally unconstrained (DNN ops accept 1D, 2D, 3D, etc.). Shape relationships are expressed through `shape_rules`, not by fixing shape on each tensor.
-- **`dtype`** uses `|` for alternatives, `same_as(x)` for dependent types. Concrete entries may list dtypes explicitly.
-- **`shape_rules`** use Python expression syntax, are optional and best-effort.
-- **Params declare the full interface.** If an op mathematically supports a parameter (e.g., `dim` for norm), it belongs in the manifest even if the current kernel only supports the default value.
 
 ### Workloads
 
 Representative shape/dtype combinations for benchmarking:
 
-```yaml
-workloads:
-  - x_shape: [2048, 4096]
-    dtypes: [float16, bfloat16]
-    label: "llama-3.1-8b-prefill"
-  - x_shape: [1, 4096]
-    dtypes: [bfloat16]
-    label: "llama-3.1-8b-decode"
-```
+| Field     | Required | Description                                                                     |
+| --------- | -------- | ------------------------------------------------------------------------------- |
+| `x_shape` | yes      | Input shape for the workload. Drives benchmark execution and code generation.   |
+| `dtypes`  | yes      | List of dtypes to test.                                                         |
+| `label`   | no       | Human-readable tag for reports. Auto-generated from shape + dtype when omitted. |
 
-- `x_shape` and `dtypes` are required — they drive benchmark execution and code generation. Kernel-level parameters (e.g., `M`/`N`) are derivable from shapes and should not be repeated.
-- `label` is optional — a human-readable tag for reports and dashboards. Tools auto-generate from shape + dtype when omitted.
-- Op-specific parameters (e.g., `dim` for norm, `causal` for attention) can be added per workload entry.
-
-Shapes are chosen by the op developer based on target model architectures.
+Op-specific parameters (e.g., `dim` for norm, `causal` for attention) can be added per workload entry. Shapes are chosen by the op developer based on target model architectures.
 
 ### Roofline
 
 Two modes — inline expression for simple ops, Python function reference for complex ops:
 
-```yaml
-roofline:
-  flops: "4 * M * N"
-  bytes: "2 * (M * N + N + M * N)"
-```
-
-```yaml
-roofline:
-  func: "tileops.perf.formulas.gqa_prefill_fwd"
-```
+| Mode     | Format                           | When to use                                                                    |
+| -------- | -------------------------------- | ------------------------------------------------------------------------------ |
+| Inline   | `flops: "expr"`, `bytes: "expr"` | FLOPs and bytes can be expressed as simple arithmetic on dimension names.      |
+| Function | `func: "module.path"`            | Complex ops where formulas depend on multiple parameters or conditional logic. |
 
 Referenced functions live in `tileops/perf/formulas.py` and return `{"flops": int, "bytes": int}`.
 
@@ -92,13 +269,12 @@ The field is `bytes` (total bytes moved), not `memory` — maps directly to `byt
 
 Pointers to implementation files for navigation and CI validation:
 
-```yaml
-source:
-  kernel: tileops/kernels/norm/rms_norm.py
-  op: tileops/ops/norm/rms_norm.py
-  test: tests/ops/test_rms_norm.py
-  bench: benchmarks/ops/bench_rms_norm.py
-```
+| Field    | Required | Description                 |
+| -------- | -------- | --------------------------- |
+| `kernel` | yes      | Kernel implementation path. |
+| `op`     | yes      | Op class path.              |
+| `test`   | yes      | Test file path.             |
+| `bench`  | yes      | Benchmark file path.        |
 
 ## What Is NOT in the Manifest
 
