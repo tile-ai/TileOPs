@@ -58,7 +58,7 @@ jobs:
 
               export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
               echo "Starting kernel cache warmup..."
-              python scripts/warmup_kernel_cache.py --max-workers 64 -n 8
+              python scripts/warmup_kernel_cache.py --max-workers 64 -n 16
             '
         shell: bash
 

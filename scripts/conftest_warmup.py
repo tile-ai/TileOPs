@@ -5,13 +5,16 @@ warmup_kernel_cache.py).  Applies patches in every process, including
 pytest-xdist worker subprocesses.
 
 Patches applied:
-  1. tilelang.profiler.do_bench → returns dummy latency (skip GPU profiling)
-  2. ThreadPoolExecutor max_workers → capped to TILEOPS_WARMUP_MAX_WORKERS
+  1. ThreadPoolExecutor max_workers → capped to TILEOPS_WARMUP_MAX_WORKERS
+  2. GPU memory released after each test to prevent OOM across workers
+
+Note: profiling is NOT patched — real GPU measurements run so that
+autotuner results can be cached for the benchmark job.
 """
 
 import concurrent.futures
+import gc
 import os
-import unittest.mock
 
 
 def pytest_configure(config):
@@ -19,11 +22,20 @@ def pytest_configure(config):
     if os.environ.get("TILEOPS_WARMUP_MODE") != "1":
         return
 
-    # --- Patch 1: skip GPU profiling ---
-    patcher = unittest.mock.patch("tilelang.profiler.do_bench", return_value=1.0)
-    patcher.start()
-    # Store on config so we can stop it later if needed.
-    config._warmup_patcher = patcher
+    # --- Patch 1: skip baseline profiling (only compile/tune tileops kernels) ---
+    from tileops.ops.op import Op
+    from benchmarks.benchmark import BenchmarkBase
+
+    _orig_profile = BenchmarkBase.profile
+
+    def _warmup_profile(self, functor, *inputs, **kwargs):
+        if isinstance(functor, Op):
+            return _orig_profile(self, functor, *inputs, **kwargs)
+        # Baseline functor — return dummy result to skip profiling
+        return {"latency_ms": 0.0}
+
+    BenchmarkBase.profile = _warmup_profile
+    config._warmup_orig_profile = _orig_profile
 
     # --- Patch 2: cap compilation parallelism ---
     max_workers = int(os.environ.get("TILEOPS_WARMUP_MAX_WORKERS", "64"))
@@ -40,11 +52,31 @@ def pytest_configure(config):
     concurrent.futures.ThreadPoolExecutor = _CappedPool
 
 
+def pytest_runtest_teardown(item, nextitem):
+    """Release GPU memory after each test to prevent OOM across xdist workers.
+
+    Without this, each pytest-xdist worker accumulates GPU memory from compiled
+    kernels and tensors over its lifetime.  Since workers are long-lived
+    processes, idle workers hold onto GPU memory that active workers need,
+    eventually exhausting the device and causing the last worker to hang.
+    """
+    if os.environ.get("TILEOPS_WARMUP_MODE") != "1":
+        return
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gc.collect()
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def pytest_unconfigure(config):
     """Cleanup all patches."""
-    patcher = getattr(config, "_warmup_patcher", None)
-    if patcher is not None:
-        patcher.stop()
+    orig_profile = getattr(config, "_warmup_orig_profile", None)
+    if orig_profile is not None:
+        from benchmarks.benchmark import BenchmarkBase
+        BenchmarkBase.profile = orig_profile
 
     orig_pool = getattr(config, "_warmup_orig_pool", None)
     if orig_pool is not None:
