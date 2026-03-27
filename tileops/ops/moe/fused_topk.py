@@ -22,8 +22,11 @@ class FusedTopKOp(Op):
         num_tokens: Number of input tokens T.
         num_experts: Number of experts E.
         top_k: Number of experts to select per token K.
-        scoring_func: "softmax" (Qwen3/Qwen2) or "sigmoid" (DeepSeek-V3/GLM-4).
+        scoring_func: "softmax" (Qwen3/Qwen2) or "sigmoid" (DeepSeek-V3/GLM-4/Kimi K2).
         renormalize: If True, normalize top-k weights to sum to 1.
+        with_correction_bias: If True, forward() accepts a per-expert correction_bias
+            tensor.  Bias is added to sigmoid scores for selection only; output
+            weights remain the original sigmoid scores.  Requires scoring_func="sigmoid".
         kernel_map: Optional kernel map override.
         config: Optional kernel config dict.
 
@@ -41,6 +44,7 @@ class FusedTopKOp(Op):
         top_k: int,
         scoring_func: str = "softmax",
         renormalize: bool = False,
+        with_correction_bias: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         config: Optional[dict] = None,
     ):
@@ -49,6 +53,7 @@ class FusedTopKOp(Op):
         self.top_k = top_k
         self.scoring_func = scoring_func
         self.renormalize = renormalize
+        self.with_correction_bias = with_correction_bias
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["fused_topk_kernel"](
@@ -57,6 +62,7 @@ class FusedTopKOp(Op):
             top_k=top_k,
             scoring_func=scoring_func,
             renormalize=renormalize,
+            with_correction_bias=with_correction_bias,
             config=config,
         )
 
@@ -67,14 +73,17 @@ class FusedTopKOp(Op):
     def forward(
         self,
         gating_output: torch.Tensor,
+        correction_bias: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run top-k routing.
 
         Args:
             gating_output: [T, E] router logits (bf16, fp16, or float32).
+            correction_bias: [E] float32 per-expert bias.  Required when
+                with_correction_bias=True; must be None otherwise.
 
         Returns:
             topk_weights: [T, K] float32.
             topk_ids:     [T, K] int32.
         """
-        return self.kernel(gating_output)
+        return self.kernel(gating_output, correction_bias)
