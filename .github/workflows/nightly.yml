@@ -55,9 +55,6 @@ jobs:
               mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
               PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
-              MAX_JOBS=32 PIP_NO_BUILD_ISOLATION=1 pip install -e ".[bench]"
-              MAX_JOBS=32 pip install git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd \
-                || echo "::warning::native-sparse-attention installation failed; skipping"
 
               export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
               echo "Starting kernel cache warmup..."
@@ -119,9 +116,6 @@ jobs:
               done
 
               PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
-              MAX_JOBS=32 PIP_NO_BUILD_ISOLATION=1 pip install -e ".[bench]"
-              MAX_JOBS=32 pip install git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd \
-                || echo "::warning::native-sparse-attention installation failed; skipping"
 
               export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
               python -c "
