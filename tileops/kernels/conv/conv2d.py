@@ -6,24 +6,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.conv.common import conv_shared_memory_bytes, get_shared_memory_limit_bytes
 from tileops.kernels.kernel import Kernel
 from tileops.utils import get_sm_version
 
 __all__ = ["Conv2d1x1Kernel", "Conv2dKernel"]
-
-_HOPPER_SHARED_MEMORY_LIMIT_BYTES = 227 * 1024
-
-
-def _conv2d_shared_memory_bytes(
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    dtype: torch.dtype,
-) -> int:
-    dtype_bytes = torch.tensor([], dtype=dtype).element_size()
-    per_stage_bytes = (block_m * block_k + block_k * block_n) * dtype_bytes
-    return per_stage_bytes * max(1, num_stages)
 
 
 @functools.lru_cache(maxsize=32)
@@ -417,19 +404,20 @@ class Conv2dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
         configs = itertools.product(
             [64, 128],
             [64, 128, 256],
             [64, 128],
             [2, 3],
             [128, 256],
-            [True, False],
+            [True],
         )
         valid_configs = []
         for block_m, block_n, block_k, num_stages, threads, enable_rasteration in configs:
-            shared_memory_bytes = _conv2d_shared_memory_bytes(
+            shared_memory_bytes = conv_shared_memory_bytes(
                 block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > _HOPPER_SHARED_MEMORY_LIMIT_BYTES:
+            if shared_memory_bytes > shared_memory_limit_bytes:
                 continue
             valid_configs.append({
                 "block_m": block_m,
@@ -449,7 +437,7 @@ class Conv2dKernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        # OIHW -> HWIO to match the kernel layout (kernel_h, kernel_w, c_in, c_out).
+        # OIHW -> HWIO to match the kernel layout expected by the implicit GEMM path.
         weight_hwcf = weight.permute(2, 3, 1, 0).contiguous()
         return _conv2d_wrapped_kernel(
             self.n,
@@ -556,6 +544,7 @@ class Conv2d1x1Kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
         configs = itertools.product(
             [64, 128, 256],
             [64, 128, 256],
@@ -566,9 +555,9 @@ class Conv2d1x1Kernel(Kernel):
         )
         valid_configs = []
         for block_m, block_n, block_k, num_stages, threads, enable_rasteration in configs:
-            shared_memory_bytes = _conv2d_shared_memory_bytes(
+            shared_memory_bytes = conv_shared_memory_bytes(
                 block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > _HOPPER_SHARED_MEMORY_LIMIT_BYTES:
+            if shared_memory_bytes > shared_memory_limit_bytes:
                 continue
             valid_configs.append({
                 "block_m": block_m,
@@ -588,6 +577,7 @@ class Conv2d1x1Kernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
+        # OIHW -> OC,IC since the 1x1 kernel consumes a dense [C_out, C_in] weight matrix.
         weight_oc_ci = weight.view(self.c_out, self.c_in).contiguous()
         return _conv2d_1x1_wrapped_kernel(
             self.n,

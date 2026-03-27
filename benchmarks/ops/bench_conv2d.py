@@ -147,13 +147,13 @@ def test_conv2d_bench(
         dtype=dtype,
         tune=tune,
     )
-    result = bm.profile(op, *inputs, warmup=5, rep=10)
+    result = bm.profile(op, *inputs)
     BenchmarkReport.record("conv2d", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program_nchw, x_nchw, weight, bias, warmup=5, rep=10)
+    result_bl = bm.profile(test.ref_program_nchw, x_nchw, weight, bias)
     BenchmarkReport.record("conv2d", locals(), result_bl, tag="torch-nchw")
 
-    result_bl = bm.profile(test.ref_program_nhwc, x_nhwc, weight, bias, warmup=5, rep=10)
+    result_bl = bm.profile(test.ref_program_nhwc, x_nhwc, weight, bias)
     BenchmarkReport.record("conv2d", locals(), result_bl, tag="torch-nhwc")
 
 
