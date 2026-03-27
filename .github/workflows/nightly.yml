@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 60
     runs-on: [self-hosted, tile-ops, nightly]
     container:
-      image: tileops-runner:latest
+      image: ghcr.io/tile-ai/tileops-runner:latest
       options: --gpus '"device=1"'
       volumes:
         - /data/ci-cache/tilelang:/cache/tilelang
@@ -156,7 +156,7 @@ jobs:
     timeout-minutes: 120
     runs-on: [self-hosted, tile-ops, nightly]
     container:
-      image: tileops-runner:latest
+      image: ghcr.io/tile-ai/tileops-runner:latest
       options: --gpus '"device=1"'
       volumes:
         - /data/ci-cache/tilelang:/cache/tilelang
@@ -368,7 +368,7 @@ jobs:
     timeout-minutes: 180
     runs-on: [self-hosted, tile-ops, nightly]
     container:
-      image: tileops-runner:latest
+      image: ghcr.io/tile-ai/tileops-runner:latest
       options: --gpus '"device=1"'
       volumes:
         - /data/ci-cache/tilelang:/cache/tilelang
@@ -565,7 +565,7 @@ jobs:
       contents: write
     runs-on: [self-hosted, tile-ops, nightly]
     container:
-      image: tileops-runner:latest
+      image: ghcr.io/tile-ai/tileops-runner:latest
       options: --gpus '"device=1"'
       volumes:
         - /data/ci-cache/tilelang:/cache/tilelang
