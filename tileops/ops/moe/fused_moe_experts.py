@@ -203,7 +203,7 @@ class FusedMoeExpertsPadded(Op):
             )
 
         numel = num_tokens * top_k
-        _padded_batch_sum = numel + num_experts * _BLOCK_M
+        _padded_batch_sum = numel + (num_experts * (_BLOCK_M - 1))
 
         self._permute = MoePermutePaddedOp(
             num_tokens=num_tokens,
