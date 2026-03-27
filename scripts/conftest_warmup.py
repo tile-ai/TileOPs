@@ -23,8 +23,8 @@ def pytest_configure(config):
         return
 
     # --- Patch 1: skip baseline profiling (only compile/tune tileops kernels) ---
-    from tileops.ops.op import Op
     from benchmarks.benchmark import BenchmarkBase
+    from tileops.ops.op import Op
 
     _orig_profile = BenchmarkBase.profile
 
@@ -67,7 +67,7 @@ def pytest_runtest_teardown(item, nextitem):
         if torch.cuda.is_available():
             gc.collect()
             torch.cuda.empty_cache()
-    except Exception:
+    except (ImportError, AttributeError):
         pass
 
 
