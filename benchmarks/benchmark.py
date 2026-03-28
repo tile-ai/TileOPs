@@ -7,7 +7,6 @@ from typing import Any, Callable, Optional, Tuple
 
 import torch
 from torch.autograd.profiler import DeviceType
-from tilelang.profiler import do_bench
 
 from tests.test_base import TestBase
 
@@ -271,10 +270,10 @@ def bench_kernel(
     if has_args:
         tensor_mask = tuple(isinstance(a, torch.Tensor) for a in args)
         total_bytes = sum(a.nelement() * a.element_size()
-                          for a, m in zip(args, tensor_mask) if m)
+                          for a, m in zip(args, tensor_mask, strict=True) if m)
         if total_bytes * _N_CLONES <= _MAX_CLONE_BYTES:
             arg_pool = [
-                tuple(a.clone() if m else a for a, m in zip(args, tensor_mask))
+                tuple(a.clone() if m else a for a, m in zip(args, tensor_mask, strict=True))
                 for _ in range(_N_CLONES)
             ]
             def _run(i):
@@ -338,7 +337,7 @@ def bench_kernel(
                 _run(i)
                 end_events[i].record()
             torch.cuda.synchronize()
-            times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+            times = [s.elapsed_time(e) for s, e in zip(start_events, end_events, strict=True)]
             trial_means.append(sum(times) / len(times))
 
     # Free the arg pool and release cached GPU memory to prevent
