@@ -9,7 +9,6 @@ from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdTest
 from tileops.ops import GqaSlidingWindowVarlenFwdOp
 
-
 _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = [
     pytest.param(1, [3000], [3000], 32, 8, 128, True, -1, -1, torch.float16, False, id="single-seq-causal"),
     pytest.param(2, [1537, 3073], [1537, 3073], 32, 8, 128, True, 2000, -1, torch.float16, False, id="mixed-length-left-window"),
