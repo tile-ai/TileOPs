@@ -1,26 +1,216 @@
 # Op Manifest Specification
 
-`ops_manifest.yaml` is the central op registry and the agent entry point. Every operator has a declarative spec here before code is written. The spec drives code generation, test validation, performance evaluation, and documentation — but does not affect runtime. The user-facing API remains plain Python classes.
+`ops_manifest.yaml` is the central op registry, the agent entry point, and the **source of truth** for op interfaces. Runtime code (including `Op.infer_shape()`) is generated from the manifest, not the other way around.
 
 ```
 ops_manifest.yaml (spec)
        │
-       ├──→ Agent reads spec, generates minimal Python code
+       ├──→ Agent generates Op code + Op.infer_shape()
        ├──→ Test generator reads workloads + tolerance
        ├──→ Benchmark reads workloads
        ├──→ Roofline reads flops/bytes formulas
        └──→ Docs generator reads signatures
 ```
 
+## Trust Model
+
+The manifest separates specification from implementation. Op interfaces are declared in the manifest and reviewed by humans; code is generated from the manifest and validated programmatically.
+
+**Motivation.** When the same agent produces both kernel code and test code, test inputs and tolerances may inadvertently align with implementation behavior rather than mathematical correctness. A human-reviewed spec with automated validation reduces this coupling.
+
+```
+Human reviews manifest (source of truth)
+  │
+  ├──→ Parser derives programmatic checks (CI enforces)
+  │     ├─ Op.forward() signature matches manifest
+  │     ├─ Tests cover all declared dtypes/shapes
+  │     ├─ Benchmarks use declared workloads
+  │     ├─ infer_shape() is consistent with shape_rules
+  │     └─ constraints are respected
+  │
+  └──→ Agent generates code within spec constraints
+        ├─ Manifest changes require human approval
+        ├─ Generated code must pass parser validation
+        └─ CI enforces validation
+```
+
+**Invariants:**
+
+1. The manifest is the sole source of truth for op interfaces. Changes require human review.
+1. Programmatic validation is derived from the manifest, not from the generating agent.
+1. Test coverage (shapes, dtypes, workloads) is determined by the manifest, not by the agent.
+1. Reference implementations are provided independently of kernel implementations. The spec defines *what*, the kernel implements *how*, the reference independently verifies *whether*.
+
 ## Fields
 
-Each manifest entry lives under the top-level `ops:` key and has a `family` field plus four sections: signature, workloads, roofline, and source.
+Each entry lives under the top-level `ops:` key:
 
-`family` is an explicit, machine-readable field for doc generation, API grouping, and tooling — not derived from source paths, which can change.
+| Field       | Required | Description                                                                      |
+| ----------- | -------- | -------------------------------------------------------------------------------- |
+| `family`    | yes      | Op family for grouping (e.g., `norm`, `attention`). Not derived from file paths. |
+| `signature` | yes      | Op interface. See [Signature](#signature).                                       |
+| `workloads` | yes      | Benchmark shapes/dtypes. See [Workloads](#workloads).                            |
+| `roofline`  | yes      | Performance model. See [Roofline](#roofline).                                    |
+| `source`    | yes      | Implementation file paths. See [Source](#source).                                |
 
 ### Signature
 
-Declares inputs, outputs, parameters, and optional shape rules:
+| Field          | Type | Required | Description                                                               |
+| -------------- | ---- | -------- | ------------------------------------------------------------------------- |
+| `inputs`       | list | yes      | Input tensors, positional order.                                          |
+| `outputs`      | list | yes      | Output tensors, positional order.                                         |
+| `params`       | list | no       | Scalar / config parameters.                                               |
+| `shape_rules`  | list | no       | Python expressions for shape inference. Used to generate `infer_shape()`. |
+| `dtype_combos` | list | no       | Valid dtype combinations. Overrides per-tensor `dtype` when present.      |
+
+**Tensor fields** (`inputs` / `outputs`):
+
+| Field         | Type   | Required | Description                                                                       |
+| ------------- | ------ | -------- | --------------------------------------------------------------------------------- |
+| `name`        | string | yes      | Identifier. Referenced in `shape_rules` and `same_as(ref)`.                       |
+| `dtype`       | string | yes      | `\|` for alternatives, `same_as(ref)` for dependent types.                        |
+| `shape`       | string | no       | Dimension names or `same_as(ref)`. Present = fixed rank, absent = arbitrary rank. |
+| `constraints` | map    | no       | Dimension restrictions. Requires `shape`.                                         |
+
+**Param fields**:
+
+| Field     | Type   | Required | Description                                          |
+| --------- | ------ | -------- | ---------------------------------------------------- |
+| `name`    | string | yes      | Identifier.                                          |
+| `type`    | string | yes      | Python type (`int`, `float`, `bool`, `"list[int]"`). |
+| `default` | any    | no       | Default value. Omit if required.                     |
+
+#### Rules
+
+**R1. List, not dict.** Signature fields use lists — preserves positional order (YAML mapping order is unspecified).
+
+**R2. Full interface.** Params include all mathematically supported parameters, even if the current kernel only supports the default.
+
+**R3. `dtype` syntax.** `|` for alternatives, `same_as(ref)` for dependent types.
+
+**R4. `dtype_combos`.** Enumerates valid cross-tensor dtype combinations. Source of truth when present; per-tensor `dtype` remains for documentation.
+
+```yaml
+dtype_combos:
+  - {x: float16, weight: float16}
+  - {x: float16, weight: float8_e4m3}
+  - {x: bfloat16, weight: bfloat16}
+```
+
+**R5. Output shape completeness.** Every output's shape must be fully specified via `shape`, `same_as(ref)`, and/or `shape_rules`. The manifest must be sufficient for generating `Op.infer_shape()`.
+
+**R6. `shape` present = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). Names become variables in `roofline` and `constraints`. No ellipsis or wildcards.
+
+**R7. `shape` absent = arbitrary rank.** Any number of dimensions. Axis constraints go in `params` + `shape_rules`.
+
+**R8. `same_as(ref)`.** Output has identical shape to the referenced tensor. Works for both fixed and arbitrary rank.
+
+**R9. Shared dimension names = equality.** `K` in two tensors means their sizes must match.
+
+**R10. `constraints`.** Restricts dimensions on tensors with `shape`. Values: `"64 | 128 | 256"` (enumerated) or `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"` (predicates).
+
+**R11. `shape_rules`.** Python expressions describing shape relationships. Agent generates `Op.infer_shape()` from these. Required when `shape` + `same_as` cannot fully specify output shape.
+
+**R12. Manifest → `infer_shape()`.** Agent generates `Op.infer_shape()` from `shape`, `same_as(ref)`, and `shape_rules`. Manifest and code must be consistent.
+
+#### Shape Decision Tree
+
+Step 1 — declare output shape in the manifest. Step 2 — generate `Op.infer_shape()` from that declaration.
+
+**Step 1 — Declare:**
+
+```
+Output shape identical to an input?
+├─ YES → shape: "same_as(ref)"                            [R8]
+└─ NO
+   Fixed rank, expressible with dimension names?
+   ├─ YES → shape: "[D1, D2, ...]"                        [R6]
+   │   Inter-tensor relationships beyond shared names?
+   │   └─ YES → add shape_rules                           [R11]
+   └─ NO (arbitrary rank, depends on params)
+      └─ write shape_rules                                [R11]
+```
+
+Every leaf is a complete spec — no "omit and fallback" path.
+
+**Step 2 — Generate `Op.infer_shape()`:**
+
+| Declaration                             | Generated logic                                     |
+| --------------------------------------- | --------------------------------------------------- |
+| `shape: "same_as(ref)"`                 | `return ref.shape`                                  |
+| `shape: "[D1, D2, ...]"` + shared names | Return shape with matched dimensions from inputs    |
+| `shape_rules`                           | Translate expressions into Python shape computation |
+
+#### Examples
+
+**Fixed rank — GEMM** \[R1, R6, R9\]:
+
+```yaml
+# Shared K implies a.shape[1] == b.shape[0]
+inputs:
+  - {name: a, dtype: "float16 | bfloat16", shape: "[M, K]"}
+  - {name: b, dtype: "same_as(a)", shape: "[K, N]"}
+outputs:
+  - {name: c, dtype: "same_as(a)", shape: "[M, N]"}
+```
+
+**Fixed rank + constraints — FFT** \[R6, R8, R10\]:
+
+```yaml
+inputs:
+  - {name: x, dtype: "complex64", shape: "[M, N]", constraints: {N: "power_of_2"}}
+outputs:
+  - {name: y, dtype: "same_as(x)", shape: "same_as(x)"}
+```
+
+**Arbitrary rank + same_as — RMSNorm** \[R7, R8, R11\]:
+
+```yaml
+# No shape on x → any rank. dim selects axis. weight is 1-D along that axis.
+inputs:
+  - {name: x, dtype: "float16 | bfloat16"}
+  - {name: weight, dtype: "same_as(x)"}
+outputs:
+  - {name: y, dtype: "same_as(x)", shape: "same_as(x)"}
+params:
+  - {name: dim, type: int, default: -1}
+  - {name: eps, type: float, default: 1e-6}
+shape_rules:
+  - "weight.shape == (x.shape[dim],)"
+```
+
+**Arbitrary rank + shape_rules — Reduce** \[R7, R11\]:
+
+```yaml
+# Output rank depends on dim and keepdim — shape_rules fully describe the logic.
+inputs:
+  - {name: x, dtype: "float16 | bfloat16"}
+outputs:
+  - {name: y, dtype: "same_as(x)"}
+params:
+  - {name: dim, type: "int | list[int]"}
+  - {name: keepdim, type: bool, default: false}
+shape_rules:
+  - "y.ndim == x.ndim if keepdim else x.ndim - len(dim)"
+  - "y.shape[i] == 1 if i in dim and keepdim else x.shape[i]"
+```
+
+**Arbitrary rank + shape_rules — Transpose** \[R7, R11\]:
+
+```yaml
+# Same rank, permuted dimensions.
+inputs:
+  - {name: x, dtype: "float16 | bfloat16"}
+outputs:
+  - {name: y, dtype: "same_as(x)"}
+params:
+  - {name: dims, type: "list[int]"}
+shape_rules:
+  - "y.ndim == x.ndim"
+  - "y.shape[i] == x.shape[dims[i]]"
+```
+
+**Full entry — RMSNorm:**
 
 ```yaml
 ops:
@@ -29,79 +219,60 @@ ops:
 
     signature:
       inputs:
-        x: {dtype: "float16 | bfloat16"}
-        weight: {dtype: "same_as(x)"}
+        - {name: x, dtype: "float16 | bfloat16"}
+        - {name: weight, dtype: "same_as(x)"}
       outputs:
-        y: {dtype: "same_as(x)"}
+        - {name: y, dtype: "same_as(x)", shape: "same_as(x)"}
       params:
-        dim: {type: int, default: -1}
-        eps: {type: float, default: 1e-6}
+        - {name: dim, type: int, default: -1}
+        - {name: eps, type: float, default: 1e-6}
       shape_rules:
         - "weight.shape == (x.shape[dim],)"
-        - "y.shape == x.shape"
+
+    workloads:
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+      - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+
+    roofline:
+      flops: "4 * M * N"
+      bytes: "2 * (M * N + N + M * N)"
+
+    source:
+      kernel: tileops/kernels/norm/rms_norm.py
+      op: tileops/ops/norm/rms_norm.py
+      test: tests/ops/test_rms_norm.py
+      bench: benchmarks/ops/bench_rms_norm.py
 ```
-
-Conventions:
-
-- **Signature uses dict, not list.** Name is identity — making it a key (`x: {dtype: ...}`) is more concise than list items (`- name: x`).
-- **No per-tensor shape.** Tensor rank is intentionally unconstrained (DNN ops accept 1D, 2D, 3D, etc.). Shape relationships are expressed through `shape_rules`, not by fixing shape on each tensor.
-- **`dtype`** uses `|` for alternatives, `same_as(x)` for dependent types. Concrete entries may list dtypes explicitly.
-- **`shape_rules`** use Python expression syntax, are optional and best-effort.
-- **Params declare the full interface.** If an op mathematically supports a parameter (e.g., `dim` for norm), it belongs in the manifest even if the current kernel only supports the default value.
 
 ### Workloads
 
-Representative shape/dtype combinations for benchmarking:
+| Field     | Required | Description                                                       |
+| --------- | -------- | ----------------------------------------------------------------- |
+| `x_shape` | yes      | Input shape. Drives benchmark execution and code generation.      |
+| `dtypes`  | yes      | List of dtypes to test.                                           |
+| `label`   | no       | Human-readable tag. Auto-generated from shape + dtype if omitted. |
 
-```yaml
-workloads:
-  - x_shape: [2048, 4096]
-    dtypes: [float16, bfloat16]
-    label: "llama-3.1-8b-prefill"
-  - x_shape: [1, 4096]
-    dtypes: [bfloat16]
-    label: "llama-3.1-8b-decode"
-```
-
-- `x_shape` and `dtypes` are required — they drive benchmark execution and code generation. Kernel-level parameters (e.g., `M`/`N`) are derivable from shapes and should not be repeated.
-- `label` is optional — a human-readable tag for reports and dashboards. Tools auto-generate from shape + dtype when omitted.
-- Op-specific parameters (e.g., `dim` for norm, `causal` for attention) can be added per workload entry.
-
-Shapes are chosen by the op developer based on target model architectures.
+Op-specific parameters (e.g., `causal` for attention) can be added per entry. Shapes target real model architectures.
 
 ### Roofline
 
-Two modes — inline expression for simple ops, Python function reference for complex ops:
+| Mode     | Format                           | When to use                                                |
+| -------- | -------------------------------- | ---------------------------------------------------------- |
+| Inline   | `flops: "expr"`, `bytes: "expr"` | Simple arithmetic on dimension names.                      |
+| Function | `func: "module.path"`            | Complex formulas with multiple parameters or conditionals. |
 
-```yaml
-roofline:
-  flops: "4 * M * N"
-  bytes: "2 * (M * N + N + M * N)"
-```
-
-```yaml
-roofline:
-  func: "tileops.perf.formulas.gqa_prefill_fwd"
-```
-
-Referenced functions live in `tileops/perf/formulas.py` and return `{"flops": int, "bytes": int}`.
-
-The field is `bytes` (total bytes moved), not `memory` — maps directly to `bytes_moved` in the roofline formula `memory_time = bytes_moved / hbm_bandwidth`.
+Functions live in `tileops/perf/formulas.py`, return `{"flops": int, "bytes": int}`. The field is `bytes` (total bytes moved), not `memory`.
 
 ### Source
 
-Pointers to implementation files for navigation and CI validation:
-
-```yaml
-source:
-  kernel: tileops/kernels/norm/rms_norm.py
-  op: tileops/ops/norm/rms_norm.py
-  test: tests/ops/test_rms_norm.py
-  bench: benchmarks/ops/bench_rms_norm.py
-```
+| Field    | Required | Description                 |
+| -------- | -------- | --------------------------- |
+| `kernel` | yes      | Kernel implementation path. |
+| `op`     | yes      | Op class path.              |
+| `test`   | yes      | Test file path.             |
+| `bench`  | yes      | Benchmark file path.        |
 
 ## What Is NOT in the Manifest
 
-- **Reference implementations** — stay in test files as PyTorch code.
-- **Kernel implementation details** — tile sizes, memory strategies, `num_per_thread` are implementation choices.
+- **Kernel implementation details** — tile sizes, memory strategies, `num_per_thread`.
 - **Autotuning configuration** — handled by the kernel layer.

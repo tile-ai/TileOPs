@@ -1,29 +1,11 @@
 # ops_manifest.yaml -- Spec-driven op registry for TileOPs
 #
-# Schema
-# ------
-# ops:
-#   <op_name>:                       # Unique op identifier (e.g. rmsnorm_fwd)
-#     signature:
-#       inputs:   [{name, dtype, shape}]   # Input tensors
-#       outputs:  [{name, dtype, shape}]   # Output tensors
-#       params:   [{name, type, default}]  # Scalar / config parameters
-#       shape_rules: [str]                 # Optional Python expressions relating dimensions
-#     workloads:  [{x_shape, dtypes, label?}]  # Representative shapes for benchmarking
-#     roofline:                            # Analytical cost model
-#       flops: <expr>                      # Inline Python expression  -OR-
-#       bytes: <expr>                      #   both flops and bytes expressions
-#       func: <module:function>            # Alternative: reference to Python function
-#     source:
-#       kernel: <path>                     # Path to kernel implementation
-#       op:     <path>                     # Path to op wrapper
-#       test:   <path>                     # Path to test file
-#       bench:  <path>                     # Path to benchmark file
-#     family: <str>                     # Op family for grouping (e.g. norm, attention)
+# See docs/manifest.md for the full specification.
 #
 # Notes:
 # - Backward ops are registered as independent entries (e.g. rmsnorm_bwd).
-# - shape_rules use Python expression syntax and are optional.
+# - shape_rules use Python expression syntax. Agent generates Op.infer_shape()
+#   from shape, same_as(ref), and shape_rules declared in the manifest.
 # - roofline supports two modes: inline expressions (flops/bytes) or func.
 
 ops:
@@ -33,15 +15,13 @@ ops:
     signature:
       inputs:
         - name: x
-          dtype: "{float16, bfloat16}"
-          shape: "[M, N]"
+          dtype: "float16 | bfloat16"
         - name: weight
-          dtype: "{float16, bfloat16}"
-          shape: "[N]"
+          dtype: "same_as(x)"
       outputs:
         - name: y
-          dtype: "{float16, bfloat16}"
-          shape: "[M, N]"
+          dtype: "same_as(x)"
+          shape: "same_as(x)"
       params:
         - name: dim
           type: int
@@ -50,8 +30,7 @@ ops:
           type: float
           default: 1.0e-6
       shape_rules:
-        - "weight.shape == (x.shape[-1],)"
-        - "y.shape == x.shape"
+        - "weight.shape == (x.shape[dim],)"
 
     workloads:
       # Llama-3.1-8B (hidden_dim=4096)
