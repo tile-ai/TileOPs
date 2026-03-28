@@ -21,31 +21,10 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport, _shared_cupti_session
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_moe_unpermute import MoeUnpermuteTest
 from tests.test_base import FixtureBase
 from tileops.ops.moe import MoeUnpermuteOp
-
-# ---------------------------------------------------------------------------
-# CUPTI warmup
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session", autouse=True)
-def warmup_cupti():
-    if True:  # bench_kernel manages its own profiler; no external warmup needed
-        return
-    dummy = torch.empty(1, device="cuda")
-    schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)
-    with torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CUDA],
-        schedule=schedule,
-    ) as prof:
-        for _ in range(2):
-            dummy.zero_()
-            prof.step()
-    torch.cuda.synchronize()
-
 
 # ---------------------------------------------------------------------------
 # Benchmark fixture (production-scale configs)

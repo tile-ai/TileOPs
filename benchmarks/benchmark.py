@@ -314,9 +314,9 @@ def bench_kernel(
             with profiler:
                 for _ in range(n_trials):
                     # Warmup step (discarded by schedule)
-                    for _ in range(n_repeat):
+                    for i in range(n_repeat):
                         cache.zero_()
-                        _run(0)
+                        _run(i)
                     profiler.step()
                     # Active step (measured → _on_trace_ready)
                     for i in range(n_repeat):
