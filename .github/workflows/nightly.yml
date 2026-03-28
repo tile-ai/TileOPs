@@ -26,11 +26,18 @@ jobs:
     timeout-minutes: 60
     runs-on: [self-hosted, tile-ops, nightly]
     steps:
+      - name: Fix workspace ownership
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            --entrypoint chown \
+            tileops-runner:latest \
+            -R "$(id -u):$(id -g)" /workspace
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: false
 
       - name: Warm kernel compilation cache
         continue-on-error: true
@@ -72,11 +79,18 @@ jobs:
     timeout-minutes: 120
     runs-on: [self-hosted, tile-ops, nightly]
     steps:
+      - name: Fix workspace ownership
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            --entrypoint chown \
+            tileops-runner:latest \
+            -R "$(id -u):$(id -g)" /workspace
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: false
 
       - name: Run benchmark ops
         id: benchmark_tests
@@ -163,11 +177,18 @@ jobs:
     timeout-minutes: 180
     runs-on: [self-hosted, tile-ops, nightly]
     steps:
+      - name: Fix workspace ownership
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            --entrypoint chown \
+            tileops-runner:latest \
+            -R "$(id -u):$(id -g)" /workspace
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: false
 
       - name: Run full op tests
         id: op_tests
@@ -291,10 +312,16 @@ jobs:
       contents: write
     runs-on: [self-hosted, tile-ops, nightly]
     steps:
+      - name: Fix workspace ownership
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            --entrypoint chown \
+            tileops-runner:latest \
+            -R "$(id -u):$(id -g)" /workspace
+
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          clean: false
 
       - name: Build and test wheel package
         run: |
