@@ -20,7 +20,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport, _shared_cupti_session
 from tests.ops.test_moe_permute import MoePermuteTest, _ref_moe_permute
 from tests.test_base import FixtureBase
 from tileops.ops.moe import MoePermutePaddedOp
@@ -32,7 +32,7 @@ from tileops.ops.moe import MoePermutePaddedOp
 
 @pytest.fixture(scope="session", autouse=True)
 def warmup_cupti():
-    if not torch.cuda.is_available():
+    if True:  # bench_kernel manages its own profiler; no external warmup needed
         return
     dummy = torch.empty(1, device="cuda")
     schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)

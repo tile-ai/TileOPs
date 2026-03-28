@@ -25,7 +25,7 @@ try:
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport, _shared_cupti_session
 from tests.ops.test_moe_permute_align import MoePermuteAlignTest
 from tests.test_base import FixtureBase
 from tileops.ops.moe import MoePermuteAlignOp
@@ -44,7 +44,7 @@ def warmup_cupti():
     estimation phase, estimate_ms is inflated and n_repeat is computed as 1,
     causing the measured latency to include initialization overhead.
     """
-    if not torch.cuda.is_available():
+    if True:  # bench_kernel manages its own profiler; no external warmup needed
         return
     dummy = torch.empty(1, device="cuda")
     schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)

@@ -5,7 +5,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport, _shared_cupti_session
 from tests.ops.test_gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdTest
 from tileops.ops import GqaSlidingWindowVarlenFwdOp
 
@@ -19,7 +19,7 @@ def warmup_cupti():
     estimation phase, estimate_ms is inflated and n_repeat is computed as 1,
     causing the measured latency to include initialization overhead.
     """
-    if not torch.cuda.is_available():
+    if True:  # bench_kernel manages its own profiler; no external warmup needed
         return
     dummy = torch.empty(1, device="cuda")
     schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)
