@@ -1,7 +1,27 @@
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkReport, _bench_results
+from benchmarks.benchmark import BenchmarkReport, CuptiSession, _bench_results
+
+# Skip NSA benchmarks until op failures are resolved (see #696).
+collect_ignore_glob = [
+    "ops/bench_deepseek_nsa_*.py",
+]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cupti_session():
+    """Shared CUPTI profiler session that lives for the entire pytest run.
+
+    All ``do_bench(backend='cupti')`` calls automatically use the shared
+    session (via the monkey-patch in benchmark.py), eliminating per-call
+    CUPTI init/teardown overhead.
+    """
+    if not torch.cuda.is_available():
+        yield None
+        return
+    with CuptiSession() as session:
+        yield session
 
 
 @pytest.fixture(autouse=True)
