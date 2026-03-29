@@ -15,7 +15,7 @@ class ReluFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             # Smoke: fp16, 1M elements
-            pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
             # Full: other dtypes and sizes
             pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),

@@ -14,7 +14,7 @@ class Conv1dFixture(FixtureBase):
         ("n, c_in, l_in, c_out, kernel_size, stride, padding, dtype, tune", [
             pytest.param(
                 2, 64, 512, 128, 3, 1, 1, torch.float16, False,
-                marks=pytest.mark.smoke,
+                marks=[pytest.mark.smoke, pytest.mark.packaging],
                 id="smoke-tcn-k3-s1-fp16",
             ),
             pytest.param(

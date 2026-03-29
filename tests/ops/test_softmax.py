@@ -42,7 +42,7 @@ class SoftmaxFixture(FixtureBase):
             "m, n, dtype, tune",
             [
                 # Smoke: first param — small data, fp32, pow2 dim
-                pytest.param(32, 256, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(32, 256, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
                 # Full: all dtypes x pow2/non-pow2 x normal-M/tail-M (small data)
                 pytest.param(32, 256, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(32, 256, torch.bfloat16, False, marks=pytest.mark.full),

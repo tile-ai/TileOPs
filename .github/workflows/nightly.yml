@@ -359,10 +359,11 @@ jobs:
               ls -lh dist/*.whl
 
               echo "=== Install built wheel ==="
-              pip install --force-reinstall dist/*.whl
+              pip install dist/*.whl
 
               TMP_TEST_DIR="$(mktemp -d)"
               cp -r tests "${TMP_TEST_DIR}/tests"
+              cp pyproject.toml "${TMP_TEST_DIR}/"
               cd "${TMP_TEST_DIR}"
 
               echo "=== Runtime cache env ==="
@@ -370,8 +371,8 @@ jobs:
               echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
               echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
-              echo "=== Run pytest smoke ==="
-              python -m pytest -q tests/ops -m "smoke" \
+              echo "=== Run pytest packaging ==="
+              python -m pytest -q tests/ops -m "packaging" \
                 --junit-xml=/workspace/packaging_smoke.xml
             ' 2>&1 | tee packaging.log
         shell: bash

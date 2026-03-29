@@ -305,7 +305,7 @@ class RopeBasicFixture(FixtureBase):
     """Basic RoPE fixture: shapes x dtypes."""
     PARAMS = [
         ("batch, seq_len, num_heads, head_dim, dtype", [
-            pytest.param(2, 128, 8, 64, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 128, 8, 64, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
             pytest.param(2, 128, 8, 64, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(2, 128, 8, 64, torch.float32, marks=pytest.mark.full),
             pytest.param(1, 256, 4, 128, torch.float16, marks=pytest.mark.full),
