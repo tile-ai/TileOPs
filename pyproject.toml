@@ -123,4 +123,5 @@ markers = [
     "smoke: fast PR critical-path tests",
     "full: standard correctness coverage",
     "nightly: exhaustive or long-running coverage",
+    "packaging: minimal wheel-install sanity check (one case per op family)",
 ]
