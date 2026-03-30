@@ -4,6 +4,14 @@
 
 Design rationale: `TileOpsGov/docs/manifest-design-rationale.md`
 
+## Trust Model
+
+1. The manifest is the sole source of truth for op interfaces. Changes require human review.
+1. Programmatic validation is derived from the manifest, not from the generating agent.
+1. Test coverage (shapes, dtypes, workloads) is determined by the manifest, not by the agent.
+1. `Op.forward()` signature must match the manifest. CI enforces this.
+1. Benchmarks must use declared workloads. No hardcoded shapes.
+
 ## Entry Structure
 
 Each entry lives under `ops:`:
