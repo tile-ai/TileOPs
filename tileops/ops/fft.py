@@ -18,6 +18,9 @@ class FFTC2COp(Op):
     Computes the one-dimensional discrete Fourier transform of complex input.
     This is equivalent to torch.fft.fft.
 
+    Supports batched input: any leading dimensions are flattened into a single
+    batch dimension, processed in parallel by the kernel, and reshaped back.
+
     Uses pre-computed twiddle factor LUT and shared-memory butterfly fusion
     for optimal GPU performance.
 
@@ -35,12 +38,22 @@ class FFTC2COp(Op):
                  kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
         self.n = n
         self.dtype = dtype
+        self._tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["fft_c2c_kernel"](n, dtype, tune=tune)
+        self._kernel_cache: Dict[int, Kernel] = {}
+        # Default kernel for Op base class compatibility
+        self.kernel = self._get_kernel(1)
 
-        # Pre-compute twiddle LUT on CPU and move to GPU once
+        # Pre-compute twiddle LUT on CPU and move to GPU once (shared across batch sizes)
         self.twiddle_real, self.twiddle_imag = self._build_lut(n, dtype)
+
+    def _get_kernel(self, batch_size: int) -> Kernel:
+        if batch_size not in self._kernel_cache:
+            self._kernel_cache[batch_size] = self.kernel_map["fft_c2c_kernel"](
+                self.n, batch_size, self.dtype, tune=self._tune,
+            )
+        return self._kernel_cache[batch_size]
 
     @staticmethod
     def _build_lut(n: int, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
@@ -84,25 +97,26 @@ class FFTC2COp(Op):
         """
         x_real = x.real.contiguous()
         x_imag = x.imag.contiguous()
-
         original_shape = x.shape
+
         if x.ndim > 1:
             batch_size = x_real[..., 0].numel()
             x_real = x_real.reshape(batch_size, self.n)
             x_imag = x_imag.reshape(batch_size, self.n)
-
-            y_real_list = []
-            y_imag_list = []
-            for i in range(batch_size):
-                y_r, y_i = self.kernel(x_real[i], x_imag[i],
-                                       self.twiddle_real, self.twiddle_imag)
-                y_real_list.append(y_r)
-                y_imag_list.append(y_i)
-
-            y_real = torch.stack(y_real_list).reshape(original_shape)
-            y_imag = torch.stack(y_imag_list).reshape(original_shape)
         else:
-            y_real, y_imag = self.kernel(x_real, x_imag,
-                                         self.twiddle_real, self.twiddle_imag)
+            batch_size = 1
+            x_real = x_real.unsqueeze(0)
+            x_imag = x_imag.unsqueeze(0)
+
+        kernel = self._get_kernel(batch_size)
+        y_real, y_imag = kernel(x_real, x_imag,
+                                self.twiddle_real, self.twiddle_imag)
+
+        if x.ndim > 1:
+            y_real = y_real.reshape(original_shape)
+            y_imag = y_imag.reshape(original_shape)
+        else:
+            y_real = y_real.squeeze(0)
+            y_imag = y_imag.squeeze(0)
 
         return torch.complex(y_real, y_imag)

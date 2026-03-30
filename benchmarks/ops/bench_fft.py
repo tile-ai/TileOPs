@@ -12,15 +12,18 @@ from tileops.ops import FFTC2COp
 
 class FFTBenchmarkFixture(FixtureBase):
     PARAMS = [
-        ("n, dtype, tune", [
-            (4096, torch.complex64, True),
-            (8192, torch.complex64, True),
-            (16384, torch.complex64, True),
-            (32768, torch.complex64, True),
-            (4096, torch.complex128, True),
-            (8192, torch.complex128, True),
-            (16384, torch.complex128, True),
-            (32768, torch.complex128, True),
+        ("n, dtype, tune, batch_shape", [
+            (4096, torch.complex64, True, ()),
+            (16384, torch.complex64, True, ()),
+            (65536, torch.complex64, True, ()),
+            (262144, torch.complex64, True, ()),
+            (1048576, torch.complex64, True, ()),
+            (4096, torch.complex64, True, (64,)),
+            (4096, torch.complex64, True, (256,)),
+            (1024, torch.complex64, True, (1024,)),
+            (4096, torch.complex128, True, ()),
+            (65536, torch.complex128, True, ()),
+            (4096, torch.complex128, True, (64,)),
         ]),
     ]
 
@@ -29,21 +32,28 @@ class FFTBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         n = self.test.n
-        return 5.0 * n * math.log2(n)
+        batch = math.prod(self.test.batch_shape) if self.test.batch_shape else 1
+        return batch * 5.0 * n * math.log2(n)
 
     def calculate_memory(self) -> Optional[float]:
         n = self.test.n
         dtype = self.test.dtype
-        return 2 * n * torch.empty(1, dtype=dtype).element_size()
+        batch = math.prod(self.test.batch_shape) if self.test.batch_shape else 1
+        return batch * 2 * n * torch.empty(1, dtype=dtype).element_size()
 
 
 @FFTBenchmarkFixture
-def test_fft_bench(n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = FFTTest(n, dtype)
+def test_fft_bench(n: int, dtype: torch.dtype, tune: bool, batch_shape: tuple) -> None:
+    test = FFTTest(n, dtype, batch_shape=batch_shape)
     bm = FFTBenchmark(test)
     inputs = test.gen_inputs()
 
     op = FFTC2COp(n, dtype=dtype, tune=tune)
+
+    # Warmup: trigger JIT compilation before timed profiling
+    op(*inputs)
+    torch.cuda.synchronize()
+
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

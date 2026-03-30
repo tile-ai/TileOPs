@@ -13,10 +13,13 @@ _PI = 3.14159265358979323846
 
 
 @functools.lru_cache(maxsize=32)
-def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
+def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Callable:
     """
-    1D Complex-to-Complex FFT kernel with pre-computed twiddle LUT and
-    shared-memory (SMEM) stage fusion.
+    Batched 1D Complex-to-Complex FFT kernel with pre-computed twiddle LUT
+    and shared-memory (SMEM) stage fusion.
+
+    Processes *batch_size* independent 1D FFTs in parallel by mapping the
+    batch dimension to the kernel grid's y-axis.
 
     Design (two-phase, single-launch for SMEM stages):
 
@@ -36,18 +39,16 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
       Stage s (half_m = 2^s) occupies LUT[half_m-1 : 2*half_m-1].
       LUT[half_m-1 + k] = exp(-2πi * k / m),  m = 2*half_m,  k = 0..half_m-1.
 
-    Reference: cuFFT optimization guide — precomputed twiddle tables + shared
-    memory butterflies eliminate redundant trig evaluation and global memory
-    traffic for early stages.
-
     Args:
-        n:     FFT size (must be a power of 2).
-        dtype: 'complex64' or 'complex128'.
+        n:          FFT size (must be a power of 2).
+        batch_size: Number of independent 1D FFTs to compute in parallel.
+        dtype:      'complex64' or 'complex128'.
 
     Returns:
         A JIT-decorated function _fft_lut_func(block_size, threads) that
         itself returns a compiled prim_func taking
         (x_real, x_imag, lut_real, lut_imag) and producing (y_real, y_imag).
+        Input/output tensors have shape (batch_size, n).
     """
     if dtype == 'complex64':
         real_dtype = 'float32'
@@ -61,6 +62,8 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
 
     log2n = int(math.log2(n))
     lut_size = n - 1  # total number of twiddle factors across all stages
+
+    B = batch_size  # shorter alias for tensor shapes
 
     @tilelang.jit(
         out_idx=[4, 5],
@@ -87,26 +90,18 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
 
         @T.macro
         def fused_bitrev_smem_stages(
-            x_real: T.Tensor((n,), real_dtype),
-            x_imag: T.Tensor((n,), real_dtype),
-            y_real: T.Tensor((n,), real_dtype),
-            y_imag: T.Tensor((n,), real_dtype),
+            x_real: T.Tensor((B, n), real_dtype),
+            x_imag: T.Tensor((B, n), real_dtype),
+            y_real: T.Tensor((B, n), real_dtype),
+            y_imag: T.Tensor((B, n), real_dtype),
         ):
             """
             Fused bit-reversal load + SMEM butterfly stages in a single kernel.
 
-            Each of the smem_blocks blocks:
-              1. Loads smem_per_block elements from x (at bit-reversed indices)
-                 into SMEM — this replaces the separate bit-reversal kernel.
-              2. Performs smem_stages butterfly stages in-place on SMEM data.
-              3. Writes smem_per_block results back to y.
-
-            The fused load eliminates one full kernel launch and one round-trip
-            to global memory compared to the two-kernel (bit-reversal + SMEM)
-            approach.  Random reads from the bit-reversed positions are the same
-            cost regardless of when they happen.
+            Grid: (smem_blocks, batch_size) — each (bx, bb) block handles one
+            chunk of one batch element entirely in shared memory.
             """
-            with T.Kernel(smem_blocks, threads=threads) as bx:
+            with T.Kernel(smem_blocks, B, threads=threads) as (bx, bb):
                 smem_r = T.alloc_shared([smem_per_block], real_dtype)
                 smem_i = T.alloc_shared([smem_per_block], real_dtype)
 
@@ -121,8 +116,8 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         for _bit in T.serial(log2n):
                             rev_idx = (rev_idx << 1) | (temp & 1)
                             temp = temp >> 1
-                        smem_r[i] = x_real[rev_idx]
-                        smem_i[i] = x_imag[rev_idx]
+                        smem_r[i] = x_real[bb, rev_idx]
+                        smem_i[i] = x_imag[bb, rev_idx]
 
                 # ---- load second half: smem[threads..smem_per_block-1] ----
                 for i in T.Parallel(threads):
@@ -136,8 +131,8 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         for _bit in T.serial(log2n):
                             rev_idx = (rev_idx << 1) | (temp & 1)
                             temp = temp >> 1
-                        smem_r[j] = x_real[rev_idx]
-                        smem_i[j] = x_imag[rev_idx]
+                        smem_r[j] = x_real[bb, rev_idx]
+                        smem_i[j] = x_imag[bb, rev_idx]
 
                 T.sync_threads()
 
@@ -179,38 +174,29 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
                 # ---- store ----
                 for i in T.Parallel(threads):
                     if i < smem_per_block:
-                        y_real[bx * smem_per_block + i] = smem_r[i]
-                        y_imag[bx * smem_per_block + i] = smem_i[i]
+                        y_real[bb, bx * smem_per_block + i] = smem_r[i]
+                        y_imag[bb, bx * smem_per_block + i] = smem_i[i]
 
                 for i in T.Parallel(threads):
                     j = i + threads
                     if j < smem_per_block:
-                        y_real[bx * smem_per_block + j] = smem_r[j]
-                        y_imag[bx * smem_per_block + j] = smem_i[j]
+                        y_real[bb, bx * smem_per_block + j] = smem_r[j]
+                        y_imag[bb, bx * smem_per_block + j] = smem_i[j]
 
         @T.macro
         def lut_butterfly_stage(
-            y_real: T.Tensor((n,), real_dtype),
-            y_imag: T.Tensor((n,), real_dtype),
+            y_real: T.Tensor((B, n), real_dtype),
+            y_imag: T.Tensor((B, n), real_dtype),
             lut_real: T.Tensor((lut_size,), real_dtype),
             lut_imag: T.Tensor((lut_size,), real_dtype),
             stage,
         ):
-            """
-            One butterfly stage using pre-computed LUT twiddle factors.
-
-            LUT offset for (stage, k): half_m - 1 + k,  half_m = 2^stage.
-            Avoids sin/cos entirely for large-stride stages where trig is expensive.
-
-            When stage is a compile-time Python int (called from range()),
-            half_m and m are compile-time constants, enabling the compiler to
-            replace division/modulo with shift/mask operations.
-            """
+            """One butterfly stage using pre-computed LUT twiddle factors."""
             half_m = 1 << stage
             m = half_m * 2
             lut_base = half_m - 1
 
-            with T.Kernel(T.ceildiv(n // 2, block_size), threads=threads) as bx:
+            with T.Kernel(T.ceildiv(n // 2, block_size), B, threads=threads) as (bx, bb):
                 for i in T.Parallel(block_size):
                     butterfly_idx = bx * block_size + i
                     if butterfly_idx < n // 2:
@@ -223,18 +209,18 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         tw_r = T.cast(lut_real[lut_offset], accum_dtype)
                         tw_i = T.cast(lut_imag[lut_offset], accum_dtype)
 
-                        u_r = T.cast(y_real[j_idx], accum_dtype)
-                        u_i = T.cast(y_imag[j_idx], accum_dtype)
-                        v_r = T.cast(y_real[l_idx], accum_dtype)
-                        v_i = T.cast(y_imag[l_idx], accum_dtype)
+                        u_r = T.cast(y_real[bb, j_idx], accum_dtype)
+                        u_i = T.cast(y_imag[bb, j_idx], accum_dtype)
+                        v_r = T.cast(y_real[bb, l_idx], accum_dtype)
+                        v_i = T.cast(y_imag[bb, l_idx], accum_dtype)
 
                         t_r = v_r * tw_r - v_i * tw_i
                         t_i = v_r * tw_i + v_i * tw_r
 
-                        y_real[j_idx] = T.cast(u_r + t_r, real_dtype)
-                        y_imag[j_idx] = T.cast(u_i + t_i, real_dtype)
-                        y_real[l_idx] = T.cast(u_r - t_r, real_dtype)
-                        y_imag[l_idx] = T.cast(u_i - t_i, real_dtype)
+                        y_real[bb, j_idx] = T.cast(u_r + t_r, real_dtype)
+                        y_imag[bb, j_idx] = T.cast(u_i + t_i, real_dtype)
+                        y_real[bb, l_idx] = T.cast(u_r - t_r, real_dtype)
+                        y_imag[bb, l_idx] = T.cast(u_i - t_i, real_dtype)
 
         def _butterfly(u_r, u_i, v_r, v_i, tw_r, tw_i):
             """Radix-2 butterfly: returns (u+t, u-t) where t = v * tw."""
@@ -244,30 +230,20 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
 
         @T.macro
         def lut_butterfly_radix4(
-            y_real: T.Tensor((n,), real_dtype),
-            y_imag: T.Tensor((n,), real_dtype),
+            y_real: T.Tensor((B, n), real_dtype),
+            y_imag: T.Tensor((B, n), real_dtype),
             lut_real: T.Tensor((lut_size,), real_dtype),
             lut_imag: T.Tensor((lut_size,), real_dtype),
             stage_lo,
         ):
-            """
-            Fused radix-4 butterfly combining two consecutive LUT stages
-            (stage_lo and stage_lo+1) into a single kernel launch.
+            """Fused radix-4 butterfly combining two consecutive LUT stages."""
+            q = 1 << stage_lo
+            m4 = q * 4
+            lut_base_lo = q - 1
+            lut_base_hi = 2 * q - 1
+            n_groups = n // 4
 
-            Each thread processes 4 elements instead of 2, halving the number
-            of kernel launches and global memory round-trips for LUT stages.
-
-            Math: apply stage_lo butterflies (stride q) on pairs (a,b) and
-            (c,d), then stage_lo+1 butterflies (stride 2q) on pairs (a',c')
-            and (b',d').  The second pair's twiddle is w2 * (-i).
-            """
-            q = 1 << stage_lo           # stride for stage_lo
-            m4 = q * 4                  # combined group size
-            lut_base_lo = q - 1         # LUT offset for stage_lo
-            lut_base_hi = 2 * q - 1     # LUT offset for stage_lo+1
-            n_groups = n // 4           # total radix-4 groups
-
-            with T.Kernel(T.ceildiv(n_groups, block_size), threads=threads) as bx:
+            with T.Kernel(T.ceildiv(n_groups, block_size), B, threads=threads) as (bx, bb):
                 for i in T.Parallel(block_size):
                     gidx = bx * block_size + i
                     if gidx < n_groups:
@@ -275,71 +251,54 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         k = gidx % q
                         base = grp * m4 + k
 
-                        # Load 4 elements
-                        a_r = T.cast(y_real[base], accum_dtype)
-                        a_i = T.cast(y_imag[base], accum_dtype)
-                        b_r = T.cast(y_real[base + q], accum_dtype)
-                        b_i = T.cast(y_imag[base + q], accum_dtype)
-                        c_r = T.cast(y_real[base + 2 * q], accum_dtype)
-                        c_i = T.cast(y_imag[base + 2 * q], accum_dtype)
-                        d_r = T.cast(y_real[base + 3 * q], accum_dtype)
-                        d_i = T.cast(y_imag[base + 3 * q], accum_dtype)
+                        a_r = T.cast(y_real[bb, base], accum_dtype)
+                        a_i = T.cast(y_imag[bb, base], accum_dtype)
+                        b_r = T.cast(y_real[bb, base + q], accum_dtype)
+                        b_i = T.cast(y_imag[bb, base + q], accum_dtype)
+                        c_r = T.cast(y_real[bb, base + 2 * q], accum_dtype)
+                        c_i = T.cast(y_imag[bb, base + 2 * q], accum_dtype)
+                        d_r = T.cast(y_real[bb, base + 3 * q], accum_dtype)
+                        d_i = T.cast(y_imag[bb, base + 3 * q], accum_dtype)
 
-                        # Twiddle factors from LUT
                         w1_r = T.cast(lut_real[lut_base_lo + k], accum_dtype)
                         w1_i = T.cast(lut_imag[lut_base_lo + k], accum_dtype)
                         w2_r = T.cast(lut_real[lut_base_hi + k], accum_dtype)
                         w2_i = T.cast(lut_imag[lut_base_hi + k], accum_dtype)
 
-                        # Stage_lo: butterflies (a,b) and (c,d) with w1
                         ap_r, ap_i, bp_r, bp_i = _butterfly(a_r, a_i, b_r, b_i, w1_r, w1_i)
                         cp_r, cp_i, dp_r, dp_i = _butterfly(c_r, c_i, d_r, d_i, w1_r, w1_i)
 
-                        # Stage_lo+1: (a',c') with w2, (b',d') with w2*(-i)
                         tc_r = cp_r * w2_r - cp_i * w2_i
                         tc_i = cp_r * w2_i + cp_i * w2_r
-                        # w2*(-i) = (w2_i, -w2_r)
                         td2_r = dp_r * w2_i - dp_i * (-w2_r)
                         td2_i = dp_r * (-w2_r) + dp_i * w2_i
 
-                        # Store 4 results
-                        y_real[base] = T.cast(ap_r + tc_r, real_dtype)
-                        y_imag[base] = T.cast(ap_i + tc_i, real_dtype)
-                        y_real[base + 2 * q] = T.cast(ap_r - tc_r, real_dtype)
-                        y_imag[base + 2 * q] = T.cast(ap_i - tc_i, real_dtype)
-                        y_real[base + q] = T.cast(bp_r + td2_r, real_dtype)
-                        y_imag[base + q] = T.cast(bp_i + td2_i, real_dtype)
-                        y_real[base + 3 * q] = T.cast(bp_r - td2_r, real_dtype)
-                        y_imag[base + 3 * q] = T.cast(bp_i - td2_i, real_dtype)
+                        y_real[bb, base] = T.cast(ap_r + tc_r, real_dtype)
+                        y_imag[bb, base] = T.cast(ap_i + tc_i, real_dtype)
+                        y_real[bb, base + 2 * q] = T.cast(ap_r - tc_r, real_dtype)
+                        y_imag[bb, base + 2 * q] = T.cast(ap_i - tc_i, real_dtype)
+                        y_real[bb, base + q] = T.cast(bp_r + td2_r, real_dtype)
+                        y_imag[bb, base + q] = T.cast(bp_i + td2_i, real_dtype)
+                        y_real[bb, base + 3 * q] = T.cast(bp_r - td2_r, real_dtype)
+                        y_imag[bb, base + 3 * q] = T.cast(bp_i - td2_i, real_dtype)
 
         @T.macro
         def lut_butterfly_radix8(
-            y_real: T.Tensor((n,), real_dtype),
-            y_imag: T.Tensor((n,), real_dtype),
+            y_real: T.Tensor((B, n), real_dtype),
+            y_imag: T.Tensor((B, n), real_dtype),
             lut_real: T.Tensor((lut_size,), real_dtype),
             lut_imag: T.Tensor((lut_size,), real_dtype),
             stage_lo,
         ):
-            """
-            Fused radix-8 butterfly combining three consecutive LUT stages
-            (stage_lo, stage_lo+1, stage_lo+2) into a single kernel launch.
+            """Fused radix-8 butterfly combining three consecutive LUT stages."""
+            q = 1 << stage_lo
+            m8 = q * 8
+            lut1 = q - 1
+            lut2 = 2 * q - 1
+            lut3 = 4 * q - 1
+            n_groups = n // 8
 
-            Each thread processes 8 elements, reducing kernel launches by 3×
-            compared to radix-2 and by 1.5× compared to radix-4.
-
-            Algorithm:
-              Stage s  (stride q):   4 butterfly pairs with w1
-              Stage s+1 (stride 2q): 4 butterfly pairs with w2a, w2b
-              Stage s+2 (stride 4q): 4 butterfly pairs with w3a..w3d
-            """
-            q = 1 << stage_lo             # stride for stage_lo
-            m8 = q * 8                    # combined group size
-            lut1 = q - 1                  # LUT base for stage_lo
-            lut2 = 2 * q - 1             # LUT base for stage_lo+1
-            lut3 = 4 * q - 1             # LUT base for stage_lo+2
-            n_groups = n // 8             # total radix-8 groups
-
-            with T.Kernel(T.ceildiv(n_groups, block_size), threads=threads) as bx:
+            with T.Kernel(T.ceildiv(n_groups, block_size), B, threads=threads) as (bx, bb):
                 for i in T.Parallel(block_size):
                     gidx = bx * block_size + i
                     if gidx < n_groups:
@@ -347,36 +306,31 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         k = gidx % q
                         base = grp * m8 + k
 
-                        # Load 8 elements: x0..x7 at offsets 0, q, 2q, ..., 7q
-                        x0_r = T.cast(y_real[base], accum_dtype)
-                        x0_i = T.cast(y_imag[base], accum_dtype)
-                        x1_r = T.cast(y_real[base + q], accum_dtype)
-                        x1_i = T.cast(y_imag[base + q], accum_dtype)
-                        x2_r = T.cast(y_real[base + 2 * q], accum_dtype)
-                        x2_i = T.cast(y_imag[base + 2 * q], accum_dtype)
-                        x3_r = T.cast(y_real[base + 3 * q], accum_dtype)
-                        x3_i = T.cast(y_imag[base + 3 * q], accum_dtype)
-                        x4_r = T.cast(y_real[base + 4 * q], accum_dtype)
-                        x4_i = T.cast(y_imag[base + 4 * q], accum_dtype)
-                        x5_r = T.cast(y_real[base + 5 * q], accum_dtype)
-                        x5_i = T.cast(y_imag[base + 5 * q], accum_dtype)
-                        x6_r = T.cast(y_real[base + 6 * q], accum_dtype)
-                        x6_i = T.cast(y_imag[base + 6 * q], accum_dtype)
-                        x7_r = T.cast(y_real[base + 7 * q], accum_dtype)
-                        x7_i = T.cast(y_imag[base + 7 * q], accum_dtype)
+                        x0_r = T.cast(y_real[bb, base], accum_dtype)
+                        x0_i = T.cast(y_imag[bb, base], accum_dtype)
+                        x1_r = T.cast(y_real[bb, base + q], accum_dtype)
+                        x1_i = T.cast(y_imag[bb, base + q], accum_dtype)
+                        x2_r = T.cast(y_real[bb, base + 2 * q], accum_dtype)
+                        x2_i = T.cast(y_imag[bb, base + 2 * q], accum_dtype)
+                        x3_r = T.cast(y_real[bb, base + 3 * q], accum_dtype)
+                        x3_i = T.cast(y_imag[bb, base + 3 * q], accum_dtype)
+                        x4_r = T.cast(y_real[bb, base + 4 * q], accum_dtype)
+                        x4_i = T.cast(y_imag[bb, base + 4 * q], accum_dtype)
+                        x5_r = T.cast(y_real[bb, base + 5 * q], accum_dtype)
+                        x5_i = T.cast(y_imag[bb, base + 5 * q], accum_dtype)
+                        x6_r = T.cast(y_real[bb, base + 6 * q], accum_dtype)
+                        x6_i = T.cast(y_imag[bb, base + 6 * q], accum_dtype)
+                        x7_r = T.cast(y_real[bb, base + 7 * q], accum_dtype)
+                        x7_i = T.cast(y_imag[bb, base + 7 * q], accum_dtype)
 
-                        # ---- Stage s (stride q): 4 butterfly pairs with w1 ----
-                        # w1 = LUT[lut1 + k]
                         w1_r = T.cast(lut_real[lut1 + k], accum_dtype)
                         w1_i = T.cast(lut_imag[lut1 + k], accum_dtype)
 
-                        # ---- Stage s (stride q): 4 butterfly pairs with w1 ----
                         a0_r, a0_i, a1_r, a1_i = _butterfly(x0_r, x0_i, x1_r, x1_i, w1_r, w1_i)
                         a2_r, a2_i, a3_r, a3_i = _butterfly(x2_r, x2_i, x3_r, x3_i, w1_r, w1_i)
                         a4_r, a4_i, a5_r, a5_i = _butterfly(x4_r, x4_i, x5_r, x5_i, w1_r, w1_i)
                         a6_r, a6_i, a7_r, a7_i = _butterfly(x6_r, x6_i, x7_r, x7_i, w1_r, w1_i)
 
-                        # ---- Stage s+1 (stride 2q): pairs at distance 2q ----
                         w2a_r = T.cast(lut_real[lut2 + k], accum_dtype)
                         w2a_i = T.cast(lut_imag[lut2 + k], accum_dtype)
                         w2b_r = T.cast(lut_real[lut2 + k + q], accum_dtype)
@@ -387,7 +341,6 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         b4_r, b4_i, b6_r, b6_i = _butterfly(a4_r, a4_i, a6_r, a6_i, w2a_r, w2a_i)
                         b5_r, b5_i, b7_r, b7_i = _butterfly(a5_r, a5_i, a7_r, a7_i, w2b_r, w2b_i)
 
-                        # ---- Stage s+2 (stride 4q): pairs at distance 4q ----
                         w3a_r = T.cast(lut_real[lut3 + k], accum_dtype)
                         w3a_i = T.cast(lut_imag[lut3 + k], accum_dtype)
                         w3b_r = T.cast(lut_real[lut3 + k + q], accum_dtype)
@@ -402,32 +355,31 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
                         c2_r, c2_i, c6_r, c6_i = _butterfly(b2_r, b2_i, b6_r, b6_i, w3c_r, w3c_i)
                         c3_r, c3_i, c7_r, c7_i = _butterfly(b3_r, b3_i, b7_r, b7_i, w3d_r, w3d_i)
 
-                        # Store 8 results
-                        y_real[base] = T.cast(c0_r, real_dtype)
-                        y_imag[base] = T.cast(c0_i, real_dtype)
-                        y_real[base + q] = T.cast(c1_r, real_dtype)
-                        y_imag[base + q] = T.cast(c1_i, real_dtype)
-                        y_real[base + 2 * q] = T.cast(c2_r, real_dtype)
-                        y_imag[base + 2 * q] = T.cast(c2_i, real_dtype)
-                        y_real[base + 3 * q] = T.cast(c3_r, real_dtype)
-                        y_imag[base + 3 * q] = T.cast(c3_i, real_dtype)
-                        y_real[base + 4 * q] = T.cast(c4_r, real_dtype)
-                        y_imag[base + 4 * q] = T.cast(c4_i, real_dtype)
-                        y_real[base + 5 * q] = T.cast(c5_r, real_dtype)
-                        y_imag[base + 5 * q] = T.cast(c5_i, real_dtype)
-                        y_real[base + 6 * q] = T.cast(c6_r, real_dtype)
-                        y_imag[base + 6 * q] = T.cast(c6_i, real_dtype)
-                        y_real[base + 7 * q] = T.cast(c7_r, real_dtype)
-                        y_imag[base + 7 * q] = T.cast(c7_i, real_dtype)
+                        y_real[bb, base] = T.cast(c0_r, real_dtype)
+                        y_imag[bb, base] = T.cast(c0_i, real_dtype)
+                        y_real[bb, base + q] = T.cast(c1_r, real_dtype)
+                        y_imag[bb, base + q] = T.cast(c1_i, real_dtype)
+                        y_real[bb, base + 2 * q] = T.cast(c2_r, real_dtype)
+                        y_imag[bb, base + 2 * q] = T.cast(c2_i, real_dtype)
+                        y_real[bb, base + 3 * q] = T.cast(c3_r, real_dtype)
+                        y_imag[bb, base + 3 * q] = T.cast(c3_i, real_dtype)
+                        y_real[bb, base + 4 * q] = T.cast(c4_r, real_dtype)
+                        y_imag[bb, base + 4 * q] = T.cast(c4_i, real_dtype)
+                        y_real[bb, base + 5 * q] = T.cast(c5_r, real_dtype)
+                        y_imag[bb, base + 5 * q] = T.cast(c5_i, real_dtype)
+                        y_real[bb, base + 6 * q] = T.cast(c6_r, real_dtype)
+                        y_imag[bb, base + 6 * q] = T.cast(c6_i, real_dtype)
+                        y_real[bb, base + 7 * q] = T.cast(c7_r, real_dtype)
+                        y_imag[bb, base + 7 * q] = T.cast(c7_i, real_dtype)
 
         @T.prim_func
         def _fft_lut_main(
-            x_real: T.Tensor((n,), real_dtype),         # type: ignore
-            x_imag: T.Tensor((n,), real_dtype),         # type: ignore
+            x_real: T.Tensor((B, n), real_dtype),         # type: ignore
+            x_imag: T.Tensor((B, n), real_dtype),         # type: ignore
             lut_real: T.Tensor((lut_size,), real_dtype),  # type: ignore
             lut_imag: T.Tensor((lut_size,), real_dtype),  # type: ignore
-            y_real: T.Tensor((n,), real_dtype),         # type: ignore
-            y_imag: T.Tensor((n,), real_dtype),         # type: ignore
+            y_real: T.Tensor((B, n), real_dtype),         # type: ignore
+            y_imag: T.Tensor((B, n), real_dtype),         # type: ignore
         ) -> None:
             # Fused bit-reversal + SMEM butterfly stages: single kernel launch,
             # one global-memory read of x, one write of y for all SMEM stages.
@@ -461,6 +413,7 @@ def _fft_c2c_kernel(n: int, dtype: str = 'complex64') -> Callable:
 @torch.library.custom_op("top::fft_c2c_wrapped_kernel", mutates_args=())
 def _fft_c2c_wrapped_kernel(
     n: int,
+    batch_size: int,
     dtype: str,
     block_size: int,
     threads: int,
@@ -469,7 +422,7 @@ def _fft_c2c_wrapped_kernel(
     lut_real: torch.Tensor,
     lut_imag: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return _fft_c2c_kernel(n, dtype)(block_size, threads)(
+    return _fft_c2c_kernel(n, batch_size, dtype)(block_size, threads)(
         x_real, x_imag, lut_real, lut_imag
     )
 
@@ -477,6 +430,7 @@ def _fft_c2c_wrapped_kernel(
 @_fft_c2c_wrapped_kernel.register_fake
 def _(
     n: int,
+    batch_size: int,
     dtype: str,
     block_size: int,
     threads: int,
@@ -485,8 +439,8 @@ def _(
     real_dtype = inputs[0].dtype
     device = inputs[0].device
     return (
-        torch.empty((n,), dtype=real_dtype, device=device),
-        torch.empty((n,), dtype=real_dtype, device=device),
+        torch.empty((batch_size, n), dtype=real_dtype, device=device),
+        torch.empty((batch_size, n), dtype=real_dtype, device=device),
     )
 
 
@@ -525,13 +479,15 @@ class FFTC2CKernel(Kernel):
 
     def __init__(self,
                  n: int,
+                 batch_size: int = 1,
                  dtype: torch.dtype = torch.complex64,
                  tune: bool = False) -> None:
         super().__init__()
         self.n = n
+        self.batch_size = batch_size
         self.dtype = dtype
 
-        self.kernel = _fft_c2c_kernel(n, self.dtype_str)
+        self.kernel = _fft_c2c_kernel(n, batch_size, self.dtype_str)
         self.init_config(tune=tune)
 
     @property
@@ -579,6 +535,7 @@ class FFTC2CKernel(Kernel):
         """
         return _fft_c2c_wrapped_kernel(
             self.n,
+            self.batch_size,
             self.dtype_str,
             self.config["block_size"],
             self.config["threads"],
