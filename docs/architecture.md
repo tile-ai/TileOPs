@@ -20,7 +20,7 @@ graph TD
     M6["M6: HW Profile"]
     HW["HW Microbench"]
     M7["M7: CI Gate"]
-    M8["M8: Docs"]
+    M8["M8: Docs<br/>design + API + perf"]
 
     M1 -- "spec" --> M2
     M1 -- "workloads" --> M4
@@ -37,6 +37,7 @@ graph TD
     M3 --> M7
     M4 --> M7
 
+    M2 -- "design docs" --> M8
     M7 --> M8
 
     linkStyle 0 stroke:#059669,stroke-width:2px
@@ -45,7 +46,7 @@ graph TD
     linkStyle 4,5,6 stroke:#7c3aed,stroke-width:2px
     linkStyle 7,8 stroke:#e11d48,stroke-width:2px
     linkStyle 9,10 stroke:#d97706,stroke-width:2px
-    linkStyle 11 stroke:#2563eb,stroke-width:2px
+    linkStyle 11,12 stroke:#2563eb,stroke-width:2px
 ```
 
 🟢 Op Delivery 🟣 Perf Tuning 🔴 HW Calibration 🟠 CI Guard 🔵 Publish — dashed = not yet built
@@ -62,16 +63,16 @@ graph TD
 
 ### Module reference
 
-| Module              | Responsibility                                                      | Key Artifact                       |
-| ------------------- | ------------------------------------------------------------------- | ---------------------------------- |
-| **M1: Spec**        | Declare op interface, workloads, roofline formulas                  | `ops_manifest.yaml`                |
-| **M2: Kernel + Op** | GPU kernel implementations and user-facing Python API               | `tileops/kernels/`, `tileops/ops/` |
-| **M3: Correctness** | Numerical correctness against PyTorch reference                     | `tests/`                           |
-| **M4: Benchmark**   | Measure raw execution time per workload                             | `benchmarks/`                      |
-| **M5: Roofline**    | Hardware efficiency from raw time + formulas + HW profile           | `tileops/perf/`                    |
-| **M6: HW Profile**  | GPU hardware parameters (bandwidth, FLOPS) from offline calibration | `tileops/perf/profiles/`           |
-| **M7: CI Gate**     | Correctness and performance regression guard per PR                 | CI pipeline                        |
-| **M8: Docs**        | Auto-generated API reference, perf tables, support matrix           | TileOPs.github.io                  |
+| Module              | Responsibility                                                                                       | Key Artifact                       |
+| ------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| **M1: Spec**        | Declare op interface, workloads, roofline formulas                                                   | `ops_manifest.yaml`                |
+| **M2: Kernel + Op** | GPU kernel implementations and user-facing Python API                                                | `tileops/kernels/`, `tileops/ops/` |
+| **M3: Correctness** | Numerical correctness against PyTorch reference                                                      | `tests/`                           |
+| **M4: Benchmark**   | Measure raw execution time per workload                                                              | `benchmarks/`                      |
+| **M5: Roofline**    | Hardware efficiency from raw time + formulas + HW profile                                            | `tileops/perf/`                    |
+| **M6: HW Profile**  | GPU hardware parameters (bandwidth, FLOPS) from offline calibration                                  | `tileops/perf/profiles/`           |
+| **M7: CI Gate**     | Correctness and performance regression guard per PR                                                  | CI pipeline                        |
+| **M8: Docs**        | Design docs, API reference, perf tables — agent artifacts published alongside auto-generated content | TileOPs.github.io                  |
 
 ## Data Contracts
 
