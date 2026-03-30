@@ -23,6 +23,8 @@ graph TD
     M8["M8: Docs"]
 
     M1 -- "spec" --> M2
+    M1 -- "workloads" --> M4
+    M1 -- "formulas" --> M5
     M2 --> M3
 
     M2 --> M4
@@ -37,11 +39,13 @@ graph TD
 
     M7 --> M8
 
-    linkStyle 0,1 stroke:#059669,stroke-width:2px
-    linkStyle 2,3,4 stroke:#7c3aed,stroke-width:2px
-    linkStyle 5,6 stroke:#e11d48,stroke-width:2px
-    linkStyle 7,8 stroke:#d97706,stroke-width:2px
-    linkStyle 9 stroke:#2563eb,stroke-width:2px
+    linkStyle 0 stroke:#059669,stroke-width:2px
+    linkStyle 1,2 stroke:#7c3aed,stroke-width:1.5px,stroke-dasharray:6
+    linkStyle 3 stroke:#059669,stroke-width:2px
+    linkStyle 4,5,6 stroke:#7c3aed,stroke-width:2px
+    linkStyle 7,8 stroke:#e11d48,stroke-width:2px
+    linkStyle 9,10 stroke:#d97706,stroke-width:2px
+    linkStyle 11 stroke:#2563eb,stroke-width:2px
 ```
 
 🟢 Op Delivery 🟣 Perf Tuning 🔴 HW Calibration 🟠 CI Guard 🔵 Publish — dashed = not yet built
