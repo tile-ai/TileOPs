@@ -11,7 +11,7 @@ Baselines:
 FLOPs (same formula for both model families):
   Gate+up: T*K * 2*F*H * 2  FLOPs
   Down:    T*K *   H*F * 2  FLOPs
-  Total ≈  T*K * 4*F*H
+  Total =  T*K * 6*F*H
 
 Memory (dominant: weight reads):
   w_gate_up [E, 2F, H] + w_down [E, H, F]  (bf16)

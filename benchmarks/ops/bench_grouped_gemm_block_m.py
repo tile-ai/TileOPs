@@ -154,20 +154,6 @@ def test_grouped_gemm_block_m(label, true_batch_sizes, N, K):
         tflops = flops / ms * 1e-9
         results[bm] = (ms, tflops, padding_pct)
 
-    # vLLM reference (uniform routing, softmax=True assumed)
-    vllm_ms = None
-    if _VLLM_AVAILABLE:
-        hidden = torch.randn(true_sum // 8, 2048, dtype=dtype, device=device)
-        w_gate_up = torch.randn(E, N, K, dtype=dtype, device=device) * 0.02
-        w_down = torch.randn(E, K, N // 2, dtype=dtype, device=device) * 0.02
-        topk_weights = torch.ones(true_sum // 8, 8, dtype=dtype, device=device) / 8
-        topk_ids = torch.zeros(true_sum // 8, 8, dtype=torch.int64, device=device)
-        for i in range(true_sum // 8):
-            topk_ids[i] = torch.randperm(E)[:8]
-        _vllm_fused_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids)
-        torch.cuda.synchronize()
-        vllm_ms = _bench(
-            lambda: _vllm_fused_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids))
 
     # ── Report ────────────────────────────────────────────────────────────
     print(f"\n{'─'*65}")
@@ -180,8 +166,6 @@ def test_grouped_gemm_block_m(label, true_batch_sizes, N, K):
         speedup = base_ms / ms
         marker = " <--" if bm == min(results, key=lambda k: results[k][0]) else ""
         print(f"  {bm:>8}  {pct:>5.1f}%  {ms:>9.3f}ms  {tflops:>8.2f}  {speedup:>8.2f}x{marker}")
-    if vllm_ms is not None:
-        print(f"  {'vLLM':>8}  {'N/A':>6}  {vllm_ms:>9.3f}ms  (fused gate+up+silu+down)")
     print(f"{'─'*65}")
 
 

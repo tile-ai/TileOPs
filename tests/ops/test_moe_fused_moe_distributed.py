@@ -149,6 +149,9 @@ def test_kimi_k2_ep_distributed(T, E_global, K, H, F, world_size):
         )
         out_full = op_full(hidden, gating, w_gate_up_full, w_down_full, correction_bias)
 
+        # Higher tolerance (5e-2) needed for distributed EP: numerical variance from
+        # (1) different reduction order (local expert GEMMs → all-reduce vs full GEMM)
+        # (2) bfloat16 accumulation across multiple all-reduce operations
         torch.testing.assert_close(out_local.float(), out_full.float(), rtol=5e-2, atol=5e-2)
         print(f"PASS: 8-GPU EP (Kimi K2) [T={T}, E={E_global}, K={K}, H={H}, F={F}]")
 
@@ -232,6 +235,7 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
         torch.testing.assert_close(shared_out.float(), shared_out_full.float(), rtol=1e-5, atol=1e-5)
 
         # Verify routed output (after all-reduce)
+        # Higher tolerance needed due to distributed EP numerical variance (see line 155 comment)
         torch.testing.assert_close(routed_out_local.float(), routed_out_full.float(), rtol=5e-2, atol=5e-2)
 
         print(f"PASS: 8-GPU EP SharedFusedMoE [T={T}, E={E_global}, K={K}, H={H}, F={F}, shared_F={shared_F}]")
@@ -242,10 +246,10 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
 
 @DistributedFixture
 def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
-    """Multi-GPU EP test: TileOPs (expert_map) vs vLLM (All-to-All).
+    """Multi-GPU EP test: TileOPs (expert_map) vs vLLM (single-GPU baseline).
 
     TileOPs: uses expert_map local filtering, all-reduce routed output
-    vLLM: uses All-to-All dispatch/combine (real EP communication)
+    vLLM: single-GPU execution on rank-0 with full weights (baseline reference)
     Verifies: both produce same final output on rank-0
     """
     if not _VLLM_AVAILABLE:
@@ -308,6 +312,7 @@ def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
             inplace=False,
         ) * 2.827
 
+        # Higher tolerance needed due to distributed EP numerical variance (see line 155 comment)
         torch.testing.assert_close(out_tileops.float(), out_vllm.float(), rtol=5e-2, atol=5e-2)
         print(f"PASS: {world_size}-GPU EP TileOPs vs vLLM [T={T}, E={E_global}, K={K}, H={H}, F={F}]")
 
@@ -388,6 +393,7 @@ def test_fused_moe_vs_vllm_ep_layer(T, E_global, K, H, F, world_size):
     dist.all_reduce(out_vllm, op=dist.ReduceOp.SUM)
 
     # Compare outputs
+    # Higher tolerance needed due to distributed EP numerical variance (see line 155 comment)
     torch.testing.assert_close(out_tileops.float(), out_vllm.float(), rtol=5e-2, atol=5e-2)
 
     if rank == 0:
