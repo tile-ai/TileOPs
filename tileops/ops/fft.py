@@ -3,12 +3,12 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.fft import FFTC2CKernel, FFTC2CLUTKernel
+from tileops.kernels.fft import FFTC2CKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ['FFTC2COp', 'FFTC2CLUTOp']
+__all__ = ['FFTC2COp']
 
 
 class FFTC2COp(Op):
@@ -18,76 +18,8 @@ class FFTC2COp(Op):
     Computes the one-dimensional discrete Fourier transform of complex input.
     This is equivalent to torch.fft.fft.
 
-    Args:
-        n: FFT size (number of complex samples)
-        dtype: Data type for computation (default: torch.complex64)
-        tune: Whether to enable autotuning (default: False)
-        kernel_map: Optional custom kernel mapping for testing
-    """
-
-    def __init__(self,
-                 n: int,
-                 dtype: torch.dtype = torch.complex64,
-                 tune: bool = False,
-                 kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
-        self.n = n
-        self.dtype = dtype
-
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["fft_c2c_kernel"](n, dtype, tune=tune)
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fft_c2c_kernel": FFTC2CKernel}
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute 1D FFT of complex input.
-
-        Args:
-            x: Input tensor of shape (..., n) with complex dtype
-
-        Returns:
-            Output tensor of same shape as input with FFT applied along last dimension
-        """
-        x_real = x.real.contiguous()
-        x_imag = x.imag.contiguous()
-
-        original_shape = x.shape
-        if x.ndim > 1:
-            batch_size = x_real[..., 0].numel()
-            x_real = x_real.reshape(batch_size, self.n)
-            x_imag = x_imag.reshape(batch_size, self.n)
-
-            y_real_list = []
-            y_imag_list = []
-            for i in range(batch_size):
-                y_r, y_i = self.kernel(x_real[i], x_imag[i])
-                y_real_list.append(y_r)
-                y_imag_list.append(y_i)
-
-            y_real = torch.stack(y_real_list).reshape(original_shape)
-            y_imag = torch.stack(y_imag_list).reshape(original_shape)
-        else:
-            y_real, y_imag = self.kernel(x_real, x_imag)
-
-        return torch.complex(y_real, y_imag)
-
-
-class FFTC2CLUTOp(Op):
-    """
-    1D Complex-to-Complex FFT operation with CPU pre-computed twiddle factor LUT.
-
-    Computes the one-dimensional discrete Fourier transform of complex input.
-    This is equivalent to torch.fft.fft, but uses a pre-computed look-up table
-    (LUT) for twiddle factors instead of on-the-fly trigonometric evaluation.
-
-    The LUT is built on CPU at construction time and cached on GPU for the
-    lifetime of the Op. Each forward call passes the LUT tensors to the kernel.
-
-    LUT layout (flat array of size n-1):
-      Stage s has half_m = 2^s entries at offset (half_m - 1).
-      LUT[half_m - 1 + k] = exp(-2πi * k / 2^(s+1))
+    Uses pre-computed twiddle factor LUT and shared-memory butterfly fusion
+    for optimal GPU performance.
 
     Args:
         n: FFT size (number of complex samples, must be a power of 2)
@@ -105,7 +37,7 @@ class FFTC2CLUTOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["fft_c2c_lut_kernel"](n, dtype, tune=tune)
+        self.kernel = self.kernel_map["fft_c2c_kernel"](n, dtype, tune=tune)
 
         # Pre-compute twiddle LUT on CPU and move to GPU once
         self.twiddle_real, self.twiddle_imag = self._build_lut(n, dtype)
@@ -138,11 +70,11 @@ class FFTC2CLUTOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fft_c2c_lut_kernel": FFTC2CLUTKernel}
+        return {"fft_c2c_kernel": FFTC2CKernel}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Compute 1D FFT of complex input using pre-computed twiddle LUT.
+        Compute 1D FFT of complex input.
 
         Args:
             x: Input tensor of shape (..., n) with complex dtype

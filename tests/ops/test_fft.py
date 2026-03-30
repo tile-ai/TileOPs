@@ -28,12 +28,10 @@ class FFTTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> Tuple[torch.Tensor]:
-        # Generate random complex input
         x = torch.randn(self.n, device='cuda', dtype=self.dtype)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        # Use PyTorch's FFT as reference
         return torch.fft.fft(x, dim=-1)
 
 
