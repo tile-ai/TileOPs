@@ -315,8 +315,8 @@ ops:
     roofline:
       # 2-pass: compute mean/var over L elements per channel, then normalize. ≈ 10*C*L
       flops: "10 * C * L"
-      # Read x + write y + params (weight, bias, running stats)
-      bytes: "(2 * C * L + 4 * C) * elem_bytes"
+      # Read x + write y (elem_bytes each) + float32 params (weight, bias, running_mean, running_var)
+      bytes: "2 * C * L * elem_bytes + 4 * C * 4"
 
     source:
       kernel: tileops/kernels/norm/batch_norm.py
@@ -360,8 +360,8 @@ ops:
     roofline:
       # Backward: 3 reductions + elementwise ≈ 8*C*L
       flops: "8 * C * L"
-      # Read grad_out + read x + read weight + write grad_x + write grad_weight + write grad_bias
-      bytes: "(3 * C * L + 3 * C) * elem_bytes"
+      # Read grad_out + x + write grad_x (elem_bytes each) + float32 read weight + write grad_weight, grad_bias
+      bytes: "3 * C * L * elem_bytes + 3 * C * 4"
 
     source:
       kernel: tileops/kernels/norm/batch_norm.py
