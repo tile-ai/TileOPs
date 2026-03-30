@@ -12,43 +12,39 @@ One diagram, all modules. Edge color = which flow owns that edge.
 
 ```mermaid
 graph TD
-    HW["HW Microbench<br/>benchmarks/hardware/"]
     M1["M1: Spec<br/>ops_manifest.yaml"]
     M2["M2: Op + Kernel"]
     M3["M3: Correctness"]
     M4["M4: Benchmark"]
     M5["M5: Roofline"]
     M6["M6: HW Profile"]
+    HW["HW Microbench"]
     M7["M7: CI Gate"]
     M8["M8: Docs"]
 
-    M1 -- "signature, workloads" --> M2
-    M2 -- "Op callable" --> M3
+    M1 -- "spec" --> M2
+    M2 --> M3
 
-    M2 -- "Op callable" --> M4
-    M1 -- "workloads" --> M4
+    M2 --> M4
     M4 -- "raw time" --> M5
-    M1 -- "roofline formulas" --> M5
     M5 -. "SOL% < target" .-> M2
 
-    HW -- "measured BW, FLOPS" --> M6
-    M6 -- "GPU profile YAML" --> M5
+    HW --> M6
+    M6 -- "GPU profile" --> M5
 
-    M3 -- "pass/fail" --> M7
-    M4 -- "latency delta" --> M7
+    M3 --> M7
+    M4 -- "latency Δ" --> M7
 
-    M2 -- "docstring" --> M8
-    M5 -- "SOL%, bound type" --> M8
-    M7 -- "gate status" --> M8
+    M7 --> M8
 
     linkStyle 0,1 stroke:#059669,stroke-width:2px
-    linkStyle 2,3,4,5,6 stroke:#7c3aed,stroke-width:2px
-    linkStyle 7,8 stroke:#e11d48,stroke-width:2px
-    linkStyle 9,10 stroke:#d97706,stroke-width:2px
-    linkStyle 11,12,13 stroke:#2563eb,stroke-width:2px
+    linkStyle 2,3,4 stroke:#7c3aed,stroke-width:2px
+    linkStyle 5,6 stroke:#e11d48,stroke-width:2px
+    linkStyle 7,8 stroke:#d97706,stroke-width:2px
+    linkStyle 9 stroke:#2563eb,stroke-width:2px
 ```
 
-**Legend**: 🟢 Op Delivery 🟣 Perf Tuning 🔴 HW Calibration 🟠 CI Guard 🔵 Publish — dashed edge = feedback loop (not yet built)
+🟢 Op Delivery 🟣 Perf Tuning 🔴 HW Calibration 🟠 CI Guard 🔵 Publish — dashed = not yet built
 
 ### Flow status
 
