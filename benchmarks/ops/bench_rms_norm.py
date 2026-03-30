@@ -13,17 +13,21 @@ _OP_NAME = "rmsnorm_fwd"
 
 class RmsNormBenchmark(BenchmarkBase):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            t = self.test
+            elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
+            self._roofline_cache = eval_roofline(
+                _OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        flops, _ = eval_roofline(_OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)
-        return flops
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        _, mem_bytes = eval_roofline(_OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)
-        return mem_bytes
+        return self._get_roofline()[1]
 
 
 def _manifest_params():

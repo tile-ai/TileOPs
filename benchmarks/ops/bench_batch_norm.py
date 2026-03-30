@@ -26,44 +26,52 @@ _BWD_OP_NAME = "batchnorm_bwd"
 
 class BatchNormFwdBenchmark(BenchmarkBase):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
     def __init__(self, test, N, C, spatial):
         super().__init__(test)
         self.N = N
         self.C = C
         self.spatial = spatial
 
-    def _roofline_vars(self):
-        L = self.N * math.prod(self.spatial) if self.spatial else self.N
-        return dict(C=self.C, L=L, elem_bytes=2)
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            L = self.N * math.prod(self.spatial) if self.spatial else self.N
+            elem_bytes = torch.tensor([], dtype=self.test.dtype).element_size()
+            self._roofline_cache = eval_roofline(
+                _FWD_OP_NAME, C=self.C, L=L, elem_bytes=elem_bytes)
+        return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
-        flops, _ = eval_roofline(_FWD_OP_NAME, **self._roofline_vars())
-        return flops
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        _, mem_bytes = eval_roofline(_FWD_OP_NAME, **self._roofline_vars())
-        return mem_bytes
+        return self._get_roofline()[1]
 
 
 class BatchNormBwdBenchmark(BenchmarkBase):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
     def __init__(self, test, N, C, spatial):
         super().__init__(test)
         self.N = N
         self.C = C
         self.spatial = spatial
 
-    def _roofline_vars(self):
-        L = self.N * math.prod(self.spatial) if self.spatial else self.N
-        return dict(C=self.C, L=L, elem_bytes=2)
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            L = self.N * math.prod(self.spatial) if self.spatial else self.N
+            elem_bytes = torch.tensor([], dtype=self.test.dtype).element_size()
+            self._roofline_cache = eval_roofline(
+                _BWD_OP_NAME, C=self.C, L=L, elem_bytes=elem_bytes)
+        return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
-        flops, _ = eval_roofline(_BWD_OP_NAME, **self._roofline_vars())
-        return flops
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        _, mem_bytes = eval_roofline(_BWD_OP_NAME, **self._roofline_vars())
-        return mem_bytes
+        return self._get_roofline()[1]
 
 
 # ---------------------------------------------------------------------------
