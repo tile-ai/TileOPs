@@ -75,25 +75,28 @@ class TestOpSchema:
                 f"{op_name}: roofline must have (flops + bytes) or func"
             )
 
-    def test_every_tensor_has_name_and_dtype(self, all_ops):
+    def test_every_tensor_has_dtype(self, all_ops):
         for op_name, entry in all_ops.items():
             sig = entry["signature"]
             for direction in ("inputs", "outputs"):
-                for i, tensor in enumerate(sig[direction]):
-                    assert "name" in tensor, (
-                        f"{op_name}: {direction}[{i}] missing 'name'"
+                tensors = sig[direction]
+                assert isinstance(tensors, dict), (
+                    f"{op_name}: {direction} must be a dict"
+                )
+                for name, attrs in tensors.items():
+                    assert isinstance(attrs, dict), (
+                        f"{op_name}: {direction}.{name} must be a dict"
                     )
-                    assert "dtype" in tensor, (
-                        f"{op_name}: {direction}[{i}] missing 'dtype'"
+                    assert "dtype" in attrs, (
+                        f"{op_name}: {direction}.{name} missing 'dtype'"
                     )
 
     def test_every_output_has_explicit_shape(self, all_ops):
         for op_name, entry in all_ops.items():
             sig = entry["signature"]
             has_shape_rules = "shape_rules" in sig and len(sig["shape_rules"]) > 0
-            for tensor in sig["outputs"]:
-                name = tensor.get("name", "?")
-                has_shape = "shape" in tensor
+            for name, attrs in sig["outputs"].items():
+                has_shape = "shape" in attrs
                 assert has_shape or has_shape_rules, (
                     f"{op_name}: output '{name}' must have 'shape' or "
                     f"signature must have 'shape_rules'"
@@ -103,22 +106,21 @@ class TestOpSchema:
         for op_name, entry in all_ops.items():
             sig = entry["signature"]
             for direction in ("inputs", "outputs"):
-                for tensor in sig[direction]:
-                    if "constraints" not in tensor:
+                for name, attrs in sig[direction].items():
+                    if "constraints" not in attrs:
                         continue
-                    name = tensor.get("name", "?")
-                    assert "shape" in tensor, (
+                    assert "shape" in attrs, (
                         f"{op_name}: tensor '{name}' has constraints "
                         f"but no shape"
                     )
-                    shape_str = tensor["shape"]
+                    shape_str = attrs["shape"]
                     # Extract dimension names from "[D1, D2, ...]"
                     dims = {
                         d.strip()
                         for d in shape_str.strip("[]").split(",")
                         if d.strip()
                     }
-                    for ckey in tensor["constraints"]:
+                    for ckey in attrs["constraints"]:
                         assert ckey in dims, (
                             f"{op_name}: tensor '{name}' constraint key "
                             f"'{ckey}' not in shape dims {dims}"
@@ -129,11 +131,7 @@ class TestOpSchema:
             sig = entry["signature"]
             if "dtype_combos" not in sig:
                 continue
-            declared = {
-                t["name"]
-                for t in sig["inputs"] + sig["outputs"]
-                if "name" in t
-            }
+            declared = set(sig["inputs"].keys()) | set(sig["outputs"].keys())
             for i, combo in enumerate(sig["dtype_combos"]):
                 assert isinstance(combo, dict), (
                     f"{op_name}: dtype_combos[{i}] must be a mapping"
