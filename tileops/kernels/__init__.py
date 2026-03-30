@@ -22,7 +22,7 @@ from .deltanet_recurrence import DeltaNetDecodeFP32Kernel, DeltaNetDecodeKernel
 from .dropout import DropoutKernel
 from .elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
 from .engram import EngramDecodeKernel, EngramGateConvBwdKernel, EngramGateConvFwdKernel
-from .fft import FFTC2CKernel, FFTC2CLUTKernel
+from .fft import FFTC2CKernel
 from .flash_attn import (
     FlashAttnBwdPostprocessKernel,
     FlashAttnBwdPreprocessKernel,
@@ -80,7 +80,6 @@ __all__ = [
     "EngramGateConvBwdKernel",
     "EngramGateConvFwdKernel",
     "FFTC2CKernel",
-    "FFTC2CLUTKernel",
     "FusedGatedKernel",
     "FlashAttnBwdPostprocessKernel",
     "FlashAttnBwdPreprocessKernel",
