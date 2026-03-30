@@ -6,34 +6,44 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_layer_norm import LayerNormTest
+from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.layer_norm import LayerNormOp
+
+_OP_NAME = "layernorm_fwd"
 
 
 class LayerNormBenchmark(BenchmarkBase):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            t = self.test
+            elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
+            self._roofline_cache = eval_roofline(
+                _OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        # Per row: N for mean, N for variance, N for normalize, N for scale, N for bias
-        # Simplified: ~5N flops per row
-        return 5 * t.m * t.n
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        """Useful bytes only (not padded). Read x + read weight + read bias + write y."""
-        t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + read weight (N, broadcast) + read bias (N, broadcast) + write y (M*N)
-        return (2 * t.m * t.n + 2 * t.n) * elem_bytes
+        return self._get_roofline()[1]
 
 
-_LAYER_NORM_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
-    pytest.param(2048, 5120, torch.float16, True, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
-]
+def _manifest_params():
+    params = []
+    for w in load_workloads(_OP_NAME):
+        m, n = w["x_shape"]
+        label = w.get("label", f"{m}x{n}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(m, n, dtype, True,
+                                       id=f"{label}-{dtype_str}"))
+    return params
 
 
-@pytest.mark.parametrize("m, n, dtype, tune", _LAYER_NORM_BENCH_PARAMS)
+@pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
 def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
     bm = LayerNormBenchmark(test)

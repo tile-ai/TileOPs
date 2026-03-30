@@ -106,8 +106,8 @@ Design documents and tutorials are authored in TileOpsGov and published manually
 
 ```
 TileOPs/
-├── ops_manifest.yaml                 # Op registry (agent entry point)
 ├── tileops/
+│   ├── ops_manifest.yaml             # Op registry (agent entry point, packaged)
 │   ├── kernels/                      # L1: GPU kernel implementations
 │   ├── ops/                          # L2: User-facing Op classes
 │   ├── utils/

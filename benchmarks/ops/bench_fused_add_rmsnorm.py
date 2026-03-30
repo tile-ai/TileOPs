@@ -5,35 +5,44 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_fused_add_rmsnorm import FusedAddRmsNormTest
+from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.fused_add_rmsnorm import FusedAddRmsNormOp
+
+_OP_NAME = "fused_add_rmsnorm_fwd"
 
 
 class FusedAddRmsNormBenchmark(BenchmarkBase):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            t = self.test
+            elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
+            self._roofline_cache = eval_roofline(
+                _OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        # Per row: N adds (residual) + N squares + (N-1) adds + 1 div + 1 add
-        # + 1 rsqrt + N muls (x*rrms) + N muls (weight) = ~5N flops per row
-        return 5 * t.m * t.n
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        """Useful bytes only.  Read x + residual + weight + write y + residual_out."""
-        t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + read residual (M*N) + read weight (N)
-        # + write y (M*N) + write residual_out (M*N)
-        return (4 * t.m * t.n + t.n) * elem_bytes
+        return self._get_roofline()[1]
 
 
-_FUSED_ADD_RMSNORM_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
-    pytest.param(2048, 5120, torch.float16, True, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
-]
+def _manifest_params():
+    params = []
+    for w in load_workloads(_OP_NAME):
+        m, n = w["x_shape"]
+        label = w.get("label", f"{m}x{n}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(m, n, dtype, True,
+                                       id=f"{label}-{dtype_str}"))
+    return params
 
 
-@pytest.mark.parametrize("m, n, dtype, tune", _FUSED_ADD_RMSNORM_BENCH_PARAMS)
+@pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
 def test_fused_add_rmsnorm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddRmsNormTest(m, n, dtype)
     bm = FusedAddRmsNormBenchmark(test)

@@ -12,7 +12,7 @@ import yaml
 pytestmark = pytest.mark.smoke
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = REPO_ROOT / "ops_manifest.yaml"
+MANIFEST_PATH = REPO_ROOT / "tileops" / "ops_manifest.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -61,10 +61,10 @@ class TestOpSchema:
         for op_name, entry in all_ops.items():
             sig = entry["signature"]
             assert "inputs" in sig, f"{op_name}: signature missing 'inputs'"
-            assert isinstance(sig["inputs"], list), f"{op_name}: inputs must be a list"
+            assert isinstance(sig["inputs"], dict), f"{op_name}: inputs must be a dict"
             assert len(sig["inputs"]) >= 1, f"{op_name}: must have at least 1 input"
             assert "outputs" in sig, f"{op_name}: signature missing 'outputs'"
-            assert isinstance(sig["outputs"], list), f"{op_name}: outputs must be a list"
+            assert isinstance(sig["outputs"], dict), f"{op_name}: outputs must be a dict"
 
     def test_every_roofline_has_valid_mode(self, all_ops):
         for op_name, entry in all_ops.items():
@@ -75,25 +75,28 @@ class TestOpSchema:
                 f"{op_name}: roofline must have (flops + bytes) or func"
             )
 
-    def test_every_tensor_has_name_and_dtype(self, all_ops):
+    def test_every_tensor_has_dtype(self, all_ops):
         for op_name, entry in all_ops.items():
             sig = entry["signature"]
             for direction in ("inputs", "outputs"):
-                for i, tensor in enumerate(sig[direction]):
-                    assert "name" in tensor, (
-                        f"{op_name}: {direction}[{i}] missing 'name'"
+                tensors = sig[direction]
+                assert isinstance(tensors, dict), (
+                    f"{op_name}: {direction} must be a dict"
+                )
+                for name, attrs in tensors.items():
+                    assert isinstance(attrs, dict), (
+                        f"{op_name}: {direction}.{name} must be a dict"
                     )
-                    assert "dtype" in tensor, (
-                        f"{op_name}: {direction}[{i}] missing 'dtype'"
+                    assert "dtype" in attrs, (
+                        f"{op_name}: {direction}.{name} missing 'dtype'"
                     )
 
     def test_every_output_has_explicit_shape(self, all_ops):
         for op_name, entry in all_ops.items():
             sig = entry["signature"]
             has_shape_rules = "shape_rules" in sig and len(sig["shape_rules"]) > 0
-            for tensor in sig["outputs"]:
-                name = tensor.get("name", "?")
-                has_shape = "shape" in tensor
+            for name, attrs in sig["outputs"].items():
+                has_shape = "shape" in attrs
                 assert has_shape or has_shape_rules, (
                     f"{op_name}: output '{name}' must have 'shape' or "
                     f"signature must have 'shape_rules'"
@@ -103,22 +106,21 @@ class TestOpSchema:
         for op_name, entry in all_ops.items():
             sig = entry["signature"]
             for direction in ("inputs", "outputs"):
-                for tensor in sig[direction]:
-                    if "constraints" not in tensor:
+                for name, attrs in sig[direction].items():
+                    if "constraints" not in attrs:
                         continue
-                    name = tensor.get("name", "?")
-                    assert "shape" in tensor, (
+                    assert "shape" in attrs, (
                         f"{op_name}: tensor '{name}' has constraints "
                         f"but no shape"
                     )
-                    shape_str = tensor["shape"]
+                    shape_str = attrs["shape"]
                     # Extract dimension names from "[D1, D2, ...]"
                     dims = {
                         d.strip()
                         for d in shape_str.strip("[]").split(",")
                         if d.strip()
                     }
-                    for ckey in tensor["constraints"]:
+                    for ckey in attrs["constraints"]:
                         assert ckey in dims, (
                             f"{op_name}: tensor '{name}' constraint key "
                             f"'{ckey}' not in shape dims {dims}"
@@ -129,11 +131,7 @@ class TestOpSchema:
             sig = entry["signature"]
             if "dtype_combos" not in sig:
                 continue
-            declared = {
-                t["name"]
-                for t in sig["inputs"] + sig["outputs"]
-                if "name" in t
-            }
+            declared = set(sig["inputs"].keys()) | set(sig["outputs"].keys())
             for i, combo in enumerate(sig["dtype_combos"]):
                 assert isinstance(combo, dict), (
                     f"{op_name}: dtype_combos[{i}] must be a mapping"
@@ -180,6 +178,56 @@ class TestSourcePaths:
             source = entry["source"]
             for key, rel_path in source.items():
                 full_path = REPO_ROOT / rel_path
-                assert full_path.exists(), (
-                    f"{op_name}: source.{key} not found: {rel_path}"
+                assert full_path.is_file(), (
+                    f"{op_name}: source.{key} is not a file: {rel_path}"
                 )
+
+
+class TestManifestAPI:
+    """Tests for the programmatic manifest API (tileops.manifest)."""
+
+    def test_load_workloads_returns_list(self):
+        from tileops.manifest import load_workloads
+
+        workloads = load_workloads("rmsnorm_fwd")
+        assert isinstance(workloads, list)
+        assert len(workloads) >= 1
+        assert "x_shape" in workloads[0]
+
+    def test_load_workloads_unknown_op_raises(self):
+        from tileops.manifest import load_workloads
+
+        with pytest.raises(KeyError, match="nonexistent_op"):
+            load_workloads("nonexistent_op")
+
+    def test_eval_roofline_returns_tuple(self):
+        from tileops.manifest import eval_roofline
+
+        flops, mem_bytes = eval_roofline("rmsnorm_fwd", M=2048, N=4096, elem_bytes=2)
+        assert isinstance(flops, float)
+        assert isinstance(mem_bytes, float)
+        assert flops > 0
+        assert mem_bytes > 0
+
+    def test_eval_roofline_rejects_object_traversal(self):
+        """Verify the AST evaluator blocks __class__/__mro__ attacks."""
+        from tileops.manifest import _safe_eval
+
+        with pytest.raises(ValueError):
+            _safe_eval("().__class__.__mro__[1].__subclasses__()", {})
+
+    def test_eval_roofline_rejects_import(self):
+        """Verify the AST evaluator blocks __import__ calls."""
+        from tileops.manifest import _safe_eval
+
+        with pytest.raises(ValueError):
+            _safe_eval("__import__('os').system('echo pwned')", {})
+
+    def test_safe_eval_arithmetic(self):
+        """Verify basic arithmetic works in the safe evaluator."""
+        from tileops.manifest import _safe_eval
+
+        assert _safe_eval("2 * M * N", {"M": 1024, "N": 4096}) == 2 * 1024 * 4096
+        assert _safe_eval("M + N - 1", {"M": 10, "N": 3}) == 12
+        assert _safe_eval("M ** 2", {"M": 4}) == 16
+        assert _safe_eval("-M", {"M": 5}) == -5
