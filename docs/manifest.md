@@ -57,17 +57,18 @@ Each entry lives under the top-level `ops:` key:
 
 | Field          | Type | Required | Description                                                               |
 | -------------- | ---- | -------- | ------------------------------------------------------------------------- |
-| `inputs`       | list | yes      | Input tensors, positional order.                                          |
-| `outputs`      | list | yes      | Output tensors, positional order.                                         |
+| `inputs`       | dict | yes      | Input tensors keyed by name.                                              |
+| `outputs`      | dict | yes      | Output tensors keyed by name.                                             |
 | `params`       | list | no       | Scalar / config parameters.                                               |
 | `shape_rules`  | list | no       | Python expressions for shape inference. Used to generate `infer_shape()`. |
 | `dtype_combos` | list | no       | Valid dtype combinations. Overrides per-tensor `dtype` when present.      |
 
 **Tensor fields** (`inputs` / `outputs`):
 
+Each tensor is a key-value pair where the key is the tensor name (referenced in `shape_rules`, `same_as(ref)`, and roofline expressions) and the value is a dict with:
+
 | Field         | Type   | Required | Description                                                                       |
 | ------------- | ------ | -------- | --------------------------------------------------------------------------------- |
-| `name`        | string | yes      | Identifier. Referenced in `shape_rules` and `same_as(ref)`.                       |
 | `dtype`       | string | yes      | `\|` for alternatives, `same_as(ref)` for dependent types.                        |
 | `shape`       | string | no       | Dimension names or `same_as(ref)`. Present = fixed rank, absent = arbitrary rank. |
 | `constraints` | map    | no       | Dimension restrictions. Requires `shape`.                                         |
@@ -82,7 +83,7 @@ Each entry lives under the top-level `ops:` key:
 
 #### Rules
 
-**R1. List, not dict.** Signature fields use lists — preserves positional order (YAML mapping order is unspecified).
+**R1. Dict, not list.** Signature `inputs` and `outputs` use dicts keyed by tensor name. This avoids redundant `name` fields inside each entry and aligns with how tensors are referenced elsewhere (roofline expressions, shape_rules, dtype_combos). `params` remains a list to preserve positional order.
 
 **R2. Full interface.** Params include all mathematically supported parameters, even if the current kernel only supports the default.
 
@@ -148,19 +149,19 @@ Every leaf is a complete spec — no "omit and fallback" path.
 ```yaml
 # Shared K implies a.shape[1] == b.shape[0]
 inputs:
-  - {name: a, dtype: "float16 | bfloat16", shape: "[M, K]"}
-  - {name: b, dtype: "same_as(a)", shape: "[K, N]"}
+  a: {dtype: "float16 | bfloat16", shape: "[M, K]"}
+  b: {dtype: "same_as(a)", shape: "[K, N]"}
 outputs:
-  - {name: c, dtype: "same_as(a)", shape: "[M, N]"}
+  c: {dtype: "same_as(a)", shape: "[M, N]"}
 ```
 
 **Fixed rank + constraints — FFT** \[R6, R8, R10\]:
 
 ```yaml
 inputs:
-  - {name: x, dtype: "complex64", shape: "[M, N]", constraints: {N: "power_of_2"}}
+  x: {dtype: "complex64", shape: "[M, N]", constraints: {N: "power_of_2"}}
 outputs:
-  - {name: y, dtype: "same_as(x)", shape: "same_as(x)"}
+  y: {dtype: "same_as(x)", shape: "same_as(x)"}
 ```
 
 **Arbitrary rank + same_as — RMSNorm** \[R7, R8, R11\]:
@@ -168,10 +169,10 @@ outputs:
 ```yaml
 # No shape on x → any rank. dim selects axis. weight is 1-D along that axis.
 inputs:
-  - {name: x, dtype: "float16 | bfloat16"}
-  - {name: weight, dtype: "same_as(x)"}
+  x: {dtype: "float16 | bfloat16"}
+  weight: {dtype: "same_as(x)"}
 outputs:
-  - {name: y, dtype: "same_as(x)", shape: "same_as(x)"}
+  y: {dtype: "same_as(x)", shape: "same_as(x)"}
 params:
   - {name: dim, type: int, default: -1}
   - {name: eps, type: float, default: 1e-6}
@@ -184,9 +185,9 @@ shape_rules:
 ```yaml
 # Output rank depends on dim and keepdim — shape_rules fully describe the logic.
 inputs:
-  - {name: x, dtype: "float16 | bfloat16"}
+  x: {dtype: "float16 | bfloat16"}
 outputs:
-  - {name: y, dtype: "same_as(x)"}
+  y: {dtype: "same_as(x)"}
 params:
   - {name: dim, type: "int | list[int]"}
   - {name: keepdim, type: bool, default: false}
@@ -200,9 +201,9 @@ shape_rules:
 ```yaml
 # Same rank, permuted dimensions.
 inputs:
-  - {name: x, dtype: "float16 | bfloat16"}
+  x: {dtype: "float16 | bfloat16"}
 outputs:
-  - {name: y, dtype: "same_as(x)"}
+  y: {dtype: "same_as(x)"}
 params:
   - {name: dims, type: "list[int]"}
 shape_rules:
@@ -219,10 +220,10 @@ ops:
 
     signature:
       inputs:
-        - {name: x, dtype: "float16 | bfloat16"}
-        - {name: weight, dtype: "same_as(x)"}
+        x: {dtype: "float16 | bfloat16"}
+        weight: {dtype: "same_as(x)"}
       outputs:
-        - {name: y, dtype: "same_as(x)", shape: "same_as(x)"}
+        y: {dtype: "same_as(x)", shape: "same_as(x)"}
       params:
         - {name: dim, type: int, default: -1}
         - {name: eps, type: float, default: 1e-6}

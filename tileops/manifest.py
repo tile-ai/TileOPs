@@ -7,20 +7,108 @@ Provides two core functions:
 
 from __future__ import annotations
 
+import ast
 import functools
-from pathlib import Path
+import math
+import operator
+from importlib import resources
 from typing import Any
 
 import yaml
 
-_MANIFEST_PATH = Path(__file__).resolve().parent.parent / "ops_manifest.yaml"
+# Load ops_manifest.yaml from package data via importlib.resources.
+_MANIFEST_REF = resources.files("tileops").joinpath("ops_manifest.yaml")
+
+# ---------------------------------------------------------------------------
+# Safe arithmetic evaluator (AST-based)
+# ---------------------------------------------------------------------------
+
+_BINOP_MAP: dict[type, Any] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Pow: operator.pow,
+    ast.Mod: operator.mod,
+}
+
+_UNARYOP_MAP: dict[type, Any] = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
+
+_SAFE_FUNCTIONS: dict[str, Any] = {
+    "log2": math.log2,
+    "ceil": math.ceil,
+    "floor": math.floor,
+}
+
+
+def _safe_eval(expr: str, variables: dict[str, float]) -> float:
+    """Evaluate a simple arithmetic expression safely using AST walking.
+
+    Only allows: numeric literals, variable lookups, binary arithmetic
+    (+, -, *, /, //, **, %), unary +/-, and whitelisted function calls
+    (log2, ceil, floor).
+    """
+    tree = ast.parse(expr, mode="eval")
+    return float(_eval_node(tree.body, variables))
+
+
+def _eval_node(node: ast.AST, variables: dict[str, float]) -> float | int:
+    """Recursively evaluate an AST node."""
+    if isinstance(node, ast.Constant):
+        if not isinstance(node.value, (int, float)):
+            raise ValueError(f"Unsupported constant type: {type(node.value).__name__}")
+        return node.value
+
+    if isinstance(node, ast.Name):
+        if node.id in variables:
+            return variables[node.id]
+        raise ValueError(f"Unknown variable: {node.id!r}")
+
+    if isinstance(node, ast.BinOp):
+        op_func = _BINOP_MAP.get(type(node.op))
+        if op_func is None:
+            raise ValueError(f"Unsupported binary operator: {type(node.op).__name__}")
+        left = _eval_node(node.left, variables)
+        right = _eval_node(node.right, variables)
+        return op_func(left, right)
+
+    if isinstance(node, ast.UnaryOp):
+        op_func = _UNARYOP_MAP.get(type(node.op))
+        if op_func is None:
+            raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+        return op_func(_eval_node(node.operand, variables))
+
+    if isinstance(node, ast.Call):
+        # Only allow simple name calls (e.g., log2(...)), not attribute access
+        if not isinstance(node.func, ast.Name):
+            raise ValueError(
+                f"Only simple function calls allowed, got: {ast.dump(node.func)}"
+            )
+        func_name = node.func.id
+        if func_name not in _SAFE_FUNCTIONS:
+            raise ValueError(f"Function not allowed: {func_name!r}")
+        if node.keywords:
+            raise ValueError("Keyword arguments not allowed in safe eval")
+        args = [_eval_node(arg, variables) for arg in node.args]
+        return _SAFE_FUNCTIONS[func_name](*args)
+
+    raise ValueError(f"Unsupported expression node: {type(node).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=1)
 def _load_manifest() -> dict[str, Any]:
     """Load and cache the manifest. Called once per process."""
-    with open(_MANIFEST_PATH) as f:
-        data = yaml.safe_load(f)
+    text = _MANIFEST_REF.read_text(encoding="utf-8")
+    data = yaml.safe_load(text)
     return data["ops"]
 
 
@@ -55,15 +143,11 @@ def eval_roofline(op_name: str, **variables: float) -> tuple[float, float]:
             f"func-mode roofline not yet supported (op={op_name})"
         )
 
-    # Evaluate inline expressions in a restricted namespace.
-    ns: dict[str, Any] = {"__builtins__": {}}
-    ns.update(variables)
-
     flops_expr = roofline["flops"]
     bytes_expr = roofline["bytes"]
 
     try:
-        flops = float(eval(flops_expr, ns))  # noqa: S307
+        flops = float(_safe_eval(flops_expr, variables))
     except Exception as exc:
         raise ValueError(
             f"Failed to evaluate roofline flops for '{op_name}': "
@@ -71,7 +155,7 @@ def eval_roofline(op_name: str, **variables: float) -> tuple[float, float]:
         ) from exc
 
     try:
-        mem_bytes = float(eval(bytes_expr, ns))  # noqa: S307
+        mem_bytes = float(_safe_eval(bytes_expr, variables))
     except Exception as exc:
         raise ValueError(
             f"Failed to evaluate roofline bytes for '{op_name}': "

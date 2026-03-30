@@ -181,3 +181,53 @@ class TestSourcePaths:
                 assert full_path.is_file(), (
                     f"{op_name}: source.{key} is not a file: {rel_path}"
                 )
+
+
+class TestManifestAPI:
+    """Tests for the programmatic manifest API (tileops.manifest)."""
+
+    def test_load_workloads_returns_list(self):
+        from tileops.manifest import load_workloads
+
+        workloads = load_workloads("rmsnorm_fwd")
+        assert isinstance(workloads, list)
+        assert len(workloads) >= 1
+        assert "x_shape" in workloads[0]
+
+    def test_load_workloads_unknown_op_raises(self):
+        from tileops.manifest import load_workloads
+
+        with pytest.raises(KeyError, match="nonexistent_op"):
+            load_workloads("nonexistent_op")
+
+    def test_eval_roofline_returns_tuple(self):
+        from tileops.manifest import eval_roofline
+
+        flops, mem_bytes = eval_roofline("rmsnorm_fwd", M=2048, N=4096, elem_bytes=2)
+        assert isinstance(flops, float)
+        assert isinstance(mem_bytes, float)
+        assert flops > 0
+        assert mem_bytes > 0
+
+    def test_eval_roofline_rejects_object_traversal(self):
+        """Verify the AST evaluator blocks __class__/__mro__ attacks."""
+        from tileops.manifest import _safe_eval
+
+        with pytest.raises(ValueError):
+            _safe_eval("().__class__.__mro__[1].__subclasses__()", {})
+
+    def test_eval_roofline_rejects_import(self):
+        """Verify the AST evaluator blocks __import__ calls."""
+        from tileops.manifest import _safe_eval
+
+        with pytest.raises(ValueError):
+            _safe_eval("__import__('os').system('echo pwned')", {})
+
+    def test_safe_eval_arithmetic(self):
+        """Verify basic arithmetic works in the safe evaluator."""
+        from tileops.manifest import _safe_eval
+
+        assert _safe_eval("2 * M * N", {"M": 1024, "N": 4096}) == 2 * 1024 * 4096
+        assert _safe_eval("M + N - 1", {"M": 10, "N": 3}) == 12
+        assert _safe_eval("M ** 2", {"M": 4}) == 16
+        assert _safe_eval("-M", {"M": 5}) == -5
