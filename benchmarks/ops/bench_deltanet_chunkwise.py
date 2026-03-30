@@ -17,7 +17,6 @@ from typing import Optional
 
 import pytest
 import torch
-from tilelang.profiler import do_bench as _do_bench
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_deltanet_chunkwise_bwd import _autograd_bwd_ref
@@ -39,21 +38,6 @@ def _to_fla_layout(q, k, v, beta):
         v.permute(0, 2, 1, 3).contiguous(),
         beta.permute(0, 2, 1).contiguous(),
     )
-
-
-def _profile_manual(fn, bm, warmup=100, rep=100):
-    """Profile a function using do_bench with cupti/event fallback, returning a result dict."""
-    latency = _do_bench(fn, warmup=warmup, rep=rep, backend='cupti')
-    if latency <= 0:
-        latency = _do_bench(fn, warmup=warmup, rep=rep, backend='event')
-    result = {"latency_ms": latency}
-    flops = bm.calculate_flops()
-    if flops is not None:
-        result["tflops"] = flops / latency * 1e-9
-    memory = bm.calculate_memory()
-    if memory is not None:
-        result["bandwidth_tbs"] = memory / latency * 1e-9
-    return result
 
 
 # =============================================================================
@@ -213,13 +197,13 @@ def test_deltanet_vs_fla_bwd(
             o_fla.backward(do_fla, retain_graph=True)
             return q_fla.grad, k_fla.grad, v_fla.grad
 
-        result_fla = _profile_manual(fla_bwd, bm)
+        result_fla = bm.profile(fla_bwd)
         BenchmarkReport.record(bwd_op, locals(), result_fla, tag="fla")
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
             return _autograd_bwd_ref(do, q, k, v, beta, BC)
-        result_bl = _profile_manual(torch_bwd, bm)
+        result_bl = bm.profile(torch_bwd)
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
 
@@ -289,7 +273,7 @@ def test_deltanet_vs_fla_fwdbwd(
         o.backward(do)
         return q.grad, k.grad, v.grad
 
-    result = _profile_manual(tileops_fwdbwd, bm, warmup=50)
+    result = bm.profile_autograd(tileops_fwdbwd)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     if chunk_delta_rule is not None:
@@ -307,13 +291,13 @@ def test_deltanet_vs_fla_fwdbwd(
             o.backward(do_fla)
             return q_fla.grad, k_fla.grad, v_fla.grad
 
-        result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
+        result_fla = bm.profile_autograd(fla_fwdbwd)
         BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch autograd reference baseline ---
         def torch_fwdbwd():
             return _autograd_bwd_ref(do, q.data, k.data, v.data, beta.data, BC)
-        result_bl = _profile_manual(torch_fwdbwd, bm, warmup=50)
+        result_bl = bm.profile_autograd(torch_fwdbwd)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
