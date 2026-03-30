@@ -61,10 +61,10 @@ class TestOpSchema:
         for op_name, entry in all_ops.items():
             sig = entry["signature"]
             assert "inputs" in sig, f"{op_name}: signature missing 'inputs'"
-            assert isinstance(sig["inputs"], list), f"{op_name}: inputs must be a list"
+            assert isinstance(sig["inputs"], dict), f"{op_name}: inputs must be a dict"
             assert len(sig["inputs"]) >= 1, f"{op_name}: must have at least 1 input"
             assert "outputs" in sig, f"{op_name}: signature missing 'outputs'"
-            assert isinstance(sig["outputs"], list), f"{op_name}: outputs must be a list"
+            assert isinstance(sig["outputs"], dict), f"{op_name}: outputs must be a dict"
 
     def test_every_roofline_has_valid_mode(self, all_ops):
         for op_name, entry in all_ops.items():

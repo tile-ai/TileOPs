@@ -14,7 +14,11 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_batch_norm import BatchNormBwdTest, BatchNormFwdTest
+from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
+
+_FWD_OP_NAME = "batchnorm_fwd"
+_BWD_OP_NAME = "batchnorm_bwd"
 
 # ---------------------------------------------------------------------------
 # Benchmark classes
@@ -28,16 +32,17 @@ class BatchNormFwdBenchmark(BenchmarkBase):
         self.C = C
         self.spatial = spatial
 
-    def calculate_flops(self) -> Optional[float]:
-        # 2 passes × L elements × C channels × ~5 ops (mean/var/norm/scale/shift)
+    def _roofline_vars(self):
         L = self.N * math.prod(self.spatial) if self.spatial else self.N
-        return 5.0 * self.C * L * 2
+        return dict(C=self.C, L=L, elem_bytes=2)
+
+    def calculate_flops(self) -> Optional[float]:
+        flops, _ = eval_roofline(_FWD_OP_NAME, **self._roofline_vars())
+        return flops
 
     def calculate_memory(self) -> Optional[float]:
-        # Read x + write y + params (weight, bias, running stats)
-        L = self.N * math.prod(self.spatial) if self.spatial else self.N
-        elem_bytes = 2  # float16 / bfloat16
-        return (2 * self.C * L + 4 * self.C) * elem_bytes
+        _, mem_bytes = eval_roofline(_FWD_OP_NAME, **self._roofline_vars())
+        return mem_bytes
 
 
 class BatchNormBwdBenchmark(BenchmarkBase):
@@ -48,14 +53,17 @@ class BatchNormBwdBenchmark(BenchmarkBase):
         self.C = C
         self.spatial = spatial
 
-    def calculate_flops(self) -> Optional[float]:
+    def _roofline_vars(self):
         L = self.N * math.prod(self.spatial) if self.spatial else self.N
-        return 8.0 * self.C * L
+        return dict(C=self.C, L=L, elem_bytes=2)
+
+    def calculate_flops(self) -> Optional[float]:
+        flops, _ = eval_roofline(_BWD_OP_NAME, **self._roofline_vars())
+        return flops
 
     def calculate_memory(self) -> Optional[float]:
-        L = self.N * math.prod(self.spatial) if self.spatial else self.N
-        elem_bytes = 2
-        return (3 * self.C * L + 3 * self.C) * elem_bytes
+        _, mem_bytes = eval_roofline(_BWD_OP_NAME, **self._roofline_vars())
+        return mem_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -104,30 +112,40 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
 
 
 # ---------------------------------------------------------------------------
+# Manifest-driven params
+# ---------------------------------------------------------------------------
+
+def _manifest_fwd_params():
+    params = []
+    for w in load_workloads(_FWD_OP_NAME):
+        shape = w["x_shape"]
+        N, C, spatial = shape[0], shape[1], tuple(shape[2:])
+        label = w.get("label", f"{N}x{C}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(N, C, spatial, dtype, True, False,
+                                       id=f"{label}-{dtype_str}"))
+    return params
+
+
+def _manifest_bwd_params():
+    params = []
+    for w in load_workloads(_BWD_OP_NAME):
+        shape = w["x_shape"]
+        N, C, spatial = shape[0], shape[1], tuple(shape[2:])
+        label = w.get("label", f"{N}x{C}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(N, C, spatial, dtype,
+                                       id=f"{label}-{dtype_str}"))
+    return params
+
+
+# ---------------------------------------------------------------------------
 # Benchmark tests
 # ---------------------------------------------------------------------------
 
-# Use a reduced fixture for benchmarks (avoid OOM on large spatial dims).
-_FWD_BENCH_PARAMS = [
-    (32, 64,  (),        torch.float16, True, False),
-    (8,  64,  (32, 32),  torch.float16, True, False),
-    (4,  128, (32, 32),  torch.float16, True, False),
-    (4,  256, (28, 28),  torch.float16, True, False),
-    (4,  128, (1024, 1024),  torch.float16, True, False),
-    (4,  256, (1024, 1024),  torch.float16, True, False),
-]
-
-_BWD_BENCH_PARAMS = [
-    (32, 64,  (),        torch.float16),
-    (8,  64,  (32, 32),  torch.float16),
-    (4,  128, (32, 32),  torch.float16),
-    (4,  256, (28, 28),  torch.float16),
-    (4,  128, (1024, 1024),  torch.float16),
-    (4,  256, (1024, 1024),  torch.float16),
-]
-
-
-@pytest.mark.parametrize("N, C, spatial, dtype, training, tune", _FWD_BENCH_PARAMS)
+@pytest.mark.parametrize("N, C, spatial, dtype, training, tune", _manifest_fwd_params())
 def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     inputs = _make_inputs(N, C, spatial, dtype)
 
@@ -144,7 +162,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-cudnn")
 
 
-@pytest.mark.parametrize("N, C, spatial, dtype", _BWD_BENCH_PARAMS)
+@pytest.mark.parametrize("N, C, spatial, dtype", _manifest_bwd_params())
 def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     inputs = _make_bwd_inputs(N, C, spatial, dtype)
 
