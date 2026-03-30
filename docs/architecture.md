@@ -56,21 +56,6 @@ graph TD
 | 🟠 **CI Guard**       | half        | correctness gate (gpu-smoke)  | perf regression detection missing (no baseline compare)             |
 | 🔵 **Publish**        | not started | —                             | no doc-gen scripts, no build system                                 |
 
-### Critical path
-
-```
-Flow 3 (HW Calibration)          Flow 2 (Perf Tuning)
-  GEMM microbench ────────┐        roofline.py ──────────┐
-  h100 profile ───────────┤        formulas.py ──────────┤
-  tensor core calibration ┘        optimization loop ────┘
-                  │                          │
-                  └──── both feed into ──────┘
-                              │
-                    Flow 4: perf regression
-                              │
-                    Flow 5: auto-gen docs
-```
-
 ### Module reference
 
 | Module              | Responsibility                                                      | Key Artifact                       |
