@@ -4,7 +4,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark import BenchmarkBase, BenchmarkReport, CuptiSession
 from tests.ops.test_fft import FFTTest
 from tests.test_base import FixtureBase
 from tileops.ops import FFTC2COp
@@ -54,11 +54,12 @@ def test_fft_bench(n: int, dtype: torch.dtype, tune: bool, batch_shape: tuple) -
     op(*inputs)
     torch.cuda.synchronize()
 
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    with CuptiSession():
+        result = bm.profile(op, *inputs)
+        BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-cufft")
+        result_bl = bm.profile(test.ref_program, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-cufft")
 
 
 if __name__ == "__main__":
