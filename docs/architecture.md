@@ -4,35 +4,85 @@ TileOPs is a spec-driven GPU operator platform built on TileLang. Every operator
 
 ## Modules
 
-The platform consists of 8 modules:
+The platform consists of 8 modules connected by five end-to-end data flows:
+
+| Flow                  | Trigger                 | Path            | Outcome                        |
+| :-------------------- | :---------------------- | :-------------- | :----------------------------- |
+| **🟩 New Op**         | new manifest entry      | M1 → M2 → M3    | correct op ready for benchmark |
+| **🟪 Perf Tuning**    | op callable             | M2/M1 → M4 → M5 | SOL% meets threshold           |
+| **🟥 HW Calibration** | new GPU / driver update | HW → M6 → M5    | GPU profile YAML               |
+| **🟧 CI Guard**       | PR push                 | M3/M4 → M7      | gate pass or block             |
+| **🟦 Publish**        | merge                   | M2/M5/M7 → M8   | auto-generated docs            |
 
 ```mermaid
 graph TD
-    M1["M1: Spec<br/>ops_manifest.yaml"]
-    M2["M2: Op + Kernel"]
-    M6["M6: HW Profile"]
+    subgraph Develop [" Develop"]
+        M1["M1: Spec<br/>ops_manifest.yaml"]
+        M2["M2: Op + Kernel"]
+    end
 
-    subgraph Validate
+    subgraph Validate [" Validate"]
         M3["M3: Correctness"]
         M4["M4: Benchmark"]
     end
 
-    M5["M5: Roofline"]
-    M7["M7: CI Gate"]
-    M8["M8: Docs"]
+    subgraph Evaluate [" Evaluate"]
+        HW["HW Microbench<br/>benchmarks/hardware/"]
+        M6["M6: HW Profile"]
+        M5["M5: Roofline"]
+    end
 
+    subgraph Deliver [" Deliver"]
+        M7["M7: CI Gate"]
+        M8["M8: Docs"]
+    end
+
+    %% Flow 1: New Op (emerald)
     M1 -- "signature<br/>workloads" --> M2
-    M1 -- "workloads<br/>(shapes, dtypes)" --> M4
-    M1 -- "roofline formulas<br/>(flops, bytes)" --> M5
     M2 -- "Op callable" --> M3
+
+    %% Flow 2: Perf Tuning (violet)
     M2 -- "Op callable" --> M4
-    M2 -- "docstring" --> M8
-    M3 -- "pass/fail" --> M7
+    M1 -- "workloads<br/>(shapes, dtypes)" --> M4
     M4 -- "raw time<br/>(JSON/CSV)" --> M5
-    M4 -- "pass/fail<br/>latency delta" --> M7
-    M5 -- "SOL%<br/>bound type" --> M8
+    M1 -- "roofline formulas<br/>(flops, bytes)" --> M5
+
+    %% Flow 3: HW Calibration (rose)
+    HW -- "measured BW<br/>measured FLOPS" --> M6
     M6 -- "GPU profile<br/>(YAML)" --> M5
+
+    %% Flow 4: CI Guard (amber)
+    M3 -- "pass/fail" --> M7
+    M4 -- "pass/fail<br/>latency delta" --> M7
+
+    %% Flow 5: Publish (sky)
+    M2 -- "docstring" --> M8
+    M5 -- "SOL%<br/>bound type" --> M8
     M7 -- "gate status<br/>benchmark results" --> M8
+
+    %% Node styles by layer
+    classDef dev fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef val fill:#e0e7ff,stroke:#6366f1,color:#312e81
+    classDef eval fill:#ccfbf1,stroke:#0d9488,color:#134e4a
+    classDef del fill:#fce7f3,stroke:#db2777,color:#831843
+
+    class M1,M2 dev
+    class M3,M4 val
+    class HW,M6,M5 eval
+    class M7,M8 del
+
+    %% Subgraph styles
+    style Develop fill:#fefce8,stroke:#eab308,stroke-width:1.5px,rx:8,ry:8
+    style Validate fill:#eef2ff,stroke:#818cf8,stroke-width:1.5px,rx:8,ry:8
+    style Evaluate fill:#f0fdfa,stroke:#14b8a6,stroke-width:1.5px,rx:8,ry:8
+    style Deliver fill:#fdf2f8,stroke:#ec4899,stroke-width:1.5px,rx:8,ry:8
+
+    %% Edge colors by flow
+    linkStyle 0,1 stroke:#059669,stroke-width:2px
+    linkStyle 2,3,4,5 stroke:#7c3aed,stroke-width:2px
+    linkStyle 6,7 stroke:#e11d48,stroke-width:2px
+    linkStyle 8,9 stroke:#d97706,stroke-width:2px
+    linkStyle 10,11,12 stroke:#2563eb,stroke-width:2px
 ```
 
 | Module              | Responsibility                                                         | Key Artifact                       |
