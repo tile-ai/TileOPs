@@ -54,15 +54,15 @@ graph TD
     linkStyle 11,12 stroke:#9333ea,stroke-width:2px
 ```
 
-🩵 Op Delivery 🔷 Perf Tuning 🟡 HW Calibration 🔴 CI Guard 🟣 Publish
+🟢 Op Delivery 🔵 Perf Tuning 🟠 HW Calibration 🔴 CI Guard 🟣 Publish
 
 ### Flow status
 
 | Flow                  | Status      | What works                    | Gap                                                                 |
 | :-------------------- | :---------- | :---------------------------- | :------------------------------------------------------------------ |
-| 🩵 **Op Delivery**    | done        | M1 → M2 → M3 → CI merge       | —                                                                   |
-| 🔷 **Perf Tuning**    | broken      | M4 produces raw time          | `roofline.py` + `formulas.py` missing; optimization loop not closed |
-| 🟡 **HW Calibration** | partial     | HBM microbench + h200 profile | tensor core calibration missing; h100 profile missing               |
+| 🟢 **Op Delivery**    | done        | M1 → M2 → M3 → CI merge       | —                                                                   |
+| 🔵 **Perf Tuning**    | broken      | M4 produces raw time          | `roofline.py` + `formulas.py` missing; optimization loop not closed |
+| 🟠 **HW Calibration** | partial     | HBM microbench + h200 profile | tensor core calibration missing; h100 profile missing               |
 | 🔴 **CI Guard**       | half        | correctness gate (gpu-smoke)  | perf regression detection missing (no baseline compare)             |
 | 🟣 **Publish**        | not started | —                             | no doc-gen scripts, no build system                                 |
 
