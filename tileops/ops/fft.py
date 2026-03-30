@@ -99,24 +99,17 @@ class FFTC2COp(Op):
         x_imag = x.imag.contiguous()
         original_shape = x.shape
 
-        if x.ndim > 1:
-            batch_size = x_real[..., 0].numel()
-            x_real = x_real.reshape(batch_size, self.n)
-            x_imag = x_imag.reshape(batch_size, self.n)
-        else:
-            batch_size = 1
-            x_real = x_real.unsqueeze(0)
-            x_imag = x_imag.unsqueeze(0)
+        # Flatten all batch dimensions into a single batch dimension
+        batch_size = x_real[..., 0].numel() if x.ndim > 1 else 1
+        x_real = x_real.reshape(batch_size, self.n)
+        x_imag = x_imag.reshape(batch_size, self.n)
 
         kernel = self._get_kernel(batch_size)
         y_real, y_imag = kernel(x_real, x_imag,
                                 self.twiddle_real, self.twiddle_imag)
 
-        if x.ndim > 1:
-            y_real = y_real.reshape(original_shape)
-            y_imag = y_imag.reshape(original_shape)
-        else:
-            y_real = y_real.squeeze(0)
-            y_imag = y_imag.squeeze(0)
+        # Reshape back to original shape
+        y_real = y_real.reshape(original_shape)
+        y_imag = y_imag.reshape(original_shape)
 
         return torch.complex(y_real, y_imag)

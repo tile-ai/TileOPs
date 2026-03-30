@@ -191,7 +191,16 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
             lut_imag: T.Tensor((lut_size,), real_dtype),
             stage,
         ):
-            """One butterfly stage using pre-computed LUT twiddle factors."""
+            """
+            One butterfly stage using pre-computed LUT twiddle factors.
+
+            LUT offset for (stage, k): half_m - 1 + k,  half_m = 2^stage.
+            Avoids sin/cos entirely for large-stride stages where trig is expensive.
+
+            When stage is a compile-time Python int (called from range()),
+            half_m and m are compile-time constants, enabling the compiler to
+            replace division/modulo with shift/mask operations.
+            """
             half_m = 1 << stage
             m = half_m * 2
             lut_base = half_m - 1
@@ -236,7 +245,17 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
             lut_imag: T.Tensor((lut_size,), real_dtype),
             stage_lo,
         ):
-            """Fused radix-4 butterfly combining two consecutive LUT stages."""
+            """
+            Fused radix-4 butterfly combining two consecutive LUT stages
+            (stage_lo and stage_lo+1) into a single kernel launch.
+
+            Each thread processes 4 elements instead of 2, halving the number
+            of kernel launches and global memory round-trips for LUT stages.
+
+            Math: apply stage_lo butterflies (stride q) on pairs (a,b) and
+            (c,d), then stage_lo+1 butterflies (stride 2q) on pairs (a',c')
+            and (b',d').  The second pair's twiddle is w2 * (-i).
+            """
             q = 1 << stage_lo
             m4 = q * 4
             lut_base_lo = q - 1
@@ -290,7 +309,18 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
             lut_imag: T.Tensor((lut_size,), real_dtype),
             stage_lo,
         ):
-            """Fused radix-8 butterfly combining three consecutive LUT stages."""
+            """
+            Fused radix-8 butterfly combining three consecutive LUT stages
+            (stage_lo, stage_lo+1, stage_lo+2) into a single kernel launch.
+
+            Each thread processes 8 elements, reducing kernel launches by 3×
+            compared to radix-2 and by 1.5× compared to radix-4.
+
+            Algorithm:
+              Stage s  (stride q):   4 butterfly pairs with w1
+              Stage s+1 (stride 2q): 4 butterfly pairs with w2a, w2b
+              Stage s+2 (stride 4q): 4 butterfly pairs with w3a..w3d
+            """
             q = 1 << stage_lo
             m8 = q * 8
             lut1 = q - 1
