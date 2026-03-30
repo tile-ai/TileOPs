@@ -21,7 +21,7 @@ graph TD
     M8["M8: Docs<br/>design + API + perf"]
 
     subgraph loop ["Kernel Tuning Loop"]
-        M4["M4: Benchmark"]
+        M4["M4: Perf Tuning"]
         M5["M5: Roofline"]
     end
 
