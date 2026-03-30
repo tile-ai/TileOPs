@@ -11,15 +11,6 @@ The platform consists of 8 modules (M1–M8). Five data flows connect them into 
 One diagram, all modules. Edge color = which flow owns that edge.
 
 ```mermaid
----
-config:
-  theme: default
-  themeVariables:
-    edgeLabelBackground: transparent
-  flowchart:
-    arrowMarkerAbsolute: true
-    curve: basis
----
 graph TD
     M1["M1: Spec<br/>ops_manifest.yaml"]
     M2["M2: Op + Kernel"]
