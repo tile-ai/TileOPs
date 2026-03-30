@@ -33,7 +33,7 @@ graph TD
     M6 -- "GPU profile" --> M5
 
     M3 --> M7
-    M4 -- "latency Δ" --> M7
+    M4 --> M7
 
     M7 --> M8
 
