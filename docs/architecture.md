@@ -4,56 +4,66 @@ TileOPs is a spec-driven GPU operator platform built on TileLang. Every operator
 
 ## Modules
 
-The platform consists of 8 modules (M1–M8). Five data flows connect them into end-to-end pipelines:
+The platform consists of 8 modules (M1–M8). Five data flows connect them into end-to-end pipelines.
+
+### System topology
+
+One diagram, all modules. Edge color = which flow owns that edge.
 
 ```mermaid
-graph LR
-    subgraph F1 ["Flow 1: Op Delivery"]
-        direction LR
-        F1_M1["M1: Spec"] --> F1_M2["M2: Op+Kernel"] --> F1_M3["M3: Unit Test"] --> F1_PR(("PR"))
-    end
+graph TD
+    HW["HW Microbench<br/>benchmarks/hardware/"]
+    M1["M1: Spec<br/>ops_manifest.yaml"]
+    M2["M2: Op + Kernel"]
+    M3["M3: Correctness"]
+    M4["M4: Benchmark"]
+    M5["M5: Roofline"]
+    M6["M6: HW Profile"]
+    M7["M7: CI Gate"]
+    M8["M8: Docs"]
 
-    subgraph F2 ["Flow 2: Perf Evaluation"]
-        direction LR
-        F2_M2["M2: Op"] --> F2_M4["M4: Benchmark"]
-        F2_M1["M1: Workloads"] --> F2_M4
-        F2_M4 -- "raw time" --> F2_M5["M5: Roofline"]
-        F2_M1b["M1: Formulas"] --> F2_M5
-        F2_M5 -- "SOL%" --> F2_D{"meets\nthreshold?"}
-        F2_D -- "no" --> F2_M2
-    end
+    M1 -- "signature, workloads" --> M2
+    M2 -- "Op callable" --> M3
 
-    subgraph F3 ["Flow 3: HW Calibration"]
-        direction LR
-        F3_HW["HW Microbench"] --> F3_M6["M6: Profile YAML"] --> F3_M5["→ M5"]
-    end
+    M2 -- "Op callable" --> M4
+    M1 -- "workloads" --> M4
+    M4 -- "raw time" --> M5
+    M1 -- "roofline formulas" --> M5
+    M5 -. "SOL% < target" .-> M2
 
-    subgraph F4 ["Flow 4: CI Guard"]
-        direction LR
-        F4_M3["M3: pytest"] --> F4_M7["M7: Gate"]
-        F4_M4["M4: latency Δ"] --> F4_M7
-    end
+    HW -- "measured BW, FLOPS" --> M6
+    M6 -- "GPU profile YAML" --> M5
 
-    subgraph F5 ["Flow 5: Publish"]
-        direction LR
-        F5_src["M2 docstring\nM5 SOL%\nM7 results"] --> F5_M8["M8: Docs"]
-    end
+    M3 -- "pass/fail" --> M7
+    M4 -- "latency delta" --> M7
+
+    M2 -- "docstring" --> M8
+    M5 -- "SOL%, bound type" --> M8
+    M7 -- "gate status" --> M8
+
+    linkStyle 0,1 stroke:#059669,stroke-width:2px
+    linkStyle 2,3,4,5,6 stroke:#7c3aed,stroke-width:2px
+    linkStyle 7,8 stroke:#e11d48,stroke-width:2px
+    linkStyle 9,10 stroke:#d97706,stroke-width:2px
+    linkStyle 11,12,13 stroke:#2563eb,stroke-width:2px
 ```
+
+**Legend**: 🟢 Op Delivery 🟣 Perf Tuning 🔴 HW Calibration 🟠 CI Guard 🔵 Publish — dashed edge = feedback loop (not yet built)
 
 ### Flow status
 
-| Flow                   | Status          | What works                        | Gap                                                     |
-| :--------------------- | :-------------- | :-------------------------------- | :------------------------------------------------------ |
-| **1. Op Delivery**     | **done**        | manifest → code → test → CI merge | —                                                       |
-| **2. Perf Evaluation** | **broken**      | M4 produces raw time              | M5 roofline tool missing; optimization loop not closed  |
-| **3. HW Calibration**  | **partial**     | HBM microbench + h200 profile     | tensor core calibration missing; h100 profile missing   |
-| **4. CI Guard**        | **half**        | correctness gate (gpu-smoke)      | perf regression detection missing (no baseline compare) |
-| **5. Publish**         | **not started** | —                                 | no doc-gen scripts, no build system                     |
+| Flow                  | Status      | What works                    | Gap                                                                 |
+| :-------------------- | :---------- | :---------------------------- | :------------------------------------------------------------------ |
+| 🟢 **Op Delivery**    | done        | M1 → M2 → M3 → CI merge       | —                                                                   |
+| 🟣 **Perf Tuning**    | broken      | M4 produces raw time          | `roofline.py` + `formulas.py` missing; optimization loop not closed |
+| 🔴 **HW Calibration** | partial     | HBM microbench + h200 profile | tensor core calibration missing; h100 profile missing               |
+| 🟠 **CI Guard**       | half        | correctness gate (gpu-smoke)  | perf regression detection missing (no baseline compare)             |
+| 🔵 **Publish**        | not started | —                             | no doc-gen scripts, no build system                                 |
 
 ### Critical path
 
 ```
-Flow 3 (HW Calibration)          Flow 2 (Perf Evaluation)
+Flow 3 (HW Calibration)          Flow 2 (Perf Tuning)
   GEMM microbench ────────┐        roofline.py ──────────┐
   h100 profile ───────────┤        formulas.py ──────────┤
   tensor core calibration ┘        optimization loop ────┘
