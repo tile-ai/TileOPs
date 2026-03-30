@@ -15,12 +15,15 @@ graph TD
     M1["M1: Spec<br/>ops_manifest.yaml"]
     M2["M2: Op + Kernel"]
     M3["M3: Correctness"]
-    M4["M4: Benchmark"]
-    M5["M5: Roofline"]
     M6["M6: HW Profile"]
     HW["HW Microbench"]
     M7["M7: CI Gate"]
     M8["M8: Docs<br/>design + API + perf"]
+
+    subgraph loop ["Kernel Tuning Loop"]
+        M4["M4: Benchmark"]
+        M5["M5: Roofline"]
+    end
 
     M1 -- "spec" --> M2
     M1 -- "workloads" --> M4
@@ -39,6 +42,8 @@ graph TD
 
     M2 -- "design docs" --> M8
     M7 --> M8
+
+    style loop fill:none,stroke:#7c3aed,stroke-width:2px,stroke-dasharray:5,rx:8,ry:8
 
     linkStyle 0 stroke:#059669,stroke-width:2px
     linkStyle 1,2 stroke:#7c3aed,stroke-width:1.5px,stroke-dasharray:6
