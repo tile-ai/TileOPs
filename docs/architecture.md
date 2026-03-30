@@ -60,11 +60,11 @@ graph TD
 
 | Flow                  | Status      | What works                    | Gap                                                                 |
 | :-------------------- | :---------- | :---------------------------- | :------------------------------------------------------------------ |
-| 🟢 **Op Delivery**    | done        | M1 → M2 → M3 → CI merge       | —                                                                   |
-| 🟣 **Perf Tuning**    | broken      | M4 produces raw time          | `roofline.py` + `formulas.py` missing; optimization loop not closed |
-| 🔴 **HW Calibration** | partial     | HBM microbench + h200 profile | tensor core calibration missing; h100 profile missing               |
-| 🟠 **CI Guard**       | half        | correctness gate (gpu-smoke)  | perf regression detection missing (no baseline compare)             |
-| 🔵 **Publish**        | not started | —                             | no doc-gen scripts, no build system                                 |
+| 🩵 **Op Delivery**    | done        | M1 → M2 → M3 → CI merge       | —                                                                   |
+| 🔷 **Perf Tuning**    | broken      | M4 produces raw time          | `roofline.py` + `formulas.py` missing; optimization loop not closed |
+| 🟡 **HW Calibration** | partial     | HBM microbench + h200 profile | tensor core calibration missing; h100 profile missing               |
+| 🔴 **CI Guard**       | half        | correctness gate (gpu-smoke)  | perf regression detection missing (no baseline compare)             |
+| 🟣 **Publish**        | not started | —                             | no doc-gen scripts, no build system                                 |
 
 ### Module reference
 
