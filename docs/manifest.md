@@ -247,13 +247,24 @@ ops:
 
 ### Workloads
 
-| Field     | Required | Description                                                       |
-| --------- | -------- | ----------------------------------------------------------------- |
-| `x_shape` | yes      | Input shape. Drives benchmark execution and code generation.      |
-| `dtypes`  | yes      | List of dtypes to test.                                           |
-| `label`   | no       | Human-readable tag. Auto-generated from shape + dtype if omitted. |
+Each workload entry is a dict. Only `dtypes` is universal; all other keys are op-specific.
 
-Op-specific parameters (e.g., `causal` for attention) can be added per entry. Shapes target real model architectures.
+| Field    | Required | Description                                                       |
+| -------- | -------- | ----------------------------------------------------------------- |
+| `dtypes` | yes      | List of dtypes to test.                                           |
+| `label`  | no       | Human-readable tag. Auto-generated from shape + dtype if omitted. |
+
+Shape keys correspond to signature input tensor names with a `_shape` suffix. For ops with a single primary input, `x_shape` is conventional. For ops with multiple independently-shaped inputs, use per-tensor keys:
+
+```yaml
+# Single primary input (norm, elementwise, reduction):
+- {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b"}
+
+# Multiple inputs with independent shapes (attention):
+- {q_shape: [1, 1, 32, 128], kv_shape: [1, 8192, 8, 128], dtypes: [float16], label: "gqa-decode"}
+```
+
+Op-specific scalar parameters (e.g., `groups` for GroupNorm, `is_causal` for attention) can be added per entry. Shapes target real model architectures.
 
 ### Roofline
 
@@ -266,14 +277,108 @@ Functions live in `tileops/perf/formulas.py`, return `{"flops": int, "bytes": in
 
 ### Source
 
-| Field    | Required | Description                 |
-| -------- | -------- | --------------------------- |
-| `kernel` | yes      | Kernel implementation path. |
-| `op`     | yes      | Op class path.              |
-| `test`   | yes      | Test file path.             |
-| `bench`  | yes      | Benchmark file path.        |
+| Field    | Required | Type           | Description                                           |
+| -------- | -------- | -------------- | ----------------------------------------------------- |
+| `kernel` | yes      | string or list | Kernel implementation path(s). List for multi-kernel. |
+| `op`     | yes      | string         | Op class path.                                        |
+| `test`   | yes      | string         | Test file path.                                       |
+| `bench`  | yes      | string         | Benchmark file path.                                  |
 
-## What Is NOT in the Manifest
+## Design Principles
 
+### YAML is data, not a DSL
+
+The manifest is a **data structure** — key-value pairs, lists, dicts. It must not encode logic. Specifically:
+
+- No conditionals, loops, or branching in YAML values.
+- Roofline expressions (`"4 * M * N"`) are arithmetic on variables, not code. They are evaluated by `_safe_eval()` which only permits numeric constants, basic arithmetic, and whitelisted functions (`log2`, `ceil`, `floor`).
+- `shape_rules` are declarative assertions about shape relationships, not imperative shape computation. They describe *what* must hold, not *how* to compute it.
+- Variable bindings between roofline formulas and workload shapes are the responsibility of the consumer (benchmark code), not the manifest. The manifest declares formulas; consumers supply variable values.
+
+When a proposed manifest extension requires encoding logic (conditionals, dispatch rules, evaluation order), the answer is not "extend the schema" — it is "move that concern to code" (Tier 2 `func` mode) or "redesign the Op interface."
+
+### Op interface requirements for manifest entry
+
+Every Op in the manifest must have a **clean, static interface**:
+
+1. **All tensor parameters are required.** No `Optional[Tensor]` in `forward()`.
+1. **Output count is fixed.** No conditional returns based on constructor parameters.
+1. **One Op, one concern.** If an Op serves two usage patterns (e.g., training without state vs. inference with state), split it into two Op classes that share the same Kernel.
+
+Ops that violate these rules must be refactored before entering the manifest. This is not a manifest limitation — it is an Op design hygiene requirement. Optional tensors and conditional outputs make interfaces ambiguous for all consumers (tests, benchmarks, code generators, documentation), not just the manifest.
+
+**Examples of required refactoring:**
+
+| Current interface                                                 | Problem                                   | Refactored                                                                              |
+| ----------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| `GLAFwdOp(q, k, v, g, initial_state=None) → (o, Optional[state])` | Optional input, conditional output        | `GLAFwdOp(q, k, v, g) → o` + `GLAFwdStatefulOp(q, k, v, g, state) → (o, new_state)`     |
+| `FusedTopKOp(gating, correction_bias=None) → (weights, ids)`      | Optional input                            | `FusedTopKOp(gating) → (w, ids)` + `FusedTopKWithCorrectionOp(gating, bias) → (w, ids)` |
+| `DeltaNetFwdOp(...) → (o, S, Aw, Au, w, u)`                       | Exposes backward intermediates as outputs | `DeltaNetFwdOp(...) → o` (intermediates saved internally)                               |
+
+Both split variants share the same underlying Kernel — the split is at the Op wrapper level, with zero code duplication.
+
+### Tier model
+
+Ops are classified into two tiers based on roofline complexity. Both tiers share the same signature, workloads, and source schema — they differ only in how roofline is expressed.
+
+**Decision flow:**
+
+```
+Does forward() have all-required tensors and fixed output count?
+├─ NO → Refactor the Op interface first (see above)
+└─ YES
+    Can roofline be expressed as a single arithmetic expression per metric?
+    ├─ YES → Tier 1 (inline roofline)
+    └─ NO  → Tier 2 (func roofline)
+```
+
+**Tier 1 — inline roofline.** Simple arithmetic on dimension variables. Covers ops where FLOPs and bytes are a direct function of tensor dimensions.
+
+```yaml
+roofline:
+  flops: "4 * M * N"
+  bytes: "(2 * M * N + N) * elem_bytes"
+```
+
+Families: norm, reduction, elementwise, RoPE, FFT, GEMM.
+
+**Tier 2 — func roofline.** References a Python function for complex formulas where inline expressions are insufficient (e.g., causal masks halve FLOPs, conv stride/padding affect output size, variable-length sequences).
+
+```yaml
+roofline:
+  func: "tileops.perf.formulas.mha_fwd_roofline"
+```
+
+Functions live in `tileops/perf/formulas.py`, accept workload parameters as kwargs, and return `{"flops": int, "bytes": int}`.
+
+Families: attention (fwd/bwd), conv, MoE composites, variable-length attention.
+
+**Classification of current Op families:**
+
+| Family                    | Tier   | Count | Notes                                                                            |
+| ------------------------- | ------ | ----- | -------------------------------------------------------------------------------- |
+| Norm                      | 1      | ~10   | Currently in manifest                                                            |
+| Reduction                 | 1      | ~18   | `output_dtype` may differ (e.g., argmax → int64); declared directly in signature |
+| Elementwise               | 1      | ~60   | Highly uniform; batch-generate manifest entries                                  |
+| RoPE                      | 1      | ~5    | LUT state is internal to `__init__`, not in `forward()` signature                |
+| FFT                       | 1      | ~1    | Same — twiddle factors are `__init__` state                                      |
+| GEMM                      | 1      | ~2    | Simple roofline: `2 * M * N * K`                                                 |
+| Conv                      | 2      | ~3    | Roofline depends on stride, padding, kernel size                                 |
+| Dense Attention (fwd)     | 2      | ~3    | Causal mask affects FLOPs                                                        |
+| Dense Attention (bwd)     | 2      | ~2    | Multi-kernel pipeline is internal; external signature is fixed                   |
+| Variable-length Attention | 2      | ~4    | `cu_seqlens` is a required tensor input, not optional                            |
+| Linear Attention          | 1 or 2 | ~8    | After interface refactoring (split stateful variants)                            |
+| MoE (composites)          | 2      | ~4    | External interface is simple; internal pipeline is implementation detail         |
+| MoE (primitives)          | 1      | ~6    | FusedTopK, Permute, Unpermute, GroupedGemm                                       |
+
+### What the manifest does NOT describe
+
+The following are **implementation details** that belong in code, not in the manifest:
+
+- **Kernel dispatch logic** — which kernel class is selected based on shape, dtype, or hardware (e.g., Hopper vs. Ampere). This is the Op's `default_kernel_map` responsibility.
+- **Multi-kernel pipelines** — an Op that internally chains prep → main → post kernels. The manifest describes the Op's external interface, not its internal orchestration.
+- **Accumulator dtypes** — intermediate float32 accumulators used inside kernels. These do not appear in `forward()` signatures.
+- **Tensor layout** — BSHD vs. BHSD, packed vs. padded. Layout is a kernel-level concern. If two layouts require different interfaces, they are different Ops.
+- **Non-tensor persistent state** — lookup tables, RNG state, frequency caches. These are constructed in `__init__` and do not appear in `forward()`.
 - **Kernel implementation details** — tile sizes, memory strategies, `num_per_thread`.
 - **Autotuning configuration** — handled by the kernel layer.
