@@ -4,7 +4,7 @@ TileOPs is a spec-driven GPU operator platform built on TileLang. Every operator
 
 ## Modules
 
-The platform consists of 8 modules (M1–M8). Five data flows connect them into end-to-end pipelines.
+The platform consists of 8 modules (M1–M8). Four data flows connect them into end-to-end pipelines.
 
 ### System topology
 
@@ -71,7 +71,7 @@ graph TD
 | **M1: Spec**        | Declare op interface, workloads, roofline formulas                                                   | `ops_manifest.yaml`                |
 | **M2: Kernel + Op** | GPU kernel implementations and user-facing Python API                                                | `tileops/kernels/`, `tileops/ops/` |
 | **M3: Correctness** | Numerical correctness against PyTorch reference                                                      | `tests/`                           |
-| **M4: Benchmark**   | Measure raw execution time per workload                                                              | `benchmarks/`                      |
+| **M4: Perf Tuning** | Benchmark execution time and drive kernel optimization loop                                          | `benchmarks/`                      |
 | **M5: Roofline**    | Hardware efficiency from raw time + formulas + HW profile                                            | `tileops/perf/`                    |
 | **M6: HW Profile**  | GPU hardware parameters (bandwidth, FLOPS) from offline calibration                                  | `tileops/perf/profiles/`           |
 | **M7: CI Gate**     | Correctness and performance regression guard per PR                                                  | CI pipeline                        |
@@ -79,22 +79,20 @@ graph TD
 
 ## Data Contracts
 
-Every arrow in the flow diagrams corresponds to one row below. If an edge has no contract, it does not exist.
+Modules communicate through data contracts. The topology diagram above is simplified for clarity — this table is the complete contract list.
 
-| From | To  | Artifact                         | Format                                |
-| ---- | --- | -------------------------------- | ------------------------------------- |
-| M1   | M2  | signature, workloads             | `ops_manifest.yaml`                   |
-| M1   | M4  | workloads (shapes, dtypes)       | `ops_manifest.yaml`                   |
-| M1   | M5  | roofline formulas (flops, bytes) | `ops_manifest.yaml`                   |
-| M2   | M3  | Op callable                      | Python import                         |
-| M2   | M4  | Op callable                      | Python import                         |
-| M2   | M8  | docstring                        | Google-style in source                |
-| M3   | M7  | pass/fail                        | pytest exit code                      |
-| M4   | M5  | raw time per workload            | JSON/CSV                              |
-| M4   | M7  | pass/fail, latency delta         | pytest exit code + JUnit properties   |
-| M5   | M8  | SOL%, bound type per workload    | structured output                     |
-| M6   | M5  | GPU profile                      | YAML (`tileops/perf/profiles/`)       |
-| M7   | M8  | gate status, benchmark results   | CI scheduled job → perf tables update |
+| From | To  | Artifact                         | Format                           |
+| ---- | --- | -------------------------------- | -------------------------------- |
+| M1   | M2  | signature, workloads             | `ops_manifest.yaml`              |
+| M1   | M4  | workloads (shapes, dtypes)       | `ops_manifest.yaml`              |
+| M1   | M5  | roofline formulas (flops, bytes) | `ops_manifest.yaml`              |
+| M2   | M3  | Op callable                      | Python import                    |
+| M2   | M4  | Op callable                      | Python import                    |
+| M2   | M8  | design docs, docstrings          | Markdown, Google-style in source |
+| M3   | M7  | pass/fail                        | pytest exit code                 |
+| M4   | M5  | raw time per workload            | JSON/CSV                         |
+| M6   | M5  | GPU profile                      | YAML (`tileops/perf/profiles/`)  |
+| M7   | M8  | gate status                      | CI pipeline                      |
 
 ## Two-Layer Separation (M2)
 
@@ -112,14 +110,14 @@ The Op layer never contains TileLang code. The Kernel layer never validates user
 1. Read spec from M1 (manifest)
 1. Write kernel (M2), op (M2), test (M3), docstring
 1. Run tests (M3) — if fail, iterate on code
-1. Run benchmark (M4) — raw time output
-1. Roofline tool (M5) computes efficiency from raw time + manifest formulas + GPU profile
+1. Run perf tuning (M4) — benchmark raw time, feed to roofline (M5)
+1. M5 computes efficiency from raw time + manifest formulas + GPU profile
 1. If efficiency is insufficient, optimize kernel and repeat from step 2
 1. Submit PR → CI (M7) checks correctness and regression → merge → docs auto-update (M8)
 
 ## Documentation System
 
-Documentation is an automatic output of the production pipeline, not a manually maintained artifact.
+Documentation combines auto-generated content (API reference, perf tables) with design artifacts produced during agent-driven development.
 
 | Content                        | Data Source                    | Generation    |
 | ------------------------------ | ------------------------------ | ------------- |
@@ -129,7 +127,7 @@ Documentation is an automatic output of the production pipeline, not a manually 
 | Support matrix (dtype × shape) | Manifest workloads             | Script        |
 | Op list and status             | Manifest + test pass status    | Script        |
 
-Design documents and tutorials are authored in TileOpsGov and published manually.
+Design documents are authored during development and published alongside auto-generated content.
 
 ## Directory Structure
 
