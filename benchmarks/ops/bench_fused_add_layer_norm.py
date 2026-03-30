@@ -6,35 +6,40 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_fused_add_layer_norm import FusedAddLayerNormTest
+from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormOp
+
+_OP_NAME = "fused_add_layernorm_fwd"
 
 
 class FusedAddLayerNormBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.test
-        # Per row: N adds (residual), N for mean, N for variance, N for normalize,
-        # N for scale, N for bias = ~6N flops per row
-        return 6 * t.m * t.n
+        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
+        flops, _ = eval_roofline(_OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)
+        return flops
 
     def calculate_memory(self) -> Optional[float]:
-        """Useful bytes only.  Read x + residual + weight + bias + write y + residual_out."""
         t = self.test
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + read residual (M*N) + read weight (N) + read bias (N)
-        # + write y (M*N) + write residual_out (M*N)
-        return (4 * t.m * t.n + 2 * t.n) * elem_bytes
+        _, mem_bytes = eval_roofline(_OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)
+        return mem_bytes
 
 
-_FUSED_ADD_LAYER_NORM_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
-    pytest.param(1024, 3000, torch.float16, True, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
-]
+def _manifest_params():
+    params = []
+    for w in load_workloads(_OP_NAME):
+        m, n = w["x_shape"]
+        label = w.get("label", f"{m}x{n}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(m, n, dtype, True,
+                                       id=f"{label}-{dtype_str}"))
+    return params
 
 
-@pytest.mark.parametrize("m, n, dtype, tune", _FUSED_ADD_LAYER_NORM_BENCH_PARAMS)
+@pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
 def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddLayerNormTest(m, n, dtype)
     bm = FusedAddLayerNormBenchmark(test)

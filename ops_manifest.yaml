@@ -1,34 +1,54 @@
 # ops_manifest.yaml -- Spec-driven op registry for TileOPs
 #
-# See docs/manifest.md for the full specification.
+# Schema
+# ------
+# ops:
+#   <op_name>:                       # Unique op identifier (e.g. rmsnorm_fwd)
+#     family: <str>                  # Op family for grouping (e.g. norm, attention)
+#     signature:
+#       inputs:
+#         <name>: {dtype: "<type_expr>"}     # Input tensors
+#       outputs:
+#         <name>: {dtype: "<type_expr>"}     # Output tensors
+#       params:
+#         <name>: {type: <scalar_type>, default: <value>}  # Scalar / config parameters
+#       shape_rules: [str]                   # Optional Python expressions relating dimensions
+#     workloads:  [{<dim>: <val>, dtypes: [...], label?: <str>}]  # Representative shapes
+#     roofline:                              # Analytical cost model
+#       flops: <expr>                        # Inline Python expression  -OR-
+#       bytes: <expr>                        #   both flops and bytes expressions
+#       func: <module.function>              # Alternative: reference to Python function
+#     source:
+#       kernel: <path>                       # Path to kernel implementation
+#       op:     <path>                       # Path to op wrapper
+#       test:   <path>                       # Path to test file
+#       bench:  <path>                       # Path to benchmark file
 #
 # Notes:
-# - Backward ops are registered as independent entries (e.g. rmsnorm_bwd).
-# - shape_rules use Python expression syntax. Agent generates Op.infer_shape()
-#   from shape, same_as(ref), and shape_rules declared in the manifest.
+# - Signature uses dict (name as key), not list. See docs/manifest.md.
+# - Backward ops are registered as independent entries (e.g. batchnorm_bwd).
+# - shape_rules use Python expression syntax and are optional.
 # - roofline supports two modes: inline expressions (flops/bytes) or func.
+# - Tensor shape is intentionally unconstrained; shape relationships go in shape_rules.
 
 ops:
+
+  # ---------------------------------------------------------------------------
+  # norm — row-norm ops (operate along last dim, shape: [*leading, N])
+  # ---------------------------------------------------------------------------
+
   rmsnorm_fwd:
     family: norm
 
     signature:
       inputs:
-        - name: x
-          dtype: "float16 | bfloat16"
-        - name: weight
-          dtype: "same_as(x)"
+        x: {dtype: "float16 | bfloat16"}
+        weight: {dtype: "same_as(x)"}
       outputs:
-        - name: y
-          dtype: "same_as(x)"
-          shape: "same_as(x)"
+        y: {dtype: "same_as(x)"}
       params:
-        - name: dim
-          type: int
-          default: -1
-        - name: eps
-          type: float
-          default: 1.0e-6
+        dim: {type: int, default: -1}
+        eps: {type: float, default: 1.0e-6}
       shape_rules:
         - "weight.shape == (x.shape[dim],)"
 
@@ -46,11 +66,377 @@ ops:
     roofline:
       # Per row: N squares + (N-1) adds + div + add + rsqrt + N muls (normalize) + N muls (weight) ≈ 4N
       flops: "4 * M * N"
-      # Bytes: read x (M*N) + read weight (N) + write y (M*N), x2 for fp16/bf16 elem_size
-      bytes: "2 * (M * N + N + M * N)"
+      # Read x (M*N) + read weight (N) + write y (M*N), x elem_size
+      bytes: "(2 * M * N + N) * elem_bytes"
 
     source:
       kernel: tileops/kernels/norm/rms_norm.py
       op: tileops/ops/norm/rms_norm.py
       test: tests/ops/test_rms_norm.py
       bench: benchmarks/ops/bench_rms_norm.py
+
+  layernorm_fwd:
+    family: norm
+
+    signature:
+      inputs:
+        x: {dtype: "float32 | float16 | bfloat16"}
+        weight: {dtype: "same_as(x)"}
+        bias: {dtype: "same_as(x)"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        eps: {type: float, default: 1.0e-5}
+      shape_rules:
+        - "weight.shape == (x.shape[-1],)"
+        - "bias.shape == (x.shape[-1],)"
+        - "y.shape == x.shape"
+
+    workloads:
+      # Llama-3.1-8B (hidden_dim=4096)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+      - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+      # Llama-3.1-70B (hidden_dim=8192)
+      - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+      - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+      # Llama-3.1-405B (hidden_dim=16384)
+      - {x_shape: [2048, 16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
+      - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+
+    roofline:
+      # Per row: N mean + N variance + N normalize + N scale + N bias ≈ 5N
+      flops: "5 * M * N"
+      # Read x (M*N) + read weight (N) + read bias (N) + write y (M*N)
+      bytes: "(2 * M * N + 2 * N) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/norm/layer_norm.py
+      op: tileops/ops/norm/layer_norm.py
+      test: tests/ops/test_layer_norm.py
+      bench: benchmarks/ops/bench_layer_norm.py
+
+  ada_layernorm_fwd:
+    family: norm
+
+    signature:
+      inputs:
+        x: {dtype: "float32 | float16 | bfloat16"}
+        scale: {dtype: "same_as(x)"}
+        shift: {dtype: "same_as(x)"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        eps: {type: float, default: 1.0e-5}
+      shape_rules:
+        - "scale.shape == x.shape"
+        - "shift.shape == x.shape"
+        - "y.shape == x.shape"
+
+    workloads:
+      # DiT-XL/2 (hidden_dim=1152)
+      - {x_shape: [1024, 1152], dtypes: [float16, bfloat16], label: "dit-xl-2"}
+      # Llama-3.1-8B (hidden_dim=4096)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+      - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+
+    roofline:
+      # Per row: N mean + N variance + N normalize + N scale + N shift ≈ 5N
+      flops: "5 * M * N"
+      # Read x + read scale + read shift + write y = 4*M*N
+      bytes: "4 * M * N * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/norm/ada_layer_norm
+      op: tileops/ops/norm/ada_layer_norm.py
+      test: tests/ops/test_ada_layer_norm.py
+      bench: benchmarks/ops/bench_ada_layer_norm.py
+
+  ada_layernorm_zero_fwd:
+    family: norm
+
+    signature:
+      inputs:
+        x: {dtype: "float32 | float16 | bfloat16"}
+        scale: {dtype: "same_as(x)"}
+        shift: {dtype: "same_as(x)"}
+        gate: {dtype: "same_as(x)"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        eps: {type: float, default: 1.0e-5}
+      shape_rules:
+        - "scale.shape == x.shape"
+        - "shift.shape == x.shape"
+        - "gate.shape == x.shape"
+        - "y.shape == x.shape"
+
+    workloads:
+      # DiT-XL/2 (hidden_dim=1152)
+      - {x_shape: [1024, 1152], dtypes: [float16, bfloat16], label: "dit-xl-2"}
+      # Llama-3.1-8B (hidden_dim=4096)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+      - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+
+    roofline:
+      # Per row: N mean + N variance + N normalize + N scale + N shift + N gate ≈ 6N
+      flops: "6 * M * N"
+      # Read x + read scale + read shift + read gate + write y = 5*M*N
+      bytes: "5 * M * N * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/norm/ada_layer_norm_zero
+      op: tileops/ops/norm/ada_layer_norm_zero.py
+      test: tests/ops/test_ada_layer_norm_zero.py
+      bench: benchmarks/ops/bench_ada_layer_norm.py
+
+  fused_add_layernorm_fwd:
+    family: norm
+
+    signature:
+      inputs:
+        x: {dtype: "float32 | float16 | bfloat16"}
+        residual: {dtype: "same_as(x)"}
+        weight: {dtype: "same_as(x)"}
+        bias: {dtype: "same_as(x)"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+        residual_out: {dtype: "same_as(x)"}
+      params:
+        eps: {type: float, default: 1.0e-5}
+      shape_rules:
+        - "residual.shape == x.shape"
+        - "weight.shape == (x.shape[-1],)"
+        - "bias.shape == (x.shape[-1],)"
+        - "y.shape == x.shape"
+        - "residual_out.shape == x.shape"
+
+    workloads:
+      # Llama-3.1-8B (hidden_dim=4096)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+      - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+      # Llama-3.1-70B (hidden_dim=8192)
+      - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+      - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+
+    roofline:
+      # Per row: N add (residual) + N mean + N variance + N normalize + N scale + N bias ≈ 6N
+      flops: "6 * M * N"
+      # Read x + read residual + read weight + read bias + write y + write residual_out
+      bytes: "(4 * M * N + 2 * N) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/norm/fused_add_norm
+      op: tileops/ops/norm/fused_add_layer_norm.py
+      test: tests/ops/test_fused_add_layer_norm.py
+      bench: benchmarks/ops/bench_fused_add_layer_norm.py
+
+  fused_add_rmsnorm_fwd:
+    family: norm
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16"}
+        residual: {dtype: "same_as(x)"}
+        weight: {dtype: "same_as(x)"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+        residual_out: {dtype: "same_as(x)"}
+      params:
+        eps: {type: float, default: 1.0e-6}
+      shape_rules:
+        - "residual.shape == x.shape"
+        - "weight.shape == (x.shape[-1],)"
+        - "y.shape == x.shape"
+        - "residual_out.shape == x.shape"
+
+    workloads:
+      # Llama-3.1-8B (hidden_dim=4096)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+      - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+      # Llama-3.1-70B (hidden_dim=8192)
+      - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+      - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+      # Llama-3.1-405B (hidden_dim=16384)
+      - {x_shape: [2048, 16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
+      - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+
+    roofline:
+      # Per row: N add (residual) + N squares + (N-1) adds + rsqrt + N normalize + N weight ≈ 5N
+      flops: "5 * M * N"
+      # Read x + read residual + read weight + write y + write residual_out
+      bytes: "(4 * M * N + N) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/norm/fused_add_norm
+      op: tileops/ops/norm/fused_add_rmsnorm.py
+      test: tests/ops/test_fused_add_rmsnorm.py
+      bench: benchmarks/ops/bench_fused_add_rmsnorm.py
+
+  # ---------------------------------------------------------------------------
+  # norm — spatial-norm ops (operate over spatial/channel dims, shape: [N, C, *spatial])
+  # ---------------------------------------------------------------------------
+
+  batchnorm_fwd:
+    family: norm
+
+    signature:
+      inputs:
+        x: {dtype: "float32 | float16 | bfloat16"}
+        weight: {dtype: "same_as(x)"}
+        bias: {dtype: "same_as(x)"}
+        running_mean: {dtype: "float32"}
+        running_var: {dtype: "float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+        mean: {dtype: "float32"}
+        rstd: {dtype: "float32"}
+      params:
+        training: {type: bool, default: true}
+        eps: {type: float, default: 1.0e-5}
+        momentum: {type: float, default: 0.1}
+      shape_rules:
+        - "weight.shape == (x.shape[1],)"
+        - "bias.shape == (x.shape[1],)"
+        - "running_mean.shape == (x.shape[1],)"
+        - "running_var.shape == (x.shape[1],)"
+        - "y.shape == x.shape"
+        - "mean.shape == (x.shape[1],)"
+        - "rstd.shape == (x.shape[1],)"
+
+    workloads:
+      # ResNet-50 stages
+      - {x_shape: [32, 64], dtypes: [float16], label: "resnet50-fc"}
+      - {x_shape: [8, 64, 32, 32], dtypes: [float16], label: "resnet50-stage1"}
+      - {x_shape: [4, 128, 32, 32], dtypes: [float16], label: "resnet50-stage2"}
+      - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "resnet50-stage3"}
+      # Large spatial
+      - {x_shape: [4, 128, 1024, 1024], dtypes: [float16], label: "large-spatial"}
+
+    roofline:
+      # 2-pass: compute mean/var over L elements per channel, then normalize. ≈ 10*C*L
+      flops: "10 * C * L"
+      # Read x + write y + params (weight, bias, running stats)
+      bytes: "(2 * C * L + 4 * C) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/norm/batch_norm.py
+      op: tileops/ops/norm/batch_norm.py
+      test: tests/ops/test_batch_norm.py
+      bench: benchmarks/ops/bench_batch_norm.py
+
+  batchnorm_bwd:
+    family: norm
+
+    signature:
+      inputs:
+        grad_out: {dtype: "float32 | float16 | bfloat16"}
+        x: {dtype: "same_as(grad_out)"}
+        weight: {dtype: "same_as(grad_out)"}
+        mean: {dtype: "float32"}
+        rstd: {dtype: "float32"}
+      outputs:
+        grad_x: {dtype: "same_as(grad_out)"}
+        grad_weight: {dtype: "same_as(grad_out)"}
+        grad_bias: {dtype: "same_as(grad_out)"}
+      params: {}
+      shape_rules:
+        - "x.shape == grad_out.shape"
+        - "weight.shape == (grad_out.shape[1],)"
+        - "mean.shape == (grad_out.shape[1],)"
+        - "rstd.shape == (grad_out.shape[1],)"
+        - "grad_x.shape == grad_out.shape"
+        - "grad_weight.shape == (grad_out.shape[1],)"
+        - "grad_bias.shape == (grad_out.shape[1],)"
+
+    workloads:
+      # ResNet-50 stages (same as fwd)
+      - {x_shape: [32, 64], dtypes: [float16], label: "resnet50-fc"}
+      - {x_shape: [8, 64, 32, 32], dtypes: [float16], label: "resnet50-stage1"}
+      - {x_shape: [4, 128, 32, 32], dtypes: [float16], label: "resnet50-stage2"}
+      - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "resnet50-stage3"}
+      # Large spatial
+      - {x_shape: [4, 128, 1024, 1024], dtypes: [float16], label: "large-spatial"}
+
+    roofline:
+      # Backward: 3 reductions + elementwise ≈ 8*C*L
+      flops: "8 * C * L"
+      # Read grad_out + read x + read weight + write grad_x + write grad_weight + write grad_bias
+      bytes: "(3 * C * L + 3 * C) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/norm/batch_norm.py
+      op: tileops/ops/norm/batch_norm.py
+      test: tests/ops/test_batch_norm.py
+      bench: benchmarks/ops/bench_batch_norm.py
+
+  groupnorm_fwd:
+    family: norm
+
+    signature:
+      inputs:
+        x: {dtype: "float32 | float16 | bfloat16"}
+        weight: {dtype: "same_as(x)"}
+        bias: {dtype: "same_as(x)"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        groups: {type: int}
+        eps: {type: float, default: 1.0e-5}
+      shape_rules:
+        - "weight.shape == (x.shape[1],)"
+        - "bias.shape == (x.shape[1],)"
+        - "x.shape[1] % groups == 0"
+        - "y.shape == x.shape"
+
+    workloads:
+      # Typical CV shapes
+      - {x_shape: [8, 128, 32, 32], groups: 32, dtypes: [float16, bfloat16], label: "image-g32"}
+      - {x_shape: [4, 256, 28, 28], groups: 32, dtypes: [float16], label: "wider-channel-g32"}
+      - {x_shape: [4, 128, 30, 30], groups: 16, dtypes: [float16], label: "tail-spatial-g16"}
+
+    roofline:
+      # Per element: subtract mean + square for var + normalize + scale + bias ≈ 5
+      flops: "5 * N * C * spatial_size"
+      # Read x + write y + read weight (C) + read bias (C)
+      bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/norm/group_norm.py
+      op: tileops/ops/norm/group_norm.py
+      test: tests/ops/test_group_norm.py
+      bench: benchmarks/ops/bench_group_norm.py
+
+  instancenorm_fwd:
+    family: norm
+
+    signature:
+      inputs:
+        x: {dtype: "float32 | float16 | bfloat16"}
+        weight: {dtype: "same_as(x)"}
+        bias: {dtype: "same_as(x)"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        eps: {type: float, default: 1.0e-5}
+      shape_rules:
+        - "weight.shape == (x.shape[1],)"
+        - "bias.shape == (x.shape[1],)"
+        - "y.shape == x.shape"
+
+    workloads:
+      # Typical CV shapes (style transfer, image generation)
+      - {x_shape: [8, 128, 32, 32], dtypes: [float16, bfloat16], label: "image"}
+      - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "wider-channel"}
+      - {x_shape: [4, 64, 30, 30], dtypes: [float16], label: "tail-spatial"}
+
+    roofline:
+      # Same as GroupNorm (InstanceNorm = GroupNorm with G=C)
+      flops: "5 * N * C * spatial_size"
+      # Read x + write y + read weight (C) + read bias (C)
+      bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/norm/group_norm.py
+      op: tileops/ops/norm/instance_norm.py
+      test: tests/ops/test_instance_norm.py
+      bench: benchmarks/ops/bench_instance_norm.py
