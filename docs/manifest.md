@@ -2,8 +2,6 @@
 
 `ops_manifest.yaml` is the **source of truth** for op interfaces. Code, tests, benchmarks, and docs are generated from it.
 
-Design rationale: `TileOpsGov/docs/manifest-design-rationale.md`
-
 ## Trust Model
 
 1. The manifest is the sole source of truth for op interfaces. Changes require human review.
