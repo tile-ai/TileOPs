@@ -180,6 +180,6 @@ class TestSourcePaths:
             source = entry["source"]
             for key, rel_path in source.items():
                 full_path = REPO_ROOT / rel_path
-                assert full_path.exists(), (
-                    f"{op_name}: source.{key} not found: {rel_path}"
+                assert full_path.is_file(), (
+                    f"{op_name}: source.{key} is not a file: {rel_path}"
                 )

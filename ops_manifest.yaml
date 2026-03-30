@@ -146,7 +146,7 @@ ops:
       bytes: "4 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/ada_layer_norm
+      kernel: tileops/kernels/norm/ada_layer_norm/fwd.py
       op: tileops/ops/norm/ada_layer_norm.py
       test: tests/ops/test_ada_layer_norm.py
       bench: benchmarks/ops/bench_ada_layer_norm.py
@@ -184,7 +184,7 @@ ops:
       bytes: "5 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/ada_layer_norm_zero
+      kernel: tileops/kernels/norm/ada_layer_norm_zero/__init__.py
       op: tileops/ops/norm/ada_layer_norm_zero.py
       test: tests/ops/test_ada_layer_norm_zero.py
       bench: benchmarks/ops/bench_ada_layer_norm.py
@@ -225,7 +225,7 @@ ops:
       bytes: "(4 * M * N + 2 * N) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/fused_add_norm
+      kernel: tileops/kernels/norm/fused_add_norm/fwd.py
       op: tileops/ops/norm/fused_add_layer_norm.py
       test: tests/ops/test_fused_add_layer_norm.py
       bench: benchmarks/ops/bench_fused_add_layer_norm.py
@@ -267,7 +267,7 @@ ops:
       bytes: "(4 * M * N + N) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/fused_add_norm
+      kernel: tileops/kernels/norm/fused_add_norm/fwd.py
       op: tileops/ops/norm/fused_add_rmsnorm.py
       test: tests/ops/test_fused_add_rmsnorm.py
       bench: benchmarks/ops/bench_fused_add_rmsnorm.py
@@ -282,8 +282,8 @@ ops:
     signature:
       inputs:
         x: {dtype: "float32 | float16 | bfloat16"}
-        weight: {dtype: "same_as(x)"}
-        bias: {dtype: "same_as(x)"}
+        weight: {dtype: "float32"}
+        bias: {dtype: "float32"}
         running_mean: {dtype: "float32"}
         running_var: {dtype: "float32"}
       outputs:
@@ -331,13 +331,13 @@ ops:
       inputs:
         grad_out: {dtype: "float32 | float16 | bfloat16"}
         x: {dtype: "same_as(grad_out)"}
-        weight: {dtype: "same_as(grad_out)"}
+        weight: {dtype: "float32"}
         mean: {dtype: "float32"}
         rstd: {dtype: "float32"}
       outputs:
         grad_x: {dtype: "same_as(grad_out)"}
-        grad_weight: {dtype: "same_as(grad_out)"}
-        grad_bias: {dtype: "same_as(grad_out)"}
+        grad_weight: {dtype: "float32"}
+        grad_bias: {dtype: "float32"}
       params: {}
       shape_rules:
         - "x.shape == grad_out.shape"
