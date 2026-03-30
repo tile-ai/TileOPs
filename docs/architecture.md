@@ -4,101 +4,83 @@ TileOPs is a spec-driven GPU operator platform built on TileLang. Every operator
 
 ## Modules
 
-The platform consists of 8 modules connected by five end-to-end data flows:
-
-| Flow                  | Trigger                 | Path            | Outcome                        |
-| :-------------------- | :---------------------- | :-------------- | :----------------------------- |
-| **🟩 New Op**         | new manifest entry      | M1 → M2 → M3    | correct op ready for benchmark |
-| **🟪 Perf Tuning**    | op callable             | M2/M1 → M4 → M5 | SOL% meets threshold           |
-| **🟥 HW Calibration** | new GPU / driver update | HW → M6 → M5    | GPU profile YAML               |
-| **🟧 CI Guard**       | PR push                 | M3/M4 → M7      | gate pass or block             |
-| **🟦 Publish**        | merge                   | M2/M5/M7 → M8   | auto-generated docs            |
+The platform consists of 8 modules (M1–M8). Five data flows connect them into end-to-end pipelines:
 
 ```mermaid
-graph TD
-    subgraph Develop [" Develop"]
-        M1["M1: Spec<br/>ops_manifest.yaml"]
-        M2["M2: Op + Kernel"]
+graph LR
+    subgraph F1 ["Flow 1: Op Delivery"]
+        direction LR
+        F1_M1["M1: Spec"] --> F1_M2["M2: Op+Kernel"] --> F1_M3["M3: Unit Test"] --> F1_PR(("PR"))
     end
 
-    subgraph Validate [" Validate"]
-        M3["M3: Correctness"]
-        M4["M4: Benchmark"]
+    subgraph F2 ["Flow 2: Perf Evaluation"]
+        direction LR
+        F2_M2["M2: Op"] --> F2_M4["M4: Benchmark"]
+        F2_M1["M1: Workloads"] --> F2_M4
+        F2_M4 -- "raw time" --> F2_M5["M5: Roofline"]
+        F2_M1b["M1: Formulas"] --> F2_M5
+        F2_M5 -- "SOL%" --> F2_D{"meets\nthreshold?"}
+        F2_D -- "no" --> F2_M2
     end
 
-    subgraph Evaluate [" Evaluate"]
-        HW["HW Microbench<br/>benchmarks/hardware/"]
-        M6["M6: HW Profile"]
-        M5["M5: Roofline"]
+    subgraph F3 ["Flow 3: HW Calibration"]
+        direction LR
+        F3_HW["HW Microbench"] --> F3_M6["M6: Profile YAML"] --> F3_M5["→ M5"]
     end
 
-    subgraph Deliver [" Deliver"]
-        M7["M7: CI Gate"]
-        M8["M8: Docs"]
+    subgraph F4 ["Flow 4: CI Guard"]
+        direction LR
+        F4_M3["M3: pytest"] --> F4_M7["M7: Gate"]
+        F4_M4["M4: latency Δ"] --> F4_M7
     end
 
-    %% Flow 1: New Op (emerald)
-    M1 -- "signature<br/>workloads" --> M2
-    M2 -- "Op callable" --> M3
-
-    %% Flow 2: Perf Tuning (violet)
-    M2 -- "Op callable" --> M4
-    M1 -- "workloads<br/>(shapes, dtypes)" --> M4
-    M4 -- "raw time<br/>(JSON/CSV)" --> M5
-    M1 -- "roofline formulas<br/>(flops, bytes)" --> M5
-
-    %% Flow 3: HW Calibration (rose)
-    HW -- "measured BW<br/>measured FLOPS" --> M6
-    M6 -- "GPU profile<br/>(YAML)" --> M5
-
-    %% Flow 4: CI Guard (amber)
-    M3 -- "pass/fail" --> M7
-    M4 -- "pass/fail<br/>latency delta" --> M7
-
-    %% Flow 5: Publish (sky)
-    M2 -- "docstring" --> M8
-    M5 -- "SOL%<br/>bound type" --> M8
-    M7 -- "gate status<br/>benchmark results" --> M8
-
-    %% Node styles by layer
-    classDef dev fill:#fef9c3,stroke:#ca8a04,color:#713f12
-    classDef val fill:#e0e7ff,stroke:#6366f1,color:#312e81
-    classDef eval fill:#ccfbf1,stroke:#0d9488,color:#134e4a
-    classDef del fill:#fce7f3,stroke:#db2777,color:#831843
-
-    class M1,M2 dev
-    class M3,M4 val
-    class HW,M6,M5 eval
-    class M7,M8 del
-
-    %% Subgraph styles
-    style Develop fill:#fefce8,stroke:#eab308,stroke-width:1.5px,rx:8,ry:8
-    style Validate fill:#eef2ff,stroke:#818cf8,stroke-width:1.5px,rx:8,ry:8
-    style Evaluate fill:#f0fdfa,stroke:#14b8a6,stroke-width:1.5px,rx:8,ry:8
-    style Deliver fill:#fdf2f8,stroke:#ec4899,stroke-width:1.5px,rx:8,ry:8
-
-    %% Edge colors by flow
-    linkStyle 0,1 stroke:#059669,stroke-width:2px
-    linkStyle 2,3,4,5 stroke:#7c3aed,stroke-width:2px
-    linkStyle 6,7 stroke:#e11d48,stroke-width:2px
-    linkStyle 8,9 stroke:#d97706,stroke-width:2px
-    linkStyle 10,11,12 stroke:#2563eb,stroke-width:2px
+    subgraph F5 ["Flow 5: Publish"]
+        direction LR
+        F5_src["M2 docstring\nM5 SOL%\nM7 results"] --> F5_M8["M8: Docs"]
+    end
 ```
 
-| Module              | Responsibility                                                         | Key Artifact                       |
-| ------------------- | ---------------------------------------------------------------------- | ---------------------------------- |
-| **M1: Spec**        | Declare op interface, workloads, roofline formulas                     | `ops_manifest.yaml`                |
-| **M2: Kernel + Op** | GPU kernel implementations and user-facing Python API                  | `tileops/kernels/`, `tileops/ops/` |
-| **M3: Correctness** | Numerical correctness against PyTorch reference                        | `tests/`                           |
-| **M4: Benchmark**   | Performance guard — CI benchmarks to detect regression on existing ops | `benchmarks/`                      |
-| **M5: Roofline**    | Hardware efficiency from raw time + formulas + HW profile              | `tileops/perf/`                    |
-| **M6: HW Profile**  | GPU hardware parameters (bandwidth, FLOPS) from offline calibration    | `tileops/perf/profiles/`           |
-| **M7: CI Gate**     | Correctness and performance regression guard per PR                    | CI pipeline                        |
-| **M8: Docs**        | Auto-generated API reference, perf tables, support matrix              | TileOPs.github.io                  |
+### Flow status
+
+| Flow                   | Status          | What works                        | Gap                                                     |
+| :--------------------- | :-------------- | :-------------------------------- | :------------------------------------------------------ |
+| **1. Op Delivery**     | **done**        | manifest → code → test → CI merge | —                                                       |
+| **2. Perf Evaluation** | **broken**      | M4 produces raw time              | M5 roofline tool missing; optimization loop not closed  |
+| **3. HW Calibration**  | **partial**     | HBM microbench + h200 profile     | tensor core calibration missing; h100 profile missing   |
+| **4. CI Guard**        | **half**        | correctness gate (gpu-smoke)      | perf regression detection missing (no baseline compare) |
+| **5. Publish**         | **not started** | —                                 | no doc-gen scripts, no build system                     |
+
+### Critical path
+
+```
+Flow 3 (HW Calibration)          Flow 2 (Perf Evaluation)
+  GEMM microbench ────────┐        roofline.py ──────────┐
+  h100 profile ───────────┤        formulas.py ──────────┤
+  tensor core calibration ┘        optimization loop ────┘
+                  │                          │
+                  └──── both feed into ──────┘
+                              │
+                    Flow 4: perf regression
+                              │
+                    Flow 5: auto-gen docs
+```
+
+### Module reference
+
+| Module              | Responsibility                                                      | Key Artifact                       |
+| ------------------- | ------------------------------------------------------------------- | ---------------------------------- |
+| **M1: Spec**        | Declare op interface, workloads, roofline formulas                  | `ops_manifest.yaml`                |
+| **M2: Kernel + Op** | GPU kernel implementations and user-facing Python API               | `tileops/kernels/`, `tileops/ops/` |
+| **M3: Correctness** | Numerical correctness against PyTorch reference                     | `tests/`                           |
+| **M4: Benchmark**   | Measure raw execution time per workload                             | `benchmarks/`                      |
+| **M5: Roofline**    | Hardware efficiency from raw time + formulas + HW profile           | `tileops/perf/`                    |
+| **M6: HW Profile**  | GPU hardware parameters (bandwidth, FLOPS) from offline calibration | `tileops/perf/profiles/`           |
+| **M7: CI Gate**     | Correctness and performance regression guard per PR                 | CI pipeline                        |
+| **M8: Docs**        | Auto-generated API reference, perf tables, support matrix           | TileOPs.github.io                  |
 
 ## Data Contracts
 
-Modules communicate through **data contracts** — explicit, versioned agreements on what artifact one module produces and another consumes. Every arrow in the module graph corresponds to exactly one row in the table below. If an edge has no contract, it does not exist. No implicit dependencies.
+Every arrow in the flow diagrams corresponds to one row below. If an edge has no contract, it does not exist.
 
 | From | To  | Artifact                         | Format                                |
 | ---- | --- | -------------------------------- | ------------------------------------- |
@@ -114,8 +96,6 @@ Modules communicate through **data contracts** — explicit, versioned agreement
 | M5   | M8  | SOL%, bound type per workload    | structured output                     |
 | M6   | M5  | GPU profile                      | YAML (`tileops/perf/profiles/`)       |
 | M7   | M8  | gate status, benchmark results   | CI scheduled job → perf tables update |
-
-Note: M3 (Correctness) and M4 (Benchmark) have no data dependency. The development workflow runs correctness first, but this is a process convention, not a data contract.
 
 ## Two-Layer Separation (M2)
 
