@@ -38,7 +38,6 @@ graph TD
     M6 -- "GPU profile" --> M5
 
     M3 --> M7
-    M4 --> M7
 
     M2 -- "design docs" --> M8
     M7 --> M8
@@ -51,8 +50,7 @@ graph TD
     linkStyle 4,5,6 stroke:#1d4ed8,stroke-width:3px
     linkStyle 7,8 stroke:#ca8a04,stroke-width:2px
     linkStyle 9 stroke:#0d9488,stroke-width:2px
-    linkStyle 10 stroke:#1d4ed8,stroke-width:2px
-    linkStyle 11,12 stroke:#9333ea,stroke-width:2px
+    linkStyle 10,11 stroke:#9333ea,stroke-width:2px
 ```
 
 🟢 Op Delivery 🔵 Perf Tuning 🟠 HW Calibration 🟣 Publish
