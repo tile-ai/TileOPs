@@ -32,7 +32,7 @@ graph TD
 
     M2 --> M4
     M4 -- "raw time" --> M5
-    M5 -. "SOL% < target" .-> M2
+    M5 -- "optimize" --> M2
 
     HW --> M6
     M6 -- "GPU profile" --> M5
@@ -43,12 +43,12 @@ graph TD
     M2 -- "design docs" --> M8
     M7 --> M8
 
-    style loop fill:none,stroke:#7c3aed,stroke-width:2px,stroke-dasharray:5,rx:8,ry:8
+    style loop fill:none,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:5,rx:8,ry:8
 
     linkStyle 0 stroke:#059669,stroke-width:2px
     linkStyle 1,2 stroke:#7c3aed,stroke-width:1.5px,stroke-dasharray:6
     linkStyle 3 stroke:#059669,stroke-width:2px
-    linkStyle 4,5,6 stroke:#7c3aed,stroke-width:2px
+    linkStyle 4,5,6 stroke:#c026d3,stroke-width:3px
     linkStyle 7,8 stroke:#e11d48,stroke-width:2px
     linkStyle 9,10 stroke:#d97706,stroke-width:2px
     linkStyle 11,12 stroke:#2563eb,stroke-width:2px
