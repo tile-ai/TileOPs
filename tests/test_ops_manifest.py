@@ -12,7 +12,7 @@ import yaml
 pytestmark = pytest.mark.smoke
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = REPO_ROOT / "ops_manifest.yaml"
+MANIFEST_PATH = REPO_ROOT / "tileops" / "ops_manifest.yaml"
 
 
 @pytest.fixture(scope="module")
