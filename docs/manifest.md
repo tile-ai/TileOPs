@@ -45,23 +45,71 @@ signature:
 
 ### Rules
 
-- **R1.** `inputs`/`outputs` are dicts keyed by tensor name. `params` is a list.
-- **R2.** Params include all supported parameters, even if the kernel only supports the default.
-- **R3.** dtype syntax: `|` for alternatives, `same_as(ref)` for dependent types.
-- **R4.** `dtype_combos` enumerates valid cross-tensor combinations. Source of truth when present.
-- **R5.** Every output shape must be fully specified via `shape`, `same_as(ref)`, and/or `shape_rules`.
-- **R6.** `shape` present = fixed rank. Dimension names become variables in `roofline`/`constraints`.
-- **R7.** `shape` absent = arbitrary rank. Use `params` + `shape_rules` for axis constraints.
-- **R8.** `same_as(ref)` = identical shape to referenced tensor.
-- **R9.** Shared dimension names = equality constraint (`K` in two tensors means sizes match).
-- **R10.** `constraints`: `"64 | 128 | 256"` (enumerated), `"power_of_2"`, `"divisible_by(k)"`.
-- **R11.** `shape_rules`: Python expressions for shape relationships. Required when `shape` + `same_as` are insufficient.
+**R1. Dict, not list.** Signature `inputs` and `outputs` use dicts keyed by tensor name. `params` remains a list to preserve positional order.
+
+**R2. Full interface.** Params include all mathematically supported parameters, even if the current kernel only supports the default.
+
+**R3. `dtype` syntax.** `|` for alternatives, `same_as(ref)` for dependent types.
+
+**R4. `dtype_combos`.** Enumerates valid cross-tensor dtype combinations. Source of truth when present; per-tensor `dtype` remains for documentation.
+
+```yaml
+dtype_combos:
+  - {x: float16, weight: float16}
+  - {x: float16, weight: float8_e4m3}
+  - {x: bfloat16, weight: bfloat16}
+```
+
+**R5. Output shape completeness.** Every output's shape must be fully specified via `shape`, `same_as(ref)`, and/or `shape_rules`. The manifest must be sufficient for generating `Op.infer_shape()`.
+
+**R6. `shape` present = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). Names become variables in `roofline` and `constraints`. No ellipsis or wildcards.
+
+**R7. `shape` absent = arbitrary rank.** Any number of dimensions. Axis constraints go in `params` + `shape_rules`.
+
+**R8. `same_as(ref)`.** Output has identical shape to the referenced tensor. Works for both fixed and arbitrary rank.
+
+**R9. Shared dimension names = equality.** `K` in two tensors means their sizes must match.
+
+**R10. `constraints`.** Restricts dimensions on tensors with `shape`. Values: `"64 | 128 | 256"` (enumerated) or `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"` (predicates).
+
+**R11. `shape_rules`.** Python expressions describing shape relationships. Agent generates `Op.infer_shape()` from these. Required when `shape` + `same_as` cannot fully specify output shape.
+
+**R12. Manifest → `infer_shape()`.** Agent generates `Op.infer_shape()` from `shape`, `same_as(ref)`, and `shape_rules`. Manifest and code must be consistent.
+
+### Shape Decision Tree
+
+Step 1 — declare output shape in the manifest. Step 2 — generate `Op.infer_shape()` from that declaration.
+
+**Step 1 — Declare:**
+
+```
+Output shape identical to an input?
+├─ YES → shape: "same_as(ref)"                            [R8]
+└─ NO
+   Fixed rank, expressible with dimension names?
+   ├─ YES → shape: "[D1, D2, ...]"                        [R6]
+   │   Inter-tensor relationships beyond shared names?
+   │   └─ YES → add shape_rules                           [R11]
+   └─ NO (arbitrary rank, depends on params)
+      └─ write shape_rules                                [R11]
+```
+
+Every leaf is a complete spec — no "omit and fallback" path.
+
+**Step 2 — Generate `Op.infer_shape()`:**
+
+| Declaration                             | Generated logic                                     |
+| --------------------------------------- | --------------------------------------------------- |
+| `shape: "same_as(ref)"`                 | `return ref.shape`                                  |
+| `shape: "[D1, D2, ...]"` + shared names | Return shape with matched dimensions from inputs    |
+| `shape_rules`                           | Translate expressions into Python shape computation |
 
 ### Examples
 
-**Fixed rank — GEMM:**
+**Fixed rank — GEMM** \[R1, R6, R9\]:
 
 ```yaml
+# Shared K implies a.shape[1] == b.shape[0]
 inputs:
   a: {dtype: "float16 | bfloat16", shape: "[M, K]"}
   b: {dtype: "same_as(a)", shape: "[K, N]"}
@@ -69,9 +117,19 @@ outputs:
   c: {dtype: "same_as(a)", shape: "[M, N]"}
 ```
 
-**Arbitrary rank — RMSNorm:**
+**Fixed rank + constraints — FFT** \[R6, R8, R10\]:
 
 ```yaml
+inputs:
+  x: {dtype: "complex64", shape: "[M, N]", constraints: {N: "power_of_2"}}
+outputs:
+  y: {dtype: "same_as(x)", shape: "same_as(x)"}
+```
+
+**Arbitrary rank + same_as — RMSNorm** \[R7, R8, R11\]:
+
+```yaml
+# No shape on x → any rank. dim selects axis. weight is 1-D along that axis.
 inputs:
   x: {dtype: "float16 | bfloat16"}
   weight: {dtype: "same_as(x)"}
@@ -82,6 +140,56 @@ params:
   - {name: eps, type: float, default: 1e-6}
 shape_rules:
   - "weight.shape == (x.shape[dim],)"
+```
+
+**Arbitrary rank + shape_rules — Reduce** \[R7, R11\]:
+
+```yaml
+# Output rank depends on dim and keepdim — shape_rules fully describe the logic.
+inputs:
+  x: {dtype: "float16 | bfloat16"}
+outputs:
+  y: {dtype: "same_as(x)"}
+params:
+  - {name: dim, type: "int | list[int]"}
+  - {name: keepdim, type: bool, default: false}
+shape_rules:
+  - "y.ndim == x.ndim if keepdim else x.ndim - len(dim)"
+  - "y.shape[i] == 1 if i in dim and keepdim else x.shape[i]"
+```
+
+**Full entry — RMSNorm:**
+
+```yaml
+ops:
+  rmsnorm_fwd:
+    family: norm
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16"}
+        weight: {dtype: "same_as(x)"}
+      outputs:
+        y: {dtype: "same_as(x)", shape: "same_as(x)"}
+      params:
+        - {name: dim, type: int, default: -1}
+        - {name: eps, type: float, default: 1e-6}
+      shape_rules:
+        - "weight.shape == (x.shape[dim],)"
+
+    workloads:
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+      - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+
+    roofline:
+      flops: "4 * M * N"
+      bytes: "2 * (M * N + N + M * N)"
+
+    source:
+      kernel: tileops/kernels/norm/rms_norm.py
+      op: tileops/ops/norm/rms_norm.py
+      test: tests/ops/test_rms_norm.py
+      bench: benchmarks/ops/bench_rms_norm.py
 ```
 
 ## Workloads
