@@ -405,7 +405,19 @@ class BenchmarkBase(ABC):
         """
         with torch.no_grad():
             latency = bench_kernel(functor, args=inputs)
+        return self._build_result(latency)
 
+    def profile_autograd(self, functor: Any) -> dict:
+        """Profile a callable that requires autograd (e.g. fwd+bwd).
+
+        Same as profile() but without torch.no_grad(), so the callable
+        can build autograd graphs and call .backward() internally.
+        The functor must be a zero-arg closure that captures its inputs.
+        """
+        latency = bench_kernel(functor)
+        return self._build_result(latency)
+
+    def _build_result(self, latency: float) -> dict:
         result = {"latency_ms": latency}
         flops = self.calculate_flops()
         if flops is not None:

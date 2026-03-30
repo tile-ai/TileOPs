@@ -9,7 +9,6 @@ from typing import Optional
 
 import pytest
 import torch
-from tilelang.profiler import do_bench as _do_bench
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gla_recurrence import GLADecodeTest
@@ -20,21 +19,6 @@ try:
     from fla.ops.gla import fused_recurrent_gla
 except ImportError:
     fused_recurrent_gla = None
-
-
-def _profile_manual(fn, bm, warmup=100, rep=100):
-    """Profile a function using do_bench with cupti/event fallback."""
-    latency = _do_bench(fn, warmup=warmup, rep=rep, backend='cupti')
-    if latency <= 0:
-        latency = _do_bench(fn, warmup=warmup, rep=rep, backend='event')
-    result = {"latency_ms": latency}
-    flops = bm.calculate_flops()
-    if flops is not None:
-        result["tflops"] = flops / latency * 1e-9
-    memory = bm.calculate_memory()
-    if memory is not None:
-        result["bandwidth_tbs"] = memory / latency * 1e-9
-    return result
 
 
 class GLADecodeBenchmark(BenchmarkBase):
@@ -112,12 +96,12 @@ def test_gla_decode_bench(
                 output_final_state=True,
             )
 
-        result_fla = _profile_manual(fla_decode, bm)
+        result_fla = bm.profile(fla_decode)
         BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch reference baseline ---
         result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":
