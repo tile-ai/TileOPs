@@ -14,7 +14,6 @@ Verifies:
   - TileOPs vs vLLM multi-GPU EP correctness
 """
 
-import os
 import pytest
 import torch
 import torch.distributed as dist

@@ -93,4 +93,3 @@ def test_shared_fused_moe_none():
     assert shared_out is None
     assert routed_out.shape == (T, H)
     print("PASS SharedFusedMoE with shared_experts_fn=None")
-

@@ -61,7 +61,7 @@ def _build_inputs(true_batch_sizes, N, K, dtype, device, block_m):
     # Fill valid rows with random data
     true_off = 0
     pad_off = 0
-    for i, s in enumerate(true_batch_sizes):
+    for _i, s in enumerate(true_batch_sizes):
         ps = math.ceil(s / block_m) * block_m
         A[pad_off:pad_off + s] = torch.randn(s, K, dtype=dtype, device=device)
         true_off += s

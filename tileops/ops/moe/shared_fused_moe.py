@@ -119,4 +119,3 @@ class SharedFusedMoE(FusedMoe):
         )
 
         return shared_out, routed_out
-

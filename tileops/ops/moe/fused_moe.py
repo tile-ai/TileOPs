@@ -23,7 +23,7 @@ EP note:
     FusedMoeExperts directly with pre-dispatched tokens.
 """
 
-from typing import Callable, Dict, Optional
+from typing import Dict, Optional
 
 import torch
 

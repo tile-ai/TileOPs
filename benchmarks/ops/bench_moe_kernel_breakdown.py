@@ -13,7 +13,6 @@ Usage:
 """
 
 import torch
-import torch.nn.functional as F
 
 # ── Optional vLLM ───────────────────────────────────────────────────────────
 try:
@@ -22,12 +21,14 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
+from tileops.kernels.moe.moe_grouped_gemm_nopad import (
+    _SCHED_THREADS,
+    _moe_grouped_gemm_kernel,
+    _tile_scheduler_kernel,
+)
 from tileops.ops.elementwise import SiluAndMulOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
-from tileops.ops.moe import FusedTopKOp, MoePermutePaddedOp, MoePermuteNopadOp, MoeUnpermuteOp
-from tileops.kernels.moe.moe_grouped_gemm_nopad import (
-    _tile_scheduler_kernel, _moe_grouped_gemm_kernel, _SCHED_THREADS,
-)
+from tileops.ops.moe import FusedTopKOp, MoePermuteNopadOp, MoePermutePaddedOp, MoeUnpermuteOp
 
 # ── Config ───────────────────────────────────────────────────────────────────
 CONFIGS = [
@@ -69,7 +70,7 @@ def print_breakdown(title: str, stages: list[tuple[str, float]]) -> None:
     for name, t in stages:
         print(f"  {name:<26}  {t:7.3f}  {t/total*100:5.1f}%")
     print(f"  {'TOTAL':<26}  {total:7.3f}  100.0%")
-    print(f"  (end-to-end via full op: see main benchmark)")
+    print("  (end-to-end via full op: see main benchmark)")
 
 
 # ── Input generation ─────────────────────────────────────────────────────────
@@ -205,7 +206,9 @@ def profile_vllm(T, E, K, H, F, scoring_func, renormalize, iters=5):
     # vLLM expects int64 topk_ids
     tids_i64 = tids.to(torch.int64)
 
-    fn = lambda: _vllm_fused_experts(hidden, w_gu, w_down, tw, tids_i64)
+    def fn():
+        return _vllm_fused_experts(hidden, w_gu, w_down, tw, tids_i64)
+
     for _ in range(20):
         fn()
     torch.cuda.synchronize()
