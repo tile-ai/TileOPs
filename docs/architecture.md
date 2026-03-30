@@ -45,16 +45,16 @@ graph TD
 
     style loop fill:none,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:5,rx:8,ry:8
 
-    linkStyle 0 stroke:#059669,stroke-width:2px
-    linkStyle 1,2 stroke:#7c3aed,stroke-width:1.5px,stroke-dasharray:6
-    linkStyle 3 stroke:#059669,stroke-width:2px
-    linkStyle 4,5,6 stroke:#c026d3,stroke-width:3px
-    linkStyle 7,8 stroke:#e11d48,stroke-width:2px
-    linkStyle 9,10 stroke:#d97706,stroke-width:2px
-    linkStyle 11,12 stroke:#2563eb,stroke-width:2px
+    linkStyle 0 stroke:#16a34a,stroke-width:2px
+    linkStyle 1,2 stroke:#2563eb,stroke-width:1.5px,stroke-dasharray:6
+    linkStyle 3 stroke:#16a34a,stroke-width:2px
+    linkStyle 4,5,6 stroke:#2563eb,stroke-width:3px
+    linkStyle 7,8 stroke:#ea580c,stroke-width:2px
+    linkStyle 9,10 stroke:#64748b,stroke-width:2px
+    linkStyle 11,12 stroke:#8b5cf6,stroke-width:2px
 ```
 
-🟢 Op Delivery 🟣 Perf Tuning 🔴 HW Calibration 🟠 CI Guard 🔵 Publish — dashed = not yet built
+🟩 Op Delivery 🟦 Perf Tuning 🟧 HW Calibration ⬜ CI Guard 🟪 Publish
 
 ### Flow status
 
