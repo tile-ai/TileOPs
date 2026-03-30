@@ -22,8 +22,8 @@ Usage:
     # Forward returns (shared_output, routed_output)
     shared_out, routed_out = op(hidden, gating, w_gate_up, w_down)
 
-    # Model layer combines them
-    final_out = routed_out * routed_scaling_factor + shared_out
+    # Model layer combines them (routed_scaling_factor already applied internally)
+    final_out = routed_out + shared_out
 """
 
 from typing import Callable, Dict, Optional

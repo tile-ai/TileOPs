@@ -102,6 +102,9 @@ class FusedMoe(Op):
             with_correction_bias=with_correction_bias,
         )
 
+        if layout not in ("nopad", "padded"):
+            raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
+
         experts_cls = FusedMoeExperts if layout == "nopad" else FusedMoeExpertsPadded
         self._experts = experts_cls(
             num_tokens=num_tokens,

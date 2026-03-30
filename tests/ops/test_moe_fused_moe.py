@@ -68,7 +68,7 @@ def _ref_kimi_routing(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Pure-PyTorch Kimi K2 routing: sigmoid → biased topk → gather original weights."""
     scores = gating_output.float().sigmoid()
-    tmp = scores + correction_bias.float().unsqueeze(0) if correction_bias is not None else scores
+    tmp = (scores + correction_bias.float().unsqueeze(0)) if correction_bias is not None else scores
     topk_ids = tmp.topk(top_k, dim=-1, sorted=False).indices
     topk_weights = scores.gather(1, topk_ids)
     topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)

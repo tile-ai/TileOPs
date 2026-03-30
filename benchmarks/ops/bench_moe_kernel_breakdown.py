@@ -89,7 +89,7 @@ def gen_inputs(T, E, K, H, F):
 
 def profile_padded(T, E, K, H, F, scoring_func, renormalize):
     numel = T * K
-    padded = numel + E * _BLOCK_M
+    padded = numel + E * (_BLOCK_M - 1)
     hidden, gating, w_gu, w_down = gen_inputs(T, E, K, H, F)
 
     # Build ops
