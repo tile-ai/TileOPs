@@ -62,7 +62,7 @@ class MhcPreTest(TestBase):
         c_x = self.c_x
 
         xsqr = x * x
-        r_ref = torch.sqrt(xsqr.sum(dim=1)) / math.sqrt(n_expand * c_x)
+        r_ref = torch.sqrt(xsqr.sum(dim=1)) / math.sqrt(n_expand * c_x) + 0.0001
         H = torch.zeros([batch, n_expand * n_expand + 2 * n_expand],
                         device="cuda", dtype=torch.float)
         for i in range(batch):
