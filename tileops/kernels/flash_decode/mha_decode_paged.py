@@ -9,7 +9,11 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
-__all__ = ["mha_decode_paged_kernel"]
+__all__ = [
+    "MHADecodePagedKernel",
+    "MHADecodePagedSplitKVKernel",
+    "MHADecodePagedCombineKernel",
+]
 
 # ---------------------------------------------------------------------------
 # JIT kernel: no-split variant (paged)
@@ -113,17 +117,18 @@ def _mha_decode_no_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_siz
 
 
 # ---------------------------------------------------------------------------
-# JIT kernel: split variant (paged, split + combine)
+# JIT kernel: split-only variant (paged, no combine)
 # ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
-def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype):
+def _mha_decode_split_only_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal,
+                                  dtype):
     scale = make_log2e_scale(dim)
     accum_dtype = "float"
 
     @tilelang.jit(
-        out_idx=[-1],
+        out_idx=[5, 6],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -203,8 +208,8 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                 logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
             T.copy(acc_s, acc_s_cast)
 
-        @T.macro
-        def _mha_decode_split(
+        @T.prim_func
+        def mha_decode_split_only(
                 Q: T.Tensor(shape_q, dtype),
                 K: T.Tensor(shape_kv, dtype),
                 V: T.Tensor(shape_kv, dtype),
@@ -269,7 +274,6 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                     ),
                 )
                 num_blockn_in_page = page_size // block_N
-                # loop_range = T.ceildiv(seqlen_kv_b, block_N)
                 loop_range = blocks_in_split
                 offset = 0 if sid == 0 else split_length_shared[sid - 1] // block_N
 
@@ -302,13 +306,37 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                     Output_partial[bid, mid * block_M:(mid + 1) * block_M, hid, sid, :],
                     disable_tma=True)
 
-        @T.macro
-        def combine(
+        return mha_decode_split_only
+
+    return _func
+
+
+# ---------------------------------------------------------------------------
+# JIT kernel: combine-only variant
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=32)
+def _mha_decode_paged_combine_kernel(batch, heads, seqlen_q, num_split, dim, dtype):
+    accum_dtype = "float"
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"])
+    def _func(block_M, threads):
+        shape_q = [batch, seqlen_q, heads, dim]
+        part_shape = [batch, seqlen_q, heads, num_split, dim]
+
+        @T.prim_func
+        def mha_decode_combine(
                 glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype),
                 Output_partial: T.Tensor(part_shape, dtype),
                 Output: T.Tensor(shape_q, dtype),
         ):
-            with T.Kernel(T.ceildiv(seqlen_q, block_M), heads, batch, threads=128) as (bx, by, bz):
+            with T.Kernel(T.ceildiv(seqlen_q, block_M), heads, batch, threads=threads) as (bx, by, bz):
                 po_local = T.alloc_fragment([block_M, dim], dtype)
                 po_shared = T.alloc_shared([block_M, dim], dtype)
                 o_accum_local = T.alloc_fragment([block_M, dim], accum_dtype)
@@ -359,25 +387,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                 T.copy(
                     o_shared, Output[bz, bx * block_M:(bx + 1) * block_M, by, :], disable_tma=True)
 
-        @T.prim_func
-        def mha_decode_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_kv, dtype),
-                V: T.Tensor(shape_kv, dtype),
-                real_seqlen_kv: T.Tensor([batch], T.int32),
-                block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
-                glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype),
-                Output_partial: T.Tensor(part_shape,
-                                         dtype),  # [batch, seqlen_q, heads, num_split, dim]
-                split_length: T.Tensor([batch, num_split], "int32"),
-                Output: T.Tensor(shape_q, dtype),
-        ):
-
-            _mha_decode_split(Q, K, V, real_seqlen_kv, block_table, glse, Output_partial,
-                              split_length)
-            combine(glse, Output_partial, Output)
-
-        return mha_decode_split
+        return mha_decode_combine
 
     return _func
 
@@ -410,35 +420,54 @@ def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int, page_size
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("top::mha_decode_paged_split_op", mutates_args=())
-def _mha_decode_paged_split_op(
+@torch.library.custom_op("top::mha_decode_paged_split_only_op", mutates_args=())
+def _mha_decode_paged_split_only_op(
         batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int, page_size: int,
         is_causal: bool, dtype: str, block_M: int, block_N: int, num_stages: int, threads: int,
         num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-        real_seqlen_kv: torch.Tensor, block_table: torch.Tensor, glse: torch.Tensor,
-        Output_partial: torch.Tensor,
-        acc_split_length: torch.Tensor) -> torch.Tensor:
-    return _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal,
-                                    dtype)(block_M, block_N, num_split, num_stages,
-                                           threads)(Q, K, V, real_seqlen_kv, block_table, glse,
-                                                    Output_partial, acc_split_length)
+        real_seqlen_kv: torch.Tensor, block_table: torch.Tensor,
+        split_length: torch.Tensor) -> list[torch.Tensor]:
+    return _mha_decode_split_only_kernel(
+        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal,
+        dtype)(block_M, block_N, num_split, num_stages,
+               threads)(Q, K, V, real_seqlen_kv, block_table, split_length)
 
 
-@_mha_decode_paged_split_op.register_fake
+@_mha_decode_paged_split_only_op.register_fake
 def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int, page_size: int,
       is_causal: bool, dtype: str, block_M: int, block_N: int, num_stages: int, threads: int,
       num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-      real_seqlen_kv: torch.Tensor, block_table: torch.Tensor, glse: torch.Tensor,
-      Output_partial: torch.Tensor, acc_split_length: torch.Tensor) -> torch.Tensor:
-    return torch.empty_like(Q)
+      real_seqlen_kv: torch.Tensor, block_table: torch.Tensor,
+      split_length: torch.Tensor) -> list[torch.Tensor]:
+    torch_dtype = getattr(torch, dtype)
+    glse = torch.empty(batch, heads, num_split, seqlen_q, dtype=torch_dtype, device=Q.device)
+    Output_partial = torch.empty(
+        batch, seqlen_q, heads, num_split, dim, dtype=torch_dtype, device=Q.device)
+    return [glse, Output_partial]
+
+
+@torch.library.custom_op("top::mha_decode_paged_combine_op", mutates_args=())
+def _mha_decode_paged_combine_op(batch: int, heads: int, seqlen_q: int, num_split: int, dim: int,
+                                  dtype: str, block_M: int, threads: int, glse: torch.Tensor,
+                                  Output_partial: torch.Tensor) -> torch.Tensor:
+    return _mha_decode_paged_combine_kernel(batch, heads, seqlen_q, num_split, dim,
+                                             dtype)(block_M, threads)(glse, Output_partial)
+
+
+@_mha_decode_paged_combine_op.register_fake
+def _(batch: int, heads: int, seqlen_q: int, num_split: int, dim: int, dtype: str, block_M: int,
+      threads: int, glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
+    return torch.empty(
+        batch, seqlen_q, heads, dim, dtype=glse.dtype, device=glse.device)
 
 
 # ---------------------------------------------------------------------------
-# Kernel class
+# Kernel classes
 # ---------------------------------------------------------------------------
 
 
-class mha_decode_paged_kernel(Kernel):
+class MHADecodePagedKernel(Kernel):
+    """No-split paged MHA decode kernel for short sequences."""
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
@@ -448,8 +477,8 @@ class mha_decode_paged_kernel(Kernel):
                  seqlen_kv,
                  dim,
                  page_size,
-                 is_causal,
-                 dtype: str = "bfloat16",
+                 is_causal=False,
+                 dtype="float16",
                  config: Optional[dict] = None,
                  tune=False):
         super().__init__()
@@ -458,19 +487,77 @@ class mha_decode_paged_kernel(Kernel):
         self.seqlen_q = seqlen_q
         self.seqlen_kv = seqlen_kv
         self.dim = dim
+        self.page_size = page_size
         self.is_causal = is_causal
         self.dtype = dtype
+
+        self.kernel = _mha_decode_no_split_kernel(
+            self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.page_size,
+            self.is_causal, self.dtype_str)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        block_N = min(64 if self.dim <= 128 else 32, self.page_size)
+        return {"block_M": 128, "block_N": block_N, "num_stages": 2, "threads": 128}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        block_M = [64, 128]
+        block_N = [64, 128]
+        num_stages = [1, 2, 3]
+        threads = [128]
+        _configs = list(itertools.product(block_M, block_N, num_stages, threads))
+
+        configs = [{
+            'block_M': c[0],
+            'block_N': c[1],
+            'num_stages': c[2],
+            'threads': c[3]
+        } for c in _configs if c[1] <= self.page_size]
+        return configs
+
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+                real_seqlen_kv: torch.Tensor, block_table: torch.Tensor):
+        block_M = self.config["block_M"]
+        block_N = self.config["block_N"]
+        num_stages = self.config["num_stages"]
+        threads = self.config["threads"]
+
+        return _mha_decode_paged_no_split_op(
+            self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.page_size,
+            self.is_causal, self.dtype_str, block_M, block_N, num_stages, threads, Q, K, V,
+            real_seqlen_kv, block_table)
+
+
+class MHADecodePagedSplitKVKernel(Kernel):
+    """Split-only paged MHA decode kernel (no combine). Outputs glse and Output_partial."""
+    supported_archs: list[int] = [80, 89, 90]
+
+    def __init__(self,
+                 batch,
+                 heads,
+                 seqlen_q,
+                 seqlen_kv,
+                 dim,
+                 page_size,
+                 is_causal=False,
+                 dtype="float16",
+                 config: Optional[dict] = None,
+                 tune=False):
+        super().__init__()
+        self.batch = batch
+        self.heads = heads
+        self.seqlen_q = seqlen_q
+        self.seqlen_kv = seqlen_kv
+        self.dim = dim
         self.page_size = page_size
+        self.is_causal = is_causal
+        self.dtype = dtype
 
-        self.no_split_jit = _mha_decode_no_split_kernel(
+        self.kernel = _mha_decode_split_only_kernel(
             self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.page_size,
             self.is_causal, self.dtype_str)
-        self.split_jit = _mha_decode_split_kernel(
-            self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.page_size,
-            self.is_causal, self.dtype_str)
-
-        # autotune targets the split kernel
-        self.kernel = self.split_jit
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
 
@@ -521,9 +608,10 @@ class mha_decode_paged_kernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        block_N = min(64 if self.dim <= 128 else 32, self.page_size)
         return {
             "block_M": 128,
-            "block_N": 64 if self.dim <= 128 else 32,
+            "block_N": block_N,
             "num_split": 4,
             "num_stages": 2,
             "threads": 128
@@ -544,42 +632,65 @@ class mha_decode_paged_kernel(Kernel):
             'num_split': c[2],
             'num_stages': c[3],
             'threads': c[4]
-        } for c in _configs]
+        } for c in _configs if c[1] <= self.page_size]
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                real_seqlen_kv: torch.Tensor, block_table: torch.Tensor):
+                real_seqlen_kv: torch.Tensor, block_table: torch.Tensor,
+                split_length: torch.Tensor):
         block_M = self.config["block_M"]
         block_N = self.config["block_N"]
         num_split = self.config["num_split"]
         num_stages = self.config["num_stages"]
         threads = self.config["threads"]
 
-        # Dispatch: use no-split for short sequences where splitting is not beneficial
-        real_max = real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
-        threshold = num_split * block_N
-        if real_max < threshold:
-            return _mha_decode_paged_no_split_op(
-                self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.page_size,
-                self.is_causal, self.dtype_str, block_M, block_N, num_stages, threads, Q, K, V,
-                real_seqlen_kv, block_table)
-
-        # Split path: compute cumulative per-split lengths
-        chunk_size = real_max // (num_split * block_N) * block_N
-        split_length = torch.full((self.batch, num_split), chunk_size, dtype=torch.int32,
-                                  device=Q.device)
-        split_length[:, -1] = int(real_max - (num_split - 1) * chunk_size)
-        acc_split_length = torch.cumsum(split_length, dim=1).to(torch.int32)
-
-        glse = torch.zeros((self.batch, self.heads, num_split, self.seqlen_q),
-                           dtype=self.dtype,
-                           device=Q.device).contiguous()
-        Output_partial = torch.zeros(
-            (self.batch, self.seqlen_q, self.heads, num_split, self.dim),
-            dtype=self.dtype,
-            device=Q.device).contiguous()
-
-        return _mha_decode_paged_split_op(
+        return _mha_decode_paged_split_only_op(
             self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.page_size,
             self.is_causal, self.dtype_str, block_M, block_N, num_stages, threads, num_split, Q, K,
-            V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length)
+            V, real_seqlen_kv, block_table, split_length)
+
+
+class MHADecodePagedCombineKernel(Kernel):
+    """Combine-only kernel: reduces partial outputs from split kernel into final output."""
+    supported_archs: list[int] = [80, 89, 90]
+
+    def __init__(self,
+                 batch,
+                 heads,
+                 seqlen_q,
+                 num_split,
+                 dim,
+                 dtype="float16",
+                 config: Optional[dict] = None,
+                 tune=False):
+        super().__init__()
+        self.batch = batch
+        self.heads = heads
+        self.seqlen_q = seqlen_q
+        self.num_split = num_split
+        self.dim = dim
+        self.dtype = dtype
+
+        self.kernel = _mha_decode_paged_combine_kernel(
+            self.batch, self.heads, self.seqlen_q, self.num_split, self.dim, self.dtype_str)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {"block_M": 128, "threads": 128}
+
+    def forward(self, glse: torch.Tensor, Output_partial: torch.Tensor):
+        block_M = self.config["block_M"]
+        threads = self.config["threads"]
+
+        return _mha_decode_paged_combine_op(self.batch, self.heads, self.seqlen_q, self.num_split,
+                                             self.dim, self.dtype_str, block_M, threads, glse,
+                                             Output_partial)
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility alias
+# ---------------------------------------------------------------------------
+
+# Keep old name as an alias for the split kernel (which was the primary autotune target)
+mha_decode_paged_kernel = MHADecodePagedSplitKVKernel
