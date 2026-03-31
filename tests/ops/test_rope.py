@@ -305,7 +305,7 @@ class RopeBasicFixture(FixtureBase):
     """Basic RoPE fixture: shapes x dtypes."""
     PARAMS = [
         ("batch, seq_len, num_heads, head_dim, dtype", [
-            pytest.param(2, 128, 8, 64, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+            pytest.param(2, 128, 8, 64, torch.float16, marks=[pytest.mark.full, pytest.mark.packaging]),
             pytest.param(2, 128, 8, 64, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(2, 128, 8, 64, torch.float32, marks=pytest.mark.full),
             pytest.param(1, 256, 4, 128, torch.float16, marks=pytest.mark.full),
@@ -317,7 +317,7 @@ class RopeEdgeFixture(FixtureBase):
     """Edge case fixture: seq_len=1, small head_dim."""
     PARAMS = [
         ("batch, seq_len, num_heads, head_dim, dtype", [
-            pytest.param(1, 1, 1, 16, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(1, 1, 1, 16, torch.float32, marks=pytest.mark.full),
             pytest.param(2, 512, 8, 64, torch.float16, marks=pytest.mark.full),
         ]),
     ]
@@ -532,7 +532,7 @@ def test_rope_non_neox_edge(batch: int, seq_len: int, num_heads: int,
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_rope_rejects_wrong_shape_2d() -> None:
     """A same-numel but wrong-shape 2D tensor must be rejected."""
     from tileops.ops.rope import RopeNeoxOp
@@ -546,7 +546,7 @@ def test_rope_rejects_wrong_shape_2d() -> None:
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_rope_noncontiguous_1d_works() -> None:
     """A non-contiguous 1D view must produce correct results after contiguity normalization."""
     from tileops.ops.rope import RopeNeoxOp
@@ -566,7 +566,7 @@ def test_rope_noncontiguous_1d_works() -> None:
     torch.testing.assert_close(out_nc, out_c, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_rope_rejects_non_float_dtype() -> None:
     from tileops.kernels.rope import RopeNeoxKernel
 

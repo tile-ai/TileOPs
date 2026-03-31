@@ -12,7 +12,7 @@ from tileops.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 class GqaFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
-            pytest.param(1, 1024, 8, 4, 64, False, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1, 1024, 8, 4, 64, False, torch.float16, False, marks=pytest.mark.full),
             pytest.param(4, 2048, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.full),
             pytest.param(4, 2048, 64, 4, 128, False, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
@@ -22,7 +22,7 @@ class GqaFwdFixture(FixtureBase):
 class GqaBwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
-            pytest.param(1, 1024, 8, 4, 64, False, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1, 1024, 8, 4, 64, False, torch.float16, False, marks=pytest.mark.full),
             pytest.param(4, 2048, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.full),
             pytest.param(4, 2048, 64, 4, 128, False, torch.bfloat16, False, marks=pytest.mark.full),
         ]),

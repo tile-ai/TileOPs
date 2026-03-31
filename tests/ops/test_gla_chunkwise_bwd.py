@@ -141,7 +141,7 @@ def _fla_autograd_bwd(
 class GLABwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
-            pytest.param(2, 64, 2, 64, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
+            pytest.param(2, 64, 2, 64, 64, 64, torch.float32, False, marks=pytest.mark.full),
             pytest.param(1, 128, 4, 64, 64, 64, torch.float32, False, marks=pytest.mark.full),
             pytest.param(2, 64, 2, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),

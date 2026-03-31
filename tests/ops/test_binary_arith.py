@@ -32,7 +32,7 @@ class CoalesceFixture(FixtureBase):
     PARAMS = [
         ("a_shape, b_shape, expected_ndim", [
             # same-shape: coalesces to 1D
-            pytest.param((1024, 1024), (1024, 1024), 1, marks=pytest.mark.smoke),
+            pytest.param((1024, 1024), (1024, 1024), 1, marks=pytest.mark.full),
             # bias-add: (B,S,D) + (1,1,D) -> 2 groups
             pytest.param((2, 512, 768), (1, 1, 768), 2, marks=pytest.mark.full),
             # row broadcast: (B,S,D) + (B,S,1) -> 2 groups
@@ -91,7 +91,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 class AddSameShapeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
             pytest.param(16_384, torch.float16, marks=pytest.mark.full),
@@ -132,7 +132,7 @@ class AddBroadcastFixture(FixtureBase):
     PARAMS = [
         ("a_shape, b_shape, dtype", [
             pytest.param(
-                (2, 512, 768), (1, 1, 768), torch.float16, marks=pytest.mark.smoke,
+                (2, 512, 768), (1, 1, 768), torch.float16, marks=pytest.mark.full,
             ),
             pytest.param(
                 (2, 512, 768), (2, 512, 1), torch.float16, marks=pytest.mark.full,
@@ -223,7 +223,7 @@ class ArithBroadcastFixture(FixtureBase):
     PARAMS = [
         ("op_name, op_cls, ref_fn, gen_a, gen_b, a_shape, b_shape", [
             pytest.param(name, cls, ref, ga, gb, a_s, b_s,
-                         marks=pytest.mark.smoke if i == 0 and j == 0
+                         marks=pytest.mark.full if i == 0 and j == 0
                          else pytest.mark.full)
             for j, (name, cls, ref, ga, gb) in enumerate(_ARITH_BROADCAST_OPS)
             for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
@@ -251,7 +251,7 @@ def test_binary_arith_broadcast(
 class AddStrategyFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype, strategy", [
-            pytest.param(4_096, torch.float16, "direct", marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, "direct", marks=pytest.mark.full),
             pytest.param(16_384, torch.float16, "explicit_parallel", marks=pytest.mark.full),
         ]),
     ]
@@ -314,7 +314,7 @@ class BinaryPositiveTest(TestBase):
 class SubFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -338,7 +338,7 @@ def test_sub_op(n_total: int, dtype: torch.dtype) -> None:
 class MulFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -362,7 +362,7 @@ def test_mul_op(n_total: int, dtype: torch.dtype) -> None:
 class DivFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -386,7 +386,7 @@ def test_div_op(n_total: int, dtype: torch.dtype) -> None:
 class RemainderFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -428,7 +428,7 @@ def test_remainder_op(n_total: int, dtype: torch.dtype) -> None:
 class PowFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -468,7 +468,7 @@ def test_pow_op(n_total: int, dtype: torch.dtype) -> None:
 class FloorDivideFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -510,7 +510,7 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
 class LerpFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -559,7 +559,7 @@ def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
 class MaximumFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -583,7 +583,7 @@ def test_maximum_op(n_total: int, dtype: torch.dtype) -> None:
 class MinimumFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -607,7 +607,7 @@ def test_minimum_op(n_total: int, dtype: torch.dtype) -> None:
 class MaxMinNanFixture(FixtureBase):
     PARAMS = [
         ("dtype", [
-            pytest.param(torch.float32, marks=pytest.mark.smoke),
+            pytest.param(torch.float32, marks=pytest.mark.full),
             pytest.param(torch.float16, marks=pytest.mark.full),
         ]),
     ]
@@ -665,7 +665,7 @@ def test_minimum_nan_propagation(dtype: torch.dtype) -> None:
 class SignedZeroFixture(FixtureBase):
     PARAMS = [
         ("dtype", [
-            pytest.param(torch.float16, marks=pytest.mark.smoke),
+            pytest.param(torch.float16, marks=pytest.mark.full),
             pytest.param(torch.bfloat16, marks=pytest.mark.full),
             pytest.param(torch.float32, marks=pytest.mark.full),
         ]),
@@ -790,7 +790,7 @@ class EdgeCaseFixture(FixtureBase):
                     torch.randn(n, dtype=d, device="cuda"),
                     torch.rand(n, dtype=d, device="cuda") + 0.1,
                 ),
-                marks=pytest.mark.smoke,
+                marks=pytest.mark.full,
             ),
             # remainder: positive inputs
             pytest.param(
@@ -858,7 +858,7 @@ def test_binary_arith_edge_cases(op_cls, ref_fn, gen_fn) -> None:
 class FloatOnlyBinaryRejectFixture(FixtureBase):
     PARAMS = [
         ("op_cls, dtype", [
-            pytest.param(DivOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(DivOp, torch.int32, marks=pytest.mark.full),
             pytest.param(RemainderOp, torch.int32, marks=pytest.mark.full),
             pytest.param(PowOp, torch.int32, marks=pytest.mark.full),
             pytest.param(FloorDivideOp, torch.int64, marks=pytest.mark.full),
@@ -877,7 +877,7 @@ def test_float_only_binary_ops_reject_integer_dtype(op_cls, dtype: torch.dtype) 
         op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
     """Runtime inputs should fail fast instead of reaching backend lowering."""
     op = SubOp(a_shape=(16,), b_shape=(16,), dtype=torch.float16)
@@ -892,7 +892,7 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_kernel_has_autotune_configs() -> None:
     """BinaryKernel subclasses must expose autotune_configs with >= 3 entries."""
 
@@ -914,7 +914,7 @@ def test_binary_kernel_has_autotune_configs() -> None:
             assert "num_per_thread" in cfg, f"Config missing 'num_per_thread': {cfg}"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_kernel_autotune_configs_distinct() -> None:
     """autotune_configs entries must be distinct (no duplicates)."""
     shape = (4096,)
@@ -934,7 +934,7 @@ def test_binary_kernel_autotune_configs_distinct() -> None:
 class OptimizedMaxMinFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1024 * 4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1024 * 4096, torch.float16, marks=pytest.mark.full),
             pytest.param(1024 * 10240, torch.float16, marks=pytest.mark.full),
             pytest.param(1024 * 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
@@ -972,7 +972,7 @@ def test_minimum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_register_copy_downgrades_on_broadcast() -> None:
     """Explicitly requesting register_copy on broadcast shapes must not crash.
 
@@ -1009,7 +1009,7 @@ def test_register_copy_downgrades_on_broadcast() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_tune_true_does_not_crash() -> None:
     """tune=True must not crash even though op_func closures are not serializable.
 

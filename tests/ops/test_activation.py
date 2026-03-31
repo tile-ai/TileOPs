@@ -15,7 +15,7 @@ class ReluFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             # Smoke: fp16, 1M elements
-            pytest.param(1_000_000, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+            pytest.param(1_000_000, torch.float16, marks=[pytest.mark.full, pytest.mark.packaging]),
             # Full: other dtypes and sizes
             pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
@@ -59,7 +59,7 @@ def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
 class ReluStrategyFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype, strategy", [
-            pytest.param(1_000_000, torch.float16, "direct", marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.float16, "direct", marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float16, "explicit_parallel", marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float16, "register_copy", marks=pytest.mark.full),
         ]),
@@ -84,7 +84,7 @@ class ActivationFixture(FixtureBase):
     """Parametrize over shapes / dtypes for activation ops."""
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
         ]),
@@ -95,7 +95,7 @@ class ActivationEdgeFixture(FixtureBase):
     """L4 edge-case fixture: fp32, 4K elements."""
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(4096, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -184,7 +184,7 @@ def test_selu(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _randn, F.selu, SeluOp)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_activation_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import GeluKernel
 
@@ -273,7 +273,7 @@ def test_softplus(n_total: int, dtype: torch.dtype) -> None:
 class PreluFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
         ]),
@@ -304,7 +304,7 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
     print("All checks passed for PreluOp.")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_prelu_batch_dim() -> None:
     """PReLU with a leading batch dimension: shape (2, 4, 8)."""
     from tileops.ops.elementwise import PreluOp
@@ -321,7 +321,7 @@ def test_prelu_batch_dim() -> None:
     print("All checks passed for PreluOp batch-dim.")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_independent_activation_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import LeakyReluKernel
     with pytest.raises(ValueError, match="only supports dtypes"):

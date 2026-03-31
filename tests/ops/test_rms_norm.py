@@ -9,7 +9,7 @@ class RmsNormFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype, tune", [
             # Standard aligned shapes (AC required)
-            pytest.param(1024, 4096, torch.float16, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+            pytest.param(1024, 4096, torch.float16, False, marks=[pytest.mark.full, pytest.mark.packaging]),
             pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
             pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
@@ -58,7 +58,7 @@ def test_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 class RmsNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
-            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.full),
             pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
@@ -89,7 +89,7 @@ def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 class RmsNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
-            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.full),
             pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]

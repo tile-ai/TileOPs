@@ -17,7 +17,7 @@ class NsaFwdFixture(FixtureBase):
          "groups, selected_blocks, dtype, accum_dtype, tune", [
              pytest.param(
                  1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False,
-                 marks=pytest.mark.smoke,
+                 marks=pytest.mark.full,
              ),
              pytest.param(
                  4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False,

@@ -42,7 +42,7 @@ class SoftmaxFixture(FixtureBase):
             "m, n, dtype, tune",
             [
                 # Smoke: first param — small data, fp32, pow2 dim
-                pytest.param(32, 256, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                pytest.param(32, 256, torch.float32, False, marks=[pytest.mark.full, pytest.mark.packaging]),
                 # Full: all dtypes x pow2/non-pow2 x normal-M/tail-M (small data)
                 pytest.param(32, 256, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(32, 256, torch.bfloat16, False, marks=pytest.mark.full),
@@ -104,7 +104,7 @@ class LogSoftmaxFixture(FixtureBase):
         (
             "m, n, dtype, tune",
             [
-                pytest.param(32, 256, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(32, 256, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(32, 256, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(32, 256, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(32, 300, torch.float32, False, marks=pytest.mark.full),
@@ -163,7 +163,7 @@ class LogSumExpFixture(FixtureBase):
         (
             "m, n, dtype, tune",
             [
-                pytest.param(32, 256, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(32, 256, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(32, 256, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(32, 256, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(32, 300, torch.float32, False, marks=pytest.mark.full),
@@ -222,7 +222,7 @@ class NonContigFixture(FixtureBase):
         (
             "m, n, dtype",
             [
-                pytest.param(32, 256, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(32, 256, torch.float32, marks=pytest.mark.full),
                 pytest.param(32, 256, torch.float16, marks=pytest.mark.full),
                 pytest.param(32, 256, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(32, 300, torch.float32, marks=pytest.mark.full),
@@ -294,7 +294,7 @@ class Input1DFixture(FixtureBase):
         (
             "n, dtype",
             [
-                pytest.param(256, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(256, torch.float32, marks=pytest.mark.full),
                 pytest.param(256, torch.float16, marks=pytest.mark.full),
                 pytest.param(256, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(300, torch.float32, marks=pytest.mark.full),
@@ -358,7 +358,7 @@ class Input3DFixture(FixtureBase):
         (
             "batch, seq, hidden, dtype",
             [
-                pytest.param(2, 16, 256, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(2, 16, 256, torch.float32, marks=pytest.mark.full),
                 pytest.param(2, 16, 256, torch.float16, marks=pytest.mark.full),
                 pytest.param(2, 16, 256, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(2, 16, 300, torch.float32, marks=pytest.mark.full),
@@ -428,7 +428,7 @@ class Input4DFixture(FixtureBase):
         (
             "b, h, s, d, dtype",
             [
-                pytest.param(2, 4, 8, 256, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 8, 256, torch.float32, marks=pytest.mark.full),
                 pytest.param(2, 4, 8, 256, torch.float16, marks=pytest.mark.full),
                 pytest.param(2, 4, 8, 256, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(2, 4, 8, 300, torch.float32, marks=pytest.mark.full),

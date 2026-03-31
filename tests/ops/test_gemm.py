@@ -12,7 +12,7 @@ class GemmFixture(FixtureBase):
         ("m, n, k, dtype, trans_a, trans_b, tune", [
             pytest.param(
                 1024, 1024, 1024, torch.float16, False, False, False,
-                marks=[pytest.mark.smoke, pytest.mark.packaging],
+                marks=[pytest.mark.full, pytest.mark.packaging],
                 id="smoke-fp16-square",
             ),
             pytest.param(
@@ -84,7 +84,7 @@ class GemvBoundaryFixture(FixtureBase):
     PARAMS = [
         ("n, k, dtype, tune", [
             # lhs_row: m=1, trans_b=True — non-aligned n
-            pytest.param(3000, 1024, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(3000, 1024, torch.float16, False, marks=pytest.mark.full),
             pytest.param(3000, 1024, torch.bfloat16, False, marks=pytest.mark.full),
             # lhs_row: non-aligned k
             pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),

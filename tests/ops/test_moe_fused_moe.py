@@ -88,15 +88,15 @@ class Qwen3Fixture(FixtureBase):
             [
                 pytest.param(
                     32, 8, 2, 64, 32, "softmax", False, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-softmax-bf16",
+                    marks=pytest.mark.full, id="smoke-softmax-bf16",
                 ),
                 pytest.param(
                     32, 8, 2, 64, 32, "softmax", True, torch.float16,
-                    marks=pytest.mark.smoke, id="smoke-softmax-renorm-fp16",
+                    marks=pytest.mark.full, id="smoke-softmax-renorm-fp16",
                 ),
                 pytest.param(
                     32, 8, 2, 64, 32, "sigmoid", True, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-sigmoid-renorm-bf16",
+                    marks=pytest.mark.full, id="smoke-sigmoid-renorm-bf16",
                 ),
                 pytest.param(
                     512, 128, 8, 2048, 1024, "softmax", False, torch.bfloat16,
@@ -189,23 +189,23 @@ class KimiFixture(FixtureBase):
             [
                 pytest.param(
                     32, 8, 2, 64, 32, 1.0, False, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-nobias-bf16",
+                    marks=pytest.mark.full, id="smoke-nobias-bf16",
                 ),
                 pytest.param(
                     32, 8, 2, 64, 32, 1.0, True, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-bias-bf16",
+                    marks=pytest.mark.full, id="smoke-bias-bf16",
                 ),
                 pytest.param(
                     32, 8, 2, 64, 32, 2.827, True, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-bias-scale-bf16",
+                    marks=pytest.mark.full, id="smoke-bias-scale-bf16",
                 ),
                 pytest.param(
                     32, 8, 2, 64, 32, 2.827, True, torch.float16,
-                    marks=pytest.mark.smoke, id="smoke-bias-scale-fp16",
+                    marks=pytest.mark.full, id="smoke-bias-scale-fp16",
                 ),
                 pytest.param(
                     64, 384, 8, 64, 32, 2.827, True, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="kimi-k2-smoke-bf16",
+                    marks=pytest.mark.full, id="kimi-k2-smoke-bf16",
                 ),
                 pytest.param(
                     512, 384, 8, 256, 128, 2.827, True, torch.bfloat16,
@@ -288,7 +288,7 @@ def test_fused_moe_kimi(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_expert_map_local_filter() -> None:
     """Simulate EP=2 on a single GPU: each rank owns half the experts.
 
@@ -346,7 +346,7 @@ def test_expert_map_local_filter() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_correction_bias_routing_precision() -> None:
     """Verify correction_bias is used only for top-k selection, not for weights.
 
@@ -391,15 +391,15 @@ class VllmFixture(FixtureBase):
             [
                 pytest.param(
                     32, 8, 2, 64, 32, 1.0, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-bf16",
+                    marks=pytest.mark.full, id="smoke-bf16",
                 ),
                 pytest.param(
                     32, 8, 2, 64, 32, 2.827, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-scale-bf16",
+                    marks=pytest.mark.full, id="smoke-scale-bf16",
                 ),
                 pytest.param(
                     64, 384, 8, 64, 32, 2.827, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="kimi-k2-smoke-bf16",
+                    marks=pytest.mark.full, id="kimi-k2-smoke-bf16",
                 ),
                 pytest.param(
                     512, 384, 8, 256, 128, 2.827, torch.bfloat16,

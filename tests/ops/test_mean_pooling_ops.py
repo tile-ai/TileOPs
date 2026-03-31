@@ -14,7 +14,7 @@ class MeanPoolingFixture(FixtureBase):
         ("batch_size, seq_len, heads, dim, chunk_size, dtype, accum_dtype, tune, offsets", [
             pytest.param(
                 1, 8192, 64, 128, 64, torch.float16, torch.float32, False, None,
-                marks=pytest.mark.smoke,
+                marks=pytest.mark.full,
             ),
             pytest.param(
                 1, 8192, 64, 128, 64, torch.float16, torch.float32, True, None,

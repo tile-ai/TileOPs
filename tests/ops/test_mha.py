@@ -14,7 +14,7 @@ class MhaFwdFixture(FixtureBase):
         ("batch, seq_len, heads, dim, causal, dtype, tune", [
             pytest.param(
                 1, 1024, 8, 64, False, torch.float16, False,
-                marks=[pytest.mark.smoke, pytest.mark.packaging],
+                marks=[pytest.mark.full, pytest.mark.packaging],
                 id="smoke-fwd-fp16",
             ),
             pytest.param(
@@ -36,7 +36,7 @@ class MhaBwdFixture(FixtureBase):
         ("batch, seq_len, heads, dim, causal, dtype, tune", [
             pytest.param(
                 1, 1024, 8, 64, False, torch.float16, False,
-                marks=pytest.mark.smoke,
+                marks=pytest.mark.full,
                 id="smoke-bwd-fp16",
             ),
             pytest.param(

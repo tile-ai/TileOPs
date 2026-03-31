@@ -12,7 +12,7 @@ from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
 class MlaDecodeFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune", [
-            pytest.param(32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 

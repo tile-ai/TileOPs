@@ -21,7 +21,7 @@ class LogicalReduceBasicFixture(FixtureBase):
         (
             "m, n, dtype",
             [
-                pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.float32, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bool, marks=pytest.mark.full),
@@ -48,7 +48,7 @@ class LogicalReduceNonContigFixture(FixtureBase):
         (
             "m, n, dtype",
             [
-                pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bool, marks=pytest.mark.full),
             ],
@@ -61,7 +61,7 @@ class LogicalReduce3DFixture(FixtureBase):
         (
             "batch, seq, hidden, dtype",
             [
-                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
@@ -73,7 +73,7 @@ class LogicalReduce4DFixture(FixtureBase):
         (
             "b0, b1, b2, n, dtype",
             [
-                pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
@@ -85,7 +85,7 @@ class LogicalReduce1DFixture(FixtureBase):
         (
             "n, dtype",
             [
-                pytest.param(512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(512, torch.float16, marks=pytest.mark.full),
                 pytest.param(512, torch.float32, marks=pytest.mark.full),
                 pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(512, torch.bool, marks=pytest.mark.full),
@@ -406,7 +406,7 @@ def _make_dtype_smoke_fixture(dt: torch.dtype) -> type:
         PARAMS = [
             (
                 "m, n, dtype",
-                [pytest.param(_DTYPE_SMOKE_M, _DTYPE_SMOKE_N, dt, marks=pytest.mark.smoke)],
+                [pytest.param(_DTYPE_SMOKE_M, _DTYPE_SMOKE_N, dt, marks=pytest.mark.full)],
             )
         ]
 

@@ -15,7 +15,7 @@ class GqaSlidingWindowVarlenFwdFixture(FixtureBase):
         ("batch, seqlens_q, seqlens_k, heads, heads_kv, dim,"
          " is_causal, wl, wr, dtype, tune", [
              # ── Prefill: seqlen_q == seqlen_k (offset=0) ─────────────────────
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.smoke),   # causal
+             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.full),   # causal
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True, 128,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal + wl
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # bidirectional
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, 64,  64, torch.float16,  False, marks=pytest.mark.full),    # window

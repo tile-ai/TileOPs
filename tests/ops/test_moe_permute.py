@@ -105,8 +105,8 @@ def _ref_moe_permute(
 class MoePermuteFixture(FixtureBase):
     PARAMS = [
         ("total_tokens, top_k, num_experts, hidden_size, dtype", [
-            pytest.param(4,    2,   4,   64,  torch.bfloat16, marks=pytest.mark.smoke, id="tiny-bf16"),
-            pytest.param(4,    2,   4,   64,  torch.float16,  marks=pytest.mark.smoke, id="tiny-fp16"),
+            pytest.param(4,    2,   4,   64,  torch.bfloat16, marks=pytest.mark.full, id="tiny-bf16"),
+            pytest.param(4,    2,   4,   64,  torch.float16,  marks=pytest.mark.full, id="tiny-fp16"),
             pytest.param(16,   2,   8,   128, torch.bfloat16, marks=pytest.mark.full,  id="small"),
             pytest.param(128,  4,   8,   256, torch.bfloat16, marks=pytest.mark.full,  id="medium"),
             pytest.param(1024, 8,   128, 128, torch.bfloat16, marks=pytest.mark.full,  id="qwen3-scale"),
@@ -211,7 +211,7 @@ def test_moe_permute_op(total_tokens, top_k, num_experts, hidden_size, dtype):
     print(f"PASS [{total_tokens}tok, top{top_k}, E={num_experts}, H={hidden_size}, {dtype}]")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_moe_permute_skewed():
     """All tokens routed to expert 0."""
     T, K, E, H = 32, 4, 8, 64

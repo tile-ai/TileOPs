@@ -20,7 +20,7 @@ class ArgreduceBasicFixture(FixtureBase):
         (
             "m, n, dtype",
             [
-                pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.float32, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
@@ -40,7 +40,7 @@ class ArgreduceNonContigFixture(FixtureBase):
         (
             "m, n, dtype",
             [
-                pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
@@ -52,7 +52,7 @@ class Argreduce3DFixture(FixtureBase):
         (
             "batch, seq, hidden, dtype",
             [
-                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
@@ -64,7 +64,7 @@ class Argreduce4DFixture(FixtureBase):
         (
             "b0, b1, b2, n, dtype",
             [
-                pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.full),
                 pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
@@ -76,7 +76,7 @@ class Argreduce1DFixture(FixtureBase):
         (
             "n, dtype",
             [
-                pytest.param(512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(512, torch.float16, marks=pytest.mark.full),
                 pytest.param(512, torch.float32, marks=pytest.mark.full),
                 pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
             ],

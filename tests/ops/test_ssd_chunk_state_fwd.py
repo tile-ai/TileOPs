@@ -81,7 +81,7 @@ class SsdChunkStateFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx", [
             pytest.param(
-                1, 2, 64, 4, 64, 32, 1, torch.float16, False, False, marks=pytest.mark.smoke,
+                1, 2, 64, 4, 64, 32, 1, torch.float16, False, False, marks=pytest.mark.full,
             ),
             pytest.param(
                 2, 4, 64, 8, 64, 64, 2, torch.float16, False, False, marks=pytest.mark.full,

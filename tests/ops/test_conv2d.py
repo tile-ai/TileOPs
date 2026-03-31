@@ -14,7 +14,7 @@ class Conv2dFixture(FixtureBase):
         ("n, c_in, h, w, c_out, kernel_size, stride, padding, dtype, tune", [
             pytest.param(
                 2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), torch.float16, False,
-                marks=pytest.mark.smoke,
+                marks=pytest.mark.full,
                 id="smoke-fp16-3x3",
             ),
             pytest.param(
@@ -148,7 +148,7 @@ def test_conv2d(
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_accepts_zero_bias() -> None:
     op = Conv2dOp(
         n=1,
@@ -169,7 +169,7 @@ def test_conv2d_accepts_zero_bias() -> None:
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_dispatches_1x1_kernel() -> None:
     op = Conv2dOp(
         n=1,
@@ -183,7 +183,7 @@ def test_conv2d_dispatches_1x1_kernel() -> None:
     assert isinstance(op.kernel, Conv2d1x1Kernel)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
     op = Conv2dOp(
         n=1,
@@ -198,7 +198,7 @@ def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
     assert isinstance(op.kernel, Conv2dKernel)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_dispatches_3x3_kernel() -> None:
     op = Conv2dOp(
         n=1,
@@ -213,7 +213,7 @@ def test_conv2d_dispatches_3x3_kernel() -> None:
     assert isinstance(op.kernel, Conv2dKernel)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_dispatches_5x5_kernel() -> None:
     op = Conv2dOp(
         n=1,

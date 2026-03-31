@@ -48,7 +48,7 @@ class ComparisonTest(TestBase):
 class EqFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -71,7 +71,7 @@ def test_eq_op(n_total: int, dtype: torch.dtype) -> None:
 class NeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -94,7 +94,7 @@ def test_ne_op(n_total: int, dtype: torch.dtype) -> None:
 class GtFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -117,7 +117,7 @@ def test_gt_op(n_total: int, dtype: torch.dtype) -> None:
 class LtFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -140,7 +140,7 @@ def test_lt_op(n_total: int, dtype: torch.dtype) -> None:
 class GeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -163,7 +163,7 @@ def test_ge_op(n_total: int, dtype: torch.dtype) -> None:
 class LeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
@@ -202,7 +202,7 @@ class ComparisonBroadcastFixture(FixtureBase):
     PARAMS = [
         ("op_name, op_cls, ref_fn, a_shape, b_shape", [
             pytest.param(name, cls, ref, a_s, b_s,
-                         marks=pytest.mark.smoke if i == 0 and j == 0
+                         marks=pytest.mark.full if i == 0 and j == 0
                          else pytest.mark.full)
             for j, (name, cls, ref) in enumerate(_CMP_OPS)
             for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
@@ -232,7 +232,7 @@ def test_comparison_broadcast(
 class EqEdgeCaseFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(4096, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -261,7 +261,7 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
 class ComparisonRejectFixture(FixtureBase):
     PARAMS = [
         ("op_cls, dtype", [
-            pytest.param(EqOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(EqOp, torch.int32, marks=pytest.mark.full),
             pytest.param(NeOp, torch.int32, marks=pytest.mark.full),
             pytest.param(GtOp, torch.int32, marks=pytest.mark.full),
             pytest.param(LtOp, torch.int32, marks=pytest.mark.full),

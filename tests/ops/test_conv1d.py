@@ -14,7 +14,7 @@ class Conv1dFixture(FixtureBase):
         ("n, c_in, l_in, c_out, kernel_size, stride, padding, dtype, tune", [
             pytest.param(
                 2, 64, 512, 128, 3, 1, 1, torch.float16, False,
-                marks=[pytest.mark.smoke, pytest.mark.packaging],
+                marks=[pytest.mark.full, pytest.mark.packaging],
                 id="smoke-tcn-k3-s1-fp16",
             ),
             pytest.param(
@@ -124,7 +124,7 @@ def test_conv1d(
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv1d_accepts_zero_bias() -> None:
     op = Conv1dOp(
         n=1,
@@ -145,7 +145,7 @@ def test_conv1d_accepts_zero_bias() -> None:
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv1d_dispatches_kernel() -> None:
     op = Conv1dOp(
         n=1,

@@ -15,7 +15,7 @@ class SpecialFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
         ]),
@@ -27,7 +27,7 @@ class SpecialEdgeFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(4096, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -110,7 +110,7 @@ def test_isfinite_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_special_test(n_total, dtype, IsfiniteOp, torch.isfinite, gen_fn=_all_finite)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_special_predicates_reject_non_float_dtype() -> None:
     from tileops.kernels.elementwise import IsnanKernel
 
@@ -129,7 +129,7 @@ class IndependentFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
         ]),
@@ -141,7 +141,7 @@ class IndependentEdgeFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(4096, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -234,7 +234,7 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
 class AlibiFixture(FixtureBase):
     PARAMS = [
         ("seq_len, num_heads, dtype", [
-            pytest.param(128, 8, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(128, 8, torch.float16, marks=pytest.mark.full),
             pytest.param(128, 8, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -266,7 +266,7 @@ def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
 class SinusoidalFixture(FixtureBase):
     PARAMS = [
         ("seq_len, d_model, dtype", [
-            pytest.param(512, 256, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(512, 256, torch.float16, marks=pytest.mark.full),
             pytest.param(512, 256, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -305,7 +305,7 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
 class ClampDtypeSizeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(4096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_777_216, torch.float16, marks=pytest.mark.full),
@@ -459,7 +459,7 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
     print("All checks passed for NanToNumOp edge case.")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_independent_special_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import ClampKernel
     with pytest.raises(ValueError, match="only supports dtypes"):
@@ -471,7 +471,7 @@ def test_independent_special_rejects_non_float_dtype() -> None:
 # ===========================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize("op_cls, kwargs", [
     pytest.param("EluOp", {"alpha": 1.0}, id="elu"),
     pytest.param("HardtanhOp", {"min_val": -1.0, "max_val": 1.0}, id="hardtanh"),
@@ -488,7 +488,7 @@ def test_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> None:
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize("op_cls, kwargs", [
     pytest.param("EluOp", {"alpha": 1.0}, id="elu"),
     pytest.param("HardtanhOp", {"min_val": -1.0, "max_val": 1.0}, id="hardtanh"),
@@ -505,7 +505,7 @@ def test_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> None:
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize("op_cls, kwargs", [
     pytest.param("MaskedFillOp", {"fill_value": -100.0}, id="masked_fill"),
 ])
@@ -520,7 +520,7 @@ def test_masked_fill_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> N
         op(x, mask)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize("op_cls, kwargs", [
     pytest.param("MaskedFillOp", {"fill_value": -100.0}, id="masked_fill"),
 ])
@@ -540,7 +540,7 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
 # ===========================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_elu_rejects_unrepresentable_alpha() -> None:
     """EluOp must reject alpha that overflows the kernel dtype."""
     from tileops.ops.elementwise import EluOp
@@ -548,7 +548,7 @@ def test_elu_rejects_unrepresentable_alpha() -> None:
         EluOp(N_total=1024, dtype=torch.float16, alpha=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_hardtanh_rejects_unrepresentable_min_val() -> None:
     """HardtanhOp must reject min_val that overflows the kernel dtype."""
     from tileops.ops.elementwise import HardtanhOp
@@ -556,7 +556,7 @@ def test_hardtanh_rejects_unrepresentable_min_val() -> None:
         HardtanhOp(N_total=1024, dtype=torch.float16, min_val=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_hardtanh_rejects_unrepresentable_max_val() -> None:
     """HardtanhOp must reject max_val that overflows the kernel dtype."""
     from tileops.ops.elementwise import HardtanhOp
@@ -564,7 +564,7 @@ def test_hardtanh_rejects_unrepresentable_max_val() -> None:
         HardtanhOp(N_total=1024, dtype=torch.float16, max_val=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_softplus_rejects_unrepresentable_beta() -> None:
     """SoftplusOp must reject beta that overflows the kernel dtype."""
     from tileops.ops.elementwise import SoftplusOp
@@ -572,7 +572,7 @@ def test_softplus_rejects_unrepresentable_beta() -> None:
         SoftplusOp(N_total=1024, dtype=torch.float16, beta=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_softplus_rejects_unrepresentable_threshold() -> None:
     """SoftplusOp must reject threshold that overflows the kernel dtype."""
     from tileops.ops.elementwise import SoftplusOp
@@ -580,7 +580,7 @@ def test_softplus_rejects_unrepresentable_threshold() -> None:
         SoftplusOp(N_total=1024, dtype=torch.float16, threshold=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_clamp_rejects_unrepresentable_min_val() -> None:
     """ClampOp must reject min_val that overflows the kernel dtype."""
     from tileops.ops.elementwise import ClampOp
@@ -588,7 +588,7 @@ def test_clamp_rejects_unrepresentable_min_val() -> None:
         ClampOp(N_total=1024, dtype=torch.float16, min_val=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_clamp_rejects_unrepresentable_max_val() -> None:
     """ClampOp must reject max_val that overflows the kernel dtype."""
     from tileops.ops.elementwise import ClampOp
@@ -596,7 +596,7 @@ def test_clamp_rejects_unrepresentable_max_val() -> None:
         ClampOp(N_total=1024, dtype=torch.float16, max_val=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_masked_fill_forward_rejects_cpu_mask() -> None:
     """MaskedFillOp forward() must raise ValueError when mask is not on CUDA."""
     from tileops.ops.elementwise import MaskedFillOp
@@ -607,7 +607,7 @@ def test_masked_fill_forward_rejects_cpu_mask() -> None:
         op(x, mask)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_masked_fill_forward_rejects_non_bool_mask() -> None:
     """MaskedFillOp forward() must raise ValueError when mask dtype is not bool."""
     from tileops.ops.elementwise import MaskedFillOp
@@ -618,7 +618,7 @@ def test_masked_fill_forward_rejects_non_bool_mask() -> None:
         op(x, mask)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
     """MaskedFillOp forward() must raise ValueError when mask numel mismatches."""
     from tileops.ops.elementwise import MaskedFillOp
@@ -629,7 +629,7 @@ def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
         op(x, mask)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_elu_rejects_infinite_alpha() -> None:
     """EluOp must reject infinite alpha."""
     from tileops.ops.elementwise import EluOp
@@ -637,7 +637,7 @@ def test_elu_rejects_infinite_alpha() -> None:
         EluOp(N_total=1024, dtype=torch.float32, alpha=float("inf"))
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_softplus_rejects_non_numeric_beta() -> None:
     """SoftplusOp must reject non-numeric beta."""
     from tileops.ops.elementwise import SoftplusOp

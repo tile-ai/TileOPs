@@ -14,7 +14,7 @@ import torch.nn as nn
 from tileops.ops.moe import FusedMoe, SharedFusedMoE
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_shared_fused_moe_basic():
     """Basic test: SharedFusedMoE with simple shared expert MLP."""
     torch.manual_seed(42)
@@ -68,7 +68,7 @@ def test_shared_fused_moe_basic():
     print(f"PASS SharedFusedMoE basic [T={T}, E={E}, K={K}, H={H}, F={F}]")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_shared_fused_moe_none():
     """Test SharedFusedMoE with shared_experts_fn=None."""
     torch.manual_seed(42)

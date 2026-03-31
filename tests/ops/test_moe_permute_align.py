@@ -90,7 +90,7 @@ def _ref_permute_align(
 class MoePermuteAlignFixture(FixtureBase):
     PARAMS = [
         ("total_tokens, top_k, num_experts, block_size", [
-            pytest.param(4,   2,   4,   4,   marks=pytest.mark.smoke, id="tiny-bs4"),
+            pytest.param(4,   2,   4,   4,   marks=pytest.mark.full, id="tiny-bs4"),
             pytest.param(16,  2,   8,   16,  marks=pytest.mark.full,  id="small-bs16"),
             pytest.param(128, 4,   8,   64,  marks=pytest.mark.full,  id="medium-bs64"),
             pytest.param(1024,8,   64,  128, marks=pytest.mark.full,  id="large-bs128"),
@@ -227,7 +227,7 @@ def test_permute_align_op(
           f"E={num_experts}, bs={block_size}].")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_permute_align_sentinel_padding() -> None:
     """Padding slots must be filled with sentinel value (numel).
 
@@ -248,7 +248,7 @@ def test_permute_align_sentinel_padding() -> None:
     )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_permute_align_expert_ids_range() -> None:
     """All expert_ids must be in [0, num_experts)."""
     total_tokens, top_k, num_experts, block_size = 16, 4, 8, 16
@@ -266,7 +266,7 @@ def test_permute_align_expert_ids_range() -> None:
     )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_permute_align_skewed_distribution() -> None:
     """All tokens routed to expert 0 — stress-tests Step 3 loop bound.
 

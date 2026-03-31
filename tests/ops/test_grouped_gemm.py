@@ -42,7 +42,7 @@ class GroupedGemmFixture(FixtureBase):
         ("batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b, tune", [
             pytest.param(
                 16384, 4, 4864, 4096, torch.float16, False, True, False,
-                marks=pytest.mark.smoke,
+                marks=pytest.mark.full,
             ),
             pytest.param(
                 16384, 4, 4864, 4096, torch.float16, False, False, False,
@@ -186,7 +186,7 @@ def test_grouped_gemm(batch_sum: int, batch_count: int, N: int, K: int, dtype: t
 class GroupedGemmCompleteFixture(FixtureBase):
     PARAMS = [
         ("batch_sum, batch_count, N, K, dtype, tune", [
-            pytest.param(16384, 4, 4864, 4096, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(16384, 4, 4864, 4096, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 

@@ -12,7 +12,7 @@ import torch
 # BatchNormFwdOp input validation
 # ---------------------------------------------------------------------------
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestBatchNormFwdValidation:
 
     def _make_op(self):
@@ -53,7 +53,7 @@ class TestBatchNormFwdValidation:
 # BatchNorm torch.compile smoke tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestBatchNormCustomOp:
 
     def test_fwd_torch_compile_smoke(self):

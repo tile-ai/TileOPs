@@ -16,7 +16,7 @@ class MhaDecodePagedFixture(FixtureBase):
         ("batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype, tune", [
             pytest.param(
                 1, 16, 1, 512, 128, 128, False, torch.float16, False,
-                marks=pytest.mark.smoke,
+                marks=pytest.mark.full,
             ),
             pytest.param(
                 1, 8, 1, 1024, 64, 256, False, torch.float16, False,

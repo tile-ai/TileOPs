@@ -51,7 +51,7 @@ class LogicalTest(TestBase):
 class LogicalAndFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -73,7 +73,7 @@ def test_logical_and_op(n_total: int, dtype: torch.dtype) -> None:
 class LogicalOrFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_384, torch.float32, marks=pytest.mark.full),
         ]),
     ]
@@ -107,7 +107,7 @@ class LogicalBroadcastFixture(FixtureBase):
     PARAMS = [
         ("op_name, op_cls, ref_fn, a_shape, b_shape", [
             pytest.param(name, cls, ref, a_s, b_s,
-                         marks=pytest.mark.smoke if i == 0 and j == 0
+                         marks=pytest.mark.full if i == 0 and j == 0
                          else pytest.mark.full)
             for j, (name, cls, ref) in enumerate(_LOGICAL_OPS)
             for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
@@ -139,7 +139,7 @@ class LogicalFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.bool, marks=pytest.mark.full),

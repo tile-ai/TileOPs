@@ -12,7 +12,7 @@ from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
 class GqaDecodeFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, heads_kv, seq_len_kv, dim, dtype, tune", [
-            pytest.param(1, 32, 8, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1, 32, 8, 8192, 128, torch.float16, False, marks=pytest.mark.full),
             pytest.param(4, 32, 4, 4096, 128, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(8, 64, 16, 8192, 128, torch.float16, False, marks=pytest.mark.full),
         ]),

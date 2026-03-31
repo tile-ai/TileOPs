@@ -34,7 +34,7 @@ class MathFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
         ]),
@@ -46,7 +46,7 @@ class MathEdgeFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(4096, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -220,7 +220,7 @@ def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(n_total, dtype, _randn, torch.expm1, Expm1Op)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_math_ops_reject_non_float_dtype() -> None:
     from tileops.kernels.elementwise import ExpKernel
 

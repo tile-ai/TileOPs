@@ -48,7 +48,7 @@ class BitwiseTest(TestBase):
 class BitwiseAndFixture(FixtureBase):
     PARAMS = [
         ("n_total", [
-            pytest.param(4_096, marks=pytest.mark.smoke),
+            pytest.param(4_096, marks=pytest.mark.full),
             pytest.param(16_384, marks=pytest.mark.full),
         ]),
     ]
@@ -70,7 +70,7 @@ def test_bitwise_and_op(n_total: int) -> None:
 class BitwiseOrFixture(FixtureBase):
     PARAMS = [
         ("n_total", [
-            pytest.param(4_096, marks=pytest.mark.smoke),
+            pytest.param(4_096, marks=pytest.mark.full),
             pytest.param(16_384, marks=pytest.mark.full),
         ]),
     ]
@@ -92,7 +92,7 @@ def test_bitwise_or_op(n_total: int) -> None:
 class BitwiseXorFixture(FixtureBase):
     PARAMS = [
         ("n_total", [
-            pytest.param(4_096, marks=pytest.mark.smoke),
+            pytest.param(4_096, marks=pytest.mark.full),
             pytest.param(16_384, marks=pytest.mark.full),
         ]),
     ]
@@ -127,7 +127,7 @@ class BitwiseBroadcastFixture(FixtureBase):
     PARAMS = [
         ("op_name, op_cls, ref_fn, a_shape, b_shape", [
             pytest.param(name, cls, ref, a_s, b_s,
-                         marks=pytest.mark.smoke if i == 0 and j == 0
+                         marks=pytest.mark.full if i == 0 and j == 0
                          else pytest.mark.full)
             for j, (name, cls, ref) in enumerate(_BITWISE_OPS)
             for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
@@ -158,7 +158,7 @@ class BitwiseFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_048_576, torch.bool, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.bool, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.uint8, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.int8, marks=pytest.mark.full),
             pytest.param(1_048_576, torch.int16, marks=pytest.mark.full),
@@ -196,7 +196,7 @@ def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.parametrize("dtype", [
-    pytest.param(torch.float16, marks=pytest.mark.smoke),
+    pytest.param(torch.float16, marks=pytest.mark.full),
     pytest.param(torch.bfloat16, marks=pytest.mark.full),
     pytest.param(torch.float32, marks=pytest.mark.full),
 ])
@@ -215,7 +215,7 @@ def test_bitwise_not_rejects_float_dtype(dtype: torch.dtype) -> None:
 class BitwiseBinaryRejectFixture(FixtureBase):
     PARAMS = [
         ("op_cls, dtype", [
-            pytest.param(BitwiseAndOp, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(BitwiseAndOp, torch.float16, marks=pytest.mark.full),
             pytest.param(BitwiseOrOp, torch.float16, marks=pytest.mark.full),
             pytest.param(BitwiseXorOp, torch.float16, marks=pytest.mark.full),
             pytest.param(BitwiseAndOp, torch.bfloat16, marks=pytest.mark.full),

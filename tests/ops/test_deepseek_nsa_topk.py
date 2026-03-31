@@ -14,7 +14,7 @@ class NsaTopkFixture(FixtureBase):
          "dtype, accum_dtype, tune", [
              pytest.param(
                  5, 1024, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False,
-                 marks=pytest.mark.smoke,
+                 marks=pytest.mark.full,
              ),
              pytest.param(
                  3, 512, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False,
