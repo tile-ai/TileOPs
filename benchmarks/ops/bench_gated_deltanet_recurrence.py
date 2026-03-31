@@ -78,10 +78,12 @@ def test_gated_deltanet_decode_bench(
         g_fla = g.unsqueeze(1)       # [B, H] -> [B, 1, H]
         beta_fla = beta.unsqueeze(1)
 
+        state_fla = state.contiguous()
+
         def fla_decode():
             return fused_recurrent_gated_delta_rule(
                 q_fla, k_fla, v_fla, g=g_fla, beta=beta_fla,
-                initial_state=state.contiguous(),
+                initial_state=state_fla,
                 output_final_state=True,
             )
 
