@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tileops.kernels.pool.common import pool_output_dim
 from tileops.ops import AvgPool1dOp
 
 
@@ -51,16 +52,12 @@ class AvgPool1dBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.test
-        out_l = (t.l_in + 2 * t.padding - t.kernel_size + t.stride - 1) // t.stride + 1 if t.ceil_mode else (
-            (t.l_in + 2 * t.padding - t.kernel_size) // t.stride + 1
-        )
+        out_l = pool_output_dim(t.l_in, t.kernel_size, t.stride, t.padding, t.ceil_mode)
         return t.n * t.c_in * out_l * t.kernel_size
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test
-        out_l = (t.l_in + 2 * t.padding - t.kernel_size + t.stride - 1) // t.stride + 1 if t.ceil_mode else (
-            (t.l_in + 2 * t.padding - t.kernel_size) // t.stride + 1
-        )
+        out_l = pool_output_dim(t.l_in, t.kernel_size, t.stride, t.padding, t.ceil_mode)
         return (t.n * t.c_in * t.l_in + t.n * t.c_in * out_l) * t.dtype.itemsize
 
 

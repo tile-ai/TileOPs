@@ -46,70 +46,48 @@ def _avg_pool2d_kernel(
                 T.ceildiv(n * out_h * out_w, block_m),
                 threads=threads,
             ) as (bx, by):
-                out_local = T.alloc_fragment((block_m, block_c), accum_dtype)
-                out_shared = T.alloc_shared((block_m, block_c), dtype)
                 out_flat = T.Tensor((n * out_h * out_w, c_in), dtype, out.data)
-
-                T.clear(out_local)
-
-                for kh in T.serial(kernel_h):
-                    for kw in T.serial(kernel_w):
-                        for i, j in T.Parallel(block_m, block_c):
-                            m_idx = by * block_m + i
-                            c_idx = bx * block_c + j
-                            batch = m_idx // (out_h * out_w)
-                            out_idx = m_idx % (out_h * out_w)
-                            oh = out_idx // out_w
-                            ow = out_idx % out_w
-                            ih = oh * stride_h + kh - pad_h
-                            iw = ow * stride_w + kw - pad_w
-                            in_bound = (
-                                (m_idx < n * out_h * out_w)
-                                & (c_idx < c_in)
-                                & (ih >= 0)
-                                & (ih < h_in)
-                                & (iw >= 0)
-                                & (iw < w_in)
-                            )
-                            out_local[i, j] += T.if_then_else(
-                                in_bound,
-                                T.cast(x[batch, ih, iw, c_idx], accum_dtype),
-                                T.cast(0.0, accum_dtype),
-                            )
-
-                for i, j in T.Parallel(block_m, block_c):
-                    m_idx = by * block_m + i
-                    c_idx = bx * block_c + j
-                    out_idx = m_idx % (out_h * out_w)
-                    oh = out_idx // out_w
-                    ow = out_idx % out_w
-                    start_h = oh * stride_h - pad_h
-                    start_w = ow * stride_w - pad_w
-                    end_h = start_h + kernel_h
-                    end_w = start_w + kernel_w
-                    valid_h = T.max(T.min(end_h, h_in) - T.max(start_h, 0), 0)
-                    valid_w = T.max(T.min(end_w, w_in) - T.max(start_w, 0), 0)
-                    valid_count = valid_h * valid_w
-                    padded_h = T.max(T.min(end_h, h_in + pad_h) - T.max(start_h, -pad_h), 0)
-                    padded_w = T.max(T.min(end_w, w_in + pad_w) - T.max(start_w, -pad_w), 0)
-                    padded_count = padded_h * padded_w
-                    divisor = T.if_then_else(
-                        use_divisor_override,
-                        divisor_override,
-                        T.if_then_else(count_include_pad, padded_count, valid_count),
-                    )
-                    divisor = T.max(divisor, 1)
-                    out_shared[i, j] = T.if_then_else(
-                        (m_idx < n * out_h * out_w) & (c_idx < c_in),
-                        T.cast(out_local[i, j] / T.cast(divisor, accum_dtype), dtype),
-                        T.cast(0.0, dtype),
-                    )
 
                 for i, j in T.Parallel(block_m, block_c):
                     m_idx = by * block_m + i
                     c_idx = bx * block_c + j
                     if m_idx < n * out_h * out_w and c_idx < c_in:
-                        out_flat[m_idx, c_idx] = out_shared[i, j]
+                        batch = m_idx // (out_h * out_w)
+                        out_idx = m_idx % (out_h * out_w)
+                        oh = out_idx // out_w
+                        ow = out_idx % out_w
+                        sum_val = T.alloc_var(T.float32)
+                        sum_val = T.cast(0.0, accum_dtype)
+
+                        for kh in T.serial(kernel_h):
+                            for kw in T.serial(kernel_w):
+                                ih = oh * stride_h + kh - pad_h
+                                iw = ow * stride_w + kw - pad_w
+                                if ih >= 0 and ih < h_in and iw >= 0 and iw < w_in:
+                                    sum_val += T.cast(x[batch, ih, iw, c_idx], accum_dtype)
+
+                        start_h = oh * stride_h - pad_h
+                        start_w = ow * stride_w - pad_w
+                        end_h = start_h + kernel_h
+                        end_w = start_w + kernel_w
+                        valid_h = T.max(T.min(end_h, h_in) - T.max(start_h, 0), 0)
+                        valid_w = T.max(T.min(end_w, w_in) - T.max(start_w, 0), 0)
+                        valid_count = valid_h * valid_w
+                        padded_h = T.max(T.min(end_h, h_in + pad_h) - T.max(start_h, -pad_h), 0)
+                        padded_w = T.max(T.min(end_w, w_in + pad_w) - T.max(start_w, -pad_w), 0)
+                        padded_count = padded_h * padded_w
+                        divisor = T.max(
+                            T.if_then_else(
+                                use_divisor_override,
+                                divisor_override,
+                                T.if_then_else(count_include_pad, padded_count, valid_count),
+                            ),
+                            1,
+                        )
+                        out_flat[m_idx, c_idx] = T.cast(
+                            sum_val / T.cast(divisor, accum_dtype),
+                            dtype,
+                        )
 
         return _avg_pool2d_main
 
