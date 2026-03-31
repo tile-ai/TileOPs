@@ -1,5 +1,6 @@
 import functools
 import itertools
+import math
 from typing import Optional
 
 import tilelang
@@ -56,6 +57,10 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                 B_shape = (batch_count, K, N)
                 B_shared_shape = (block_k, block_n)
 
+            # 1D grid with M-major ordering for A-tile reuse
+            _num_pid_m = math.ceil(batch_sum / block_m)
+            _num_pid_n = math.ceil(N / block_n)
+
             @T.prim_func
             def _grouped_gemm_main(
                     A: T.Tensor(A_shape, dtype),  # type: ignore
@@ -65,13 +70,15 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                     batch_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
                     batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
             ):
-                with T.Kernel(
-                        T.ceildiv(batch_sum, block_m), T.ceildiv(N, block_n),
-                        threads=threads) as (bx, by):
+                with T.Kernel(_num_pid_m * _num_pid_n, threads=threads) as (pid,):
                     A_shared = T.alloc_shared(A_shared_shape, dtype)
                     B_shared = T.alloc_shared(B_shared_shape, dtype)
                     C_local = T.alloc_fragment([block_m, block_n], accum_dtype)
                     cur_batch_idx = T.alloc_local([1], "int32")
+
+                    # M-major ordering: each M-tile processes all N-tiles
+                    bx = pid // _num_pid_n
+                    by = pid % _num_pid_n
                     m_start = bx * block_m
                     n_start = by * block_n
 

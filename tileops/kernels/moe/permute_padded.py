@@ -203,7 +203,7 @@ class MoePermutePaddedKernel(Kernel):
         self.dtype = dtype
         self.block_m = block_m
         self.numel = num_tokens * top_k
-        self._padded_batch_sum = self.numel + num_experts * block_m
+        self._padded_batch_sum = self.numel + num_experts * (block_m - 1)
 
         self._scan_fn = _make_scan_kernel(self.numel, num_experts, top_k, block_m)
         self._gather_fn = _make_gather_kernel(
