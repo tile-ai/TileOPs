@@ -58,6 +58,7 @@ RUN MAX_JOBS=64 NVCC_THREADS=64 pip install --no-cache-dir --no-build-isolation 
 
 RUN MAX_JOBS=64 NVCC_THREADS=64 pip install --no-cache-dir --no-build-isolation \
         "flash-linear-attention==0.4.2" \
+        "flashinfer-python>=0.6.6" \
         "vllm==0.18.0" \
         "sgl-kernel==0.3.21" \
     || echo "WARNING: Some bench deps failed to install -- non-fatal for runner image"
