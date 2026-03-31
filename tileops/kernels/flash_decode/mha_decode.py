@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
-__all__ = ["mha_decode_kernel"]
+__all__ = ["MHADecodeKernel", "MHADecodeSplitKVKernel", "MHADecodeCombineKernel"]
 
 # ---------------------------------------------------------------------------
 # JIT kernel: no-split variant
@@ -101,17 +101,17 @@ def _mha_decode_no_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causa
 
 
 # ---------------------------------------------------------------------------
-# JIT kernel: split variant (split + combine)
+# JIT kernel: split-only variant (no combine)
 # ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
-def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype):
+def _mha_decode_split_only_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, dtype):
     scale = make_log2e_scale(dim)
     accum_dtype = "float"
 
     @tilelang.jit(
-        out_idx=[-1],
+        out_idx=[4, 5],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -175,8 +175,8 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, 
                   (k + 1) * block_N, hid, :], V_shared)
             T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
-        @T.macro
-        def _mha_decode_split(
+        @T.prim_func
+        def mha_decode_split_only(
                 Q: T.Tensor(shape_q, dtype),
                 K: T.Tensor(shape_kv, dtype),
                 V: T.Tensor(shape_kv, dtype),
@@ -245,13 +245,37 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, 
                     Output_partial[bid, mid * block_M:(mid + 1) * block_M, hid, sid, :],
                     disable_tma=True)
 
-        @T.macro
-        def combine(
+        return mha_decode_split_only
+
+    return _func
+
+
+# ---------------------------------------------------------------------------
+# JIT kernel: combine-only variant
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=32)
+def _mha_decode_combine_kernel(batch, heads, seqlen_q, num_split, dim, dtype):
+    accum_dtype = "float"
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"])
+    def _func(block_M, threads):
+        shape_q = [batch, seqlen_q, heads, dim]
+        part_shape = [batch, seqlen_q, heads, num_split, dim]
+
+        @T.prim_func
+        def mha_decode_combine(
                 glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype),
                 Output_partial: T.Tensor(part_shape, dtype),
                 Output: T.Tensor(shape_q, dtype),
         ):
-            with T.Kernel(T.ceildiv(seqlen_q, block_M), heads, batch, threads=128) as (bx, by, bz):
+            with T.Kernel(T.ceildiv(seqlen_q, block_M), heads, batch, threads=threads) as (bx, by, bz):
                 po_local = T.alloc_fragment([block_M, dim], dtype)
                 po_shared = T.alloc_shared([block_M, dim], dtype)
                 o_accum_local = T.alloc_fragment([block_M, dim], accum_dtype)
@@ -302,23 +326,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, 
                 T.copy(
                     o_shared, Output[bz, bx * block_M:(bx + 1) * block_M, by, :], disable_tma=True)
 
-        @T.prim_func
-        def mha_decode_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_kv, dtype),
-                V: T.Tensor(shape_kv, dtype),
-                real_seqlen_kv: T.int32,
-                glse: T.Tensor([batch, heads, num_split, seqlen_q], dtype),
-                Output_partial: T.Tensor(part_shape,
-                                         dtype),  # [batch, seqlen_q, heads, num_split, dim]
-                split_length: T.Tensor(num_split, "int32"),
-                Output: T.Tensor(shape_q, dtype),
-        ):
-
-            _mha_decode_split(Q, K, V, real_seqlen_kv, glse, Output_partial, split_length)
-            combine(glse, Output_partial, Output)
-
-        return mha_decode_split
+        return mha_decode_combine
 
     return _func
 
@@ -346,33 +354,52 @@ def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, real_seqlen_kv: int
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("top::mha_decode_split_op", mutates_args=())
-def _mha_decode_split_op(batch: int, heads: int, seqlen_q: int, seqlen_kv: int,
-                          real_seqlen_kv: int, dim: int, is_causal: bool, dtype: str,
-                          block_M: int, block_N: int, num_stages: int, threads: int,
-                          num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
-                          glse: torch.Tensor, Output_partial: torch.Tensor,
-                          split_length: torch.Tensor) -> torch.Tensor:
-    return _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal,
-                                    dtype)(block_M, block_N, num_split, num_stages,
-                                           threads)(Q, K, V, real_seqlen_kv, glse, Output_partial,
-                                                    split_length)
+@torch.library.custom_op("top::mha_decode_split_only_op", mutates_args=())
+def _mha_decode_split_only_op(
+        batch: int, heads: int, seqlen_q: int, seqlen_kv: int, real_seqlen_kv: int, dim: int,
+        is_causal: bool, dtype: str, block_M: int, block_N: int, num_stages: int, threads: int,
+        num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+        split_length: torch.Tensor) -> list[torch.Tensor]:
+    return _mha_decode_split_only_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal,
+                                         dtype)(block_M, block_N, num_split, num_stages,
+                                                threads)(Q, K, V, real_seqlen_kv,
+                                                         split_length)
 
 
-@_mha_decode_split_op.register_fake
+@_mha_decode_split_only_op.register_fake
 def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, real_seqlen_kv: int, dim: int,
       is_causal: bool, dtype: str, block_M: int, block_N: int, num_stages: int, threads: int,
-      num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, glse: torch.Tensor,
-      Output_partial: torch.Tensor, split_length: torch.Tensor) -> torch.Tensor:
-    return torch.empty_like(Q)
+      num_split: int, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+      split_length: torch.Tensor) -> list[torch.Tensor]:
+    torch_dtype = getattr(torch, dtype)
+    glse = torch.empty(batch, heads, num_split, seqlen_q, dtype=torch_dtype, device=Q.device)
+    Output_partial = torch.empty(
+        batch, seqlen_q, heads, num_split, dim, dtype=torch_dtype, device=Q.device)
+    return [glse, Output_partial]
+
+
+@torch.library.custom_op("top::mha_decode_combine_op", mutates_args=())
+def _mha_decode_combine_op(batch: int, heads: int, seqlen_q: int, num_split: int, dim: int,
+                            dtype: str, block_M: int, threads: int, glse: torch.Tensor,
+                            Output_partial: torch.Tensor) -> torch.Tensor:
+    return _mha_decode_combine_kernel(batch, heads, seqlen_q, num_split, dim,
+                                      dtype)(block_M, threads)(glse, Output_partial)
+
+
+@_mha_decode_combine_op.register_fake
+def _(batch: int, heads: int, seqlen_q: int, num_split: int, dim: int, dtype: str, block_M: int,
+      threads: int, glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
+    return torch.empty(
+        batch, seqlen_q, heads, dim, dtype=glse.dtype, device=glse.device)
 
 
 # ---------------------------------------------------------------------------
-# Kernel class
+# Kernel classes
 # ---------------------------------------------------------------------------
 
 
-class mha_decode_kernel(Kernel):
+class MHADecodeKernel(Kernel):
+    """No-split MHA decode kernel for short sequences."""
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
@@ -381,8 +408,8 @@ class mha_decode_kernel(Kernel):
                  seqlen_q,
                  seqlen_kv,
                  dim,
-                 is_causal,
-                 dtype: str = "bfloat16",
+                 is_causal=False,
+                 dtype="float16",
                  config: Optional[dict] = None,
                  tune=False):
         super().__init__()
@@ -394,20 +421,73 @@ class mha_decode_kernel(Kernel):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        self.no_split_jit = _mha_decode_no_split_kernel(
+        self.kernel = _mha_decode_no_split_kernel(
             self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.is_causal,
             self.dtype_str)
-        self.split_jit = _mha_decode_split_kernel(
-            self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.is_causal,
-            self.dtype_str)
+        self.init_config(config, tune)
 
-        # autotune targets the split kernel
-        self.kernel = self.split_jit
+    @property
+    def default_config(self) -> dict:
+        return {"block_M": 128, "block_N": 64 if self.dim <= 128 else 32, "num_stages": 2, "threads": 128}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        block_M = [64, 128]
+        block_N = [64, 128]
+        num_stages = [1, 2, 3]
+        threads = [128]
+        _configs = list(itertools.product(block_M, block_N, num_stages, threads))
+
+        configs = [{
+            'block_M': c[0],
+            'block_N': c[1],
+            'num_stages': c[2],
+            'threads': c[3]
+        } for c in _configs]
+        return configs
+
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int):
+        block_M = self.config["block_M"]
+        block_N = self.config["block_N"]
+        num_stages = self.config["num_stages"]
+        threads = self.config["threads"]
+
+        return _mha_decode_no_split_op(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
+                                       real_seqlen_kv, self.dim, self.is_causal, self.dtype_str,
+                                       block_M, block_N, num_stages, threads, Q, K, V)
+
+
+class MHADecodeSplitKVKernel(Kernel):
+    """Split-only MHA decode kernel (no combine). Outputs glse and Output_partial."""
+    supported_archs: list[int] = [80, 89, 90]
+
+    def __init__(self,
+                 batch,
+                 heads,
+                 seqlen_q,
+                 seqlen_kv,
+                 dim,
+                 is_causal=False,
+                 dtype="float16",
+                 config: Optional[dict] = None,
+                 tune=False):
+        super().__init__()
+        self.batch = batch
+        self.heads = heads
+        self.seqlen_q = seqlen_q
+        self.seqlen_kv = seqlen_kv
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+
+        self.kernel = _mha_decode_split_only_kernel(
+            self.batch, self.heads, self.seqlen_q, self.seqlen_kv, self.dim, self.is_causal,
+            self.dtype_str)
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
 
     def _make_supply_prog(self):
-        """Create a supply_prog that handles scalar and int32 tensor parameters."""
+        """Create a supply_prog that handles the scalar real_seqlen_kv parameter."""
         from tilelang.utils.tensor import get_tensor_supply as _get_tensor_supply
 
         default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
@@ -463,40 +543,61 @@ class mha_decode_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int):
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int,
+                split_length: torch.Tensor):
         block_M = self.config["block_M"]
         block_N = self.config["block_N"]
         num_split = self.config["num_split"]
         num_stages = self.config["num_stages"]
         threads = self.config["threads"]
 
-        # Dispatch: use no-split for short sequences where splitting is not beneficial
-        threshold = num_split * block_N
-        if real_seqlen_kv < threshold:
-            # The no-split kernel does not support all thread counts that the
-            # split kernel accepts.  With threads=256 the LayoutInference pass
-            # hits a fragment conflict between acc_s (float32) and acc_s_cast
-            # (float16/bfloat16) whose MMA layouts differ in replicate count.
-            # Cap to the default thread count which is always safe for the no-split variant.
-            no_split_threads = min(threads, self.default_config["threads"])
-            return _mha_decode_no_split_op(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
-                                           real_seqlen_kv, self.dim, self.is_causal, self.dtype_str,
-                                           block_M, block_N, num_stages, no_split_threads, Q, K, V)
+        return _mha_decode_split_only_op(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
+                                         real_seqlen_kv, self.dim, self.is_causal, self.dtype_str,
+                                         block_M, block_N, num_stages, threads, num_split, Q, K, V,
+                                         split_length)
 
-        # Split path: compute per-split lengths
-        base_len = real_seqlen_kv // (num_split * block_N) * block_N
-        split_length = torch.full((num_split,), base_len, dtype=torch.int32, device=Q.device)
-        split_length[-1] = real_seqlen_kv - (num_split - 1) * base_len
 
-        glse = torch.empty((self.batch, self.heads, num_split, self.seqlen_q),
-                           dtype=self.dtype,
-                           device=Q.device)
-        Output_partial = torch.empty(
-            (self.batch, self.seqlen_q, self.heads, num_split, self.dim),
-            dtype=self.dtype,
-            device=Q.device)
+class MHADecodeCombineKernel(Kernel):
+    """Combine-only kernel: reduces partial outputs from split kernel into final output."""
+    supported_archs: list[int] = [80, 89, 90]
 
-        return _mha_decode_split_op(self.batch, self.heads, self.seqlen_q, self.seqlen_kv,
-                                    real_seqlen_kv, self.dim, self.is_causal, self.dtype_str,
-                                    block_M, block_N, num_stages, threads, num_split, Q, K, V,
-                                    glse, Output_partial, split_length)
+    def __init__(self,
+                 batch,
+                 heads,
+                 seqlen_q,
+                 num_split,
+                 dim,
+                 dtype="float16",
+                 config: Optional[dict] = None,
+                 tune=False):
+        super().__init__()
+        self.batch = batch
+        self.heads = heads
+        self.seqlen_q = seqlen_q
+        self.num_split = num_split
+        self.dim = dim
+        self.dtype = dtype
+
+        self.kernel = _mha_decode_combine_kernel(
+            self.batch, self.heads, self.seqlen_q, self.num_split, self.dim, self.dtype_str)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {"block_M": 128, "threads": 128}
+
+    def forward(self, glse: torch.Tensor, Output_partial: torch.Tensor):
+        block_M = self.config["block_M"]
+        threads = self.config["threads"]
+
+        return _mha_decode_combine_op(self.batch, self.heads, self.seqlen_q, self.num_split,
+                                      self.dim, self.dtype_str, block_M, threads, glse,
+                                      Output_partial)
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility alias
+# ---------------------------------------------------------------------------
+
+# Keep old name as an alias for the split kernel (which was the primary autotune target)
+mha_decode_kernel = MHADecodeSplitKVKernel
