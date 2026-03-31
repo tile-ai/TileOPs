@@ -1,15 +1,16 @@
 """Pytest conftest plugin for kernel cache warmup mode.
 
 Activated by environment variable TILEOPS_WARMUP_MODE=1 (set by
-warmup_kernel_cache.py).  Applies patches in every process, including
+warmup_kernel_cache.py). Applies patches in every process, including
 pytest-xdist worker subprocesses.
 
 Patches applied:
-  1. ThreadPoolExecutor max_workers → capped to TILEOPS_WARMUP_MAX_WORKERS
+  1. ThreadPoolExecutor max_workers -> capped to TILEOPS_WARMUP_MAX_WORKERS
   2. GPU memory released after each test to prevent OOM across workers
 
-Note: profiling is NOT patched — real GPU measurements run so that
-autotuner results can be cached for the benchmark job.
+When warming benchmark suites, baseline profiling is skipped so only
+TileOPs kernels are compiled/tuned. For correctness suites this patch is
+best-effort and becomes a no-op if benchmark helpers are unavailable.
 """
 
 import concurrent.futures
@@ -22,20 +23,23 @@ def pytest_configure(config):
     if os.environ.get("TILEOPS_WARMUP_MODE") != "1":
         return
 
-    # --- Patch 1: skip baseline profiling (only compile/tune tileops kernels) ---
-    from benchmarks.benchmark import BenchmarkBase
-    from tileops.ops.op import Op
+    # --- Patch 1: skip benchmark baseline profiling when applicable ---
+    try:
+        from benchmarks.benchmark import BenchmarkBase
+        from tileops.ops.op import Op
 
-    _orig_profile = BenchmarkBase.profile
+        _orig_profile = BenchmarkBase.profile
 
-    def _warmup_profile(self, functor, *inputs, **kwargs):
-        if isinstance(functor, Op):
-            return _orig_profile(self, functor, *inputs, **kwargs)
-        # Baseline functor — return dummy result to skip profiling
-        return {"latency_ms": 0.0}
+        def _warmup_profile(self, functor, *inputs, **kwargs):
+            if isinstance(functor, Op):
+                return _orig_profile(self, functor, *inputs, **kwargs)
+            # Baseline functor - return dummy result to skip profiling
+            return {"latency_ms": 0.0}
 
-    BenchmarkBase.profile = _warmup_profile
-    config._warmup_orig_profile = _orig_profile
+        BenchmarkBase.profile = _warmup_profile
+        config._warmup_orig_profile = _orig_profile
+    except ImportError:
+        config._warmup_orig_profile = None
 
     # --- Patch 2: cap compilation parallelism ---
     max_workers = int(os.environ.get("TILEOPS_WARMUP_MAX_WORKERS", "64"))

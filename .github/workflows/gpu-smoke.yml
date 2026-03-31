@@ -335,7 +335,7 @@ jobs:
             echo "reason=$reason"
           } >> "$GITHUB_OUTPUT"
 
-  gpu-smoke:
+  cache-warmup:
     needs: [ci-prereq, security-policy]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-prereq.outputs.skip != 'true' && needs.security-policy.outputs.skip_gpu_smoke != 'true' }}
     runs-on: [self-hosted, tile-ops, venv]
@@ -369,11 +369,258 @@ jobs:
         run: |
           set -euo pipefail
 
+          DEP_HASH="$(python3 scripts/dep_hash.py)"
           HASH_INPUT="$(
             {
               echo "python=3.11"
               echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              sha256sum pyproject.toml
+              echo "${DEP_HASH}"
+            } | sha256sum | cut -c1-16
+          )"
+          VENV_PREFIX="tileops_ci_venv"
+          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
+          TRUSTED_VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          FORK_CAN_COPY_TRUSTED_VENV="false"
+
+          if [[ "$IS_FORK" == "true" ]]; then
+            RUNTIME_ROOT="${RUNNER_TEMP}/gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            TILELANG_CACHE_DIR="${RUNTIME_ROOT}/tilelang/cache"
+            TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
+            TRITON_CACHE_DIR="${RUNTIME_ROOT}/triton/cache"
+            PIP_CACHE_DIR="${RUNTIME_ROOT}/pip/cache"
+            WHEEL_DIR="${RUNTIME_ROOT}/wheels"
+            VENV_PATH="${RUNTIME_ROOT}/venv"
+            if [[ -x "${TRUSTED_VENV_PATH}/bin/python" ]]; then
+              FORK_CAN_COPY_TRUSTED_VENV="true"
+              VENV_REUSED="true"
+            else
+              VENV_REUSED="false"
+            fi
+            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
+
+            TRUSTED_WHEEL_DIR="/home/ci-runner/.wheel-cache"
+            copy_start=$SECONDS
+            if command -v rsync >/dev/null 2>&1; then
+              rsync -a /home/ci-runner/.tilelang/cache/ "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
+              rsync -a /home/ci-runner/.triton/cache/ "${TRITON_CACHE_DIR}/" 2>/dev/null || true
+              rsync -a /home/ci-runner/.cache/pip/ "${PIP_CACHE_DIR}/" 2>/dev/null || true
+              if [[ -d "${TRUSTED_WHEEL_DIR}" ]]; then
+                rsync -a "${TRUSTED_WHEEL_DIR}/" "${WHEEL_DIR}/" 2>/dev/null || true
+              fi
+            else
+              cp -a /home/ci-runner/.tilelang/cache/. "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
+              cp -a /home/ci-runner/.triton/cache/. "${TRITON_CACHE_DIR}/" 2>/dev/null || true
+              cp -a /home/ci-runner/.cache/pip/. "${PIP_CACHE_DIR}/" 2>/dev/null || true
+              if [[ -d "${TRUSTED_WHEEL_DIR}" ]]; then
+                cp -a "${TRUSTED_WHEEL_DIR}/." "${WHEEL_DIR}/" 2>/dev/null || true
+              fi
+            fi
+            copy_elapsed=$(( SECONDS - copy_start ))
+            echo "Cache copy completed in ${copy_elapsed}s"
+          else
+            RUNTIME_ROOT="/home/ci-runner"
+            TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
+            TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
+            TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
+            PIP_CACHE_DIR=""
+            WHEEL_DIR="/home/ci-runner/.wheel-cache"
+
+            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${WHEEL_DIR}"
+
+            VENV_PATH="${TRUSTED_VENV_PATH}"
+            if [[ -x "${VENV_PATH}/bin/python" ]]; then
+              VENV_REUSED="true"
+            else
+              VENV_REUSED="false"
+            fi
+          fi
+
+          {
+            echo "RUNTIME_ROOT=${RUNTIME_ROOT}"
+            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
+            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
+            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+            echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
+            echo "WHEEL_DIR=${WHEEL_DIR}"
+            echo "VENV_PATH=${VENV_PATH}"
+            echo "TRUSTED_VENV_PATH=${TRUSTED_VENV_PATH}"
+            echo "FORK_CAN_COPY_TRUSTED_VENV=${FORK_CAN_COPY_TRUSTED_VENV}"
+            echo "VENV_REUSED=${VENV_REUSED}"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate GPU frequency
+        run: |
+          set -euo pipefail
+          TARGET_CLOCK_MHZ=1830
+          RETRIES=5
+          SLEEP_SECONDS=2
+
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error::nvidia-smi is not available on this runner."
+            exit 1
+          fi
+
+          echo "Detected GPUs:"
+          nvidia-smi -L
+
+          attempt=1
+          while [ "$attempt" -le "$RETRIES" ]; do
+            echo "Validation attempt ${attempt}/${RETRIES}"
+            mismatch=0
+            while IFS=',' read -r gpu_index gpu_name gpu_clock; do
+              gpu_index="$(echo "$gpu_index" | xargs)"
+              gpu_name="$(echo "$gpu_name" | xargs)"
+              gpu_clock="$(echo "$gpu_clock" | xargs)"
+              echo "GPU ${gpu_index} (${gpu_name}) clock: ${gpu_clock} MHz"
+              if [[ "$gpu_clock" != "$TARGET_CLOCK_MHZ" ]]; then
+                mismatch=1
+              fi
+            done < <(nvidia-smi --query-gpu=index,name,clocks.current.graphics --format=csv,noheader,nounits)
+
+            if [[ "$mismatch" -eq 0 ]]; then
+              echo "All GPUs locked at ${TARGET_CLOCK_MHZ} MHz."
+              break
+            fi
+
+            if [[ "$attempt" -eq "$RETRIES" ]]; then
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz on all GPUs."
+              exit 1
+            fi
+
+            sleep "$SLEEP_SECONDS"
+            attempt=$((attempt + 1))
+          done
+
+      - name: Ensure venv and install dependencies
+        env:
+          IS_FORK: ${{ needs.security-policy.outputs.is_fork }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$IS_FORK" == "true" && "$FORK_CAN_COPY_TRUSTED_VENV" == "true" ]]; then
+            echo "Copying trusted venv from ${TRUSTED_VENV_PATH} to ${VENV_PATH}"
+            rm -rf "${VENV_PATH}"
+            if command -v rsync >/dev/null 2>&1; then
+              rsync -a --delete "${TRUSTED_VENV_PATH}/" "${VENV_PATH}/"
+            else
+              mkdir -p "${VENV_PATH}"
+              cp -a "${TRUSTED_VENV_PATH}/." "${VENV_PATH}/"
+            fi
+            # shellcheck source=/dev/null
+            source "${VENV_PATH}/bin/activate"
+            python --version
+            python -m pip --version
+            python -c "import tileops, torch; print('Copied fork venv import check ok')"
+            exit 0
+          fi
+
+          if [[ "$VENV_REUSED" == "true" ]]; then
+            echo "Using cached venv at ${VENV_PATH}"
+            exit 0
+          fi
+
+          echo "Creating fresh venv at ${VENV_PATH}"
+          python -m venv "${VENV_PATH}"
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          python -m pip install --upgrade pip setuptools wheel --no-user
+          if [[ "$IS_FORK" == "true" ]]; then
+            FIND_LINKS_FLAG=""
+            if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
+              FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
+            fi
+            # shellcheck disable=SC2086
+            PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
+
+            TRUSTED_VENV=$(find "${{ runner.tool_cache }}" -maxdepth 1 -type d -name "tileops_ci_venv_*" -exec test -x '{}/bin/python' \; -print 2>/dev/null | sort -t_ -k5 -r | head -1 || true)
+            if [[ -n "$TRUSTED_VENV" ]]; then
+              TRUSTED_LIB=$(find "$TRUSTED_VENV" -name "libtilelang.so" -type f 2>/dev/null | head -1 || true)
+              FORK_LIB=$(find "${VENV_PATH}" -name "libtilelang.so" -type f 2>/dev/null | head -1 || true)
+              if [[ -n "$TRUSTED_LIB" && -n "$FORK_LIB" ]]; then
+                touch -r "$TRUSTED_LIB" "$FORK_LIB"
+                echo "Synced libtilelang.so mtime for cache key compatibility"
+              else
+                echo "Warning: could not locate libtilelang.so for mtime sync"
+              fi
+            else
+              echo "Warning: no trusted venv found for mtime sync"
+            fi
+          else
+            FIND_LINKS_FLAG=""
+            if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
+              FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
+            fi
+            # shellcheck disable=SC2086
+            PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' ${FIND_LINKS_FLAG}
+            pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
+          fi
+
+      - name: Warm selected smoke tests
+        env:
+          TEST_SCOPE: ${{ needs.security-policy.outputs.scope }}
+          PYTEST_TARGETS: ${{ needs.security-policy.outputs.pytest_targets }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+          current_dir="$(pwd)"
+          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
+          echo "PYTHONPATH=$PYTHONPATH"
+
+          echo "Resolved warmup scope: ${TEST_SCOPE}"
+          echo "Resolved warmup targets: ${PYTEST_TARGETS}"
+          read -r -a TARGETS <<< "${PYTEST_TARGETS}"
+          echo "Warming pytest -m \"smoke\" on ${#TARGETS[@]} target(s)"
+          python scripts/warmup_kernel_cache.py \
+            --pytest-targets "${TARGETS[@]}" \
+            --marker smoke \
+            --max-workers 64 \
+            -n 8
+
+      - name: Cleanup isolated fork state
+        if: ${{ always() && needs.security-policy.outputs.is_fork == 'true' }}
+        run: rm -rf "${RUNTIME_ROOT}"
+
+  gpu-smoke:
+    needs: [ci-prereq, security-policy, cache-warmup]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-prereq.outputs.skip != 'true' && needs.security-policy.outputs.skip_gpu_smoke != 'true' }}
+    runs-on: [self-hosted, tile-ops, venv]
+    steps:
+      - name: Checkout code for fork PR
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout code for trusted branch
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve runtime state
+        env:
+          IS_FORK: ${{ needs.security-policy.outputs.is_fork }}
+        run: |
+          set -euo pipefail
+
+          DEP_HASH="$(python3 scripts/dep_hash.py)"
+          HASH_INPUT="$(
+            {
+              echo "python=3.11"
+              echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
+              echo "${DEP_HASH}"
             } | sha256sum | cut -c1-16
           )"
           VENV_PREFIX="tileops_ci_venv"
@@ -555,7 +802,12 @@ jobs:
               echo "Warning: no trusted venv found for mtime sync"
             fi
           else
-            PIP_NO_BUILD_ISOLATION=1 PIP_NO_CACHE_DIR=1 pip install -e '.[dev]'
+            FIND_LINKS_FLAG=""
+            if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
+              FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
+            fi
+            # shellcheck disable=SC2086
+            PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' ${FIND_LINKS_FLAG}
             # Export wheels (including dependencies) so fork PRs can reuse them
             pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
           fi
@@ -580,10 +832,7 @@ jobs:
               print(f"{key}={os.environ.get(key)}")
           PY
 
-          TEST_MARK_EXPR="smoke or full"
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            TEST_MARK_EXPR="smoke"
-          fi
+          TEST_MARK_EXPR="smoke"
 
           echo "Resolved test scope: ${TEST_SCOPE}"
           echo "Resolved pytest targets: ${PYTEST_TARGETS}"

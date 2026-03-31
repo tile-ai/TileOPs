@@ -1,31 +1,19 @@
 #!/usr/bin/env python3
-"""Pre-compile and autotune all benchmark kernel variants.
+"""Warm TileLang/Triton caches by running a selected pytest subset.
 
-Runs every benchmark test to trigger kernel compilation and autotuning,
-populating both:
-  - tilelang kernel compilation cache  (compiled .so binaries)
-  - tilelang autotuner result cache    (best config per kernel)
+By default this warms all benchmark files under benchmarks/ops. The same
+driver can also warm correctness suites by accepting explicit pytest
+targets and a marker expression.
 
-On subsequent runs, both caches are hit and warmup completes quickly.
-The benchmark job then loads cached autotuner results directly instead
-of re-profiling all configurations (~2ms vs minutes per kernel).
-
-Profiling runs with real GPU measurements (not dummy values) so that
-the cached best-config choices are meaningful.  Parallel pytest-xdist
-workers introduce some measurement noise, but the relative config
-ranking is preserved well enough for cache seeding.
-
-Uses pytest-xdist to run benchmark test cases in parallel across multiple
-workers, while the autotuner's ThreadPoolExecutor parallelizes config
-compilation within each op.  Two levels of parallelism:
-
-  Level 1: pytest-xdist workers  (-n flag)  — across ops/benchmarks
-  Level 2: ThreadPoolExecutor    (--max-workers) — across autotune configs
+Warmup populates:
+  - tilelang kernel compilation cache
+  - tilelang autotuner result cache (when benchmark paths autotune)
 
 Usage:
     python scripts/warmup_kernel_cache.py
     python scripts/warmup_kernel_cache.py --max-workers 64 -n 4
     python scripts/warmup_kernel_cache.py --shard 0 --total-shards 4
+    python scripts/warmup_kernel_cache.py --pytest-targets tests -m smoke
 """
 
 import argparse
@@ -49,6 +37,12 @@ def main():
     parser.add_argument(
         "-n", "--num-pytest-workers", type=int, default=16,
         help="Number of pytest-xdist workers for parallel test execution (default: 16)")
+    parser.add_argument(
+        "--pytest-targets", nargs="*", default=None,
+        help="Optional explicit pytest targets to warm instead of benchmarks/ops")
+    parser.add_argument(
+        "-m", "--marker", default=None,
+        help="Optional pytest marker expression for selecting the warmup subset")
     args = parser.parse_args()
 
     # Communicate settings to worker processes via environment variables.
@@ -59,19 +53,24 @@ def main():
     print(f"Compilation parallelism: {args.num_pytest_workers} pytest workers "
           f"x {args.max_workers} compile threads each")
 
-    # Collect benchmark files and shard.
-    bench_dir = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "ops")
-    all_files = sorted(glob.glob(os.path.join(bench_dir, "bench_*.py")))
-    shard_files = all_files[args.shard::args.total_shards]
+    if args.pytest_targets:
+        selected_targets = args.pytest_targets
+        print(f"Using explicit pytest targets ({len(selected_targets)}):")
+        for target in selected_targets:
+            print(f"  {target}")
+    else:
+        bench_dir = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "ops")
+        all_files = sorted(glob.glob(os.path.join(bench_dir, "bench_*.py")))
+        selected_targets = all_files[args.shard::args.total_shards]
 
-    if not shard_files:
-        print(f"Shard {args.shard}/{args.total_shards}: no files to process")
-        return
+        if not selected_targets:
+            print(f"Shard {args.shard}/{args.total_shards}: no files to process")
+            return
 
-    print(f"Shard {args.shard}/{args.total_shards}: "
-          f"{len(shard_files)}/{len(all_files)} benchmark files")
-    for f in shard_files:
-        print(f"  {os.path.basename(f)}")
+        print(f"Shard {args.shard}/{args.total_shards}: "
+              f"{len(selected_targets)}/{len(all_files)} benchmark files")
+        for f in selected_targets:
+            print(f"  {os.path.basename(f)}")
 
     import pytest
 
@@ -83,13 +82,16 @@ def main():
         sys.path.insert(0, scripts_dir)
 
     pytest_args = [
-        *shard_files,
+        *selected_targets,
         "-v",
         "--tb=line",
         "-p", "no:cacheprovider",
         "-p", "conftest_warmup",
         "--override-ini=continue_on_collection_errors=true",
     ]
+
+    if args.marker:
+        pytest_args.extend(["-m", args.marker])
 
     if args.num_pytest_workers > 1:
         pytest_args.extend(["-n", str(args.num_pytest_workers)])
