@@ -41,37 +41,52 @@ class GqaBwdBenchmark(BenchmarkBase):
         return t.batch * total_heads * t.seq_len * t.dim * t.dtype.itemsize
 
 
-def _baseline_gqa_fwd(test: GqaFwdTest):
+def _fa3_gqa_fwd(test: GqaFwdTest):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
-        import flash_attn_interface
+        from flash_attn import flash_attn_func  # noqa: PLC0415
     except ImportError:
         return None
 
     def baseline_fn(q, k, v):
-        return flash_attn_interface.flash_attn_func(
-            q, k, v, softmax_scale=None, causal=test.is_causal)
+        return flash_attn_func(q, k, v, causal=test.is_causal)
 
     return baseline_fn
 
 
-def _baseline_gqa_bwd(test: GqaBwdTest):
+def _fa3_gqa_bwd(test: GqaBwdTest):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
-        import flash_attn_interface
+        from flash_attn import flash_attn_func  # noqa: PLC0415
     except ImportError:
         return None
 
-    softmax_scale = test.dim**(-0.5)
-
+    @torch.enable_grad()
     def baseline_fn(q, k, v, o, grad_output, lse):
-        dq = torch.empty_like(q)
-        dk = torch.empty_like(k)
-        dv = torch.empty_like(v)
-        dq, dk, dv, _ = flash_attn_interface._flash_attn_backward(
-            grad_output, q, k, v, o, lse, None, None, None, None, None, None, dq, dk, dv,
-            softmax_scale, test.is_causal)
-        return dq, dk, dv
+        q = q.detach().requires_grad_(True)
+        k = k.detach().requires_grad_(True)
+        v = v.detach().requires_grad_(True)
+        out = flash_attn_func(q, k, v, causal=test.is_causal)
+        out.backward(grad_output)
+        return q.grad, k.grad, v.grad
+
+    return baseline_fn
+
+
+def _flashinfer_gqa_fwd(test: GqaFwdTest):
+    """Return FlashInfer forward baseline callable, or None if not installed."""
+    try:
+        from flashinfer.prefill import single_prefill_with_kv_cache  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    def baseline_fn(q, k, v):
+        outs = []
+        for b in range(q.shape[0]):
+            out = single_prefill_with_kv_cache(
+                q[b], k[b], v[b], causal=test.is_causal, kv_layout="NHD")
+            outs.append(out)
+        return torch.stack(outs)
 
     return baseline_fn
 
@@ -122,13 +137,18 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    baseline_fn = _baseline_gqa_fwd(test)
-    if baseline_fn is not None:
-        result_bl = bm.profile(baseline_fn, *inputs)
+    fa3_fn = _fa3_gqa_fwd(test)
+    if fa3_fn is not None:
+        result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
     else:
         result_bl = bm.profile(_torch_gqa_fwd(test), *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+
+    fi_fn = _flashinfer_gqa_fwd(test)
+    if fi_fn is not None:
+        result_fi = bm.profile(fi_fn, *inputs)
+        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
 
 _GQA_BWD_BENCH_PARAMS = _GQA_FWD_BENCH_PARAMS
@@ -148,9 +168,9 @@ def test_gqa_bwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    baseline_fn = _baseline_gqa_bwd(test)
-    if baseline_fn is not None:
-        result_bl = bm.profile(baseline_fn, *inputs)
+    fa3_fn = _fa3_gqa_bwd(test)
+    if fa3_fn is not None:
+        result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
     else:
         result_bl = bm.profile(_torch_gqa_bwd(test), *inputs)
