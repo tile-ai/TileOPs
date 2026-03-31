@@ -97,6 +97,9 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
     BenchmarkReport.record("moe_unpermute", locals(), result, tag="tileops")
 
     # PyTorch vectorized baseline: index_select + weighted scatter_add
+    # NOTE: This is a reasonable vectorized PyTorch implementation using
+    # scatter_add_. The performance gap vs TileOPs reflects the overhead of
+    # PyTorch's generic scatter operations vs specialized fused kernels.
     def _torch_fn(mm2_pad, fwd_idx, topk_weights):
         # gather rows at fwd_idx positions, weight, then scatter-add per token
         src = mm2_pad[fwd_idx.long()].float()            # [T*K, H]

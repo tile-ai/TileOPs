@@ -98,6 +98,10 @@ def test_moe_permute_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # PyTorch reference baseline
+    # NOTE: This uses Python loops for simplicity and correctness verification.
+    # It is intentionally not optimized and does not represent PyTorch's best
+    # possible performance. The purpose is to provide a simple, readable reference
+    # implementation for correctness checking, not performance comparison.
     def _ref_fn(hidden_states, topk_ids):
         return _ref_moe_permute(hidden_states, topk_ids, num_experts)
 

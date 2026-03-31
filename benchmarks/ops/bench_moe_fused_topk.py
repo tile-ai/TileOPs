@@ -97,6 +97,9 @@ def test_fused_topk_bench(
     BenchmarkReport.record("fused_topk", locals(), result, tag="tileops")
 
     # PyTorch reference baseline
+    # NOTE: Uses torch.softmax/sigmoid + torch.topk, which is a reasonable
+    # vectorized implementation. Performance gap vs TileOPs reflects the benefit
+    # of fused kernels that avoid intermediate materialization.
     def _ref_fn(gating_output):
         return _ref_fused_topk(gating_output, top_k, scoring_func, renormalize)
 
