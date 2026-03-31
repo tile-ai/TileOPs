@@ -41,7 +41,7 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.moe import FusedMoe
+from tileops.ops.moe import FusedMoe, FusedTopKOp
 
 # ---------------------------------------------------------------------------
 # Test / fixture types
@@ -217,11 +217,13 @@ def test_fused_moe_bench(
 
     # ── vLLM baseline (optional) ──────────────────────────────────────────────
     if _VLLM_AVAILABLE:
+        gating_f32 = gating.float()
+
         def _vllm_fn(hidden, gating, correction_bias, w_gate_up, w_down):
             # vLLM: routing + GEMM (complete flow like TileOPs)
             tw, tids, _ = _vllm_fused_topk(
                 hidden_states=hidden,
-                gating_output=gating.float(),
+                gating_output=gating_f32,
                 topk=top_k,
                 renormalize=renormalize,
                 scoring_func=scoring_func,
@@ -240,7 +242,6 @@ def test_fused_moe_bench(
         BenchmarkReport.record(op, locals(), result_vllm, tag="vllm")
     else:
         # torch-ref baseline: memory-efficient per-expert GEMM loop
-        from tileops.ops.moe import FusedTopKOp
         fk = FusedTopKOp(num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
                          scoring_func=scoring_func, renormalize=renormalize,
                          with_correction_bias=with_correction_bias)

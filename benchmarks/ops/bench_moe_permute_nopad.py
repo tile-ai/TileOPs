@@ -150,6 +150,7 @@ def test_moe_permute_nopad_bench(
         numel = total_tokens * top_k
         perm_h_buf = torch.empty(numel, hidden_size, dtype=dtype, device=hidden_states.device)
         token_indices = torch.arange(total_tokens, device=hidden_states.device).unsqueeze(1).expand(-1, top_k).flatten()
+        scatter_indices = torch.empty(numel, dtype=torch.int64, device=hidden_states.device)
 
         def _torch_fn(hidden_states, topk_ids):
             gathered = hidden_states[token_indices]  # [T*K, H]
@@ -167,7 +168,6 @@ def test_moe_permute_nopad_bench(
                                        counts.cumsum(0)[:-1]])
             within_rank = torch.arange(numel, device=flat_ids.device) - expert_first[sorted_experts]
             scatter_for_sorted = true_offsets[sorted_experts] + within_rank
-            scatter_indices = torch.empty(numel, dtype=torch.int64, device=flat_ids.device)
             scatter_indices[sorted_idx] = scatter_for_sorted
 
             perm_h_buf[scatter_indices] = gathered

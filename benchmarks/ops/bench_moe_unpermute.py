@@ -107,10 +107,13 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
     # fwd_idx[t*K+k] = padded_slot for (token t, expert choice k), so after gather
     # rows are in token-major order → can reshape to [T, K, H] and reduce directly.
     # This avoids index_add_ (atomic ops) and uses a fused mul+sum path instead.
+    fwd_idx_long = fwd_idx.long()
+    topk_weights_f32 = topk_weights.float()
+
     def _torch_fn(mm2_pad, fwd_idx, topk_weights):
-        gathered = mm2_pad[fwd_idx.long()].float()                  # [T*K, H]
+        gathered = mm2_pad[fwd_idx_long].float()                  # [T*K, H]
         weighted_sum = (gathered.view(total_tokens, top_k, hidden_size)
-                        * topk_weights.float().unsqueeze(-1)).sum(dim=1)  # [T, H]
+                        * topk_weights_f32.unsqueeze(-1)).sum(dim=1)  # [T, H]
         return weighted_sum.to(mm2_pad.dtype)
 
     _torch_fn(mm2_pad, fwd_idx, topk_weights)  # warmup
