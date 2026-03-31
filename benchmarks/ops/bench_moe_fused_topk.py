@@ -4,6 +4,13 @@ Baselines:
   - vLLM fused_topk (optional): only runs when vllm is installed.
   - PyTorch reference: torch.softmax/sigmoid + torch.topk.
 
+Real model configurations:
+  Model              E    K  scoring   renorm
+  Kimi K2          384   8  sigmoid   True
+  DeepSeek-V3      256   8  sigmoid   True
+  Qwen3-235B-A22B  128   8  softmax   False
+  Qwen3-30B-A3B    128   8  softmax   False
+
 Usage:
     conda run -n tileops python -m pytest benchmarks/ops/bench_moe_fused_topk.py -vvs
 """
@@ -36,18 +43,21 @@ class FusedTopKBenchFixture(FixtureBase):
     """
     PARAMS = [
         ("num_tokens, num_experts, top_k, scoring_func, renormalize", [
-            # ── Qwen3-MoE: 128 experts, top_k=8, softmax ──────────────────
-            (512,  128, 8, "softmax", False),
-            (2048, 128, 8, "softmax", False),
-            (4096, 128, 8, "softmax", False),
-            # ── Qwen3.5-MoE: 256 experts, top_k=8, softmax + renorm ───────
-            (512,  256, 8, "softmax", True),
-            (2048, 256, 8, "softmax", True),
-            (4096, 256, 8, "softmax", True),
-            # ── DeepSeek-V3/GLM-4: 256 experts, top_k=8, sigmoid + renorm ─
+            # ── Kimi K2: E=384, K=8, sigmoid ──────────────────────────────
+            (1,    384, 8, "sigmoid", True),
+            (32,   384, 8, "sigmoid", True),
+            (512,  384, 8, "sigmoid", True),
+            (4096, 384, 8, "sigmoid", True),
+            # ── DeepSeek-V3: E=256, K=8, sigmoid ──────────────────────────
+            (1,    256, 8, "sigmoid", True),
+            (32,   256, 8, "sigmoid", True),
             (512,  256, 8, "sigmoid", True),
-            (2048, 256, 8, "sigmoid", True),
             (4096, 256, 8, "sigmoid", True),
+            # ── Qwen3-235B-A22B / Qwen3-30B-A3B: E=128, K=8, softmax ─────
+            (1,    128, 8, "softmax", False),
+            (32,   128, 8, "softmax", False),
+            (512,  128, 8, "softmax", False),
+            (4096, 128, 8, "softmax", False),
         ]),
     ]
 

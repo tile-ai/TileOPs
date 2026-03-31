@@ -1,15 +1,18 @@
 """Benchmark for MoeUnpermuteOp.
 
 Baselines:
-  - PyTorch vectorized: index_select + weighted scatter_add.
+  - vLLM moe_unpermute (optional): vLLM's CUDA kernel.
+  - PyTorch reference: gather + weighted view+sum.
 
-Note: vLLM moe_unpermute is not included as a baseline because after the
-padded-layout refactor, TileOPs' MoeUnpermuteOp accepts a padding-aligned
-input buffer ([padded_batch_sum, H]) and fwd_idx (flat_idx → padded_slot),
-while vLLM's moe_unpermute accepts a non-padded buffer ([T*K, H]) with
-different index semantics. The two are no longer functionally equivalent
-and cannot be meaningfully compared in isolation; use bench_moe_qwen3_moe.py
-for end-to-end comparison.
+Note: vLLM uses inv_permuted_idx (reverse mapping) while TileOPs uses fwd_idx
+(forward mapping); inv_permuted_idx is derived from fwd_idx before benchmarking.
+
+Real model configurations:
+  Model              H     K
+  Kimi K2          7168   8
+  DeepSeek-V3      7168   8
+  Qwen3-235B-A22B  7168   8
+  Qwen3-30B-A3B    3072   8
 
 Usage:
     conda run -n tileops python -m pytest benchmarks/ops/bench_moe_unpermute.py -vvs
@@ -20,6 +23,12 @@ from typing import Optional
 
 import pytest
 import torch
+
+try:
+    from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import moe_unpermute
+    _VLLM_AVAILABLE = True
+except ImportError:
+    _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_moe_unpermute import MoeUnpermuteTest
@@ -38,18 +47,16 @@ class MoeUnpermuteBenchFixture(FixtureBase):
     """
     PARAMS = [
         ("total_tokens, top_k, hidden_size", [
-            # ── Mixtral-8x7B style: top_k=2 ─────────────────────────────────
-            (512,  2,  4096),
-            (2048, 2,  4096),
-            (4096, 2,  4096),
-            # ── DeepSeek-V3 style: top_k=8 ──────────────────────────────────
-            (512,  8,  7168),
-            (2048, 8,  7168),
-            (4096, 8,  7168),
-            # ── Qwen3 MoE: top_k=8 ──────────────────────────────────────────
-            (512,  8,  2048),
-            (2048, 8,  2048),
-            (4096, 8,  2048),
+            # ── Kimi K2 / DeepSeek-V3 / Qwen3-235B-A22B: H=7168, K=8 ────
+            (1,    8, 7168),
+            (32,   8, 7168),
+            (512,  8, 7168),
+            (4096, 8, 7168),
+            # ── Qwen3-30B-A3B: H=3072, K=8 ───────────────────────────────
+            (1,    8, 3072),
+            (32,   8, 3072),
+            (512,  8, 3072),
+            (4096, 8, 3072),
         ]),
     ]
 
@@ -96,25 +103,40 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
     result = bm.profile(op, mm2_pad, fwd_idx, topk_weights)
     BenchmarkReport.record("moe_unpermute", locals(), result, tag="tileops")
 
-    # PyTorch vectorized baseline: index_select + weighted scatter_add
-    # NOTE: This is a reasonable vectorized PyTorch implementation using
-    # scatter_add_. The performance gap vs TileOPs reflects the overhead of
-    # PyTorch's generic scatter operations vs specialized fused kernels.
+    # PyTorch vectorized baseline: gather + weighted sum
+    # fwd_idx[t*K+k] = padded_slot for (token t, expert choice k), so after gather
+    # rows are in token-major order → can reshape to [T, K, H] and reduce directly.
+    # This avoids index_add_ (atomic ops) and uses a fused mul+sum path instead.
     def _torch_fn(mm2_pad, fwd_idx, topk_weights):
-        # gather rows at fwd_idx positions, weight, then scatter-add per token
-        src = mm2_pad[fwd_idx.long()].float()            # [T*K, H]
-        w = topk_weights.flatten().unsqueeze(1)          # [T*K, 1]
-        weighted = src * w                               # [T*K, H], float32
-        out = torch.zeros(total_tokens, hidden_size, dtype=torch.float32, device=mm2_pad.device)
-        token_idx = torch.arange(total_tokens, device=mm2_pad.device).repeat_interleave(top_k)
-        out.scatter_add_(0, token_idx.unsqueeze(1).expand_as(weighted), weighted)
-        return out.to(mm2_pad.dtype)
+        gathered = mm2_pad[fwd_idx.long()].float()                  # [T*K, H]
+        weighted_sum = (gathered.view(total_tokens, top_k, hidden_size)
+                        * topk_weights.float().unsqueeze(-1)).sum(dim=1)  # [T, H]
+        return weighted_sum.to(mm2_pad.dtype)
 
     _torch_fn(mm2_pad, fwd_idx, topk_weights)  # warmup
     torch.cuda.synchronize()
 
     result_torch = bm.profile(_torch_fn, mm2_pad, fwd_idx, topk_weights)
     BenchmarkReport.record("moe_unpermute", locals(), result_torch, tag="torch-ref")
+
+    # vLLM baseline (optional)
+    if _VLLM_AVAILABLE:
+        # vLLM uses inv_permuted_idx (reverse mapping: padded_slot → flat_idx)
+        # Compute from fwd_idx (forward mapping: flat_idx → padded_slot)
+        numel = total_tokens * top_k
+        inv_permuted_idx = torch.empty(numel, dtype=torch.int32, device=fwd_idx.device)
+        inv_permuted_idx[fwd_idx.long()] = torch.arange(numel, dtype=torch.int32, device=fwd_idx.device)
+        out_vllm = torch.empty(total_tokens, hidden_size, dtype=mm2_pad.dtype, device=mm2_pad.device)
+
+        def _vllm_fn(mm2_pad, fwd_idx, topk_weights):
+            moe_unpermute(out_vllm, mm2_pad, topk_weights, inv_permuted_idx)
+            return out_vllm
+
+        _vllm_fn(mm2_pad, fwd_idx, topk_weights)  # warmup
+        torch.cuda.synchronize()
+
+        result_vllm = bm.profile(_vllm_fn, mm2_pad, fwd_idx, topk_weights)
+        BenchmarkReport.record("moe_unpermute", locals(), result_vllm, tag="vllm")
 
 
 if __name__ == "__main__":
