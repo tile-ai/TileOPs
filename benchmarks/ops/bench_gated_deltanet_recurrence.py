@@ -8,6 +8,11 @@ from tests.ops.test_gated_deltanet_recurrence import GatedDeltaNetDecodeTest
 from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetDecodeOp
 
+try:
+    from fla.ops.gated_delta_rule import fused_recurrent_gated_delta_rule
+except ImportError:
+    fused_recurrent_gated_delta_rule = None
+
 
 class GatedDeltaNetDecodeBenchmark(BenchmarkBase):
 
@@ -64,8 +69,28 @@ def test_gated_deltanet_decode_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    if fused_recurrent_gated_delta_rule is not None:
+        # --- FLA: fused_recurrent_gated_delta_rule with T=1 ---
+        q, k, v, g, beta, state = inputs
+        q_fla = q.unsqueeze(1)       # [B, H, DK] -> [B, 1, H, DK]
+        k_fla = k.unsqueeze(1)
+        v_fla = v.unsqueeze(1)
+        g_fla = g.unsqueeze(1)       # [B, H] -> [B, 1, H]
+        beta_fla = beta.unsqueeze(1)
+
+        def fla_decode():
+            return fused_recurrent_gated_delta_rule(
+                q_fla, k_fla, v_fla, g=g_fla, beta=beta_fla,
+                initial_state=state.contiguous(),
+                output_final_state=True,
+            )
+
+        result_fla = bm.profile(fla_decode)
+        BenchmarkReport.record(op, locals(), result_fla, tag="fla")
+    else:
+        # --- Torch reference baseline ---
+        result_bl = bm.profile(test.ref_program, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":
