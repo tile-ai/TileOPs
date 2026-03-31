@@ -36,7 +36,9 @@ from .flash_attn import (
     MhaFwdWgmmaPipelinedKernel,
 )
 from .flash_decode import (
-    gqa_decode_kernel,
+    GQADecodeCombineKernel,
+    GQADecodeKernel,
+    GQADecodeSplitKVKernel,
     gqa_decode_paged_kernel,
     mha_decode_kernel,
     mha_decode_paged_kernel,
@@ -127,7 +129,9 @@ __all__ = [
     "SparseMlaKernel",
     "TopkSelectorKernel",
     "UnaryKernel",
-    "gqa_decode_kernel",
+    "GQADecodeCombineKernel",
+    "GQADecodeKernel",
+    "GQADecodeSplitKVKernel",
     "gqa_decode_paged_kernel",
     "grouped_gemm_kernel",
     "MoePermuteAlignKernel",

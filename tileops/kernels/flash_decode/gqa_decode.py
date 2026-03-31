@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
-__all__ = ["gqa_decode_kernel"]
+__all__ = ["GQADecodeKernel", "GQADecodeSplitKVKernel", "GQADecodeCombineKernel"]
 
 # ---------------------------------------------------------------------------
 # JIT kernel: no-split variant
@@ -105,17 +105,17 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
 
 
 # ---------------------------------------------------------------------------
-# JIT kernel: split variant (split + combine)
+# JIT kernel: split-only variant (no combine)
 # ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
-def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
+def _gqa_decode_split_only_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
     scale = make_log2e_scale(dim)
     accum_dtype = "float"
 
     @tilelang.jit(
-        out_idx=[-1],
+        out_idx=[4, 5],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -125,7 +125,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
         shape_q = [batch, heads, dim]
         shape_k = [batch, seqlen_kv, groups, dim]
         shape_v = [batch, seqlen_kv, groups, dim]
-        shape_o = [batch, heads, dim]
         kv_group_num = heads // groups
 
         part_shape = [batch, heads, num_split, dim]
@@ -135,8 +134,8 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
         online_softmax_split = make_online_softmax(scale, accum_dtype, block_H, valid_block_N)
         rescale = make_rescale(block_H, dim)
 
-        @T.macro
-        def _gqa_decode_split(
+        @T.prim_func
+        def gqa_decode_split_only(
                 Q: T.Tensor(shape_q, dtype),
                 K: T.Tensor(shape_k, dtype),
                 V: T.Tensor(shape_v, dtype),
@@ -175,7 +174,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                # loop_range = T.ceildiv((seqlen_kv // num_split), valid_block_N)
                 loop_range = T.ceildiv(split_length_shared[sid], block_N)
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
@@ -213,13 +211,37 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 T.copy(O_shared, Output_partial[bid, hid * valid_block_H:(hid + 1) * valid_block_H,
                                                 sid, :])
 
-        @T.macro
-        def combine(
+        return gqa_decode_split_only
+
+    return _func
+
+
+# ---------------------------------------------------------------------------
+# JIT kernel: combine-only variant
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=32)
+def _gqa_decode_combine_kernel(batch, heads, num_split, dim, dtype):
+    accum_dtype = "float"
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"])
+    def _func(threads):
+        part_shape = [batch, heads, num_split, dim]
+        shape_o = [batch, heads, dim]
+
+        @T.prim_func
+        def gqa_decode_combine(
                 glse: T.Tensor([batch, heads, num_split], dtype),
                 Output_partial: T.Tensor(part_shape, dtype),
                 Output: T.Tensor(shape_o, dtype),
         ):
-            with T.Kernel(heads, batch, threads=128) as (by, bz):
+            with T.Kernel(heads, batch, threads=threads) as (by, bz):
                 #
                 glse_vec = T.alloc_fragment([num_split], dtype)
                 for k in T.Parallel(num_split):
@@ -245,21 +267,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, dtype):
                 for i in T.Parallel(dim):
                     Output[bz, by, i] = o_accum[i]
 
-        @T.prim_func
-        def gqa_decode_split(
-                Q: T.Tensor(shape_q, dtype),
-                K: T.Tensor(shape_k, dtype),
-                V: T.Tensor(shape_v, dtype),
-                real_seqlen_kv: T.int32,
-                glse: T.Tensor([batch, heads, num_split], dtype),
-                Output_partial: T.Tensor(part_shape, dtype),
-                split_length: T.Tensor(num_split, "int32"),
-                Output: T.Tensor(shape_o, dtype),
-        ):
-            _gqa_decode_split(Q, K, V, real_seqlen_kv, glse, Output_partial, split_length)
-            combine(glse, Output_partial, Output)
-
-        return gqa_decode_split
+        return gqa_decode_combine
 
     return _func
 
@@ -286,33 +294,50 @@ def _(batch: int, heads: int, groups: int, seqlen_kv: int, real_seqlen_kv: int, 
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("top::gqa_decode_split_op", mutates_args=())
-def _gqa_decode_split_op(batch: int, heads: int, groups: int, seqlen_kv: int,
-                          real_seqlen_kv: int, dim: int, dtype: str, block_H: int, block_N: int,
-                          num_stages: int, threads: int, num_split: int, Q: torch.Tensor,
-                          K: torch.Tensor, V: torch.Tensor, glse: torch.Tensor,
-                          Output_partial: torch.Tensor,
-                          split_length: torch.Tensor) -> torch.Tensor:
-    return _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim,
-                                    dtype)(block_H, block_N, num_split, num_stages,
-                                           threads)(Q, K, V, real_seqlen_kv, glse, Output_partial,
-                                                    split_length)
+@torch.library.custom_op("top::gqa_decode_split_only_op", mutates_args=())
+def _gqa_decode_split_only_op(
+        batch: int, heads: int, groups: int, seqlen_kv: int, real_seqlen_kv: int, dim: int,
+        dtype: str, block_H: int, block_N: int, num_stages: int, threads: int, num_split: int,
+        Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+        split_length: torch.Tensor) -> list[torch.Tensor]:
+    return _gqa_decode_split_only_kernel(batch, heads, groups, seqlen_kv, dim,
+                                         dtype)(block_H, block_N, num_split, num_stages,
+                                                threads)(Q, K, V, real_seqlen_kv,
+                                                         split_length)
 
 
-@_gqa_decode_split_op.register_fake
+@_gqa_decode_split_only_op.register_fake
 def _(batch: int, heads: int, groups: int, seqlen_kv: int, real_seqlen_kv: int, dim: int,
       dtype: str, block_H: int, block_N: int, num_stages: int, threads: int, num_split: int,
-      Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, glse: torch.Tensor,
-      Output_partial: torch.Tensor, split_length: torch.Tensor) -> torch.Tensor:
-    return torch.empty_like(Q)
+      Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+      split_length: torch.Tensor) -> list[torch.Tensor]:
+    torch_dtype = getattr(torch, dtype)
+    glse = torch.empty(batch, heads, num_split, dtype=torch_dtype, device=Q.device)
+    Output_partial = torch.empty(batch, heads, num_split, dim, dtype=torch_dtype, device=Q.device)
+    return [glse, Output_partial]
+
+
+@torch.library.custom_op("top::gqa_decode_combine_op", mutates_args=())
+def _gqa_decode_combine_op(batch: int, heads: int, num_split: int, dim: int, dtype: str,
+                            threads: int, glse: torch.Tensor,
+                            Output_partial: torch.Tensor) -> torch.Tensor:
+    return _gqa_decode_combine_kernel(batch, heads, num_split, dim,
+                                      dtype)(threads)(glse, Output_partial)
+
+
+@_gqa_decode_combine_op.register_fake
+def _(batch: int, heads: int, num_split: int, dim: int, dtype: str, threads: int,
+      glse: torch.Tensor, Output_partial: torch.Tensor) -> torch.Tensor:
+    return torch.empty(batch, heads, dim, dtype=glse.dtype, device=glse.device)
 
 
 # ---------------------------------------------------------------------------
-# Kernel class
+# Kernel classes
 # ---------------------------------------------------------------------------
 
 
-class gqa_decode_kernel(Kernel):
+class GQADecodeKernel(Kernel):
+    """No-split GQA decode kernel for short sequences."""
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
@@ -332,13 +357,64 @@ class gqa_decode_kernel(Kernel):
         self.dim = dim
         self.dtype = dtype
 
-        self.no_split_jit = _gqa_decode_no_split_kernel(
+        self.kernel = _gqa_decode_no_split_kernel(
             self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.dtype_str)
-        self.split_jit = _gqa_decode_split_kernel(
-            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.dtype_str)
+        self.init_config(config, tune)
 
-        # autotune targets the split kernel
-        self.kernel = self.split_jit
+    @property
+    def default_config(self) -> dict:
+        return {"block_H": 64, "block_N": 128, "num_stages": 2, "threads": 128}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        block_N = [64, 128]
+        block_H = [64]
+        num_stages = [1, 2, 3]
+        threads = [128]
+        _configs = list(itertools.product(block_H, block_N, num_stages, threads))
+
+        configs = [{
+            'block_H': c[0],
+            'block_N': c[1],
+            'num_stages': c[2],
+            'threads': c[3]
+        } for c in _configs]
+        return configs
+
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int):
+        block_H = self.config["block_H"]
+        block_N = self.config["block_N"]
+        num_stages = self.config["num_stages"]
+        threads = self.config["threads"]
+
+        return _gqa_decode_no_split_op(self.batch, self.heads, self.groups, self.seqlen_kv,
+                                       real_seqlen_kv, self.dim, self.dtype_str, block_H,
+                                       block_N, num_stages, threads, Q, K, V)
+
+
+class GQADecodeSplitKVKernel(Kernel):
+    """Split-only GQA decode kernel (no combine). Outputs glse and Output_partial."""
+    supported_archs: list[int] = [80, 89, 90]
+
+    def __init__(self,
+                 batch,
+                 heads,
+                 groups,
+                 seqlen_kv,
+                 dim,
+                 dtype="float16",
+                 config: Optional[dict] = None,
+                 tune=False):
+        super().__init__()
+        self.batch = batch
+        self.heads = heads
+        self.groups = groups
+        self.seqlen_kv = seqlen_kv
+        self.dim = dim
+        self.dtype = dtype
+
+        self.kernel = _gqa_decode_split_only_kernel(
+            self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.dtype_str)
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
 
@@ -393,33 +469,57 @@ class gqa_decode_kernel(Kernel):
         } for c in _configs]
         return configs
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int):
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int,
+                split_length: torch.Tensor):
         block_H = self.config["block_H"]
         block_N = self.config["block_N"]
         num_split = self.config["num_split"]
         num_stages = self.config["num_stages"]
         threads = self.config["threads"]
 
-        # Dispatch: use no-split for short sequences where splitting is not beneficial
-        threshold = num_split * block_N
-        if real_seqlen_kv < threshold:
-            return _gqa_decode_no_split_op(self.batch, self.heads, self.groups, self.seqlen_kv,
-                                           real_seqlen_kv, self.dim, self.dtype_str, block_H,
-                                           block_N, num_stages, threads, Q, K, V)
+        return _gqa_decode_split_only_op(self.batch, self.heads, self.groups, self.seqlen_kv,
+                                         real_seqlen_kv, self.dim, self.dtype_str, block_H,
+                                         block_N, num_stages, threads, num_split, Q, K, V,
+                                         split_length)
 
-        # Split path: compute per-split lengths
-        base_len = real_seqlen_kv // (num_split * block_N) * block_N
-        split_length = torch.full((num_split,), base_len, dtype=torch.int32, device=Q.device)
-        split_length[-1] = real_seqlen_kv - (num_split - 1) * base_len
 
-        glse = torch.empty((self.batch, self.heads, num_split),
-                           dtype=self.dtype,
-                           device=Q.device)
-        Output_partial = torch.empty((self.batch, self.heads, num_split, self.dim),
-                                     dtype=self.dtype,
-                                     device=Q.device)
+class GQADecodeCombineKernel(Kernel):
+    """Combine-only kernel: reduces partial outputs from split kernel into final output."""
+    supported_archs: list[int] = [80, 89, 90]
 
-        return _gqa_decode_split_op(self.batch, self.heads, self.groups, self.seqlen_kv,
-                                    real_seqlen_kv, self.dim, self.dtype_str, block_H, block_N,
-                                    num_stages, threads, num_split, Q, K, V, glse, Output_partial,
-                                    split_length)
+    def __init__(self,
+                 batch,
+                 heads,
+                 num_split,
+                 dim,
+                 dtype="float16",
+                 config: Optional[dict] = None,
+                 tune=False):
+        super().__init__()
+        self.batch = batch
+        self.heads = heads
+        self.num_split = num_split
+        self.dim = dim
+        self.dtype = dtype
+
+        self.kernel = _gqa_decode_combine_kernel(
+            self.batch, self.heads, self.num_split, self.dim, self.dtype_str)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {"threads": 128}
+
+    def forward(self, glse: torch.Tensor, Output_partial: torch.Tensor):
+        threads = self.config["threads"]
+
+        return _gqa_decode_combine_op(self.batch, self.heads, self.num_split, self.dim,
+                                      self.dtype_str, threads, glse, Output_partial)
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility alias
+# ---------------------------------------------------------------------------
+
+# Keep old name as an alias for the split kernel (which was the primary autotune target)
+gqa_decode_kernel = GQADecodeSplitKVKernel
