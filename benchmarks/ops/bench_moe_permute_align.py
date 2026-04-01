@@ -150,18 +150,21 @@ class MoePermuteAlignBenchFixture(FixtureBase):
     """
     PARAMS = [
         ("total_tokens, top_k, num_experts, block_size", [
-            # ── Mixtral-8x7B style: 8 experts, top_k=2 ──────────────────────
-            (512,  2,   8,   16),
-            (2048, 2,   8,   16),
-            (4096, 2,   8,   16),
-            # ── DeepSeek-MoE style: 64 experts, top_k=6 ─────────────────────
-            (512,  6,  64,   64),
-            (2048, 6,  64,   64),
-            (4096, 6,  64,  128),
-            (8192, 6,  64,  128),
-            # ── Large MoE: 256 experts, top_k=6 ─────────────────────────────
-            (2048, 6, 256,  128),
-            (8192, 6, 256,  128),
+            # ── Kimi K2: E=384, K=8, block_size=64 ───────────────────────
+            (1,    8, 384, 64),
+            (32,   8, 384, 64),
+            (512,  8, 384, 64),
+            (4096, 8, 384, 64),
+            # ── DeepSeek-V3: E=256, K=8, block_size=64 ───────────────────
+            (1,    8, 256, 64),
+            (32,   8, 256, 64),
+            (512,  8, 256, 64),
+            (4096, 8, 256, 64),
+            # ── Qwen3-235B-A22B / Qwen3-30B-A3B: E=128, K=8, block_size=64
+            (1,    8, 128, 64),
+            (32,   8, 128, 64),
+            (512,  8, 128, 64),
+            (4096, 8, 128, 64),
         ]),
     ]
 
@@ -214,11 +217,12 @@ def test_permute_align_bench(
     max_padded = numel + (num_experts + 1) * (block_size - 1)
     max_num_blocks = math.ceil(max_padded / block_size)
 
+    sorted_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)
+    expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
+    num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
+
     def _triton_fn(topk_ids):
-        sorted_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)
         sorted_ids.fill_(numel)
-        expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
-        num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
         _triton_permute_align(topk_ids, num_experts, block_size,
                               sorted_ids, expert_ids, num_post_pad)
         return sorted_ids, expert_ids, num_post_pad
@@ -232,16 +236,17 @@ def test_permute_align_bench(
 
     # sgl-kernel baseline (optional — only runs when sgl_kernel is installed)
     if _SGL_KERNEL_AVAILABLE:
+        sorted_ids_sgl = torch.empty(max_padded, dtype=torch.int32, device=dev)
+        expert_ids_sgl = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
+        num_post_pad_sgl = torch.empty(1, dtype=torch.int32, device=dev)
+        cumsum_buf = torch.empty(num_experts + 1, dtype=torch.int32, device=dev)
+
         def _sgl_fn(topk_ids):
-            sorted_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)
-            sorted_ids.fill_(numel)
-            expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
-            num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
-            cumsum_buf = torch.empty(num_experts + 1, dtype=torch.int32, device=dev)
+            sorted_ids_sgl.fill_(numel)
             _sgl_moe_align_block_size(topk_ids, num_experts, block_size,
-                                      sorted_ids, expert_ids, num_post_pad,
+                                      sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl,
                                       cumsum_buf)
-            return sorted_ids, expert_ids, num_post_pad
+            return sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl
 
         # Warmup sgl-kernel baseline
         _sgl_fn(*inputs)

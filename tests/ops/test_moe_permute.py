@@ -8,7 +8,7 @@ Verifies:
 """
 
 import math
-from typing import Tuple
+from typing import Optional, Tuple
 
 import pytest
 import torch
@@ -26,6 +26,7 @@ def _ref_moe_permute(
     topk_ids: torch.Tensor,
     num_experts: int,
     block_m: int = 64,
+    perm_h_pad_buf: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Pure-PyTorch reference for moe_permute.
 
@@ -85,7 +86,11 @@ def _ref_moe_permute(
         write_ptr[eid] += 1
 
     # Build perm_h_pad (zeros, write at padded positions)
-    perm_h_pad = torch.zeros(padded_batch_sum, H, dtype=hidden_states.dtype, device=dev)
+    if perm_h_pad_buf is not None and perm_h_pad_buf.shape[0] >= padded_batch_sum:
+        perm_h_pad = perm_h_pad_buf[:padded_batch_sum]
+        perm_h_pad.zero_()
+    else:
+        perm_h_pad = torch.zeros(padded_batch_sum, H, dtype=hidden_states.dtype, device=dev)
     for slot in range(numel):
         perm_h_pad[slot_to_padded_list[slot]] = hidden_states[slot_to_row[slot]]
 

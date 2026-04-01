@@ -1,22 +1,22 @@
 """Benchmark for FusedMoe — unified routed MoE FFN operator.
 
-Covers Kimi K2 (sigmoid, correction_bias, E=384, K=8) and Qwen3-MoE
-(softmax, E=128/256) in both decode (T small) and prefill (T large) regimes.
+Covers real model configurations in both decode (T small) and prefill (T large) regimes:
+
+  Model              H     F     E    K  scoring   renorm  bias   scale
+  Kimi K2          7168  2048  384   8  sigmoid   True    True   2.827
+  DeepSeek-V3      7168  2048  256   8  sigmoid   True    False  1.0
+  Qwen3-235B-A22B  7168  2048  128   8  softmax   False   False  1.0
+  Qwen3-30B-A3B    3072  1536  128   8  softmax   False   False  1.0
 
 Baselines:
   - tileops-padded: FusedMoe(layout="padded")
-  - vllm:           vLLM fused_experts (optional)
+  - vllm:           vLLM fused_topk + fused_experts (complete flow)
   - torch-ref:      per-expert GEMM loop (fallback when vLLM is absent)
 
 FLOPs (same formula for both model families):
   Gate+up: T*K * 2*F*H * 2  FLOPs
   Down:    T*K *   H*F * 2  FLOPs
   Total =  T*K * 6*F*H
-
-Memory (dominant: weight reads):
-  w_gate_up [E, 2F, H] + w_down [E, H, F]  (bf16)
-  + activations: hidden [T,H] + output [T,H]
-  ≈ (E*(2F+H)*H + T*H) * 2 * 2  bytes
 
 Usage:
     conda run -n tileops python -m pytest benchmarks/ops/bench_moe_fused_moe.py -vvs
@@ -31,6 +31,9 @@ import torch.nn.functional as F
 try:
     from vllm.model_executor.layers.fused_moe.fused_moe import (
         fused_experts as _vllm_fused_experts,
+    )
+    from vllm.model_executor.layers.fused_moe.router.fused_topk_router import (
+        fused_topk as _vllm_fused_topk,
     )
     _VLLM_AVAILABLE = True
 except ImportError:
@@ -105,18 +108,25 @@ class FusedMoeBenchFixture(FixtureBase):
             " routed_scaling_factor, dtype",
             [
                 # ── Kimi K2: E=384, K=8, H=7168, F=2048, sigmoid+bias ──────
-                # decode (T small, latency-sensitive)
                 (1,    384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
-                (8,    384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
                 (32,   384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
-                # prefill (T large, throughput-sensitive)
                 (512,  384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
-                (2048, 384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
                 (4096, 384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
-                # ── Qwen3-MoE: E=128, K=8, softmax ─────────────────────────
-                (512,  128, 8, 2048, 1024, "softmax", False, False, 1.0, torch.bfloat16),
-                (2048, 128, 8, 2048, 1024, "softmax", False, False, 1.0, torch.bfloat16),
-                (4096, 128, 8, 2048, 1024, "softmax", False, False, 1.0, torch.bfloat16),
+                # ── DeepSeek-V3: E=256, K=8, H=7168, F=2048, sigmoid ───────
+                (1,    256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (32,   256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (512,  256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (4096, 256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                # ── Qwen3-235B-A22B: E=128, K=8, H=7168, F=2048, softmax ──
+                (1,    128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (32,   128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (512,  128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (4096, 128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                # ── Qwen3-30B-A3B: E=128, K=8, H=3072, F=1536, softmax ────
+                (1,    128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+                (32,   128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+                (512,  128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+                (4096, 128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
             ],
         )
     ]
@@ -165,17 +175,6 @@ def test_fused_moe_bench(
     bm = FusedMoeBenchmark(test)
     hidden, gating, correction_bias, w_gate_up, w_down = test.gen_inputs()
 
-    # Pre-compute routing once (shared across all implementations)
-    fk = FusedTopKOp(
-        num_tokens=num_tokens,
-        num_experts=num_experts,
-        top_k=top_k,
-        scoring_func=scoring_func,
-        renormalize=renormalize,
-        with_correction_bias=with_correction_bias,
-    )
-    topk_weights, topk_ids = fk(gating, correction_bias)
-
     # ── TileOPs nopad ─────────────────────────────────────────────────────────
     op = FusedMoe(
         num_tokens=num_tokens,
@@ -218,8 +217,18 @@ def test_fused_moe_bench(
 
     # ── vLLM baseline (optional) ──────────────────────────────────────────────
     if _VLLM_AVAILABLE:
+        gating_f32 = gating.float()
+
         def _vllm_fn(hidden, gating, correction_bias, w_gate_up, w_down):
-            out = _vllm_fused_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids)
+            # vLLM: routing + GEMM (complete flow like TileOPs)
+            tw, tids, _ = _vllm_fused_topk(
+                hidden_states=hidden,
+                gating_output=gating_f32,
+                topk=top_k,
+                renormalize=renormalize,
+                scoring_func=scoring_func,
+            )
+            out = _vllm_fused_experts(hidden, w_gate_up, w_down, tw, tids)
             if routed_scaling_factor != 1.0:
                 out = out * routed_scaling_factor
             return out
@@ -233,12 +242,17 @@ def test_fused_moe_bench(
         BenchmarkReport.record(op, locals(), result_vllm, tag="vllm")
     else:
         # torch-ref baseline: memory-efficient per-expert GEMM loop
+        fk = FusedTopKOp(num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
+                         scoring_func=scoring_func, renormalize=renormalize,
+                         with_correction_bias=with_correction_bias)
+        topk_weights, topk_ids = fk(gating, correction_bias)
+        output_buf = torch.zeros(num_tokens, hidden_size, dtype=torch.float32, device=hidden.device)
+        ids_i64 = topk_ids.to(torch.int64)
+
         def _ref_fn(hidden, gating, correction_bias, w_gate_up, w_down):
-            T, H = hidden.shape
             E = w_gate_up.shape[0]
             ffn_dim = w_gate_up.shape[1] // 2
-            output = torch.zeros(T, H, dtype=torch.float32, device=hidden.device)
-            ids_i64 = topk_ids.to(torch.int64)
+            output_buf.zero_()
             for e in range(E):
                 mask = (ids_i64 == e)
                 if not mask.any():
@@ -249,8 +263,8 @@ def test_fused_moe_bench(
                 act = F.silu(gate_up[:, :ffn_dim]) * gate_up[:, ffn_dim:]
                 down = act @ w_down[e].float().t()
                 weights = topk_weights[t_idx, k_idx].float().unsqueeze(-1)
-                output.index_add_(0, t_idx, down * weights)
-            return (output * routed_scaling_factor).to(hidden.dtype)
+                output_buf.index_add_(0, t_idx, down * weights)
+            return (output_buf * routed_scaling_factor).to(hidden.dtype)
 
         _ref_fn(hidden, gating, correction_bias, w_gate_up, w_down)  # warmup
         torch.cuda.synchronize()
