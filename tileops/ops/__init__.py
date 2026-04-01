@@ -1,5 +1,7 @@
 from .da_cumsum_fwd import DaCumsumFwdOp
+from .conv1d import Conv1dOp
 from .conv2d import Conv2dOp
+from .conv3d import Conv3dOp
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_nsa import (
@@ -12,7 +14,7 @@ from .deltanet_chunkwise import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
 from .deltanet_recurrence import DeltaNetDecodeOp
 from .dropout import DropoutOp
 from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
-from .fft import FFTC2CLUTOp, FFTC2COp
+from .fft import FFTC2COp
 from .fp8_lighting_indexer import Fp8LightingIndexerOp
 from .fp8_quant import Fp8QuantOp
 from .gated_deltanet_chunkwise import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
@@ -91,10 +93,11 @@ __all__ = [
     "AdaLayerNormZeroOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
+    "Conv1dOp",
     "Conv2dOp",
+    "Conv3dOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
     "DropoutOp",
-    "FFTC2CLUTOp",
     "FFTC2COp",
     "Fp8LightingIndexerOp",
     "Fp8QuantOp",

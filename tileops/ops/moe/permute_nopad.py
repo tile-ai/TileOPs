@@ -22,9 +22,12 @@ class MoePermuteNopadOp(Op):
     Args:
         num_tokens: Number of input tokens T.
         top_k: Number of experts selected per token K.
-        num_experts: Total number of experts E.
+        num_experts: Total number of experts E (global count).
         hidden_size: Hidden dimension H.
         dtype: Data type of hidden_states (bf16 or fp16).
+        expert_map: Optional [E_global] int32 tensor mapping global expert ids
+            to local ids (-1 = not on this rank).  When provided, only local
+            token-expert pairs are counted; non-local positions get fwd_idx = -1.
         kernel_map: Optional kernel override dict.
 
     Example:
@@ -39,6 +42,7 @@ class MoePermuteNopadOp(Op):
         num_experts: int,
         hidden_size: int,
         dtype: torch.dtype = torch.bfloat16,
+        expert_map: Optional[torch.Tensor] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
         self.num_tokens = num_tokens
@@ -49,7 +53,7 @@ class MoePermuteNopadOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["permute_nopad_kernel"](
-            num_tokens, top_k, num_experts, hidden_size, dtype
+            num_tokens, top_k, num_experts, hidden_size, dtype, expert_map
         )
 
     @property
@@ -65,13 +69,14 @@ class MoePermuteNopadOp(Op):
 
         Args:
             hidden_states: [T, H] input activations (bf16/fp16).
-            topk_ids: [T, K] int32 expert assignments.
+            topk_ids: [T, K] int32 expert assignments (global ids).
 
         Returns:
             perm_h:                    [T*K, H] tight hidden states
-            true_offsets:              [E] int32 tight start per expert
-            true_sizes:                [E] int32 true token count per expert
-            expert_first_token_offset: [E+1] int64 non-padded prefix-sum
+            true_offsets:              [E_local] int32 tight start per local expert
+            true_sizes:                [E_local] int32 true token count per local expert
+            expert_first_token_offset: [E_local+1] int64 non-padded prefix-sum
             fwd_idx:                   [T*K] int32 forward mapping: flat_idx → tight slot
+                                       (-1 for non-local pairs when expert_map is set)
         """
         return self.kernel(hidden_states, topk_ids)

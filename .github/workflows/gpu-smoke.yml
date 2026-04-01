@@ -369,6 +369,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          HASH_INPUT="$(
+            {
+              echo "python=3.11"
+              echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
+              sha256sum pyproject.toml
+            } | sha256sum | cut -c1-16
+          )"
+          VENV_PREFIX="tileops_ci_venv"
+          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
+          TRUSTED_VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          FORK_CAN_COPY_TRUSTED_VENV="false"
+
           if [[ "$IS_FORK" == "true" ]]; then
             RUNTIME_ROOT="${RUNNER_TEMP}/gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
             # Per-run isolated cache: rsync from trusted cache into temp dir.
@@ -379,7 +391,12 @@ jobs:
             PIP_CACHE_DIR="${RUNTIME_ROOT}/pip/cache"
             WHEEL_DIR="${RUNTIME_ROOT}/wheels"
             VENV_PATH="${RUNTIME_ROOT}/venv"
-            VENV_REUSED="false"
+            if [[ -x "${TRUSTED_VENV_PATH}/bin/python" ]]; then
+              FORK_CAN_COPY_TRUSTED_VENV="true"
+              VENV_REUSED="true"
+            else
+              VENV_REUSED="false"
+            fi
             mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
             # Copy trusted compile caches into the isolated per-run dir.
@@ -413,16 +430,7 @@ jobs:
 
             mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${WHEEL_DIR}"
 
-            VENV_PREFIX="tileops_ci_venv"
-            HASH_INPUT="$(
-              {
-                echo "python=3.11"
-                echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-                sha256sum pyproject.toml
-              } | sha256sum | cut -c1-16
-            )"
-            VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
-            VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+            VENV_PATH="${TRUSTED_VENV_PATH}"
             if [[ -x "${VENV_PATH}/bin/python" ]]; then
               VENV_REUSED="true"
             else
@@ -438,6 +446,8 @@ jobs:
             echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
             echo "WHEEL_DIR=${WHEEL_DIR}"
             echo "VENV_PATH=${VENV_PATH}"
+            echo "TRUSTED_VENV_PATH=${TRUSTED_VENV_PATH}"
+            echo "FORK_CAN_COPY_TRUSTED_VENV=${FORK_CAN_COPY_TRUSTED_VENV}"
             echo "VENV_REUSED=${VENV_REUSED}"
           } >> "$GITHUB_ENV"
 
@@ -490,13 +500,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$VENV_REUSED" == "true" ]]; then
-            echo "Using cached venv at ${VENV_PATH}"
+          if [[ "$IS_FORK" == "true" && "$FORK_CAN_COPY_TRUSTED_VENV" == "true" ]]; then
+            echo "Copying trusted venv from ${TRUSTED_VENV_PATH} to ${VENV_PATH}"
+            rm -rf "${VENV_PATH}"
+            if command -v rsync >/dev/null 2>&1; then
+              rsync -a --delete "${TRUSTED_VENV_PATH}/" "${VENV_PATH}/"
+            else
+              mkdir -p "${VENV_PATH}"
+              cp -a "${TRUSTED_VENV_PATH}/." "${VENV_PATH}/"
+            fi
+            # Validate the copied venv before continuing. A byte-for-byte copy can
+            # still be sensitive to absolute paths embedded by venv tooling.
+            # shellcheck source=/dev/null
+            source "${VENV_PATH}/bin/activate"
+            python --version
+            python -m pip --version
+            python -c "import tileops, torch; print('Copied fork venv import check ok')"
             exit 0
           fi
 
-          if [[ "$IS_FORK" == "true" ]]; then
-            rm -rf "${VENV_PATH}"
+          if [[ "$VENV_REUSED" == "true" ]]; then
+            echo "Using cached venv at ${VENV_PATH}"
+            exit 0
           fi
 
           echo "Creating fresh venv at ${VENV_PATH}"

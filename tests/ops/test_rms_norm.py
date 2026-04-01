@@ -9,7 +9,7 @@ class RmsNormFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype, tune", [
             # Standard aligned shapes (AC required)
-            pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1024, 4096, torch.float16, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
             pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
             pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
