@@ -169,6 +169,25 @@ class TestOpSchema:
                         f"{op_name}: invalid shape_rule: {rule!r} ({exc})"
                     )
 
+    def test_workloads_include_all_required_params(self, all_ops):
+        """Every workload entry must specify all required (no-default) params."""
+        for op_name, entry in all_ops.items():
+            sig = entry["signature"]
+            params = sig.get("params", {})
+            required_params = {
+                name
+                for name, attrs in params.items()
+                if isinstance(attrs, dict) and "default" not in attrs
+            }
+            if not required_params:
+                continue
+            for i, wl in enumerate(entry["workloads"]):
+                missing = required_params - set(wl.keys())
+                assert not missing, (
+                    f"{op_name}: workload[{i}] missing required param(s): "
+                    f"{missing}"
+                )
+
 
 class TestSourcePaths:
     """All source paths point to existing files."""

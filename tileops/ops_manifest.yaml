@@ -875,11 +875,11 @@ ops:
 
     workloads:
       # Llama-3.1-8B (H=32, H_kv=8, D=128), short seq
-      - {total_q: 2048, total_k: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-3.1-8b-short-w256"}
-      - {total_q: 8192, total_k: 8192, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-3.1-8b-long-w1024"}
+      - {total_q: 2048, total_k: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-3.1-8b-short-w256"}
+      - {total_q: 8192, total_k: 8192, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-3.1-8b-long-w1024"}
       # Llama-3.1-70B (H=64, H_kv=8, D=128)
-      - {total_q: 2048, total_k: 2048, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short-w256"}
-      - {total_q: 8192, total_k: 8192, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long-w1024"}
+      - {total_q: 2048, total_k: 2048, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short-w256"}
+      - {total_q: 8192, total_k: 8192, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long-w1024"}
 
     roofline:
       func: "tileops.perf.formulas.gqa_sliding_window_varlen_fwd_roofline"
@@ -917,13 +917,13 @@ ops:
 
     workloads:
       # DeepSeek-V2 (H=128, H_kv=1, D=128, pe_dim=64), short KV
-      - {q_shape: [32, 128, 128], q_pe_shape: [32, 128, 64], kv_shape: [32, 4096, 1, 128], k_pe_shape: [32, 4096, 1, 64], dtypes: [float16, bfloat16], label: "deepseek-v2-4k"}
+      - {q_shape: [32, 128, 128], q_pe_shape: [32, 128, 64], kv_shape: [32, 4096, 1, 128], k_pe_shape: [32, 4096, 1, 64], pe_dim: 64, dtypes: [float16, bfloat16], label: "deepseek-v2-4k"}
       # DeepSeek-V2, long KV
-      - {q_shape: [8, 128, 128], q_pe_shape: [8, 128, 64], kv_shape: [8, 32768, 1, 128], k_pe_shape: [8, 32768, 1, 64], dtypes: [float16, bfloat16], label: "deepseek-v2-32k"}
+      - {q_shape: [8, 128, 128], q_pe_shape: [8, 128, 64], kv_shape: [8, 32768, 1, 128], k_pe_shape: [8, 32768, 1, 64], pe_dim: 64, dtypes: [float16, bfloat16], label: "deepseek-v2-32k"}
       # DeepSeek-V3 (H=128, H_kv=1, D=128, pe_dim=64), short KV
-      - {q_shape: [16, 128, 128], q_pe_shape: [16, 128, 64], kv_shape: [16, 4096, 1, 128], k_pe_shape: [16, 4096, 1, 64], dtypes: [bfloat16], label: "deepseek-v3-4k"}
+      - {q_shape: [16, 128, 128], q_pe_shape: [16, 128, 64], kv_shape: [16, 4096, 1, 128], k_pe_shape: [16, 4096, 1, 64], pe_dim: 64, dtypes: [bfloat16], label: "deepseek-v3-4k"}
       # DeepSeek-V3, long KV
-      - {q_shape: [4, 128, 128], q_pe_shape: [4, 128, 64], kv_shape: [4, 32768, 1, 128], k_pe_shape: [4, 32768, 1, 64], dtypes: [bfloat16], label: "deepseek-v3-32k"}
+      - {q_shape: [4, 128, 128], q_pe_shape: [4, 128, 64], kv_shape: [4, 32768, 1, 128], k_pe_shape: [4, 32768, 1, 64], pe_dim: 64, dtypes: [bfloat16], label: "deepseek-v3-32k"}
 
     roofline:
       func: "tileops.perf.formulas.deepseek_mla_decode_roofline"
@@ -951,7 +951,7 @@ ops:
         stride_kv: {type: int}
         q_start_index_s: {type: int}
         is_causal: {type: bool, default: true}
-        sm_scale: {type: float}
+        sm_scale: {type: float, default: null}
       shape_rules:
         - "q.shape == (B, S, H, D + dim_tail)"
         - "kv.shape == (B, S_kv, H_kv, D + dim_tail)"
