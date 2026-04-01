@@ -639,10 +639,10 @@ ops:
         o: {dtype: "same_as(q)"}
       params: {}
       shape_rules:
-        - "q.shape == (B, 1, H, D)"
+        - "q.shape == (B, S_q, H, D)"
         - "k.shape == (B, N_kv, H, D)"
         - "v.shape == (B, N_kv, H, D)"
-        - "o.shape == (B, 1, H, D)"
+        - "o.shape == (B, S_q, H, D)"
 
     workloads:
       # Llama-3.1-8B (H=32, D=128), short KV
