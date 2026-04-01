@@ -210,8 +210,8 @@ jobs:
       - name: Install PyYAML
         run: pip install pyyaml
 
-      - name: Validate ops_manifest.yaml (L0,L2,L3,L4 — L1 needs full deps)
-        run: python scripts/validate_manifest.py --levels L0,L2,L3,L4
+      - name: Validate ops_manifest.yaml (signature needs full deps)
+        run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench
 
   actionlint:
     needs: [validate-commits, validate-pr-title, ci-gate]

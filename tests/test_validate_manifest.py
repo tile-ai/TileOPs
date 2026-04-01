@@ -1,6 +1,6 @@
 """Tests for scripts/validate_manifest.py.
 
-Verifies that the manifest validator correctly implements L0-L4 checks.
+Verifies that the manifest validator correctly implements schema/signature/shape/dtype/bench checks.
 Uses synthetic manifest data to test individual check functions,
 plus an integration test against the real ops_manifest.yaml.
 """
@@ -34,11 +34,11 @@ def validator():
 
 
 # ---------------------------------------------------------------------------
-# L0: YAML schema validation
+# schema: YAML structure validation
 # ---------------------------------------------------------------------------
 
-class TestL0Schema:
-    """L0 checks that required fields exist and have correct types."""
+class TestSchema:
+    """schema checks that required fields exist and have correct types."""
 
     def test_valid_entry_passes(self, validator):
         entry = {
@@ -59,7 +59,7 @@ class TestL0Schema:
             },
         }
         errors = validator.check_l0("test_op", entry)
-        assert errors == [], f"Unexpected L0 errors: {errors}"
+        assert errors == [], f"Unexpected schema errors: {errors}"
 
     def test_missing_family_fails(self, validator):
         entry = {
@@ -111,7 +111,7 @@ class TestL0Schema:
         assert any("roofline" in e.lower() or "bytes" in e.lower() for e in errors)
 
     def test_params_as_list_fails(self, validator):
-        """signature.params as a YAML list must produce L0 error, not crash."""
+        """signature.params as a YAML list must produce schema error, not crash."""
         entry = {
             "family": "norm",
             "signature": {
@@ -128,8 +128,8 @@ class TestL0Schema:
             },
         }
         errors = validator.check_l0("test_op", entry)
-        assert any("params" in e and "L0" in e for e in errors), (
-            f"Expected L0 error about params being non-dict, got: {errors}"
+        assert any("params" in e and "schema" in e for e in errors), (
+            f"Expected schema error about params being non-dict, got: {errors}"
         )
 
     def test_tensor_missing_dtype_fails(self, validator):
@@ -152,11 +152,11 @@ class TestL0Schema:
 
 
 # ---------------------------------------------------------------------------
-# L1: Signature consistency
+# signature: Op.forward() consistency
 # ---------------------------------------------------------------------------
 
-class TestL1Signature:
-    """L1 checks that Op.forward() params match manifest inputs."""
+class TestSignature:
+    """signature checks that Op.forward() params match manifest inputs."""
 
     def test_matching_signature_passes(self, validator):
         manifest_inputs = {"x": {"dtype": "float16"}, "weight": {"dtype": "same_as(x)"}}
@@ -186,14 +186,14 @@ class TestL1Signature:
         assert any("extra" in e for e in errors)
 
     def test_malformed_params_does_not_crash(self, validator):
-        """L1 must return errors, not crash, when params is not a dict."""
+        """signature check must return errors, not crash, when params is not a dict."""
         manifest_inputs = {"x": {"dtype": "float16"}}
         manifest_params = ["training"]  # list, not dict
         forward_params = ["x", "training"]
         errors = validator.check_l1_signature(
             "test_op", manifest_inputs, manifest_params, forward_params,
         )
-        assert any("L1" in e and "params" in e.lower() for e in errors)
+        assert any("signature" in e and "params" in e.lower() for e in errors)
 
     def test_params_in_forward_accepted(self, validator):
         """Manifest params that appear as forward() args are valid."""
@@ -209,7 +209,7 @@ class TestL1Signature:
         assert errors == []
 
     def test_import_error_skips_l1_with_warning(self, validator, monkeypatch):
-        """L1 gracefully skips when Op module cannot be imported (missing deps)."""
+        """signature check gracefully skips when Op module cannot be imported (missing deps)."""
         # Simulate _resolve_op_class returning an import error
         monkeypatch.setattr(
             validator,
@@ -232,7 +232,7 @@ class TestL1Signature:
         assert "missing dependencies" in warnings[0]
 
     def test_resolve_failure_without_import_error_is_error(self, validator, monkeypatch):
-        """L1 reports an error when Op class is not found (not an import issue)."""
+        """signature check reports an error when Op class is not found (not an import issue)."""
         monkeypatch.setattr(
             validator,
             "_resolve_op_class",
@@ -254,11 +254,11 @@ class TestL1Signature:
 
 
 # ---------------------------------------------------------------------------
-# L3: Dtype conformance
+# dtype: dtype string conformance
 # ---------------------------------------------------------------------------
 
-class TestL3Dtype:
-    """L3 checks that dtype strings are valid torch dtype names."""
+class TestDtype:
+    """dtype checks that dtype strings are valid torch dtype names."""
 
     def test_valid_signature_dtypes_pass(self, validator):
         entry = {
@@ -272,7 +272,7 @@ class TestL3Dtype:
         assert errors == []
 
     def test_invalid_workload_dtype_fails(self, validator):
-        """Workloads with unrecognized dtype must produce L3 error."""
+        """Workloads with unrecognized dtype must produce dtype error."""
         entry = {
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
@@ -281,8 +281,8 @@ class TestL3Dtype:
             "workloads": [{"dtypes": ["not_a_dtype"]}],
         }
         errors = validator.check_l3("test_op", entry)
-        assert any("not_a_dtype" in e and "L3" in e for e in errors), (
-            f"Expected L3 error for invalid workload dtype, got: {errors}"
+        assert any("not_a_dtype" in e and "dtype" in e for e in errors), (
+            f"Expected dtype error for invalid workload dtype, got: {errors}"
         )
 
     def test_multiple_invalid_workload_dtypes(self, validator):
@@ -315,11 +315,11 @@ class TestL3Dtype:
 
 
 # ---------------------------------------------------------------------------
-# L4: Benchmark file uses manifest workloads
+# bench: benchmark uses manifest workloads
 # ---------------------------------------------------------------------------
 
-class TestL4Benchmark:
-    """L4 checks that bench files import from tileops.manifest."""
+class TestBench:
+    """bench checks that bench files import from tileops.manifest."""
 
     def test_bench_with_load_workloads_passes(self, validator, tmp_path):
         bench_file = tmp_path / "bench_test.py"
@@ -332,7 +332,7 @@ class TestL4Benchmark:
         assert errors == [] and warnings == []
 
     def test_bench_with_both_patterns_passes(self, validator, tmp_path):
-        """Bench using both load_workloads and eval_roofline passes L4."""
+        """Bench using both load_workloads and eval_roofline passes bench."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(
             "from tileops.manifest import load_workloads, eval_roofline\n"
@@ -343,7 +343,7 @@ class TestL4Benchmark:
         assert errors == [] and warnings == []
 
     def test_bench_with_load_workloads_only_warns(self, validator, tmp_path):
-        """Bench using load_workloads but not eval_roofline warns on L4."""
+        """Bench using load_workloads but not eval_roofline warns on bench."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(
             "from tileops.manifest import load_workloads\n"
@@ -352,7 +352,7 @@ class TestL4Benchmark:
         errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
         assert errors == []
         assert any("eval_roofline" in w for w in warnings), (
-            f"Expected L4 warning about missing eval_roofline, got: {warnings}"
+            f"Expected bench warning about missing eval_roofline, got: {warnings}"
         )
 
     def test_bench_without_load_workloads_warns(self, validator, tmp_path):
@@ -367,7 +367,7 @@ class TestL4Benchmark:
         assert any("load_workloads" in w for w in warnings)
 
     def test_comments_only_do_not_satisfy_l4(self, validator, tmp_path):
-        """Substring in comments must NOT pass L4 (AST-based check)."""
+        """Substring in comments must NOT pass bench (AST-based check)."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
             # load_workloads
@@ -381,7 +381,7 @@ class TestL4Benchmark:
         assert any("eval_roofline" in w for w in warnings)
 
     def test_import_without_call_warns_l4(self, validator, tmp_path):
-        """Importing but never calling load_workloads/eval_roofline warns on L4."""
+        """Importing but never calling load_workloads/eval_roofline warns on bench."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
             from tileops.manifest import load_workloads, eval_roofline
@@ -394,7 +394,7 @@ class TestL4Benchmark:
         )
 
     def test_call_without_import_warns_l4(self, validator, tmp_path):
-        """Calling load_workloads without importing it warns on L4."""
+        """Calling load_workloads without importing it warns on bench."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
             workloads = load_workloads('test_op')
@@ -407,7 +407,7 @@ class TestL4Benchmark:
         )
 
     def test_attribute_style_only_warns_l4(self, validator, tmp_path):
-        """manifest.load_workloads() without bare call warns on L4.
+        """manifest.load_workloads() without bare call warns on bench.
 
         The import check requires ``from tileops.manifest import name``, and
         usage check requires a bare ``name(...)`` call. Attribute-style calls
@@ -445,7 +445,7 @@ class TestL4Benchmark:
         )
 
     def test_import_from_wrong_module_warns_l4(self, validator, tmp_path):
-        """Importing load_workloads from a non-tileops.manifest module warns on L4."""
+        """Importing load_workloads from a non-tileops.manifest module warns on bench."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
             from fake_module import load_workloads, eval_roofline
@@ -462,7 +462,7 @@ class TestL4Benchmark:
         )
 
     def test_syntax_error_in_bench_file_fails_l4(self, validator, tmp_path):
-        """A bench file with syntax errors produces an L4 error."""
+        """A bench file with syntax errors produces an bench error."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text("def broken(\n")
         errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
@@ -480,19 +480,19 @@ class TestLevelsFlag:
         assert validator._parse_levels(["script.py"]) is None
 
     def test_parse_levels_with_flag(self, validator):
-        result = validator._parse_levels(["script.py", "--levels", "L0,L2,L3"])
-        assert result == frozenset({"L0", "L2", "L3"})
+        result = validator._parse_levels(["script.py", "--levels", "schema,shape,dtype"])
+        assert result == frozenset({"schema", "shape", "dtype"})
 
     def test_parse_levels_with_equals(self, validator):
-        result = validator._parse_levels(["script.py", "--levels=L0,L4"])
-        assert result == frozenset({"L0", "L4"})
+        result = validator._parse_levels(["script.py", "--levels=schema,bench"])
+        assert result == frozenset({"schema", "bench"})
 
     def test_parse_levels_case_insensitive(self, validator):
-        result = validator._parse_levels(["script.py", "--levels", "l0,l2"])
-        assert result == frozenset({"L0", "L2"})
+        result = validator._parse_levels(["script.py", "--levels", "Schema,SHAPE"])
+        assert result == frozenset({"schema", "shape"})
 
     def test_validate_manifest_skips_l1_when_not_in_levels(self, validator, tmp_path):
-        """When levels excludes L1, no L1 checks run and no warnings appear."""
+        """When levels excludes L1, no signature checks run and no warnings appear."""
         # Create a minimal manifest that would trigger L1 import-error warnings
         manifest = tmp_path / "manifest.yaml"
         manifest.write_text(textwrap.dedent("""\
@@ -519,15 +519,15 @@ class TestLevelsFlag:
         errors, warnings = validator.validate_manifest(
             manifest_path=manifest,
             repo_root=tmp_path,
-            levels=frozenset({"L0", "L2", "L3"}),
+            levels=frozenset({"schema", "shape", "dtype"}),
         )
         # No L1 warnings should be emitted
-        assert not any("[L1]" in w for w in warnings), (
+        assert not any("[signature]" in w for w in warnings), (
             f"L1 should not run when excluded from levels, got warnings: {warnings}"
         )
 
     def test_validate_manifest_skips_l4_when_not_in_levels(self, validator, tmp_path):
-        """When levels excludes L4, missing bench file does not cause L4 error."""
+        """When levels excludes L4, missing bench file does not cause bench error."""
         manifest = tmp_path / "manifest.yaml"
         # Create op source file so it is not spec-only
         op_dir = tmp_path / "ops"
@@ -555,9 +555,9 @@ class TestLevelsFlag:
         errors, warnings = validator.validate_manifest(
             manifest_path=manifest,
             repo_root=tmp_path,
-            levels=frozenset({"L0"}),
+            levels=frozenset({"schema"}),
         )
-        assert not any("[L4]" in e for e in errors), (
+        assert not any("[bench]" in e for e in errors), (
             f"L4 should not run when excluded, got: {errors}"
         )
 
@@ -583,9 +583,9 @@ class TestIntegration:
         )
 
     def test_validator_with_levels_flag_passes(self):
-        """Preflight-style invocation with --levels L0,L2,L3,L4 passes."""
+        """Preflight-style invocation with --levels schema,shape,dtype,bench passes."""
         result = subprocess.run(
-            [sys.executable, str(VALIDATOR_SCRIPT), "--levels", "L0,L2,L3,L4"],
+            [sys.executable, str(VALIDATOR_SCRIPT), "--levels", "schema,shape,dtype,bench"],
             capture_output=True,
             text=True,
             cwd=str(REPO_ROOT),

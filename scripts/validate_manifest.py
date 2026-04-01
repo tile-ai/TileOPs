@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
-"""Validate ops_manifest.yaml with L0-L4 checks.
+"""Validate ops_manifest.yaml.
 
-Levels:
-  L0 — YAML schema: required fields, types, structure
-  L1 — Signature consistency: Op.forward() params match manifest inputs+params
-  L2 — Shape rules: shape_rules are parseable Python expressions
-  L3 — Dtype conformance: dtype strings are valid torch dtype names or references
-  L4 — Benchmark file: bench file imports load_workloads from tileops.manifest
+Checks:
+  schema    — YAML structure: required fields, types, nesting
+  signature — Op.forward() params match manifest inputs+params
+  shape     — shape_rules are parseable Python expressions
+  dtype     — dtype strings are valid torch dtype names or references
+  bench     — benchmark file imports load_workloads/eval_roofline from manifest
 
-Spec-only ops (source files don't exist) get L0 only.
-Implemented ops get all checks.
+Spec-only ops get schema only. Implemented ops get all checks.
 
 Usage:
-    python scripts/validate_manifest.py [--verbose] [--levels L0,L2,L3,L4]
+    python scripts/validate_manifest.py [--verbose] [--levels schema,shape,dtype,bench]
 
 Exit code 0 = all checks pass; 1 = failures found.
 
-The --levels flag selects which validation levels to run. When omitted, all
-levels (L0-L4) are enabled. This allows lightweight CI environments to
-explicitly exclude levels that require heavy dependencies (e.g. L1 needs
-the full tileops runtime to import Op modules).
+The --levels flag selects which checks to run. When omitted, all are enabled.
+This allows lightweight CI environments to exclude checks that require heavy
+dependencies (e.g. signature needs the full tileops runtime to import Op modules).
 """
 
 from __future__ import annotations
@@ -55,7 +53,7 @@ _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
 
 # ---------------------------------------------------------------------------
-# L0: YAML schema validation
+# schema: YAML structure validation
 # ---------------------------------------------------------------------------
 
 def check_l0(op_name: str, entry: dict) -> list[str]:
@@ -65,14 +63,14 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
     # Top-level required fields
     missing_top = _REQUIRED_TOP - set(entry.keys())
     if missing_top:
-        errors.append(f"[L0] {op_name}: missing top-level fields: {missing_top}")
+        errors.append(f"[schema] {op_name}: missing top-level fields: {missing_top}")
 
     # Signature structure
     sig = entry.get("signature")
     if isinstance(sig, dict):
         missing_sig = _REQUIRED_SIGNATURE - set(sig.keys())
         if missing_sig:
-            errors.append(f"[L0] {op_name}: signature missing: {missing_sig}")
+            errors.append(f"[schema] {op_name}: signature missing: {missing_sig}")
 
         # Check inputs/outputs are dicts with dtype
         for direction in ("inputs", "outputs"):
@@ -80,53 +78,53 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
             if not isinstance(tensors, dict):
                 if direction in sig:
                     errors.append(
-                        f"[L0] {op_name}: signature.{direction} must be a dict"
+                        f"[schema] {op_name}: signature.{direction} must be a dict"
                     )
                 continue
             for tname, attrs in tensors.items():
                 if not isinstance(attrs, dict):
                     errors.append(
-                        f"[L0] {op_name}: {direction}.{tname} must be a dict"
+                        f"[schema] {op_name}: {direction}.{tname} must be a dict"
                     )
                     continue
                 if "dtype" not in attrs:
                     errors.append(
-                        f"[L0] {op_name}: {direction}.{tname} missing 'dtype'"
+                        f"[schema] {op_name}: {direction}.{tname} missing 'dtype'"
                     )
 
         # Params must be a mapping if present
         if "params" in sig and not isinstance(sig["params"], dict):
             errors.append(
-                f"[L0] {op_name}: signature.params must be a mapping"
+                f"[schema] {op_name}: signature.params must be a mapping"
             )
 
         # shape_rules must be list of strings if present
         if "shape_rules" in sig:
             rules = sig["shape_rules"]
             if not isinstance(rules, list):
-                errors.append(f"[L0] {op_name}: shape_rules must be a list")
+                errors.append(f"[schema] {op_name}: shape_rules must be a list")
             else:
                 for i, rule in enumerate(rules):
                     if not isinstance(rule, str):
                         errors.append(
-                            f"[L0] {op_name}: shape_rules[{i}] must be a string"
+                            f"[schema] {op_name}: shape_rules[{i}] must be a string"
                         )
     elif "signature" in entry:
-        errors.append(f"[L0] {op_name}: signature must be a mapping")
+        errors.append(f"[schema] {op_name}: signature must be a mapping")
 
     # Workloads
     workloads = entry.get("workloads")
     if isinstance(workloads, list):
         for i, w in enumerate(workloads):
             if not isinstance(w, dict):
-                errors.append(f"[L0] {op_name}: workloads[{i}] must be a dict")
+                errors.append(f"[schema] {op_name}: workloads[{i}] must be a dict")
                 continue
             if "dtypes" not in w:
                 errors.append(
-                    f"[L0] {op_name}: workloads[{i}] missing 'dtypes'"
+                    f"[schema] {op_name}: workloads[{i}] missing 'dtypes'"
                 )
     elif "workloads" in entry:
-        errors.append(f"[L0] {op_name}: workloads must be a list")
+        errors.append(f"[schema] {op_name}: workloads must be a list")
 
     # Roofline
     roofline = entry.get("roofline")
@@ -135,10 +133,10 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
         has_func = "func" in roofline
         if not has_inline and not has_func:
             errors.append(
-                f"[L0] {op_name}: roofline must have (flops + bytes) or func"
+                f"[schema] {op_name}: roofline must have (flops + bytes) or func"
             )
     elif "roofline" in entry:
-        errors.append(f"[L0] {op_name}: roofline must be a mapping")
+        errors.append(f"[schema] {op_name}: roofline must be a mapping")
 
     # Source
     source = entry.get("source")
@@ -146,16 +144,16 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
         missing_src = _REQUIRED_SOURCE - set(source.keys())
         if missing_src:
             errors.append(
-                f"[L0] {op_name}: source missing fields: {missing_src}"
+                f"[schema] {op_name}: source missing fields: {missing_src}"
             )
     elif "source" in entry:
-        errors.append(f"[L0] {op_name}: source must be a mapping")
+        errors.append(f"[schema] {op_name}: source must be a mapping")
 
     return errors
 
 
 # ---------------------------------------------------------------------------
-# L1: Signature consistency (Op.forward() vs manifest)
+# signature: Op.forward() vs manifest consistency
 # ---------------------------------------------------------------------------
 
 def check_l1_signature(
@@ -177,10 +175,10 @@ def check_l1_signature(
     """
     errors: list[str] = []
 
-    # Guard: manifest_params must be a dict (L0 should catch this, but be safe)
+    # Guard: manifest_params must be a dict (schema should catch this, but be safe)
     if not isinstance(manifest_params, dict):
         errors.append(
-            f"[L1] {op_name}: signature.params is not a mapping, "
+            f"[signature] {op_name}: signature.params is not a mapping, "
             f"cannot validate forward() consistency"
         )
         return errors
@@ -195,12 +193,12 @@ def check_l1_signature(
     missing_inputs = set(manifest_inputs.keys()) - actual
     if missing_inputs:
         errors.append(
-            f"[L1] {op_name}: manifest inputs not in forward(): {missing_inputs}"
+            f"[signature] {op_name}: manifest inputs not in forward(): {missing_inputs}"
         )
 
     if extra_in_forward:
         errors.append(
-            f"[L1] {op_name}: forward() has params not in manifest: {extra_in_forward}"
+            f"[signature] {op_name}: forward() has params not in manifest: {extra_in_forward}"
         )
 
     return errors
@@ -285,12 +283,12 @@ def _get_forward_params(cls) -> list[str] | None:
 def check_l1(
     op_name: str, entry: dict, *, warnings: list[str] | None = None,
 ) -> list[str]:
-    """Full L1 check: resolve Op class and compare forward() to manifest.
+    """Signature check: resolve Op class and compare forward() to manifest.
 
     If the Op module cannot be imported (e.g. missing runtime dependencies),
-    L1 is skipped with a warning instead of failing. This allows the
-    validator to run in lightweight CI environments (PyYAML-only) where
-    L0/L2/L3/L4 still execute, while L1 runs when full deps are available.
+    the signature check is skipped with a warning instead of failing. This
+    allows the validator to run in lightweight CI environments (PyYAML-only)
+    where other checks still execute.
 
     Args:
         op_name: Manifest op name.
@@ -308,9 +306,9 @@ def check_l1(
     result = _resolve_op_class(op_file, op_name)
 
     if result.import_error:
-        # Missing dependencies — skip L1 gracefully
+        # Missing dependencies — skip signature check gracefully
         msg = (
-            f"[L1] {op_name}: skipped — could not import {op_file} "
+            f"[signature] {op_name}: skipped — could not import {op_file} "
             f"(missing dependencies)"
         )
         if warnings is not None:
@@ -318,13 +316,13 @@ def check_l1(
         return errors
 
     if result.cls is None:
-        errors.append(f"[L1] {op_name}: could not resolve Op class from {op_file}")
+        errors.append(f"[signature] {op_name}: could not resolve Op class from {op_file}")
         return errors
 
     forward_params = _get_forward_params(result.cls)
     if forward_params is None:
         errors.append(
-            f"[L1] {op_name}: could not inspect forward() on {result.cls.__name__}"
+            f"[signature] {op_name}: could not inspect forward() on {result.cls.__name__}"
         )
         return errors
 
@@ -335,7 +333,7 @@ def check_l1(
 
 
 # ---------------------------------------------------------------------------
-# L2: Shape rules evaluation
+# shape: shape_rules syntax validation
 # ---------------------------------------------------------------------------
 
 def check_l2(op_name: str, entry: dict) -> list[str]:
@@ -349,13 +347,13 @@ def check_l2(op_name: str, entry: dict) -> list[str]:
             ast.parse(rule, mode="eval")
         except SyntaxError as exc:
             errors.append(
-                f"[L2] {op_name}: shape_rules[{i}] invalid syntax: {rule!r} ({exc})"
+                f"[shape] {op_name}: shape_rules[{i}] invalid syntax: {rule!r} ({exc})"
             )
     return errors
 
 
 # ---------------------------------------------------------------------------
-# L3: Dtype conformance
+# dtype: dtype string conformance
 # ---------------------------------------------------------------------------
 
 def _parse_dtype_expr(dtype_str: str) -> list[str]:
@@ -376,11 +374,11 @@ def _validate_dtype_token(
         ref = m.group(1)
         if ref not in tensor_names:
             return (
-                f"[L3] {op_name}: {context} dtype same_as({ref}) "
+                f"[dtype] {op_name}: {context} dtype same_as({ref}) "
                 f"references unknown tensor"
             )
     elif token not in _TORCH_DTYPES:
-        return f"[L3] {op_name}: {context} has unrecognized dtype '{token}'"
+        return f"[dtype] {op_name}: {context} has unrecognized dtype '{token}'"
     return None
 
 
@@ -418,7 +416,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
             for j, dt in enumerate(dtypes):
                 if not isinstance(dt, str):
                     errors.append(
-                        f"[L3] {op_name}: workloads[{i}].dtypes[{j}] "
+                        f"[dtype] {op_name}: workloads[{i}].dtypes[{j}] "
                         f"is not a string"
                     )
                     continue
@@ -435,7 +433,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# L4: Benchmark file uses manifest workloads
+# bench: benchmark file uses manifest workloads
 # ---------------------------------------------------------------------------
 
 def _ast_has_import_and_usage(
@@ -488,7 +486,7 @@ def check_l4_benchmark(
         full_path = repo_root / bench_path
 
     if not full_path.is_file():
-        errors.append(f"[L4] {op_name}: bench file not found: {bench_path}")
+        errors.append(f"[bench] {op_name}: bench file not found: {bench_path}")
         return errors, warnings
 
     content = full_path.read_text(encoding="utf-8")
@@ -497,7 +495,7 @@ def check_l4_benchmark(
         tree = ast.parse(content, filename=bench_path)
     except SyntaxError as exc:
         errors.append(
-            f"[L4] {op_name}: bench file {bench_path} has syntax error: {exc}"
+            f"[bench] {op_name}: bench file {bench_path} has syntax error: {exc}"
         )
         return errors, warnings
 
@@ -506,12 +504,12 @@ def check_l4_benchmark(
 
     if not usage["load_workloads"]:
         warnings.append(
-            f"[L4] {op_name}: bench file {bench_path} does not import and use "
+            f"[bench] {op_name}: bench file {bench_path} does not import and use "
             f"load_workloads from tileops.manifest"
         )
     if not usage["eval_roofline"]:
         warnings.append(
-            f"[L4] {op_name}: bench file {bench_path} does not import and use "
+            f"[bench] {op_name}: bench file {bench_path} does not import and use "
             f"eval_roofline from tileops.manifest"
         )
     return errors, warnings
@@ -530,7 +528,7 @@ def _is_spec_only(entry: dict, repo_root: Path) -> bool:
     return not (repo_root / op_file).is_file()
 
 
-ALL_LEVELS = frozenset({"L0", "L1", "L2", "L3", "L4"})
+ALL_LEVELS = frozenset({"schema", "signature", "shape", "dtype", "bench"})
 
 
 def validate_manifest(
@@ -545,12 +543,12 @@ def validate_manifest(
         manifest_path: Path to ops_manifest.yaml.
         repo_root: Repository root directory.
         verbose: If True, print progress.
-        levels: Set of level names to run (e.g. {"L0", "L2", "L3", "L4"}).
-                When None, all levels are enabled.
+        levels: Set of check names to run (e.g. {"schema", "shape", "dtype", "bench"}).
+                When None, all checks are enabled.
 
     Returns:
         A tuple of (errors, warnings). Errors are hard failures; warnings
-        are informational messages (e.g. L1 skipped due to missing deps).
+        are informational messages (e.g. signature skipped due to missing deps).
     """
     if manifest_path is None:
         manifest_path = MANIFEST_PATH
@@ -570,41 +568,40 @@ def validate_manifest(
         if verbose:
             print(f"  Checking {op_name}...")
 
-        # L0: always run if selected
-        if "L0" in levels:
-            l0_errors = check_l0(op_name, entry)
-            all_errors.extend(l0_errors)
-            # If L0 fails, skip higher levels for this op
-            if l0_errors:
+        # schema: YAML structure validation
+        if "schema" in levels:
+            schema_errors = check_l0(op_name, entry)
+            all_errors.extend(schema_errors)
+            if schema_errors:
                 continue
 
         spec_only = _is_spec_only(entry, repo_root)
         if spec_only:
             if verbose:
-                print(f"    {op_name}: spec-only, skipping L1-L4")
+                print(f"    {op_name}: spec-only, skipping signature/shape/dtype/bench")
             continue
 
-        # L1: signature consistency
-        if "L1" in levels:
+        # signature: Op.forward() consistency
+        if "signature" in levels:
             all_errors.extend(check_l1(op_name, entry, warnings=all_warnings))
 
-        # L2: shape rules
-        if "L2" in levels:
+        # shape: shape_rules syntax
+        if "shape" in levels:
             all_errors.extend(check_l2(op_name, entry))
 
-        # L3: dtype conformance
-        if "L3" in levels:
+        # dtype: dtype string conformance
+        if "dtype" in levels:
             all_errors.extend(check_l3(op_name, entry))
 
-        # L4: benchmark uses manifest workloads
-        if "L4" in levels:
+        # bench: benchmark uses manifest workloads
+        if "bench" in levels:
             bench_path = entry.get("source", {}).get("bench", "")
             if bench_path:
-                l4_errors, l4_warnings = check_l4_benchmark(
+                bench_errors, bench_warnings = check_l4_benchmark(
                     op_name, bench_path, repo_root
                 )
-                all_errors.extend(l4_errors)
-                all_warnings.extend(l4_warnings)
+                all_errors.extend(bench_errors)
+                all_warnings.extend(bench_warnings)
 
     return all_errors, all_warnings
 
@@ -614,24 +611,21 @@ def validate_manifest(
 # ---------------------------------------------------------------------------
 
 def _parse_levels(argv: list[str]) -> frozenset[str] | None:
-    """Parse ``--levels L0,L2,L3`` from argv. Returns None when flag absent."""
+    """Parse ``--levels schema,shape,dtype`` from argv. Returns None when flag absent."""
     for i, arg in enumerate(argv):
         if arg == "--levels" and i + 1 < len(argv):
-            raw = argv[i + 1].upper().split(",")
-            parsed = frozenset(t.strip() for t in raw)
-            unknown = parsed - ALL_LEVELS
-            if unknown:
-                print(f"ERROR: unknown levels: {unknown}")
-                sys.exit(2)
-            return parsed
-        if arg.startswith("--levels="):
-            raw = arg.split("=", 1)[1].upper().split(",")
-            parsed = frozenset(t.strip() for t in raw)
-            unknown = parsed - ALL_LEVELS
-            if unknown:
-                print(f"ERROR: unknown levels: {unknown}")
-                sys.exit(2)
-            return parsed
+            raw_str = argv[i + 1]
+        elif arg.startswith("--levels="):
+            raw_str = arg.split("=", 1)[1]
+        else:
+            continue
+        parsed = frozenset(t.strip().lower() for t in raw_str.split(","))
+        unknown = parsed - ALL_LEVELS
+        if unknown:
+            print(f"ERROR: unknown levels: {unknown}")
+            print(f"  Valid levels: {', '.join(sorted(ALL_LEVELS))}")
+            sys.exit(2)
+        return parsed
     return None
 
 
