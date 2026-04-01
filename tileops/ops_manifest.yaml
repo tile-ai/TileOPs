@@ -688,14 +688,22 @@ ops:
         - "o.shape == (B, S_q, H, D)"
 
     workloads:
-      # Llama-3.1-8B (H=32, D=128), page_size=1
+      # Llama-3.1-8B (H=32, D=128), short KV, page_size=1
       - {q_shape: [32, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg1"}
-      # Llama-3.1-8B, page_size=64
+      # Llama-3.1-8B, short KV, page_size=64
       - {q_shape: [32, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg64"}
-      # Llama-3.1-70B (H=64, D=128), page_size=1
+      # Llama-3.1-8B, long KV, page_size=1
+      - {q_shape: [8, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg1"}
+      # Llama-3.1-8B, long KV, page_size=64
+      - {q_shape: [8, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg64"}
+      # Llama-3.1-70B (H=64, D=128), short KV, page_size=1
       - {q_shape: [16, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg1"}
-      # Llama-3.1-70B, page_size=64
+      # Llama-3.1-70B, short KV, page_size=64
       - {q_shape: [16, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg64"}
+      # Llama-3.1-70B, long KV, page_size=1
+      - {q_shape: [4, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg1"}
+      # Llama-3.1-70B, long KV, page_size=64
+      - {q_shape: [4, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg64"}
 
     roofline:
       func: "tileops.perf.formulas.mha_decode_paged_roofline"
@@ -769,14 +777,22 @@ ops:
         - "H % H_kv == 0"
 
     workloads:
-      # Llama-3.1-8B (H=32, H_kv=8, D=128), page_size=1
+      # Llama-3.1-8B (H=32, H_kv=8, D=128), short KV, page_size=1
       - {q_shape: [32, 32, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg1"}
-      # Llama-3.1-8B, page_size=64
+      # Llama-3.1-8B, short KV, page_size=64
       - {q_shape: [32, 32, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg64"}
-      # Llama-3.1-70B (H=64, H_kv=8, D=128), page_size=1
+      # Llama-3.1-8B, long KV, page_size=1
+      - {q_shape: [8, 32, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg1"}
+      # Llama-3.1-8B, long KV, page_size=64
+      - {q_shape: [8, 32, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg64"}
+      # Llama-3.1-70B (H=64, H_kv=8, D=128), short KV, page_size=1
       - {q_shape: [16, 64, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg1"}
-      # Llama-3.1-70B, page_size=64
+      # Llama-3.1-70B, short KV, page_size=64
       - {q_shape: [16, 64, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg64"}
+      # Llama-3.1-70B, long KV, page_size=1
+      - {q_shape: [4, 64, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg1"}
+      # Llama-3.1-70B, long KV, page_size=64
+      - {q_shape: [4, 64, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg64"}
 
     roofline:
       func: "tileops.perf.formulas.gqa_decode_paged_roofline"
