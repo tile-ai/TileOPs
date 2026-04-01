@@ -12,10 +12,9 @@ concurrency:
   cancel-in-progress: false
 
 # ---------------------------------------------------------------------------
-# Shared helper: compute a venv cache hash from dependency fields only
-# (not the entire pyproject.toml) so that linting / style changes do not
-# invalidate the venv and, by extension, the tilelang kernel cache.
-# See: https://github.com/tile-ai/TileOPs/issues/540
+# All nightly jobs run on the host-based runner (label: nightly) and launch
+# work inside the local tileops-runner:latest Docker image via `docker run`.
+# Persistent caches are mounted from /data/ci-cache/ on the host.
 # ---------------------------------------------------------------------------
 
 jobs:
@@ -25,119 +24,50 @@ jobs:
   cache-warmup:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     timeout-minutes: 60
-    runs-on: [self-hosted, tile-ops, venv]
+    runs-on: [self-hosted, tile-ops, nightly]
     steps:
+      - name: Fix workspace ownership
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            --entrypoint chown \
+            tileops-runner:latest \
+            -R "$(id -u):$(id -g)" /workspace
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Configure persistent compile caches
-        run: |
-          set -euo pipefail
-
-          TILELANG_CACHE_DIR="${HOME}/.tilelang/cache"
-          TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-          TRITON_CACHE_DIR="${HOME}/.triton/cache"
-          PIP_CACHE_DIR="${HOME}/.cache/pip"
-          WHEEL_DIR="${HOME}/.wheel-cache"
-
-          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
-
-          {
-            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-            echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
-            echo "WHEEL_DIR=${WHEEL_DIR}"
-          } >> "$GITHUB_ENV"
-
-          echo "Configured compile caches:"
-          echo "  TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-          echo "  TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-          echo "  TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-          echo "  PIP_CACHE_DIR=${PIP_CACHE_DIR}"
-          echo "  WHEEL_DIR=${WHEEL_DIR}"
-        shell: bash
-
-      - name: Resolve persistent venv
-        run: |
-          set -euo pipefail
-
-          VENV_PREFIX="tileops_benchmarks_venv"
-          DEP_HASH="$(python3 scripts/dep_hash.py)"
-          HASH_INPUT="$(
-            {
-              echo "python=3.11"
-              echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              echo "${DEP_HASH}"
-            } | sha256sum | cut -c1-16
-          )"
-          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-
-          echo "Resolved venv path: ${VENV_PATH}"
-          echo "VENV_DIR=${VENV_DIR}" >> "$GITHUB_ENV"
-          echo "VENV_PATH=${VENV_PATH}" >> "$GITHUB_ENV"
-
-          if [ -x "${VENV_PATH}/bin/python" ]; then
-            echo "Reusing existing venv: ${VENV_PATH}"
-            echo "VENV_REUSED=true" >> "$GITHUB_ENV"
-          else
-            echo "No matching venv found. Will create: ${VENV_PATH}"
-            echo "VENV_REUSED=false" >> "$GITHUB_ENV"
-
-            for old_venv in "${{ runner.tool_cache }}/${VENV_PREFIX}"_*; do
-              if [ ! -d "${old_venv}" ]; then
-                continue
-              fi
-              if [ "${old_venv}" = "${VENV_PATH}" ]; then
-                continue
-              fi
-              echo "Removing stale venv: ${old_venv}"
-              rm -rf "${old_venv}"
-            done
-          fi
-        shell: bash
-
-      - name: Ensure persistent venv and install dependencies
-        run: |
-          set -euo pipefail
-          if [ "${VENV_REUSED}" = "true" ]; then
-            echo "Using cached venv at ${VENV_PATH}"
-            exit 0
-          fi
-
-          echo "Creating fresh venv at ${VENV_PATH}"
-          python -m venv "${VENV_PATH}"
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-          python -m pip install --upgrade pip setuptools wheel --no-user
-          FIND_LINKS_FLAG=""
-          if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
-            FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
-          fi
-          # shellcheck disable=SC2086
-          PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
-          pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
-        shell: bash
-
-      - name: Pre-compile all benchmark kernel variants
+      - name: Warm kernel compilation cache
         continue-on-error: true
         run: |
-          set -euo pipefail
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-          current_dir="$(pwd)"
-          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
-          echo "PYTHONPATH=$PYTHONPATH"
-          echo "Starting kernel cache warmup..."
-          python scripts/warmup_kernel_cache.py --max-workers 64 -n 8
+          docker run --rm \
+            --gpus '"device=1"' \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            -v /data/ci-cache/tilelang:/cache/tilelang \
+            -v /data/ci-cache/triton:/cache/triton \
+            -v /data/ci-cache/pip:/cache/pip \
+            -v /data/ci-cache/wheels:/cache/wheels \
+            -e TILELANG_CACHE_DIR=/cache/tilelang \
+            -e TILELANG_TMP_DIR=/cache/tilelang/tmp \
+            -e TRITON_CACHE_DIR=/cache/triton \
+            -e PIP_CACHE_DIR=/cache/pip \
+            -e WHEEL_DIR=/cache/wheels \
+            -e MAX_JOBS=64 \
+            -w /workspace \
+            --entrypoint bash \
+            tileops-runner:latest \
+            -c '
+              set -euo pipefail
+              mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
+
+              PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
+
+              export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
+              echo "Starting kernel cache warmup..."
+              python scripts/warmup_kernel_cache.py --max-workers 64 -n 16
+            '
         shell: bash
 
   # =========================================================================
@@ -147,186 +77,77 @@ jobs:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [cache-warmup]
     timeout-minutes: 120
-    runs-on: [self-hosted, tile-ops, venv]
+    runs-on: [self-hosted, tile-ops, nightly]
     steps:
+      - name: Fix workspace ownership
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            --entrypoint chown \
+            tileops-runner:latest \
+            -R "$(id -u):$(id -g)" /workspace
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Configure persistent compile caches
-        run: |
-          set -euo pipefail
-
-          TILELANG_CACHE_DIR="${HOME}/.tilelang/cache"
-          TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-          TRITON_CACHE_DIR="${HOME}/.triton/cache"
-          PIP_CACHE_DIR="${HOME}/.cache/pip"
-          WHEEL_DIR="${HOME}/.wheel-cache"
-
-          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
-
-          {
-            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-            echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
-            echo "WHEEL_DIR=${WHEEL_DIR}"
-          } >> "$GITHUB_ENV"
-
-          echo "Configured compile caches:"
-          echo "  TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-          echo "  TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-          echo "  TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-          echo "  PIP_CACHE_DIR=${PIP_CACHE_DIR}"
-          echo "  WHEEL_DIR=${WHEEL_DIR}"
-        shell: bash
-
-      - name: Validate GPU frequency
-        run: |
-          set -euo pipefail
-          TARGET_CLOCK_MHZ=1830
-          RETRIES=5
-          SLEEP_SECONDS=2
-
-          if ! command -v nvidia-smi >/dev/null 2>&1; then
-            echo "::error::nvidia-smi is not available on this runner."
-            exit 1
-          fi
-
-          echo "Detected GPUs:"
-          nvidia-smi -L
-
-          attempt=1
-          while [ "$attempt" -le "$RETRIES" ]; do
-            echo "Validation attempt ${attempt}/${RETRIES}"
-            mismatch=0
-            while IFS=',' read -r gpu_index gpu_name gpu_clock; do
-              gpu_index="$(echo "$gpu_index" | xargs)"
-              gpu_name="$(echo "$gpu_name" | xargs)"
-              gpu_clock="$(echo "$gpu_clock" | xargs)"
-              echo "GPU ${gpu_index} (${gpu_name}) clock: ${gpu_clock} MHz"
-              if [ "$gpu_clock" != "$TARGET_CLOCK_MHZ" ]; then
-                mismatch=1
-              fi
-            done < <(nvidia-smi --query-gpu=index,name,clocks.current.graphics --format=csv,noheader,nounits)
-
-            if [ "$mismatch" -eq 0 ]; then
-              echo "All GPUs locked at ${TARGET_CLOCK_MHZ} MHz."
-              break
-            fi
-
-            if [ "$attempt" -eq "$RETRIES" ]; then
-              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz on all GPUs."
-              exit 1
-            fi
-
-            sleep "$SLEEP_SECONDS"
-            attempt=$((attempt + 1))
-          done
-        shell: bash
-
-      - name: Resolve persistent venv
-        run: |
-          set -euo pipefail
-
-          VENV_PREFIX="tileops_benchmarks_venv"
-          DEP_HASH="$(python3 scripts/dep_hash.py)"
-          HASH_INPUT="$(
-            {
-              echo "python=3.11"
-              echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              echo "${DEP_HASH}"
-            } | sha256sum | cut -c1-16
-          )"
-          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-
-          echo "Resolved venv path: ${VENV_PATH}"
-          echo "VENV_DIR=${VENV_DIR}" >> "$GITHUB_ENV"
-          echo "VENV_PATH=${VENV_PATH}" >> "$GITHUB_ENV"
-
-          if [ -x "${VENV_PATH}/bin/python" ]; then
-            echo "Reusing existing venv: ${VENV_PATH}"
-            echo "VENV_REUSED=true" >> "$GITHUB_ENV"
-          else
-            echo "No matching venv found. Will create: ${VENV_PATH}"
-            echo "VENV_REUSED=false" >> "$GITHUB_ENV"
-
-            for old_venv in "${{ runner.tool_cache }}/${VENV_PREFIX}"_*; do
-              if [ ! -d "${old_venv}" ]; then
-                continue
-              fi
-              if [ "${old_venv}" = "${VENV_PATH}" ]; then
-                continue
-              fi
-              echo "Removing stale venv: ${old_venv}"
-              rm -rf "${old_venv}"
-            done
-          fi
-        shell: bash
-
-      - name: Ensure persistent venv and install dependencies
-        run: |
-          set -euo pipefail
-          if [ "${VENV_REUSED}" = "true" ]; then
-            echo "Using cached venv at ${VENV_PATH}"
-            exit 0
-          fi
-
-          echo "Creating fresh venv at ${VENV_PATH}"
-          python -m venv "${VENV_PATH}"
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-          python -m pip install --upgrade pip setuptools wheel --no-user
-          FIND_LINKS_FLAG=""
-          if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
-            FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
-          fi
-          # shellcheck disable=SC2086
-          PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
-          pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
-        shell: bash
-
       - name: Run benchmark ops
         id: benchmark_tests
         continue-on-error: true
         run: |
-          set -euo pipefail
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-          current_dir="$(pwd)"
-          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
-          echo "PYTHONPATH=$PYTHONPATH"
-          python - <<'PY'
-          import os
+          docker run --rm \
+            --gpus '"device=1"' \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            -v /data/ci-cache/tilelang:/cache/tilelang \
+            -v /data/ci-cache/triton:/cache/triton \
+            -v /data/ci-cache/pip:/cache/pip \
+            -v /data/ci-cache/wheels:/cache/wheels \
+            -e TILELANG_CACHE_DIR=/cache/tilelang \
+            -e TILELANG_TMP_DIR=/cache/tilelang/tmp \
+            -e TRITON_CACHE_DIR=/cache/triton \
+            -e PIP_CACHE_DIR=/cache/pip \
+            -e WHEEL_DIR=/cache/wheels \
+            -e MAX_JOBS=64 \
+            -w /workspace \
+            --entrypoint bash \
+            tileops-runner:latest \
+            -c '
+              set -euo pipefail
+              mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
-          print("Runtime cache env:")
-          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
-              print(f"{key}={os.environ.get(key)}")
-          PY
-          set -o pipefail
-          python -m pytest -q benchmarks/ops --junit-xml=bench_results.xml | tee tileops_benchmarks.log
-        shell: bash
+              # Validate GPU frequency
+              TARGET_CLOCK_MHZ=1830
+              RETRIES=5
+              nvidia-smi -L
+              for i in $(seq 1 $RETRIES); do
+                gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
+                echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
+                if [ "$gpu_clock" = "$TARGET_CLOCK_MHZ" ]; then break; fi
+                if [ "$i" -eq "$RETRIES" ]; then
+                  echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
+                  exit 1
+                fi
+                sleep 2
+              done
 
-      - name: Merge benchmark profile summary
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          if [ -f profile_run.log ]; then
-            {
-              echo
-              echo "===== profile_run.log summary ====="
-              cat profile_run.log
-            } >> tileops_benchmarks.log
-          else
-            echo "::warning::profile_run.log not found; benchmark may have failed partially" >> tileops_benchmarks.log
-          fi
+              PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
+
+              export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
+              echo "Runtime cache env:"
+              echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
+              echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
+              echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
+
+              set -o pipefail
+              python -m pytest -q benchmarks/ops --junit-xml=bench_results.xml | tee tileops_benchmarks.log
+
+              if [ -f profile_run.log ]; then
+                { echo; echo "===== profile_run.log summary ====="; cat profile_run.log; } >> tileops_benchmarks.log
+              else
+                echo "::warning::profile_run.log not found; benchmark may have failed partially" >> tileops_benchmarks.log
+              fi
+            '
         shell: bash
 
       - name: Upload benchmark artifacts
@@ -352,127 +173,55 @@ jobs:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [benchmark]
     timeout-minutes: 180
-    runs-on: [self-hosted, tile-ops, venv]
+    runs-on: [self-hosted, tile-ops, nightly]
     steps:
+      - name: Fix workspace ownership
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            --entrypoint chown \
+            tileops-runner:latest \
+            -R "$(id -u):$(id -g)" /workspace
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Configure persistent compile caches
-        run: |
-          set -euo pipefail
-
-          TILELANG_CACHE_DIR="${HOME}/.tilelang/cache"
-          TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-          TRITON_CACHE_DIR="${HOME}/.triton/cache"
-          PIP_CACHE_DIR="${HOME}/.cache/pip"
-          WHEEL_DIR="${HOME}/.wheel-cache"
-
-          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
-
-          {
-            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-            echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
-            echo "WHEEL_DIR=${WHEEL_DIR}"
-          } >> "$GITHUB_ENV"
-
-          echo "Configured compile caches:"
-          echo "  TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-          echo "  TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-          echo "  TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-          echo "  PIP_CACHE_DIR=${PIP_CACHE_DIR}"
-          echo "  WHEEL_DIR=${WHEEL_DIR}"
-        shell: bash
-
-      - name: Resolve persistent venv
-        run: |
-          set -euo pipefail
-
-          VENV_PREFIX="tileops_op_test_venv"
-          DEP_HASH="$(python3 scripts/dep_hash.py)"
-          HASH_INPUT="$(
-            {
-              echo "python=3.11"
-              echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              echo "${DEP_HASH}"
-            } | sha256sum | cut -c1-16
-          )"
-          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-
-          echo "Resolved venv path: ${VENV_PATH}"
-          echo "VENV_DIR=${VENV_DIR}" >> "$GITHUB_ENV"
-          echo "VENV_PATH=${VENV_PATH}" >> "$GITHUB_ENV"
-
-          if [ -x "${VENV_PATH}/bin/python" ]; then
-            echo "Reusing existing venv: ${VENV_PATH}"
-            echo "VENV_REUSED=true" >> "$GITHUB_ENV"
-          else
-            echo "No matching venv found. Will create: ${VENV_PATH}"
-            echo "VENV_REUSED=false" >> "$GITHUB_ENV"
-
-            for old_venv in "${{ runner.tool_cache }}/${VENV_PREFIX}"_*; do
-              if [ ! -d "${old_venv}" ]; then
-                continue
-              fi
-              if [ "${old_venv}" = "${VENV_PATH}" ]; then
-                continue
-              fi
-              echo "Removing stale venv: ${old_venv}"
-              rm -rf "${old_venv}"
-            done
-          fi
-        shell: bash
-
-      - name: Ensure persistent venv and install dependencies
-        run: |
-          set -euo pipefail
-          if [ "${VENV_REUSED}" = "true" ]; then
-            echo "Using cached venv at ${VENV_PATH}"
-            exit 0
-          fi
-
-          echo "Creating fresh venv at ${VENV_PATH}"
-          python -m venv "${VENV_PATH}"
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-          python -m pip install --upgrade pip setuptools wheel --no-user
-          FIND_LINKS_FLAG=""
-          if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
-            FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
-          fi
-          # shellcheck disable=SC2086
-          PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
-          pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
-        shell: bash
-
       - name: Run full op tests
         id: op_tests
         continue-on-error: true
         run: |
-          set -euo pipefail
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-          current_dir="$(pwd)"
-          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
-          echo "PYTHONPATH=$PYTHONPATH"
-          python - <<'PY'
-          import os
+          docker run --rm \
+            --gpus '"device=1"' \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            -v /data/ci-cache/tilelang:/cache/tilelang \
+            -v /data/ci-cache/triton:/cache/triton \
+            -v /data/ci-cache/pip:/cache/pip \
+            -v /data/ci-cache/wheels:/cache/wheels \
+            -e TILELANG_CACHE_DIR=/cache/tilelang \
+            -e TILELANG_TMP_DIR=/cache/tilelang/tmp \
+            -e TRITON_CACHE_DIR=/cache/triton \
+            -e PIP_CACHE_DIR=/cache/pip \
+            -e WHEEL_DIR=/cache/wheels \
+            -w /workspace \
+            --entrypoint bash \
+            tileops-runner:latest \
+            -c '
+              set -euo pipefail
+              mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
-          print("Runtime cache env:")
-          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
-              print(f"{key}={os.environ.get(key)}")
-          PY
-          set -o pipefail
-          python -m pytest tests/ -v --tb=short --junit-xml=test_results.xml | tee tileops_op_test.log
+              PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
+
+              export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
+              echo "Runtime cache env:"
+              echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
+              echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
+              echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
+
+              set -o pipefail
+              python -m pytest tests/ -v --tb=short --junit-xml=test_results.xml | tee tileops_op_test.log
+            '
         shell: bash
 
       - name: Download benchmark artifacts
@@ -493,24 +242,29 @@ jobs:
       - name: Generate nightly report
         if: ${{ always() }}
         run: |
-          set -euo pipefail
-          source "${VENV_PATH}/bin/activate"
-          current_dir="$(pwd)"
-          export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            -w /workspace \
+            --entrypoint bash \
+            tileops-runner:latest \
+            -c '
+              set -euo pipefail
+              pip install --no-deps -e . 2>/dev/null
+              export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
 
-          HISTORY_FLAG=""
-          if [ -f .perf_history/perf_history.json ]; then
-            HISTORY_FLAG="--history .perf_history/perf_history.json"
-          fi
+              HISTORY_FLAG=""
+              if [ -f .perf_history/perf_history.json ]; then
+                HISTORY_FLAG="--history .perf_history/perf_history.json"
+              fi
 
-          # shellcheck disable=SC2086
-          python scripts/nightly_report.py \
-            --test-xml test_results.xml \
-            --bench-xml bench_results.xml \
-            ${HISTORY_FLAG} \
-            --output nightly_report.md \
-            --history-out perf_history.json \
-            || echo "::warning::nightly_report.py failed"
+              python scripts/nightly_report.py \
+                --test-xml test_results.xml \
+                --bench-xml bench_results.xml \
+                ${HISTORY_FLAG} \
+                --output nightly_report.md \
+                --history-out perf_history.json \
+                || echo "::warning::nightly_report.py failed"
+            '
         shell: bash
 
       - name: Post nightly report to step summary
@@ -552,183 +306,75 @@ jobs:
     needs: [op_test]
     permissions:
       contents: write
-    runs-on: [self-hosted, tile-ops, venv]
+    runs-on: [self-hosted, tile-ops, nightly]
     steps:
+      - name: Fix workspace ownership
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            --entrypoint chown \
+            tileops-runner:latest \
+            -R "$(id -u):$(id -g)" /workspace
+
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Configure persistent compile caches
+      - name: Build and test wheel package
         run: |
-          set -euo pipefail
+          docker run --rm \
+            --gpus '"device=1"' \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            -v /data/ci-cache/tilelang:/cache/tilelang \
+            -v /data/ci-cache/triton:/cache/triton \
+            -e TILELANG_CACHE_DIR=/cache/tilelang \
+            -e TILELANG_TMP_DIR=/cache/tilelang/tmp \
+            -e TRITON_CACHE_DIR=/cache/triton \
+            -w /workspace \
+            --entrypoint bash \
+            tileops-runner:latest \
+            -c '
+              set -euo pipefail
+              mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
 
-          TILELANG_CACHE_DIR="${HOME}/.tilelang/cache"
-          TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-          TRITON_CACHE_DIR="${HOME}/.triton/cache"
+              # Validate GPU frequency
+              TARGET_CLOCK_MHZ=1830
+              RETRIES=5
+              nvidia-smi -L
+              for i in $(seq 1 $RETRIES); do
+                gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
+                echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
+                if [ "$gpu_clock" = "$TARGET_CLOCK_MHZ" ]; then break; fi
+                if [ "$i" -eq "$RETRIES" ]; then
+                  echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
+                  exit 1
+                fi
+                sleep 2
+              done
 
-          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+              pip install build pytest
 
-          {
-            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-          } >> "$GITHUB_ENV"
+              echo "=== Build wheel package ==="
+              python -m build --wheel
+              echo "=== Build artifacts ==="
+              ls -lh dist/*.whl
 
-          echo "Configured compile caches:"
-          echo "  TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-          echo "  TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-          echo "  TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-        shell: bash
+              echo "=== Install built wheel ==="
+              pip install dist/*.whl
 
-      - name: Validate GPU frequency
-        run: |
-          set -euo pipefail
-          TARGET_CLOCK_MHZ=1830
-          RETRIES=5
-          SLEEP_SECONDS=2
+              TMP_TEST_DIR="$(mktemp -d)"
+              cp -r tests "${TMP_TEST_DIR}/tests"
+              cp pyproject.toml "${TMP_TEST_DIR}/"
+              cd "${TMP_TEST_DIR}"
 
-          if ! command -v nvidia-smi >/dev/null 2>&1; then
-            echo "::error::nvidia-smi is not available on this runner."
-            exit 1
-          fi
+              echo "=== Runtime cache env ==="
+              echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
+              echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
+              echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
-          echo "Detected GPUs:"
-          nvidia-smi -L
-
-          attempt=1
-          while [ "$attempt" -le "$RETRIES" ]; do
-            echo "Validation attempt ${attempt}/${RETRIES}"
-            mismatch=0
-            while IFS=',' read -r gpu_index gpu_name gpu_clock; do
-              gpu_index="$(echo "$gpu_index" | xargs)"
-              gpu_name="$(echo "$gpu_name" | xargs)"
-              gpu_clock="$(echo "$gpu_clock" | xargs)"
-              echo "GPU ${gpu_index} (${gpu_name}) clock: ${gpu_clock} MHz"
-              if [ "$gpu_clock" != "$TARGET_CLOCK_MHZ" ]; then
-                mismatch=1
-              fi
-            done < <(nvidia-smi --query-gpu=index,name,clocks.current.graphics --format=csv,noheader,nounits)
-
-            if [ "$mismatch" -eq 0 ]; then
-              echo "All GPUs locked at ${TARGET_CLOCK_MHZ} MHz."
-              break
-            fi
-
-            if [ "$attempt" -eq "$RETRIES" ]; then
-              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz on all GPUs."
-              exit 1
-            fi
-
-            sleep "$SLEEP_SECONDS"
-            attempt=$((attempt + 1))
-          done
-        shell: bash
-
-      - name: Resolve persistent venv
-        run: |
-          set -euo pipefail
-
-          VENV_PREFIX="tileops_packaging_venv"
-          DEP_HASH="$(python3 scripts/dep_hash.py)"
-          HASH_INPUT="$(
-            {
-              echo "python=3.11"
-              echo "install=pip install build pytest"
-              echo "${DEP_HASH}"
-            } | sha256sum | cut -c1-16
-          )"
-          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
-          VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-
-          echo "Resolved venv path: ${VENV_PATH}"
-          echo "VENV_DIR=${VENV_DIR}" >> "$GITHUB_ENV"
-          echo "VENV_PATH=${VENV_PATH}" >> "$GITHUB_ENV"
-
-          if [ -x "${VENV_PATH}/bin/python" ]; then
-            echo "Reusing existing venv: ${VENV_PATH}"
-            echo "VENV_REUSED=true" >> "$GITHUB_ENV"
-          else
-            echo "No matching venv found. Will create: ${VENV_PATH}"
-            echo "VENV_REUSED=false" >> "$GITHUB_ENV"
-
-            for old_venv in "${{ runner.tool_cache }}/${VENV_PREFIX}"_*; do
-              if [ ! -d "${old_venv}" ]; then
-                continue
-              fi
-              if [ "${old_venv}" = "${VENV_PATH}" ]; then
-                continue
-              fi
-              echo "Removing stale venv: ${old_venv}"
-              rm -rf "${old_venv}"
-            done
-          fi
-        shell: bash
-
-      - name: Create clean virtual environment
-        run: |
-          set -euo pipefail
-          if [ "${VENV_REUSED}" = "true" ]; then
-            echo "Using cached venv at ${VENV_PATH}"
-            exit 0
-          fi
-
-          echo "Preparing clean venv at ${VENV_PATH}"
-          python -m venv "${VENV_PATH}"
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-          python -m pip install --upgrade pip setuptools wheel --no-user
-          pip install build pytest --no-user
-        shell: bash
-
-      - name: Build wheel package
-        run: |
-          set -euo pipefail
-          source "${VENV_PATH}/bin/activate"
-
-          PACKAGING_LOG="${GITHUB_WORKSPACE}/packaging.log"
-          : > "${PACKAGING_LOG}"
-
-          {
-            echo "=== Build wheel package ==="
-            python -m build --wheel
-            echo
-            echo "=== Build artifacts ==="
-            ls -lh dist/*.whl
-          } 2>&1 | tee -a "${PACKAGING_LOG}"
-        shell: bash
-
-      - name: Run ops smoke tests against built wheel
-        run: |
-          set -euo pipefail
-          source "${VENV_PATH}/bin/activate"
-
-          PACKAGING_LOG="${GITHUB_WORKSPACE}/packaging.log"
-
-          {
-            echo
-            echo "=== Install built wheel ==="
-            pip install --force-reinstall dist/*.whl
-
-            TMP_TEST_DIR="$(mktemp -d)"
-            trap 'rm -rf "${TMP_TEST_DIR}"' EXIT
-            cp -r tests "${TMP_TEST_DIR}/tests"
-            unset PYTHONPATH || true
-
-            cd "${TMP_TEST_DIR}"
-
-            echo
-            echo "=== Runtime cache env ==="
-            python -c 'import os; [print(f"{key}={os.environ.get(key)}") for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR")]'
-
-            echo
-            echo "=== Run pytest smoke ==="
-            python -m pytest -q tests/ops -m "smoke" \
-              --junit-xml="${GITHUB_WORKSPACE}/packaging_smoke.xml"
-          } 2>&1 | tee -a "${PACKAGING_LOG}"
+              echo "=== Run pytest packaging ==="
+              python -m pytest -q tests/ops -m "packaging" \
+                --junit-xml=/workspace/packaging_smoke.xml
+            ' 2>&1 | tee packaging.log
         shell: bash
 
       - name: Upload wheel artifact

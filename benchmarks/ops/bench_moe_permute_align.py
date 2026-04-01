@@ -31,34 +31,6 @@ from tests.test_base import FixtureBase
 from tileops.ops.moe import MoePermuteAlignOp
 
 # ---------------------------------------------------------------------------
-# CUPTI warmup fixture
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session", autouse=True)
-def warmup_cupti():
-    """Pre-initialize the CUPTI profiler once per session.
-
-    The first torch.profiler.profile() call with CUDA activity tracking
-    incurs a one-time initialization cost.  If this happens inside do_bench's
-    estimation phase, estimate_ms is inflated and n_repeat is computed as 1,
-    causing the measured latency to include initialization overhead.
-    """
-    if not torch.cuda.is_available():
-        return
-    dummy = torch.empty(1, device="cuda")
-    schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)
-    with torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CUDA],
-        schedule=schedule,
-    ) as prof:
-        for _ in range(2):
-            dummy.zero_()
-            prof.step()
-    torch.cuda.synchronize()
-
-
-# ---------------------------------------------------------------------------
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
 # ---------------------------------------------------------------------------
 

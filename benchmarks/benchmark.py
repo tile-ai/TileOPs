@@ -3,10 +3,10 @@ import subprocess
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import torch
-from tilelang.profiler import do_bench
+from torch.autograd.profiler import DeviceType
 
 from tests.test_base import TestBase
 
@@ -17,71 +17,169 @@ _logger = logging.getLogger("tileops.bench")
 _bench_results = threading.local()
 
 
-def _patch_cupti_filter():
-    """Narrow tilelang's CUPTI kernel-name exclusion to cache-clearing only.
+def _sum_kernel_time_us(kineto_results):
+    """Extract total CUDA kernel time directly from C++ Kineto events.
 
-    tilelang's ``_bench_with_cupti`` (bench.py) excludes all CUDA kernels
-    whose name contains ``"at::native::vectorized_elementwise"``.  The
-    intent is to strip the ``cache.zero_()`` overhead inserted between
-    benchmark iterations, but ``cache.zero_()`` produces a kernel with
-    ``FillFunctor`` in its name — the same ``vectorized_elementwise``
-    family that PyTorch uses for add, mul, where, maximum, etc.
-
-    The overly broad substring match therefore removes **all** PyTorch
-    elementwise kernel time, making baseline latencies near-zero for
-    elementwise benchmarks.
-
-    This patch replaces the upstream function with one that only excludes
-    kernels containing **both** ``vectorized_elementwise`` and
-    ``FillFunctor`` (i.e. the actual cache-clearing kernel).
+    Bypasses ``profiler.key_averages()`` which triggers expensive Python
+    event parsing (~120ms) and tree building (~10ms) for large traces.
+    Direct C++ iteration is ~16x faster for n_repeat=1280.
     """
-    import tilelang.profiler.bench as _bench_mod
+    total_us = 0.0
+    for evt in kineto_results.events():
+        if evt.device_type() == DeviceType.CUDA:
+            name = evt.name()
+            if "vectorized_elementwise" in name and "FillFunctor" in name:
+                continue
+            total_us += evt.duration_ns() / 1000.0
+    return total_us
 
-    if not hasattr(_bench_mod, "_bench_with_cupti"):
-        import warnings
-        warnings.warn(
-            "tilelang CUPTI patch skipped: _bench_with_cupti not found. "
-            "The upstream API may have changed — elementwise baseline "
-            "latencies measured via CUPTI may be inaccurate.",
-            stacklevel=2,
-        )
-        return
 
-    def _bench_with_cupti_fixed(fn, cache, n_repeat):
-        from tilelang.profiler.bench import suppress_stdout_stderr
+# ---------------------------------------------------------------------------
+# L2 cache flush buffer (sized to actual L2, allocated lazily)
+# ---------------------------------------------------------------------------
 
+_l2_flush_cache: Optional[torch.Tensor] = None
+
+
+def _get_l2_flush_cache() -> torch.Tensor:
+    global _l2_flush_cache
+    if _l2_flush_cache is None:
+        l2_bytes = torch.cuda.get_device_properties(0).L2_cache_size
+        if l2_bytes <= 0:
+            l2_bytes = int(256e6)  # fallback
+        _l2_flush_cache = torch.empty(l2_bytes // 4, dtype=torch.int, device="cuda")
+    return _l2_flush_cache
+
+
+# ---------------------------------------------------------------------------
+# NVIDIA SOL-ExecBench–style benchmark
+# ---------------------------------------------------------------------------
+
+def bench_kernel(
+    fn: Callable,
+    args: Tuple[torch.Tensor, ...] = (),
+    n_warmup: int = 10,
+    n_repeat: int = 50,
+    n_trials: int = 3,
+) -> float:
+    """Benchmark a GPU kernel with pure kernel timing via CUPTI.
+
+    Protocol (adapted from NVIDIA SOL-ExecBench, arxiv.org/abs/2603.19173):
+      1. Lock GPU clocks externally (nvidia-smi).
+      2. Run *n_warmup* un-timed iterations with L2 flush.
+      3. For each of *n_trials* trials, profile *n_repeat* iterations
+         under CUPTI to get pure kernel execution time (no launch overhead).
+         L2 is flushed before every iteration.  Input tensors are cloned
+         each iteration so the kernel always sees fresh addresses.
+      4. Report the median trial mean (robust to outlier trials).
+
+    Uses CUPTI via torch.profiler for accurate kernel-only timing, with
+    direct Kineto C++ event iteration to avoid Python parsing overhead.
+    Falls back to CUDA events if CUPTI is unavailable.
+
+    Args:
+        fn: Callable to benchmark.  If *args* is provided, called as
+            ``fn(*cloned_args)``; otherwise called as ``fn()``.
+        args: Tensor arguments to clone each iteration.  Non-tensor
+            values are passed through unchanged.
+        n_warmup: Warmup iterations (default 10).
+        n_repeat: Timed iterations per trial (default 50).
+        n_trials: Independent trials (default 3).
+
+    Returns:
+        Kernel latency in **milliseconds**.
+    """
+    from tilelang.profiler.bench import suppress_stdout_stderr
+
+    cache = _get_l2_flush_cache()
+    has_args = len(args) > 0
+
+    # Pre-clone a small pool of input tensors so the kernel sees different
+    # addresses across iterations.  Skip cloning if total tensor memory
+    # exceeds 1 GB to avoid OOM on large workloads.
+    _N_CLONES = 3
+    _MAX_CLONE_BYTES = 1 << 30  # 1 GB
+    if has_args:
+        tensor_mask = tuple(isinstance(a, torch.Tensor) for a in args)
+        total_bytes = sum(a.nelement() * a.element_size()
+                          for a, m in zip(args, tensor_mask, strict=True) if m)
+        if total_bytes * _N_CLONES <= _MAX_CLONE_BYTES:
+            arg_pool = [
+                tuple(a.clone() if m else a for a, m in zip(args, tensor_mask, strict=True))
+                for _ in range(_N_CLONES)
+            ]
+            def _run(i):
+                return fn(*arg_pool[i % _N_CLONES])
+        else:
+            arg_pool = None
+            def _run(i):
+                return fn(*args)
+    else:
+        arg_pool = None
+        def _run(i):
+            return fn()
+
+    # Warmup (no profiling)
+    for i in range(n_warmup):
+        cache.zero_()
+        _run(i % n_repeat)
+    torch.cuda.synchronize()
+
+    # Timed trials with CUPTI (single profiler, n_trials cycles)
+    trial_means: list[float] = []
+
+    def _on_trace_ready(prof):
+        kr = prof.profiler.kineto_results
+        kernel_us = _sum_kernel_time_us(kr) / n_repeat
+        trial_means.append(kernel_us * 1e-3)
+
+    try:
         with suppress_stdout_stderr():
             schedule = torch.profiler.schedule(
-                wait=1, warmup=0, active=1, repeat=1,
+                wait=0, warmup=1, active=1, repeat=n_trials,
             )
             profiler = torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CUDA],
                 schedule=schedule,
+                on_trace_ready=_on_trace_ready,
             )
             with profiler:
-                for _ in range(2):
-                    for _ in range(n_repeat):
+                for _ in range(n_trials):
+                    # Warmup step (discarded by schedule)
+                    for i in range(n_repeat):
                         cache.zero_()
-                        fn()
+                        _run(i)
                     profiler.step()
+                    # Active step (measured → _on_trace_ready)
+                    for i in range(n_repeat):
+                        cache.zero_()
+                        _run(i)
+                    profiler.step()
+    except RuntimeError:
+        pass
 
-        total_cuda_time = 0.0
-        excluded_time = 0.0
-        for event in profiler.key_averages():
-            total_cuda_time += event.self_device_time_total
-            # Only exclude the cache.zero_() kernel (FillFunctor), not
-            # all vectorized_elementwise kernels.
-            if ("vectorized_elementwise" in event.key
-                    and "FillFunctor" in event.key):
-                excluded_time += event.self_device_time_total
+    # Fallback to CUDA events if CUPTI failed
+    if not trial_means:
+        for _ in range(n_trials):
+            start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+            end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+            for i in range(n_repeat):
+                cache.zero_()
+                start_events[i].record()
+                _run(i)
+                end_events[i].record()
+            torch.cuda.synchronize()
+            times = [s.elapsed_time(e) for s, e in zip(start_events, end_events, strict=True)]
+            trial_means.append(sum(times) / len(times))
 
-        kernel_time_us = (total_cuda_time - excluded_time) / n_repeat
-        return kernel_time_us * 1e-3
+    # Free the arg pool and release cached GPU memory to prevent
+    # accumulation across hundreds of benchmark calls.
+    if arg_pool is not None:
+        del arg_pool
+    torch.cuda.empty_cache()
 
-    _bench_mod._bench_with_cupti = _bench_with_cupti_fixed
-
-
-_patch_cupti_filter()
+    trial_means.sort()
+    return trial_means[len(trial_means) // 2]
 
 
 def _get_env_metadata() -> list[str]:
@@ -130,28 +228,28 @@ class BenchmarkBase(ABC):
 
     def profile(self,
                 functor: Any,
-                *inputs: Tuple[torch.Tensor],
-                warmup: int = 100,
-                rep: int = 200) -> dict:
+                *inputs: Tuple[torch.Tensor]) -> dict:
         """Profile a callable and return structured results.
 
-        Works for both tileops ops and baseline implementations.
+        Uses the NVIDIA SOL-ExecBench protocol: CUPTI kernel timing,
+        10 warmup, 50 repeats × 3 trials, L2 flush sized to actual
+        cache, input tensors cloned each iteration.
         """
-        def bench_fn():
-            return functor(*inputs)
-
         with torch.no_grad():
-            # CUPTI gives pure kernel time (no host-launch overhead).
-            # It is a global singleton — when another process holds the
-            # handle (e.g. someone running ncu), do_bench returns 0.
-            # Fall back to CUDA-event with median aggregation in that case.
-            latency = do_bench(bench_fn, warmup=warmup, rep=rep, backend='cupti')
-            if latency <= 0:
-                latency = do_bench(
-                    bench_fn, warmup=warmup, rep=rep,
-                    backend='event', return_mode='median',
-                )
+            latency = bench_kernel(functor, args=inputs)
+        return self._build_result(latency)
 
+    def profile_autograd(self, functor: Any) -> dict:
+        """Profile a callable that requires autograd (e.g. fwd+bwd).
+
+        Same as profile() but without torch.no_grad(), so the callable
+        can build autograd graphs and call .backward() internally.
+        The functor must be a zero-arg closure that captures its inputs.
+        """
+        latency = bench_kernel(functor)
+        return self._build_result(latency)
+
+    def _build_result(self, latency: float) -> dict:
         result = {"latency_ms": latency}
         flops = self.calculate_flops()
         if flops is not None:

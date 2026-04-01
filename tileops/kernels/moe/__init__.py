@@ -1,6 +1,15 @@
 from .fused_topk import FusedTopKKernel
-from .permute import MoePermuteKernel
+from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from .permute_align import MoePermuteAlignKernel
+from .permute_nopad import MoePermuteNopadKernel
+from .permute_padded import MoePermutePaddedKernel
 from .unpermute import MoeUnpermuteKernel
 
-__all__ = ["FusedTopKKernel", "MoePermuteAlignKernel", "MoePermuteKernel", "MoeUnpermuteKernel"]
+__all__ = [
+    "FusedTopKKernel",
+    "MoeGroupedGemmNopadKernel",
+    "MoePermuteAlignKernel",
+    "MoePermutePaddedKernel",
+    "MoePermuteNopadKernel",
+    "MoeUnpermuteKernel",
+]

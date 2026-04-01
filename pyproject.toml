@@ -5,9 +5,10 @@ description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
-    "torch>=2.1.0,<2.10.0",
+    "torch>=2.1.0,<2.11.0",
     "tilelang==0.1.8",
     "einops",
+    "pyyaml>=6.0",
 ]
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -37,6 +38,12 @@ dev = [
     "pytest-xdist>=3.0",
     "pyyaml>=6.0",
 ]
+bench = [
+    "flash-attn==2.8.3",
+    "flash-linear-attention==0.4.2",
+    "vllm==0.18.0",
+    "sgl-kernel==0.3.21",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -47,7 +54,7 @@ where = ["."]
 exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
 
 [tool.setuptools.package-data]
-tileops = ["kernels/moe/_atomic_helper.h"]
+tileops = ["kernels/moe/_atomic_helper.h", "ops_manifest.yaml"]
 
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
@@ -117,4 +124,5 @@ markers = [
     "smoke: fast PR critical-path tests",
     "full: standard correctness coverage",
     "nightly: exhaustive or long-running coverage",
+    "packaging: minimal wheel-install sanity check (one case per op family)",
 ]

@@ -34,7 +34,7 @@ from tileops.kernels.kernel import Kernel
 
 _ATOMIC_HELPER_H = os.path.join(os.path.dirname(__file__), "_atomic_helper.h")
 
-__all__ = ["MoePermuteKernel"]
+__all__ = ["MoePermutePaddedKernel"]
 
 _SCAN_THREADS = 1024
 
@@ -163,7 +163,7 @@ def _make_gather_kernel(
     return _gather
 
 
-class MoePermuteKernel(Kernel):
+class MoePermutePaddedKernel(Kernel):
     """MoE token permute kernel with block_m-aligned padding (cutlass path).
 
     Sorts tokens into expert-contiguous order with block_m padding alignment
@@ -179,7 +179,7 @@ class MoePermuteKernel(Kernel):
         config: Optional config dict.
 
     Example:
-        >>> kernel = MoePermuteKernel(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
+        >>> kernel = MoePermutePaddedKernel(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
         >>> perm_h_pad, p_offsets, p_sizes, offsets, fwd_idx = kernel(hidden_states, topk_ids)
     """
 
@@ -203,7 +203,7 @@ class MoePermuteKernel(Kernel):
         self.dtype = dtype
         self.block_m = block_m
         self.numel = num_tokens * top_k
-        self._padded_batch_sum = self.numel + num_experts * block_m
+        self._padded_batch_sum = self.numel + num_experts * (block_m - 1)
 
         self._scan_fn = _make_scan_kernel(self.numel, num_experts, top_k, block_m)
         self._gather_fn = _make_gather_kernel(

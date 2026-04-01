@@ -1,3 +1,4 @@
+from .conv import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
 from .deepseek_mla import (
     Fp8LightingIndexerKernel,
     Fp8QuantKernel,
@@ -21,7 +22,7 @@ from .deltanet_recurrence import DeltaNetDecodeFP32Kernel, DeltaNetDecodeKernel
 from .dropout import DropoutKernel
 from .elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
 from .engram import EngramDecodeKernel, EngramGateConvBwdKernel, EngramGateConvFwdKernel
-from .fft import FFTC2CKernel, FFTC2CLUTKernel
+from .fft import FFTC2CKernel
 from .flash_attn import (
     FlashAttnBwdPostprocessKernel,
     FlashAttnBwdPreprocessKernel,
@@ -71,11 +72,14 @@ __all__ = [
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
     "DropoutKernel",
+    "Conv1dKernel",
+    "Conv2d1x1Kernel",
+    "Conv2dKernel",
+    "Conv3dKernel",
     "EngramDecodeKernel",
     "EngramGateConvBwdKernel",
     "EngramGateConvFwdKernel",
     "FFTC2CKernel",
-    "FFTC2CLUTKernel",
     "FusedGatedKernel",
     "FlashAttnBwdPostprocessKernel",
     "FlashAttnBwdPreprocessKernel",

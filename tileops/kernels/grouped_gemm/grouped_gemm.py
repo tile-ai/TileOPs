@@ -1,5 +1,6 @@
 import functools
 import itertools
+import math
 from typing import Optional
 
 import tilelang
@@ -56,6 +57,10 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                 B_shape = (batch_count, K, N)
                 B_shared_shape = (block_k, block_n)
 
+            # 1D grid with M-major ordering for A-tile reuse
+            _num_pid_m = math.ceil(batch_sum / block_m)
+            _num_pid_n = math.ceil(N / block_n)
+
             @T.prim_func
             def _grouped_gemm_main(
                     A: T.Tensor(A_shape, dtype),  # type: ignore
@@ -65,51 +70,62 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                     batch_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
                     batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
             ):
-                with T.Kernel(
-                        T.ceildiv(batch_sum, block_m), T.ceildiv(N, block_n),
-                        threads=threads) as (bx, by):
+                with T.Kernel(_num_pid_m * _num_pid_n, threads=threads) as (pid,):
                     A_shared = T.alloc_shared(A_shared_shape, dtype)
                     B_shared = T.alloc_shared(B_shared_shape, dtype)
                     C_local = T.alloc_fragment([block_m, block_n], accum_dtype)
                     cur_batch_idx = T.alloc_local([1], "int32")
+
+                    # M-major ordering: each M-tile processes all N-tiles
+                    bx = pid // _num_pid_n
+                    by = pid % _num_pid_n
                     m_start = bx * block_m
                     n_start = by * block_n
 
-                    cur_batch_idx[0] = 0
-                    for i in range(batch_count):
-                        batch_start = batch_offsets[i]
-                        batch_end = batch_start + batch_sizes[i]
-                        in_batch = (m_start >= batch_start) & (m_start < batch_end)
-                        cur_batch_idx[0] = T.if_then_else(in_batch, i, cur_batch_idx[0])
-                    batch_start = batch_offsets[cur_batch_idx[0]]
-                    batch_size = batch_sizes[cur_batch_idx[0]]
-                    batch_end = batch_start + batch_size
-                    actual_rows = T.min(block_m, batch_end - m_start)
-                    actual_cols = T.min(block_n, N - n_start)
-                    T.clear(C_local)
+                    # Guard: skip CTAs that fall beyond the actual padded data.
+                    # batch_padded_offsets[E-1] + batch_sizes[E-1] gives the true
+                    # end of the last expert's padded block.  When batch_sum is a
+                    # conservative upper bound (e.g. T*K + E*block_m in MoE), the
+                    # extra CTAs would otherwise execute full K-loops with all-zero
+                    # inputs, wasting SM cycles and B-tensor bandwidth.
+                    total_valid_rows = (batch_padded_offsets[batch_count - 1] +
+                                        batch_sizes[batch_count - 1])
+                    if m_start < total_valid_rows:
+                        cur_batch_idx[0] = 0
+                        for i in range(batch_count):
+                            batch_start = batch_offsets[i]
+                            batch_end = batch_start + batch_sizes[i]
+                            in_batch = (m_start >= batch_start) & (m_start < batch_end)
+                            cur_batch_idx[0] = T.if_then_else(in_batch, i, cur_batch_idx[0])
+                        batch_start = batch_offsets[cur_batch_idx[0]]
+                        batch_size = batch_sizes[cur_batch_idx[0]]
+                        batch_end = batch_start + batch_size
+                        actual_rows = T.min(block_m, batch_end - m_start)
+                        actual_cols = T.min(block_n, N - n_start)
+                        T.clear(C_local)
 
-                    for k in T.Pipelined(T.ceildiv(K, block_k), num_stages=num_stages):
-                        # Load A block (same for NT and NN)
-                        for i, j in T.Parallel(block_m, block_k):
-                            A_shared[i, j] = T.if_then_else(
-                                i < actual_rows and j < K - k * block_k,
-                                A[m_start + i, k * block_k + j], 0)
-                        # Load B block
-                        if transpose_b:
-                            for i, j in T.Parallel(block_n, block_k):
-                                B_shared[i, j] = T.if_then_else(
-                                    j < K - k * block_k and i < actual_cols,
-                                    B[cur_batch_idx[0], n_start + i, k * block_k + j], 0)
-                        else:
-                            for i, j in T.Parallel(block_k, block_n):
-                                B_shared[i, j] = T.if_then_else(
-                                    i < K - k * block_k and j < actual_cols,
-                                    B[cur_batch_idx[0], k * block_k + i, n_start + j], 0)
-                        T.gemm(A_shared, B_shared, C_local, transpose_B=transpose_b)
-                    # Store result
-                    for i, j in T.Parallel(block_m, block_n):
-                        if i < actual_rows and j < actual_cols:
-                            C[m_start + i, n_start + j] = C_local[i, j]
+                        for k in T.Pipelined(T.ceildiv(K, block_k), num_stages=num_stages):
+                            # Load A block (same for NT and NN)
+                            for i, j in T.Parallel(block_m, block_k):
+                                A_shared[i, j] = T.if_then_else(
+                                    i < actual_rows and j < K - k * block_k,
+                                    A[m_start + i, k * block_k + j], 0)
+                            # Load B block
+                            if transpose_b:
+                                for i, j in T.Parallel(block_n, block_k):
+                                    B_shared[i, j] = T.if_then_else(
+                                        j < K - k * block_k and i < actual_cols,
+                                        B[cur_batch_idx[0], n_start + i, k * block_k + j], 0)
+                            else:
+                                for i, j in T.Parallel(block_k, block_n):
+                                    B_shared[i, j] = T.if_then_else(
+                                        i < K - k * block_k and j < actual_cols,
+                                        B[cur_batch_idx[0], k * block_k + i, n_start + j], 0)
+                            T.gemm(A_shared, B_shared, C_local, transpose_B=transpose_b)
+                        # Store result
+                        for i, j in T.Parallel(block_m, block_n):
+                            if i < actual_rows and j < actual_cols:
+                                C[m_start + i, n_start + j] = C_local[i, j]
 
         else:
             # TN / TT pattern: iterate per batch, outputs 3D tensor

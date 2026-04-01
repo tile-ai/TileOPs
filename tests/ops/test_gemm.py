@@ -12,7 +12,7 @@ class GemmFixture(FixtureBase):
         ("m, n, k, dtype, trans_a, trans_b, tune", [
             pytest.param(
                 1024, 1024, 1024, torch.float16, False, False, False,
-                marks=pytest.mark.smoke,
+                marks=[pytest.mark.smoke, pytest.mark.packaging],
                 id="smoke-fp16-square",
             ),
             pytest.param(

@@ -5,14 +5,14 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.moe import MoePermuteKernel
+from tileops.kernels.moe import MoePermutePaddedKernel
 
 from ..op import Op
 
-__all__ = ["MoePermuteOp"]
+__all__ = ["MoePermutePaddedOp"]
 
 
-class MoePermuteOp(Op):
+class MoePermutePaddedOp(Op):
     """Route tokens to block_m-aligned padded expert layout for NT grouped-GEMM.
 
     Args:
@@ -25,7 +25,7 @@ class MoePermuteOp(Op):
         kernel_map: Optional kernel override dict.
 
     Example:
-        >>> op = MoePermuteOp(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
+        >>> op = MoePermutePaddedOp(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
         >>> perm_h_pad, p_offsets, p_sizes, offsets, fwd_idx = op(hidden_states, topk_ids)
     """
 
@@ -53,7 +53,7 @@ class MoePermuteOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"permute_kernel": MoePermuteKernel}
+        return {"permute_kernel": MoePermutePaddedKernel}
 
     def forward(
         self,

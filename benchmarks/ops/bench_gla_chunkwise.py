@@ -14,7 +14,6 @@ from typing import Optional
 
 import pytest
 import torch
-from tilelang.profiler import do_bench as _do_bench
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_gla_chunkwise_bwd import _gla_autograd_bwd_ref, _gla_fwd_torch_ref
@@ -25,21 +24,6 @@ try:
     from fla.ops.gla import chunk_gla
 except ImportError:
     chunk_gla = None
-
-
-def _profile_manual(fn, bm, warmup=100, rep=100):
-    """Profile a function using do_bench with cupti/event fallback."""
-    latency = _do_bench(fn, warmup=warmup, rep=rep, backend='cupti')
-    if latency <= 0:
-        latency = _do_bench(fn, warmup=warmup, rep=rep, backend='event')
-    result = {"latency_ms": latency}
-    flops = bm.calculate_flops()
-    if flops is not None:
-        result["tflops"] = flops / latency * 1e-9
-    memory = bm.calculate_memory()
-    if memory is not None:
-        result["bandwidth_tbs"] = memory / latency * 1e-9
-    return result
 
 
 # =============================================================================
@@ -136,7 +120,7 @@ def test_gla_fwd_bench(
     else:
         # --- Torch reference baseline ---
         result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # =============================================================================
@@ -222,14 +206,14 @@ def test_gla_bwd_bench(
             o_fla.backward(do_fla, retain_graph=True)
             return q_fla.grad, k_fla.grad, v_fla.grad
 
-        result_fla = _profile_manual(fla_bwd, bm)
+        result_fla = bm.profile(fla_bwd)
         BenchmarkReport.record(bwd_op, locals(), result_fla, tag="fla")
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
             return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
-        result_bl = _profile_manual(torch_bwd, bm)
-        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch-ref")
+        result_bl = bm.profile(torch_bwd)
+        BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
 
 # =============================================================================
@@ -298,7 +282,7 @@ def test_gla_fwdbwd_bench(
         dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
         return bwd_op.forward(q, k, v, g, h, do, dht)
 
-    result = _profile_manual(tileops_fwdbwd, bm, warmup=50)
+    result = bm.profile_autograd(tileops_fwdbwd)
     BenchmarkReport.record(fwd_op, locals(), result, tag="tileops")
 
     if chunk_gla is not None:
@@ -315,13 +299,13 @@ def test_gla_fwdbwd_bench(
             o.backward(do_fla)
             return q_fla.grad, k_fla.grad, v_fla.grad
 
-        result_fla = _profile_manual(fla_fwdbwd, bm, warmup=50)
+        result_fla = bm.profile_autograd(fla_fwdbwd)
         BenchmarkReport.record(fwd_op, locals(), result_fla, tag="fla")
     else:
         def ref_autograd_fwdbwd():
             return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
-        result_bl = _profile_manual(ref_autograd_fwdbwd, bm, warmup=50)
-        BenchmarkReport.record(fwd_op, locals(), result_bl, tag="torch-ref")
+        result_bl = bm.profile_autograd(ref_autograd_fwdbwd)
+        BenchmarkReport.record(fwd_op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

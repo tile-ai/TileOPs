@@ -1,10 +1,10 @@
-"""Benchmark for MoePermuteOp.
+"""Benchmark for MoePermutePaddedOp.
 
 Baselines:
   - PyTorch reference: pure Python counting sort + gather.
 
 Note: vLLM moe_permute is not included as a baseline because after the
-padded-layout refactor, TileOPs' MoePermuteOp outputs a padding-aligned
+padded-layout refactor, TileOPs' MoePermutePaddedOp outputs a padding-aligned
 buffer ([padded_batch_sum, H]) and fwd_idx, while vLLM's moe_permute
 outputs a non-padded buffer ([T*K, H]) with different index semantics.
 The two are no longer functionally equivalent and cannot be meaningfully
@@ -23,28 +23,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_moe_permute import MoePermuteTest, _ref_moe_permute
 from tests.test_base import FixtureBase
-from tileops.ops.moe import MoePermuteOp
-
-# ---------------------------------------------------------------------------
-# CUPTI warmup
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session", autouse=True)
-def warmup_cupti():
-    if not torch.cuda.is_available():
-        return
-    dummy = torch.empty(1, device="cuda")
-    schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)
-    with torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CUDA],
-        schedule=schedule,
-    ) as prof:
-        for _ in range(2):
-            dummy.zero_()
-            prof.step()
-    torch.cuda.synchronize()
-
+from tileops.ops.moe import MoePermutePaddedOp
 
 # ---------------------------------------------------------------------------
 # Benchmark fixture (production-scale configs)
@@ -82,7 +61,7 @@ class MoePermuteBenchFixture(FixtureBase):
 class MoePermuteBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        return None
+        return 0
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test
@@ -111,12 +90,12 @@ def test_moe_permute_bench(
     hidden_states, topk_ids = test.gen_inputs()
 
     # TileOPs
-    op = MoePermuteOp(total_tokens, top_k, num_experts, hidden_size, dtype)
+    op = MoePermutePaddedOp(total_tokens, top_k, num_experts, hidden_size, dtype)
     op(hidden_states, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()
 
     result = bm.profile(op, hidden_states, topk_ids)
-    BenchmarkReport.record("moe_permute", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # PyTorch reference baseline
     def _ref_fn(hidden_states, topk_ids):
@@ -126,7 +105,7 @@ def test_moe_permute_bench(
     torch.cuda.synchronize()
 
     result_ref = bm.profile(_ref_fn, hidden_states, topk_ids)
-    BenchmarkReport.record("moe_permute", locals(), result_ref, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_ref, tag="torch-ref")
 
 
 if __name__ == "__main__":
