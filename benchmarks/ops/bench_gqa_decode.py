@@ -44,6 +44,7 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
 
     Reshapes the contiguous (B, S_kv, H_kv, D) KV into paged format with
     page_size=256, then uses the specialized decode kernel.
+    FlashInfer decode kernel supports group_size (Q/KV head ratio) up to 8.
     """
     try:
         from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper  # noqa: PLC0415
@@ -54,6 +55,8 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
     # K/V is (B, S_kv, H_kv, D)
     B, H, D = q.shape
     Hkv = k.shape[2]
+    if H // Hkv > 8:
+        return None  # FlashInfer decode kernel does not support group_size > 8
     Skv = k.shape[1]
     page_size = 256
     pages_per_seq = (Skv + page_size - 1) // page_size

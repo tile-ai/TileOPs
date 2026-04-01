@@ -52,11 +52,17 @@ def _fa3_gqa_decode_paged(test, k, v):
 
 
 def _flashinfer_gqa_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
-    """Set up FlashInfer paged decode wrapper. Returns callable or None."""
+    """Set up FlashInfer paged decode wrapper. Returns callable or None.
+
+    FlashInfer decode kernel supports group_size (Q/KV head ratio) up to 8.
+    """
     try:
         from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper  # noqa: PLC0415
     except ImportError:
         return None
+
+    if test.heads // test.heads_kv > 8:
+        return None  # FlashInfer decode kernel does not support group_size > 8
 
     batch = q.shape[0]
     num_pages = k.shape[0] // test.page_size
