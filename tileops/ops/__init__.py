@@ -1,6 +1,7 @@
 from .conv1d import Conv1dOp
 from .conv2d import Conv2dOp
 from .conv3d import Conv3dOp
+from .da_cumsum_fwd import DaCumsumFwdOp
 from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
 from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
 from .deepseek_nsa import (
@@ -80,8 +81,10 @@ from .rope import (
     RopeNonNeoxOp,
     RopeYarnOp,
 )
+from .ssd_chunk_scan_bwd_dstates import SsdChunkScanBwdDstatesOp
 from .ssd_chunk_scan_fwd import SsdChunkScanFwdOp
 from .ssd_chunk_state_fwd import SsdChunkStateFwdOp
+from .ssd_decode import SsdDecodeOp
 from .ssd_state_passing_fwd import SsdStatePassingFwdOp
 from .topk_selector import TopkSelectorOp
 
@@ -94,6 +97,7 @@ __all__ = [
     "Conv1dOp",
     "Conv2dOp",
     "Conv3dOp",
+    "DaCumsumFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
     "DropoutOp",
     "FFTC2COp",
@@ -138,8 +142,10 @@ __all__ = [
     "Op",
     "MoePermuteAlignOp",
     "RmsNormOp",
+    "SsdChunkScanBwdDstatesOp",
     "SsdChunkScanFwdOp",
     "SsdChunkStateFwdOp",
+    "SsdDecodeOp",
     "SsdStatePassingFwdOp",
     "RopeLlama31Op",
     "RopeLongRopeOp",
