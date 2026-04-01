@@ -27,8 +27,10 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_moe_permute_align import MoePermuteAlignTest
-from tests.test_base import FixtureBase
+from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoePermuteAlignOp
+
+_OP_NAME = "moe_permute_align"
 
 # ---------------------------------------------------------------------------
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
@@ -139,53 +141,49 @@ def _triton_permute_align(
 
 
 # ---------------------------------------------------------------------------
-# Benchmark fixture (production-scale configs)
-# ---------------------------------------------------------------------------
-
-
-class MoePermuteAlignBenchFixture(FixtureBase):
-    """Production-scale configs for throughput benchmarking.
-
-    Columns: total_tokens, top_k, num_experts, block_size
-    """
-    PARAMS = [
-        ("total_tokens, top_k, num_experts, block_size", [
-            # ── Kimi K2: E=384, K=8, block_size=64 ───────────────────────
-            (1,    8, 384, 64),
-            (32,   8, 384, 64),
-            (512,  8, 384, 64),
-            (4096, 8, 384, 64),
-            # ── DeepSeek-V3: E=256, K=8, block_size=64 ───────────────────
-            (1,    8, 256, 64),
-            (32,   8, 256, 64),
-            (512,  8, 256, 64),
-            (4096, 8, 256, 64),
-            # ── Qwen3-235B-A22B / Qwen3-30B-A3B: E=128, K=8, block_size=64
-            (1,    8, 128, 64),
-            (32,   8, 128, 64),
-            (512,  8, 128, 64),
-            (4096, 8, 128, 64),
-        ]),
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Benchmark class
 # ---------------------------------------------------------------------------
 
 
 class MoePermuteAlignBenchmark(BenchmarkBase):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            t = self.test
+            self._roofline_cache = eval_roofline(
+                _OP_NAME,
+                total_tokens=t.total_tokens,
+                top_k=t.top_k,
+                num_experts=t.num_experts,
+                block_size=t.block_size,
+            )
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        return None
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
-        numel = t.total_tokens * t.top_k
-        max_padded = numel + (t.num_experts + 1) * (t.block_size - 1)
-        max_num_blocks = math.ceil(max_padded / t.block_size)
-        # topk_ids read + sorted_token_ids write + expert_ids write + num_post_pad write
-        return (numel + max_padded + max_num_blocks + 1) * 4  # int32 = 4 bytes
+        return self._get_roofline()[1]
+
+
+# ---------------------------------------------------------------------------
+# Manifest-driven parametrize
+# ---------------------------------------------------------------------------
+
+
+def _manifest_params():
+    """Convert manifest workloads to pytest params."""
+    params = []
+    for w in load_workloads(_OP_NAME):
+        label = w.get("label", "unlabeled")
+        for dtype_str in w["dtypes"]:
+            params.append(pytest.param(
+                w["total_tokens"], w["top_k"], w["num_experts"], w["block_size"],
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +191,10 @@ class MoePermuteAlignBenchmark(BenchmarkBase):
 # ---------------------------------------------------------------------------
 
 
-@MoePermuteAlignBenchFixture
+@pytest.mark.parametrize(
+    "total_tokens, top_k, num_experts, block_size",
+    _manifest_params(),
+)
 def test_permute_align_bench(
     total_tokens: int, top_k: int, num_experts: int, block_size: int
 ) -> None:
@@ -234,7 +235,7 @@ def test_permute_align_bench(
     result_bl = bm.profile(_triton_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="triton")
 
-    # sgl-kernel baseline (optional — only runs when sgl_kernel is installed)
+    # sgl-kernel baseline (optional -- only runs when sgl_kernel is installed)
     if _SGL_KERNEL_AVAILABLE:
         sorted_ids_sgl = torch.empty(max_padded, dtype=torch.int32, device=dev)
         expert_ids_sgl = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)

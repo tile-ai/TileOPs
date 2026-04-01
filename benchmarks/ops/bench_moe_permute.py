@@ -31,44 +31,10 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_moe_permute import MoePermuteTest
-from tests.test_base import FixtureBase
+from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoePermutePaddedOp
 
-# ---------------------------------------------------------------------------
-# Benchmark fixture (production-scale configs)
-# ---------------------------------------------------------------------------
-
-
-class MoePermuteBenchFixture(FixtureBase):
-    """Production-scale configs for throughput benchmarking.
-
-    Columns: total_tokens, top_k, num_experts, hidden_size
-    """
-    PARAMS = [
-        ("total_tokens, top_k, num_experts, hidden_size", [
-            # ── Kimi K2: H=7168, E=384, K=8 ─────────────────────────────
-            (1,    8, 384, 7168),
-            (32,   8, 384, 7168),
-            (512,  8, 384, 7168),
-            (4096, 8, 384, 7168),
-            # ── DeepSeek-V3: H=7168, E=256, K=8 ─────────────────────────
-            (1,    8, 256, 7168),
-            (32,   8, 256, 7168),
-            (512,  8, 256, 7168),
-            (4096, 8, 256, 7168),
-            # ── Qwen3-235B-A22B: H=7168, E=128, K=8 ─────────────────────
-            (1,    8, 128, 7168),
-            (32,   8, 128, 7168),
-            (512,  8, 128, 7168),
-            (4096, 8, 128, 7168),
-            # ── Qwen3-30B-A3B: H=3072, E=128, K=8 ───────────────────────
-            (1,    8, 128, 3072),
-            (32,   8, 128, 3072),
-            (512,  8, 128, 3072),
-            (4096, 8, 128, 3072),
-        ]),
-    ]
-
+_OP_NAME = "moe_permute_padded"
 
 # ---------------------------------------------------------------------------
 # Benchmark class
@@ -77,19 +43,45 @@ class MoePermuteBenchFixture(FixtureBase):
 
 class MoePermuteBenchmark(BenchmarkBase):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            t = self.test
+            elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
+            self._roofline_cache = eval_roofline(
+                _OP_NAME,
+                total_tokens=t.total_tokens,
+                top_k=t.top_k,
+                num_experts=t.num_experts,
+                hidden_size=t.hidden_size,
+                elem_bytes=elem_bytes,
+            )
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        return 0
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
-        numel = t.total_tokens * t.top_k
-        H = t.hidden_size
-        elem_bytes = 2  # bf16
-        # hidden_states read [T, H] + perm_h_pad write [T*K, H] (actual tokens only, pads are zero-init)
-        # + expert_first_token_offset write [E+1]*8 + fwd_idx write [T*K]*4
-        # + padded_offsets write [E]*4 + padded_sizes write [E]*4
-        return (t.total_tokens * H + numel * H) * elem_bytes + \
-               (t.num_experts + 1) * 8 + numel * 4 + t.num_experts * 4 * 2
+        return self._get_roofline()[1]
+
+
+# ---------------------------------------------------------------------------
+# Manifest-driven parametrize
+# ---------------------------------------------------------------------------
+
+
+def _manifest_params():
+    """Convert manifest workloads to pytest params."""
+    params = []
+    for w in load_workloads(_OP_NAME):
+        label = w.get("label", "unlabeled")
+        for dtype_str in w["dtypes"]:
+            params.append(pytest.param(
+                w["total_tokens"], w["top_k"], w["num_experts"], w["hidden_size"],
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +89,10 @@ class MoePermuteBenchmark(BenchmarkBase):
 # ---------------------------------------------------------------------------
 
 
-@MoePermuteBenchFixture
+@pytest.mark.parametrize(
+    "total_tokens, top_k, num_experts, hidden_size",
+    _manifest_params(),
+)
 def test_moe_permute_bench(
     total_tokens: int, top_k: int, num_experts: int, hidden_size: int
 ) -> None:

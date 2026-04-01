@@ -28,7 +28,7 @@ Each entry lives under `ops:`:
 signature:
   inputs:       # dict — tensor name → {dtype, shape?, constraints?}
   outputs:      # dict — tensor name → {dtype, shape?, constraints?}
-  params:       # list — [{name, type, default?}]
+  params:       # dict — param name → {type, default?}
   shape_rules:  # list — Python expressions for shape inference
   dtype_combos: # list — valid cross-tensor dtype combinations
 ```
@@ -41,11 +41,11 @@ signature:
 | `shape`       | no       | Dimension names or `same_as(ref)`. Present = fixed rank.   |
 | `constraints` | no       | Dimension restrictions (requires `shape`).                 |
 
-**Param fields**: `name` (string), `type` (string: `int`, `float`, `bool`, `"list[int]"`), `default` (optional).
+**Param fields**: key = parameter name, value = dict with `type` (string: `int`, `float`, `bool`, `"list[int]"`) and optional `default`.
 
 ### Rules
 
-**R1. Dict, not list.** Signature `inputs` and `outputs` use dicts keyed by tensor name. `params` remains a list to preserve positional order.
+**R1. Dict, not list.** Signature `inputs`, `outputs`, and `params` all use dicts keyed by name.
 
 **R2. Full interface.** Params include all mathematically supported parameters, even if the current kernel only supports the default.
 
@@ -136,8 +136,8 @@ inputs:
 outputs:
   y: {dtype: "same_as(x)", shape: "same_as(x)"}
 params:
-  - {name: dim, type: int, default: -1}
-  - {name: eps, type: float, default: 1e-6}
+  dim: {type: int, default: -1}
+  eps: {type: float, default: 1e-6}
 shape_rules:
   - "weight.shape == (x.shape[dim],)"
 ```
@@ -151,8 +151,8 @@ inputs:
 outputs:
   y: {dtype: "same_as(x)"}
 params:
-  - {name: dim, type: "int | list[int]"}
-  - {name: keepdim, type: bool, default: false}
+  dim: {type: "int | list[int]"}
+  keepdim: {type: bool, default: false}
 shape_rules:
   - "y.ndim == x.ndim if keepdim else x.ndim - len(dim)"
   - "y.shape[i] == 1 if i in dim and keepdim else x.shape[i]"
@@ -172,8 +172,8 @@ ops:
       outputs:
         y: {dtype: "same_as(x)", shape: "same_as(x)"}
       params:
-        - {name: dim, type: int, default: -1}
-        - {name: eps, type: float, default: 1e-6}
+        dim: {type: int, default: -1}
+        eps: {type: float, default: 1e-6}
       shape_rules:
         - "weight.shape == (x.shape[dim],)"
 
@@ -238,6 +238,74 @@ Ops must have **all-required tensors** and **fixed output count** to enter the m
 | ---- | ----------------------------------- | --------------------------------------------- |
 | 1    | Inline arithmetic expression        | norm, reduction, elementwise, RoPE, FFT, GEMM |
 | 2    | `func` reference to Python function | attention, conv, MoE, varlen attention        |
+
+## Benchmark Pattern
+
+Benchmark files must use manifest-driven workloads via `load_workloads` and `eval_roofline` from `tileops.manifest`. This ensures benchmarks always match the declared interface.
+
+### Required imports
+
+```python
+from tileops.manifest import eval_roofline, load_workloads
+```
+
+### Workload parametrization
+
+Use `load_workloads(op_name)` to generate pytest parameters from the manifest:
+
+```python
+_OP_NAME = "rmsnorm_fwd"
+
+
+def _manifest_params():
+    params = []
+    for w in load_workloads(_OP_NAME):
+        m, n = w["x_shape"]
+        label = w.get("label", f"{m}x{n}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}"))
+    return params
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
+def test_rms_norm_bench(m, n, dtype, tune): ...
+```
+
+### Roofline evaluation
+
+Use `eval_roofline(op_name, **variables)` to compute analytical flops and bytes from the manifest's roofline expressions:
+
+```python
+flops, mem_bytes = eval_roofline(_OP_NAME, M=m, N=n, elem_bytes=elem_bytes)
+```
+
+The variable names must match those used in the manifest's `roofline.flops` and `roofline.bytes` expressions.
+
+### Hardcoded shapes are not allowed
+
+Benchmark files must not hardcode workload shapes. The L4 check in `scripts/validate_manifest.py` enforces that every benchmark file listed in the manifest's `source.bench` imports `load_workloads`.
+
+## Manifest Validation
+
+`scripts/validate_manifest.py` runs five check levels against every entry in `ops_manifest.yaml`:
+
+| Level | Check             | Description                                             |
+| ----- | ----------------- | ------------------------------------------------------- |
+| L0    | YAML schema       | Required fields exist and have correct types            |
+| L1    | Signature         | `Op.forward()` params match manifest inputs and params  |
+| L2    | Shape rules       | `shape_rules` entries are valid Python expressions      |
+| L3    | Dtype conformance | dtype strings are valid torch types or `same_as()` refs |
+| L4    | Benchmark file    | Bench file imports `load_workloads`                     |
+
+**Spec-only ops** (where `source.op` does not exist on disk) receive L0 only; L1-L4 are skipped. This allows declaring an op interface before implementation.
+
+The validator runs in CI as part of the preflight workflow. Run locally:
+
+```bash
+python scripts/validate_manifest.py          # normal
+python scripts/validate_manifest.py --verbose # per-op progress
+```
 
 ## Exclusions
 

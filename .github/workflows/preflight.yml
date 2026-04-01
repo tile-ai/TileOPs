@@ -192,6 +192,27 @@ jobs:
       - name: Run gitleaks
         run: gitleaks dir . --redact --no-banner
 
+  validate-manifest:
+    needs: [validate-commits, validate-pr-title]
+    if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Validate ops_manifest.yaml (L0,L2,L3,L4 — L1 needs full deps)
+        run: python scripts/validate_manifest.py --levels L0,L2,L3,L4
+
   actionlint:
     needs: [validate-commits, validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
