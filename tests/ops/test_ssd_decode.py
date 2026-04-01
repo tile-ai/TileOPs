@@ -119,7 +119,7 @@ def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     # Run kernel; state is updated in-place.
     y_op = op(A, dt, x, B_in, C_in, state)
 
-    atol = 1e-3 if dtype == torch.float16 else 1.6e-2
+    atol = 1e-3
     rtol = 1e-3
     allclose_compare(y_op, y_ref, atol=atol, rtol=rtol)
     allclose_compare(state, state_ref, atol=atol, rtol=rtol)

@@ -166,6 +166,17 @@ class DaCumsumFwdKernel(Kernel):
         # so a single thread per block is the natural choice.
         return {"threads": 1}
 
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # For small batch/head configs, intra-block parallelism can improve occupancy.
+        # Warp-level scan with __shfl_up could reduce Q=64 from 64 serial steps to ~6.
+        return [
+            {"threads": 1},
+            {"threads": 32},
+            {"threads": 64},
+            {"threads": 128},
+        ]
+
     def forward(
         self,
         dt: torch.Tensor,

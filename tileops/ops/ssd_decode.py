@@ -95,12 +95,13 @@ class SsdDecodeOp(Op):
             raise ValueError(f"Expected float32 dt, got {dt.dtype}")
         if state.dtype != torch.float32:
             raise ValueError(f"Expected float32 state, got {state.dtype}")
+        if not state.is_contiguous():
+            raise ValueError("state must be contiguous for in-place update")
 
         A = A.contiguous()
         dt = dt.contiguous()
         x = x.contiguous()
         B_in = B_in.contiguous()
         C_in = C_in.contiguous()
-        state = state.contiguous()
 
         return self.kernel(A, dt, x, B_in, C_in, state)
