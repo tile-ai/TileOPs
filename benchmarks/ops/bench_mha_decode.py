@@ -88,14 +88,15 @@ def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: to
     if fa3_fn is not None:
         result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
-    else:
-        result_bl = bm.profile(test.ref_program, *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
     fi_fn = _flashinfer_mha_decode_fwd(test, *inputs)
     if fi_fn is not None:
         result_fi = bm.profile(fi_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+
+    if fa3_fn is None and fi_fn is None:
+        result_bl = bm.profile(test.ref_program, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 
 if __name__ == "__main__":

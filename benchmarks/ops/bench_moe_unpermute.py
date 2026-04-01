@@ -103,25 +103,6 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
     result = bm.profile(op, mm2_pad, fwd_idx, topk_weights)
     BenchmarkReport.record("moe_unpermute", locals(), result, tag="tileops")
 
-    # PyTorch vectorized baseline: gather + weighted sum
-    # fwd_idx[t*K+k] = padded_slot for (token t, expert choice k), so after gather
-    # rows are in token-major order → can reshape to [T, K, H] and reduce directly.
-    # This avoids index_add_ (atomic ops) and uses a fused mul+sum path instead.
-    fwd_idx_long = fwd_idx.long()
-    topk_weights_f32 = topk_weights.float()
-
-    def _torch_fn(mm2_pad, fwd_idx, topk_weights):
-        gathered = mm2_pad[fwd_idx_long].float()                  # [T*K, H]
-        weighted_sum = (gathered.view(total_tokens, top_k, hidden_size)
-                        * topk_weights_f32.unsqueeze(-1)).sum(dim=1)  # [T, H]
-        return weighted_sum.to(mm2_pad.dtype)
-
-    _torch_fn(mm2_pad, fwd_idx, topk_weights)  # warmup
-    torch.cuda.synchronize()
-
-    result_torch = bm.profile(_torch_fn, mm2_pad, fwd_idx, topk_weights)
-    BenchmarkReport.record("moe_unpermute", locals(), result_torch, tag="torch-ref")
-
     # vLLM baseline (optional)
     if _VLLM_AVAILABLE:
         # vLLM uses inv_permuted_idx (reverse mapping: padded_slot → flat_idx)
@@ -140,6 +121,22 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
 
         result_vllm = bm.profile(_vllm_fn, mm2_pad, fwd_idx, topk_weights)
         BenchmarkReport.record("moe_unpermute", locals(), result_vllm, tag="vllm")
+    else:
+        # Fallback: PyTorch vectorized baseline (gather + weighted sum)
+        fwd_idx_long = fwd_idx.long()
+        topk_weights_f32 = topk_weights.float()
+
+        def _torch_fn(mm2_pad, fwd_idx, topk_weights):
+            gathered = mm2_pad[fwd_idx_long].float()                  # [T*K, H]
+            weighted_sum = (gathered.view(total_tokens, top_k, hidden_size)
+                            * topk_weights_f32.unsqueeze(-1)).sum(dim=1)  # [T, H]
+            return weighted_sum.to(mm2_pad.dtype)
+
+        _torch_fn(mm2_pad, fwd_idx, topk_weights)  # warmup
+        torch.cuda.synchronize()
+
+        result_torch = bm.profile(_torch_fn, mm2_pad, fwd_idx, topk_weights)
+        BenchmarkReport.record("moe_unpermute", locals(), result_torch, tag="torch-ref")
 
 
 if __name__ == "__main__":

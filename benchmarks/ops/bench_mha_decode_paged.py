@@ -119,9 +119,6 @@ def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
-
     fa3_fn = _fa3_mha_decode_paged(test, k, v)
     if fa3_fn is not None:
         result_fa3 = bm.profile(fa3_fn, *inputs)
@@ -131,6 +128,10 @@ def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv
     if fi_fn is not None:
         result_fi = bm.profile(fi_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+
+    if fa3_fn is None and fi_fn is None:
+        result_bl = bm.profile(test.ref_program, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":
