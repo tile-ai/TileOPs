@@ -1,0 +1,32 @@
+extends: default
+
+rules:
+  # 2-space indentation, consistent throughout
+  indentation:
+    spaces: 2
+    indent-sequences: whatever
+
+  # Disable line-length: manifest workloads are intentionally long flow-style
+  line-length: disable
+
+  # Allow both document-start styles
+  document-start: disable
+
+  # Allow inline/flow-style mappings (used heavily in ops_manifest.yaml workloads)
+  braces:
+    forbid: false
+    min-spaces-inside: 0
+    max-spaces-inside: 0
+
+  brackets:
+    forbid: false
+    min-spaces-inside: 0
+    max-spaces-inside: 0
+
+  # Catch real problems
+  key-duplicates: enable
+
+  # Relax truthy to avoid flagging 'on' in GitHub workflow triggers
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false

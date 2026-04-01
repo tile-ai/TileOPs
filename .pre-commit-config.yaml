@@ -29,6 +29,12 @@ repos:
         args: [--ignore-case]
         files: ^docs/spelling_wordlist\.txt$
 
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.37.1
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint.yml]
+
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.0
     hooks:
