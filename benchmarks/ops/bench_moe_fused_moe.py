@@ -1,4 +1,4 @@
-"""Benchmark for FusedMoe — unified routed MoE FFN operator.
+"""Benchmark for FusedMoe -- unified routed MoE FFN operator.
 
 Covers real model configurations in both decode (T small) and prefill (T large) regimes:
 
@@ -100,38 +100,6 @@ class FusedMoeBenchTest(TestBase):
         return None
 
 
-class FusedMoeBenchFixture(FixtureBase):
-    PARAMS = [
-        (
-            "num_tokens, num_experts, top_k, hidden_size, ffn_size,"
-            " scoring_func, renormalize, with_correction_bias,"
-            " routed_scaling_factor, dtype",
-            [
-                # ── Kimi K2: E=384, K=8, H=7168, F=2048, sigmoid+bias ──────
-                (1,    384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
-                (32,   384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
-                (512,  384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
-                (4096, 384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
-                # ── DeepSeek-V3: E=256, K=8, H=7168, F=2048, sigmoid ───────
-                (1,    256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
-                (32,   256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
-                (512,  256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
-                (4096, 256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
-                # ── Qwen3-235B-A22B: E=128, K=8, H=7168, F=2048, softmax ──
-                (1,    128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
-                (32,   128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
-                (512,  128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
-                (4096, 128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
-                # ── Qwen3-30B-A3B: E=128, K=8, H=3072, F=1536, softmax ────
-                (1,    128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
-                (32,   128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
-                (512,  128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
-                (4096, 128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
-            ],
-        )
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Benchmark class
 # ---------------------------------------------------------------------------
@@ -143,17 +111,45 @@ class FusedMoeBenchmark(BenchmarkBase):
         t = self.test
         return (
             t.num_tokens * t.top_k
-            * (2 * t.ffn_size * t.hidden_size * 2   # gate+up
-               + t.hidden_size * t.ffn_size * 2)    # down
+            * (2 * t.ffn_size * t.hidden_size * 2
+               + t.hidden_size * t.ffn_size * 2)
         )
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test
-        elem = 2  # bf16 = 2 bytes
+        elem = 2
         w = (t.num_experts * 2 * t.ffn_size * t.hidden_size
              + t.num_experts * t.hidden_size * t.ffn_size) * elem
         a = t.num_tokens * t.hidden_size * elem * 2
         return w + a
+
+
+class FusedMoeBenchFixture(FixtureBase):
+    PARAMS = [
+        (
+            "num_tokens, num_experts, top_k, hidden_size, ffn_size,"
+            " scoring_func, renormalize, with_correction_bias,"
+            " routed_scaling_factor, dtype",
+            [
+                (1,    384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
+                (32,   384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
+                (512,  384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
+                (4096, 384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
+                (1,    256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (32,   256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (512,  256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (4096, 256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (1,    128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (32,   128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (512,  128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (4096, 128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (1,    128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+                (32,   128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+                (512,  128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+                (4096, 128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+            ],
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +171,7 @@ def test_fused_moe_bench(
     bm = FusedMoeBenchmark(test)
     hidden, gating, correction_bias, w_gate_up, w_down = test.gen_inputs()
 
-    # ── TileOPs nopad ─────────────────────────────────────────────────────────
+    # -- TileOPs nopad -----------------------------------------------------
     op = FusedMoe(
         num_tokens=num_tokens,
         num_experts=num_experts,
@@ -195,7 +191,7 @@ def test_fused_moe_bench(
     result = bm.profile(op, hidden, gating, w_gate_up, w_down, correction_bias)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    # ── TileOPs padded ────────────────────────────────────────────────────────
+    # -- TileOPs padded ----------------------------------------------------
     op_pad = FusedMoe(
         num_tokens=num_tokens,
         num_experts=num_experts,
@@ -215,7 +211,7 @@ def test_fused_moe_bench(
     result_pad = bm.profile(op_pad, hidden, gating, w_gate_up, w_down, correction_bias)
     BenchmarkReport.record(op_pad, locals(), result_pad, tag="tileops-padded")
 
-    # ── vLLM baseline (optional) ──────────────────────────────────────────────
+    # -- vLLM baseline (optional) ------------------------------------------
     if _VLLM_AVAILABLE:
         gating_f32 = gating.float()
 

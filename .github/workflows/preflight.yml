@@ -192,6 +192,27 @@ jobs:
       - name: Run gitleaks
         run: gitleaks dir . --redact --no-banner
 
+  validate-manifest:
+    needs: [validate-commits, validate-pr-title]
+    if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install TileOPs and validator dependencies
+        run: pip install -e .
+
+      - name: Validate ops_manifest.yaml
+        run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench
+
   actionlint:
     needs: [validate-commits, validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}

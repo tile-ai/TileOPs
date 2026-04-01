@@ -32,37 +32,6 @@ from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedTopKOp
 
 # ---------------------------------------------------------------------------
-# Benchmark fixture
-# ---------------------------------------------------------------------------
-
-
-class FusedTopKBenchFixture(FixtureBase):
-    """Production-scale configs for throughput benchmarking.
-
-    Columns: num_tokens, num_experts, top_k, scoring_func, renormalize
-    """
-    PARAMS = [
-        ("num_tokens, num_experts, top_k, scoring_func, renormalize", [
-            # ── Kimi K2: E=384, K=8, sigmoid ──────────────────────────────
-            (1,    384, 8, "sigmoid", True),
-            (32,   384, 8, "sigmoid", True),
-            (512,  384, 8, "sigmoid", True),
-            (4096, 384, 8, "sigmoid", True),
-            # ── DeepSeek-V3: E=256, K=8, sigmoid ──────────────────────────
-            (1,    256, 8, "sigmoid", True),
-            (32,   256, 8, "sigmoid", True),
-            (512,  256, 8, "sigmoid", True),
-            (4096, 256, 8, "sigmoid", True),
-            # ── Qwen3-235B-A22B / Qwen3-30B-A3B: E=128, K=8, softmax ─────
-            (1,    128, 8, "softmax", False),
-            (32,   128, 8, "softmax", False),
-            (512,  128, 8, "softmax", False),
-            (4096, 128, 8, "softmax", False),
-        ]),
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Benchmark class
 # ---------------------------------------------------------------------------
 
@@ -71,17 +40,34 @@ class FusedTopKBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.test
-        # Approx: scoring (2*E ops/token) + K-pass argmax (2*E*K comparisons/token)
         return t.num_tokens * t.num_experts * 2 * (1 + t.top_k)
 
     def calculate_memory(self) -> Optional[float]:
         t = self.test
-        # gating_output read [T, E] bf16 + topk_weights write [T, K] f32 + topk_ids write [T, K] int32
         return (
             t.num_tokens * t.num_experts * 2
             + t.num_tokens * t.top_k * 4
             + t.num_tokens * t.top_k * 4
         )
+
+
+class FusedTopKBenchFixture(FixtureBase):
+    PARAMS = [
+        ("num_tokens, num_experts, top_k, scoring_func, renormalize", [
+            (1,    384, 8, "sigmoid", True),
+            (32,   384, 8, "sigmoid", True),
+            (512,  384, 8, "sigmoid", True),
+            (4096, 384, 8, "sigmoid", True),
+            (1,    256, 8, "sigmoid", True),
+            (32,   256, 8, "sigmoid", True),
+            (512,  256, 8, "sigmoid", True),
+            (4096, 256, 8, "sigmoid", True),
+            (1,    128, 8, "softmax", False),
+            (32,   128, 8, "softmax", False),
+            (512,  128, 8, "softmax", False),
+            (4096, 128, 8, "softmax", False),
+        ]),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +97,7 @@ def test_fused_topk_bench(
     if _VLLM_AVAILABLE and scoring_func in ("softmax", "sigmoid"):
         has_external = True
         hidden_dummy = torch.empty(num_tokens, 1, device=gating_output.device)
-        # Cast bf16→f32 inside the timed call to match TileOPs' input conditions.
+        # Cast bf16->f32 inside the timed call to match TileOPs' input conditions.
         def _vllm_fn(gating_output):
             return _vllm_fused_topk(
                 hidden_states=hidden_dummy,

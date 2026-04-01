@@ -32,34 +32,10 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_moe_unpermute import MoeUnpermuteTest
-from tests.test_base import FixtureBase
+from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoeUnpermuteOp
 
-# ---------------------------------------------------------------------------
-# Benchmark fixture (production-scale configs)
-# ---------------------------------------------------------------------------
-
-
-class MoeUnpermuteBenchFixture(FixtureBase):
-    """Production-scale configs for throughput benchmarking.
-
-    Columns: total_tokens, top_k, hidden_size
-    """
-    PARAMS = [
-        ("total_tokens, top_k, hidden_size", [
-            # ── Kimi K2 / DeepSeek-V3 / Qwen3-235B-A22B: H=7168, K=8 ────
-            (1,    8, 7168),
-            (32,   8, 7168),
-            (512,  8, 7168),
-            (4096, 8, 7168),
-            # ── Qwen3-30B-A3B: H=3072, K=8 ───────────────────────────────
-            (1,    8, 3072),
-            (32,   8, 3072),
-            (512,  8, 3072),
-            (4096, 8, 3072),
-        ]),
-    ]
-
+_OP_NAME = "moe_unpermute"
 
 # ---------------------------------------------------------------------------
 # Benchmark class
@@ -68,19 +44,44 @@ class MoeUnpermuteBenchFixture(FixtureBase):
 
 class MoeUnpermuteBenchmark(BenchmarkBase):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            t = self.test
+            elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
+            self._roofline_cache = eval_roofline(
+                _OP_NAME,
+                total_tokens=t.total_tokens,
+                top_k=t.top_k,
+                hidden_size=t.hidden_size,
+                elem_bytes=elem_bytes,
+            )
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        # multiply + add per element per expert slot: 2 * T*K * H
-        return 2 * t.total_tokens * t.top_k * t.hidden_size
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
-        numel = t.total_tokens * t.top_k
-        H = t.hidden_size
-        elem_bytes = 2  # bf16
-        # mm2_pad read [padded_batch_sum, H] ≈ [T*K, H] in standalone bench (padded_batch_sum=T*K)
-        # + output write [T, H] + fwd_idx read [T*K]*4 + topk_weights read [T*K]*4
-        return (numel * H + t.total_tokens * H) * elem_bytes + numel * 4 + numel * 4
+        return self._get_roofline()[1]
+
+
+# ---------------------------------------------------------------------------
+# Manifest-driven parametrize
+# ---------------------------------------------------------------------------
+
+
+def _manifest_params():
+    """Convert manifest workloads to pytest params."""
+    params = []
+    for w in load_workloads(_OP_NAME):
+        label = w.get("label", "unlabeled")
+        for dtype_str in w["dtypes"]:
+            params.append(pytest.param(
+                w["total_tokens"], w["top_k"], w["hidden_size"],
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +89,10 @@ class MoeUnpermuteBenchmark(BenchmarkBase):
 # ---------------------------------------------------------------------------
 
 
-@MoeUnpermuteBenchFixture
+@pytest.mark.parametrize(
+    "total_tokens, top_k, hidden_size",
+    _manifest_params(),
+)
 def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) -> None:
     dtype = torch.bfloat16
     test = MoeUnpermuteTest(total_tokens, top_k, hidden_size, dtype)
@@ -105,8 +109,8 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
 
     # vLLM baseline (optional)
     if _VLLM_AVAILABLE:
-        # vLLM uses inv_permuted_idx (reverse mapping: padded_slot → flat_idx)
-        # Compute from fwd_idx (forward mapping: flat_idx → padded_slot)
+        # vLLM uses inv_permuted_idx (reverse mapping: padded_slot -> flat_idx)
+        # Compute from fwd_idx (forward mapping: flat_idx -> padded_slot)
         numel = total_tokens * top_k
         inv_permuted_idx = torch.empty(numel, dtype=torch.int32, device=fwd_idx.device)
         inv_permuted_idx[fwd_idx.long()] = torch.arange(numel, dtype=torch.int32, device=fwd_idx.device)

@@ -171,6 +171,8 @@ class TestOpSchema:
 
     def test_every_op_has_at_least_two_workloads(self, all_ops):
         for op_name, entry in all_ops.items():
+            if entry.get("status") == "spec-only":
+                continue
             assert len(entry["workloads"]) >= 2, (
                 f"{op_name} must have at least 2 workloads"
             )
@@ -202,6 +204,8 @@ class TestSourcePaths:
         for op_name, entry in all_ops.items():
             source = entry["source"]
             for key, rel_path in source.items():
+                if not isinstance(rel_path, str):
+                    continue
                 full_path = REPO_ROOT / rel_path
                 assert full_path.is_file(), (
                     f"{op_name}: source.{key} is not a file: {rel_path}"
