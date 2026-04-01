@@ -198,17 +198,16 @@ def _set_explicit_tier(item: pytest.Item, tier: str) -> None:
 
 
 def _clear_inherited_tiers_for_ops_items(items: list[pytest.Item]) -> None:
-    visited_nodes: set[int] = set()
+    visited_nodes: set[object] = set()
     for item in items:
         rel_path = _relative_test_path(item.path)
         if not rel_path.startswith(OPS_TEST_PREFIX):
             continue
         node = item.parent
         while node is not None:
-            node_id = id(node)
-            if node_id not in visited_nodes:
+            if node not in visited_nodes:
                 node.own_markers = [m for m in node.own_markers if m.name not in TIER_NAMES]
-                visited_nodes.add(node_id)
+                visited_nodes.add(node)
             node = node.parent
 
 

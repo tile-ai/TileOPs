@@ -16,6 +16,8 @@ import pytest
 import tests.conftest as tier_conftest
 from tests.conftest import _normalize_public_op_smoke, pytest_collection_modifyitems
 
+pytestmark = pytest.mark.full
+
 
 @pytest.fixture
 def disable_public_op_smoke_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
