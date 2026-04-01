@@ -38,39 +38,63 @@ class MhaBwdBenchmark(BenchmarkBase):
         return 7 * t.batch * t.heads * t.seq_len * t.dim * t.dtype.itemsize
 
 
-def _baseline_mha_fwd(test: MhaFwdTest):
+def _fa3_mha_fwd(test: MhaFwdTest):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
-        import flash_attn_interface
+        from flash_attn import flash_attn_func  # noqa: PLC0415
     except ImportError:
         return None
 
     def baseline_fn(q, k, v):
-        return flash_attn_interface.flash_attn_func(
-            q, k, v, softmax_scale=None, causal=test.is_causal)
+        return flash_attn_func(q, k, v, causal=test.is_causal)
 
     return baseline_fn
 
 
-def _baseline_mha_bwd(test: MhaBwdTest):
+def _fa3_mha_bwd(test: MhaBwdTest):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
-        import flash_attn_interface
+        from flash_attn import flash_attn_func  # noqa: PLC0415
     except ImportError:
         return None
 
-    softmax_scale = test.dim**(-0.5)
-
+    @torch.enable_grad()
     def baseline_fn(q, k, v, o, grad_output, lse):
-        dq = torch.empty_like(q)
-        dk = torch.empty_like(k)
-        dv = torch.empty_like(v)
-        dq, dk, dv, _ = flash_attn_interface._flash_attn_backward(
-            grad_output, q, k, v, o, lse, None, None, None, None, None, None, dq, dk, dv,
-            softmax_scale, test.is_causal)
-        return dq, dk, dv
+        q = q.detach().requires_grad_(True)
+        k = k.detach().requires_grad_(True)
+        v = v.detach().requires_grad_(True)
+        out = flash_attn_func(q, k, v, causal=test.is_causal)
+        out.backward(grad_output)
+        return q.grad, k.grad, v.grad
 
     return baseline_fn
+
+
+def _flashinfer_mha_fwd(test: MhaFwdTest, q, k, v):
+    """Set up FlashInfer batched prefill wrapper. Returns callable or None."""
+    try:
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    B, S, H, D = q.shape
+    cu_seqlens = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * S
+
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper.plan(
+        qo_indptr=cu_seqlens, kv_indptr=cu_seqlens,
+        num_qo_heads=H, num_kv_heads=H, head_dim_qk=D,
+        causal=test.is_causal,
+        q_data_type=q.dtype,
+    )
+
+    def run_fn(q, k, v):
+        return wrapper.run(
+            q.reshape(-1, H, D), k.reshape(-1, H, D), v.reshape(-1, H, D),
+        ).reshape(B, S, H, D)
+
+    return run_fn
 
 
 def _torch_mha_fwd(test):
@@ -116,13 +140,18 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    baseline_fn = _baseline_mha_fwd(test)
-    if baseline_fn is not None:
-        result_bl = bm.profile(baseline_fn, *inputs)
+    fa3_fn = _fa3_mha_fwd(test)
+    if fa3_fn is not None:
+        result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
     else:
         result_bl = bm.profile(_torch_mha_fwd(test), *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+
+    fi_fn = _flashinfer_mha_fwd(test, *inputs)
+    if fi_fn is not None:
+        result_fi = bm.profile(fi_fn, *inputs)
+        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
 
 _MHA_BWD_BENCH_PARAMS = _MHA_FWD_BENCH_PARAMS
@@ -139,9 +168,9 @@ def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    baseline_fn = _baseline_mha_bwd(test)
-    if baseline_fn is not None:
-        result_bl = bm.profile(baseline_fn, *inputs)
+    fa3_fn = _fa3_mha_bwd(test)
+    if fa3_fn is not None:
+        result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
     else:
         result_bl = bm.profile(_torch_mha_bwd(test), *inputs)

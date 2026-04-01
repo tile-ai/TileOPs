@@ -62,6 +62,40 @@ def _fa3_baseline(q, k, v, is_causal, wl, wr):
         return None
 
 
+def _flashinfer_sliding_window_fwd(test, q, k, v):
+    """Set up FlashInfer batched prefill with sliding window. Returns callable or None.
+
+    FlashInfer only supports window_left; skip when window_right >= 0.
+    """
+    if test.wr >= 0:
+        return None
+    try:
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    B, S, H, D = q.shape
+    Hkv = k.shape[2]
+    cu_seqlens = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * S
+
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper.plan(
+        qo_indptr=cu_seqlens, kv_indptr=cu_seqlens,
+        num_qo_heads=H, num_kv_heads=Hkv, head_dim_qk=D,
+        causal=test.is_causal,
+        window_left=test.wl,
+        q_data_type=q.dtype,
+    )
+
+    def run_fn(q, k, v):
+        return wrapper.run(
+            q.reshape(-1, H, D), k.reshape(-1, Hkv, D), v.reshape(-1, Hkv, D),
+        ).reshape(B, S, H, D)
+
+    return run_fn
+
+
 _GQA_SLIDING_WINDOW_FWD_BENCH_PARAMS = [
     pytest.param(2, 512, 8, 2, 64, True, -1, -1, torch.float16, True, id="causal-mainstream"),
     pytest.param(2, 512, 8, 2, 64, True, 128, -1, torch.float16, True, id="causal-left-window"),
@@ -113,6 +147,12 @@ def test_gqa_sliding_window_fwd_bench(
     else:
         result_bl = bm.profile(_torch_sliding_window_fwd(test), *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+    # FlashInfer baseline
+    fi_fn = _flashinfer_sliding_window_fwd(test, *inputs)
+    if fi_fn is not None:
+        result_fi = bm.profile(fi_fn, *inputs)
+        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
 
 if __name__ == "__main__":
