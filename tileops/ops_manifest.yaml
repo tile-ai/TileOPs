@@ -999,6 +999,8 @@ ops:
         renormalize: {type: bool, default: false}
         with_correction_bias: {type: bool, default: false}
         routed_scaling_factor: {type: float, default: 1.0}
+      shape_rules:
+        - "output.shape == hidden_states.shape"
 
     workloads:
       # Kimi K2: E=384, K=8, H=7168, F=2048, sigmoid+bias
@@ -1102,6 +1104,8 @@ ops:
         top_k: {type: int}
         num_experts: {type: int}
         hidden_size: {type: int}
+      shape_rules:
+        - "hidden_states.shape == (total_tokens, hidden_size)"
 
     workloads:
       # Kimi K2: H=7168, E=384, K=8
@@ -1152,6 +1156,8 @@ ops:
         top_k: {type: int}
         num_experts: {type: int}
         block_size: {type: int, default: 64}
+      shape_rules:
+        - "topk_ids.shape == (total_tokens, top_k)"
 
     workloads:
       # Kimi K2: E=384, K=8, block_size=64
@@ -1200,6 +1206,8 @@ ops:
         top_k: {type: int}
         num_experts: {type: int}
         hidden_size: {type: int}
+      shape_rules:
+        - "hidden_states.shape == (total_tokens, hidden_size)"
 
     workloads:
       # Kimi K2: H=7168, E=384, K=8
@@ -1249,6 +1257,8 @@ ops:
         total_tokens: {type: int}
         top_k: {type: int}
         hidden_size: {type: int}
+      shape_rules:
+        - "output.shape == (total_tokens, hidden_size)"
 
     workloads:
       # Kimi K2 / DeepSeek-V3 / Qwen3-235B-A22B: H=7168, K=8
@@ -1294,6 +1304,8 @@ ops:
         hidden_size: {type: int}
         ffn_size: {type: int}
         routed_scaling_factor: {type: float, default: 1.0}
+      shape_rules:
+        - "output.shape == hidden_states.shape"
 
     workloads:
       - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
@@ -1328,6 +1340,8 @@ ops:
         hidden_size: {type: int}
         ffn_size: {type: int}
         routed_scaling_factor: {type: float, default: 1.0}
+      shape_rules:
+        - "output.shape == hidden_states.shape"
 
     workloads:
       - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
@@ -1359,6 +1373,8 @@ ops:
         num_experts: {type: int}
         n: {type: int}
         k: {type: int}
+      shape_rules:
+        - "c.shape == (numel, n)"
 
     workloads:
       - {numel: 4096, num_experts: 256, n: 4096, k: 2048, dtypes: [bfloat16], label: "deepseek-v3-gate-up"}
