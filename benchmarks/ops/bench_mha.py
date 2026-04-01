@@ -38,7 +38,7 @@ class MhaBwdBenchmark(BenchmarkBase):
         return 7 * t.batch * t.heads * t.seq_len * t.dim * t.dtype.itemsize
 
 
-def _baseline_mha_fwd(test: MhaFwdTest):
+def _fa3_mha_fwd(test: MhaFwdTest):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
         from flash_attn import flash_attn_func  # noqa: PLC0415
@@ -51,7 +51,7 @@ def _baseline_mha_fwd(test: MhaFwdTest):
     return baseline_fn
 
 
-def _baseline_mha_bwd(test: MhaBwdTest):
+def _fa3_mha_bwd(test: MhaBwdTest):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
         from flash_attn import flash_attn_func  # noqa: PLC0415
@@ -140,7 +140,7 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    fa3_fn = _baseline_mha_fwd(test)
+    fa3_fn = _fa3_mha_fwd(test)
     if fa3_fn is not None:
         result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
@@ -168,7 +168,7 @@ def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    fa3_fn = _baseline_mha_bwd(test)
+    fa3_fn = _fa3_mha_bwd(test)
     if fa3_fn is not None:
         result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
