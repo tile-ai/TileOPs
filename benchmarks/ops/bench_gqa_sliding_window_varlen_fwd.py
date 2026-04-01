@@ -117,6 +117,37 @@ def _fa3_varlen_baseline(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q,
         return None
 
 
+def _flashinfer_varlen_sliding_window_fwd(test, q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
+    """Set up FlashInfer ragged prefill wrapper. Returns callable or None.
+
+    FlashInfer only supports window_left; skip when window_right >= 0.
+    """
+    if test.wr >= 0:
+        return None
+    try:
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper.plan(
+        qo_indptr=cu_seqlens_q,
+        kv_indptr=cu_seqlens_k,
+        num_qo_heads=test.heads,
+        num_kv_heads=test.heads_kv,
+        head_dim_qk=test.dim,
+        causal=test.is_causal,
+        window_left=test.wl,
+        q_data_type=q.dtype,
+    )
+
+    def run_fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
+        return wrapper.run(q, k, v)
+
+    return run_fn
+
+
 @pytest.mark.parametrize(
     "batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune",
     _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS,
@@ -166,6 +197,12 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     else:
         result_bl = bm.profile(_torch_sliding_window_varlen_fwd(test), *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+    # FlashInfer baseline
+    fi_fn = _flashinfer_varlen_sliding_window_fwd(test, *inputs)
+    if fi_fn is not None:
+        result_fi = bm.profile(fi_fn, *inputs)
+        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
 
 if __name__ == "__main__":

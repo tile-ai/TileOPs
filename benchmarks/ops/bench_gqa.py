@@ -73,22 +73,32 @@ def _fa3_gqa_bwd(test: GqaBwdTest):
     return baseline_fn
 
 
-def _flashinfer_gqa_fwd(test: GqaFwdTest):
-    """Return FlashInfer forward baseline callable, or None if not installed."""
+def _flashinfer_gqa_fwd(test: GqaFwdTest, q, k, v):
+    """Set up FlashInfer batched prefill wrapper. Returns callable or None."""
     try:
-        from flashinfer.prefill import single_prefill_with_kv_cache  # noqa: PLC0415
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
     except ImportError:
         return None
 
-    def baseline_fn(q, k, v):
-        outs = []
-        for b in range(q.shape[0]):
-            out = single_prefill_with_kv_cache(
-                q[b], k[b], v[b], causal=test.is_causal, kv_layout="NHD")
-            outs.append(out)
-        return torch.stack(outs)
+    B, S, H, D = q.shape
+    Hkv = k.shape[2]
+    cu_seqlens = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * S
 
-    return baseline_fn
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper.plan(
+        qo_indptr=cu_seqlens, kv_indptr=cu_seqlens,
+        num_qo_heads=H, num_kv_heads=Hkv, head_dim_qk=D,
+        causal=test.is_causal,
+        q_data_type=q.dtype,
+    )
+
+    def run_fn(q, k, v):
+        return wrapper.run(
+            q.reshape(-1, H, D), k.reshape(-1, Hkv, D), v.reshape(-1, Hkv, D),
+        ).reshape(B, S, H, D)
+
+    return run_fn
 
 
 def _torch_gqa_fwd(test):
@@ -145,7 +155,7 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
         result_bl = bm.profile(_torch_gqa_fwd(test), *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
-    fi_fn = _flashinfer_gqa_fwd(test)
+    fi_fn = _flashinfer_gqa_fwd(test, *inputs)
     if fi_fn is not None:
         result_fi = bm.profile(fi_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")

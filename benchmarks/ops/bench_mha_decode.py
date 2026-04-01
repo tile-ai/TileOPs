@@ -25,6 +25,47 @@ class MhaDecodeBenchmark(BenchmarkBase):
                 t.dtype.itemsize)
 
 
+def _fa3_mha_decode_fwd(test):
+    """Return FA3 forward baseline callable, or None if not installed."""
+    try:
+        from flash_attn import flash_attn_func  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    def baseline_fn(q, k, v):
+        return flash_attn_func(q, k, v)
+
+    return baseline_fn
+
+
+def _flashinfer_mha_decode_fwd(test, q, k, v):
+    """Set up FlashInfer batched prefill wrapper. Returns callable or None."""
+    try:
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    B, Sq, H, D = q.shape
+    Skv = k.shape[1]
+    cu_seqlens_q = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * Sq
+    cu_seqlens_k = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * Skv
+
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper.plan(
+        qo_indptr=cu_seqlens_q, kv_indptr=cu_seqlens_k,
+        num_qo_heads=H, num_kv_heads=H, head_dim_qk=D,
+        q_data_type=q.dtype,
+    )
+
+    def run_fn(q, k, v):
+        return wrapper.run(
+            q.reshape(-1, H, D), k.reshape(-1, H, D), v.reshape(-1, H, D),
+        ).reshape(B, Sq, H, D)
+
+    return run_fn
+
+
 _MHA_DECODE_BENCH_PARAMS = [
     pytest.param(1, 32, 128, 8192, 128, torch.float16, True, id="fp16-long-cache"),
     pytest.param(1, 32, 128, 8192, 128, torch.bfloat16, True, id="bf16-long-cache"),
@@ -43,8 +84,18 @@ def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: to
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+    fa3_fn = _fa3_mha_decode_fwd(test)
+    if fa3_fn is not None:
+        result_bl = bm.profile(fa3_fn, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
+    else:
+        result_bl = bm.profile(test.ref_program, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+
+    fi_fn = _flashinfer_mha_decode_fwd(test, *inputs)
+    if fi_fn is not None:
+        result_fi = bm.profile(fi_fn, *inputs)
+        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
 
 if __name__ == "__main__":

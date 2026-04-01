@@ -74,22 +74,34 @@ def pytest_runtest_call(item):
         if bw is not None:
             item.user_properties.append(("tileops_bandwidth_tbs", f"{bw:.2f}"))
 
-    # Use the first baseline only to avoid duplicate property names in JUnit XML.
-    if baseline_entries:
-        be = baseline_entries[0]
+    # Write all baselines into JUnit XML properties.
+    # The first baseline uses the legacy unprefixed names (baseline_tag, etc.)
+    # for backward compatibility.  Additional baselines use "{tag}_latency_ms",
+    # "{tag}_tflops", "{tag}_ratio" so the report can display multiple columns.
+    for idx, be in enumerate(baseline_entries):
         tag = be["tag"]
-        item.user_properties.append(("baseline_tag", tag))
-        item.user_properties.append(("baseline_latency_ms",
-                                     f"{be.get('latency_ms', 0):.4f}"))
+        bl_latency = be.get("latency_ms", 0)
         bl_tflops = be.get("tflops")
-        if bl_tflops is not None:
-            item.user_properties.append(("baseline_tflops", f"{bl_tflops:.2f}"))
 
+        if idx == 0:
+            # Legacy unprefixed keys — consumed by existing nightly_report.py
+            item.user_properties.append(("baseline_tag", tag))
+            item.user_properties.append(("baseline_latency_ms", f"{bl_latency:.4f}"))
+            if bl_tflops is not None:
+                item.user_properties.append(("baseline_tflops", f"{bl_tflops:.2f}"))
+            if tileops_entry:
+                tl = tileops_entry.get("latency_ms", 0)
+                if tl > 0 and bl_latency > 0:
+                    item.user_properties.append(("baseline_ratio",
+                                                 f"{bl_latency / tl:.4f}"))
+
+        # Tag-prefixed keys — always written for every baseline
+        item.user_properties.append((f"{tag}_latency_ms", f"{bl_latency:.4f}"))
+        if bl_tflops is not None:
+            item.user_properties.append((f"{tag}_tflops", f"{bl_tflops:.2f}"))
         if tileops_entry:
             tl = tileops_entry.get("latency_ms", 0)
-            bl = be.get("latency_ms", 0)
-            if tl > 0 and bl > 0:
-                ratio = bl / tl
-                item.user_properties.append(("baseline_ratio", f"{ratio:.4f}"))
+            if tl > 0 and bl_latency > 0:
+                item.user_properties.append((f"{tag}_ratio", f"{bl_latency / tl:.4f}"))
 
     _bench_results.entries = []

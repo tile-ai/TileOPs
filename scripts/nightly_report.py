@@ -116,8 +116,34 @@ def parse_bench_xml(path: str) -> list[dict]:
                     entry[key] = float(props[key])
                 except ValueError:
                     entry[key] = props[key]
+
+        # Collect tag-prefixed baselines written by conftest (e.g. fa3_latency_ms,
+        # flashinfer_latency_ms).  Each baseline becomes a dict in "baselines".
+        baselines = {}
+        for pkey, pval in props.items():
+            if pkey.endswith("_latency_ms") and pkey not in (
+                    "tileops_latency_ms", "baseline_latency_ms"):
+                tag = pkey.removesuffix("_latency_ms")
+                baselines.setdefault(tag, {})["latency_ms"] = _try_float(pval)
+            elif pkey.endswith("_tflops") and pkey not in (
+                    "tileops_tflops", "baseline_tflops"):
+                tag = pkey.removesuffix("_tflops")
+                baselines.setdefault(tag, {})["tflops"] = _try_float(pval)
+            elif pkey.endswith("_ratio") and pkey not in ("baseline_ratio",):
+                tag = pkey.removesuffix("_ratio")
+                baselines.setdefault(tag, {})["ratio"] = _try_float(pval)
+        if baselines:
+            entry["baselines"] = baselines
+
         results.append(entry)
     return results
+
+
+def _try_float(v):
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +188,7 @@ def aggregate_bench_results(results: list[dict]) -> dict:
         for key in ("tileops_latency_ms", "tileops_tflops", "tileops_bandwidth_tbs",
                      "tileops_variant",
                      "baseline_tag", "baseline_latency_ms", "baseline_tflops",
-                     "baseline_ratio"):
+                     "baseline_ratio", "baselines"):
             if key in r:
                 config_entry[key] = r[key]
         d["configs"].append(config_entry)
@@ -267,10 +293,11 @@ def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
-    """Find ops where tileops is significantly slower than baseline."""
+    """Find ops where tileops is significantly slower than any baseline."""
     alerts = []
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
+            # Check legacy primary baseline
             ratio = cfg.get("baseline_ratio")
             if ratio is not None and ratio < BASELINE_RATIO_ALERT:
                 alerts.append({
@@ -281,6 +308,21 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
                     "ratio": ratio,
                     "baseline_tag": cfg.get("baseline_tag", "baseline"),
                 })
+            # Check additional baselines
+            for tag, bl in cfg.get("baselines", {}).items():
+                bl_ratio = bl.get("ratio")
+                if bl_ratio is not None and bl_ratio < BASELINE_RATIO_ALERT:
+                    # Skip if this is the same as the primary baseline
+                    if tag == cfg.get("baseline_tag"):
+                        continue
+                    alerts.append({
+                        "op": op,
+                        "config": cfg["name"],
+                        "tileops_ms": cfg.get("tileops_latency_ms"),
+                        "baseline_ms": bl.get("latency_ms"),
+                        "ratio": bl_ratio,
+                        "baseline_tag": tag,
+                    })
     return alerts
 
 
@@ -312,6 +354,17 @@ def build_history_entry(bench_ops: dict) -> dict:
                     bl_tflops = cfg.get("baseline_tflops")
                     if bl_tflops is not None:
                         entry[tag]["tflops"] = bl_tflops
+            # Additional baselines
+            for btag, bl in cfg.get("baselines", {}).items():
+                if btag == cfg.get("baseline_tag"):
+                    continue  # already recorded above
+                bl_entry = {}
+                if bl.get("latency_ms") is not None:
+                    bl_entry["latency_ms"] = bl["latency_ms"]
+                if bl.get("tflops") is not None:
+                    bl_entry["tflops"] = bl["tflops"]
+                if bl_entry:
+                    entry[btag] = bl_entry
             if entry:
                 cfg_data[cfg["name"]] = entry
         if cfg_data:
@@ -526,23 +579,39 @@ def generate_report(
                 lat = cfg.get("tileops_latency_ms")
                 tflops = cfg.get("tileops_tflops")
                 bw = cfg.get("tileops_bandwidth_tbs")
-                bl_tag = cfg.get("baseline_tag", "")
                 variant = cfg.get("tileops_variant")
-                ratio = cfg.get("baseline_ratio")
                 lat_str = f"{lat:.4f}" if lat else "-"
                 tflops_str = f"{tflops:.2f}" if tflops else "-"
                 bw_str = f"{bw:.2f}" if bw else "-"
+
+                # Collect all baselines for this config into rows
+                bl_rows = []
+                bl_tag = cfg.get("baseline_tag", "")
+                ratio = cfg.get("baseline_ratio")
                 if bl_tag:
-                    bl_str = str(bl_tag)
-                elif variant:
-                    bl_str = f"strategy: {variant}"
+                    bl_rows.append((bl_tag, ratio))
+                for tag, bl in cfg.get("baselines", {}).items():
+                    if tag == bl_tag:
+                        continue
+                    bl_rows.append((tag, bl.get("ratio")))
+
+                if not bl_rows:
+                    bl_str = f"strategy: {variant}" if variant else "-"
+                    lines.append(f"|  | {op} | {cfg['name']} "
+                                 f"| {lat_str} | {tflops_str} | {bw_str} "
+                                 f"| {bl_str} | - |")
                 else:
-                    bl_str = "-"
-                ratio_str = f"{ratio:.1%}" if ratio else "-"
-                emoji = _ratio_emoji(ratio) if ratio else ""
-                lines.append(f"| {emoji} | {op} | {cfg['name']} "
-                             f"| {lat_str} | {tflops_str} | {bw_str} "
-                             f"| {bl_str} | {ratio_str} |")
+                    via_parts = []
+                    for btag, bratio in bl_rows:
+                        r_str = f"{bratio:.1%}" if bratio else "-"
+                        via_parts.append(f"{btag} {r_str}")
+                    via_str = ", ".join(via_parts)
+                    # Use the best (highest) ratio for the emoji
+                    best_ratio = max((r for _, r in bl_rows if r), default=None)
+                    emoji = _ratio_emoji(best_ratio) if best_ratio else ""
+                    lines.append(f"| {emoji} | {op} | {cfg['name']} "
+                                 f"| {lat_str} | {tflops_str} | {bw_str} "
+                                 f"| {via_str} | - |")
         lines.append("")
         lines.append("</details>")
         lines.append("")
