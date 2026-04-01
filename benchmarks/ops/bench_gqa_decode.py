@@ -40,30 +40,51 @@ def _fa3_gqa_decode_fwd(test):
 
 
 def _flashinfer_gqa_decode_fwd(test, q, k, v):
-    """Set up FlashInfer batched ragged prefill (seqlen_q=1). Returns callable or None."""
+    """Set up FlashInfer batched paged decode for non-paged KV cache.
+
+    Reshapes the contiguous (B, S_kv, H_kv, D) KV into paged format with
+    page_size=256, then uses the specialized decode kernel.
+    """
     try:
-        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper  # noqa: PLC0415
     except ImportError:
         return None
 
     # Q is (B, H, D) — single token per request
+    # K/V is (B, S_kv, H_kv, D)
     B, H, D = q.shape
     Hkv = k.shape[2]
     Skv = k.shape[1]
-    cu_seqlens_q = torch.arange(0, B + 1, dtype=torch.int32, device=q.device)
-    cu_seqlens_k = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * Skv
+    page_size = 256
+    pages_per_seq = (Skv + page_size - 1) // page_size
+
+    # Reshape (B, S_kv, H_kv, D) → (B * pages_per_seq, page_size, H_kv, D)
+    # Pad S_kv to a multiple of page_size if needed
+    if Skv % page_size != 0:
+        pad = page_size * pages_per_seq - Skv
+        k = torch.nn.functional.pad(k, (0, 0, 0, 0, 0, pad))
+        v = torch.nn.functional.pad(v, (0, 0, 0, 0, 0, pad))
+    k_paged = k.reshape(B * pages_per_seq, page_size, Hkv, D)
+    v_paged = v.reshape(B * pages_per_seq, page_size, Hkv, D)
+    kv_data = (k_paged, v_paged)
+
+    total_pages = B * pages_per_seq
+    indptr = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * pages_per_seq
+    indices = torch.arange(0, total_pages, dtype=torch.int32, device=q.device)
+    last_page_len_val = Skv - (pages_per_seq - 1) * page_size
+    last_page_len = torch.full((B,), last_page_len_val, dtype=torch.int32, device=q.device)
 
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
-    wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper = BatchDecodeWithPagedKVCacheWrapper(workspace, kv_layout="NHD")
     wrapper.plan(
-        qo_indptr=cu_seqlens_q, kv_indptr=cu_seqlens_k,
-        num_qo_heads=H, num_kv_heads=Hkv, head_dim_qk=D,
+        indptr=indptr, indices=indices, last_page_len=last_page_len,
+        num_qo_heads=H, num_kv_heads=Hkv, head_dim=D,
+        page_size=page_size,
         q_data_type=q.dtype,
     )
 
     def run_fn(q, k, v):
-        # Q: (B, H, D) → (B, H, D) — already packed (1 token per request)
-        return wrapper.run(q, k.reshape(-1, Hkv, D), v.reshape(-1, Hkv, D))
+        return wrapper.run(q, kv_data)
 
     return run_fn
 
