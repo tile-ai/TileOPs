@@ -1035,6 +1035,7 @@ ops:
       op: tileops/ops/moe/fused_moe.py
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
+      bench_manifest_driven: true
 
   moe_fused_topk:
     family: moe
@@ -1085,6 +1086,7 @@ ops:
       op: tileops/ops/moe/fused_topk.py
       test: tests/ops/test_moe_fused_topk.py
       bench: benchmarks/ops/bench_moe_fused_topk.py
+      bench_manifest_driven: true
 
   moe_permute_padded:
     family: moe
@@ -1140,6 +1142,7 @@ ops:
       op: tileops/ops/moe/permute_padded.py
       test: tests/ops/test_moe_permute.py
       bench: benchmarks/ops/bench_moe_permute.py
+      bench_manifest_driven: true
 
   moe_permute_align:
     family: moe
@@ -1187,6 +1190,7 @@ ops:
       op: tileops/ops/moe/permute_align.py
       test: tests/ops/test_moe_permute_align.py
       bench: benchmarks/ops/bench_moe_permute_align.py
+      bench_manifest_driven: true
 
   moe_permute_nopad:
     family: moe
@@ -1242,6 +1246,7 @@ ops:
       op: tileops/ops/moe/permute_nopad.py
       test: tests/ops/test_moe_permute.py
       bench: benchmarks/ops/bench_moe_permute_nopad.py
+      bench_manifest_driven: true
 
   moe_unpermute:
     family: moe
@@ -1283,6 +1288,7 @@ ops:
       op: tileops/ops/moe/unpermute.py
       test: tests/ops/test_moe_unpermute.py
       bench: benchmarks/ops/bench_moe_unpermute.py
+      bench_manifest_driven: true
 
   moe_fused_experts:
     family: moe

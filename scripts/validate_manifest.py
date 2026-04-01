@@ -6,7 +6,7 @@ Checks:
   signature — Op.forward() params match manifest inputs+params
   shape     — shape_rules are parseable Python expressions
   dtype     — dtype strings are valid torch dtype names or references
-  bench     — benchmark file imports load_workloads/eval_roofline from manifest
+  bench     — benchmark file uses load_workloads/eval_roofline with this op name
 
 Spec-only ops get schema only. Implemented ops get all checks.
 
@@ -16,8 +16,6 @@ Usage:
 Exit code 0 = all checks pass; 1 = failures found.
 
 The --levels flag selects which checks to run. When omitted, all are enabled.
-This allows lightweight CI environments to exclude checks that require heavy
-dependencies (e.g. signature needs the full tileops runtime to import Op modules).
 """
 
 from __future__ import annotations
@@ -146,6 +144,12 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
             errors.append(
                 f"[schema] {op_name}: source missing fields: {missing_src}"
             )
+        if "bench_manifest_driven" in source and not isinstance(
+            source["bench_manifest_driven"], bool,
+        ):
+            errors.append(
+                f"[schema] {op_name}: source.bench_manifest_driven must be a bool"
+            )
     elif "source" in entry:
         errors.append(f"[schema] {op_name}: source must be a mapping")
 
@@ -183,22 +187,13 @@ def check_l1_signature(
         )
         return errors
 
-    # Expected forward params = manifest inputs keys + manifest params keys
-    expected = set(manifest_inputs.keys()) | set(manifest_params.keys())
-    actual = set(forward_params)
-
-    extra_in_forward = actual - expected
-
-    # Inputs must appear in forward()
-    missing_inputs = set(manifest_inputs.keys()) - actual
-    if missing_inputs:
+    expected = list(manifest_inputs.keys()) + [
+        name for name in manifest_params.keys() if name in forward_params
+    ]
+    if forward_params != expected:
         errors.append(
-            f"[signature] {op_name}: manifest inputs not in forward(): {missing_inputs}"
-        )
-
-    if extra_in_forward:
-        errors.append(
-            f"[signature] {op_name}: forward() has params not in manifest: {extra_in_forward}"
+            f"[signature] {op_name}: forward() params {forward_params} do not match "
+            f"manifest order {expected}"
         )
 
     return errors
@@ -285,18 +280,13 @@ def check_l1(
 ) -> list[str]:
     """Signature check: resolve Op class and compare forward() to manifest.
 
-    If the Op module cannot be imported (e.g. missing runtime dependencies),
-    the signature check is skipped with a warning instead of failing. This
-    allows the validator to run in lightweight CI environments (PyYAML-only)
-    where other checks still execute.
-
     Args:
         op_name: Manifest op name.
         entry: The manifest entry dict.
         warnings: Optional list to append warning messages to.
 
     Returns:
-        List of error strings (empty if OK or skipped).
+        List of error strings (empty if OK).
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
@@ -306,13 +296,10 @@ def check_l1(
     result = _resolve_op_class(op_file, op_name)
 
     if result.import_error:
-        # Missing dependencies — skip signature check gracefully
-        msg = (
-            f"[signature] {op_name}: skipped — could not import {op_file} "
+        errors.append(
+            f"[signature] {op_name}: could not import {op_file} "
             f"(missing dependencies)"
         )
-        if warnings is not None:
-            warnings.append(msg)
         return errors
 
     if result.cls is None:
@@ -436,36 +423,58 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
 # bench: benchmark file uses manifest workloads
 # ---------------------------------------------------------------------------
 
-def _ast_has_import_and_usage(
+def _resolve_constant_str_bindings(tree: ast.Module) -> dict[str, str]:
+    """Collect simple module-level string constants: NAME = 'value'."""
+    bindings: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            bindings[target.id] = node.value.value
+    return bindings
+
+
+def _call_uses_expected_op_name(
+    call: ast.Call, expected_op_name: str, bindings: dict[str, str],
+) -> bool:
+    """Return True when call(arg0, ...) uses the expected op name."""
+    if not call.args:
+        return False
+    first_arg = call.args[0]
+    if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+        return first_arg.value == expected_op_name
+    if isinstance(first_arg, ast.Name):
+        return bindings.get(first_arg.id) == expected_op_name
+    return False
+
+
+def _ast_manifest_call_usage(
     tree: ast.Module,
+    op_name: str,
     target_names: set[str],
 ) -> dict[str, bool]:
-    """Check whether *target_names* are imported AND referenced in *tree*.
-
-    Returns a dict mapping each target name to True/False.
-    A name counts as "used" if it appears as:
-      - An ``ImportFrom`` name (``from tileops.manifest import name``),  AND
-      - A bare ``Name`` node elsewhere in the AST (e.g., ``load_workloads(...)``).
-
-    Attribute-style calls like ``fake.load_workloads(...)`` are NOT accepted,
-    because the required import form is ``from tileops.manifest import name``
-    which binds ``name`` as a bare identifier, not an attribute on some object.
-    """
+    """Check whether target functions are imported and called with this op name."""
     imported: set[str] = set()
-    called: set[str] = set()
+    matched_calls: set[str] = set()
+    bindings = _resolve_constant_str_bindings(tree)
 
     for node in ast.walk(tree):
-        # from tileops.manifest import load_workloads, eval_roofline
         if isinstance(node, ast.ImportFrom):
             if node.module == "tileops.manifest" and node.names:
                 for alias in node.names:
                     if alias.name in target_names:
                         imported.add(alias.name)
-        # Direct bare-name usage only: load_workloads('op')
-        elif isinstance(node, ast.Name) and node.id in target_names:
-            called.add(node.id)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            func_name = node.func.id
+            if func_name in target_names and _call_uses_expected_op_name(
+                node, op_name, bindings,
+            ):
+                matched_calls.add(func_name)
 
-    return {name: (name in imported and name in called) for name in target_names}
+    return {name: (name in imported and name in matched_calls) for name in target_names}
 
 
 def check_l4_benchmark(
@@ -476,18 +485,16 @@ def check_l4_benchmark(
     Uses Python AST parsing (no execution) to verify actual import and usage,
     rather than raw substring matching which can be fooled by comments.
 
-    Returns (errors, warnings). Missing bench file is an error; missing
-    manifest usage is a warning (allows incremental migration).
+    Returns a list of hard validation errors.
     """
     errors: list[str] = []
-    warnings: list[str] = []
     full_path = Path(bench_path)
     if not full_path.is_absolute():
         full_path = repo_root / bench_path
 
     if not full_path.is_file():
         errors.append(f"[bench] {op_name}: bench file not found: {bench_path}")
-        return errors, warnings
+        return errors
 
     content = full_path.read_text(encoding="utf-8")
 
@@ -497,35 +504,36 @@ def check_l4_benchmark(
         errors.append(
             f"[bench] {op_name}: bench file {bench_path} has syntax error: {exc}"
         )
-        return errors, warnings
+        return errors
 
     targets = {"load_workloads", "eval_roofline"}
-    usage = _ast_has_import_and_usage(tree, targets)
+    usage = _ast_manifest_call_usage(tree, op_name, targets)
 
     if not usage["load_workloads"]:
-        warnings.append(
-            f"[bench] {op_name}: bench file {bench_path} does not import and use "
-            f"load_workloads from tileops.manifest"
+        errors.append(
+            f"[bench] {op_name}: bench file {bench_path} must import "
+            f"load_workloads from tileops.manifest and call it with op name {op_name!r}"
         )
     if not usage["eval_roofline"]:
-        warnings.append(
-            f"[bench] {op_name}: bench file {bench_path} does not import and use "
-            f"eval_roofline from tileops.manifest"
+        errors.append(
+            f"[bench] {op_name}: bench file {bench_path} must import "
+            f"eval_roofline from tileops.manifest and call it with op name {op_name!r}"
         )
-    return errors, warnings
+    return errors
 
 
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-def _is_spec_only(entry: dict, repo_root: Path) -> bool:
-    """An op is spec-only if status is 'spec-only' or its source.op file does not exist."""
-    if entry.get("status") == "spec-only":
-        return True
-    source = entry.get("source", {})
-    op_file = source.get("op", "")
-    return not (repo_root / op_file).is_file()
+def _is_spec_only(entry: dict) -> bool:
+    """Spec-only behavior must be explicit in the manifest status."""
+    return entry.get("status") == "spec-only"
+
+
+def _is_bench_manifest_driven(entry: dict) -> bool:
+    """Bench strictness is opt-in until all legacy benchmarks are migrated."""
+    return bool(entry.get("source", {}).get("bench_manifest_driven", False))
 
 
 ALL_LEVELS = frozenset({"schema", "signature", "shape", "dtype", "bench"})
@@ -575,7 +583,7 @@ def validate_manifest(
             if schema_errors:
                 continue
 
-        spec_only = _is_spec_only(entry, repo_root)
+        spec_only = _is_spec_only(entry)
         if spec_only:
             if verbose:
                 print(f"    {op_name}: spec-only, skipping signature/shape/dtype/bench")
@@ -597,11 +605,11 @@ def validate_manifest(
         if "bench" in levels:
             bench_path = entry.get("source", {}).get("bench", "")
             if bench_path:
-                bench_errors, bench_warnings = check_l4_benchmark(
-                    op_name, bench_path, repo_root
-                )
-                all_errors.extend(bench_errors)
-                all_warnings.extend(bench_warnings)
+                bench_errors = check_l4_benchmark(op_name, bench_path, repo_root)
+                if _is_bench_manifest_driven(entry):
+                    all_errors.extend(bench_errors)
+                else:
+                    all_warnings.extend(bench_errors)
 
     return all_errors, all_warnings
 

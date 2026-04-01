@@ -290,15 +290,17 @@ Benchmark files must not hardcode workload shapes. The L4 check in `scripts/vali
 
 `scripts/validate_manifest.py` runs five check levels against every entry in `ops_manifest.yaml`:
 
-| Level | Check             | Description                                             |
-| ----- | ----------------- | ------------------------------------------------------- |
-| L0    | YAML schema       | Required fields exist and have correct types            |
-| L1    | Signature         | `Op.forward()` params match manifest inputs and params  |
-| L2    | Shape rules       | `shape_rules` entries are valid Python expressions      |
-| L3    | Dtype conformance | dtype strings are valid torch types or `same_as()` refs |
-| L4    | Benchmark file    | Bench file imports `load_workloads`                     |
+| Level | Check             | Description                                                                                                 |
+| ----- | ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| L0    | YAML schema       | Required fields exist and have correct types                                                                |
+| L1    | Signature         | `Op.forward()` params match manifest inputs, plus any manifest-declared runtime params it accepts, in order |
+| L2    | Shape rules       | `shape_rules` entries are valid Python expressions                                                          |
+| L3    | Dtype conformance | dtype strings are valid torch types or `same_as()` refs                                                     |
+| L4    | Benchmark file    | Bench file imports and calls `load_workloads` / `eval_roofline` with this op name                           |
 
-**Spec-only ops** (where `source.op` does not exist on disk) receive L0 only; L1-L4 are skipped. This allows declaring an op interface before implementation.
+**Spec-only ops** (`status: spec-only`) receive L0 only; L1-L4 are skipped. Implemented ops are expected to pass all checks in CI.
+
+For L4, strict CI enforcement is enabled per entry by setting `source.bench_manifest_driven: true`. This makes the migration state explicit in the manifest instead of inferring it from benchmark code.
 
 The validator runs in CI as part of the preflight workflow. Run locally:
 
