@@ -4,7 +4,11 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.pool import AvgPool3dKernel
-from tileops.kernels.pool.common import normalize_3d
+from tileops.kernels.pool.common import (
+    _normalize_pool_dims,
+    validate_channels_last_input,
+    validate_pool_params,
+)
 
 from .op import Op
 
@@ -12,6 +16,7 @@ __all__ = ["AvgPool3dOp"]
 
 
 class AvgPool3dOp(Op):
+    """Average pooling over channels-last `NDHWC` inputs."""
 
     def __init__(
         self,
@@ -35,13 +40,24 @@ class AvgPool3dOp(Op):
         self.d_in = d_in
         self.h_in = h_in
         self.w_in = w_in
-        self.kernel_size = normalize_3d(kernel_size)
-        self.stride = self.kernel_size if stride is None else normalize_3d(stride)
-        self.padding = normalize_3d(padding)
+        self.kernel_size = _normalize_pool_dims("kernel_size", kernel_size, 3)
+        self.stride = (
+            self.kernel_size
+            if stride is None
+            else _normalize_pool_dims("stride", stride, 3)
+        )
+        self.padding = _normalize_pool_dims("padding", padding, 3)
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
         self.divisor_override = divisor_override
         self.dtype = dtype
+        validate_pool_params(
+            ndim=3,
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            divisor_override=divisor_override,
+        )
 
         self.dispatch_kernel(kernel_map)
         if "avg_pool3d_kernel" not in self.kernel_map:
@@ -73,4 +89,10 @@ class AvgPool3dOp(Op):
         return {"avg_pool3d_kernel": AvgPool3dKernel}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        validate_channels_last_input(
+            op_name=type(self).__name__,
+            x_shape=tuple(x.shape),
+            expected_shape=(self.n, self.d_in, self.h_in, self.w_in, self.c_in),
+            layout="NDHWC",
+        )
         return self.kernel(x)

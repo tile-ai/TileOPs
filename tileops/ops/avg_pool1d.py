@@ -4,7 +4,11 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.pool import AvgPool1dKernel
-from tileops.kernels.pool.common import normalize_1d
+from tileops.kernels.pool.common import (
+    _normalize_pool_dims,
+    validate_channels_last_input,
+    validate_pool_params,
+)
 
 from .op import Op
 
@@ -12,6 +16,11 @@ __all__ = ["AvgPool1dOp"]
 
 
 class AvgPool1dOp(Op):
+    """Average pooling over channels-last `NLC` inputs.
+
+    This op intentionally uses the TileOPs channels-last contract rather than
+    PyTorch's default `NCL` layout.
+    """
 
     def __init__(
         self,
@@ -30,12 +39,22 @@ class AvgPool1dOp(Op):
         self.n = n
         self.c_in = c_in
         self.l_in = l_in
-        self.kernel_size = normalize_1d(kernel_size)
-        self.stride = self.kernel_size if stride is None else normalize_1d(stride)
-        self.padding = normalize_1d(padding)
+        self.kernel_size = _normalize_pool_dims("kernel_size", kernel_size, 1)[0]
+        self.stride = (
+            (self.kernel_size,)
+            if stride is None
+            else _normalize_pool_dims("stride", stride, 1)
+        )[0]
+        self.padding = _normalize_pool_dims("padding", padding, 1)[0]
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
         self.dtype = dtype
+        validate_pool_params(
+            ndim=1,
+            kernel_size=(self.kernel_size,),
+            stride=(self.stride,),
+            padding=(self.padding,),
+        )
 
         self.dispatch_kernel(kernel_map)
         if "avg_pool1d_kernel" not in self.kernel_map:
@@ -58,4 +77,10 @@ class AvgPool1dOp(Op):
         return {"avg_pool1d_kernel": AvgPool1dKernel}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        validate_channels_last_input(
+            op_name=type(self).__name__,
+            x_shape=tuple(x.shape),
+            expected_shape=(self.n, self.l_in, self.c_in),
+            layout="NLC",
+        )
         return self.kernel(x)

@@ -4,7 +4,11 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.pool import AvgPool2dKernel
-from tileops.kernels.pool.common import normalize_2d
+from tileops.kernels.pool.common import (
+    _normalize_pool_dims,
+    validate_channels_last_input,
+    validate_pool_params,
+)
 
 from .op import Op
 
@@ -12,6 +16,11 @@ __all__ = ["AvgPool2dOp"]
 
 
 class AvgPool2dOp(Op):
+    """Average pooling over channels-last `NHWC` inputs.
+
+    This op is API-compatible with PyTorch pooling parameters, but the tensor
+    layout contract is channels-last rather than `NCHW`.
+    """
 
     def __init__(
         self,
@@ -33,13 +42,24 @@ class AvgPool2dOp(Op):
         self.c_in = c_in
         self.h_in = h_in
         self.w_in = w_in
-        self.kernel_size = normalize_2d(kernel_size)
-        self.stride = self.kernel_size if stride is None else normalize_2d(stride)
-        self.padding = normalize_2d(padding)
+        self.kernel_size = _normalize_pool_dims("kernel_size", kernel_size, 2)
+        self.stride = (
+            self.kernel_size
+            if stride is None
+            else _normalize_pool_dims("stride", stride, 2)
+        )
+        self.padding = _normalize_pool_dims("padding", padding, 2)
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
         self.divisor_override = divisor_override
         self.dtype = dtype
+        validate_pool_params(
+            ndim=2,
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            divisor_override=divisor_override,
+        )
 
         self.dispatch_kernel(kernel_map)
         if "avg_pool2d_kernel" not in self.kernel_map:
@@ -67,4 +87,10 @@ class AvgPool2dOp(Op):
         return {"avg_pool2d_kernel": AvgPool2dKernel}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        validate_channels_last_input(
+            op_name=type(self).__name__,
+            x_shape=tuple(x.shape),
+            expected_shape=(self.n, self.h_in, self.w_in, self.c_in),
+            layout="NHWC",
+        )
         return self.kernel(x)

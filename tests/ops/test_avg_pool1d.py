@@ -99,5 +99,17 @@ def test_avg_pool1d_dispatches_kernel() -> None:
     assert isinstance(op.kernel, AvgPool1dKernel)
 
 
+@pytest.mark.smoke
+def test_avg_pool1d_rejects_wrong_tuple_arity() -> None:
+    with pytest.raises(ValueError, match="kernel_size must be an int or a tuple of 1 ints"):
+        AvgPool1dOp(n=1, c_in=8, l_in=32, kernel_size=(3, 4))
+
+
+@pytest.mark.smoke
+def test_avg_pool1d_rejects_non_positive_stride() -> None:
+    with pytest.raises(ValueError, match="stride must be greater than zero"):
+        AvgPool1dOp(n=1, c_in=8, l_in=32, kernel_size=3, stride=0)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

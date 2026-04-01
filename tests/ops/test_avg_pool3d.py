@@ -5,8 +5,16 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.kernel import Kernel
 from tileops.kernels.pool import AvgPool3dKernel
 from tileops.ops import AvgPool3dOp
+
+
+class _DummyKernel(Kernel):
+    supported_archs = [80]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
 
 
 class AvgPool3dFixture(FixtureBase):
@@ -125,6 +133,79 @@ def test_avg_pool3d_dispatches_kernel() -> None:
         padding=(0, 0, 0),
     )
     assert isinstance(op.kernel, AvgPool3dKernel)
+
+
+@pytest.mark.smoke
+def test_avg_pool3d_rejects_zero_divisor_override() -> None:
+    with pytest.raises(ValueError, match="divisor_override must not be zero"):
+        AvgPool3dOp(
+            n=1,
+            c_in=8,
+            d_in=8,
+            h_in=16,
+            w_in=16,
+            kernel_size=(2, 2, 2),
+            divisor_override=0,
+        )
+
+
+@pytest.mark.smoke
+def test_avg_pool3d_rejects_non_positive_stride() -> None:
+    with pytest.raises(ValueError, match="stride must be greater than zero"):
+        AvgPool3dOp(
+            n=1,
+            c_in=8,
+            d_in=8,
+            h_in=16,
+            w_in=16,
+            kernel_size=(2, 2, 2),
+            stride=(2, 0, 2),
+        )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_avg_pool3d_negative_divisor_override_matches_torch() -> None:
+    x = torch.randn(1, 4, 6, 6, 3, device="cuda", dtype=torch.float16).contiguous()
+    op = AvgPool3dOp(
+        n=1,
+        c_in=3,
+        d_in=4,
+        h_in=6,
+        w_in=6,
+        kernel_size=(2, 2, 2),
+        stride=(2, 2, 2),
+        padding=(0, 0, 0),
+        divisor_override=-1,
+        dtype=torch.float16,
+    )
+    out = op(x)
+    ref = F.avg_pool3d(
+        x.permute(0, 4, 1, 2, 3).contiguous(),
+        kernel_size=(2, 2, 2),
+        stride=(2, 2, 2),
+        padding=(0, 0, 0),
+        divisor_override=-1,
+    ).permute(0, 2, 3, 4, 1).contiguous()
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_avg_pool3d_forward_rejects_ncdhw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    op = AvgPool3dOp(
+        n=1,
+        c_in=3,
+        d_in=4,
+        h_in=6,
+        w_in=6,
+        kernel_size=(2, 2, 2),
+        stride=(2, 2, 2),
+        kernel_map={"avg_pool3d_kernel": _DummyKernel},
+    )
+    x = torch.randn(1, 3, 4, 6, 6)
+    with pytest.raises(ValueError, match="NDHWC"):
+        op(x)
 
 
 if __name__ == "__main__":

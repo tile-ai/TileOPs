@@ -76,13 +76,14 @@ def _avg_pool2d_kernel(
                         padded_h = T.max(T.min(end_h, h_in + pad_h) - T.max(start_h, -pad_h), 0)
                         padded_w = T.max(T.min(end_w, w_in + pad_w) - T.max(start_w, -pad_w), 0)
                         padded_count = padded_h * padded_w
-                        divisor = T.max(
-                            T.if_then_else(
-                                use_divisor_override,
-                                divisor_override,
-                                T.if_then_else(count_include_pad, padded_count, valid_count),
-                            ),
+                        auto_divisor = T.max(
+                            T.if_then_else(count_include_pad, padded_count, valid_count),
                             1,
+                        )
+                        divisor = T.if_then_else(
+                            use_divisor_override,
+                            divisor_override,
+                            auto_divisor,
                         )
                         out_flat[m_idx, c_idx] = T.cast(
                             sum_val / T.cast(divisor, accum_dtype),
