@@ -258,13 +258,12 @@ class TestManifestAPI:
         assert _safe_eval("-M", {"M": 5}) == -5
 
     def test_eval_roofline_func_mode(self):
-        """Verify func-mode roofline dispatch works for attention ops."""
+        """Verify func-mode roofline dispatch resolves and calls the function."""
         from tileops.manifest import eval_roofline
 
-        # mha_fwd uses func-mode roofline referencing tileops.perf.formulas
-        flops, mem_bytes = eval_roofline("mha_fwd")
-        assert isinstance(flops, float)
-        assert isinstance(mem_bytes, float)
+        # Stubs raise NotImplementedError — dispatch succeeds if it reaches them
+        with pytest.raises(NotImplementedError):
+            eval_roofline("mha_fwd")
 
     def test_eval_roofline_func_mode_bad_module_raises(self):
         """Verify func-mode raises ValueError for non-importable module."""

@@ -40,7 +40,7 @@ def mha_fwd_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, S, H, D, is_causal.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 def mha_bwd_roofline(**kwargs: Any) -> dict[str, int]:
@@ -48,7 +48,7 @@ def mha_bwd_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, S, H, D, is_causal.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ def gqa_fwd_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, S, H, H_kv, D, is_causal.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 def gqa_bwd_roofline(**kwargs: Any) -> dict[str, int]:
@@ -69,7 +69,7 @@ def gqa_bwd_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, S, H, H_kv, D, is_causal.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ def mha_decode_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, H, N_kv, D.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 def mha_decode_paged_roofline(**kwargs: Any) -> dict[str, int]:
@@ -90,7 +90,7 @@ def mha_decode_paged_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, H, N_kv, D, page_size.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ def gqa_decode_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, H, H_kv, N_kv, D.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 def gqa_decode_paged_roofline(**kwargs: Any) -> dict[str, int]:
@@ -111,7 +111,7 @@ def gqa_decode_paged_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, H, H_kv, N_kv, D, page_size.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ def gqa_sliding_window_fwd_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, S, H, H_kv, D, window_size.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 def gqa_sliding_window_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
@@ -132,7 +132,7 @@ def gqa_sliding_window_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, H, H_kv, D, window_size.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ def deepseek_mla_decode_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, H, H_kv, N_kv, D, pe_dim.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
 
 
 def deepseek_dsa_decode_roofline(**kwargs: Any) -> dict[str, int]:
@@ -153,4 +153,4 @@ def deepseek_dsa_decode_roofline(**kwargs: Any) -> dict[str, int]:
 
     TODO: implement full formula based on B, H, S, S_kv, D, D_tail, topk.
     """
-    return {"flops": 0, "bytes": 0}
+    raise NotImplementedError
