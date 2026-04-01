@@ -194,15 +194,16 @@ def test_gqa_sliding_window_varlen_fwd_bench(
                 q, k, v, csq, csk, msq, max_seqlen_k, is_causal, wl, wr),
             *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
-    else:
-        result_bl = bm.profile(_torch_sliding_window_varlen_fwd(test), *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
     # FlashInfer baseline
     fi_fn = _flashinfer_varlen_sliding_window_fwd(test, *inputs)
     if fi_fn is not None:
         result_fi = bm.profile(fi_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+
+    if fa3_out is None and fi_fn is None:
+        result_bl = bm.profile(_torch_sliding_window_varlen_fwd(test), *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

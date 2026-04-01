@@ -106,21 +106,10 @@ def test_fused_topk_bench(
     result = bm.profile(op, gating_output)
     BenchmarkReport.record("fused_topk", locals(), result, tag="tileops")
 
-    # PyTorch reference baseline
-    # NOTE: Uses torch.softmax/sigmoid + torch.topk, which is a reasonable
-    # vectorized implementation. Performance gap vs TileOPs reflects the benefit
-    # of fused kernels that avoid intermediate materialization.
-    def _ref_fn(gating_output):
-        return _ref_fused_topk(gating_output, top_k, scoring_func, renormalize)
-
-    _ref_fn(gating_output)  # warmup
-    torch.cuda.synchronize()
-
-    result_ref = bm.profile(_ref_fn, gating_output)
-    BenchmarkReport.record("fused_topk", locals(), result_ref, tag="pytorch-ref")
-
     # vLLM baseline (optional)
+    has_external = False
     if _VLLM_AVAILABLE and scoring_func in ("softmax", "sigmoid"):
+        has_external = True
         hidden_dummy = torch.empty(num_tokens, 1, device=gating_output.device)
         # Cast bf16→f32 inside the timed call to match TileOPs' input conditions.
         def _vllm_fn(gating_output):
@@ -137,3 +126,14 @@ def test_fused_topk_bench(
 
         result_vllm = bm.profile(_vllm_fn, gating_output)
         BenchmarkReport.record("fused_topk", locals(), result_vllm, tag="vllm")
+
+    # Fallback: torch reference baseline (only when no external baselines)
+    if not has_external:
+        def _ref_fn(gating_output):
+            return _ref_fused_topk(gating_output, top_k, scoring_func, renormalize)
+
+        _ref_fn(gating_output)  # warmup
+        torch.cuda.synchronize()
+
+        result_ref = bm.profile(_ref_fn, gating_output)
+        BenchmarkReport.record("fused_topk", locals(), result_ref, tag="torch-ref")

@@ -188,14 +188,15 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
     if fa3_fn is not None:
         result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
-    else:
-        result_bl = bm.profile(_torch_gqa_fwd(test), *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
     fi_fn = _flashinfer_gqa_fwd(test, *inputs)
     if fi_fn is not None:
         result_fi = bm.profile(fi_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
+
+    if fa3_fn is None and fi_fn is None:
+        result_bl = bm.profile(_torch_gqa_fwd(test), *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 
 # GQA backward benchmark parameters (training only).
@@ -228,6 +229,7 @@ def test_gqa_bwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
     else:
         result_bl = bm.profile(_torch_gqa_bwd(test), *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
+    # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
 if __name__ == "__main__":
