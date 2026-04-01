@@ -146,6 +146,49 @@ class TestYamlValidity:
         assert "ops" in data
 
 
+class TestDeepseekDsaDecodeContract:
+    """Validate deepseek_dsa_decode manifest entry matches Op/test interface."""
+
+    def test_indices_rank_is_4(self, all_ops):
+        """indices must be rank-4: (B, S, H_kv, topk) per test_deepseek_dsa_decode.py."""
+        rules = all_ops["deepseek_dsa_decode"]["signature"]["shape_rules"]
+        indices_rule = [r for r in rules if "indices" in r][0]
+        # Count commas to determine rank: rank-4 has 3 commas
+        assert indices_rule.count(",") == 3, (
+            f"indices must be rank-4 (B, S, H_kv, topk), got: {indices_rule}"
+        )
+
+    def test_output_shape_is_D_not_D_plus_dim_tail(self, all_ops):
+        """Output o must have last dim D, not D + dim_tail (ref_program returns dim)."""
+        rules = all_ops["deepseek_dsa_decode"]["signature"]["shape_rules"]
+        o_rule = [r for r in rules if r.startswith("o.")][0]
+        assert "D)" in o_rule and "dim_tail" not in o_rule, (
+            f"Output shape must end with D, not D + dim_tail, got: {o_rule}"
+        )
+
+    def test_q_start_index_s_in_params(self, all_ops):
+        """q_start_index_s is required by Op with no default; must be in params."""
+        params = all_ops["deepseek_dsa_decode"]["signature"]["params"]
+        assert "q_start_index_s" in params, (
+            "q_start_index_s is a required Op parameter and must appear in manifest params"
+        )
+
+    def test_workload_indices_shapes_are_rank_4(self, all_ops):
+        """All workload indices_shape entries must be rank-4."""
+        for wl in all_ops["deepseek_dsa_decode"]["workloads"]:
+            shape = wl["indices_shape"]
+            assert len(shape) == 4, (
+                f"Workload {wl.get('label')}: indices_shape must be rank-4, got {shape}"
+            )
+
+    def test_workloads_have_q_start_index_s(self, all_ops):
+        """All workloads must specify q_start_index_s."""
+        for wl in all_ops["deepseek_dsa_decode"]["workloads"]:
+            assert "q_start_index_s" in wl, (
+                f"Workload {wl.get('label')}: must specify q_start_index_s"
+            )
+
+
 class TestWorkloadCoverage:
     """Workloads include 8B + 70B configs, short + long sequences."""
 

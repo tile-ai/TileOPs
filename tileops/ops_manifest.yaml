@@ -933,21 +933,22 @@ ops:
         dim_tail: {type: int}
         topk: {type: int}
         stride_kv: {type: int}
+        q_start_index_s: {type: int}
         is_causal: {type: bool, default: true}
         sm_scale: {type: float}
       shape_rules:
         - "q.shape == (B, S, H, D + dim_tail)"
         - "kv.shape == (B, S_kv, H_kv, D + dim_tail)"
-        - "indices.shape == (B, S, topk)"
-        - "o.shape == (B, S, H, D + dim_tail)"
+        - "indices.shape == (B, S, H_kv, topk)"
+        - "o.shape == (B, S, H, D)"
 
     workloads:
       # DeepSeek-V2 (H=128, H_kv=1, D=128, dim_tail=64, topk=8, stride_kv=64)
-      - {q_shape: [4, 1, 128, 192], kv_shape: [4, 4096, 1, 192], indices_shape: [4, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, dtypes: [float16, bfloat16], label: "deepseek-v2-4k"}
-      - {q_shape: [2, 1, 128, 192], kv_shape: [2, 32768, 1, 192], indices_shape: [2, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, dtypes: [float16, bfloat16], label: "deepseek-v2-32k"}
+      - {q_shape: [4, 1, 128, 192], kv_shape: [4, 4096, 1, 192], indices_shape: [4, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [float16, bfloat16], label: "deepseek-v2-4k"}
+      - {q_shape: [2, 1, 128, 192], kv_shape: [2, 32768, 1, 192], indices_shape: [2, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [float16, bfloat16], label: "deepseek-v2-32k"}
       # DeepSeek-V3 (H=128, H_kv=1, D=128, dim_tail=64, topk=8, stride_kv=64)
-      - {q_shape: [4, 1, 128, 192], kv_shape: [4, 4096, 1, 192], indices_shape: [4, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, dtypes: [bfloat16], label: "deepseek-v3-4k"}
-      - {q_shape: [2, 1, 128, 192], kv_shape: [2, 32768, 1, 192], indices_shape: [2, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, dtypes: [bfloat16], label: "deepseek-v3-32k"}
+      - {q_shape: [4, 1, 128, 192], kv_shape: [4, 4096, 1, 192], indices_shape: [4, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [bfloat16], label: "deepseek-v3-4k"}
+      - {q_shape: [2, 1, 128, 192], kv_shape: [2, 32768, 1, 192], indices_shape: [2, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [bfloat16], label: "deepseek-v3-32k"}
 
     roofline:
       func: "tileops.perf.formulas.deepseek_dsa_decode_roofline"
