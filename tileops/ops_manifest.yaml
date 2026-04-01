@@ -14,7 +14,7 @@
 #       params:
 #         <name>: {type: <scalar_type>, default: <value>}  # Scalar / config parameters
 #       shape_rules: [str]                   # Optional Python expressions relating dimensions
-#     workloads:  [{<dim>: <val>, dtypes: [...], label?: <str>}]  # Representative shapes
+#     workloads:  [{<dim>: <val>, dtypes: [...], label?: <str>}]  # Nightly benchmark shapes
 #     roofline:                              # Analytical cost model
 #       flops: <expr>                        # Inline Python expression  -OR-
 #       bytes: <expr>                        #   both flops and bytes expressions

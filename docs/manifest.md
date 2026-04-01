@@ -1,12 +1,12 @@
 # Op Manifest Specification
 
-`ops_manifest.yaml` is the **source of truth** for op interfaces. Code, tests, benchmarks, and docs are generated from it.
+`ops_manifest.yaml` is the **source of truth** for op interfaces, benchmark workloads, and benchmark roofline metadata.
 
 ## Trust Model
 
 1. The manifest is the sole source of truth for op interfaces. Changes require human review.
 1. Programmatic validation is derived from the manifest, not from the generating agent.
-1. Test coverage (shapes, dtypes, workloads) is determined by the manifest, not by the agent.
+1. `workloads` define benchmark shapes and dtypes for nightly/performance coverage, not unit-test coverage.
 1. `Op.forward()` signature must match the manifest. CI enforces this.
 1. Benchmarks must use declared workloads. No hardcoded shapes.
 
@@ -14,13 +14,13 @@
 
 Each entry lives under `ops:`:
 
-| Field       | Required | Description                                           |
-| ----------- | -------- | ----------------------------------------------------- |
-| `family`    | yes      | Op family (e.g., `norm`, `attention`).                |
-| `signature` | yes      | Op interface. See [Signature](#signature).            |
-| `workloads` | yes      | Benchmark shapes/dtypes. See [Workloads](#workloads). |
-| `roofline`  | yes      | Performance model. See [Roofline](#roofline).         |
-| `source`    | yes      | Implementation paths. See [Source](#source).          |
+| Field       | Required | Description                                                                        |
+| ----------- | -------- | ---------------------------------------------------------------------------------- |
+| `family`    | yes      | Op family (e.g., `norm`, `attention`).                                             |
+| `signature` | yes      | Op interface. See [Signature](#signature).                                         |
+| `workloads` | yes      | Benchmark shapes/dtypes for nightly/performance runs. See [Workloads](#workloads). |
+| `roofline`  | yes      | Performance model. See [Roofline](#roofline).                                      |
+| `source`    | yes      | Implementation paths. See [Source](#source).                                       |
 
 ## Signature
 
@@ -196,10 +196,10 @@ ops:
 
 Each entry is a dict. Shape keys use `<tensor_name>_shape` convention.
 
-| Field    | Required | Description             |
-| -------- | -------- | ----------------------- |
-| `dtypes` | yes      | List of dtypes to test. |
-| `label`  | no       | Human-readable tag.     |
+| Field    | Required | Description                  |
+| -------- | -------- | ---------------------------- |
+| `dtypes` | yes      | List of dtypes to benchmark. |
+| `label`  | no       | Human-readable tag.          |
 
 ```yaml
 # Single primary input:
@@ -209,6 +209,8 @@ Each entry is a dict. Shape keys use `<tensor_name>_shape` convention.
 ```
 
 Op-specific parameters (e.g., `groups`, `is_causal`) can be added per entry.
+
+`workloads` are for benchmark scheduling and benchmark parametrization only. They do not prescribe unit-test cases or UT branch coverage; unit tests remain developer-owned and should target implementation-critical branches directly.
 
 ## Roofline
 
