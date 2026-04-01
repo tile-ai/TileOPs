@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import importlib
 import math
 import operator
 from importlib import resources
@@ -139,9 +140,22 @@ def eval_roofline(op_name: str, **variables: float) -> tuple[float, float]:
     roofline = ops[op_name]["roofline"]
 
     if "func" in roofline:
-        raise NotImplementedError(
-            f"func-mode roofline not yet supported (op={op_name})"
-        )
+        func_ref = roofline["func"]
+        module_path, func_name = func_ref.rsplit(".", 1)
+        try:
+            mod = importlib.import_module(module_path)
+        except ImportError as exc:
+            raise ValueError(
+                f"Failed to import roofline module for '{op_name}': {module_path}"
+            ) from exc
+        fn = getattr(mod, func_name, None)
+        if fn is None:
+            raise ValueError(
+                f"Roofline function '{func_name}' not found in module '{module_path}' "
+                f"(op={op_name})"
+            )
+        result = fn(**variables)
+        return float(result["flops"]), float(result["bytes"])
 
     flops_expr = roofline["flops"]
     bytes_expr = roofline["bytes"]

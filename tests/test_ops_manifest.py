@@ -231,3 +231,42 @@ class TestManifestAPI:
         assert _safe_eval("M + N - 1", {"M": 10, "N": 3}) == 12
         assert _safe_eval("M ** 2", {"M": 4}) == 16
         assert _safe_eval("-M", {"M": 5}) == -5
+
+    def test_eval_roofline_func_mode(self):
+        """Verify func-mode roofline dispatch works for attention ops."""
+        from tileops.manifest import eval_roofline
+
+        # mha_fwd uses func-mode roofline referencing tileops.perf.formulas
+        flops, mem_bytes = eval_roofline("mha_fwd")
+        assert isinstance(flops, float)
+        assert isinstance(mem_bytes, float)
+
+    def test_eval_roofline_func_mode_passes_variables(self):
+        """Verify func-mode dispatch forwards kwargs to the target function."""
+        from unittest.mock import patch
+
+        from tileops.manifest import eval_roofline
+
+        sentinel = {"flops": 42, "bytes": 99}
+        with patch(
+            "tileops.perf.formulas.mha_fwd_roofline",
+            return_value=sentinel,
+        ) as mock_fn:
+            flops, mem_bytes = eval_roofline("mha_fwd", B=2, S=1024)
+            mock_fn.assert_called_once_with(B=2, S=1024)
+        assert flops == 42.0
+        assert mem_bytes == 99.0
+
+    def test_eval_roofline_func_mode_bad_module_raises(self):
+        """Verify func-mode raises ValueError for non-importable module."""
+
+        from tileops.manifest import _load_manifest, eval_roofline
+
+        ops = _load_manifest()
+        original = ops["mha_fwd"]["roofline"]["func"]
+        try:
+            ops["mha_fwd"]["roofline"]["func"] = "nonexistent.module.fn"
+            with pytest.raises(ValueError, match="Failed to import"):
+                eval_roofline("mha_fwd")
+        finally:
+            ops["mha_fwd"]["roofline"]["func"] = original
