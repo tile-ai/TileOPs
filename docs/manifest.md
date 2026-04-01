@@ -1,14 +1,31 @@
 # Op Manifest Specification
 
-`ops_manifest.yaml` is the **source of truth** for op interfaces, benchmark workloads, and benchmark roofline metadata.
+[`ops_manifest.yaml`](../tileops/ops_manifest.yaml) is the **source of truth** for op interfaces, benchmark workloads, and benchmark roofline metadata.
 
 ## Trust Model
 
-1. The manifest is the sole source of truth for op interfaces. Changes require human review.
-1. Programmatic validation is derived from the manifest, not from the generating agent.
+```mermaid
+flowchart LR
+    H["Human reviewer"] -->|writes / approves| M["ops_manifest.yaml"]
+    M -->|reads spec from| A["Agent (codegen)"]
+    A -->|produces| C["Op code, tests, benchmarks"]
+    M -->|validates against| V["Validator (CI)"]
+    C -->|checked by| V
+```
+
+Three roles govern the manifest lifecycle:
+
+- **Human reviewer** — the only actor that can modify [`ops_manifest.yaml`](../tileops/ops_manifest.yaml). All changes require PR review.
+- **Agent** — generates Op implementations, tests, and benchmarks from the manifest. The agent reads the manifest but never modifies it.
+- **Validator** — [`scripts/validate_manifest.py`](../scripts/validate_manifest.py), running in CI as the [`validate-manifest`](../.github/workflows/preflight.yml) job. Enforces consistency between the manifest and generated code.
+
+**Rules:**
+
+1. [`ops_manifest.yaml`](../tileops/ops_manifest.yaml) is the sole source of truth for op interfaces.
+1. Programmatic validation ([`scripts/validate_manifest.py`](../scripts/validate_manifest.py)) is derived from the manifest, not from the generating agent.
 1. `workloads` define benchmark shapes and dtypes for nightly/performance coverage, not unit-test coverage.
-1. `Op.forward()` signature must match the manifest. CI enforces this.
-1. Benchmarks must use declared workloads. No hardcoded shapes.
+1. `Op.forward()` signature must match the manifest. The validator's L1 check enforces this.
+1. Benchmarks must use declared workloads. No hardcoded shapes. The validator's L4 check enforces this.
 
 ## Entry Structure
 
@@ -20,6 +37,7 @@ Each entry lives under `ops:`:
 | `signature` | yes      | Op interface. See [Signature](#signature).                                         |
 | `workloads` | yes      | Benchmark shapes/dtypes for nightly/performance runs. See [Workloads](#workloads). |
 | `roofline`  | yes      | Performance model. See [Roofline](#roofline).                                      |
+| `status`    | no       | `spec-only` or `implemented`. Defaults to `implemented`. See R13.                  |
 | `source`    | yes      | Implementation paths. See [Source](#source).                                       |
 
 ## Signature
@@ -28,7 +46,7 @@ Each entry lives under `ops:`:
 signature:
   inputs:       # dict — tensor name → {dtype, shape?, constraints?}
   outputs:      # dict — tensor name → {dtype, shape?, constraints?}
-  params:       # dict — param name → {type, default?}
+  params:       # ordered dict — param name → {type, default?}
   shape_rules:  # list — Python expressions for shape inference
   dtype_combos: # list — valid cross-tensor dtype combinations
 ```
@@ -41,19 +59,29 @@ signature:
 | `shape`       | no       | Dimension names or `same_as(ref)`. Present = fixed rank.   |
 | `constraints` | no       | Dimension restrictions (requires `shape`).                 |
 
-**Param fields**: key = parameter name, value = dict with `type` (string: `int`, `float`, `bool`, `"list[int]"`) and optional `default`.
+**Param fields**: key = param name, value = dict with `type` (string: `int`, `float`, `bool`, `"list[int]"`) and optional `default`.
 
 ### Rules
 
-**R1. Dict, not list.** Signature `inputs`, `outputs`, and `params` all use dicts keyed by name.
+**R1. Ordered dict.** `inputs`, `outputs`, and `params` are dicts keyed by name. Key order is significant — it defines the function signature position.
+
+**Implementation constraint:** YAML spec does not guarantee mapping order. This project relies on Python 3.7+ `dict` insertion-order preservation via PyYAML `yaml.safe_load()`. All manifest consumers (validators, codegen, agents) MUST use an order-preserving parser.
+
+**Agent rule:** When generating `Op.forward()`, `Op.infer_shape()`, or test code from the manifest, the agent MUST preserve the key order as the positional argument order. Reordering is a breaking change.
 
 **R2. Full interface.** Params include all mathematically supported parameters, even if the current kernel only supports the default.
 
 **R3. `dtype` syntax.** `|` for alternatives, `same_as(ref)` for dependent types.
 
-**R4. `dtype_combos`.** Enumerates valid cross-tensor dtype combinations. Source of truth when present; per-tensor `dtype` remains for documentation.
+**R4. `dtype_combos`.** Enumerates the actually supported cross-tensor dtype combinations.
+
+- **When present:** Exhaustive source of truth. Only listed combinations are valid. Validator and test generator use this list, not the Cartesian product.
+- **When absent:** All combinations from the Cartesian product of per-tensor `dtype` fields are assumed supported. Validator must verify all of them.
+
+Use `dtype_combos` when the supported set is a strict subset of the Cartesian product (e.g., mixed-precision GEMM supports 3 of 4 possible combinations). Omit when all combinations are valid (e.g., all inputs are `same_as(x)`).
 
 ```yaml
+# Mixed-precision GEMM: 3 of 4 combos supported (not all Cartesian products)
 dtype_combos:
   - {x: float16, weight: float16}
   - {x: float16, weight: float8_e4m3}
@@ -75,6 +103,8 @@ dtype_combos:
 **R11. `shape_rules`.** Python expressions describing shape relationships. Agent generates `Op.infer_shape()` from these. Required when `shape` + `same_as` cannot fully specify output shape.
 
 **R12. Manifest → `infer_shape()`.** Agent generates `Op.infer_shape()` from `shape`, `same_as(ref)`, and `shape_rules`. Manifest and code must be consistent.
+
+**R13. Status gating.** `status` declares whether an op is a forward-looking spec or a shipped implementation. When `status: spec-only`, the validator applies schema checks (L0) only — signature, shape, dtype, and benchmark checks (L1-L4) are skipped. `source` paths declare intended locations. When `status: implemented`, all validation levels apply and all `source` paths must resolve to existing files. **Default:** When `status` is absent, it defaults to `implemented`. This preserves backward compatibility with existing entries. New entries SHOULD include `status` explicitly.
 
 ### Shape Decision Tree
 
@@ -154,9 +184,12 @@ params:
   dim: {type: "int | list[int]"}
   keepdim: {type: bool, default: false}
 shape_rules:
-  - "y.ndim == x.ndim if keepdim else x.ndim - len(dim)"
-  - "y.shape[i] == 1 if i in dim and keepdim else x.shape[i]"
+  # dim is normalized to list: dims = [dim] if isinstance(dim, int) else dim
+  - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+  - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
 ```
+
+All reduction ops (sum, mean, amax, amin, prod, argmax, argmin, all, any, l1_norm, l2_norm, inf_norm, var, std, var_mean, logsumexp) must include `dim` and `keepdim` params with the shape_rules shown above. **Exception:** softmax and log_softmax always preserve input shape — `keepdim` is not applicable; their output shape is `same_as(x)`. count_nonzero does not support `keepdim` in PyTorch (per R15).
 
 **Full entry — RMSNorm:**
 
@@ -164,6 +197,7 @@ shape_rules:
 ops:
   rmsnorm_fwd:
     family: norm
+    status: implemented
 
     signature:
       inputs:
@@ -182,8 +216,11 @@ ops:
       - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
 
     roofline:
+      vars:
+        M: "product(x.shape[:dim])"
+        N: "x.shape[dim]"
       flops: "4 * M * N"
-      bytes: "2 * (M * N + N + M * N)"
+      bytes: "(2 * M * N + N) * elem_bytes"
 
     source:
       kernel: tileops/kernels/norm/rms_norm.py
@@ -214,32 +251,83 @@ Op-specific parameters (e.g., `groups`, `is_causal`) can be added per entry.
 
 ## Roofline
 
-| Mode   | Format                           | When                                  |
-| ------ | -------------------------------- | ------------------------------------- |
-| Inline | `flops: "expr"`, `bytes: "expr"` | Arithmetic on dimension variables.    |
-| Func   | `func: "module.path"`            | Complex formulas needing Python code. |
+| Mode             | Format                   | When                                                           |
+| ---------------- | ------------------------ | -------------------------------------------------------------- |
+| Inline (no vars) | `flops`/`bytes` only     | Fixed-rank ops with `shape` dimension names.                   |
+| Inline + vars    | `vars` + `flops`/`bytes` | Arbitrary-rank ops; recommended for self-contained evaluation. |
+| Func             | `func: "module.path"`    | Tier 2: complex formulas needing Python code.                  |
 
-Inline expressions are evaluated by `_safe_eval()` — only numeric constants, arithmetic (`+−*/÷**%`), and `log2`/`ceil`/`floor`. Func-mode functions live in `tileops/perf/formulas.py`, accept kwargs, return `{"flops": int, "bytes": int}`.
+Inline expressions are evaluated by `_safe_eval()` — only numeric constants, arithmetic (`+−*/÷**%`), and `log2`/`ceil`/`floor`. Func-mode functions live in [`tileops/perf/formulas.py`](../tileops/perf/formulas.py), accept kwargs, return `{"flops": int, "bytes": int}`.
 
-Roofline variable bindings are the consumer's responsibility, not the manifest's.
+**R14. Roofline variable binding.**
+
+**Built-in variables:** `elem_bytes` — byte size of the first input's dtype (the first key in `inputs`). Always available.
+
+**Auto-bound from `shape`:** When a tensor declares `shape: "[M, K]"`, dimension names are directly available as roofline variables. `vars` may be omitted.
+
+**Explicit `vars`:** When tensors have arbitrary rank (no `shape` field), roofline SHOULD include a `vars` mapping for self-contained evaluation. Each entry is `name: "Python expression"`. **Backward compatibility:** When `vars` is absent for arbitrary-rank ops, the consumer provides variable bindings at evaluation time (current behavior). New entries SHOULD include `vars` for self-contained evaluation.
+
+**Implementation note:** The `vars` evaluation mechanism is not yet implemented in the current evaluator ([`tileops/manifest.py::eval_roofline`](../tileops/manifest.py)). The evaluator currently accepts caller-supplied scalar variables only. Implementing `vars` evaluation is tracked as a separate task.
+
+**`vars` evaluation context:** tensor shapes (`x.shape`, `x.shape[i]`, `x.shape[start:end]`, `x.ndim`), params by name (`dim`, `groups`), helpers (`product(iterable)`), arithmetic (`+`, `-`, `*`, `//`, `**`, `%`), built-ins (`range()`, `len()`, list comprehensions).
+
+**`flops`/`bytes` evaluation context (unchanged):** Numeric constants, bound variables, arithmetic, `log2`, `ceil`, `floor`. No shape access — all shape-dependent values must come through `vars`.
+
+**Mixed dtype:** `elem_bytes` binds to the primary input. Other dtypes use literal byte counts (e.g., `4` for float32).
+
+### Roofline Examples
+
+```yaml
+# Case 1: Fixed rank — vars omitted, shape names auto-bind
+roofline:
+  flops: "2 * M * N * K"
+  bytes: "(M * K + K * N + M * N) * elem_bytes"
+
+# Case 2: Arbitrary rank, single-dim reduction
+roofline:
+  vars:
+    M: "product(x.shape[:dim])"
+    N: "x.shape[dim]"
+  flops: "4 * M * N"
+  bytes: "(2 * M * N + N) * elem_bytes"
+
+# Case 3: Spatial norm
+roofline:
+  vars:
+    C: "x.shape[1]"
+    L: "product(x.shape) // x.shape[1]"
+  flops: "10 * C * L"
+  bytes: "2 * C * L * elem_bytes + 4 * C * 4"
+
+# Case 4: Multi-dim reduction
+roofline:
+  vars:
+    M: "product(x.shape[i] for i in range(x.ndim) if i not in dim)"
+    N: "product(x.shape[i] for i in dim)"
+  flops: "M * N"
+  bytes: "(M * N + M) * elem_bytes"
+```
+
+**R15. PyTorch interface alignment.** Op signatures must match PyTorch's public API conventions (parameter names, parameter set, semantics). Do not invent parameters that PyTorch does not expose. When PyTorch has no direct equivalent, follow the closest community convention (numpy, scipy). Consequence: spatial-norm ops (batchnorm, groupnorm, instancenorm) do NOT get a `dim` parameter — matching PyTorch's `nn.BatchNorm2d`, `nn.GroupNorm`, `nn.InstanceNorm2d`.
 
 ## Source
 
-| Field    | Required | Type           | Description          |
-| -------- | -------- | -------------- | -------------------- |
-| `kernel` | yes      | string or list | Kernel file path(s). |
-| `op`     | yes      | string         | Op class file path.  |
-| `test`   | yes      | string         | Test file path.      |
-| `bench`  | yes      | string         | Benchmark file path. |
+| Field                   | Required | Type           | Description                                                                                                                                                                                   |
+| ----------------------- | -------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kernel`                | yes      | string or list | Kernel file path(s).                                                                                                                                                                          |
+| `op`                    | yes      | string         | Op class file path.                                                                                                                                                                           |
+| `test`                  | yes      | string         | Test file path.                                                                                                                                                                               |
+| `bench`                 | yes      | string         | Benchmark file path.                                                                                                                                                                          |
+| `bench_manifest_driven` | no       | bool           | Migration flag: `true` = L4 benchmark check is a hard CI error. Introduced for gradual migration from legacy hardcoded benchmarks. Remove this field once all benchmarks are manifest-driven. |
 
 ## Tier Model
 
 Ops must have **all-required tensors** and **fixed output count** to enter the manifest. Ops with `Optional[Tensor]` or conditional outputs must be split first.
 
-| Tier | Roofline                            | Families                                      |
-| ---- | ----------------------------------- | --------------------------------------------- |
-| 1    | Inline arithmetic expression        | norm, reduction, elementwise, RoPE, FFT, GEMM |
-| 2    | `func` reference to Python function | attention, conv, MoE, varlen attention        |
+| Tier | Roofline                            | Families (implemented) | Families (planned)                            |
+| ---- | ----------------------------------- | ---------------------- | --------------------------------------------- |
+| 1    | Inline arithmetic expression        | norm                   | reduction, scan, elementwise, RoPE, FFT, GEMM |
+| 2    | `func` reference to Python function | attention, MoE         | conv, varlen attention                        |
 
 ## Benchmark Pattern
 
@@ -286,11 +374,11 @@ The variable names must match those used in the manifest's `roofline.flops` and 
 
 ### Hardcoded shapes are not allowed
 
-Benchmark files must not hardcode workload shapes. The L4 check in `scripts/validate_manifest.py` enforces that every benchmark file listed in the manifest's `source.bench` imports `load_workloads`.
+Benchmark files must not hardcode workload shapes. The L4 check in [`scripts/validate_manifest.py`](../scripts/validate_manifest.py) enforces that every benchmark file listed in the manifest's `source.bench` imports `load_workloads`.
 
 ## Manifest Validation
 
-`scripts/validate_manifest.py` runs five check levels against every entry in `ops_manifest.yaml`:
+[`scripts/validate_manifest.py`](../scripts/validate_manifest.py) runs five check levels against every entry in [`ops_manifest.yaml`](../tileops/ops_manifest.yaml):
 
 | Level | Check             | Description                                                                                                 |
 | ----- | ----------------- | ----------------------------------------------------------------------------------------------------------- |
