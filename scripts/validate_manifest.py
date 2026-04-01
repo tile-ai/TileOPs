@@ -472,20 +472,24 @@ def _ast_has_import_and_usage(
 
 def check_l4_benchmark(
     op_name: str, bench_path: str, repo_root: Path,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Check that the benchmark file imports and calls load_workloads/eval_roofline.
 
     Uses Python AST parsing (no execution) to verify actual import and usage,
     rather than raw substring matching which can be fooled by comments.
+
+    Returns (errors, warnings). Missing bench file is an error; missing
+    manifest usage is a warning (allows incremental migration).
     """
     errors: list[str] = []
+    warnings: list[str] = []
     full_path = Path(bench_path)
     if not full_path.is_absolute():
         full_path = repo_root / bench_path
 
     if not full_path.is_file():
         errors.append(f"[L4] {op_name}: bench file not found: {bench_path}")
-        return errors
+        return errors, warnings
 
     content = full_path.read_text(encoding="utf-8")
 
@@ -495,22 +499,22 @@ def check_l4_benchmark(
         errors.append(
             f"[L4] {op_name}: bench file {bench_path} has syntax error: {exc}"
         )
-        return errors
+        return errors, warnings
 
     targets = {"load_workloads", "eval_roofline"}
     usage = _ast_has_import_and_usage(tree, targets)
 
     if not usage["load_workloads"]:
-        errors.append(
+        warnings.append(
             f"[L4] {op_name}: bench file {bench_path} does not import and use "
             f"load_workloads from tileops.manifest"
         )
     if not usage["eval_roofline"]:
-        errors.append(
+        warnings.append(
             f"[L4] {op_name}: bench file {bench_path} does not import and use "
             f"eval_roofline from tileops.manifest"
         )
-    return errors
+    return errors, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -596,9 +600,11 @@ def validate_manifest(
         if "L4" in levels:
             bench_path = entry.get("source", {}).get("bench", "")
             if bench_path:
-                all_errors.extend(
-                    check_l4_benchmark(op_name, bench_path, repo_root)
+                l4_errors, l4_warnings = check_l4_benchmark(
+                    op_name, bench_path, repo_root
                 )
+                all_errors.extend(l4_errors)
+                all_warnings.extend(l4_warnings)
 
     return all_errors, all_warnings
 

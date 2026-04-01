@@ -328,8 +328,8 @@ class TestL4Benchmark:
             "workloads = load_workloads('test_op')\n"
             "eval_roofline(op, workload)\n"
         )
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert errors == []
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == [] and warnings == []
 
     def test_bench_with_both_patterns_passes(self, validator, tmp_path):
         """Bench using both load_workloads and eval_roofline passes L4."""
@@ -339,30 +339,32 @@ class TestL4Benchmark:
             "workloads = load_workloads('test_op')\n"
             "eval_roofline(op, workload)\n"
         )
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert errors == []
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == [] and warnings == []
 
-    def test_bench_with_load_workloads_only_fails(self, validator, tmp_path):
-        """Bench using load_workloads but not eval_roofline fails L4."""
+    def test_bench_with_load_workloads_only_warns(self, validator, tmp_path):
+        """Bench using load_workloads but not eval_roofline warns on L4."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(
             "from tileops.manifest import load_workloads\n"
             "workloads = load_workloads('test_op')\n"
         )
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert any("eval_roofline" in e for e in errors), (
-            f"Expected L4 error about missing eval_roofline, got: {errors}"
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+        assert any("eval_roofline" in w for w in warnings), (
+            f"Expected L4 warning about missing eval_roofline, got: {warnings}"
         )
 
-    def test_bench_without_load_workloads_fails(self, validator, tmp_path):
+    def test_bench_without_load_workloads_warns(self, validator, tmp_path):
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(
             "import pytest\n"
             "shapes = [(1024, 4096)]\n"
         )
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert len(errors) > 0
-        assert any("load_workloads" in e for e in errors)
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+        assert len(warnings) > 0
+        assert any("load_workloads" in w for w in warnings)
 
     def test_comments_only_do_not_satisfy_l4(self, validator, tmp_path):
         """Substring in comments must NOT pass L4 (AST-based check)."""
@@ -372,38 +374,40 @@ class TestL4Benchmark:
             # eval_roofline
             shapes = [(1024, 4096)]
         """))
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert any("load_workloads" in e for e in errors), (
-            f"Comments-only should fail L4, got: {errors}"
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert any("load_workloads" in w for w in warnings), (
+            f"Comments-only should warn on L4, got: {warnings}"
         )
-        assert any("eval_roofline" in e for e in errors)
+        assert any("eval_roofline" in w for w in warnings)
 
-    def test_import_without_call_fails_l4(self, validator, tmp_path):
-        """Importing but never calling load_workloads/eval_roofline fails L4."""
+    def test_import_without_call_warns_l4(self, validator, tmp_path):
+        """Importing but never calling load_workloads/eval_roofline warns on L4."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
             from tileops.manifest import load_workloads, eval_roofline
             shapes = [(1024, 4096)]
         """))
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert any("load_workloads" in e for e in errors), (
-            f"Import-only (no call) should fail L4, got: {errors}"
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+        assert any("load_workloads" in w for w in warnings), (
+            f"Import-only (no call) should warn on L4, got: {warnings}"
         )
 
-    def test_call_without_import_fails_l4(self, validator, tmp_path):
-        """Calling load_workloads without importing it fails L4."""
+    def test_call_without_import_warns_l4(self, validator, tmp_path):
+        """Calling load_workloads without importing it warns on L4."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
             workloads = load_workloads('test_op')
             eval_roofline(op, workload)
         """))
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert any("load_workloads" in e for e in errors), (
-            f"Call-without-import should fail L4, got: {errors}"
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+        assert any("load_workloads" in w for w in warnings), (
+            f"Call-without-import should warn on L4, got: {warnings}"
         )
 
-    def test_attribute_style_only_fails_l4(self, validator, tmp_path):
-        """manifest.load_workloads() without bare call fails L4.
+    def test_attribute_style_only_warns_l4(self, validator, tmp_path):
+        """manifest.load_workloads() without bare call warns on L4.
 
         The import check requires ``from tileops.manifest import name``, and
         usage check requires a bare ``name(...)`` call. Attribute-style calls
@@ -417,48 +421,51 @@ class TestL4Benchmark:
             workloads = manifest.load_workloads('test_op')
             manifest.eval_roofline(op, workload)
         """))
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert any("load_workloads" in e for e in errors), (
-            f"Attribute-only usage should fail L4, got: {errors}"
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+        assert any("load_workloads" in w for w in warnings), (
+            f"Attribute-only usage should warn on L4, got: {warnings}"
         )
 
-    def test_spoofed_attribute_call_fails_l4(self, validator, tmp_path):
-        """fake.load_workloads('wrong_op') must not pass L4."""
+    def test_spoofed_attribute_call_warns_l4(self, validator, tmp_path):
+        """fake.load_workloads('wrong_op') must warn on L4."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
             from tileops.manifest import load_workloads, eval_roofline
             workloads = fake.load_workloads('wrong_op')
             fake.eval_roofline('wrong_op')
         """))
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert any("load_workloads" in e for e in errors), (
-            f"Spoofed attribute call should fail L4, got: {errors}"
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+        assert any("load_workloads" in w for w in warnings), (
+            f"Spoofed attribute call should warn on L4, got: {warnings}"
         )
-        assert any("eval_roofline" in e for e in errors), (
-            f"Spoofed attribute call should fail L4 for eval_roofline, got: {errors}"
+        assert any("eval_roofline" in w for w in warnings), (
+            f"Spoofed attribute call should warn on L4 for eval_roofline, got: {warnings}"
         )
 
-    def test_import_from_wrong_module_fails_l4(self, validator, tmp_path):
-        """Importing load_workloads from a non-tileops.manifest module fails L4."""
+    def test_import_from_wrong_module_warns_l4(self, validator, tmp_path):
+        """Importing load_workloads from a non-tileops.manifest module warns on L4."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
             from fake_module import load_workloads, eval_roofline
             workloads = load_workloads('test_op')
             eval_roofline(op, workload)
         """))
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert any("load_workloads" in e for e in errors), (
-            f"Import from wrong module should fail L4, got: {errors}"
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+        assert any("load_workloads" in w for w in warnings), (
+            f"Import from wrong module should warn on L4, got: {warnings}"
         )
-        assert any("eval_roofline" in e for e in errors), (
-            f"Import from wrong module should fail L4 for eval_roofline, got: {errors}"
+        assert any("eval_roofline" in w for w in warnings), (
+            f"Import from wrong module should warn on L4 for eval_roofline, got: {warnings}"
         )
 
     def test_syntax_error_in_bench_file_fails_l4(self, validator, tmp_path):
         """A bench file with syntax errors produces an L4 error."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text("def broken(\n")
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        errors, warnings = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
         assert any("syntax error" in e for e in errors)
 
 
