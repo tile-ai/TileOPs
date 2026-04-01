@@ -211,7 +211,7 @@ jobs:
         run: pip install -e .
 
       - name: Validate ops_manifest.yaml
-        run: python scripts/validate_manifest.py
+        run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench
 
   actionlint:
     needs: [validate-commits, validate-pr-title, ci-gate]
