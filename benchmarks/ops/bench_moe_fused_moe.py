@@ -41,10 +41,7 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.test_base import FixtureBase, TestBase
-from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import FusedMoe, FusedTopKOp
-
-_OP_NAME = "moe_fused_moe"
 
 # ---------------------------------------------------------------------------
 # Test / fixture types
@@ -110,51 +107,49 @@ class FusedMoeBenchTest(TestBase):
 
 class FusedMoeBenchmark(BenchmarkBase):
 
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            t = self.test
-            elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-            self._roofline_cache = eval_roofline(
-                _OP_NAME,
-                num_tokens=t.num_tokens,
-                top_k=t.top_k,
-                ffn_size=t.ffn_size,
-                hidden_size=t.hidden_size,
-                num_experts=t.num_experts,
-                elem_bytes=elem_bytes,
-            )
-        return self._roofline_cache
-
     def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
+        t = self.test
+        return (
+            t.num_tokens * t.top_k
+            * (2 * t.ffn_size * t.hidden_size * 2
+               + t.hidden_size * t.ffn_size * 2)
+        )
 
     def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
+        t = self.test
+        elem = 2
+        w = (t.num_experts * 2 * t.ffn_size * t.hidden_size
+             + t.num_experts * t.hidden_size * t.ffn_size) * elem
+        a = t.num_tokens * t.hidden_size * elem * 2
+        return w + a
 
 
-# ---------------------------------------------------------------------------
-# Manifest-driven parametrize
-# ---------------------------------------------------------------------------
-
-
-def _manifest_params():
-    """Convert manifest workloads to pytest params."""
-    params = []
-    for w in load_workloads(_OP_NAME):
-        label = w.get("label", "unlabeled")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(
-                w["num_tokens"], w["num_experts"], w["top_k"],
-                w["hidden_size"], w["ffn_size"],
-                w["scoring_func"], w["renormalize"],
-                w["with_correction_bias"], w["routed_scaling_factor"],
-                dtype,
-                id=f"{label}-{dtype_str}",
-            ))
-    return params
+class FusedMoeBenchFixture(FixtureBase):
+    PARAMS = [
+        (
+            "num_tokens, num_experts, top_k, hidden_size, ffn_size,"
+            " scoring_func, renormalize, with_correction_bias,"
+            " routed_scaling_factor, dtype",
+            [
+                (1,    384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
+                (32,   384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
+                (512,  384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
+                (4096, 384, 8, 7168, 2048, "sigmoid", True, True, 2.827, torch.bfloat16),
+                (1,    256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (32,   256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (512,  256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (4096, 256, 8, 7168, 2048, "sigmoid", True, False, 1.0, torch.bfloat16),
+                (1,    128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (32,   128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (512,  128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (4096, 128, 8, 7168, 2048, "softmax", False, False, 1.0, torch.bfloat16),
+                (1,    128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+                (32,   128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+                (512,  128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+                (4096, 128, 8, 3072, 1536, "softmax", False, False, 1.0, torch.bfloat16),
+            ],
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -162,12 +157,7 @@ def _manifest_params():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "num_tokens, num_experts, top_k, hidden_size, ffn_size,"
-    " scoring_func, renormalize, with_correction_bias,"
-    " routed_scaling_factor, dtype",
-    _manifest_params(),
-)
+@FusedMoeBenchFixture
 def test_fused_moe_bench(
     num_tokens, num_experts, top_k, hidden_size, ffn_size,
     scoring_func, renormalize, with_correction_bias,

@@ -28,10 +28,8 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_moe_fused_topk import FusedTopKTest, _ref_fused_topk
-from tileops.manifest import eval_roofline, load_workloads
+from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedTopKOp
-
-_OP_NAME = "moe_fused_topk"
 
 # ---------------------------------------------------------------------------
 # Benchmark class
@@ -40,43 +38,36 @@ _OP_NAME = "moe_fused_topk"
 
 class FusedTopKBenchmark(BenchmarkBase):
 
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            t = self.test
-            self._roofline_cache = eval_roofline(
-                _OP_NAME,
-                num_tokens=t.num_tokens,
-                num_experts=t.num_experts,
-                top_k=t.top_k,
-            )
-        return self._roofline_cache
-
     def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
+        t = self.test
+        return t.num_tokens * t.num_experts * 2 * (1 + t.top_k)
 
     def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
+        t = self.test
+        return (
+            t.num_tokens * t.num_experts * 2
+            + t.num_tokens * t.top_k * 4
+            + t.num_tokens * t.top_k * 4
+        )
 
 
-# ---------------------------------------------------------------------------
-# Manifest-driven parametrize
-# ---------------------------------------------------------------------------
-
-
-def _manifest_params():
-    """Convert manifest workloads to pytest params."""
-    params = []
-    for w in load_workloads(_OP_NAME):
-        label = w.get("label", "unlabeled")
-        for dtype_str in w["dtypes"]:
-            params.append(pytest.param(
-                w["num_tokens"], w["num_experts"], w["top_k"],
-                w["scoring_func"], w["renormalize"],
-                id=f"{label}-{dtype_str}",
-            ))
-    return params
+class FusedTopKBenchFixture(FixtureBase):
+    PARAMS = [
+        ("num_tokens, num_experts, top_k, scoring_func, renormalize", [
+            (1,    384, 8, "sigmoid", True),
+            (32,   384, 8, "sigmoid", True),
+            (512,  384, 8, "sigmoid", True),
+            (4096, 384, 8, "sigmoid", True),
+            (1,    256, 8, "sigmoid", True),
+            (32,   256, 8, "sigmoid", True),
+            (512,  256, 8, "sigmoid", True),
+            (4096, 256, 8, "sigmoid", True),
+            (1,    128, 8, "softmax", False),
+            (32,   128, 8, "softmax", False),
+            (512,  128, 8, "softmax", False),
+            (4096, 128, 8, "softmax", False),
+        ]),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -84,10 +75,7 @@ def _manifest_params():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "num_tokens, num_experts, top_k, scoring_func, renormalize",
-    _manifest_params(),
-)
+@FusedTopKBenchFixture
 def test_fused_topk_bench(
     num_tokens: int, num_experts: int, top_k: int, scoring_func: str, renormalize: bool
 ) -> None:
