@@ -169,6 +169,31 @@ class TestOpSchema:
                         f"{op_name}: invalid shape_rule: {rule!r} ({exc})"
                     )
 
+    def test_every_op_has_at_least_two_workloads(self, all_ops):
+        for op_name, entry in all_ops.items():
+            assert len(entry["workloads"]) >= 2, (
+                f"{op_name} must have at least 2 workloads"
+            )
+
+    def test_workloads_include_all_required_params(self, all_ops):
+        """Every workload entry must specify all required (no-default) params."""
+        for op_name, entry in all_ops.items():
+            sig = entry["signature"]
+            params = sig.get("params", {})
+            required_params = {
+                name
+                for name, attrs in params.items()
+                if isinstance(attrs, dict) and "default" not in attrs
+            }
+            if not required_params:
+                continue
+            for i, wl in enumerate(entry["workloads"]):
+                missing = required_params - set(wl.keys())
+                assert not missing, (
+                    f"{op_name}: workload[{i}] missing required param(s): "
+                    f"{missing}"
+                )
+
 
 class TestSourcePaths:
     """All source paths point to existing files."""
@@ -231,3 +256,25 @@ class TestManifestAPI:
         assert _safe_eval("M + N - 1", {"M": 10, "N": 3}) == 12
         assert _safe_eval("M ** 2", {"M": 4}) == 16
         assert _safe_eval("-M", {"M": 5}) == -5
+
+    def test_eval_roofline_func_mode(self):
+        """Verify func-mode roofline dispatch resolves and calls the function."""
+        from tileops.manifest import eval_roofline
+
+        # Stubs raise NotImplementedError — dispatch succeeds if it reaches them
+        with pytest.raises(NotImplementedError):
+            eval_roofline("mha_fwd")
+
+    def test_eval_roofline_func_mode_bad_module_raises(self):
+        """Verify func-mode raises ValueError for non-importable module."""
+
+        from tileops.manifest import _load_manifest, eval_roofline
+
+        ops = _load_manifest()
+        original = ops["mha_fwd"]["roofline"]["func"]
+        try:
+            ops["mha_fwd"]["roofline"]["func"] = "nonexistent.module.fn"
+            with pytest.raises(ValueError, match="Failed to import"):
+                eval_roofline("mha_fwd")
+        finally:
+            ops["mha_fwd"]["roofline"]["func"] = original
