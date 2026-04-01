@@ -96,11 +96,41 @@ def _flashinfer_gqa_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     return run_fn
 
 
+# GQA paged decode benchmark parameters.
+#
+# Paged KV cache is the standard in production serving (vLLM, SGLang).
+# Batch sizes reflect real multi-request serving: B=4-64.
+#
+# Three page_size tiers:
+#   64  — TileOPs current minimum supported page_size (block_N constraint)
+#   256 — FlashInfer's optimized page_size, also FA3-compatible (multiple of 256)
+#   16  — vLLM/SGLang default; skip-marked until kernel supports page_size<64
+#
+# Head profiles and KV cache lengths match non-paged decode configs.
 _GQA_DECODE_PAGED_BENCH_PARAMS = [
-    pytest.param(1, 16, 8, 512, 128, 128, torch.float16, True, id="baseline-page128"),
-    pytest.param(2, 8, 4, 1024, 64, 256, torch.float16, True, id="batch2-page256"),
-    pytest.param(1, 16, 4, 2048, 128, 512, torch.float16, True, id="long-cache-page512"),
-    pytest.param(1, 32, 16, 512, 64, 128, torch.float16, True, id="high-head-ratio"),
+    # ── page_size=64 (TileOPs minimum) ──
+    # 8B-class online serving (B=32, 4K context)
+    pytest.param(32, 32, 8, 4096, 128, 64, torch.float16, True, id="serving-8b-p64"),
+    # 8B-class long-context serving (B=8, 32K context)
+    pytest.param(8, 32, 8, 32768, 128, 64, torch.float16, True, id="serving-8b-long-p64"),
+    # 8B-class high-throughput batch (B=64, short output)
+    pytest.param(64, 32, 8, 2048, 128, 64, torch.float16, True, id="throughput-8b-p64"),
+    # 70B-class online serving
+    pytest.param(8, 64, 8, 4096, 128, 64, torch.float16, True, id="serving-70b-p64"),
+    # ── page_size=256 (FlashInfer optimized, FA3 compatible) ──
+    # 8B-class online serving
+    pytest.param(32, 32, 8, 4096, 128, 256, torch.float16, True, id="serving-8b-p256"),
+    # 70B-class online serving
+    pytest.param(8, 64, 8, 4096, 128, 256, torch.float16, True, id="serving-70b-p256"),
+    # 405B-class online serving (B=4, limited by model size)
+    pytest.param(4, 128, 8, 4096, 128, 256, torch.float16, True, id="serving-405b-p256"),
+    # ── page_size=16 (vLLM/SGLang default) — skip until kernel support ──
+    pytest.param(32, 32, 8, 4096, 128, 16, torch.float16, True, id="serving-8b-p16",
+                 marks=pytest.mark.skip(reason="page_size=16 not yet supported by kernel")),
+    pytest.param(64, 32, 8, 2048, 128, 16, torch.float16, True, id="throughput-8b-p16",
+                 marks=pytest.mark.skip(reason="page_size=16 not yet supported by kernel")),
+    pytest.param(8, 64, 8, 4096, 128, 16, torch.float16, True, id="serving-70b-p16",
+                 marks=pytest.mark.skip(reason="page_size=16 not yet supported by kernel")),
 ]
 
 

@@ -126,10 +126,47 @@ def _torch_gqa_bwd(test):
     return fn
 
 
+# GQA forward benchmark parameters.
+#
+# Three head profiles cover the mainstream LLM GQA configurations:
+#   small  (32:8:128) — Llama-3.1-8B, Qwen3-8B, Mistral-24B
+#   medium (64:8:128) — Llama-3.1-70B, Qwen3-32B, Qwen2.5-72B
+#   large  (128:8:128) — Llama-3.1-405B
+# head_dim=128 and kv_heads=8 are near-universal across Llama, Qwen3, and Mistral.
+#
+# Inference prefill (fp16): seq_len from 1K to 128K covers short chat to
+# full-context workloads.  B=1 because prefill is single-request in practice.
+#
+# Training (bf16): seq_len 2K-8K covers SFT (2K) and pretraining (4K-8K).
+# B=1-2 reflects typical micro-batch sizes.  No long-context training configs
+# since >90% of pretraining compute is at 4K-8K.
 _GQA_FWD_BENCH_PARAMS = [
-    pytest.param(1, 1024, 8, 4, 64, False, torch.float16, True, id="prefill-fp16"),
-    pytest.param(4, 2048, 64, 4, 128, False, torch.float16, True, id="throughput-fp16"),
-    pytest.param(4, 2048, 64, 4, 128, False, torch.bfloat16, True, id="throughput-bf16"),
+    # ── Inference prefill: B=1, causal, fp16 ──
+    # Short chat prompt
+    pytest.param(1, 1024, 32, 8, 128, True, torch.float16, True, id="llama8b-1k"),
+    # Document QA / code completion
+    pytest.param(1, 4096, 32, 8, 128, True, torch.float16, True, id="llama8b-4k"),
+    # RAG context / Llama-4 chunk_size
+    pytest.param(1, 8192, 32, 8, 128, True, torch.float16, True, id="llama8b-8k"),
+    # Long-document summarization
+    pytest.param(1, 32768, 32, 8, 128, True, torch.float16, True, id="llama8b-32k"),
+    # Full-context (Llama-3.1 max)
+    pytest.param(1, 131072, 32, 8, 128, True, torch.float16, True, id="llama8b-128k"),
+    # 70B-class single-request prefill
+    pytest.param(1, 4096, 64, 8, 128, True, torch.float16, True, id="llama70b-4k"),
+    # 405B-class single-request prefill
+    pytest.param(1, 4096, 128, 8, 128, True, torch.float16, True, id="llama405b-4k"),
+    # ── Training: bf16, fwd benchmarked here, bwd below ──
+    # Pretraining main phase (8B-class, micro-batch=2)
+    pytest.param(2, 4096, 32, 8, 128, True, torch.bfloat16, True, id="train-8b-4k"),
+    # Pretraining longer sequences (8B-class)
+    pytest.param(1, 8192, 32, 8, 128, True, torch.bfloat16, True, id="train-8b-8k"),
+    # Pretraining 70B-class
+    pytest.param(1, 4096, 64, 8, 128, True, torch.bfloat16, True, id="train-70b-4k"),
+    # Pretraining 405B-class
+    pytest.param(1, 4096, 128, 8, 128, True, torch.bfloat16, True, id="train-405b-4k"),
+    # SFT / LoRA fine-tuning (shorter sequences, micro-batch=2)
+    pytest.param(2, 2048, 32, 8, 128, True, torch.bfloat16, True, id="sft-8b"),
 ]
 
 
@@ -161,7 +198,13 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
 
-_GQA_BWD_BENCH_PARAMS = _GQA_FWD_BENCH_PARAMS
+# GQA backward benchmark parameters (training only).
+# Backward is only used during training — extract the training subset from
+# _GQA_FWD_BENCH_PARAMS by ID prefix to avoid manual duplication.
+_GQA_BWD_BENCH_PARAMS = [
+    p for p in _GQA_FWD_BENCH_PARAMS
+    if p.id.startswith(("train", "sft"))
+]
 
 
 @pytest.mark.parametrize(
