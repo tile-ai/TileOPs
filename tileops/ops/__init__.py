@@ -81,7 +81,6 @@ from .rope import (
     RopeNonNeoxOp,
     RopeYarnOp,
 )
-from .ssd_chunk_scan_bwd_dstates import SsdChunkScanBwdDstatesOp
 from .ssd_chunk_scan_fwd import SsdChunkScanFwdOp
 from .ssd_chunk_state_fwd import SsdChunkStateFwdOp
 from .ssd_decode import SsdDecodeOp
@@ -142,7 +141,6 @@ __all__ = [
     "Op",
     "MoePermuteAlignOp",
     "RmsNormOp",
-    "SsdChunkScanBwdDstatesOp",
     "SsdChunkScanFwdOp",
     "SsdChunkStateFwdOp",
     "SsdDecodeOp",
