@@ -1,12 +1,8 @@
-"""Tests for smoke-param tier validation in conftest.py.
+"""Tests for tier validation in tests/conftest.py.
 
-Verifies:
-- AC-1: Zero smoke params still fail.
-- AC-2: Multiple smoke params pass validation.
-- AC-3: Smoke params must appear as first N non-xfail cases; ordering
-         violation raises pytest.UsageError.
-- AC-4: Existing single-smoke fixtures pass unchanged (backward compat).
-- AC-5: tune=False and no-xfail constraints apply to every smoke case.
+Covers two layers of behavior:
+- generic per-test tier constraints that still apply across tests/ops
+- canonical smoke normalization for public Ops exported from tileops/ops/__init__.py
 """
 
 from __future__ import annotations
@@ -17,7 +13,28 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tests.conftest import pytest_collection_modifyitems
+import tests.conftest as tier_conftest
+from tests.conftest import _normalize_public_op_smoke, pytest_collection_modifyitems
+
+
+@pytest.fixture
+def disable_public_op_smoke_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        tier_conftest,
+        "_normalize_public_op_smoke",
+        lambda items, tier_errors: None,
+    )
+
+
+@pytest.fixture
+def stub_public_op_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tier_conftest, "_load_public_op_names", lambda: ["ExampleOp"])
+    monkeypatch.setattr(
+        tier_conftest,
+        "PUBLIC_OP_SMOKE_TARGETS",
+        {"ExampleOp": ("tests/ops/test_example.py", "test_example_op")},
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers to build mock pytest.Items
@@ -31,159 +48,91 @@ def _make_item(
     path: str = "tests/ops/test_foo.py",
     markers: list[str] | None = None,
     tune: bool | None = None,
+    autotune: bool | None = None,
 ) -> MagicMock:
     """Build a lightweight mock pytest.Item for tier validation tests."""
     markers = markers or []
-    item = MagicMock(spec=["nodeid", "path", "name", "originalname",
-                           "get_closest_marker", "callspec"])
+    item = MagicMock(
+        spec=[
+            "nodeid",
+            "path",
+            "name",
+            "originalname",
+            "get_closest_marker",
+            "callspec",
+            "own_markers",
+            "add_marker",
+            "parent",
+        ]
+    )
     item.nodeid = f"{path}::{name}"
     item.path = Path(path)
     item.name = name
     item.originalname = originalname
 
-    marker_set = set(markers)
+    item.own_markers = [SimpleNamespace(name=marker_name) for marker_name in markers]
+    item.parent = SimpleNamespace(
+        own_markers=[],
+        parent=SimpleNamespace(own_markers=[], parent=None),
+    )
 
     def _get_closest_marker(marker_name: str):
-        if marker_name in marker_set:
-            return True  # truthy sentinel
+        for marker in item.own_markers:
+            if marker.name == marker_name:
+                return marker
         return None
 
+    def _add_marker(marker):
+        marker_name = getattr(getattr(marker, "mark", None), "name", None)
+        if marker_name is None:
+            marker_name = getattr(marker, "name", None)
+        if marker_name is None:
+            raise AssertionError(f"unsupported marker object: {marker!r}")
+        item.own_markers.append(SimpleNamespace(name=marker_name))
+
     item.get_closest_marker = _get_closest_marker
+    item.add_marker = _add_marker
 
-    # callspec with optional tune param
+    params: dict[str, bool] = {}
     if tune is not None:
-        item.callspec = SimpleNamespace(params={"tune": tune})
-    else:
-        item.callspec = None
-
+        params["tune"] = tune
+    if autotune is not None:
+        params["autotune"] = autotune
+    item.callspec = SimpleNamespace(params=params) if params else None
     return item
 
 
-# ===================================================================
-# AC-1: Zero smoke params still fail
-# ===================================================================
-
-
-@pytest.mark.smoke
-class TestZeroSmokeFails:
-    """At least one smoke param is required per ops test function."""
-
-    def test_zero_smoke_raises(self):
+class TestGenericOpsTierValidation:
+    def test_zero_smoke_is_allowed_when_not_a_canonical_target(
+        self, disable_public_op_smoke_normalization: None
+    ):
         items = [
             _make_item(markers=["full"], tune=False),
             _make_item(markers=["full"], tune=False),
         ]
-        with pytest.raises(pytest.UsageError, match="smoke"):
-            pytest_collection_modifyitems(items)
-
-
-# ===================================================================
-# AC-2: Multiple smoke params pass validation
-# ===================================================================
-
-
-@pytest.mark.smoke
-class TestMultiSmokePasses:
-    """Tests with >1 smoke params must pass tier validation."""
-
-    def test_two_smoke_params_pass(self):
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[1]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[2]", markers=["full"], tune=False),
-        ]
-        # Should not raise
         pytest_collection_modifyitems(items)
 
-    def test_three_smoke_params_pass(self):
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[1]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[2]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[3]", markers=["full"], tune=False),
-        ]
-        # Should not raise
-        pytest_collection_modifyitems(items)
-
-
-# ===================================================================
-# AC-3: Smoke params must appear as the first N non-xfail cases
-# ===================================================================
-
-
-@pytest.mark.smoke
-class TestSmokeOrdering:
-    """Smoke cases must be contiguous at the front of non-xfail items."""
-
-    def test_smoke_after_full_raises(self):
-        """A smoke param appearing after a non-xfail full param is invalid."""
+    def test_smoke_after_full_does_not_raise_without_ordering_rule(
+        self, disable_public_op_smoke_normalization: None
+    ):
         items = [
             _make_item(name="test_op[0]", markers=["full"], tune=False),
             _make_item(name="test_op[1]", markers=["smoke"], tune=False),
         ]
-        with pytest.raises(pytest.UsageError, match="smoke"):
-            pytest_collection_modifyitems(items)
+        pytest_collection_modifyitems(items)
 
-    def test_smoke_gap_raises(self):
-        """Smoke params with a full param in between are invalid."""
+    def test_smoke_xfail_is_allowed_for_noncanonical_items(
+        self, disable_public_op_smoke_normalization: None
+    ):
         items = [
-            _make_item(name="test_op[0]", markers=["smoke"], tune=False),
+            _make_item(name="test_op[0]", markers=["smoke", "xfail"], tune=False),
             _make_item(name="test_op[1]", markers=["full"], tune=False),
-            _make_item(name="test_op[2]", markers=["smoke"], tune=False),
-        ]
-        with pytest.raises(pytest.UsageError, match="smoke"):
-            pytest_collection_modifyitems(items)
-
-    def test_xfail_before_smoke_ok(self):
-        """xfail items before smoke are ignored for ordering purposes."""
-        items = [
-            _make_item(name="test_op[0]", markers=["full", "xfail"], tune=False),
-            _make_item(name="test_op[1]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[2]", markers=["full"], tune=False),
-        ]
-        # Should not raise -- the xfail item is excluded from ordering check
-        pytest_collection_modifyitems(items)
-
-    def test_multi_smoke_correct_order_passes(self):
-        """Multiple smoke at the front, then full -- valid."""
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[1]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[2]", markers=["full"], tune=False),
-            _make_item(name="test_op[3]", markers=["full"], tune=False),
         ]
         pytest_collection_modifyitems(items)
 
-
-# ===================================================================
-# AC-4: Backward compatibility -- single smoke still works
-# ===================================================================
-
-
-@pytest.mark.smoke
-class TestSingleSmokeBackwardCompat:
-    """Existing single-smoke test fixtures must pass unchanged."""
-
-    def test_single_smoke_first(self):
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[1]", markers=["full"], tune=False),
-            _make_item(name="test_op[2]", markers=["full"], tune=True),
-        ]
-        # Should not raise
-        pytest_collection_modifyitems(items)
-
-
-# ===================================================================
-# AC-5: tune=False and no-xfail constraints for every smoke case
-# ===================================================================
-
-
-@pytest.mark.smoke
-class TestSmokeConstraints:
-    """Every smoke case must have tune=False and must not be xfail."""
-
-    def test_smoke_tune_true_raises(self):
+    def test_smoke_tune_true_still_raises(
+        self, disable_public_op_smoke_normalization: None
+    ):
         items = [
             _make_item(name="test_op[0]", markers=["smoke"], tune=True),
             _make_item(name="test_op[1]", markers=["full"], tune=False),
@@ -191,16 +140,9 @@ class TestSmokeConstraints:
         with pytest.raises(pytest.UsageError, match="tune=False"):
             pytest_collection_modifyitems(items)
 
-    def test_smoke_xfail_raises(self):
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke", "xfail"], tune=False),
-            _make_item(name="test_op[1]", markers=["full"], tune=False),
-        ]
-        with pytest.raises(pytest.UsageError, match="xfail"):
-            pytest_collection_modifyitems(items)
-
-    def test_second_smoke_tune_true_raises(self):
-        """The tune=False constraint applies to ALL smoke cases, not just first."""
+    def test_second_smoke_tune_true_still_raises(
+        self, disable_public_op_smoke_normalization: None
+    ):
         items = [
             _make_item(name="test_op[0]", markers=["smoke"], tune=False),
             _make_item(name="test_op[1]", markers=["smoke"], tune=True),
@@ -209,49 +151,82 @@ class TestSmokeConstraints:
         with pytest.raises(pytest.UsageError, match="tune=False"):
             pytest_collection_modifyitems(items)
 
-    def test_second_smoke_xfail_raises(self):
-        """The no-xfail constraint applies to ALL smoke cases."""
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[1]", markers=["smoke", "xfail"], tune=False),
-            _make_item(name="test_op[2]", markers=["full"], tune=False),
-        ]
-        with pytest.raises(pytest.UsageError, match="xfail"):
-            pytest_collection_modifyitems(items)
 
-    def test_smoke_xfail_no_tune_raises(self):
-        """Regression: smoke+xfail without a tune param must still be rejected."""
+class TestCanonicalPublicOpNormalization:
+    def test_selects_single_autotune_false_candidate(
+        self, stub_public_op_mapping: None
+    ):
         items = [
-            _make_item(name="test_op[0]", markers=["smoke", "xfail"], tune=None),
-            _make_item(name="test_op[1]", markers=["smoke", "xfail"], tune=None),
+            _make_item(
+                name="test_example_op[param0]",
+                originalname="test_example_op",
+                path="tests/ops/test_example.py",
+                markers=["full"],
+                autotune=True,
+            ),
+            _make_item(
+                name="test_example_op[param1]",
+                originalname="test_example_op",
+                path="tests/ops/test_example.py",
+                markers=["full"],
+                autotune=False,
+            ),
+            _make_item(
+                name="test_other_op[param0]",
+                originalname="test_other_op",
+                path="tests/ops/test_other.py",
+                markers=["smoke"],
+                tune=False,
+            ),
         ]
-        with pytest.raises(pytest.UsageError, match="xfail"):
-            pytest_collection_modifyitems(items)
+        tier_errors: list[str] = []
 
-    def test_smoke_xfail_then_full_only_xfail_error(self):
-        """Regression: smoke+xfail followed by full should only raise xfail error,
-        not a spurious ordering error."""
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke", "xfail"], tune=False),
-            _make_item(name="test_op[1]", markers=["full"], tune=False),
-        ]
-        with pytest.raises(pytest.UsageError, match="xfail") as exc_info:
-            pytest_collection_modifyitems(items)
-        # Must also report missing smoke (no valid smoke cases), but NOT ordering
-        assert "must not be xfail" in str(exc_info.value)
-        assert "at least one smoke case" in str(exc_info.value)
-        assert "must appear as the first" not in str(exc_info.value)
+        _normalize_public_op_smoke(items, tier_errors)
 
-    def test_smoke_xfail_valid_smoke_full_only_xfail_error(self):
-        """Regression: [smoke+xfail, smoke, full] should raise xfail error but
-        not a spurious ordering error -- valid smoke is correctly at front."""
+        assert tier_errors == []
+        assert items[0].get_closest_marker("smoke") is None
+        assert items[0].get_closest_marker("full") is not None
+        assert items[1].get_closest_marker("smoke") is not None
+        assert items[2].get_closest_marker("smoke") is None
+        assert items[2].get_closest_marker("full") is not None
+
+    def test_missing_candidate_reports_error(self, stub_public_op_mapping: None):
         items = [
-            _make_item(name="test_op[0]", markers=["smoke", "xfail"], tune=False),
-            _make_item(name="test_op[1]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[2]", markers=["full"], tune=False),
+            _make_item(
+                name="test_other_op[param0]",
+                originalname="test_other_op",
+                path="tests/ops/test_other.py",
+                markers=["full"],
+                tune=False,
+            )
         ]
-        with pytest.raises(pytest.UsageError, match="xfail") as exc_info:
-            pytest_collection_modifyitems(items)
-        # Only the xfail rejection should fire; ordering is fine
-        assert "must not be xfail" in str(exc_info.value)
-        assert "must appear as the first" not in str(exc_info.value)
+        tier_errors: list[str] = []
+
+        _normalize_public_op_smoke(items, tier_errors)
+
+        assert any("expected at least one non-xfail item" in error for error in tier_errors)
+        assert any("expected exactly one smoke case, found 0" in error for error in tier_errors)
+
+    def test_all_autotuned_candidates_report_error(self, stub_public_op_mapping: None):
+        items = [
+            _make_item(
+                name="test_example_op[param0]",
+                originalname="test_example_op",
+                path="tests/ops/test_example.py",
+                markers=["full"],
+                autotune=True,
+            ),
+            _make_item(
+                name="test_example_op[param1]",
+                originalname="test_example_op",
+                path="tests/ops/test_example.py",
+                markers=["full"],
+                tune=True,
+            ),
+        ]
+        tier_errors: list[str] = []
+
+        _normalize_public_op_smoke(items, tier_errors)
+
+        assert any("use autotune/tune=True" in error for error in tier_errors)
+        assert any("expected exactly one smoke case, found 0" in error for error in tier_errors)
