@@ -71,7 +71,7 @@ class AvgPool2dBenchmark(BenchmarkBase):
 _AVG_POOL2D_BENCH_PARAMS = [
     pytest.param(2, 64, 112, 112, (3, 3), (2, 2), (1, 1), False, True, None, torch.float16, True, id="vision-3x3-s2"),
     pytest.param(2, 128, 56, 56, (5, 5), (2, 2), (2, 2), False, True, None, torch.float16, True, id="vision-5x5-s2"),
-    pytest.param(1, 96, 55, 57, (3, 5), (2, 2), (1, 2), True, False, 7, torch.bfloat16, True, id="ceil-divisor-bf16"),
+    pytest.param(3, 96, 55, 57, (3, 5), (2, 2), (1, 2), True, False, 7, torch.bfloat16, True, id="ceil-divisor-bf16"),
 ]
 
 
