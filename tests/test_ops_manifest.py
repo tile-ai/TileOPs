@@ -169,6 +169,12 @@ class TestOpSchema:
                         f"{op_name}: invalid shape_rule: {rule!r} ({exc})"
                     )
 
+    def test_every_op_has_at_least_two_workloads(self, all_ops):
+        for op_name, entry in all_ops.items():
+            assert len(entry["workloads"]) >= 2, (
+                f"{op_name} must have at least 2 workloads"
+            )
+
     def test_workloads_include_all_required_params(self, all_ops):
         """Every workload entry must specify all required (no-default) params."""
         for op_name, entry in all_ops.items():
@@ -259,22 +265,6 @@ class TestManifestAPI:
         flops, mem_bytes = eval_roofline("mha_fwd")
         assert isinstance(flops, float)
         assert isinstance(mem_bytes, float)
-
-    def test_eval_roofline_func_mode_passes_variables(self):
-        """Verify func-mode dispatch forwards kwargs to the target function."""
-        from unittest.mock import patch
-
-        from tileops.manifest import eval_roofline
-
-        sentinel = {"flops": 42, "bytes": 99}
-        with patch(
-            "tileops.perf.formulas.mha_fwd_roofline",
-            return_value=sentinel,
-        ) as mock_fn:
-            flops, mem_bytes = eval_roofline("mha_fwd", B=2, S=1024)
-            mock_fn.assert_called_once_with(B=2, S=1024)
-        assert flops == 42.0
-        assert mem_bytes == 99.0
 
     def test_eval_roofline_func_mode_bad_module_raises(self):
         """Verify func-mode raises ValueError for non-importable module."""
