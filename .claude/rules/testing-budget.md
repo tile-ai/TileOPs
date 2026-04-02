@@ -1,7 +1,7 @@
 - UT guards critical implementation paths. You, as the implementer, decide which paths are critical. Every test case must trace back to a specific code path, dtype dispatch, or regression — not combinatorial confidence.
 - All supported dtypes must be tested — dtype dispatch is a critical path in an operator library. But dtype coverage and shape coverage serve different purposes; do not cross them unless the combination triggers a distinct code path.
 - Smoke tier stays lean: cover each dtype with a typical shape, cover each shape category (minimal/typical/stress) with a representative dtype. Full tier may add cross-combinations only when the implementer can name the code path each combination guards.
-- Do not generate PARAMS from ops_manifest.yaml workloads. PARAMS is a curated correctness subset.
+- Do not generate test fixtures from ops_manifest.yaml workloads. Test parameters are a curated correctness subset, not an exhaustive enumeration of manifest workloads.
 - When growth exceeds 20 cases per test function, state which code paths justify the count.
 - Run `scripts/test_node_delta.py` before submitting PRs that modify tests. Report delta in PR description when growth > 10%.
 - smoke: `tune=False`, first N non-xfail cases (conftest-enforced).
