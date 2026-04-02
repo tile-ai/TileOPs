@@ -119,7 +119,7 @@ The implementer selects the smallest shape that triggers each branch. Do not gen
 
 ### Test node growth detection
 
-[`scripts/test_node_delta.py`](../scripts/test_node_delta.py) compares pytest node counts between current branch and main. Always exits 0 (non-blocking).
+[`scripts/test_node_delta.py`](../scripts/test_node_delta.py) compares **pytest collected node count** (test cases after parametrize expansion) between current branch and main. Always exits 0 (non-blocking).
 
 ```bash
 python scripts/test_node_delta.py                    # auto-detect changed test files
@@ -127,7 +127,9 @@ python scripts/test_node_delta.py tests/ops/test_foo.py  # specific files
 python scripts/test_node_delta.py --base origin/release   # different base branch
 ```
 
-Include output in PR description when growth exceeds 10%.
+- **No growth on existing files**: nothing to report.
+- **Growth on existing files**: include script output and a one-line justification in PR description.
+- **New test files only**: no delta to report — follow the policy above.
 
 ## Benchmark Requirements
 

@@ -3,7 +3,7 @@
 - Smoke tier stays lean: cover each dtype with a typical shape, cover each shape category (minimal/typical/stress) with a representative dtype. Full tier may add cross-combinations only when the implementer can name the code path each combination guards.
 - Do not generate test fixtures from ops_manifest.yaml workloads. Test parameters are a curated correctness subset, not an exhaustive enumeration of manifest workloads.
 - When growth exceeds 20 cases per test function, state which code paths justify the count.
-- Run `scripts/test_node_delta.py` before submitting PRs that modify tests. Report delta in PR description when growth > 10%.
+- Run `scripts/test_node_delta.py` before submitting PRs that modify tests. If existing test files show node growth, include the output and a one-line justification in the PR description. New-file-only changes need no delta report.
 - smoke: `tune=False`, first N non-xfail cases (conftest-enforced).
 - full: first `tune=True` case; at most one `tune=True` in full (conftest-enforced).
 - Each test in `tests/ops/` must have exactly one tier: smoke, full, or nightly (conftest-enforced).
