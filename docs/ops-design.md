@@ -1,5 +1,17 @@
 # Op Interface Design
 
+## Class Hierarchy (target architecture)
+
+```
+Op (base)
+  └── FamilyBase (e.g., RowNormOp → NormBase, ReductionBase, ...)
+        └── ConcreteOp (declaration only)
+```
+
+- **Op** — abstract base. Defines the `forward()` contract.
+- **FamilyBase** — per-family intermediate base. Owns shared `forward()` flow: validation, reshape, padding, kernel dispatch, trim. One per op family. Current: `RowNormOp` serves norm ops; migration to `NormBase` tracked in #741.
+- **ConcreteOp** — leaf class. Pure declaration: kernel class, supported dtypes, input wiring. No logic override.
+
 ## Principle 1: Two-Layer Boundary
 
 Every operator splits into Op (L2) and Kernel (L1):
