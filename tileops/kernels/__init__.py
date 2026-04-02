@@ -58,6 +58,7 @@ from .norm import (
     LayerNormKernel,
     RmsNormKernel,
 )
+from .pool import AvgPool1dKernel, AvgPool2dKernel, AvgPool3dKernel
 from .rope import (
     RopeLlama31Kernel,
     RopeLongRopeKernel,
@@ -68,6 +69,9 @@ from .rope import (
 
 __all__ = [
     "BinaryKernel",
+    "AvgPool1dKernel",
+    "AvgPool2dKernel",
+    "AvgPool3dKernel",
     "BatchNormBwdKernel",
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",

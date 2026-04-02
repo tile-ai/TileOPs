@@ -1,3 +1,6 @@
+from .avg_pool1d import AvgPool1dOp
+from .avg_pool2d import AvgPool2dOp
+from .avg_pool3d import AvgPool3dOp
 from .conv1d import Conv1dOp
 from .conv2d import Conv2dOp
 from .conv3d import Conv3dOp
@@ -89,6 +92,9 @@ from .topk_selector import TopkSelectorOp
 
 __all__ = [
     "BinaryOp",
+    "AvgPool1dOp",
+    "AvgPool2dOp",
+    "AvgPool3dOp",
     "AdaLayerNormOp",
     "AdaLayerNormZeroOp",
     "BatchNormBwdOp",
