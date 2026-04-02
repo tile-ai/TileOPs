@@ -380,7 +380,7 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim])"
+        M: "product(x.shape) // x.shape[dim]"
         N: "x.shape[dim]"
       flops: "4 * M * N"
       bytes: "(2 * M * N + N) * elem_bytes"

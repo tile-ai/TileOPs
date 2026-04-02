@@ -35,7 +35,7 @@
 ops:
 
   # ---------------------------------------------------------------------------
-  # norm — row-norm ops (operate along last dim, shape: [*leading, N])
+  # norm — normalization ops (compute statistics along specified dim(s), normalize, apply affine)
   # ---------------------------------------------------------------------------
 
   rmsnorm_fwd:
@@ -67,7 +67,7 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim])"
+        M: "product(x.shape) // x.shape[dim]"
         N: "x.shape[dim]"
       # Per row: N squares + (N-1) adds + div + add + rsqrt + N muls (normalize) + N muls (weight) ≈ 4N
       flops: "4 * M * N"
@@ -1011,6 +1011,7 @@ ops:
 
   moe_permute_padded:
     family: moe
+    status: implemented
 
     signature:
       inputs:
@@ -1067,6 +1068,7 @@ ops:
 
   moe_permute_align:
     family: moe
+    status: implemented
 
     signature:
       inputs:
@@ -1115,6 +1117,7 @@ ops:
 
   moe_permute_nopad:
     family: moe
+    status: implemented
 
     signature:
       inputs:
@@ -1171,6 +1174,7 @@ ops:
 
   moe_unpermute:
     family: moe
+    status: implemented
 
     signature:
       inputs:
