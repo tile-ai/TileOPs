@@ -4,12 +4,12 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 ## Core Abstractions
 
-| Class             | Location                  | Role                                                                                                                        |
-| ----------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `FixtureBase`     | `tests/test_base.py`      | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute.                           |
-| `TestBase`        | `tests/test_base.py`      | ABC with `gen_inputs()`, `ref_program()`, `check()`, `check_fn()`. Each op subclasses this.                                 |
-| `BenchmarkBase`   | `benchmarks/benchmark.py` | ABC wrapping a `TestBase` instance. Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
-| `BenchmarkReport` | `benchmarks/benchmark.py` | Static collector — `record()` stores results, `dump()` writes markdown, `clear()` resets.                                   |
+| Class             | Location                                                | Role                                                                                                                        |
+| ----------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `FixtureBase`     | [`tests/test_base.py`](../tests/test_base.py)           | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute.                           |
+| `TestBase`        | [`tests/test_base.py`](../tests/test_base.py)           | ABC with `gen_inputs()`, `ref_program()`, `check()`, `check_fn()`. Each op subclasses this.                                 |
+| `BenchmarkBase`   | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | ABC wrapping a `TestBase` instance. Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
+| `BenchmarkReport` | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | Static collector — `record()` stores results, `dump()` writes markdown, `clear()` resets.                                   |
 
 ## Test/Benchmark Pattern
 
@@ -49,7 +49,7 @@ def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
 
 ## Unit Test Requirements
 
-**Framework:** pytest. **Location:** `tests/ops/`.
+**Framework:** pytest. **Location:** [`tests/ops/`](../tests/ops/).
 
 Each op defines a `TestBase` subclass with `gen_inputs()` and `ref_program()`.
 
@@ -69,7 +69,7 @@ Each op defines a `TestBase` subclass with `gen_inputs()` and `ref_program()`.
 
 ### Infrastructure Rules
 
-- Changes to shared test infrastructure (`tests/test_base.py`, common fixtures, shared comparators) must preserve existing default semantics unless all affected tests are migrated in the same PR.
+- Changes to shared test infrastructure ([`tests/test_base.py`](../tests/test_base.py), common fixtures, shared comparators) must preserve existing default semantics unless all affected tests are migrated in the same PR.
 - If a PR touches shared test infrastructure, run a broader `pytest -m smoke` pass before merge.
 - Run full targeted test files for the affected op family on a real GPU before claiming readiness.
 
@@ -86,12 +86,30 @@ Each parameterized case must serve one of:
 
 No performance exploration, autotune sweeps, or duplicate code-path coverage.
 
-### Dtype and shape coverage
+### Testing layers
 
-- All supported dtypes must be tested — dtype dispatch is a critical path.
-- Shape coverage: minimal (smallest valid), typical (real-workload), stress (non-power-of-two / large).
-- Dtype and shape serve different purposes. Do not cross them unless the combination triggers a distinct code path. Smoke: cover each dtype with a typical shape, cover each shape category with a representative dtype. Full: cross-combinations only when the implementer can name the code path each guards.
-- Do not generate test fixtures from `ops_manifest.yaml` workloads. Test parameters are a curated correctness subset, not an exhaustive enumeration.
+| Layer             | Responsibility                                      | Shape source                                                  |
+| ----------------- | --------------------------------------------------- | ------------------------------------------------------------- |
+| UT smoke/full     | Guard PR correctness                                | Implementer selects based on kernel code paths                |
+| Nightly benchmark | Performance regression + typical/stress correctness | [`ops_manifest.yaml`](../tileops/ops_manifest.yaml) workloads |
+| Local dev         | Performance tuning verification                     | Developer decides ad-hoc                                      |
+
+### Dtype coverage
+
+All supported dtypes must be tested — dtype dispatch is a critical path in an operator library. Dtype and shape serve different purposes; do not cross them unless the combination triggers a distinct code path. Smoke: cover each dtype with one typical shape. Full: cross-combinations only when the implementer can name the code path each guards.
+
+### Shape coverage
+
+UT shapes target kernel implementation branches, not workload representativeness. Typical and stress shapes are covered by nightly benchmarks — UT does not duplicate them.
+
+Common kernel branch conditions that require shape coverage:
+
+- **Tile boundary** — shape not divisible by tile size (tail handling)
+- **Vectorization alignment** — shape not aligned to vector width (scalar fallback)
+- **Degenerate dimension** — size=1 (broadcast, squeeze paths)
+- **Dispatch branch** — different shape ranges triggering different kernel variants
+
+The implementer selects the smallest shape that triggers each branch. Do not generate test fixtures from [`ops_manifest.yaml`](../tileops/ops_manifest.yaml) workloads — test parameters are a curated correctness subset.
 
 ### Growth rules
 
@@ -101,7 +119,7 @@ No performance exploration, autotune sweeps, or duplicate code-path coverage.
 
 ### Test node growth detection
 
-`scripts/test_node_delta.py` compares pytest node counts between current branch and main. Always exits 0 (non-blocking).
+[`scripts/test_node_delta.py`](../scripts/test_node_delta.py) compares pytest node counts between current branch and main. Always exits 0 (non-blocking).
 
 ```bash
 python scripts/test_node_delta.py                    # auto-detect changed test files
@@ -113,7 +131,7 @@ Include output in PR description when growth exceeds 10%.
 
 ## Benchmark Requirements
 
-**Framework:** `benchmarks.benchmark.BenchmarkBase`. **Location:** `benchmarks/ops/`.
+**Framework:** `benchmarks.benchmark.BenchmarkBase`. **Location:** [`benchmarks/ops/`](../benchmarks/ops/).
 
 **Execution:** `pytest benchmarks/` auto-generates `profile_run.log` (markdown format).
 
