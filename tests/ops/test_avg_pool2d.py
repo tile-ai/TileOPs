@@ -164,6 +164,31 @@ def test_avg_pool2d_rejects_invalid_padding() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"kernel_size": True}, "kernel_size must be an int or a tuple of 2 ints"),
+        ({"stride": True}, "stride must be an int or a tuple of 2 ints"),
+        ({"padding": True}, "padding must be an int or a tuple of 2 ints"),
+        ({"kernel_size": (3, True)}, "kernel_size must contain only ints"),
+        ({"divisor_override": True}, "divisor_override must be an int or None"),
+        ({"divisor_override": 1.5}, "divisor_override must be an int or None"),
+    ],
+)
+def test_avg_pool2d_rejects_invalid_param_types(kwargs: dict[str, object], match: str) -> None:
+    base_kwargs = {
+        "n": 1,
+        "c_in": 8,
+        "h_in": 16,
+        "w_in": 16,
+        "kernel_size": (3, 3),
+    }
+    base_kwargs.update(kwargs)
+    with pytest.raises(TypeError, match=match):
+        AvgPool2dOp(**base_kwargs)
+
+
+@pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool2d_negative_divisor_override_matches_torch() -> None:
     x = torch.randn(1, 8, 8, 4, device="cuda", dtype=torch.float16).contiguous()
@@ -204,6 +229,24 @@ def test_avg_pool2d_forward_rejects_nchw_shape(monkeypatch: pytest.MonkeyPatch) 
     x = torch.randn(1, 4, 8, 8)
     with pytest.raises(ValueError, match="NHWC"):
         op(x)
+
+
+@pytest.mark.smoke
+def test_avg_pool2d_forward_warns_on_ambiguous_nhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    op = AvgPool2dOp(
+        n=1,
+        c_in=8,
+        h_in=8,
+        w_in=8,
+        kernel_size=(2, 2),
+        stride=(2, 2),
+        kernel_map={"avg_pool2d_kernel": _DummyKernel},
+    )
+    x = torch.randn(1, 8, 8, 8)
+    with pytest.warns(UserWarning, match="ambiguous NHWC shape"):
+        out = op(x)
+    assert out is x
 
 
 if __name__ == "__main__":

@@ -3,8 +3,16 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.kernel import Kernel
 from tileops.kernels.pool import AvgPool1dKernel
 from tileops.ops import AvgPool1dOp
+
+
+class _DummyKernel(Kernel):
+    supported_archs = [80]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
 
 
 class AvgPool1dFixture(FixtureBase):
@@ -109,6 +117,44 @@ def test_avg_pool1d_rejects_wrong_tuple_arity() -> None:
 def test_avg_pool1d_rejects_non_positive_stride() -> None:
     with pytest.raises(ValueError, match="stride must be greater than zero"):
         AvgPool1dOp(n=1, c_in=8, l_in=32, kernel_size=3, stride=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"kernel_size": True}, "kernel_size must be an int or a tuple of 1 ints"),
+        ({"stride": True}, "stride must be an int or a tuple of 1 ints"),
+        ({"padding": True}, "padding must be an int or a tuple of 1 ints"),
+    ],
+)
+def test_avg_pool1d_rejects_bool_pool_params(kwargs: dict[str, object], match: str) -> None:
+    base_kwargs = {
+        "n": 1,
+        "c_in": 8,
+        "l_in": 32,
+        "kernel_size": 3,
+    }
+    base_kwargs.update(kwargs)
+    with pytest.raises(TypeError, match=match):
+        AvgPool1dOp(**base_kwargs)
+
+
+@pytest.mark.smoke
+def test_avg_pool1d_forward_warns_on_ambiguous_nlc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    op = AvgPool1dOp(
+        n=1,
+        c_in=8,
+        l_in=8,
+        kernel_size=2,
+        stride=2,
+        kernel_map={"avg_pool1d_kernel": _DummyKernel},
+    )
+    x = torch.randn(1, 8, 8)
+    with pytest.warns(UserWarning, match="ambiguous NLC shape"):
+        out = op(x)
+    assert out is x
 
 
 if __name__ == "__main__":

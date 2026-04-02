@@ -1,8 +1,12 @@
 from collections.abc import Sequence
 from typing import Tuple
+import warnings
 
 
 def _normalize_pool_dims(name: str, value: int | Sequence[int], ndim: int) -> tuple[int, ...]:
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be an int or a tuple of {ndim} ints")
+
     if isinstance(value, int):
         return (value,) * ndim
 
@@ -12,7 +16,7 @@ def _normalize_pool_dims(name: str, value: int | Sequence[int], ndim: int) -> tu
     if len(value) != ndim:
         raise ValueError(f"{name} must be an int or a tuple of {ndim} ints")
 
-    if not all(isinstance(v, int) for v in value):
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in value):
         raise TypeError(f"{name} must contain only ints")
 
     return tuple(value)
@@ -46,7 +50,7 @@ def validate_pool_params(
         ("stride", stride),
         ("padding", padding),
     ):
-        if not all(isinstance(v, int) for v in values):
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
             raise TypeError(f"{name} must contain only ints")
 
     if any(v <= 0 for v in kernel_size):
@@ -62,6 +66,9 @@ def validate_pool_params(
         if pad > kernel // 2:
             raise ValueError("padding must be at most half of the effective kernel size")
 
+    if divisor_override is not None and (not isinstance(divisor_override, int) or isinstance(divisor_override, bool)):
+        raise TypeError("divisor_override must be an int or None")
+
     if divisor_override == 0:
         raise ValueError("divisor_override must not be zero")
 
@@ -72,11 +79,21 @@ def validate_channels_last_input(
     x_shape: tuple[int, ...],
     expected_shape: tuple[int, ...],
     layout: str,
+    ambiguous_layout_shape: tuple[int, ...] | None = None,
 ) -> None:
     if x_shape != expected_shape:
         raise ValueError(
             f"{op_name} expects a {layout} input tensor with shape {expected_shape}, "
             f"but got {x_shape}"
+        )
+
+    if ambiguous_layout_shape is not None and ambiguous_layout_shape == expected_shape:
+        warnings.warn(
+            (
+                f"{op_name} received an ambiguous {layout} shape {x_shape}; "
+                "shape alone cannot distinguish channels-last from channels-first layout"
+            ),
+            stacklevel=2,
         )
 
 

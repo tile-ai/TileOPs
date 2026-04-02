@@ -19,7 +19,8 @@ class AvgPool1dOp(Op):
     """Average pooling over channels-last `NLC` inputs.
 
     This op intentionally uses the TileOPs channels-last contract rather than
-    PyTorch's default `NCL` layout.
+    PyTorch's default `NCL` layout. Ambiguous shapes where `NLC` and `NCL`
+    would look identical, such as `(N, 8, 8)`, are rejected eagerly.
     """
 
     def __init__(
@@ -82,5 +83,6 @@ class AvgPool1dOp(Op):
             x_shape=tuple(x.shape),
             expected_shape=(self.n, self.l_in, self.c_in),
             layout="NLC",
+            ambiguous_layout_shape=(self.n, self.c_in, self.l_in),
         )
         return self.kernel(x)

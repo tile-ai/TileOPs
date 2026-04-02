@@ -164,6 +164,32 @@ def test_avg_pool3d_rejects_non_positive_stride() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"kernel_size": True}, "kernel_size must be an int or a tuple of 3 ints"),
+        ({"stride": True}, "stride must be an int or a tuple of 3 ints"),
+        ({"padding": True}, "padding must be an int or a tuple of 3 ints"),
+        ({"kernel_size": (2, 2, True)}, "kernel_size must contain only ints"),
+        ({"divisor_override": True}, "divisor_override must be an int or None"),
+        ({"divisor_override": 1.5}, "divisor_override must be an int or None"),
+    ],
+)
+def test_avg_pool3d_rejects_invalid_param_types(kwargs: dict[str, object], match: str) -> None:
+    base_kwargs = {
+        "n": 1,
+        "c_in": 8,
+        "d_in": 8,
+        "h_in": 16,
+        "w_in": 16,
+        "kernel_size": (2, 2, 2),
+    }
+    base_kwargs.update(kwargs)
+    with pytest.raises(TypeError, match=match):
+        AvgPool3dOp(**base_kwargs)
+
+
+@pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool3d_negative_divisor_override_matches_torch() -> None:
     x = torch.randn(1, 4, 6, 6, 3, device="cuda", dtype=torch.float16).contiguous()
@@ -206,6 +232,25 @@ def test_avg_pool3d_forward_rejects_ncdhw_shape(monkeypatch: pytest.MonkeyPatch)
     x = torch.randn(1, 3, 4, 6, 6)
     with pytest.raises(ValueError, match="NDHWC"):
         op(x)
+
+
+@pytest.mark.smoke
+def test_avg_pool3d_forward_warns_on_ambiguous_ndhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    op = AvgPool3dOp(
+        n=1,
+        c_in=4,
+        d_in=4,
+        h_in=4,
+        w_in=4,
+        kernel_size=(2, 2, 2),
+        stride=(2, 2, 2),
+        kernel_map={"avg_pool3d_kernel": _DummyKernel},
+    )
+    x = torch.randn(1, 4, 4, 4, 4)
+    with pytest.warns(UserWarning, match="ambiguous NDHWC shape"):
+        out = op(x)
+    assert out is x
 
 
 if __name__ == "__main__":

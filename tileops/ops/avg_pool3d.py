@@ -16,7 +16,11 @@ __all__ = ["AvgPool3dOp"]
 
 
 class AvgPool3dOp(Op):
-    """Average pooling over channels-last `NDHWC` inputs."""
+    """Average pooling over channels-last `NDHWC` inputs.
+
+    Ambiguous shapes where `NDHWC` and `NCDHW` would be indistinguishable are
+    rejected eagerly.
+    """
 
     def __init__(
         self,
@@ -94,5 +98,6 @@ class AvgPool3dOp(Op):
             x_shape=tuple(x.shape),
             expected_shape=(self.n, self.d_in, self.h_in, self.w_in, self.c_in),
             layout="NDHWC",
+            ambiguous_layout_shape=(self.n, self.c_in, self.d_in, self.h_in, self.w_in),
         )
         return self.kernel(x)

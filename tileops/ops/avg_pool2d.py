@@ -19,7 +19,8 @@ class AvgPool2dOp(Op):
     """Average pooling over channels-last `NHWC` inputs.
 
     This op is API-compatible with PyTorch pooling parameters, but the tensor
-    layout contract is channels-last rather than `NCHW`.
+    layout contract is channels-last rather than `NCHW`. Ambiguous shapes
+    where `NHWC` and `NCHW` would be indistinguishable are rejected eagerly.
     """
 
     def __init__(
@@ -92,5 +93,6 @@ class AvgPool2dOp(Op):
             x_shape=tuple(x.shape),
             expected_shape=(self.n, self.h_in, self.w_in, self.c_in),
             layout="NHWC",
+            ambiguous_layout_shape=(self.n, self.c_in, self.h_in, self.w_in),
         )
         return self.kernel(x)
