@@ -66,6 +66,9 @@ ops:
       - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
 
     roofline:
+      vars:
+        M: "product(x.shape[:dim])"
+        N: "x.shape[dim]"
       # Per row: N squares + (N-1) adds + div + add + rsqrt + N muls (normalize) + N muls (weight) ≈ 4N
       flops: "4 * M * N"
       # Read x (M*N) + read weight (N) + write y (M*N), x elem_size
@@ -107,6 +110,9 @@ ops:
       - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
 
     roofline:
+      vars:
+        M: "product(x.shape[:-1])"
+        N: "x.shape[-1]"
       # Per row: N mean + N variance + N normalize + N scale + N bias ≈ 5N
       flops: "5 * M * N"
       # Read x (M*N) + read weight (N) + read bias (N) + write y (M*N)
@@ -144,6 +150,9 @@ ops:
       - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
 
     roofline:
+      vars:
+        M: "product(x.shape[:-1])"
+        N: "x.shape[-1]"
       # Per row: N mean + N variance + N normalize + N scale + N shift ≈ 5N
       flops: "5 * M * N"
       # Read x + read scale + read shift + write y = 4*M*N
@@ -183,6 +192,9 @@ ops:
       - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
 
     roofline:
+      vars:
+        M: "product(x.shape[:-1])"
+        N: "x.shape[-1]"
       # Per row: N mean + N variance + N normalize + N scale + N shift + N gate ≈ 6N
       flops: "6 * M * N"
       # Read x + read scale + read shift + read gate + write y = 5*M*N
@@ -225,6 +237,9 @@ ops:
       - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
 
     roofline:
+      vars:
+        M: "product(x.shape[:-1])"
+        N: "x.shape[-1]"
       # Per row: N add (residual) + N mean + N variance + N normalize + N scale + N bias ≈ 6N
       flops: "6 * M * N"
       # Read x + read residual + read weight + read bias + write y + write residual_out
@@ -268,6 +283,9 @@ ops:
       - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
 
     roofline:
+      vars:
+        M: "product(x.shape[:-1])"
+        N: "x.shape[-1]"
       # Per row: N add (residual) + N squares + (N-1) adds + rsqrt + N normalize + N weight ≈ 5N
       flops: "5 * M * N"
       # Read x + read residual + read weight + write y + write residual_out
@@ -321,6 +339,9 @@ ops:
       - {x_shape: [4, 128, 1024, 1024], dtypes: [float16], label: "large-spatial"}
 
     roofline:
+      vars:
+        C: "x.shape[1]"
+        L: "product(x.shape) // x.shape[1]"
       # 2-pass: compute mean/var over L elements per channel, then normalize. ≈ 10*C*L
       flops: "10 * C * L"
       # Read x + write y (elem_bytes each) + float32 params (weight, bias, running_mean, running_var)
@@ -367,6 +388,9 @@ ops:
       - {x_shape: [4, 128, 1024, 1024], dtypes: [float16], label: "large-spatial"}
 
     roofline:
+      vars:
+        C: "grad_out.shape[1]"
+        L: "product(grad_out.shape) // grad_out.shape[1]"
       # Backward: 3 reductions + elementwise ≈ 8*C*L
       flops: "8 * C * L"
       # Read grad_out + x + write grad_x (elem_bytes each) + float32 read weight + write grad_weight, grad_bias
@@ -405,6 +429,10 @@ ops:
       - {x_shape: [4, 128, 30, 30], groups: 16, dtypes: [float16], label: "tail-spatial-g16"}
 
     roofline:
+      vars:
+        N: "x.shape[0]"
+        C: "x.shape[1]"
+        spatial_size: "product(x.shape[2:])"
       # Per element: subtract mean + square for var + normalize + scale + bias ≈ 5
       flops: "5 * N * C * spatial_size"
       # Read x + write y + read weight (C) + read bias (C)
@@ -441,6 +469,10 @@ ops:
       - {x_shape: [4, 64, 30, 30], dtypes: [float16], label: "tail-spatial"}
 
     roofline:
+      vars:
+        N: "x.shape[0]"
+        C: "x.shape[1]"
+        spatial_size: "product(x.shape[2:])"
       # Same as GroupNorm (InstanceNorm = GroupNorm with G=C)
       flops: "5 * N * C * spatial_size"
       # Read x + write y + read weight (C) + read bias (C)
@@ -1283,3 +1315,806 @@ ops:
       op: tileops/ops/moe/moe_grouped_gemm_nopad.py
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
+
+  # ---------------------------------------------------------------------------
+  # reduction -- softmax family (output shape == input shape, no keepdim)
+  # ---------------------------------------------------------------------------
+
+  softmax_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: int, default: -1}
+      shape_rules:
+        - "y.shape == x.shape"
+
+    workloads:
+      # Attention weight matrices (batch * heads, seq, seq)
+      - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
+      - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
+      # LM head logits (batch, vocab_size)
+      - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # Per row: max (N), subtract+exp (2N), sum (N), div (N) = 5N
+      flops: "5 * M * N"
+      # Read x + write y
+      bytes: "2 * M * N * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/softmax/softmax_fwd.py
+      op: tileops/ops/reduction/softmax.py
+      test: tests/ops/test_softmax.py
+      bench: benchmarks/ops/bench_softmax.py
+
+  log_softmax_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: int, default: -1}
+      shape_rules:
+        - "y.shape == x.shape"
+
+    workloads:
+      # Attention weight matrices
+      - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
+      - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
+      # LM head logits
+      - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # Per row: max (N), subtract+exp (2N), sum (N), log+subtract (2N) = 6N
+      flops: "6 * M * N"
+      # Read x + write y
+      bytes: "2 * M * N * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/softmax/softmax_fwd.py
+      op: tileops/ops/reduction/log_softmax.py
+      test: tests/ops/test_softmax.py
+      bench: benchmarks/ops/bench_softmax.py
+
+  logsumexp_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Attention weight matrices
+      - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
+      - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
+      # LM head logits
+      - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # Per row: max (N), subtract+exp (2N), sum (N), log+add (2) = 4N + 2
+      flops: "4 * M * N"
+      # Read x (M*N) + write y (M)
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/softmax/logsumexp_fwd.py
+      op: tileops/ops/reduction/logsumexp.py
+      test: tests/ops/test_softmax.py
+      bench: benchmarks/ops/bench_softmax.py
+
+  # ---------------------------------------------------------------------------
+  # reduction -- simple reductions (dim + keepdim)
+  # ---------------------------------------------------------------------------
+
+  sum_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Hidden state reduction (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+      # Long sequence reduction
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # N-1 additions per output element
+      flops: "M * N"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/reduce/fwd.py
+      op: tileops/ops/reduction/reduce.py
+      test: tests/ops/test_reduce.py
+      bench: benchmarks/ops/bench_reduce.py
+
+  mean_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Hidden state reduction (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+      # Long sequence reduction
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # N additions + 1 division per output element
+      flops: "M * (N + 1)"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/reduce/fwd.py
+      op: tileops/ops/reduction/reduce.py
+      test: tests/ops/test_reduce.py
+      bench: benchmarks/ops/bench_reduce.py
+
+  amax_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Hidden state reduction (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+      # Long sequence reduction
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # N-1 comparisons per output element
+      flops: "M * N"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/reduce/fwd.py
+      op: tileops/ops/reduction/reduce.py
+      test: tests/ops/test_reduce.py
+      bench: benchmarks/ops/bench_reduce.py
+
+  amin_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Hidden state reduction (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+      # Long sequence reduction
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # N-1 comparisons per output element
+      flops: "M * N"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/reduce/fwd.py
+      op: tileops/ops/reduction/reduce.py
+      test: tests/ops/test_reduce.py
+      bench: benchmarks/ops/bench_reduce.py
+
+  prod_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: int, default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - 1"
+        - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
+
+    workloads:
+      # Hidden state reduction (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+      # Long sequence reduction
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # N-1 multiplications per output element
+      flops: "M * N"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/reduce/fwd.py
+      op: tileops/ops/reduction/reduce.py
+      test: tests/ops/test_reduce.py
+      bench: benchmarks/ops/bench_reduce.py
+
+  # ---------------------------------------------------------------------------
+  # reduction -- Welford reductions (correction + dim + keepdim)
+  # ---------------------------------------------------------------------------
+
+  var_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        correction: {type: int, default: 1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Hidden state variance (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var"}
+      # Long sequence variance
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # Welford: mean update (2 ops) + variance update (3 ops) per element = 5N
+      flops: "5 * M * N"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/reduce/fwd.py
+      op: tileops/ops/reduction/reduce.py
+      test: tests/ops/test_reduce.py
+      bench: benchmarks/ops/bench_reduce.py
+
+  std_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        correction: {type: int, default: 1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Hidden state std (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-std"}
+      # Long sequence std
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-std"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # Welford (5N) + sqrt per output element
+      flops: "5 * M * N + M"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/reduce/fwd.py
+      op: tileops/ops/reduction/reduce.py
+      test: tests/ops/test_reduce.py
+      bench: benchmarks/ops/bench_reduce.py
+
+  var_mean_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        var: {dtype: "same_as(x)"}
+        mean: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        correction: {type: int, default: 1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "var.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "var.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "mean.ndim == var.ndim"
+        - "mean.shape == var.shape"
+
+    workloads:
+      # Hidden state var+mean (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var-mean"}
+      # Long sequence var+mean
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var-mean"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # Welford: single pass computes both mean and variance
+      flops: "5 * M * N"
+      # Read x + write var + write mean
+      bytes: "(M * N + 2 * M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/reduce/fwd.py
+      op: tileops/ops/reduction/reduce.py
+      test: tests/ops/test_reduce.py
+      bench: benchmarks/ops/bench_reduce.py
+
+  # ---------------------------------------------------------------------------
+  # reduction -- argmax/argmin (output dtype: int64)
+  # ---------------------------------------------------------------------------
+
+  argmax_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "int64"}
+      params:
+        dim: {type: int, default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - 1"
+        - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
+
+    workloads:
+      # LM head argmax (batch, vocab_size) -- greedy decoding
+      - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-argmax"}
+      # Hidden state argmax
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-argmax"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # N-1 comparisons per output element
+      flops: "M * N"
+      # Read x (elem_bytes) + write y (8 bytes for int64)
+      bytes: "M * N * elem_bytes + M * 8"
+
+    source:
+      kernel: tileops/kernels/reduction/argreduce/fwd.py
+      op: tileops/ops/reduction/argmax.py
+      test: tests/ops/test_argreduce.py
+      bench: benchmarks/ops/bench_argreduce.py
+
+  argmin_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "int64"}
+      params:
+        dim: {type: int, default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - 1"
+        - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
+
+    workloads:
+      # LM head argmin
+      - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-argmin"}
+      # Hidden state argmin
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-argmin"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # N-1 comparisons per output element
+      flops: "M * N"
+      # Read x (elem_bytes) + write y (8 bytes for int64)
+      bytes: "M * N * elem_bytes + M * 8"
+
+    source:
+      kernel: tileops/kernels/reduction/argreduce/fwd.py
+      op: tileops/ops/reduction/argmin.py
+      test: tests/ops/test_argreduce.py
+      bench: benchmarks/ops/bench_argreduce.py
+
+  # ---------------------------------------------------------------------------
+  # reduction -- logical reductions (output dtype: bool)
+  # ---------------------------------------------------------------------------
+
+  all_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32 | bool"}
+      outputs:
+        y: {dtype: "bool"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Mask validation (batch, seq_len)
+      - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
+      - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # N-1 logical AND per output element
+      flops: "M * N"
+      # Read x (elem_bytes) + write y (1 byte for bool)
+      bytes: "M * N * elem_bytes + M"
+
+    source:
+      kernel: tileops/kernels/reduction/logical_reduce/fwd.py
+      op: tileops/ops/reduction/all_op.py
+      test: tests/ops/test_logical_reduce.py
+      bench: benchmarks/ops/bench_logical_reduce.py
+
+  any_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32 | bool"}
+      outputs:
+        y: {dtype: "bool"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Mask validation (batch, seq_len)
+      - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
+      - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # N-1 logical OR per output element
+      flops: "M * N"
+      # Read x (elem_bytes) + write y (1 byte for bool)
+      bytes: "M * N * elem_bytes + M"
+
+    source:
+      kernel: tileops/kernels/reduction/logical_reduce/fwd.py
+      op: tileops/ops/reduction/any_op.py
+      test: tests/ops/test_logical_reduce.py
+      bench: benchmarks/ops/bench_logical_reduce.py
+
+  count_nonzero_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "int64"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+      shape_rules:
+        - "y.ndim == x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in ([dim] if isinstance(dim, int) else dim))"
+
+    workloads:
+      # Sparsity analysis (batch, hidden_dim)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "sparsity-hidden"}
+      # Sparse attention mask
+      - {x_shape: [32, 32768], dtypes: [float16], label: "sparsity-seq"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # Compare + conditional add per element
+      flops: "2 * M * N"
+      # Read x (elem_bytes) + write y (8 bytes for int64)
+      bytes: "M * N * elem_bytes + M * 8"
+
+    source:
+      kernel: tileops/kernels/reduction/logical_reduce/fwd.py
+      op: tileops/ops/reduction/count_nonzero.py
+      test: tests/ops/test_logical_reduce.py
+      bench: benchmarks/ops/bench_logical_reduce.py
+
+  # ---------------------------------------------------------------------------
+  # reduction -- vector norms (output dtype: same_as(x))
+  # ---------------------------------------------------------------------------
+
+  l1_norm_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Hidden state L1 norm (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l1"}
+      # Long sequence L1 norm
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l1"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # abs + add per element
+      flops: "2 * M * N"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/vector_norm/fwd.py
+      op: tileops/ops/reduction/l1_norm.py
+      test: tests/ops/test_vector_norm.py
+      bench: benchmarks/ops/bench_vector_norm.py
+
+  l2_norm_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Hidden state L2 norm (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l2"}
+      # Long sequence L2 norm
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l2"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # square + add per element, then sqrt
+      flops: "2 * M * N + M"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/vector_norm/fwd.py
+      op: tileops/ops/reduction/l2_norm.py
+      test: tests/ops/test_vector_norm.py
+      bench: benchmarks/ops/bench_vector_norm.py
+
+  inf_norm_fwd:
+    family: reduction
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: "int | list[int]", default: -1}
+        keepdim: {type: bool, default: false}
+      shape_rules:
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+
+    workloads:
+      # Hidden state inf norm (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-inf"}
+      # Long sequence inf norm
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-inf"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+      # abs + max per element
+      flops: "2 * M * N"
+      # Read x + write y
+      bytes: "(M * N + M) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/vector_norm/fwd.py
+      op: tileops/ops/reduction/inf_norm.py
+      test: tests/ops/test_vector_norm.py
+      bench: benchmarks/ops/bench_vector_norm.py
+
+  # ---------------------------------------------------------------------------
+  # scan -- prefix scan ops (output shape == input shape, no keepdim)
+  # ---------------------------------------------------------------------------
+
+  cumsum_fwd:
+    family: scan
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: int, default: -1}
+      shape_rules:
+        - "y.shape == x.shape"
+
+    workloads:
+      # Hidden state cumulative sum (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
+      # Long sequence cumulative sum
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # N-1 additions per scan line
+      flops: "M * N"
+      # Read x + write y
+      bytes: "2 * M * N * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/cumulative/fwd.py
+      op: tileops/ops/reduction/cumsum.py
+      test: tests/ops/test_cumulative.py
+      bench: benchmarks/ops/bench_cumulative.py
+
+  cumprod_fwd:
+    family: scan
+    status: spec-only
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: int, default: -1}
+      shape_rules:
+        - "y.shape == x.shape"
+
+    workloads:
+      # Hidden state cumulative product (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
+      # Long sequence cumulative product
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # N-1 multiplications per scan line
+      flops: "M * N"
+      # Read x + write y
+      bytes: "2 * M * N * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/cumulative/fwd.py
+      op: tileops/ops/reduction/cumprod.py
+      test: tests/ops/test_cumulative.py
+      bench: benchmarks/ops/bench_cumulative.py
