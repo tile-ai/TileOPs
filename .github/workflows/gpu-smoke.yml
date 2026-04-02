@@ -589,7 +589,30 @@ jobs:
           echo "Resolved pytest targets: ${PYTEST_TARGETS}"
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
-          python -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" | tee gpu_smoke.log
+          python -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
+
+      - name: Generate gpu-smoke report
+        if: ${{ always() && hashFiles('gpu_smoke_results.xml') != '' }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+
+          REPORT_TARGET="smoke, full"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            REPORT_TARGET="smoke"
+          fi
+
+          python scripts/gpu_smoke_report.py \
+            --test-xml gpu_smoke_results.xml \
+            --target "${REPORT_TARGET}" \
+            --output gpu_smoke_report.md
+
+      - name: Post gpu-smoke report to step summary
+        if: ${{ always() && hashFiles('gpu_smoke_report.md') != '' }}
+        run: cat gpu_smoke_report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cache stats
         if: ${{ always() && needs.security-policy.outputs.is_fork != 'true' }}
@@ -611,7 +634,10 @@ jobs:
         if: always()
         with:
           name: gpu_smoke.log
-          path: gpu_smoke.log
+          path: |
+            gpu_smoke.log
+            gpu_smoke_results.xml
+            gpu_smoke_report.md
           retention-days: 7
 
       - name: Cleanup isolated fork state
