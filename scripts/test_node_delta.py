@@ -50,16 +50,22 @@ def _collect_node_count(test_file: str, *, ref: str | None = None) -> int | None
             return None
         target = test_file
 
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", target, "--collect-only", "-q", "--no-header"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", target, "--collect-only", "-q", "--no-header"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    finally:
+        # Clean up temp file regardless of success/failure
+        if ref is not None:
+            Path(target).unlink(missing_ok=True)
 
-    # Clean up temp file
-    if ref is not None:
-        Path(target).unlink(missing_ok=True)
+    if result.returncode != 0:
+        # Collection failed (syntax error, missing dep, etc.)
+        print(f"  warning: pytest collection failed for {test_file}", file=sys.stderr)
+        return 0
 
     # Parse the summary line: "N tests collected" or "no tests collected"
     for line in result.stdout.splitlines()[::-1]:
