@@ -1,6 +1,6 @@
+import warnings
 from collections.abc import Sequence
 from typing import Tuple
-import warnings
 
 
 def _normalize_pool_dims(name: str, value: int | Sequence[int], ndim: int) -> tuple[int, ...]:
