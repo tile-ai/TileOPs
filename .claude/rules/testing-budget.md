@@ -1,0 +1,10 @@
+- Every parameterized test case must serve one of: dtype correctness, shape coverage, feature coverage, or regression. Do not add cases for performance exploration or autotuning sweeps.
+- Smoke tier must include at least one case for float16 and one for bfloat16 when the op supports both. Secondary dtypes (float32, float8) are full-tier only.
+- Shape coverage targets three categories: minimal (smallest valid), typical (real-workload), and stress (non-power-of-two or large). Adding shapes beyond these three categories requires justification in PARAMS comments or PR description.
+- Do not auto-generate test PARAMS from ops_manifest.yaml workloads. PARAMS is a curated correctness subset, not an exhaustive enumeration.
+- When adding parameterized cases, state the purpose (dtype/shape/feature/regression) in a PARAMS comment or PR description.
+- If a single test function exceeds 20 parameterized cases, the PR must justify the count.
+- Run `scripts/test_node_delta.py` before submitting a PR that adds or modifies tests. Include the delta in the PR description when growth exceeds 10%.
+- Smoke cases must use `tune=False` and appear as the first N non-xfail cases (enforced by conftest.py).
+- The first `tune=True` case must be marked `full` tier; at most one `tune=True` case may be `full` (enforced by conftest.py).
+- Each test in `tests/ops/` must have exactly one tier marker: `smoke`, `full`, or `nightly` (enforced by conftest.py).
