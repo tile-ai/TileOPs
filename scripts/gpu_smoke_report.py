@@ -45,6 +45,10 @@ def _truncate(text: str, limit: int = 160) -> str:
     return text[: limit - 3] + "..."
 
 
+def _escape_markdown_cell(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
 def _get_git_commit() -> str:
     try:
         result = subprocess.run(
@@ -93,6 +97,8 @@ def parse_test_xml(path: str) -> list[dict[str, str]]:
 def generate_report(results: list[dict[str, str]], target: str) -> str:
     total_cases = len(results)
     failed_cases = [result for result in results if result["outcome"] == "failed"]
+    passed_count = sum(1 for result in results if result["outcome"] == "passed")
+    skipped_count = sum(1 for result in results if result["outcome"] == "skipped")
     failed_ops = list(
         OrderedDict.fromkeys(result["op"] for result in failed_cases if result["op"])
     )
@@ -112,7 +118,10 @@ def generate_report(results: list[dict[str, str]], target: str) -> str:
         "|---|---|",
         f"| **Correctness** | {correctness} |",
         f"| **gpu-smoke target** | `{target}` |",
-        f"| **Gpu-smoke ops number** | {total_cases} |",
+        (
+            f"| **Gpu-smoke ops number** | {total_cases} "
+            f"({passed_count} passed, {skipped_count} skipped) |"
+        ),
         f"| **Gpu-smoke Failures** | {len(failed_cases)} |",
         f"| **Failures ops** | {failures_ops_str} |",
         "",
@@ -128,10 +137,10 @@ def generate_report(results: list[dict[str, str]], target: str) -> str:
             ]
         )
         for result in failed_cases:
-            op = result["op"] or "-"
-            testcase = result["name"] or result["nodeid"]
+            op = _escape_markdown_cell(result["op"] or "-")
+            testcase = _escape_markdown_cell(result["name"] or result["nodeid"])
             reason = _truncate(result["failure_reason"] or "No failure message available.")
-            reason = reason.replace("|", "\\|")
+            reason = _escape_markdown_cell(reason)
             lines.append(f"| {op} | {testcase} | {reason} |")
         lines.append("")
 
@@ -147,7 +156,9 @@ def main() -> None:
 
     results = parse_test_xml(args.test_xml)
     report = generate_report(results, args.target)
-    Path(args.output).write_text(report)
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(report)
     print(f"Report written to {args.output}")
 
 
