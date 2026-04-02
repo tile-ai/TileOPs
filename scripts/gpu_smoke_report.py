@@ -104,7 +104,9 @@ def generate_report(results: list[dict[str, str]], target: str) -> str:
     )
 
     correctness = f"{_PASS} Pass" if not failed_cases else f"{_FAIL} {len(failed_cases)} failed"
-    failures_ops_str = ", ".join(failed_ops) if failed_ops else "-"
+    failures_ops_str = (
+        ", ".join(_escape_markdown_cell(op) for op in failed_ops) if failed_ops else "-"
+    )
     health = _PASS if not failed_cases else _FAIL
 
     lines = [

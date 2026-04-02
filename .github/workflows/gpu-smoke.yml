@@ -608,7 +608,8 @@ jobs:
           python scripts/gpu_smoke_report.py \
             --test-xml gpu_smoke_results.xml \
             --target "${REPORT_TARGET}" \
-            --output gpu_smoke_report.md
+            --output gpu_smoke_report.md \
+            || echo "::warning::gpu_smoke_report.py failed"
 
       - name: Post gpu-smoke report to step summary
         if: ${{ always() && hashFiles('gpu_smoke_report.md') != '' }}
