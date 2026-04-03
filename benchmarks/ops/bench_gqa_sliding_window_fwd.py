@@ -53,13 +53,18 @@ def _torch_sliding_window_fwd(test):
     return fn
 
 
-def _fa3_baseline(q, k, v, is_causal, wl, wr):
-    """FA3 reference baseline."""
+def _fa3_baseline(is_causal, wl, wr):
+    """Return FA3 sliding-window baseline callable, or None if not installed."""
     try:
-        from flash_attn import flash_attn_func  # noqa: PLC0415
-        return flash_attn_func(q, k, v, causal=is_causal, window_size=(wl, wr))
+        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
     except ImportError:
         return None
+
+    def baseline_fn(q, k, v):
+        out = flash_attn_func(q, k, v, causal=is_causal, window_size=(wl, wr))
+        return out[0] if isinstance(out, tuple) else out
+
+    return baseline_fn
 
 
 def _flashinfer_sliding_window_fwd(test, q, k, v):
@@ -138,11 +143,9 @@ def test_gqa_sliding_window_fwd_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # FA3 baseline
-    q, k, v = inputs
-    fa3_out = _fa3_baseline(q, k, v, is_causal, wl, wr)
-    if fa3_out is not None:
-        result_bl = bm.profile(
-            lambda q, k, v: _fa3_baseline(q, k, v, is_causal, wl, wr), *inputs)
+    fa3_fn = _fa3_baseline(is_causal, wl, wr)
+    if fa3_fn is not None:
+        result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
 
     # FlashInfer baseline
@@ -151,7 +154,7 @@ def test_gqa_sliding_window_fwd_bench(
         result_fi = bm.profile(fi_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
-    if fa3_out is None and fi_fn is None:
+    if fa3_fn is None and fi_fn is None:
         result_bl = bm.profile(_torch_sliding_window_fwd(test), *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
