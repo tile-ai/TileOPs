@@ -109,6 +109,8 @@ class SharedFusedMoE(FusedMoe):
             raise ValueError(
                 f"shared_ffn_size ({shared_ffn_size}) must be divisible by tp_size ({tp_size})"
             )
+        if shared_ffn_size is not None and layout == "padded":
+            raise ValueError("layout='padded' is not supported with shared experts")
 
         self.shared_ffn_size = shared_ffn_size
         self.tp_size = tp_size
