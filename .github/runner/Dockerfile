@@ -30,8 +30,9 @@ RUN useradd -m -s /bin/bash ci-runner \
 
 # ── GitHub Actions Runner ────────────────────────────────────────────────────
 ARG RUNNER_VERSION=2.333.0
-COPY actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz /tmp/runner.tar.gz
-RUN cd /home/ci-runner/runner \
+RUN curl -o /tmp/runner.tar.gz -L \
+        https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz \
+    && cd /home/ci-runner/runner \
     && tar xzf /tmp/runner.tar.gz \
     && rm /tmp/runner.tar.gz \
     && ./bin/installdependencies.sh \
@@ -57,8 +58,9 @@ RUN MAX_JOBS=64 NVCC_THREADS=64 pip install --no-cache-dir --no-build-isolation 
     || echo "WARNING: flash-attn failed to install -- non-fatal"
 
 RUN MAX_JOBS=64 NVCC_THREADS=64 pip install --no-cache-dir --no-build-isolation \
+        "flash-attn-interface>=2.7.2" \
         "flash-linear-attention==0.4.2" \
-        "flashinfer-python>=0.6.6" \
+        "flashinfer>=0.6.6" \
         "vllm==0.18.0" \
         "sgl-kernel==0.3.21" \
     || echo "WARNING: Some bench deps failed to install -- non-fatal for runner image"

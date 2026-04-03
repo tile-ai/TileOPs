@@ -39,8 +39,9 @@ dev = [
 ]
 bench = [
     "flash-attn==2.8.3",
+    "flash-attn-interface>=2.7.2",
     "flash-linear-attention==0.4.2",
-    "flashinfer-python>=0.6.6",
+    "flashinfer>=0.6.6",
     "vllm==0.18.0",
     "sgl-kernel==0.3.21",
 ]
