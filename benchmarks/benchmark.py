@@ -286,7 +286,8 @@ class BenchmarkReport:
         else:
             name = op_or_name.__class__.__name__
             op_module = op_or_name.__class__.__module__
-            op_config = getattr(op_or_name, "config", None)
+            op_config = getattr(op_or_name, "config", None) or \
+                getattr(getattr(op_or_name, "kernel", None), "config", None)
 
         # Filter params to only include serializable benchmark parameters
         filtered_params = {
