@@ -46,7 +46,7 @@ def _fa3_gqa_decode_paged(test, k, v):
         out = flash_attn_with_kvcache(
             q.unsqueeze(1), k_paged, v_paged,
             cache_seqlens=real_seqlen_kv.int(),
-            block_table=block_table.int())
+            page_table=block_table.int())
         out = out[0] if isinstance(out, tuple) else out
         return out.squeeze(1)
 
