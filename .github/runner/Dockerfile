@@ -54,11 +54,13 @@ RUN pip install --no-cache-dir \
         "pytest-xdist>=3.0" \
         "pyyaml>=6.0"
 
-RUN MAX_JOBS=64 NVCC_THREADS=64 pip install --no-cache-dir --no-build-isolation "flash-attn==2.8.3" \
+RUN MAX_JOBS=96 NVCC_THREADS=96 pip install --no-cache-dir --no-build-isolation "flash-attn==2.8.3" \
     || echo "WARNING: flash-attn failed to install -- non-fatal"
 
-RUN MAX_JOBS=64 NVCC_THREADS=64 pip install --no-cache-dir --no-build-isolation \
-        "flash-attn-interface>=2.7.2" \
+RUN MAX_JOBS=96 NVCC_THREADS=96 pip install --no-cache-dir --no-build-isolation "flash-attn-interface>=2.7.2" \
+    || echo "WARNING: flash-attn-interface (FA3) failed to install -- non-fatal"
+
+RUN MAX_JOBS=96 NVCC_THREADS=96 pip install --no-cache-dir --no-build-isolation \
         "flash-linear-attention==0.4.2" \
         "flashinfer>=0.6.6" \
         "vllm==0.18.0" \
