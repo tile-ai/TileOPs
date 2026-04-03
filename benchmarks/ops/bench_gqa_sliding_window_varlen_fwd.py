@@ -99,11 +99,14 @@ def _torch_sliding_window_varlen_fwd(test):
     return fn
 
 
-def _fa3_varlen_baseline(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q,
-                         max_seqlen_k, is_causal, wl, wr):
-    """FA3 varlen reference baseline."""
+def _fa3_varlen_baseline(max_seqlen_k, is_causal, wl, wr):
+    """Return FA3 varlen baseline callable, or None if not installed."""
     try:
         from flash_attn_interface import flash_attn_varlen_func  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    def baseline_fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
         out = flash_attn_varlen_func(
             q, k, v,
             cu_seqlens_q=cu_seqlens_q,
@@ -114,8 +117,8 @@ def _fa3_varlen_baseline(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q,
             window_size=(wl, wr),
         )
         return out[0] if isinstance(out, tuple) else out
-    except ImportError:
-        return None
+
+    return baseline_fn
 
 
 def _flashinfer_varlen_sliding_window_fwd(test, q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
@@ -186,14 +189,9 @@ def test_gqa_sliding_window_varlen_fwd_bench(
 
     # FA3 baseline
     max_seqlen_k = max(seqlens_k)
-    fa3_out = _fa3_varlen_baseline(
-        q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
-        is_causal, wl, wr)
-    if fa3_out is not None:
-        result_bl = bm.profile(
-            lambda q, k, v, csq, csk, msq: _fa3_varlen_baseline(
-                q, k, v, csq, csk, msq, max_seqlen_k, is_causal, wl, wr),
-            *inputs)
+    fa3_fn = _fa3_varlen_baseline(max_seqlen_k, is_causal, wl, wr)
+    if fa3_fn is not None:
+        result_bl = bm.profile(fa3_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="fa3")
 
     # FlashInfer baseline
@@ -202,7 +200,7 @@ def test_gqa_sliding_window_varlen_fwd_bench(
         result_fi = bm.profile(fi_fn, *inputs)
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
-    if fa3_out is None and fi_fn is None:
+    if fa3_fn is None and fi_fn is None:
         result_bl = bm.profile(_torch_sliding_window_varlen_fwd(test), *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
