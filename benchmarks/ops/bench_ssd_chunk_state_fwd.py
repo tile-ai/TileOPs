@@ -1,7 +1,25 @@
+"""Benchmark for SsdChunkStateFwdOp vs mamba-ssm Triton baseline.
+
+Baselines:
+  - mamba-ssm (optional): mamba-ssm's _chunk_state_fwd Triton kernel; only runs
+      when mamba_ssm is installed (`cd /path/to/mamba &&
+      MAMBA_SKIP_CUDA_BUILD=TRUE pip install --no-deps --no-build-isolation -e .`).
+  - torch-ref: hand-written PyTorch reference, always available as fallback.
+
+Usage:
+    conda run -n flashmlaenv python -m pytest benchmarks/ops/bench_ssd_chunk_state_fwd.py -vvs
+    conda run -n flashmlaenv python benchmarks/ops/bench_ssd_chunk_state_fwd.py
+"""
+
 from typing import Optional
 
 import pytest
 import torch
+
+try:
+    from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_state_fwd as _mamba_chunk_state_fwd
+except ImportError:
+    _mamba_chunk_state_fwd = None
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_ssd_chunk_state_fwd import (
@@ -56,17 +74,41 @@ def test_ssd_chunk_state_fwd_bench(
     bm = SsdChunkStateFwdBenchmark(test)
     inputs = test.gen_inputs()
 
+    # TileOPs — warmup then profile
     op = SsdChunkStateFwdOp(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
         has_seq_idx=has_seq_idx, tune=tune,
     )
+    op(*inputs)
+    torch.cuda.synchronize()
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    def baseline(x, Bmat, dt, dA_cumsum, seq_idx):
-        return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, n_groups=n_groups, seq_idx=seq_idx)
-    result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record("ssd_chunk_state_fwd", locals(), result_bl, tag="baseline")
+    if _mamba_chunk_state_fwd is not None:
+        # mamba-ssm _chunk_state_fwd expects:
+        #   B (Bmat):     (b, seqlen, ngroups, dstate)       ← our layout, already correct
+        #   x:            (b, seqlen, nheads, headdim)        ← our layout, already correct
+        #   dt:           (b, nheads, nchunks, chunk_size)    ← our layout, already correct
+        #   dA_cumsum:    (b, nheads, nchunks, chunk_size)    ← our layout, already correct
+        #   seq_idx:      (b, seqlen) or None                 ← our layout, already correct
+        # returns states: (b, nchunks, nheads, headdim, dstate) = our (b, c, h, p, n) ✓
+        x, Bmat, dt, dA_cumsum, seq_idx = inputs
+
+        def _mamba_fn(x, Bmat, dt, dA_cumsum, seq_idx):
+            return _mamba_chunk_state_fwd(Bmat, x, dt, dA_cumsum, seq_idx=seq_idx)
+
+        _mamba_fn(*inputs)
+        torch.cuda.synchronize()
+        result_bl = bm.profile(_mamba_fn, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="mamba-ssm")
+    else:
+        def _torch_ref_fn(x, Bmat, dt, dA_cumsum, seq_idx):
+            return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, n_groups=n_groups, seq_idx=seq_idx)
+
+        _torch_ref_fn(*inputs)
+        torch.cuda.synchronize()
+        result_bl = bm.profile(_torch_ref_fn, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":
