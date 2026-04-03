@@ -103,8 +103,8 @@ def _fa3_varlen_baseline(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q,
                          max_seqlen_k, is_causal, wl, wr):
     """FA3 varlen reference baseline."""
     try:
-        from flash_attn import flash_attn_varlen_func  # noqa: PLC0415
-        return flash_attn_varlen_func(
+        from flash_attn_interface import flash_attn_varlen_func  # noqa: PLC0415
+        out = flash_attn_varlen_func(
             q, k, v,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
@@ -113,6 +113,7 @@ def _fa3_varlen_baseline(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q,
             causal=is_causal,
             window_size=(wl, wr),
         )
+        return out[0] if isinstance(out, tuple) else out
     except ImportError:
         return None
 

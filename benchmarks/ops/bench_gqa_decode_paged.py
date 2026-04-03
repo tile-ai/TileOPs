@@ -33,7 +33,7 @@ def _fa3_gqa_decode_paged(test, k, v):
     if test.page_size % 256 != 0:
         return None
     try:
-        from flash_attn import flash_attn_with_kvcache  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_with_kvcache  # noqa: PLC0415
     except ImportError:
         return None
 
@@ -43,10 +43,12 @@ def _fa3_gqa_decode_paged(test, k, v):
 
     def baseline_fn(q, k, v, real_seqlen_kv, block_table):
         # Q is (batch, heads, dim) — add seq dim for flash_attn
-        return flash_attn_with_kvcache(
+        out = flash_attn_with_kvcache(
             q.unsqueeze(1), k_paged, v_paged,
             cache_seqlens=real_seqlen_kv.int(),
-            block_table=block_table.int()).squeeze(1)
+            block_table=block_table.int())
+        out = out[0] if isinstance(out, tuple) else out
+        return out.squeeze(1)
 
     return baseline_fn
 

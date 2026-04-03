@@ -41,12 +41,13 @@ class MhaBwdBenchmark(BenchmarkBase):
 def _fa3_mha_fwd(test: MhaFwdTest):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
-        from flash_attn import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
     except ImportError:
         return None
 
     def baseline_fn(q, k, v):
-        return flash_attn_func(q, k, v, causal=test.is_causal)
+        out = flash_attn_func(q, k, v, causal=test.is_causal)
+        return out[0] if isinstance(out, tuple) else out
 
     return baseline_fn
 
@@ -54,7 +55,7 @@ def _fa3_mha_fwd(test: MhaFwdTest):
 def _fa3_mha_bwd(test: MhaBwdTest):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
-        from flash_attn import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
     except ImportError:
         return None
 
@@ -64,6 +65,7 @@ def _fa3_mha_bwd(test: MhaBwdTest):
         k = k.detach().requires_grad_(True)
         v = v.detach().requires_grad_(True)
         out = flash_attn_func(q, k, v, causal=test.is_causal)
+        out = out[0] if isinstance(out, tuple) else out
         out.backward(grad_output)
         return q.grad, k.grad, v.grad
 

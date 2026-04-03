@@ -56,8 +56,9 @@ def _torch_sliding_window_fwd(test):
 def _fa3_baseline(q, k, v, is_causal, wl, wr):
     """FA3 reference baseline."""
     try:
-        from flash_attn import flash_attn_func  # noqa: PLC0415
-        return flash_attn_func(q, k, v, causal=is_causal, window_size=(wl, wr))
+        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+        out = flash_attn_func(q, k, v, causal=is_causal, window_size=(wl, wr))
+        return out[0] if isinstance(out, tuple) else out
     except ImportError:
         return None
 

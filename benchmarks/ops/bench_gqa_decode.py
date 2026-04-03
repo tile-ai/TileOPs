@@ -28,13 +28,15 @@ class GqaDecodeBenchmark(BenchmarkBase):
 def _fa3_gqa_decode_fwd(test):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
-        from flash_attn import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
     except ImportError:
         return None
 
     def baseline_fn(q, k, v):
         # Q is (B, H, D) — add seq dim for flash_attn
-        return flash_attn_func(q.unsqueeze(1), k, v).squeeze(1)
+        out = flash_attn_func(q.unsqueeze(1), k, v)
+        out = out[0] if isinstance(out, tuple) else out
+        return out.squeeze(1)
 
     return baseline_fn
 

@@ -33,7 +33,7 @@ def _fa3_mha_decode_paged(test, k, v):
     if test.page_size % 256 != 0:
         return None
     try:
-        from flash_attn import flash_attn_with_kvcache  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_with_kvcache  # noqa: PLC0415
     except ImportError:
         return None
 
@@ -42,10 +42,11 @@ def _fa3_mha_decode_paged(test, k, v):
     v_paged = v.view(num_pages, test.page_size, test.heads, test.dim)
 
     def baseline_fn(q, k, v, real_seqlen_kv, block_table):
-        return flash_attn_with_kvcache(
+        out = flash_attn_with_kvcache(
             q, k_paged, v_paged,
             cache_seqlens=real_seqlen_kv.int(),
             block_table=block_table.int())
+        return out[0] if isinstance(out, tuple) else out
 
     return baseline_fn
 
