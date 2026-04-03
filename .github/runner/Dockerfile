@@ -71,6 +71,10 @@ RUN MAX_JOBS=32 pip install --no-cache-dir \
         "git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd" \
     || echo "WARNING: native-sparse-attention failed to install -- non-fatal"
 
+RUN MAMBA_FORCE_BUILD=TRUE MAX_JOBS=64 pip install --no-cache-dir --no-deps --no-build-isolation \
+        "mamba-ssm==2.3.1" \
+    || echo "WARNING: mamba-ssm failed to install -- non-fatal"
+
 # ── Install TileOPs (editable) ───────────────────────────────────────────────
 WORKDIR /home/ci-runner/tileops
 COPY --chown=ci-runner:ci-runner . .
