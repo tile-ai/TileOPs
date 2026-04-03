@@ -212,7 +212,7 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
         routed_scaling_factor=2.827,
         layout="nopad", dtype=dtype,
         expert_map=expert_map,
-        shared_experts_fn=shared_mlp,
+        shared_experts=shared_mlp,
     )
     shared_out, routed_out_local = op_local(hidden, gating, w_gate_up_local, w_down_local, correction_bias)
 
@@ -227,7 +227,7 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
             scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
             routed_scaling_factor=2.827,
             layout="nopad", dtype=dtype,
-            shared_experts_fn=shared_mlp,
+            shared_experts=shared_mlp,
         )
         shared_out_full, routed_out_full = op_full(hidden, gating, w_gate_up_full, w_down_full, correction_bias)
 
