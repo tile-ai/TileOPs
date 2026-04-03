@@ -282,9 +282,11 @@ class BenchmarkReport:
         if isinstance(op_or_name, str):
             name = op_or_name
             op_module = None
+            op_config = None
         else:
             name = op_or_name.__class__.__name__
             op_module = op_or_name.__class__.__module__
+            op_config = getattr(op_or_name, "config", None)
 
         # Filter params to only include serializable benchmark parameters
         filtered_params = {
@@ -294,11 +296,14 @@ class BenchmarkReport:
             and not k.startswith("_")
             and isinstance(v, (int, float, bool, str, torch.dtype))
         }
-        BenchmarkReport._records.setdefault(name, []).append({
+        record_entry = {
             "params": filtered_params,
             "result": result,
             "tag": tag,
-        })
+        }
+        if op_config:
+            record_entry["config"] = op_config
+        BenchmarkReport._records.setdefault(name, []).append(record_entry)
 
         # Accumulate in thread-local for conftest hook.
         if not hasattr(_bench_results, "entries"):
@@ -348,7 +353,10 @@ class BenchmarkReport:
                 lines.append("")
 
                 param_keys = list(tag_group[0]["params"].keys())
+                has_config = any("config" in e for e in tag_group)
                 header_parts = param_keys + result_keys
+                if has_config:
+                    header_parts.append("config")
                 lines.append("| " + " | ".join(header_parts) + " |")
                 lines.append("| " + " | ".join(["---"] * len(header_parts)) + " |")
 
@@ -357,6 +365,9 @@ class BenchmarkReport:
                     for rk in result_keys:
                         val = entry["result"].get(rk)
                         row.append(f"{val:.2f}" if val is not None else "N/A")
+                    if has_config:
+                        cfg = entry.get("config")
+                        row.append(str(cfg) if cfg else "")
                     lines.append("| " + " | ".join(row) + " |")
 
                 lines.append("")
