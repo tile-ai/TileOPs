@@ -102,11 +102,41 @@ def main():
     # Infrastructure errors (bad args, internal error, no tests collected)
     # indicate the warmup didn't run at all and should be surfaced.
     print(f"\nWarmup complete (pytest exit code: {exit_code})")
-    if exit_code in (0, 1):
-        sys.exit(0)
-    else:
+    if exit_code not in (0, 1):
         print(f"ERROR: warmup failed with infrastructure error (exit code {exit_code})", file=sys.stderr)
         sys.exit(exit_code)
+
+    # ── Phase 2: Serial validation ──────────────────────────────────────
+    # Parallel warmup selects autotuner configs under GPU contention, which
+    # can be suboptimal.  Re-tune serially on a quiet GPU to correct any
+    # misselected configs.  Compilation is instant (.so cache hit from
+    # phase 1), so only profiling runs.
+    print("\n" + "=" * 60)
+    print("Phase 2: Serial autotune validation")
+    print("=" * 60)
+
+    os.environ.pop("TILEOPS_WARMUP_MODE", None)
+    os.environ["TILEOPS_WARMUP_VALIDATE"] = "1"
+
+    validate_args = [
+        *shard_files,
+        "-v",
+        "--tb=line",
+        "-p", "no:cacheprovider",
+        "-p", "conftest_warmup",
+        "--override-ini=continue_on_collection_errors=true",
+    ]
+    # No -n flag: serial execution for accurate GPU profiling
+
+    validate_code = pytest.main(validate_args)
+    print(f"\nValidation complete (pytest exit code: {validate_code})")
+
+    if validate_code in (0, 1):
+        sys.exit(0)
+    else:
+        print(f"ERROR: validation failed with infrastructure error (exit code {validate_code})",
+              file=sys.stderr)
+        sys.exit(validate_code)
 
 
 if __name__ == "__main__":
