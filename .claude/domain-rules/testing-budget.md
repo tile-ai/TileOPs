@@ -1,3 +1,4 @@
+- These are condensed rules. If unclear, read [docs/testing.md](../../docs/testing.md) for full policy and rationale.
 - Every test case must trace back to a specific code path, dtype dispatch, or regression. Do not add cases for combinatorial confidence.
 - All supported dtypes must be tested. Dtype and shape coverage serve different purposes — do not cross them unless the combination triggers a distinct code path.
 - Do not generate test fixtures from ops_manifest.yaml workloads. Test parameters are a curated correctness subset.

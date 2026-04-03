@@ -35,3 +35,15 @@ TileOPs is a high-performance LLM operator library built on TileLang. The goal i
 - If unrelated failures appear, report them but do not fix them in the same task.
 - Add necessary docs and tests when introducing files/interfaces.
 - Response should include: change summary, affected paths, validation steps, and next suggestions.
+
+## Domain Rules (load on demand)
+
+Read the relevant context file **before** modifying files in that domain. Do not load them if your task does not touch that domain.
+
+| When you modify                                                   | Read first                                                                               |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `tests/`                                                          | [.claude/domain-rules/testing-budget.md](.claude/domain-rules/testing-budget.md)         |
+| `tileops/ops_manifest.yaml`                                       | [.claude/domain-rules/manifest-spec.md](.claude/domain-rules/manifest-spec.md)           |
+| `scripts/validate_manifest.py`, `tests/test_validate_manifest.py` | [.claude/domain-rules/manifest-validator.md](.claude/domain-rules/manifest-validator.md) |
+| `tileops/ops/`, `tileops/kernels/`                                | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
+| `benchmarks/`                                                     | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |

@@ -1,3 +1,4 @@
+- These are condensed rules. If unclear, read [docs/manifest.md](../../docs/manifest.md) (Manifest Validation section) for full spec.
 - `scripts/validate_manifest.py` is infrastructure, not part of normal op implementation work. When adding or updating an op manifest entry, do not modify the validator to make the new entry pass.
 - Treat validator failures as issues in the op, manifest, or benchmark unless the manifest schema or trust model has explicitly changed.
 - Only modify validator-related files when the PR is explicitly about manifest schema, trust-model policy, or validator infrastructure. In that case, document the schema/policy change in the PR.
