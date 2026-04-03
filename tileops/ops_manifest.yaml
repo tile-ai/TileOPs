@@ -40,7 +40,7 @@ ops:
 
   rmsnorm_fwd:
     family: norm
-    status: implemented
+    status: spec-only  # impl lacks dim param; fix in follow-up PR
 
     signature:
       inputs:
@@ -404,7 +404,7 @@ ops:
 
   groupnorm_fwd:
     family: norm
-    status: implemented
+    status: spec-only  # impl uses G instead of groups; fix in follow-up PR
 
     signature:
       inputs:
@@ -1011,6 +1011,7 @@ ops:
 
   moe_permute_padded:
     family: moe
+    status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
 
     signature:
       inputs:
@@ -1067,6 +1068,7 @@ ops:
 
   moe_permute_align:
     family: moe
+    status: spec-only  # impl uses numel instead of total_tokens/top_k; fix in follow-up PR
 
     signature:
       inputs:
@@ -1115,6 +1117,7 @@ ops:
 
   moe_permute_nopad:
     family: moe
+    status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
 
     signature:
       inputs:
@@ -1171,6 +1174,7 @@ ops:
 
   moe_unpermute:
     family: moe
+    status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
 
     signature:
       inputs:

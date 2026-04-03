@@ -17,6 +17,7 @@ internally.  L = N * prod(spatial) must be divisible by the kernel's block_l
 (chosen automatically by the kernel's default_config).
 """
 
+import functools
 import math
 import weakref
 from typing import Dict, Optional, Tuple
@@ -370,6 +371,7 @@ BatchNormFwdOp._eager_forward = _batchnorm_fwd_eager_forward
 _orig_fwd_init = BatchNormFwdOp.__init__
 
 
+@functools.wraps(_orig_fwd_init)
 def _patched_fwd_init(self, *args, **kwargs):
     _orig_fwd_init(self, *args, **kwargs)
     self._instance_key = _register_instance(self)
@@ -449,6 +451,7 @@ BatchNormBwdOp._eager_forward = _batchnorm_bwd_eager_forward
 _orig_bwd_init = BatchNormBwdOp.__init__
 
 
+@functools.wraps(_orig_bwd_init)
 def _patched_bwd_init(self, *args, **kwargs):
     _orig_bwd_init(self, *args, **kwargs)
     self._instance_key = _register_instance(self)
