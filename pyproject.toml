@@ -53,7 +53,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
+exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*", "workloads", "workloads.*"]
 
 [tool.setuptools.package-data]
 tileops = ["kernels/moe/_atomic_helper.h", "ops_manifest.yaml"]
