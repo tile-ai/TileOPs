@@ -94,6 +94,9 @@ Required fields: `classification`, `source_op`, `manifest_signature`. Gap report
    a. Read source file (`source_op`), find Op class, extract `__init__` and `forward` explicit named params
    b. Compare against `manifest_signature` (inputs, params)
    c. If no difference → run `python scripts/validate_manifest.py --check-op <name>` to confirm → `ready` or deeper gap
-   d. If difference → check if `pytorch_equivalent` exists (strip `_fwd`/`_bwd` suffix, match against `torch.nn.functional`, `torch`, `torch.special`, `torch.linalg`) → `semantic_gap` or `blocked`
+   d. If difference → determine `pytorch_equivalent`:
+   - Strip `_fwd` suffix, match against `torch.nn.functional`, `torch`, `torch.special`, `torch.linalg` → `semantic_gap`
+   - `_bwd` ops → always `blocked` (PyTorch backward is autograd-internal, no public reference function for autonomous testing)
+   - No match → `blocked`
 1. Write gap report to `.foundry/migrations/<family>.json`
 1. Print summary table

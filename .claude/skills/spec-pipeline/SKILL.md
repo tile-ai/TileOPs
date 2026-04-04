@@ -31,8 +31,10 @@ stateDiagram-v2
     TEST --> IMPLEMENT: tests written
     IMPLEMENT --> BENCH: implementation done, collect observations
     IMPLEMENT --> REPORT_BLOCKED: blocked
-    BENCH --> FLIP_STATUS: benchmark passes
+    BENCH --> REVALIDATE: benchmark passes
     BENCH --> REPORT_BLOCKED: benchmark blocked
+    REVALIDATE --> FLIP_STATUS: --check-op + tests pass
+    REVALIDATE --> REPORT_BLOCKED: regression detected
     FLIP_STATUS --> ROUTE: status flipped, next op
     REPORT_BLOCKED --> ROUTE: next op
     ROUTE --> CREATE_PR: all ops processed
@@ -53,11 +55,11 @@ Gap report written to `.foundry/migrations/<family>.json`.
 
 Read gap report. For each op, extract params from the entry and dispatch:
 
-| Classification | Action                                   |
-| -------------- | ---------------------------------------- |
-| `ready`        | → FLIP_STATUS                            |
-| `semantic_gap` | → TEST → IMPLEMENT → BENCH → FLIP_STATUS |
-| `blocked`      | → REPORT_BLOCKED                         |
+| Classification | Action                                                |
+| -------------- | ----------------------------------------------------- |
+| `ready`        | → FLIP_STATUS                                         |
+| `semantic_gap` | → TEST → IMPLEMENT → BENCH → REVALIDATE → FLIP_STATUS |
+| `blocked`      | → REPORT_BLOCKED                                      |
 
 ### 3. TEST (per op)
 
@@ -87,7 +89,18 @@ spec-bench(op_name, source_bench, source_op)
 
 Requires local GPU.
 
-### 6. FLIP_STATUS
+### 6. REVALIDATE (per op)
+
+Final gate after benchmark edits. Re-run validation to confirm no regressions:
+
+```bash
+python scripts/validate_manifest.py --check-op <op_name>
+python -m pytest <source_test> -v
+```
+
+Both must pass. If not → REPORT_BLOCKED (benchmark change introduced regression).
+
+### 7. FLIP_STATUS
 
 Orchestrator (not a sub-skill) changes manifest:
 
@@ -95,7 +108,7 @@ Orchestrator (not a sub-skill) changes manifest:
 - Commit the manifest change
 - Update gap report: add `promoted_at` timestamp (keep `classification` unchanged)
 
-### 7. CREATE_PR
+### 8. CREATE_PR
 
 After all ops processed:
 
