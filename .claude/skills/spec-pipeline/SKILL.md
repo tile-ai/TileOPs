@@ -73,7 +73,7 @@ When spec-implement rewrites a base class, it may create a dual-path `__init__` 
 
 Gap report written to `.foundry/migrations/<family>.json`.
 
-### 1b. GROUP_BY_BASE
+### 2. GROUP_BY_BASE
 
 Group ops by `base_class` from the gap report. Each group is a set of sibling ops sharing a base class. Process groups in order; within each group, process ops in order (first op likely fixes the base class, subsequent ops validate).
 
@@ -81,7 +81,7 @@ Group ops by `base_class` from the gap report. Each group is a set of sibling op
 
 Track group completion: a group is complete when all its ops are `promoted` or `blocked`.
 
-### 2. ROUTE
+### 3. ROUTE
 
 Read gap report. For each op, extract params from the entry and dispatch:
 
@@ -91,7 +91,7 @@ Read gap report. For each op, extract params from the entry and dispatch:
 | `semantic_gap` | → TEST → IMPLEMENT → BENCH → REVALIDATE → FLIP_STATUS |
 | `blocked`      | → REPORT_BLOCKED                                      |
 
-### 3. TEST (per op)
+### 4. TEST (per op)
 
 Invoke spec-test as a **separate agent** (trust model):
 
@@ -99,7 +99,7 @@ Invoke spec-test as a **separate agent** (trust model):
 spec-test(op_name, manifest_signature, pytorch_equivalent, source_test)
 ```
 
-### 4. IMPLEMENT (per op)
+### 5. IMPLEMENT (per op)
 
 Invoke spec-implement as a **separate agent** (trust model):
 
@@ -109,7 +109,7 @@ spec-implement(op_name, manifest_signature, source_op, source_test)
 
 Collect `observations` from return.
 
-### 5. BENCH (per op)
+### 6. BENCH (per op)
 
 Invoke spec-bench:
 
@@ -119,7 +119,7 @@ spec-bench(op_name, source_bench, source_op)
 
 Requires local GPU.
 
-### 6. REVALIDATE (per op)
+### 7. REVALIDATE (per op)
 
 Final gate after benchmark edits. Re-run validation to confirm no regressions:
 
@@ -130,7 +130,7 @@ python -m pytest <source_test> -v
 
 Both must pass. If not → REPORT_BLOCKED (benchmark change introduced regression).
 
-### 7. FLIP_STATUS
+### 8. FLIP_STATUS
 
 Orchestrator (not a sub-skill) changes manifest:
 
@@ -138,14 +138,14 @@ Orchestrator (not a sub-skill) changes manifest:
 - Commit the manifest change
 - Update gap report: add `promoted_at` timestamp (keep `classification` unchanged)
 
-### 7b. CLEANUP_GATE
+### 9. CLEANUP_GATE
 
 After each terminal per-op outcome (FLIP_STATUS or REPORT_BLOCKED), check group completion:
 
 - All siblings in the current base-class group are `promoted` or `blocked`? → trigger CLEANUP
 - Otherwise → continue to next op (ROUTE)
 
-### 7c. CLEANUP
+### 10. CLEANUP
 
 Remove dual-path legacy code from the base class. This step fires once per base-class group, after all siblings are done.
 
@@ -161,7 +161,7 @@ If any promoted op's test fails after cleanup → REPORT_BLOCKED (cleanup regres
 
 **Timeout policy for blocked ops**: if a group has blocked ops that prevent cleanup gate from firing for an extended period, the orchestrator may force cleanup — remove legacy path and mark blocked ops' tests as `xfail`. This is a human decision, not automatic.
 
-### 8. CREATE_PR
+### 11. CREATE_PR
 
 After all ops processed:
 
