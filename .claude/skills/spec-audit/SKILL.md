@@ -82,7 +82,7 @@ Per-op entry. **Example — field set is not exhaustive. Add fields that aid the
 }
 ```
 
-Required fields: `classification`, `source_op`, `manifest_signature`. Gap report is a starting point — agent reads live code and manifest during downstream skills.
+Required fields: `classification`, `source_op`, `base_class`, `manifest_signature`. `base_class` is the immediate parent class name (e.g., `_SoftmaxBaseOp`); if the op inherits `Op` directly, use `"Op"`. The orchestrator uses `base_class` for GROUP_BY_BASE grouping. Gap report is a starting point — agent reads live code and manifest during downstream skills.
 
 `pytorch_equivalent`: corresponding PyTorch function, or `null`. Not every op has one.
 
