@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
@@ -6,7 +6,26 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetDecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.gated_deltanet_recurrence import GatedDeltaNetDecodeTest
+from workloads.ops.gated_deltanet_recurrence import (
+    GatedDeltaNetDecodeTest,
+    _gated_deltanet_decode_torch_ref,
+)
+
+
+class _GatedDeltaNetDecodeTestBaseline(GatedDeltaNetDecodeTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        o, new_state = _gated_deltanet_decode_torch_ref(q, k, v, g, beta, state)
+        return o.to(self.dtype), new_state.to(self.dtype)
 
 try:
     from fla.ops.gated_delta_rule import fused_recurrent_gated_delta_rule
@@ -61,7 +80,7 @@ def test_gated_deltanet_decode_bench(
     dim_v: int,
     dtype: torch.dtype,
 ) -> None:
-    test = GatedDeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
+    test = _GatedDeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
     bm = GatedDeltaNetDecodeBenchmark(test)
     inputs = test.gen_inputs()
 

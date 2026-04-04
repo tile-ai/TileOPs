@@ -6,10 +6,14 @@ from tileops.ops.engram_fwd import EngramGateConvFwdOp
 from workloads.ops.engram_fwd import (
     EngramGateConvFwdTest as _EngramGateConvFwdTestWorkload,
 )
+from workloads.ops.engram_fwd import (
+    ref_engram_gate_conv_fwd,
+)
 
 
 class EngramGateConvFwdTest(_EngramGateConvFwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, H, k, v, rms_w_h, rms_w_v, conv_w):
+        return ref_engram_gate_conv_fwd(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
 
 
 class EngramGateConvFwdFixture(FixtureBase):

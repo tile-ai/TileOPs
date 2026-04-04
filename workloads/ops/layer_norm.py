@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 from workloads.base import WorkloadBase
 
@@ -17,13 +16,3 @@ class LayerNormTest(WorkloadBase):
         weight = torch.randn(self.n, dtype=self.dtype, device="cuda")
         bias = torch.randn(self.n, dtype=self.dtype, device="cuda")
         return x, weight, bias
-
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
-        # AC-9: reference uses torch.nn.functional.layer_norm
-        return F.layer_norm(
-            x.float(),
-            (self.n,),
-            weight=weight.float(),
-            bias=bias.float(),
-            eps=self.eps,
-        ).to(x.dtype)

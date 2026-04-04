@@ -1,6 +1,10 @@
 
+from typing import Optional, Tuple
+
 import pytest
 import torch
+import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
@@ -9,9 +13,32 @@ from workloads.ops.mha import MhaFwdTest as _MhaFwdTestWorkload
 
 
 class MhaBwdTest(_MhaBwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
+                    grad_output: torch.Tensor,
+                    lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
+        k_bhsd = k.transpose(1, 2)
+        v_bhsd = v.transpose(1, 2)
+        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
+            output_bhsd = F.scaled_dot_product_attention(
+                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
+        output = output_bhsd.transpose(1, 2).contiguous()
+
+        output.backward(grad_output)
+        return q.grad, k.grad, v.grad
+
+
 class MhaFwdTest(_MhaFwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor,
+                    v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
+        k_bhsd = k.transpose(1, 2)
+        v_bhsd = v.transpose(1, 2)
+        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
+            output_bhsd = F.scaled_dot_product_attention(
+                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
+        output = output_bhsd.transpose(1, 2).contiguous()
+        return output, None  # do not check lse
 
 
 class MhaFwdFixture(FixtureBase):

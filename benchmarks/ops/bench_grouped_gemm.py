@@ -11,6 +11,69 @@ from workloads.ops.grouped_gemm import (
 )
 
 
+class _GroupedGemmTestBaseline(GroupedGemmTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
+                    batch_offsets: torch.Tensor,
+                    batch_padded_offsets: torch.Tensor) -> torch.Tensor:
+        if not self.transpose_a:
+            # NT / NN: output is (batch_sum, N)
+            if self.transpose_b:
+                # NT: A @ B^T
+                assert A.shape[0] == sum(batch_sizes)
+                assert B.shape[0] == len(batch_sizes)
+                output = torch.empty((sum(batch_sizes), B.shape[1]), device=A.device, dtype=A.dtype)
+                start = 0
+                for i, size in enumerate(batch_sizes):
+                    size = int(size.item())
+                    end = start + size
+                    output[start:end] = torch.mm(A[start:end], B[i].transpose(0, 1).contiguous())
+                    start = end
+            else:
+                # NN: A @ B
+                assert A.shape[0] == sum(batch_sizes)
+                assert B.shape[0] == len(batch_sizes)
+                output = torch.empty((sum(batch_sizes), B.shape[2]), device=A.device, dtype=A.dtype)
+                start = 0
+                for i, size in enumerate(batch_sizes):
+                    size = int(size.item())
+                    end = start + size
+                    output[start:end] = torch.mm(A[start:end], B[i])
+                    start = end
+        else:
+            # TN / TT: output is (batch_count, N, K)
+            total_batch = int(batch_sizes.sum().item())
+            assert A.shape[0] == total_batch
+            N = A.shape[1]
+            batch_count = len(batch_sizes)
+
+            if self.transpose_b:
+                # TT: A^T @ B^T
+                K = B.shape[0]
+                assert B.shape[1] == total_batch
+                output = torch.zeros((batch_count, N, K), device=A.device, dtype=A.dtype)
+                start = 0
+                for i, size in enumerate(batch_sizes):
+                    size = int(size.item())
+                    end = start + size
+                    output[i] = torch.mm(A[start:end].transpose(0, 1),
+                                         B[:, start:end].transpose(0, 1))
+                    start = end
+            else:
+                # TN: A^T @ B
+                K = B.shape[1]
+                assert B.shape[0] == total_batch
+                output = torch.zeros((batch_count, N, K), device=A.device, dtype=A.dtype)
+                start = 0
+                for i, size in enumerate(batch_sizes):
+                    size = int(size.item())
+                    end = start + size
+                    output[i] = torch.mm(A[start:end].transpose(0, 1), B[start:end])
+                    start = end
+        return output
+
+
 class GroupedGemmBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
@@ -67,7 +130,7 @@ def _run_variant_bench(name: str, batch_sum: int, batch_count: int, N: int, K: i
                        dtype: torch.dtype, transpose_a: bool, transpose_b: bool,
                        tune: bool) -> None:
     """Run tileops and baseline benchmark for a single grouped GEMM variant."""
-    test = GroupedGemmTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
+    test = _GroupedGemmTestBaseline(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
     bm = GroupedGemmBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -142,7 +205,7 @@ def test_grouped_gemm_complete_bench(batch_sum: int, batch_count: int, N: int, K
     tileops_results = []
     baseline_results = []
     for transpose_a, transpose_b in variants:
-        variant_test = GroupedGemmTest(batch_sum, batch_count, N, K, dtype,
+        variant_test = _GroupedGemmTestBaseline(batch_sum, batch_count, N, K, dtype,
                                        transpose_a, transpose_b)
         inputs = variant_test.gen_inputs()
         op = GroupedGemmOp(batch_sum, batch_count, N, K, dtype,

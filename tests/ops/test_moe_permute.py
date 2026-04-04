@@ -18,7 +18,8 @@ from workloads.ops.moe_permute import _ref_moe_permute
 
 
 class MoePermuteTest(_MoePermuteTestWorkload, TestBase):
-    pass
+    def ref_program(self, hidden_states, topk_ids):
+        return _ref_moe_permute(hidden_states, topk_ids, self.num_experts)
 
 
 # ---------------------------------------------------------------------------

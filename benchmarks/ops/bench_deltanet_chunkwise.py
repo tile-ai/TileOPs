@@ -22,7 +22,31 @@ from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
 from workloads.base import FixtureBase
 from workloads.ops.deltanet_chunkwise_bwd import _autograd_bwd_ref
-from workloads.ops.deltanet_chunkwise_fwd import DeltaNetFwdTest
+from workloads.ops.deltanet_chunkwise_fwd import (
+    DeltaNetFwdTest,
+    _compute_w_u_torch_ref,
+    _kernel2_torch_ref,
+    _prepare_wy_repr_torch_ref,
+)
+
+
+class _DeltaNetFwdTestBaseline(DeltaNetFwdTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> torch.Tensor:
+        B, H, S, DK = k.shape
+        _, _, _, DV = v.shape
+        Aw, Au = _prepare_wy_repr_torch_ref(k, beta, self.chunk_size)
+        w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, self.chunk_size)
+        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
+        _S, o = _kernel2_torch_ref(q, k, w, u, S_0, self.chunk_size)
+        return o.to(self.dtype)
 
 try:
     from fla.ops.delta_rule import chunk_delta_rule
@@ -88,7 +112,7 @@ def test_deltanet_vs_fla_fwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = DeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = _DeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = DeltaNetFwdBenchmark(test)
     inputs = test.gen_inputs()  # q, k, v, beta (BHSD)
 
@@ -160,7 +184,7 @@ def test_deltanet_vs_fla_bwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = DeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = _DeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = DeltaNetBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
@@ -253,7 +277,7 @@ def test_deltanet_vs_fla_fwdbwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = DeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = _DeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = DeltaNetFwdBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size

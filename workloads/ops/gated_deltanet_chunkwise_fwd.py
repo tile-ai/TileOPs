@@ -27,7 +27,6 @@ def _compute_w_u_torch_ref(
     u = torch.einsum("bhcij,bhcjd->bhcid", Au_, v_beta_).reshape(B, H, S, DV)
     return w, u
 
-
 def _kernel2_torch_ref(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -74,7 +73,6 @@ def _kernel2_torch_ref(
         h = h + torch.einsum("bhnk,bhnv->bhkv", k_scaled, v_new_c)
     return h, o
 
-
 def _prepare_wy_repr_torch_ref(
     k: torch.Tensor,
     g_cum: torch.Tensor,
@@ -108,7 +106,6 @@ def _prepare_wy_repr_torch_ref(
 
     return Aw, Au
 
-
 class GatedDeltaNetFwdTest(WorkloadBase):
 
     def __init__(
@@ -137,22 +134,3 @@ class GatedDeltaNetFwdTest(WorkloadBase):
         g = -torch.rand(B, H, S, device="cuda", dtype=self.dtype)
         beta = torch.rand(B, H, S, device="cuda", dtype=self.dtype) * 0.5
         return q, k, v, g, beta
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> torch.Tensor:
-        B, H, S, DK = k.shape
-        _, _, _, DV = v.shape
-        # Chunk-local cumulative sum of g (paper requires cumulated gates)
-        BC = self.chunk_size
-        g_cum = g.float().reshape(B, H, S // BC, BC).cumsum(-1).reshape(B, H, S).to(g.dtype)
-        Aw, Au = _prepare_wy_repr_torch_ref(k, g_cum, beta, self.chunk_size)
-        w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, self.chunk_size)
-        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-        _S, o = _kernel2_torch_ref(q, k, g_cum, w, u, S_0, self.chunk_size)
-        return o.to(self.dtype)

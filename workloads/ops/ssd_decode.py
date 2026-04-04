@@ -22,7 +22,6 @@ class SsdDecodeFixture(FixtureBase):
         ]),
     ]
 
-
 class SsdDecodeTest(WorkloadBase):
     def __init__(
         self,
@@ -52,10 +51,6 @@ class SsdDecodeTest(WorkloadBase):
         C_in = torch.randn(b, g, n, dtype=self.dtype, device="cuda") * 0.1
         state = torch.randn(b, h, p, n, dtype=torch.float32, device="cuda") * 0.1
         return A, dt, x, B_in, C_in, state
-
-    def ref_program(self, A, dt, x, B_in, C_in, state):
-        return ssd_decode_ref(A, dt, x, B_in, C_in, state)
-
 
 def ssd_decode_ref(
     A: torch.Tensor,      # (H,)          float32

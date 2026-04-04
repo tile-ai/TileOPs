@@ -8,7 +8,15 @@ from workloads.ops.layer_norm import LayerNormTest as _LayerNormTestWorkload
 
 
 class LayerNormTest(_LayerNormTestWorkload, TestBase):
-    pass
+    def ref_program(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+        # AC-9: reference uses torch.nn.functional.layer_norm
+        return F.layer_norm(
+            x.float(),
+            (self.n,),
+            weight=weight.float(),
+            bias=bias.float(),
+            eps=self.eps,
+        ).to(x.dtype)
 
 
 class LayerNormFixture(FixtureBase):

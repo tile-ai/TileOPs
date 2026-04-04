@@ -1,4 +1,6 @@
 
+from typing import Tuple
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -9,7 +11,13 @@ from workloads.ops.fp8_quant import Fp8QuantTest as _Fp8QuantTestWorkload
 
 
 class Fp8QuantTest(_Fp8QuantTestWorkload, TestBase):
-    pass
+    def ref_program(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # input_tensor: (batch, seq_len_kv, kv_group, index_dim)
+        amax_value = torch.abs(input_tensor).amax(dim=-1, keepdim=True).clamp(min=1e-4)
+        scale_tensor = amax_value / 448.0
+        output_tensor = torch.clamp(input_tensor / scale_tensor, min=-448.0, max=448.0)
+        output_tensor = output_tensor.to(torch.float8_e4m3fn)
+        return scale_tensor.squeeze(dim=-1), output_tensor
 
 
 class Fp8QuantFixture(FixtureBase):

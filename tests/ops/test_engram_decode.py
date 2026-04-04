@@ -8,7 +8,12 @@ from workloads.ops.engram_decode import _ref_engram_decode_step
 
 
 class EngramDecodeTest(_EngramDecodeTestWorkload, TestBase):
-    pass
+    def ref_program(self, e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
+        y_ref, state_ref = _ref_engram_decode_step(
+            e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
+            self.max_conv_len, self.dilation, self.eps,
+        )
+        return y_ref, state_ref
 
 
 class EngramDecodeFixture(FixtureBase):

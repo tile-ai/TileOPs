@@ -1,29 +1,29 @@
 """Base classes for workload definitions shared between tests and benchmarks.
 
-WorkloadBase defines the contract: gen_inputs() and ref_program().
+WorkloadBase defines the contract: gen_inputs() for input generation.
 FixtureMeta / FixtureBase provide reusable pytest parametrize decorators.
+
+Correctness-only logic (ref_program, check, tolerances) stays in tests/.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Tuple
+from typing import Any
 
 import pytest
-import torch
 
 
 class WorkloadBase(ABC):
-    """Abstract base for workload definitions (input generation + reference).
+    """Abstract base for workload definitions (input generation + parameters).
 
-    Subclass must implement gen_inputs() and ref_program().
+    Subclass must implement gen_inputs().
     Used by both tests (via TestBase) and benchmarks (via BenchmarkBase).
+
+    Correctness-only methods (ref_program, check, tolerances) belong in
+    tests/ — not here.
     """
 
     @abstractmethod
     def gen_inputs(self) -> Any:
-        raise NotImplementedError
-
-    @abstractmethod
-    def ref_program(self, *inputs: Tuple[torch.Tensor]) -> Any:
         raise NotImplementedError
 
 

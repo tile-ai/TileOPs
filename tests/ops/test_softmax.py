@@ -27,11 +27,20 @@ from workloads.ops.softmax import SoftmaxTest as _SoftmaxTestWorkload
 
 
 class LogSoftmaxTest(_LogSoftmaxTestWorkload, TestBase):
-    pass
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return F.log_softmax(x.float(), dim=self.dim).to(x.dtype)
+
+
 class LogSumExpTest(_LogSumExpTestWorkload, TestBase):
-    pass
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.logsumexp(x.float(), dim=self.dim, keepdim=self.keepdim).to(
+            x.dtype
+        )
+
+
 class SoftmaxTest(_SoftmaxTestWorkload, TestBase):
-    pass
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return F.softmax(x.float(), dim=self.dim).to(x.dtype)
 
 
 # ---------------------------------------------------------------------------

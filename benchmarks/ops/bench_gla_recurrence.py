@@ -5,7 +5,7 @@ Compares single-step decode latency across batch sizes, dimensions, and dtypes.
 When FLA is not installed, benchmarks still run using a pure-torch reference
 implementation as baseline, so CI is never blocked by a missing optional dependency.
 """
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
@@ -13,7 +13,22 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GLADecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.gla_recurrence import GLADecodeTest
+from workloads.ops.gla_recurrence import GLADecodeTest, _gla_decode_torch_ref
+
+
+class _GLADecodeTestBaseline(GLADecodeTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        gk: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        o, new_state = _gla_decode_torch_ref(q, k, v, gk, state, self.scale)
+        return o.to(self.dtype), new_state.to(self.dtype)
 
 try:
     from fla.ops.gla import fused_recurrent_gla
@@ -72,7 +87,7 @@ def test_gla_decode_bench(
     dtype: torch.dtype,
 ) -> None:
     scale = dim_k ** -0.5
-    test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype, scale=scale)
+    test = _GLADecodeTestBaseline(batch, heads, dim_k, dim_v, dtype, scale=scale)
     bm = GLADecodeBenchmark(test)
     inputs = test.gen_inputs()
 

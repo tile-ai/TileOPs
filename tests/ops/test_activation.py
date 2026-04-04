@@ -13,7 +13,8 @@ from workloads.ops.activation import ReluTest as _ReluTestWorkload
 
 
 class ReluTest(_ReluTestWorkload, TestBase):
-    pass
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.relu(x.float()).to(x.dtype)
 
 
 class ReluFixture(FixtureBase):

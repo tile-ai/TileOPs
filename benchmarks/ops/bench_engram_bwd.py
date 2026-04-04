@@ -7,7 +7,19 @@ from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.engram_bwd import EngramGateConvBwdOp
 from workloads.ops.engram_bwd import (
     EngramGateConvBwdTest,
+    ref_engram_gate_conv_bwd,
 )
+
+
+class _EngramGateConvBwdTestBaseline(EngramGateConvBwdTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, dY, H, k, v, rms_w_h, rms_w_v, conv_w,
+                    vhat, alpha, rrms_h, rrms_k, rrms_v):
+        return ref_engram_gate_conv_bwd(
+            dY, H, k, v, rms_w_h, rms_w_v, conv_w,
+            vhat, alpha, rrms_h, rrms_k, rrms_v, self.eps,
+        )
 
 
 class EngramGateConvBwdBenchmark(BenchmarkBase):
@@ -37,7 +49,7 @@ _ENGRAM_GATE_CONV_BWD_BENCH_PARAMS = [
 
 @pytest.mark.parametrize("M, seq_len, d, dtype, tune", _ENGRAM_GATE_CONV_BWD_BENCH_PARAMS)
 def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype, tune):
-    test = EngramGateConvBwdTest(M, seq_len, d, dtype)
+    test = _EngramGateConvBwdTestBaseline(M, seq_len, d, dtype)
     bm = EngramGateConvBwdBenchmark(test)
     inputs = test.gen_inputs()
 

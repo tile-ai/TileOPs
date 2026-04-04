@@ -1,12 +1,13 @@
 
 from tests.test_base import TestBase
 from tileops.ops.da_cumsum_fwd import DaCumsumFwdOp
-from workloads.ops.da_cumsum_fwd import DaCumsumFwdFixture
+from workloads.ops.da_cumsum_fwd import DaCumsumFwdFixture, da_cumsum_fwd_ref
 from workloads.ops.da_cumsum_fwd import DaCumsumFwdTest as _DaCumsumFwdTestWorkload
 
 
 class DaCumsumFwdTest(_DaCumsumFwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, dt, A):
+        return da_cumsum_fwd_ref(dt, A, self.num_chunks, self.chunk_len)
 
 
 @DaCumsumFwdFixture

@@ -7,7 +7,10 @@ from workloads.ops.rms_norm import RmsNormTest as _RmsNormTestWorkload
 
 
 class RmsNormTest(_RmsNormTestWorkload, TestBase):
-    pass
+    def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return ((x_f32 / rms) * weight.float()).to(x.dtype)
 
 
 class RmsNormFixture(FixtureBase):

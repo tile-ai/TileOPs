@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
@@ -43,6 +43,33 @@ class Fp8LightingIndexerTest(_Fp8LightingIndexerTestWorkload, TestBase):
         difference = 1.0 - correlation
         assert 0 <= difference <= tolerance, \
             f"outputs is not close to outputs_ref, difference: {difference}"
+
+    def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
+                    cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> Tuple[torch.Tensor]:
+        k = kv
+        q = q.float()
+        k = k.float()
+        batch, seq_len, heads, index_dim = q.shape
+        seq_len_kv = self.seq_len_kv
+        kv_group = self.kv_group
+        heads_per_group = heads // kv_group
+
+        k = k.view(batch, seq_len_kv, kv_group, index_dim)
+        q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
+
+        mask_lo = torch.arange(0, seq_len_kv, device="cuda")[None, :] >= cu_seqlen_ks[:, None]
+        mask_hi = torch.arange(0, seq_len_kv, device="cuda")[None, :] < cu_seqlen_ke[:, None]
+        mask = mask_lo & mask_hi
+
+        score = torch.einsum("bsghd,bngd->bghsn", q, k)
+        weights = weights.view(seq_len, kv_group, heads_per_group)
+        weights = weights.permute(1, 2, 0).unsqueeze(0).unsqueeze(-1)
+        score = score.relu() * weights
+        logits = score.sum(dim=2)
+        logits = logits.permute(0, 2, 3, 1)
+        mask_expanded = mask.unsqueeze(0).unsqueeze(-1)
+        logits = logits.masked_fill(~mask_expanded, float("-inf"))
+        return (logits,)
 
 
 class Fp8LightingIndexerFixture(FixtureBase):

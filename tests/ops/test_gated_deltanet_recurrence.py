@@ -1,4 +1,6 @@
 
+from typing import Tuple
+
 import pytest
 import torch
 
@@ -11,7 +13,17 @@ from workloads.ops.gated_deltanet_recurrence import _gated_deltanet_decode_torch
 
 
 class GatedDeltaNetDecodeTest(_GatedDeltaNetDecodeTestWorkload, TestBase):
-    pass
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        o, new_state = _gated_deltanet_decode_torch_ref(q, k, v, g, beta, state)
+        return o.to(self.dtype), new_state.to(self.dtype)
 
 
 # =============================================================================

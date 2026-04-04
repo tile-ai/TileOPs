@@ -14,7 +14,6 @@ class DaCumsumFwdFixture(FixtureBase):
         ]),
     ]
 
-
 class DaCumsumFwdTest(WorkloadBase):
     def __init__(
         self,
@@ -35,10 +34,6 @@ class DaCumsumFwdTest(WorkloadBase):
         dt = torch.rand(b, seq_len, h, dtype=torch.float32, device="cuda") * 0.1 + 0.01
         A = -torch.rand(h, dtype=torch.float32, device="cuda")
         return dt, A
-
-    def ref_program(self, dt, A):
-        return da_cumsum_fwd_ref(dt, A, self.num_chunks, self.chunk_len)
-
 
 def da_cumsum_fwd_ref(
     dt: torch.Tensor,   # (b, seq_len, h)  float32

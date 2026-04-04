@@ -19,7 +19,10 @@ from workloads.ops.moe_permute_align import _ref_permute_align
 
 
 class MoePermuteAlignTest(_MoePermuteAlignTestWorkload, TestBase):
-    pass
+    def ref_program(
+        self, topk_ids: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return _ref_permute_align(topk_ids, self.block_size, self.num_experts)
 
 
 # ---------------------------------------------------------------------------

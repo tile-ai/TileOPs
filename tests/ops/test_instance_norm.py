@@ -8,7 +8,14 @@ from workloads.ops.instance_norm import InstanceNormTest as _InstanceNormTestWor
 
 
 class InstanceNormTest(_InstanceNormTestWorkload, TestBase):
-    pass
+    def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
+                    bias: torch.Tensor) -> torch.Tensor:
+        return F.instance_norm(
+            x.float(),
+            weight=weight.float(),
+            bias=bias.float(),
+            eps=self.eps,
+        ).to(x.dtype)
 
 
 class InstanceNormFixture(FixtureBase):

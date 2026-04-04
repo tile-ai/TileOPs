@@ -1,5 +1,6 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormOp
@@ -9,7 +10,22 @@ from workloads.ops.fused_add_layer_norm import (
 
 
 class FusedAddLayerNormTest(_FusedAddLayerNormTestWorkload, TestBase):
-    pass
+    def ref_program(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        add_result = (x.float() + residual.float()).to(x.dtype)
+        y = F.layer_norm(
+            add_result.float(),
+            (self.n,),
+            weight=weight.float(),
+            bias=bias.float(),
+            eps=self.eps,
+        ).to(x.dtype)
+        return y, add_result
 
 
 class FusedAddLayerNormFixture(FixtureBase):

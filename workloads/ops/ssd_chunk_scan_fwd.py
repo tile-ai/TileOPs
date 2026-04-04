@@ -14,7 +14,6 @@ class SsdChunkScanFwdFixture(FixtureBase):
         ]),
     ]
 
-
 class SsdChunkScanFwdTest(WorkloadBase):
     def __init__(
         self,
@@ -48,10 +47,6 @@ class SsdChunkScanFwdTest(WorkloadBase):
         prev_states = torch.randn(b, c, h, n, p, dtype=self.dtype, device="cuda") * 0.1
         dt = torch.rand(b, c, L, h, dtype=self.dtype, device="cuda") * 0.1 + 0.01
         return x, cb, dA_cumsum, C, prev_states, dt
-
-    def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
-        return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt)
-
 
 def ssd_chunk_scan_fwd_ref(
     x: torch.Tensor,           # (b, c, L, h, p)      raw x

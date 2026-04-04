@@ -8,6 +8,22 @@ from tileops.ops import NSATopkVarlenOp
 from workloads.ops.deepseek_nsa_topk import NsaTopkTest
 
 
+class _NsaTopkTestBaseline(NsaTopkTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        lse: torch.Tensor,
+        offsets: torch.LongTensor,
+        chunk_offsets: torch.LongTensor,
+        token_indices: torch.LongTensor,
+    ) -> torch.Tensor:
+        return self.nsa_topk_torch(q, k_cmp, lse, self.selected_block_num, self.bs, self.scale,
+                                   offsets, token_indices, chunk_offsets)
+
+
 class NsaTopkBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
@@ -45,7 +61,7 @@ _NSA_TOPK_BENCH_PARAMS = [
 def test_nsa_topk_bench(seq_num: int, c_seq_len: int, heads: int, dim: int, group: int,
                         scale: float, selected_block_num: int, bc: int, bs: int, bk: int,
                         dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool) -> None:
-    test = NsaTopkTest(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs,
+    test = _NsaTopkTestBaseline(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs,
                        bk, dtype, accum_dtype)
     bm = NsaTopkBenchmark(test)
     inputs = test.gen_inputs()

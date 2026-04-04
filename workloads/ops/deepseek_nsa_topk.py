@@ -210,15 +210,3 @@ class NsaTopkTest(WorkloadBase):
                 block_indices[i_c, i_h, :selected_block_num] = final_indices.to(torch.int32)
 
         return block_indices
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k_cmp: torch.Tensor,
-        lse: torch.Tensor,
-        offsets: torch.LongTensor,
-        chunk_offsets: torch.LongTensor,
-        token_indices: torch.LongTensor,
-    ) -> torch.Tensor:
-        return self.nsa_topk_torch(q, k_cmp, lse, self.selected_block_num, self.bs, self.scale,
-                                   offsets, token_indices, chunk_offsets)

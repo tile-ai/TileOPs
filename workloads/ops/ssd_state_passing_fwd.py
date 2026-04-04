@@ -14,7 +14,6 @@ class SsdStatePassingFwdFixture(FixtureBase):
         ]),
     ]
 
-
 class SsdStatePassingFwdTest(WorkloadBase):
     def __init__(
         self,
@@ -36,10 +35,6 @@ class SsdStatePassingFwdTest(WorkloadBase):
         dA_chunk_cumsum = -torch.rand(b, h, c, dtype=torch.float32, device="cuda").cumsum(-1)
         initial_states = torch.randn(b, h, d, dtype=torch.float32, device="cuda") * 0.1
         return states, dA_chunk_cumsum, initial_states
-
-    def ref_program(self, states, dA_chunk_cumsum, initial_states):
-        return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
-
 
 def ssd_state_passing_fwd_ref(
     states: torch.Tensor,           # (b, c, h, d)

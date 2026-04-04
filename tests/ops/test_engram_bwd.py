@@ -4,10 +4,16 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.engram_bwd import EngramGateConvBwdOp
 from workloads.ops.engram_bwd import EngramGateConvBwdTest as _EngramGateConvBwdTestWorkload
+from workloads.ops.engram_bwd import ref_engram_gate_conv_bwd
 
 
 class EngramGateConvBwdTest(_EngramGateConvBwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, dY, H, k, v, rms_w_h, rms_w_v, conv_w,
+                    vhat, alpha, rrms_h, rrms_k, rrms_v):
+        return ref_engram_gate_conv_bwd(
+            dY, H, k, v, rms_w_h, rms_w_v, conv_w,
+            vhat, alpha, rrms_h, rrms_k, rrms_v, self.eps,
+        )
 
 
 def _ref_rmsnorm(x, w, eps=1e-6):

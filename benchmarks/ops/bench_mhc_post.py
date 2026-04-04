@@ -8,6 +8,21 @@ from tileops.ops import ManifoldConstrainedHyperConnectionPostOp
 from workloads.ops.mhc_post import MhcPostTest
 
 
+class _MhcPostTestBaseline(MhcPostTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
+                    x_res: torch.Tensor) -> torch.Tensor:
+        batch = self.batch
+        n_expand = self.n_expand
+        c_x = self.c_x
+
+        x_out_ref = (h_post.unsqueeze(2).float() @ x_layer_out.unsqueeze(1).float()).reshape(
+            batch, n_expand * c_x) + x_res.float()
+        x_out_ref = x_out_ref.bfloat16()
+        return x_out_ref
+
+
 class MhcPostBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
@@ -31,7 +46,7 @@ _MHC_POST_BENCH_PARAMS = [
 @pytest.mark.parametrize("batch, n_expand, c_x, dtype, tune", _MHC_POST_BENCH_PARAMS)
 def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                          tune: bool) -> None:
-    test = MhcPostTest(batch, n_expand, c_x, dtype)
+    test = _MhcPostTestBaseline(batch, n_expand, c_x, dtype)
     bm = MhcPostBenchmark(test)
     inputs = test.gen_inputs()
 

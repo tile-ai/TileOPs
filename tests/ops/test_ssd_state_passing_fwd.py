@@ -2,14 +2,18 @@ import torch
 
 from tests.test_base import TestBase
 from tileops.ops.ssd_state_passing_fwd import SsdStatePassingFwdOp
-from workloads.ops.ssd_state_passing_fwd import SsdStatePassingFwdFixture
+from workloads.ops.ssd_state_passing_fwd import (
+    SsdStatePassingFwdFixture,
+    ssd_state_passing_fwd_ref,
+)
 from workloads.ops.ssd_state_passing_fwd import (
     SsdStatePassingFwdTest as _SsdStatePassingFwdTestWorkload,
 )
 
 
 class SsdStatePassingFwdTest(_SsdStatePassingFwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, states, dA_chunk_cumsum, initial_states):
+        return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
 
 
 @SsdStatePassingFwdFixture

@@ -23,7 +23,8 @@ from workloads.ops.moe_unpermute import _ref_moe_unpermute
 
 
 class MoeUnpermuteTest(_MoeUnpermuteTestWorkload, TestBase):
-    pass
+    def ref_program(self, mm2_pad, fwd_idx, topk_weights):
+        return _ref_moe_unpermute(mm2_pad, fwd_idx, topk_weights)
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,12 @@ from workloads.ops.topk_selector import TopkSelectorTest as _TopkSelectorTestWor
 
 
 class TopkSelectorTest(_TopkSelectorTestWorkload, TestBase):
-    pass
+    def ref_program(self, index_score: torch.Tensor, starts: torch.Tensor,
+                    ends: torch.Tensor) -> torch.Tensor:
+        # index_score: (batch, seq_len, seq_len_kv, kv_group); topk over seq_len_kv (dim=2)
+        indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]
+        # Match kernel/output layout: (batch, seq_len, kv_group, topk)
+        return indexes_ref.permute(0, 1, 3, 2)
 
 
 class TopkSelectorFixture(FixtureBase):

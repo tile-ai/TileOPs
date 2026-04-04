@@ -25,10 +25,23 @@ from workloads.ops.batch_norm import (
 
 
 class BatchNormBwdTest(_BatchNormBwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, grad_out, x, weight, mean, rstd):
+        """Reference via torch.autograd on a float32 graph."""
+        x32 = x.float().requires_grad_(True)
+        w32 = weight.float().requires_grad_(True)
+        b32 = torch.zeros(self.C, device=x.device, dtype=torch.float32, requires_grad=True)
+        rm = torch.zeros(self.C, device=x.device, dtype=torch.float32)
+        rv = torch.ones(self.C, device=x.device, dtype=torch.float32)
+        y32 = torch.nn.functional.batch_norm(
+            x32, rm, rv, w32, b32, training=True, momentum=0.1, eps=1e-5)
+        y32.backward(grad_out.float())
+        return x32.grad.to(x.dtype), w32.grad, b32.grad
 
 class BatchNormFwdTest(_BatchNormFwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, x, weight, bias, running_mean, running_var):
+        y, rm, rv = _ref_fwd(x, weight, bias, running_mean, running_var,
+                             training=self.training)
+        return (y,)
 
 
 # ---------------------------------------------------------------------------

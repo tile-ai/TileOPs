@@ -8,7 +8,8 @@ from workloads.ops.fft import FFTTest as _FFTTestWorkload
 
 
 class FFTTest(_FFTTestWorkload, TestBase):
-    pass
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.fft.fft(x, dim=-1)
 
 
 class FFTFixture(FixtureBase):

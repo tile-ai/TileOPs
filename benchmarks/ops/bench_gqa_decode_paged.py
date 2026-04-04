@@ -1,11 +1,50 @@
+import math
 from typing import Optional
 
 import pytest
 import torch
+import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
 from workloads.ops.gqa_decode_paged import GqaDecodePagedTest
+
+
+class _GqaDecodePagedTestBaseline(GqaDecodePagedTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                    real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
+        """Reassemble paged K/V to logical layout per batch, then GQA (expand to heads) + SDPA."""
+        batch, _, dim = q.shape
+        seqlen_kv, _, _ = k.shape
+        kv_group_num = self.heads // self.heads_kv
+        out_list = []
+        for i_b in range(batch):
+            q_b = q[i_b:i_b + 1, :, :]
+            k_logical = torch.zeros(seqlen_kv, self.heads_kv, dim, dtype=q.dtype, device=q.device)
+            v_logical = torch.zeros(seqlen_kv, self.heads_kv, dim, dtype=q.dtype, device=q.device)
+            num_pages = math.ceil(real_seqlen_kv[i_b].item() / self.page_size)
+            for i_paged in range(num_pages):
+                start_pos = block_table[i_b, i_paged].item() * self.page_size
+                end_pos = min(start_pos + self.page_size, seqlen_kv)
+                page_len = end_pos - start_pos
+                k_logical[i_paged * self.page_size:i_paged * self.page_size +
+                          page_len, :, :] = k[start_pos:end_pos, :, :]
+                v_logical[i_paged * self.page_size:i_paged * self.page_size +
+                          page_len, :, :] = v[start_pos:end_pos, :, :]
+            k_logical = k_logical[:real_seqlen_kv[i_b].item(), :, :]
+            v_logical = v_logical[:real_seqlen_kv[i_b].item(), :, :]
+            group_id = torch.arange(self.heads, dtype=torch.long, device=q.device) // kv_group_num
+            k_bhsd = k_logical[:, group_id, :].unsqueeze(0).transpose(1, 2)
+            v_bhsd = v_logical[:, group_id, :].unsqueeze(0).transpose(1, 2)
+            q_bhsd = q_b.unsqueeze(2)
+            with sdpa_kernel(backends=[SDPBackend.MATH]):
+                out_b = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
+            out_b = out_b.squeeze(2)
+            out_list.append(out_b)
+        return torch.cat(out_list, dim=0)
 
 
 class GqaDecodePagedBenchmark(BenchmarkBase):
@@ -148,7 +187,7 @@ _GQA_DECODE_PAGED_BENCH_PARAMS = [
 )
 def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
                                 page_size: int, dtype: torch.dtype, tune: bool) -> None:
-    test = GqaDecodePagedTest(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
+    test = _GqaDecodePagedTestBaseline(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
     bm = GqaDecodePagedBenchmark(test)
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs

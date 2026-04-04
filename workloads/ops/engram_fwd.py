@@ -5,14 +5,12 @@ from workloads.base import WorkloadBase
 
 CONV_KERNEL_SIZE = 4
 
-
 def _ref_rmsnorm(x, w, eps=1e-6):
     """Returns (normed, rrms)."""
     x_f = x.float()
     rrms = (x_f ** 2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
     normed = x_f * rrms * w.float()
     return normed, rrms.squeeze(-1)
-
 
 class EngramGateConvFwdTest(WorkloadBase):
     def __init__(self, M, seq_len, d, dtype, eps=1e-6):
@@ -30,10 +28,6 @@ class EngramGateConvFwdTest(WorkloadBase):
         rms_w_v = torch.ones(self.d, dtype=self.dtype, device="cuda")
         conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device="cuda") * 0.02
         return H, k, v, rms_w_h, rms_w_v, conv_w
-
-    def ref_program(self, H, k, v, rms_w_h, rms_w_v, conv_w):
-        return ref_engram_gate_conv_fwd(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
-
 
 def ref_engram_gate_conv_fwd(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
     """PyTorch reference for Engram GateConv forward."""

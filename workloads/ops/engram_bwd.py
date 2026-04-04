@@ -5,7 +5,6 @@ from workloads.base import WorkloadBase
 
 CONV_KERNEL_SIZE = 4
 
-
 def ref_engram_gate_conv_bwd(dY, H, k, v, rms_w_h, rms_w_v, conv_w,
                               vhat, alpha, rrms_h, rrms_k, rrms_v, eps=1e-6):
     """PyTorch reference backward via autograd."""
@@ -52,7 +51,6 @@ def ref_engram_gate_conv_bwd(dY, H, k, v, rms_w_h, rms_w_v, conv_w,
         cw_ag.grad,    # fp32
     )
 
-
 class EngramGateConvBwdTest(WorkloadBase):
     def __init__(self, M, seq_len, d, dtype, eps=1e-6):
         self.M = M
@@ -92,10 +90,3 @@ class EngramGateConvBwdTest(WorkloadBase):
 
         return (dY, H, k, v, rms_w_h, rms_w_v, conv_w,
                 vhat, alpha_squeezed, rrms_h, rrms_k, rrms_v)
-
-    def ref_program(self, dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-                    vhat, alpha, rrms_h, rrms_k, rrms_v):
-        return ref_engram_gate_conv_bwd(
-            dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-            vhat, alpha, rrms_h, rrms_k, rrms_v, self.eps,
-        )

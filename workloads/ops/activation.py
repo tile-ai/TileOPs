@@ -12,6 +12,3 @@ class ReluTest(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
         return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.relu(x.float()).to(x.dtype)

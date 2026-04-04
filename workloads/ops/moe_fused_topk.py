@@ -16,10 +16,6 @@ class FusedTopKTest(WorkloadBase):
         torch.manual_seed(42)
         return torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda")
 
-    def ref_program(self, gating_output):
-        return _ref_fused_topk(gating_output, self.top_k, self.scoring_func, self.renormalize)
-
-
 def _ref_fused_topk(
     gating_output: torch.Tensor,
     top_k: int,

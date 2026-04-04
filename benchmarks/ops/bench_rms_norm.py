@@ -8,6 +8,16 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.rms_norm import RmsNormOp
 from workloads.ops.rms_norm import RmsNormTest
 
+
+class _RmsNormTestBaseline(RmsNormTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return ((x_f32 / rms) * weight.float()).to(x.dtype)
+
+
 _OP_NAME = "rmsnorm_fwd"
 
 
@@ -45,7 +55,7 @@ def _manifest_params():
 
 @pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
 def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = RmsNormTest(m, n, dtype)
+    test = _RmsNormTestBaseline(m, n, dtype)
     bm = RmsNormBenchmark(test)
     inputs = test.gen_inputs()
 

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
@@ -6,7 +6,22 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeltaNetDecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.deltanet_recurrence import DeltaNetDecodeTest
+from workloads.ops.deltanet_recurrence import DeltaNetDecodeTest, _deltanet_decode_torch_ref
+
+
+class _DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        o, new_state = _deltanet_decode_torch_ref(q, k, v, beta, state)
+        return o.to(self.dtype), new_state.to(self.dtype)
 
 
 class DeltaNetDecodeBenchmark(BenchmarkBase):
@@ -56,7 +71,7 @@ def test_deltanet_decode_bench(
     dim_v: int,
     dtype: torch.dtype,
 ) -> None:
-    test = DeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
+    test = _DeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
     bm = DeltaNetDecodeBenchmark(test)
     inputs = test.gen_inputs()
 

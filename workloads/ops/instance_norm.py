@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 from workloads.base import WorkloadBase
 
@@ -20,12 +19,3 @@ class InstanceNormTest(WorkloadBase):
         weight = torch.randn(self.c, dtype=self.dtype, device="cuda")
         bias = torch.randn(self.c, dtype=self.dtype, device="cuda")
         return x, weight, bias
-
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
-                    bias: torch.Tensor) -> torch.Tensor:
-        return F.instance_norm(
-            x.float(),
-            weight=weight.float(),
-            bias=bias.float(),
-            eps=self.eps,
-        ).to(x.dtype)

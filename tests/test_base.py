@@ -53,7 +53,8 @@ def exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
 class TestBase(WorkloadBase):
     """Abstract base class for op correctness testing.
 
-    Inherits gen_inputs() and ref_program() from WorkloadBase.
+    Inherits gen_inputs() from WorkloadBase.
+    Subclasses must implement ref_program() for correctness checking.
     Provides check() for comparing op output against reference.
     """
     __test__ = False

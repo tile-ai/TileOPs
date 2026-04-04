@@ -26,7 +26,8 @@ from workloads.ops.binary_arith import AddSameShapeTest as _AddSameShapeTestWork
 
 
 class AddSameShapeTest(_AddSameShapeTestWorkload, TestBase):
-    pass
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return (a.float() + b.float()).to(a.dtype)
 
 # ---------------------------------------------------------------------------
 # coalesce_broadcast_dims unit tests

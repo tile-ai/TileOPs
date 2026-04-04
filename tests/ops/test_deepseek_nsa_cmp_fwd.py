@@ -1,4 +1,6 @@
 
+from typing import Tuple
+
 import pytest
 import torch
 
@@ -8,7 +10,18 @@ from workloads.ops.deepseek_nsa_cmp_fwd import NsaCmpFwdTest as _NsaCmpFwdTestWo
 
 
 class NsaCmpFwdTest(_NsaCmpFwdTestWorkload, TestBase):
-    pass
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.LongTensor,
+        chunk_offsets: torch.LongTensor,
+        token_indices: torch.LongTensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        _ = chunk_offsets, token_indices
+        return self.parallel_nsa_compression_fwd_pytorch(q, k_cmp, v_cmp, self.bs, self.scale,
+                                                         offsets)
 
 
 class NsaCmpFwdFixture(FixtureBase):

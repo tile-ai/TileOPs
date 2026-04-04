@@ -48,7 +48,6 @@ def _deltanet_decode_torch_ref(
 
     return o, new_state
 
-
 class DeltaNetDecodeTest(WorkloadBase):
 
     def __init__(
@@ -73,14 +72,3 @@ class DeltaNetDecodeTest(WorkloadBase):
         beta = torch.rand(B, H, device="cuda", dtype=self.dtype) * 0.5
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=self.dtype) * 0.1
         return q, k, v, beta, state
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-        state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = _deltanet_decode_torch_ref(q, k, v, beta, state)
-        return o.to(self.dtype), new_state.to(self.dtype)

@@ -36,6 +36,18 @@ class NsaTopkTest(_NsaTopkTestWorkload, TestBase):
                       f"{mismatch_ratio * 100:.3f}%")
         print(f"All checks passed for {op.__class__.__name__}.")
 
+def ref_program(
+    self,
+    q: torch.Tensor,
+    k_cmp: torch.Tensor,
+    lse: torch.Tensor,
+    offsets: torch.LongTensor,
+    chunk_offsets: torch.LongTensor,
+    token_indices: torch.LongTensor,
+) -> torch.Tensor:
+    return self.nsa_topk_torch(q, k_cmp, lse, self.selected_block_num, self.bs, self.scale,
+                               offsets, token_indices, chunk_offsets)
+
 
 class NsaTopkFixture(FixtureBase):
     PARAMS = [

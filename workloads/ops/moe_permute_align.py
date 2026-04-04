@@ -66,7 +66,6 @@ def _ref_permute_align(
         torch.tensor([total_padded], dtype=torch.int32, device=device),
     )
 
-
 class MoePermuteAlignTest(WorkloadBase):
 
     def __init__(self, total_tokens: int, top_k: int, num_experts: int, block_size: int):
@@ -82,8 +81,3 @@ class MoePermuteAlignTest(WorkloadBase):
             dtype=torch.int32, device="cuda",
         )
         return (topk_ids,)
-
-    def ref_program(
-        self, topk_ids: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _ref_permute_align(topk_ids, self.block_size, self.num_experts)

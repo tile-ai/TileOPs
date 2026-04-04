@@ -1,12 +1,13 @@
 
 from tests.test_base import TestBase, allclose_compare
 from tileops.ops.ssd_decode import SsdDecodeOp
-from workloads.ops.ssd_decode import SsdDecodeFixture
+from workloads.ops.ssd_decode import SsdDecodeFixture, ssd_decode_ref
 from workloads.ops.ssd_decode import SsdDecodeTest as _SsdDecodeTestWorkload
 
 
 class SsdDecodeTest(_SsdDecodeTestWorkload, TestBase):
-    pass
+    def ref_program(self, A, dt, x, B_in, C_in, state):
+        return ssd_decode_ref(A, dt, x, B_in, C_in, state)
 
 
 @SsdDecodeFixture

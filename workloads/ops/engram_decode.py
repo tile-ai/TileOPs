@@ -9,7 +9,6 @@ def _ref_rmsnorm(x, w, eps=1e-6):
     rrms = (x_f ** 2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
     return (x_f * rrms * w.float()), rrms
 
-
 class EngramDecodeTest(WorkloadBase):
     def __init__(self, batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, eps=1e-6):
         self.batch = batch
@@ -35,14 +34,6 @@ class EngramDecodeTest(WorkloadBase):
         rms_w_v = torch.ones(self.d, dtype=self.dtype, device="cuda")
         conv_w = torch.randn(self.conv_kernel_size, self.d, dtype=self.dtype, device="cuda") * 0.02
         return e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w
-
-    def ref_program(self, e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
-        y_ref, state_ref = _ref_engram_decode_step(
-            e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
-            self.max_conv_len, self.dilation, self.eps,
-        )
-        return y_ref, state_ref
-
 
 def _ref_engram_decode_step(
     e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
@@ -6,6 +6,18 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import Fp8QuantOp
 from workloads.ops.fp8_quant import Fp8QuantTest
+
+
+class _Fp8QuantTestBaseline(Fp8QuantTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # input_tensor: (batch, seq_len_kv, kv_group, index_dim)
+        amax_value = torch.abs(input_tensor).amax(dim=-1, keepdim=True).clamp(min=1e-4)
+        scale_tensor = amax_value / 448.0
+        output_tensor = torch.clamp(input_tensor / scale_tensor, min=-448.0, max=448.0)
+        output_tensor = output_tensor.to(torch.float8_e4m3fn)
+        return scale_tensor.squeeze(dim=-1), output_tensor
 
 
 class Fp8QuantBenchmark(BenchmarkBase):
@@ -32,7 +44,7 @@ _FP8_QUANT_BENCH_PARAMS = [
                          _FP8_QUANT_BENCH_PARAMS)
 def test_fp8_quant_bench(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
                          in_dtype: torch.dtype, tune: bool) -> None:
-    test = Fp8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
+    test = _Fp8QuantTestBaseline(batch, seq_len_kv, kv_group, index_dim, in_dtype)
     bm = Fp8QuantBenchmark(test)
     inputs = test.gen_inputs()
 

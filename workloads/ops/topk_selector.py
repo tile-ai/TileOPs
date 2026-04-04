@@ -29,10 +29,3 @@ class TopkSelectorTest(WorkloadBase):
         ends = torch.ones(self.batch, self.seq_len, dtype=self.out_dtype,
                           device="cuda") * self.seq_len_kv
         return index_score, starts, ends
-
-    def ref_program(self, index_score: torch.Tensor, starts: torch.Tensor,
-                    ends: torch.Tensor) -> torch.Tensor:
-        # index_score: (batch, seq_len, seq_len_kv, kv_group); topk over seq_len_kv (dim=2)
-        indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]
-        # Match kernel/output layout: (batch, seq_len, kv_group, topk)
-        return indexes_ref.permute(0, 1, 3, 2)

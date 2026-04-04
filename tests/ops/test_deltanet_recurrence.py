@@ -1,4 +1,6 @@
 
+from typing import Tuple
+
 import pytest
 import torch
 
@@ -9,7 +11,16 @@ from workloads.ops.deltanet_recurrence import _deltanet_decode_torch_ref
 
 
 class DeltaNetDecodeTest(_DeltaNetDecodeTestWorkload, TestBase):
-    pass
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        o, new_state = _deltanet_decode_torch_ref(q, k, v, beta, state)
+        return o.to(self.dtype), new_state.to(self.dtype)
 
 
 # =============================================================================

@@ -11,7 +11,16 @@ from workloads.ops.mhc_post import MhcPostTest as _MhcPostTestWorkload
 
 
 class MhcPostTest(_MhcPostTestWorkload, TestBase):
-    pass
+    def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
+                    x_res: torch.Tensor) -> torch.Tensor:
+        batch = self.batch
+        n_expand = self.n_expand
+        c_x = self.c_x
+
+        x_out_ref = (h_post.unsqueeze(2).float() @ x_layer_out.unsqueeze(1).float()).reshape(
+            batch, n_expand * c_x) + x_res.float()
+        x_out_ref = x_out_ref.bfloat16()
+        return x_out_ref
 
 
 class MhcPostFixture(FixtureBase):

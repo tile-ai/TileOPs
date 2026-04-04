@@ -86,7 +86,6 @@ def _ref_moe_permute(
 
     return perm_h_pad, padded_offsets_t, padded_sizes_t, expert_first_token_offset, fwd_idx_t
 
-
 class MoePermuteTest(WorkloadBase):
 
     def __init__(self, total_tokens, top_k, num_experts, hidden_size, dtype):
@@ -106,6 +105,3 @@ class MoePermuteTest(WorkloadBase):
             dtype=torch.int32, device="cuda",
         )
         return hidden_states, topk_ids
-
-    def ref_program(self, hidden_states, topk_ids):
-        return _ref_moe_permute(hidden_states, topk_ids, self.num_experts)

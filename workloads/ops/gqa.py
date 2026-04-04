@@ -1,8 +1,6 @@
-from typing import Optional, Tuple
+from typing import Tuple
 
 import torch
-from torch.nn import functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tileops.ops import GroupQueryAttentionFwdOp
 from workloads.base import WorkloadBase
@@ -57,21 +55,6 @@ class GqaBwdTest(WorkloadBase):
 
         return q, k, v, o, grad_output, lse
 
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
-                    grad_output: torch.Tensor,
-                    lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
-        k_bhsd = k.transpose(1, 2)
-        v_bhsd = v.transpose(1, 2)
-        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            output_bhsd = F.scaled_dot_product_attention(
-                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True)
-        output = output_bhsd.transpose(1, 2).contiguous()
-
-        output.backward(grad_output)
-        return q.grad, k.grad, v.grad
-
-
 class GqaFwdTest(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len: int, dim: int,
@@ -95,14 +78,3 @@ class GqaFwdTest(WorkloadBase):
             self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda',
             dtype=self.dtype).contiguous()
         return q, k, v
-
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor,
-                    v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
-        k_bhsd = k.transpose(1, 2)
-        v_bhsd = v.transpose(1, 2)
-        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            output_bhsd = F.scaled_dot_product_attention(
-                q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True)
-        output = output_bhsd.transpose(1, 2).contiguous()
-        return output, None  # do not check lse

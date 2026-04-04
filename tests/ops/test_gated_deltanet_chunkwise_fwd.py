@@ -7,10 +7,32 @@ from tileops.ops import GatedDeltaNetFwdOp
 from workloads.ops.gated_deltanet_chunkwise_fwd import (
     GatedDeltaNetFwdTest as _GatedDeltaNetFwdTestWorkload,
 )
+from workloads.ops.gated_deltanet_chunkwise_fwd import (
+    _compute_w_u_torch_ref,
+    _kernel2_torch_ref,
+    _prepare_wy_repr_torch_ref,
+)
 
 
 class GatedDeltaNetFwdTest(_GatedDeltaNetFwdTestWorkload, TestBase):
-    pass
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> torch.Tensor:
+        B, H, S, DK = k.shape
+        _, _, _, DV = v.shape
+        # Chunk-local cumulative sum of g (paper requires cumulated gates)
+        BC = self.chunk_size
+        g_cum = g.float().reshape(B, H, S // BC, BC).cumsum(-1).reshape(B, H, S).to(g.dtype)
+        Aw, Au = _prepare_wy_repr_torch_ref(k, g_cum, beta, self.chunk_size)
+        w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, self.chunk_size)
+        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
+        _S, o = _kernel2_torch_ref(q, k, g_cum, w, u, S_0, self.chunk_size)
+        return o.to(self.dtype)
 
 
 # =============================================================================

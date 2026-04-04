@@ -27,7 +27,6 @@ def _compute_w_u_torch_ref(
     u = torch.einsum("bhcij,bhcjd->bhcid", Au_, v_beta_).reshape(B, H, S, DV)
     return w, u
 
-
 def _kernel2_torch_ref(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -67,7 +66,6 @@ def _kernel2_torch_ref(
         h = h + torch.einsum("bhnk,bhnv->bhkv", k_c, v_new_c)
     return h, o
 
-
 def _prepare_wy_repr_torch_ref(
     k: torch.Tensor,
     beta: torch.Tensor,
@@ -98,7 +96,6 @@ def _prepare_wy_repr_torch_ref(
 
     return Aw, Au
 
-
 class DeltaNetFwdTest(WorkloadBase):
 
     def __init__(
@@ -126,18 +123,3 @@ class DeltaNetFwdTest(WorkloadBase):
         v = torch.randn(B, H, S, DV, device="cuda", dtype=self.dtype) * 0.1
         beta = torch.rand(B, H, S, device="cuda", dtype=self.dtype) * 0.5
         return q, k, v, beta
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> torch.Tensor:
-        B, H, S, DK = k.shape
-        _, _, _, DV = v.shape
-        Aw, Au = _prepare_wy_repr_torch_ref(k, beta, self.chunk_size)
-        w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, self.chunk_size)
-        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-        _S, o = _kernel2_torch_ref(q, k, w, u, S_0, self.chunk_size)
-        return o.to(self.dtype)

@@ -34,7 +34,6 @@ def _ref_moe_unpermute(
 
     return output.to(dtype)
 
-
 class MoeUnpermuteTest(WorkloadBase):
 
     def __init__(self, total_tokens, top_k, hidden_size, dtype):
@@ -55,6 +54,3 @@ class MoeUnpermuteTest(WorkloadBase):
             self.total_tokens, self.top_k, dtype=torch.float32, device="cuda"
         )
         return mm2_pad, fwd_idx, topk_weights
-
-    def ref_program(self, mm2_pad, fwd_idx, topk_weights):
-        return _ref_moe_unpermute(mm2_pad, fwd_idx, topk_weights)

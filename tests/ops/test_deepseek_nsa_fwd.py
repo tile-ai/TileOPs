@@ -10,7 +10,29 @@ from workloads.ops.deepseek_nsa_fwd import NsaFwdTest as _NsaFwdTestWorkload
 
 
 class NsaFwdTest(_NsaFwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                    block_indices: torch.Tensor, block_counts: torch.Tensor,
+                    offsets: torch.Tensor, token_indices: torch.Tensor) -> torch.Tensor:
+        _ = token_indices
+        q = q.unsqueeze(0)
+        k = k.unsqueeze(0)
+        v = v.unsqueeze(0)
+        block_indices = block_indices.unsqueeze(0)
+        block_counts = block_counts.unsqueeze(0)
+        return self.naive_nsa(
+            q=q,
+            k=k,
+            v=v,
+            g_slc=self.g_slc,
+            g_swa=self.g_swa,
+            block_indices=block_indices,
+            block_counts=block_counts,
+            block_size=self.block_size,
+            window_size=0,
+            scale=self.scale,
+            cu_seqlens=offsets,
+            head_first=False,
+        )
 
 
 class NsaFwdFixture(FixtureBase):

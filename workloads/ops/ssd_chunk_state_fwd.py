@@ -25,7 +25,6 @@ class SsdChunkStateFwdFixture(FixtureBase):
         ]),
     ]
 
-
 class SsdChunkStateFwdTest(WorkloadBase):
     def __init__(
         self,
@@ -66,10 +65,6 @@ class SsdChunkStateFwdTest(WorkloadBase):
             seq_idx = torch.zeros(b, seq_len, dtype=torch.int32, device="cuda")
             seq_idx[:, seq_len // 2:] = 1
         return x, Bmat, dt, dA_cumsum, seq_idx
-
-    def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
-        return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.n_groups, seq_idx=seq_idx)
-
 
 def ssd_chunk_state_fwd_ref(
     x: torch.Tensor,          # (b, seq_len, h, p)   flat sequence

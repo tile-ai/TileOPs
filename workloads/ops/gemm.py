@@ -22,10 +22,3 @@ class GemmTest(WorkloadBase):
         shape_b = (self.n, self.k) if self.trans_b else (self.k, self.n)
         b = torch.randn(*shape_b, device='cuda', dtype=self.dtype)
         return a, b
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if self.trans_a:
-            a = a.T
-        if self.trans_b:
-            b = b.T
-        return torch.matmul(a, b)

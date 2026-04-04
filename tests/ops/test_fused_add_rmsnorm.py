@@ -7,7 +7,17 @@ from workloads.ops.fused_add_rmsnorm import FusedAddRmsNormTest as _FusedAddRmsN
 
 
 class FusedAddRmsNormTest(_FusedAddRmsNormTestWorkload, TestBase):
-    pass
+    def ref_program(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor,
+        weight: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        add_result = (x.float() + residual.float()).to(x.dtype)
+        add_f32 = add_result.float()
+        rms = torch.sqrt(add_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        y = ((add_f32 / rms) * weight.float()).to(x.dtype)
+        return y, add_result
 
 
 class FusedAddRmsNormFixture(FixtureBase):

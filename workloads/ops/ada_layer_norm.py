@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 from workloads.base import WorkloadBase
 
@@ -17,15 +16,3 @@ class AdaLayerNormTest(WorkloadBase):
         scale = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
         shift = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
         return x, scale, shift
-
-    def ref_program(self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor) -> torch.Tensor:
-        # AdaLN: y = scale * LayerNorm(x) + shift
-        normed = F.layer_norm(
-            x.float(),
-            (self.n,),
-            weight=None,
-            bias=None,
-            eps=self.eps,
-        )
-        y = scale.float() * normed + shift.float()
-        return y.to(x.dtype)

@@ -10,6 +10,13 @@ from workloads.base import FixtureBase
 from workloads.ops.fft import FFTTest
 
 
+class _FFTTestBaseline(FFTTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.fft.fft(x, dim=-1)
+
+
 class FFTBenchmarkFixture(FixtureBase):
     PARAMS = [
         ("n, dtype, tune, batch_shape", [
@@ -44,7 +51,7 @@ class FFTBenchmark(BenchmarkBase):
 
 @FFTBenchmarkFixture
 def test_fft_bench(n: int, dtype: torch.dtype, tune: bool, batch_shape: tuple) -> None:
-    test = FFTTest(n, dtype, batch_shape=batch_shape)
+    test = _FFTTestBaseline(n, dtype, batch_shape=batch_shape)
     bm = FFTBenchmark(test)
     inputs = test.gen_inputs()
 

@@ -2,12 +2,13 @@ import torch
 
 from tests.test_base import TestBase
 from tileops.ops.ssd_chunk_state_fwd import SsdChunkStateFwdOp
-from workloads.ops.ssd_chunk_state_fwd import SsdChunkStateFwdFixture
+from workloads.ops.ssd_chunk_state_fwd import SsdChunkStateFwdFixture, ssd_chunk_state_fwd_ref
 from workloads.ops.ssd_chunk_state_fwd import SsdChunkStateFwdTest as _SsdChunkStateFwdTestWorkload
 
 
 class SsdChunkStateFwdTest(_SsdChunkStateFwdTestWorkload, TestBase):
-    pass
+    def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
+        return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.n_groups, seq_idx=seq_idx)
 
 
 @SsdChunkStateFwdFixture

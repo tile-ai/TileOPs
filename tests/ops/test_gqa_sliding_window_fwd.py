@@ -11,7 +11,42 @@ from workloads.ops.gqa_sliding_window_fwd import (
 
 
 class GqaSlidingWindowFwdTest(_GqaSlidingWindowFwdTestWorkload, TestBase):
-    pass
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> torch.Tensor:
+        """Pure-PyTorch reference: expand KV heads, compute masked softmax attention."""
+        groups = self.heads // self.heads_kv
+        scale = self.dim ** -0.5
+
+        # Expand KV to match Q heads: [B, S, H, D]
+        k_exp = k.repeat_interleave(groups, dim=2).float()
+        v_exp = v.repeat_interleave(groups, dim=2).float()
+
+        # [B, H, S, S]
+        scores = torch.matmul(
+            q.float().transpose(1, 2),
+            k_exp.transpose(1, 2).transpose(-2, -1),
+        ) * scale
+
+        # Build attention mask
+        S = self.seq
+        q_pos = torch.arange(S, device=q.device).unsqueeze(1)  # [S, 1]
+        k_pos = torch.arange(S, device=q.device).unsqueeze(0)  # [1, S]
+        mask = torch.zeros(S, S, dtype=torch.bool, device=q.device)
+        if self.is_causal:
+            mask = mask | (q_pos < k_pos)
+        if self.wl >= 0:
+            mask = mask | (k_pos < q_pos - self.wl)
+        if self.wr >= 0:
+            mask = mask | (k_pos > q_pos + self.wr)
+
+        scores = scores.masked_fill(mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+        probs = torch.softmax(scores, dim=-1)
+        output = torch.matmul(probs, v_exp.transpose(1, 2))  # [B, H, S, D]
+        return output.transpose(1, 2).to(q.dtype)            # [B, S, H, D]
 
 
 class GqaSlidingWindowFwdFixture(FixtureBase):

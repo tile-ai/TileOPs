@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
@@ -6,6 +6,23 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import NSACmpFwdVarlenOp
 from workloads.ops.deepseek_nsa_cmp_fwd import NsaCmpFwdTest
+
+
+class _NsaCmpFwdTestBaseline(NsaCmpFwdTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.LongTensor,
+        chunk_offsets: torch.LongTensor,
+        token_indices: torch.LongTensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        _ = chunk_offsets, token_indices
+        return self.parallel_nsa_compression_fwd_pytorch(q, k_cmp, v_cmp, self.bs, self.scale,
+                                                         offsets)
 
 
 class NsaCmpFwdBenchmark(BenchmarkBase):
@@ -41,7 +58,7 @@ _NSA_CMP_FWD_BENCH_PARAMS = [
 def test_nsa_cmp_fwd_bench(seq_num: int, c_seq_len: int, heads: int, dim_k: int, dim_v: int,
                            group: int, scale: float, bc: int, bs: int, bk: int, bv: int,
                            dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool) -> None:
-    test = NsaCmpFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, bk, bv,
+    test = _NsaCmpFwdTestBaseline(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, bk, bv,
                          dtype, accum_dtype)
     bm = NsaCmpFwdBenchmark(test)
     inputs = test.gen_inputs()

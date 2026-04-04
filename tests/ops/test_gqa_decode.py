@@ -1,6 +1,8 @@
 
 import pytest
 import torch
+import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
@@ -8,7 +10,14 @@ from workloads.ops.gqa_decode import GqaDecodeTest as _GqaDecodeTestWorkload
 
 
 class GqaDecodeTest(_GqaDecodeTestWorkload, TestBase):
-    pass
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        q_bhsd = q.unsqueeze(1).transpose(1, 2)  # [B, H, 1, D]
+        k_bhsd = k.transpose(1, 2)  # [B, H, S_kv, D]
+        v_bhsd = v.transpose(1, 2)  # [B, H, S_kv, D]
+        with sdpa_kernel(backends=[SDPBackend.MATH]):
+            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, enable_gqa=True)
+        output = output_bhsd.transpose(1, 2).squeeze(1).contiguous()
+        return output
 
 
 class GqaDecodeFixture(FixtureBase):
