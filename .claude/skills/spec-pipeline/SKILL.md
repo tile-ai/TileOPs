@@ -24,7 +24,8 @@ Family name from `ops_manifest.yaml` (e.g., `reduction`, `norm`, `attention`).
 ```mermaid
 stateDiagram-v2
     [*] --> AUDIT
-    AUDIT --> ROUTE: gap report generated
+    AUDIT --> GROUP_BY_BASE: gap report generated
+    GROUP_BY_BASE --> ROUTE: ops grouped by base class
     ROUTE --> TEST: semantic_gap op
     ROUTE --> FLIP_STATUS: ready op
     ROUTE --> REPORT_BLOCKED: blocked op
@@ -35,11 +36,32 @@ stateDiagram-v2
     BENCH --> REPORT_BLOCKED: benchmark blocked
     REVALIDATE --> FLIP_STATUS: --check-op + tests pass
     REVALIDATE --> REPORT_BLOCKED: regression detected
-    FLIP_STATUS --> ROUTE: status flipped, next op
-    REPORT_BLOCKED --> ROUTE: next op
+    FLIP_STATUS --> CLEANUP_GATE: check group completion
+    REPORT_BLOCKED --> CLEANUP_GATE: check group completion
+    CLEANUP_GATE --> ROUTE: group incomplete, next op
+    CLEANUP_GATE --> CLEANUP: all siblings promoted or blocked
+    CLEANUP --> ROUTE: legacy path removed, next group
     ROUTE --> CREATE_PR: all ops processed
     CREATE_PR --> [*]
 ```
+
+## Orchestrator Discipline
+
+### Clean worktree between sub-agents
+
+After each sub-agent returns and before dispatching the next, verify:
+
+```bash
+test -z "$(git status --porcelain)"
+```
+
+This catches tracked changes, staged changes, AND untracked files. If not clean: the sub-agent's commit failed (pre-commit hook, staging issue) or left new files uncommitted. Orchestrator commits on behalf, then proceeds. Every agent must start with a clean worktree.
+
+### Dual-path is acceptable during migration
+
+When spec-implement rewrites a base class, it may create a dual-path `__init__` (legacy + spec) to keep unmigrated sibling tests passing. This is correct temporary debt — the cleanup gate removes it.
+
+**Dual-path definition**: a class `__init__` with runtime branching to support two incompatible construction interfaces, and `forward` dispatching to two execution paths. Not polymorphism — same semantics, temporary interface coexistence.
 
 ## Steps
 
@@ -50,6 +72,14 @@ stateDiagram-v2
 ```
 
 Gap report written to `.foundry/migrations/<family>.json`.
+
+### 1b. GROUP_BY_BASE
+
+Group ops by `base_class` from the gap report. Each group is a set of sibling ops sharing a base class. Process groups in order; within each group, process ops in order (first op likely fixes the base class, subsequent ops validate).
+
+`base_class` is a required field in the gap report. spec-audit must populate it for every op entry. If an op inherits `Op` directly (no intermediate base class), its `base_class` is `"Op"` — these ops form a single group but are independent (no shared base class to rewrite, so cleanup gate is a no-op for this group).
+
+Track group completion: a group is complete when all its ops are `promoted` or `blocked`.
 
 ### 2. ROUTE
 
@@ -107,6 +137,29 @@ Orchestrator (not a sub-skill) changes manifest:
 - `status: spec-only` → `status: implemented`
 - Commit the manifest change
 - Update gap report: add `promoted_at` timestamp (keep `classification` unchanged)
+
+### 7b. CLEANUP_GATE
+
+After each terminal per-op outcome (FLIP_STATUS or REPORT_BLOCKED), check group completion:
+
+- All siblings in the current base-class group are `promoted` or `blocked`? → trigger CLEANUP
+- Otherwise → continue to next op (ROUTE)
+
+### 7c. CLEANUP
+
+Remove dual-path legacy code from the base class. This step fires once per base-class group, after all siblings are done.
+
+Actions:
+
+1. Remove legacy `__init__` branch (`if M is not None and N is not None` path)
+1. Remove `_legacy` flag and `_forward_legacy` method
+1. Remove `M`, `N` keyword-only parameters from `__init__`
+1. Run tests and `--check-op` for **promoted ops only** (blocked ops' tests may legitimately fail)
+1. Commit cleanup changes
+
+If any promoted op's test fails after cleanup → REPORT_BLOCKED (cleanup regression). Do not proceed with broken state.
+
+**Timeout policy for blocked ops**: if a group has blocked ops that prevent cleanup gate from firing for an extended period, the orchestrator may force cleanup — remove legacy path and mark blocked ops' tests as `xfail`. This is a human decision, not automatic.
 
 ### 8. CREATE_PR
 

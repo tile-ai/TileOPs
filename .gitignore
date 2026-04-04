@@ -64,6 +64,7 @@ secrets.yml
 docs/plans/
 .humanize*
 .foundry/runs/
+.foundry/migrations/
 .foundry/config.local.json
 
 CLAUDE.local.md
