@@ -528,6 +528,271 @@ class TestBench:
 
 
 # ---------------------------------------------------------------------------
+# --check-op: force all levels on a specific op, ignoring status
+# ---------------------------------------------------------------------------
+
+class TestCheckOp:
+    """--check-op forces all validation levels on a named op, ignoring spec-only."""
+
+    def test_spec_only_op_with_check_op_runs_all_levels(self, validator, tmp_path):
+        """When check_op matches a spec-only op, L1-L4 checks run (not skipped)."""
+        # Create a minimal bench file that will fail L4 (no load_workloads)
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text("import pytest\n")
+
+        entry = _make_entry(status="spec-only")
+        entry["source"]["bench"] = str(bench_file)
+        entry["source"]["bench_manifest_driven"] = True
+
+        # Build a temp manifest and call validate_manifest directly.
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        import yaml
+        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+
+        # Without check_op: spec-only op skips L1-L4
+        errors_no_flag, warnings_no_flag = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+        )
+        # Should have no bench errors (spec-only skips L4)
+        bench_errors_no_flag = [e for e in errors_no_flag if "[bench]" in e]
+        assert bench_errors_no_flag == [], (
+            f"Spec-only op should skip bench check without --check-op: {bench_errors_no_flag}"
+        )
+
+        # With check_op="my_op": forces all levels despite spec-only
+        errors_flag, warnings_flag = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            check_op="my_op",
+        )
+        # Should now have bench errors (L4 ran)
+        bench_errors_flag = [e for e in errors_flag if "[bench]" in e]
+        assert len(bench_errors_flag) > 0, (
+            "With --check-op, spec-only op should run bench check"
+        )
+
+    def test_spec_only_op_without_check_op_still_skipped(self, validator, tmp_path):
+        """Default behavior unchanged: spec-only ops skip L1-L4."""
+        entry = _make_entry(status="spec-only")
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        import yaml
+        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+
+        errors, warnings = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+        )
+        # No signature/shape/dtype/bench errors for spec-only
+        non_schema = [e for e in errors if "[schema]" not in e]
+        assert non_schema == [], (
+            f"Spec-only op should only have schema errors (if any), got: {non_schema}"
+        )
+
+    def test_check_op_nonexistent_op_reports_error(self, validator, tmp_path):
+        """--check-op with a name not in manifest reports an error."""
+        entry = _make_entry()
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        import yaml
+        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+
+        errors, warnings = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            check_op="nonexistent_op",
+        )
+        assert any("nonexistent_op" in e and "not found" in e for e in errors), (
+            f"Expected error about 'nonexistent_op' not found in manifest, got: {errors}"
+        )
+
+    def test_check_op_scopes_to_single_op(self, validator, tmp_path):
+        """--check-op validates only the named op; unrelated ops are not processed."""
+        import yaml
+
+        # target_op: spec-only, has a real bench file -> L4 will run and find errors
+        bench_file = tmp_path / "bench_target.py"
+        bench_file.write_text("import pytest\n")
+        target_entry = _make_entry(status="spec-only")
+        target_entry["source"]["bench"] = str(bench_file)
+        target_entry["source"]["bench_manifest_driven"] = True
+
+        # other_op: implemented (not spec-only), points to a nonexistent kernel
+        # If validated, L1 would fail trying to import a missing module.
+        other_entry = _make_entry(source_kernel="nonexistent_impl.py")
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(
+            {"ops": {"target_op": target_entry, "other_op": other_entry}},
+        ))
+
+        # With check_op="target_op": only target_op is validated.
+        # other_op must be completely skipped -- no import errors from its
+        # missing kernel.
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            check_op="target_op",
+        )
+        other_errors = [e for e in errors if "other_op" in e]
+        assert other_errors == [], (
+            f"--check-op should not validate unrelated ops, but got: {other_errors}"
+        )
+        # target_op should have been validated (bench errors expected)
+        target_errors = [e for e in errors if "target_op" in e]
+        assert len(target_errors) > 0, (
+            "target_op should have validation errors from forced L4 check"
+        )
+
+    def test_check_op_ignores_unrelated_variant_of_errors(self, validator, tmp_path):
+        """--check-op must not report variant_of errors from unrelated ops.
+
+        Regression: check_variant_of_consistency ran across the full manifest
+        before the check_op filter, causing --check-op to fail on unrelated
+        ops with invalid variant_of references.
+        """
+        import yaml
+
+        target_entry = _make_entry()
+        # other_op has an invalid variant_of pointing to a nonexistent primary
+        other_entry = _make_entry()
+        other_entry["variant_of"] = "nonexistent_primary"
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(
+            {"ops": {"target_op": target_entry, "other_op": other_entry}},
+        ))
+
+        # With check_op="target_op": the invalid variant_of on other_op
+        # must not appear in errors.
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            check_op="target_op",
+        )
+        variant_errors = [e for e in errors if "variant_of" in e]
+        assert variant_errors == [], (
+            f"--check-op should not report variant_of errors from unrelated ops: "
+            f"{variant_errors}"
+        )
+
+        # Without check_op: the variant_of error IS reported.
+        errors_all, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            check_op=None,
+        )
+        variant_errors_all = [e for e in errors_all if "variant_of" in e]
+        assert len(variant_errors_all) > 0, (
+            "Without --check-op, invalid variant_of should be reported"
+        )
+
+    def test_check_op_validates_variant_family(self, validator, tmp_path):
+        """--check-op on a primary also validates its immediate variants.
+
+        Regression: an agent could modify a variant to break R17/R18 rules,
+        and --check-op <primary> would still pass because variants were
+        excluded from the validation scope.
+        """
+        import yaml
+
+        primary = _make_entry(source_kernel="shared_kernel.py")
+        # Variant shares source with primary (valid)
+        valid_variant = _make_entry(source_kernel="shared_kernel.py")
+        valid_variant["variant_of"] = "primary_op"
+
+        # Broken variant: different source.kernel violates R18
+        broken_variant = _make_entry(source_kernel="different_kernel.py")
+        broken_variant["variant_of"] = "primary_op"
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump({"ops": {
+            "primary_op": primary,
+            "good_variant": valid_variant,
+            "bad_variant": broken_variant,
+        }}))
+
+        # check_op="primary_op" must catch the R18 violation on bad_variant
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            check_op="primary_op",
+        )
+        r18_errors = [e for e in errors if "bad_variant" in e and "R18" in e]
+        assert len(r18_errors) > 0, (
+            f"--check-op on primary must catch R18 violation in variant, "
+            f"got errors: {errors}"
+        )
+
+        # good_variant should NOT have R18 errors
+        good_r18 = [e for e in errors if "good_variant" in e and "R18" in e]
+        assert good_r18 == [], (
+            f"good_variant should pass R18, got: {good_r18}"
+        )
+
+    def test_check_op_variant_family_runs_schema_on_variants(self, validator, tmp_path):
+        """--check-op on primary runs per-op schema checks on variants too."""
+        import yaml
+
+        primary = _make_entry(source_kernel="shared.py")
+        # Variant with broken source (missing required fields)
+        broken_variant = {
+            "family": "test",
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+            "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
+            "roofline": {"flops": "2 * M", "bytes": "M * 2"},
+            "source": {
+                "kernel": "shared.py",
+                # missing "op", "test", "bench" fields
+            },
+            "variant_of": "primary_op",
+        }
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump({"ops": {
+            "primary_op": primary,
+            "broken_var": broken_variant,
+        }}))
+
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            check_op="primary_op",
+        )
+        schema_errors = [e for e in errors if "broken_var" in e and "source" in e]
+        assert len(schema_errors) > 0, (
+            f"--check-op on primary must run schema checks on variants, "
+            f"got errors: {errors}"
+        )
+
+    def test_check_op_cli_parsing(self, validator):
+        """_parse_check_op extracts the op name from argv."""
+        assert validator._parse_check_op(["--check-op", "softmax_fwd"]) == "softmax_fwd"
+        assert validator._parse_check_op(["--check-op=softmax_fwd"]) == "softmax_fwd"
+        assert validator._parse_check_op(["--verbose"]) is None
+        assert validator._parse_check_op([]) is None
+
+    def test_check_op_rejects_missing_value(self, validator):
+        """_parse_check_op exits with status 2 when no op name is given."""
+        with pytest.raises(SystemExit, match="2"):
+            validator._parse_check_op(["--check-op"])
+
+    def test_check_op_rejects_flag_as_value(self, validator):
+        """_parse_check_op exits with status 2 when value looks like a flag."""
+        with pytest.raises(SystemExit, match="2"):
+            validator._parse_check_op(["--check-op", "--verbose"])
+
+    def test_check_op_rejects_empty_equals_value(self, validator):
+        """_parse_check_op exits with status 2 for --check-op= (empty value)."""
+        with pytest.raises(SystemExit, match="2"):
+            validator._parse_check_op(["--check-op="])
+
+
+# ---------------------------------------------------------------------------
 # Integration: validate_manifest.py passes on the real codebase
 # ---------------------------------------------------------------------------
 
