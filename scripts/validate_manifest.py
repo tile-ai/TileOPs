@@ -11,7 +11,7 @@ Checks:
 Spec-only ops get schema only. Implemented ops get all checks.
 
 Usage:
-    python scripts/validate_manifest.py [--verbose] [--levels schema,shape,dtype,bench]
+    python scripts/validate_manifest.py [--verbose] [--levels schema,shape,dtype,bench] [--check-op NAME]
 
 Exit code 0 = all checks pass; 1 = failures found.
 
@@ -241,17 +241,24 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
 # variant_of: cross-entry consistency (R16-R18)
 # ---------------------------------------------------------------------------
 
-def check_variant_of_consistency(ops: dict) -> list[str]:
+def check_variant_of_consistency(
+    ops: dict, *, scope: set[str] | None = None
+) -> list[str]:
     """Validate variant_of references across all entries.
 
     Rules (R16-R18):
     - variant_of must reference an existing op in the manifest.
     - The primary (referenced) entry must NOT itself have variant_of (no chaining).
     - Variant and primary must share source.kernel and source.op.
+
+    When *scope* is given, only ops whose names are in *scope* are checked;
+    lookups into *ops* still use the full dict so reference resolution works.
     """
     errors: list[str] = []
 
     for op_name, entry in ops.items():
+        if scope is not None and op_name not in scope:
+            continue
         if not isinstance(entry, dict):
             continue  # malformed entry — check_l0 will report it
         primary_name = entry.get("variant_of")
@@ -760,6 +767,7 @@ def validate_manifest(
     repo_root: Path | None = None,
     verbose: bool = False,
     levels: frozenset[str] | None = None,
+    check_op: str | None = None,
 ) -> tuple[list[str], list[str]]:
     """Run applicable validation levels on the manifest.
 
@@ -769,6 +777,9 @@ def validate_manifest(
         verbose: If True, print progress.
         levels: Set of check names to run (e.g. {"schema", "shape", "dtype", "bench"}).
                 When None, all checks are enabled.
+        check_op: When set, force all validation levels (L0-L4) on this op and
+                  its variants, ignoring the ``status`` field. Only this variant
+                  family is validated; all other ops are skipped.
 
     Returns:
         A tuple of (errors, warnings). Errors are hard failures; warnings
@@ -785,14 +796,38 @@ def validate_manifest(
         data = yaml.safe_load(f)
 
     ops = data.get("ops", {})
+
+    # Fail fast: --check-op with a name not in the manifest
+    if check_op is not None and check_op not in ops:
+        return [f"--check-op: op '{check_op}' not found in manifest"], []
+
+    # When --check-op is set, compute the "variant family" scope: the named
+    # op plus all ops where variant_of == check_op.  This ensures that
+    # modifications to a variant are caught when validating the primary.
+    variant_family: set[str] | None = None
+    if check_op is not None:
+        variant_family = {check_op} | {
+            name for name, ent in ops.items()
+            if isinstance(ent, dict) and ent.get("variant_of") == check_op
+        }
+
     all_errors: list[str] = []
     all_warnings: list[str] = []
 
-    # Cross-entry checks (must run before per-entry checks)
+    # Cross-entry checks (must run before per-entry checks).
+    # When --check-op is set, scope cross-entry checks to the variant family
+    # so that unrelated ops with invalid variant_of references don't cause
+    # failures for the selected op.
     if "schema" in levels:
-        all_errors.extend(check_variant_of_consistency(ops))
+        all_errors.extend(
+            check_variant_of_consistency(ops, scope=variant_family)
+        )
 
     for op_name, entry in ops.items():
+        # --check-op scopes validation to the variant family; skip all others.
+        if variant_family is not None and op_name not in variant_family:
+            continue
+
         if verbose:
             print(f"  Checking {op_name}...")
 
@@ -804,7 +839,7 @@ def validate_manifest(
                 continue
 
         spec_only = _is_spec_only(entry)
-        if spec_only:
+        if spec_only and check_op is None:
             if verbose:
                 print(f"    {op_name}: spec-only, skipping signature/shape/dtype/bench")
             continue
@@ -857,17 +892,42 @@ def _parse_levels(argv: list[str]) -> frozenset[str] | None:
     return None
 
 
+def _parse_check_op(argv: list[str]) -> str | None:
+    """Parse ``--check-op <name>`` from argv.
+
+    Returns the op name, ``None`` when the flag is absent, or calls
+    ``sys.exit(2)`` when the value is missing or looks like another flag.
+    """
+    for i, arg in enumerate(argv):
+        if arg == "--check-op":
+            if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
+                print("ERROR: --check-op requires an op name argument")
+                sys.exit(2)
+            return argv[i + 1]
+        if arg.startswith("--check-op="):
+            value = arg.split("=", 1)[1]
+            if not value or value.startswith("-"):
+                print("ERROR: --check-op requires an op name argument")
+                sys.exit(2)
+            return value
+    return None
+
+
 def main() -> int:
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     levels = _parse_levels(sys.argv)
+    check_op = _parse_check_op(sys.argv)
 
     level_label = ",".join(sorted(levels)) if levels else "all"
+    check_op_label = f", check-op: {check_op}" if check_op else ""
     print(
         f"Validating {MANIFEST_PATH.relative_to(REPO_ROOT)} "
-        f"(levels: {level_label})..."
+        f"(levels: {level_label}{check_op_label})..."
     )
 
-    errors, warnings = validate_manifest(verbose=verbose, levels=levels)
+    errors, warnings = validate_manifest(
+        verbose=verbose, levels=levels, check_op=check_op,
+    )
 
     if warnings:
         print(f"\n{len(warnings)} warning(s):")
