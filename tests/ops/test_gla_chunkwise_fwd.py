@@ -2,9 +2,9 @@ import pytest
 import torch
 
 from tests.ops.gla_test_utils import cosine_sim, get_tolerances
-from tests.ops.test_gla_chunkwise_bwd import _gla_fwd_torch_ref
 from tests.test_base import FixtureBase
 from tileops.ops import GLAFwdOp
+from workloads.ops.gla_chunkwise_bwd import _gla_fwd_torch_ref
 
 try:
     from fla.ops.gla import chunk_gla

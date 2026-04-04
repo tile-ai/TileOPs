@@ -1,7 +1,9 @@
 import torch
 
+from workloads.base import WorkloadBase
 
-class FusedTopKTest:
+
+class FusedTopKTest(WorkloadBase):
     def __init__(self, num_tokens, num_experts, top_k, scoring_func, renormalize, dtype):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -13,6 +15,9 @@ class FusedTopKTest:
     def gen_inputs(self):
         torch.manual_seed(42)
         return torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda")
+
+    def ref_program(self, gating_output):
+        return _ref_fused_topk(gating_output, self.top_k, self.scoring_func, self.renormalize)
 
 
 def _ref_fused_topk(
