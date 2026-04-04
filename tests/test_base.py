@@ -1,7 +1,8 @@
 import logging
 import threading
+from abc import abstractmethod
 from functools import partial
-from typing import Tuple
+from typing import Any, Tuple
 
 import torch
 
@@ -58,6 +59,16 @@ class TestBase(WorkloadBase):
     Provides check() for comparing op output against reference.
     """
     __test__ = False
+
+    @abstractmethod
+    def ref_program(self, *inputs: Any) -> Any:
+        """Reference implementation for correctness checking.
+
+        Must be overridden by every concrete test subclass.
+        Should return the same outputs as the op under test, using a
+        simpler/trusted implementation (e.g. PyTorch built-ins).
+        """
+        raise NotImplementedError
 
     def check(self,
               op,
