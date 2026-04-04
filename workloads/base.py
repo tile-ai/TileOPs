@@ -9,8 +9,6 @@ Correctness-only logic (ref_program, check, tolerances) stays in tests/.
 from abc import ABC, abstractmethod
 from typing import Any
 
-import pytest
-
 
 class WorkloadBase(ABC):
     """Abstract base for workload definitions (input generation + parameters).
@@ -39,6 +37,8 @@ class FixtureMeta(type):
     """
 
     def __call__(cls, fn):
+        import pytest  # lazy import: pytest is only needed when applying parametrize decorators
+
         for names, values in reversed(cls.PARAMS):
             fn = pytest.mark.parametrize(names, values)(fn)
         return fn
