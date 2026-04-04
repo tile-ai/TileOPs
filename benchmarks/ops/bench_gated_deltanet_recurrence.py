@@ -4,9 +4,9 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gated_deltanet_recurrence import GatedDeltaNetDecodeTest
-from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetDecodeOp
+from workloads.base import FixtureBase
+from workloads.ops.gated_deltanet_recurrence import GatedDeltaNetDecodeTest
 
 try:
     from fla.ops.gated_delta_rule import fused_recurrent_gated_delta_rule
@@ -17,7 +17,7 @@ except ImportError:
 class GatedDeltaNetDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         # Two matvecs: S@k and S@q -> 2 * B*H*DK*DV each (multiply + add)
         # dot product q.k -> B*H*DK
@@ -25,7 +25,7 @@ class GatedDeltaNetDecodeBenchmark(BenchmarkBase):
         return 2.0 * B * H * (2 * DK * DV + DK * DV + DK)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         # Read: q(DK) + k(DK) + v(DV) + g(1) + beta(1) + state(DK*DV)

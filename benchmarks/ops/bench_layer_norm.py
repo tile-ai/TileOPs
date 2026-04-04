@@ -5,9 +5,9 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_layer_norm import LayerNormTest
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.layer_norm import LayerNormOp
+from workloads.ops.layer_norm import LayerNormTest
 
 _OP_NAME = "layernorm_fwd"
 
@@ -18,7 +18,7 @@ class LayerNormBenchmark(BenchmarkBase):
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.test
+            t = self.workload
             elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
             self._roofline_cache = eval_roofline(
                 _OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)

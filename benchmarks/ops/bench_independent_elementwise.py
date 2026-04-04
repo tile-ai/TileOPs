@@ -12,7 +12,6 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
 from tileops.ops.elementwise import (
     AlibiOp,
     ClampOp,
@@ -26,6 +25,7 @@ from tileops.ops.elementwise import (
     SoftplusOp,
     WhereOp,
 )
+from workloads.base import FixtureBase
 
 # DNN-realistic shapes: (tokens, hidden_dim)
 # small=4096, medium=10240, large=20480 (pow2 + non-pow2 mix)
@@ -49,10 +49,10 @@ class UnaryBenchCase:
 
 class UnaryBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        return self.test.n_total * self.test.dtype.itemsize * 2
+        return self.workload.n_total * self.workload.dtype.itemsize * 2
 
 
 # ---------------------------------------------------------------------------
@@ -121,10 +121,10 @@ class PreluBenchCase:
 
 class PreluBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.n_total * t.dtype.itemsize * 2 + t.num_channels * t.dtype.itemsize
 
 
@@ -177,10 +177,10 @@ class WhereBenchCase:
 
 class WhereBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.n_total * (t.dtype.itemsize * 2 + 1) + t.n_total * t.dtype.itemsize
 
 
@@ -230,10 +230,10 @@ class MaskedFillBenchCase:
 
 class MaskedFillBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.n_total * (t.dtype.itemsize + 1) + t.n_total * t.dtype.itemsize
 
 
@@ -276,10 +276,10 @@ class GenerativeBenchCase:
 
 class GenerativeBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        return self.test.n_total * self.test.dtype.itemsize
+        return self.workload.n_total * self.workload.dtype.itemsize
 
 
 def _generative_params():
@@ -366,11 +366,11 @@ class Fp8UnaryBenchCase:
 
 class Fp8UnaryBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         # fp8 in (1B) + fp8 out (1B) per element
-        return self.test.n_total * 2
+        return self.workload.n_total * 2
 
 
 _FP8_UNARY_OPS = {
@@ -444,11 +444,11 @@ class Fp8WhereBenchCase:
 
 class Fp8WhereBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         # cond (1B) + fp8 x (1B) + fp8 y (1B) + fp8 out (1B)
-        return self.test.n_total * 4
+        return self.workload.n_total * 4
 
 
 class Fp8MaskedFillBenchCase:
@@ -467,11 +467,11 @@ class Fp8MaskedFillBenchCase:
 
 class Fp8MaskedFillBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         # fp8 x (1B) + mask (1B) + fp8 out (1B)
-        return self.test.n_total * 3
+        return self.workload.n_total * 3
 
 
 def _fp8_selection_params():

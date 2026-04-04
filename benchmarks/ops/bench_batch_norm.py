@@ -13,9 +13,9 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_batch_norm import BatchNormBwdTest, BatchNormFwdTest
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
+from workloads.ops.batch_norm import BatchNormBwdTest, BatchNormFwdTest
 
 _FWD_OP_NAME = "batchnorm_fwd"
 _BWD_OP_NAME = "batchnorm_bwd"
@@ -37,7 +37,7 @@ class BatchNormFwdBenchmark(BenchmarkBase):
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
             L = self.N * math.prod(self.spatial) if self.spatial else self.N
-            elem_bytes = torch.tensor([], dtype=self.test.dtype).element_size()
+            elem_bytes = torch.tensor([], dtype=self.workload.dtype).element_size()
             self._roofline_cache = eval_roofline(
                 _FWD_OP_NAME, C=self.C, L=L, elem_bytes=elem_bytes)
         return self._roofline_cache
@@ -62,7 +62,7 @@ class BatchNormBwdBenchmark(BenchmarkBase):
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
             L = self.N * math.prod(self.spatial) if self.spatial else self.N
-            elem_bytes = torch.tensor([], dtype=self.test.dtype).element_size()
+            elem_bytes = torch.tensor([], dtype=self.workload.dtype).element_size()
             self._roofline_cache = eval_roofline(
                 _BWD_OP_NAME, C=self.C, L=L, elem_bytes=elem_bytes)
         return self._roofline_cache

@@ -5,9 +5,9 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fft import FFTTest
-from tests.test_base import FixtureBase
 from tileops.ops import FFTC2COp
+from workloads.base import FixtureBase
+from workloads.ops.fft import FFTTest
 
 
 class FFTBenchmarkFixture(FixtureBase):
@@ -31,14 +31,14 @@ class FFTBenchmarkFixture(FixtureBase):
 class FFTBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        n = self.test.n
-        batch = math.prod(self.test.batch_shape) if self.test.batch_shape else 1
+        n = self.workload.n
+        batch = math.prod(self.workload.batch_shape) if self.workload.batch_shape else 1
         return batch * 5.0 * n * math.log2(n)
 
     def calculate_memory(self) -> Optional[float]:
-        n = self.test.n
-        dtype = self.test.dtype
-        batch = math.prod(self.test.batch_shape) if self.test.batch_shape else 1
+        n = self.workload.n
+        dtype = self.workload.dtype
+        batch = math.prod(self.workload.batch_shape) if self.workload.batch_shape else 1
         return batch * 2 * n * torch.empty(1, dtype=dtype).element_size()
 
 

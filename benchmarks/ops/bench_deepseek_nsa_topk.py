@@ -4,20 +4,20 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deepseek_nsa_topk import NsaTopkTest
 from tileops.ops import NSATopkVarlenOp
+from workloads.ops.deepseek_nsa_topk import NsaTopkTest
 
 
 class NsaTopkBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Step 1 (LSE) + Step 2 (Scores)
         # Total: c_seq_len * head_kv * 2 * (2 * group * dim * (c_seq_len / (2 * bs)))
         return (2 * t.heads * t.dim * t.c_seq_len**2) // t.bs
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # q: read once, k_cmp: read twice per preceding block per token, block_indices: write once
         q_read = t.heads * t.c_seq_len * t.dim * t.dtype.itemsize
         k_read = (t.head_kv * t.dim * t.c_seq_len**2 * t.dtype.itemsize) // t.bs

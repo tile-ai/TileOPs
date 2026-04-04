@@ -4,18 +4,18 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_ssd_chunk_state_fwd import (
+from tileops.ops.ssd_chunk_state_fwd import SsdChunkStateFwdOp
+from workloads.ops.ssd_chunk_state_fwd import (
     SsdChunkStateFwdFixture,
     SsdChunkStateFwdTest,
     ssd_chunk_state_fwd_ref,
 )
-from tileops.ops.ssd_chunk_state_fwd import SsdChunkStateFwdOp
 
 
 class SsdChunkStateFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, Q, h, p, n = (
             t.batch, t.num_chunks, t.chunk_len,
             t.n_heads, t.d_head, t.d_state,
@@ -27,7 +27,7 @@ class SsdChunkStateFwdBenchmark(BenchmarkBase):
         return float(flops)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, Q, h, p, n, g = (
             t.batch, t.num_chunks, t.chunk_len,
             t.n_heads, t.d_head, t.d_state, t.n_groups,

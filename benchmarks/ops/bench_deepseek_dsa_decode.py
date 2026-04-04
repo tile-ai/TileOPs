@@ -4,18 +4,18 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deepseek_dsa_decode import DsaDecodeTest
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
+from workloads.ops.deepseek_dsa_decode import DsaDecodeTest
 
 
 class DsaDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.batch * t.seq_len * (2 * t.dim + t.dim_tail) * t.topk * 2 * t.heads
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # q: batch, seq_len, heads, dim + dim_tail
         # kv: batch, seq_len_kv, heads_kv, dim + dim_tail
         # indices: batch, seq_len, heads_kv, topk

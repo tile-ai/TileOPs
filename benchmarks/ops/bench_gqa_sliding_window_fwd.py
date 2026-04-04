@@ -6,15 +6,15 @@ import torch
 from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gqa_sliding_window_fwd import GqaSlidingWindowFwdTest
 from tileops.ops import GqaSlidingWindowFwdOp
+from workloads.ops.gqa_sliding_window_fwd import GqaSlidingWindowFwdTest
 
 
 class GqaSlidingWindowFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         """Approximate FLOPs for QK^T and PV GEMMs."""
-        t = self.test
+        t = self.workload
         S = t.seq
         wl, wr = t.wl, t.wr
         total_attended = 0
@@ -26,7 +26,7 @@ class GqaSlidingWindowFwdBenchmark(BenchmarkBase):
 
     def calculate_memory(self) -> Optional[float]:
         """Approximate bytes accessed: read Q/K/V, write O."""
-        t = self.test
+        t = self.workload
         elem = torch.tensor([], dtype=t.dtype).element_size()
         return 2 * t.batch * t.seq * (t.heads + t.heads_kv) * t.dim * elem
 

@@ -28,9 +28,9 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import TestBase
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoePermuteNopadOp
+from workloads.base import WorkloadBase
 
 _OP_NAME = "moe_permute_nopad"
 
@@ -39,7 +39,7 @@ _OP_NAME = "moe_permute_nopad"
 # ---------------------------------------------------------------------------
 
 
-class MoePermuteNopadTest(TestBase):
+class MoePermuteNopadTest(WorkloadBase):
     def __init__(self, total_tokens, top_k, num_experts, hidden_size, dtype):
         self.total_tokens = total_tokens
         self.top_k = top_k
@@ -69,7 +69,7 @@ class MoePermuteNopadBenchmark(BenchmarkBase):
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.test
+            t = self.workload
             elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
             self._roofline_cache = eval_roofline(
                 _OP_NAME,

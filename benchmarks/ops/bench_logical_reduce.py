@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
+from workloads.base import FixtureBase, WorkloadBase
 
 
 class LogicalReduceBenchFixture(FixtureBase):
@@ -37,7 +37,7 @@ class LogicalReduceBenchFixture(FixtureBase):
     ]
 
 
-class LogicalReduceBenchTest(TestBase):
+class LogicalReduceBenchTest(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
         self.m = m
         self.n = n
@@ -65,12 +65,12 @@ class LogicalReduceBenchTest(TestBase):
 
 class LogicalReduceBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Logical reduce: N comparisons per row, M rows
         return t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         # Output bytes: bool (1 byte) for any/all, int64 (8 bytes) for count_nonzero
         out_elem_bytes = 8 if t.op_kind == "count_nonzero" else 1

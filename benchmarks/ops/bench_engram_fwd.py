@@ -4,17 +4,17 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_engram_fwd import (
+from tileops.ops.engram_fwd import EngramGateConvFwdOp
+from workloads.ops.engram_fwd import (
     EngramGateConvFwdTest,
     ref_engram_gate_conv_fwd,
 )
-from tileops.ops.engram_fwd import EngramGateConvFwdOp
 
 
 class EngramGateConvFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         M, T, d = t.M, t.seq_len, t.d
         # 2x RMSNorm(d): ~4d each -> 8*M*T*d
         # dot product (d): 2*M*T*d
@@ -27,7 +27,7 @@ class EngramGateConvFwdBenchmark(BenchmarkBase):
         return M * T * (8 * d + 2 * d + d + 4 * d + 8 * d + d) + 20 * M * T
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         M, T, d = t.M, t.seq_len, t.d
         elem = torch.tensor([], dtype=t.dtype).element_size()
         # Read: H + k + v (3*M*T*d) + weights (2*d + 4*d)

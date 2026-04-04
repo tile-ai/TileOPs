@@ -4,14 +4,14 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deepseek_mla_decode import MlaDecodeTest
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
+from workloads.ops.deepseek_mla_decode import MlaDecodeTest
 
 
 class MlaDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # qk_flops = 2 * batch * heads * seq_len_kv * (dim + dim_pe)
         # pv_flops = 2 * batch * heads * seq_len_kv * dim
         qk_flops = 2 * t.batch * t.heads * t.seq_len_kv * (t.dim + t.dim_pe)
@@ -19,7 +19,7 @@ class MlaDecodeBenchmark(BenchmarkBase):
         return qk_flops + pv_flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Q: batch * heads * dim
         # Q_pe: batch * heads * dim_pe
         # K: batch * seq_len_kv * heads_kv * dim

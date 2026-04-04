@@ -4,20 +4,20 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gqa_decode_paged import GqaDecodePagedTest
 from tileops.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
+from workloads.ops.gqa_decode_paged import GqaDecodePagedTest
 
 
 class GqaDecodePagedBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         flops_per_matmul = 2.0 * t.batch * t.heads * t.seqlen_kv * t.dim
         flops = flops_per_matmul * 2
         return flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         num_pages = t.seqlen_kv // t.page_size
         # Q, output: batch * heads * dim; K,V: seqlen_kv * heads_kv * dim; block_table, real_seqlen_kv: int32
         return (t.batch * t.heads * t.dim * 2 +

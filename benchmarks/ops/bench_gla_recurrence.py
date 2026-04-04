@@ -11,9 +11,9 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gla_recurrence import GLADecodeTest
-from tests.test_base import FixtureBase
 from tileops.ops import GLADecodeOp
+from workloads.base import FixtureBase
+from workloads.ops.gla_recurrence import GLADecodeTest
 
 try:
     from fla.ops.gla import fused_recurrent_gla
@@ -24,7 +24,7 @@ except ImportError:
 class GLADecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         # One matvec: S @ q_gated -> B*H*DK*DV (multiply + add)
         # dot product q.k -> B*H*DK
@@ -32,7 +32,7 @@ class GLADecodeBenchmark(BenchmarkBase):
         return 2.0 * B * H * (DK * DV + DK * DV + DK)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         # Read: q(DK) + k(DK) + v(DV) + gk(DK) + state(DK*DV)

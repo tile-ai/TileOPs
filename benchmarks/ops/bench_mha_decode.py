@@ -4,20 +4,20 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_mha_decode import MhaDecodeTest
 from tileops.ops import MultiHeadAttentionDecodeWithKVCacheOp
+from workloads.ops.mha_decode import MhaDecodeTest
 
 
 class MhaDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len_q * t.seq_len_kv * t.dim
         flops = flops_per_matmul * 2
         return flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Q: batch * seq_len_q * heads * dim
         # K, V: batch * seq_len_kv * heads * dim
         # Output: batch * seq_len_q * heads * dim

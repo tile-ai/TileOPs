@@ -4,22 +4,22 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_engram_bwd import (
+from tileops.ops.engram_bwd import EngramGateConvBwdOp
+from workloads.ops.engram_bwd import (
     EngramGateConvBwdTest,
 )
-from tileops.ops.engram_bwd import EngramGateConvBwdOp
 
 
 class EngramGateConvBwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         M, T, d = t.M, t.seq_len, t.d
         fwd_flops = M * T * (8 * d + 2 * d + d + 4 * d + 8 * d + d) + 20 * M * T
         return int(fwd_flops * 2.5)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         M, T, d = t.M, t.seq_len, t.d
         elem = torch.tensor([], dtype=t.dtype).element_size()
         read_bytes = 5 * M * T * d * elem + 6 * d * elem + 4 * M * T * 4

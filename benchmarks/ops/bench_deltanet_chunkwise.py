@@ -19,10 +19,10 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deltanet_chunkwise_bwd import _autograd_bwd_ref
-from tests.ops.test_deltanet_chunkwise_fwd import DeltaNetFwdTest
-from tests.test_base import FixtureBase
 from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
+from workloads.base import FixtureBase
+from workloads.ops.deltanet_chunkwise_bwd import _autograd_bwd_ref
+from workloads.ops.deltanet_chunkwise_fwd import DeltaNetFwdTest
 
 try:
     from fla.ops.delta_rule import chunk_delta_rule
@@ -47,12 +47,12 @@ def _to_fla_layout(q, k, v, beta):
 class DeltaNetFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         return 2.0 * B * H * S * DK * DV
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * H * S * (2 * DK + 2 * DV + 1) * elem
@@ -121,12 +121,12 @@ def test_deltanet_vs_fla_fwd(
 class DeltaNetBwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         return 4.0 * B * H * S * DK * DV
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * H * S * (4 * DK + 3 * DV + 3) * elem
@@ -214,12 +214,12 @@ def test_deltanet_vs_fla_bwd(
 class DeltaNetFwdBwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         return 6.0 * B * H * S * DK * DV  # fwd (2x) + bwd (4x)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * H * S * (6 * DK + 5 * DV + 4) * elem

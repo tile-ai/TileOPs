@@ -4,15 +4,15 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_deltanet_recurrence import DeltaNetDecodeTest
-from tests.test_base import FixtureBase
 from tileops.ops import DeltaNetDecodeOp
+from workloads.base import FixtureBase
+from workloads.ops.deltanet_recurrence import DeltaNetDecodeTest
 
 
 class DeltaNetDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         # Two matvecs: S@k and S@q -> 2 * B*H*DK*DV each (multiply + add)
         # dot product q.k -> B*H*DK
@@ -20,7 +20,7 @@ class DeltaNetDecodeBenchmark(BenchmarkBase):
         return 2.0 * B * H * (2 * DK * DV + DK * DV + DK)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         # Read: q(DK) + k(DK) + v(DV) + beta(1) + state(DK*DV)

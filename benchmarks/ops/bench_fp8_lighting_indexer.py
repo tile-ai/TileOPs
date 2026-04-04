@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerTest
 from tileops.ops import Fp8LightingIndexerOp
+from workloads.ops.fp8_lighting_indexer import Fp8LightingIndexerTest
 
 
 class Fp8LightingIndexerBenchmark(BenchmarkBase):
@@ -15,7 +15,7 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
         return None
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         dtype = torch.float8_e4m3fn
         accum_dtype = torch.float32
         index_dtype = torch.int32

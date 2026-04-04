@@ -15,8 +15,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
 from tileops.ops.elementwise import AddOp
+from workloads.base import FixtureBase
 
 # DNN-realistic 2D shapes — same-shape (no broadcast) for clean strategy comparison
 _SHAPES_2D = [
@@ -54,11 +54,11 @@ class BinaryStrategyBenchmark(BenchmarkBase):
     """Bandwidth-oriented benchmark for binary elementwise strategy comparison."""
 
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         """Read a + read b + write y."""
-        t = self.test
+        t = self.workload
         elem_bytes = t.dtype.itemsize
         return 3 * t.n_total * elem_bytes
 

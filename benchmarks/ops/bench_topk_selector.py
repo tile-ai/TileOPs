@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_topk_selector import TopkSelectorTest
 from tileops.ops import TopkSelectorOp
+from workloads.ops.topk_selector import TopkSelectorTest
 
 
 class TopkSelectorBenchmark(BenchmarkBase):
@@ -14,7 +14,7 @@ class TopkSelectorBenchmark(BenchmarkBase):
         return None
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         index_score_memory = (t.batch * t.seq_len * t.seq_len_kv * t.kv_group * t.in_dtype.itemsize)
         index_memory = t.batch * t.seq_len * t.topk * t.kv_group * t.out_dtype.itemsize
         starts_memory = t.batch * t.seq_len * t.out_dtype.itemsize

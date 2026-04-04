@@ -21,6 +21,18 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.ops.reduction.log_softmax import LogSoftmaxOp
 from tileops.ops.reduction.logsumexp import LogSumExpOp
 from tileops.ops.reduction.softmax import SoftmaxOp
+from workloads.ops.softmax import LogSoftmaxTest as _LogSoftmaxTestWorkload
+from workloads.ops.softmax import LogSumExpTest as _LogSumExpTestWorkload
+from workloads.ops.softmax import SoftmaxTest as _SoftmaxTestWorkload
+
+
+class LogSoftmaxTest(_LogSoftmaxTestWorkload, TestBase):
+    pass
+class LogSumExpTest(_LogSumExpTestWorkload, TestBase):
+    pass
+class SoftmaxTest(_SoftmaxTestWorkload, TestBase):
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Tolerances (from docs/testing.md)
@@ -65,22 +77,6 @@ class SoftmaxFixture2D(FixtureBase):
             ],
         ),
     ]
-
-
-class SoftmaxTest(TestBase):
-    """TestBase adapter for spec-interface SoftmaxOp."""
-
-    def __init__(self, shape: tuple[int, ...], dim: int, dtype: torch.dtype):
-        self.shape = shape
-        self.dim = dim
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.softmax(x.float(), dim=self.dim).to(x.dtype)
 
 
 @SoftmaxFixture2D
@@ -189,22 +185,6 @@ def test_softmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 # ===================================================================
 # LogSoftmax — spec interface: LogSoftmaxOp(dim, dtype)
 # ===================================================================
-
-
-class LogSoftmaxTest(TestBase):
-    """TestBase adapter for spec-interface LogSoftmaxOp."""
-
-    def __init__(self, shape: tuple[int, ...], dim: int, dtype: torch.dtype):
-        self.shape = shape
-        self.dim = dim
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.log_softmax(x.float(), dim=self.dim).to(x.dtype)
 
 
 class LogSoftmaxFixture2D(FixtureBase):
@@ -339,31 +319,6 @@ def test_log_softmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 # ===================================================================
 # LogSumExp — spec interface: LogSumExpOp(dim, keepdim, dtype)
 # ===================================================================
-
-
-class LogSumExpTest(TestBase):
-    """TestBase adapter for spec-interface LogSumExpOp."""
-
-    def __init__(
-        self,
-        shape: tuple[int, ...],
-        dim: int,
-        dtype: torch.dtype,
-        keepdim: bool = False,
-    ):
-        self.shape = shape
-        self.dim = dim
-        self.dtype = dtype
-        self.keepdim = keepdim
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.logsumexp(x.float(), dim=self.dim, keepdim=self.keepdim).to(
-            x.dtype
-        )
 
 
 class LogSumExpFixture2D(FixtureBase):

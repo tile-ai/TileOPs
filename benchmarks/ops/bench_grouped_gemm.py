@@ -4,21 +4,21 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_grouped_gemm import (
+from tileops.ops import GroupedGemmOp
+from workloads.ops.grouped_gemm import (
     GroupedGemmCompleteTest,
     GroupedGemmTest,
 )
-from tileops.ops import GroupedGemmOp
 
 
 class GroupedGemmBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return 2.0 * t.batch_sum * t.K * t.N
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         if not t.transpose_a:
             # NT/NN: A(batch_sum, K) + B(batch_count, N, K) or (batch_count, K, N) + C(batch_sum, N)
             memory_A = t.batch_sum * t.K * t.dtype.itemsize
@@ -44,12 +44,12 @@ class GroupedGemmBenchmark(BenchmarkBase):
 class GroupedGemmCompleteBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Forward (NT) + backward dA (NN) + backward dB (TN)
         return 3 * 2.0 * t.batch_sum * t.K * t.N
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Forward NT memory
         mem_nt = (t.batch_sum * t.K + t.batch_count * t.K * t.N + t.batch_sum * t.N)
         # Backward dA NN memory

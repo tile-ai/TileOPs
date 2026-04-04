@@ -10,8 +10,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
 from tileops.ops.rope import RopeNeoxOp
+from workloads.base import FixtureBase
 
 # DNN-realistic: (seq_len, head_dim) — typical attention head sizes
 _SHAPES = [(2048, 64), (2048, 128), (4096, 128)]
@@ -32,10 +32,10 @@ class RopeBenchCase:
 class RopeBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
         # 4 ops per element: 2 muls + 1 add + 1 negate/select
-        return self.test.n_total * 4
+        return self.workload.n_total * 4
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem = t.dtype.itemsize
         # Read x + cos + sin + write y
         cos_sin_elems = t.seq_len * (t.head_dim // 2) * 2

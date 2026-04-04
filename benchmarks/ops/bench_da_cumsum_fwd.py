@@ -4,25 +4,25 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_da_cumsum_fwd import (
+from tileops.ops.da_cumsum_fwd import DaCumsumFwdOp
+from workloads.ops.da_cumsum_fwd import (
     DaCumsumFwdFixture,
     DaCumsumFwdTest,
     da_cumsum_fwd_ref,
 )
-from tileops.ops.da_cumsum_fwd import DaCumsumFwdOp
 
 
 class DaCumsumFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, L, h = t.batch, t.num_chunks, t.chunk_len, t.n_heads
         # One multiply (dt * A) and one add per element for the inclusive scan
         # Total: 2 * b * c * L * h
         return float(2 * b * c * L * h)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, L, h = t.batch, t.num_chunks, t.chunk_len, t.n_heads
         # float32 throughout
         elem = 4

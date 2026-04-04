@@ -9,6 +9,11 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import ReluOp
+from workloads.ops.activation import ReluTest as _ReluTestWorkload
+
+
+class ReluTest(_ReluTestWorkload, TestBase):
+    pass
 
 
 class ReluFixture(FixtureBase):
@@ -23,20 +28,6 @@ class ReluFixture(FixtureBase):
             pytest.param(4_000_000, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
-
-
-class ReluTest(TestBase):
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.relu(x.float()).to(x.dtype)
 
 
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:

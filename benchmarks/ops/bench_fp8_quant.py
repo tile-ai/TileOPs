@@ -4,19 +4,19 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fp8_quant import Fp8QuantTest
 from tileops.ops import Fp8QuantOp
+from workloads.ops.fp8_quant import Fp8QuantTest
 
 
 class Fp8QuantBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return (2 * t.batch * t.seq_len_kv * t.kv_group * t.index_dim +
                 t.batch * t.seq_len_kv * t.kv_group + 4 * t.batch * t.seq_len_kv * t.kv_group * t.index_dim)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.batch * t.seq_len_kv * t.kv_group * t.index_dim * t.in_dtype.itemsize
 
 

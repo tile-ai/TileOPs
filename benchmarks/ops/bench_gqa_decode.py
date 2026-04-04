@@ -4,20 +4,20 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gqa_decode import GqaDecodeTest
 from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
+from workloads.ops.gqa_decode import GqaDecodeTest
 
 
 class GqaDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len_kv * t.dim
         flops = flops_per_matmul * 2
         return flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Q: batch * 1 * heads * dim
         # K, V: batch * seq_len_kv * heads_kv * dim
         # Output: batch * 1 * heads * dim

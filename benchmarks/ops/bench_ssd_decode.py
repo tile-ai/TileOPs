@@ -4,18 +4,18 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_ssd_decode import (
+from tileops.ops.ssd_decode import SsdDecodeOp
+from workloads.ops.ssd_decode import (
     SsdDecodeFixture,
     SsdDecodeTest,
     ssd_decode_ref,
 )
-from tileops.ops.ssd_decode import SsdDecodeOp
 
 
 class SsdDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, h, p, n = t.batch, t.n_heads, t.d_head, t.d_state
         # State update: dA * old_s + dt * x * B  -> 3 muls + 1 add per (b,h,p,n)
         # Output accum: new_s * C                 -> 1 mul + 1 add per (b,h,p,n)
@@ -23,10 +23,10 @@ class SsdDecodeBenchmark(BenchmarkBase):
         return float(6 * b * h * p * n)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, h, p, n, g = t.batch, t.n_heads, t.d_head, t.d_state, t.n_groups
         f32 = torch.float32.itemsize
-        dtype_bytes = self.test.dtype.itemsize
+        dtype_bytes = self.workload.dtype.itemsize
         # Reads: A(h) + dt(b,h) + x(b,h,p) + B_in(b,g,n) + C_in(b,g,n) + state(b,h,p,n)
         reads = (
             h * f32

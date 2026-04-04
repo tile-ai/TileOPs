@@ -4,20 +4,20 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.nsa_utils import prepare_chunk_indices
-from tests.ops.test_mean_pooling_ops import MeanPoolingTest
 from tileops.ops import MeanPoolingForwardOp
+from workloads.nsa_utils import prepare_chunk_indices
+from workloads.ops.mean_pooling_ops import MeanPoolingTest
 
 
 class MeanPoolingBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Mean pooling: sum chunk_size elements + divide, per output element
         return t.batch_size * t.chunks_per_bacth * t.heads * t.dim * t.chunk_size
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Read input + write output
         input_bytes = t.batch_size * t.seq_len * t.heads * t.dim * t.dtype.itemsize
         output_bytes = t.batch_size * t.chunks_per_bacth * t.heads * t.dim * t.dtype.itemsize

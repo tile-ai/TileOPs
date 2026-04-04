@@ -4,17 +4,17 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gemm import GemmTest
 from tileops.ops import GemmOp
+from workloads.ops.gemm import GemmTest
 
 
 class GemmBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        return 2.0 * self.test.m * self.test.n * self.test.k
+        return 2.0 * self.workload.m * self.workload.n * self.workload.k
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return (t.m * t.k + t.k * t.n + t.m * t.n) * t.dtype.itemsize
 
 

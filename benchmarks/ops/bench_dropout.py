@@ -12,8 +12,8 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
 from tileops.ops.dropout import DropoutOp
+from workloads.base import FixtureBase
 
 _SHAPES = [(1024, 4096), (1024, 10240), (1024, 20480)]
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
@@ -33,11 +33,11 @@ class DropoutBenchCase:
 class DropoutBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
         # RNG + compare + scale — not compute-bound, return element count
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         # Read x + write y
-        return self.test.n_total * self.test.dtype.itemsize * 2
+        return self.workload.n_total * self.workload.dtype.itemsize * 2
 
 
 def _dropout_params():

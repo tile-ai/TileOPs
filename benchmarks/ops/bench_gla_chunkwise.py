@@ -16,9 +16,9 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gla_chunkwise_bwd import _gla_autograd_bwd_ref, _gla_fwd_torch_ref
-from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GLABwdOp, GLAFwdOp
+from workloads.base import FixtureBase, WorkloadBase
+from workloads.ops.gla_chunkwise_bwd import _gla_autograd_bwd_ref, _gla_fwd_torch_ref
 
 try:
     from fla.ops.gla import chunk_gla
@@ -30,7 +30,7 @@ except ImportError:
 # Test helper (shared between fwd and bwd benchmarks)
 # =============================================================================
 
-class GLATest(TestBase):
+class GLATest(WorkloadBase):
 
     def __init__(self, batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype):
         self.batch = batch
@@ -60,12 +60,12 @@ class GLATest(TestBase):
 class GLAFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         return 2.0 * B * H * T * K * V
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * T * H * (2 * K + 2 * V) * elem
@@ -130,12 +130,12 @@ def test_gla_fwd_bench(
 class GLABwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         return 4.0 * B * H * T * K * V
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * T * H * (4 * K + 3 * V) * elem
@@ -223,12 +223,12 @@ def test_gla_bwd_bench(
 class GLAFwdBwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         return 6.0 * B * H * T * K * V
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * T * H * (6 * K + 5 * V) * elem

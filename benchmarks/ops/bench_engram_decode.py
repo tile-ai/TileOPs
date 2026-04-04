@@ -4,17 +4,17 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_engram_decode import (
+from tileops.ops.engram_decode import EngramDecodeOp
+from workloads.ops.engram_decode import (
     EngramDecodeTest,
     _ref_engram_decode_step,
 )
-from tileops.ops.engram_decode import EngramDecodeOp
 
 
 class EngramDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, d_mem, d, w = t.batch, t.d_mem, t.d, t.conv_kernel_size
         # GEMV: 2 * B * d_mem * d (k) + 2 * B * d_mem * d (v)
         # 2x RMSNorm(d): ~4d each -> 8*B*d
@@ -27,7 +27,7 @@ class EngramDecodeBenchmark(BenchmarkBase):
                 + 20 * B)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, d_mem, d, mcl, w = t.batch, t.d_mem, t.d, t.max_conv_len, t.conv_kernel_size
         elem = torch.tensor([], dtype=t.dtype).element_size()
         # Read: e_t (B*d_mem) + h_t (B*d) + conv_state (B*mcl*d) + W_K,W_V (2*d_mem*d)
