@@ -26,6 +26,7 @@ from workloads.ops.batch_norm import (
 
 class BatchNormBwdTest(_BatchNormBwdTestWorkload, TestBase):
     pass
+
 class BatchNormFwdTest(_BatchNormFwdTestWorkload, TestBase):
     pass
 

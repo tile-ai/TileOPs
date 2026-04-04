@@ -5,7 +5,7 @@ from workloads.base import WorkloadBase
 
 
 class LogSoftmaxTest(WorkloadBase):
-    """TestBase adapter for spec-interface LogSoftmaxOp."""
+    """Workload definition for spec-interface LogSoftmaxOp."""
 
     def __init__(self, shape: tuple[int, ...], dim: int, dtype: torch.dtype):
         self.shape = shape
@@ -21,7 +21,7 @@ class LogSoftmaxTest(WorkloadBase):
 
 
 class LogSumExpTest(WorkloadBase):
-    """TestBase adapter for spec-interface LogSumExpOp."""
+    """Workload definition for spec-interface LogSumExpOp."""
 
     def __init__(
         self,
@@ -46,7 +46,7 @@ class LogSumExpTest(WorkloadBase):
 
 
 class SoftmaxTest(WorkloadBase):
-    """TestBase adapter for spec-interface SoftmaxOp."""
+    """Workload definition for spec-interface SoftmaxOp."""
 
     def __init__(self, shape: tuple[int, ...], dim: int, dtype: torch.dtype):
         self.shape = shape
