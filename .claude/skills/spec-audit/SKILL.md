@@ -91,9 +91,9 @@ Required fields: `classification`, `source_op`, `manifest_signature`. Gap report
 1. Read `tileops/ops_manifest.yaml`
 1. Filter ops where `family == <arg>` and `status == spec-only`
 1. For each op:
-   a. Read source file (`source.op`), find Op class, extract `__init__` and `forward` explicit named params
+   a. Read source file (`source_op`), find Op class, extract `__init__` and `forward` explicit named params
    b. Compare against `manifest_signature` (inputs, params)
    c. If no difference → run `python scripts/validate_manifest.py --check-op <name>` to confirm → `ready` or deeper gap
-   d. If difference → check if `pytorch_equivalent` exists (op name matches `torch.nn.functional.<base_name>` or `torch.<base_name>`) → `semantic_gap` or `blocked`
+   d. If difference → check if `pytorch_equivalent` exists (strip `_fwd`/`_bwd` suffix, match against `torch.nn.functional`, `torch`, `torch.special`, `torch.linalg`) → `semantic_gap` or `blocked`
 1. Write gap report to `.foundry/migrations/<family>.json`
 1. Print summary table

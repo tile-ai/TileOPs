@@ -93,7 +93,7 @@ Orchestrator (not a sub-skill) changes manifest:
 
 - `status: spec-only` → `status: implemented`
 - Commit the manifest change
-- Update gap report: `classification` → `promoted`
+- Update gap report: add `promoted_at` timestamp (keep `classification` unchanged)
 
 ### 7. CREATE_PR
 
