@@ -8,7 +8,7 @@ from tileops.ops import GatedDeltaNetDecodeOp
 from workloads.base import FixtureBase
 from workloads.ops.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeTest,
-    _gated_deltanet_decode_torch_ref,
+    gated_deltanet_decode_torch,
 )
 
 
@@ -24,7 +24,7 @@ class _GatedDeltaNetDecodeTestBaseline(GatedDeltaNetDecodeTest):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = _gated_deltanet_decode_torch_ref(q, k, v, g, beta, state)
+        o, new_state = gated_deltanet_decode_torch(q, k, v, g, beta, state)
         return o.to(self.dtype), new_state.to(self.dtype)
 
 try:

@@ -7,13 +7,13 @@ from workloads.ops.engram_fwd import (
     EngramGateConvFwdTest as _EngramGateConvFwdTestWorkload,
 )
 from workloads.ops.engram_fwd import (
-    ref_engram_gate_conv_fwd,
+    engram_gate_conv_fwd_torch,
 )
 
 
 class EngramGateConvFwdTest(_EngramGateConvFwdTestWorkload, TestBase):
     def ref_program(self, H, k, v, rms_w_h, rms_w_v, conv_w):
-        return ref_engram_gate_conv_fwd(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
+        return engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
 
 
 class EngramGateConvFwdFixture(FixtureBase):

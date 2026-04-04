@@ -5,7 +5,7 @@ import torch
 from workloads.base import WorkloadBase
 
 
-def _deltanet_decode_torch_ref(
+def deltanet_decode_torch(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,

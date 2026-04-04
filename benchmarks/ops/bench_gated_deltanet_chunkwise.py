@@ -21,12 +21,12 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 from workloads.base import FixtureBase
-from workloads.ops.gated_deltanet_chunkwise_bwd import _autograd_bwd_ref
+from workloads.ops.gated_deltanet_chunkwise_bwd import gated_deltanet_autograd_bwd_torch
 from workloads.ops.gated_deltanet_chunkwise_fwd import (
     GatedDeltaNetFwdTest,
-    _compute_w_u_torch_ref,
-    _kernel2_torch_ref,
-    _prepare_wy_repr_torch_ref,
+    compute_w_u_torch,
+    kernel2_gated_deltanet_torch,
+    prepare_wy_repr_gated_torch,
 )
 
 
@@ -46,10 +46,10 @@ class _GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdTest):
         # Chunk-local cumulative sum of g (paper requires cumulated gates)
         BC = self.chunk_size
         g_cum = g.float().reshape(B, H, S // BC, BC).cumsum(-1).reshape(B, H, S).to(g.dtype)
-        Aw, Au = _prepare_wy_repr_torch_ref(k, g_cum, beta, self.chunk_size)
-        w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, self.chunk_size)
+        Aw, Au = prepare_wy_repr_gated_torch(k, g_cum, beta, self.chunk_size)
+        w, u = compute_w_u_torch(Aw, Au, k, v, beta, self.chunk_size)
         S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-        _S, o = _kernel2_torch_ref(q, k, g_cum, w, u, S_0, self.chunk_size)
+        _S, o = kernel2_gated_deltanet_torch(q, k, g_cum, w, u, S_0, self.chunk_size)
         return o.to(self.dtype)
 
 try:
@@ -255,7 +255,7 @@ def test_gated_deltanet_vs_fla_bwd(
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
-            return _autograd_bwd_ref(do, q, k, v, g, beta, BC)
+            return gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, BC)
         result_bl = bm.profile(torch_bwd)
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
@@ -362,7 +362,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
     else:
         # --- Torch autograd reference baseline ---
         def torch_fwdbwd():
-            return _autograd_bwd_ref(do, q.data, k.data, v.data, g.data, beta.data, BC)
+            return gated_deltanet_autograd_bwd_torch(do, q.data, k.data, v.data, g.data, beta.data, BC)
         result_bl = bm.profile_autograd(torch_fwdbwd)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 

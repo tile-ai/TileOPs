@@ -1,18 +1,20 @@
-import pytest
 import torch
 
 from workloads.base import FixtureBase, WorkloadBase
 
 
 class SsdChunkScanFwdFixture(FixtureBase):
-    PARAMS = [
-        ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune", [
-            pytest.param(1, 2, 64, 4, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 4, 64, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 2, 128, 4, 128, 32, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 2, 64, 4, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
-    ]
+    @classmethod
+    def get_params(cls):
+        import pytest
+        return [
+            ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune", [
+                pytest.param(1, 2, 64, 4, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 64, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 2, 128, 4, 128, 32, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 2, 64, 4, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
+            ]),
+        ]
 
 class SsdChunkScanFwdTest(WorkloadBase):
     def __init__(
@@ -48,7 +50,7 @@ class SsdChunkScanFwdTest(WorkloadBase):
         dt = torch.rand(b, c, L, h, dtype=self.dtype, device="cuda") * 0.1 + 0.01
         return x, cb, dA_cumsum, C, prev_states, dt
 
-def ssd_chunk_scan_fwd_ref(
+def ssd_chunk_scan_fwd_torch(
     x: torch.Tensor,           # (b, c, L, h, p)      raw x
     cb: torch.Tensor,          # (b, c, h, L, L)
     dA_cumsum: torch.Tensor,  # (b, h, c, L)         cumsum of dA, where dA = dt * A

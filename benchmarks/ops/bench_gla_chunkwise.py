@@ -18,7 +18,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GLABwdOp, GLAFwdOp
 from workloads.base import FixtureBase, WorkloadBase
-from workloads.ops.gla_chunkwise_bwd import _gla_autograd_bwd_ref, _gla_fwd_torch_ref
+from workloads.ops.gla_chunkwise_bwd import gla_autograd_bwd_torch, gla_fwd_chunked_torch
 
 try:
     from fla.ops.gla import chunk_gla
@@ -50,7 +50,7 @@ class GLATest(WorkloadBase):
         return q, k, v, g
 
     def ref_program(self, q, k, v, g):
-        return _gla_fwd_torch_ref(q, k, v, g, self.chunk_size)
+        return gla_fwd_chunked_torch(q, k, v, g, self.chunk_size)
 
 
 # =============================================================================
@@ -211,7 +211,7 @@ def test_gla_bwd_bench(
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
-            return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
+            return gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
         result_bl = bm.profile(torch_bwd)
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
@@ -303,7 +303,7 @@ def test_gla_fwdbwd_bench(
         BenchmarkReport.record(fwd_op, locals(), result_fla, tag="fla")
     else:
         def ref_autograd_fwdbwd():
-            return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
+            return gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
         result_bl = bm.profile_autograd(ref_autograd_fwdbwd)
         BenchmarkReport.record(fwd_op, locals(), result_bl, tag="torch")
 

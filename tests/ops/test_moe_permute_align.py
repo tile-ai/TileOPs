@@ -7,6 +7,7 @@ Reference: SGLang moe_align_block_size
   python/sglang/srt/layers/moe/fused_moe_triton/moe_align_block_size.py
 """
 
+import math
 from typing import Tuple
 
 import pytest
@@ -15,7 +16,55 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoePermuteAlignOp
 from workloads.ops.moe_permute_align import MoePermuteAlignTest as _MoePermuteAlignTestWorkload
-from workloads.ops.moe_permute_align import _ref_permute_align
+
+
+def _ref_permute_align(
+    topk_ids: torch.Tensor, block_size: int, num_experts: int
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pure-Python reference for permute_align."""
+    numel = topk_ids.numel()
+    flat = topk_ids.flatten().tolist()
+
+    counts = [0] * num_experts
+    for eid in flat:
+        counts[eid] += 1
+
+    cumsum = [0] * (num_experts + 1)
+    for i in range(num_experts):
+        padded = math.ceil(counts[i] / block_size) * block_size
+        cumsum[i + 1] = cumsum[i] + padded
+
+    total_padded = cumsum[num_experts]
+    sorted_token_ids = [numel] * total_padded
+
+    slot = list(cumsum[:-1])
+    for flat_idx, eid in enumerate(flat):
+        sorted_token_ids[slot[eid]] = flat_idx
+        slot[eid] += 1
+
+    num_blocks = total_padded // block_size
+    expert_ids_list = []
+    for b in range(num_blocks):
+        block_start = b * block_size
+        lo, hi = 0, num_experts - 1
+        eid = num_experts - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if cumsum[mid] <= block_start < cumsum[mid + 1]:
+                eid = mid
+                break
+            elif block_start < cumsum[mid]:
+                hi = mid - 1
+            else:
+                lo = mid + 1
+        expert_ids_list.append(eid)
+
+    device = topk_ids.device
+    return (
+        torch.tensor(sorted_token_ids, dtype=torch.int32, device=device),
+        torch.tensor(expert_ids_list, dtype=torch.int32, device=device),
+        torch.tensor([total_padded], dtype=torch.int32, device=device),
+    )
 
 
 class MoePermuteAlignTest(_MoePermuteAlignTestWorkload, TestBase):

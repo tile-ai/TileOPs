@@ -29,7 +29,7 @@ except ImportError:
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.moe import FusedTopKOp
 from workloads.base import FixtureBase
-from workloads.ops.moe_fused_topk import FusedTopKTest, _ref_fused_topk
+from workloads.ops.moe_fused_topk import FusedTopKTest, fused_topk_torch
 
 # ---------------------------------------------------------------------------
 # Benchmark class
@@ -116,7 +116,7 @@ def test_fused_topk_bench(
     # Fallback: torch reference baseline (only when no external baselines)
     if not has_external:
         def _ref_fn(gating_output):
-            return _ref_fused_topk(gating_output, top_k, scoring_func, renormalize)
+            return fused_topk_torch(gating_output, top_k, scoring_func, renormalize)
 
         _ref_fn(gating_output)  # warmup
         torch.cuda.synchronize()

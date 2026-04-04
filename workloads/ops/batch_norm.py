@@ -12,16 +12,6 @@ def _make_tensors(N, C, spatial, dtype, device="cuda"):
     running_var = torch.ones(C, device=device, dtype=torch.float32)
     return x, weight, bias, running_mean, running_var
 
-def _ref_fwd(x, weight, bias, running_mean, running_var, training, momentum=0.1, eps=1e-5):
-    """Reference: torch.nn.functional.batch_norm (float32 upcast)."""
-    x32 = x.float()
-    rm = running_mean.clone()
-    rv = running_var.clone()
-    y32 = torch.nn.functional.batch_norm(
-        x32, rm, rv, weight.float(), bias.float(),
-        training=training, momentum=momentum, eps=eps)
-    return y32.to(x.dtype), rm, rv
-
 class BatchNormBwdTest(WorkloadBase):
 
     def __init__(self, N, C, spatial, dtype):

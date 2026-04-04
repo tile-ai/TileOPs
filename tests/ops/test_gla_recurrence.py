@@ -7,7 +7,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GLADecodeOp
 from workloads.ops.gla_recurrence import GLADecodeTest as _GLADecodeTestWorkload
-from workloads.ops.gla_recurrence import _gla_decode_torch_ref
+from workloads.ops.gla_recurrence import gla_decode_torch
 
 
 class GLADecodeTest(_GLADecodeTestWorkload, TestBase):
@@ -19,7 +19,7 @@ class GLADecodeTest(_GLADecodeTestWorkload, TestBase):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = _gla_decode_torch_ref(q, k, v, gk, state, self.scale)
+        o, new_state = gla_decode_torch(q, k, v, gk, state, self.scale)
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
@@ -103,7 +103,7 @@ def test_gla_decode_multi_step(
         v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
         gk = -torch.rand(B, H, DK, device="cuda", dtype=dtype)
 
-        o_ref, state_ref = _gla_decode_torch_ref(q, k, v, gk, state_ref)
+        o_ref, state_ref = gla_decode_torch(q, k, v, gk, state_ref)
         o_ref = o_ref.to(dtype)
         state_ref = state_ref.to(dtype)
 

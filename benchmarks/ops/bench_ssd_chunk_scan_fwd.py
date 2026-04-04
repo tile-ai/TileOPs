@@ -8,7 +8,7 @@ from tileops.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdOp
 from workloads.ops.ssd_chunk_scan_fwd import (
     SsdChunkScanFwdFixture,
     SsdChunkScanFwdTest,
-    ssd_chunk_scan_fwd_ref,
+    ssd_chunk_scan_fwd_torch,
 )
 
 
@@ -61,7 +61,7 @@ def test_ssd_chunk_scan_fwd_bench(batch, num_chunks, chunk_len, n_heads, d_head,
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(*args):
-        return ssd_chunk_scan_fwd_ref(*args)
+        return ssd_chunk_scan_fwd_torch(*args)
     result_bl = bm.profile(baseline, *inputs)
     BenchmarkReport.record("ssd_chunk_scan_fwd", locals(), result_bl, tag="baseline")
 

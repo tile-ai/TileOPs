@@ -30,16 +30,25 @@ class FixtureMeta(type):
 
     Usage:
         class MyFixture(FixtureBase):
-            PARAMS = [("a, b", [(1, 2), (3, 4)])]
+            @classmethod
+            def get_params(cls):
+                import pytest
+                return [("a, b", [
+                    pytest.param(1, 2, marks=pytest.mark.smoke),
+                ])]
 
         @MyFixture
         def test_something(a, b): ...
+
+    PARAMS may also be set as a plain class variable (list) for backwards
+    compatibility when pytest is already importable at module scope.
     """
 
     def __call__(cls, fn):
         import pytest  # lazy import: pytest is only needed when applying parametrize decorators
 
-        for names, values in reversed(cls.PARAMS):
+        params = cls.get_params() if hasattr(cls, "get_params") else cls.PARAMS
+        for names, values in reversed(params):
             fn = pytest.mark.parametrize(names, values)(fn)
         return fn
 
@@ -47,7 +56,9 @@ class FixtureMeta(type):
 class FixtureBase(metaclass=FixtureMeta):
     """Base class for reusable parametrize decorators.
 
-    Subclass and set PARAMS to a list of (names_str, values_list) tuples.
+    Subclass and set PARAMS (plain list) or override get_params() (classmethod
+    that lazily imports pytest) to provide a list of (names_str, values_list)
+    tuples.
     - Single entry with multiple param names -> explicit combinations
     - Multiple entries each with one param name -> cross-product
     """

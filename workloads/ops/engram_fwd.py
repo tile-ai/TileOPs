@@ -5,7 +5,7 @@ from workloads.base import WorkloadBase
 
 CONV_KERNEL_SIZE = 4
 
-def _ref_rmsnorm(x, w, eps=1e-6):
+def _rmsnorm(x, w, eps=1e-6):
     """Returns (normed, rrms)."""
     x_f = x.float()
     rrms = (x_f ** 2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
@@ -29,19 +29,19 @@ class EngramGateConvFwdTest(WorkloadBase):
         conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device="cuda") * 0.02
         return H, k, v, rms_w_h, rms_w_v, conv_w
 
-def ref_engram_gate_conv_fwd(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
+def engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
     """PyTorch reference for Engram GateConv forward."""
     M, T, d = H.shape
 
-    h_norm, rrms_h = _ref_rmsnorm(H, rms_w_h, eps)
-    k_norm, rrms_k = _ref_rmsnorm(k, rms_w_h, eps)  # same weight
+    h_norm, rrms_h = _rmsnorm(H, rms_w_h, eps)
+    k_norm, rrms_k = _rmsnorm(k, rms_w_h, eps)  # same weight
 
     dot = (h_norm * k_norm).sum(dim=-1, keepdim=True)
     alpha = torch.sigmoid(dot / (d ** 0.5))  # (M, T, 1)
 
     v_hat = alpha * v.float()
 
-    v_hat_norm, rrms_v = _ref_rmsnorm(v_hat.to(H.dtype), rms_w_v, eps)
+    v_hat_norm, rrms_v = _rmsnorm(v_hat.to(H.dtype), rms_w_v, eps)
 
     # Causal DWConv1D
     v_perm = v_hat_norm.float().permute(0, 2, 1)

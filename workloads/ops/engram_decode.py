@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from workloads.base import WorkloadBase
 
 
-def _ref_rmsnorm(x, w, eps=1e-6):
+def _rmsnorm(x, w, eps=1e-6):
     x_f = x.float()
     rrms = (x_f ** 2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
     return (x_f * rrms * w.float()), rrms
@@ -35,7 +35,7 @@ class EngramDecodeTest(WorkloadBase):
         conv_w = torch.randn(self.conv_kernel_size, self.d, dtype=self.dtype, device="cuda") * 0.02
         return e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w
 
-def _ref_engram_decode_step(
+def engram_decode_step_torch(
     e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
     max_conv_len, dilation, eps=1e-6,
 ):
@@ -63,8 +63,8 @@ def _ref_engram_decode_step(
     v = e_t.float() @ W_V.float()
 
     # RMSNorm gating
-    h_norm, _ = _ref_rmsnorm(h_t.unsqueeze(1), rms_w_h)
-    k_norm, _ = _ref_rmsnorm(k.unsqueeze(1).to(h_t.dtype), rms_w_h)
+    h_norm, _ = _rmsnorm(h_t.unsqueeze(1), rms_w_h)
+    k_norm, _ = _rmsnorm(k.unsqueeze(1).to(h_t.dtype), rms_w_h)
     h_norm = h_norm.squeeze(1)
     k_norm = k_norm.squeeze(1)
 
@@ -74,7 +74,7 @@ def _ref_engram_decode_step(
     v_hat = alpha * v
 
     # RMSNorm(v_hat)
-    v_hat_norm, _ = _ref_rmsnorm(v_hat.unsqueeze(1).to(h_t.dtype), rms_w_v)
+    v_hat_norm, _ = _rmsnorm(v_hat.unsqueeze(1).to(h_t.dtype), rms_w_v)
     v_hat_norm = v_hat_norm.squeeze(1)  # (B, d)
 
     # Dilated causal conv

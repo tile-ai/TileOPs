@@ -7,7 +7,7 @@ from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.engram_decode import EngramDecodeOp
 from workloads.ops.engram_decode import (
     EngramDecodeTest,
-    _ref_engram_decode_step,
+    engram_decode_step_torch,
 )
 
 
@@ -60,7 +60,7 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(*args):
-        return _ref_engram_decode_step(*args, max_conv_len=max_conv_len, dilation=dilation)
+        return engram_decode_step_torch(*args, max_conv_len=max_conv_len, dilation=dilation)
     result_bl = bm.profile(baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 

@@ -46,7 +46,7 @@ def _differentiable_fwd(q, k, v, g_raw, beta, chunk_size):
     return torch.cat(o_chunks, dim=2)
 
 
-def _autograd_bwd_ref(
+def gated_deltanet_autograd_bwd_torch(
     do: torch.Tensor,
     q: torch.Tensor,
     k: torch.Tensor,

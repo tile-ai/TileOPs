@@ -16,7 +16,7 @@ class FusedTopKTest(WorkloadBase):
         torch.manual_seed(42)
         return torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda")
 
-def _ref_fused_topk(
+def fused_topk_torch(
     gating_output: torch.Tensor,
     top_k: int,
     scoring_func: str = "softmax",

@@ -9,7 +9,7 @@ from tileops.ops import GatedDeltaNetDecodeOp
 from workloads.ops.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeTest as _GatedDeltaNetDecodeTestWorkload,
 )
-from workloads.ops.gated_deltanet_recurrence import _gated_deltanet_decode_torch_ref
+from workloads.ops.gated_deltanet_recurrence import gated_deltanet_decode_torch
 
 
 class GatedDeltaNetDecodeTest(_GatedDeltaNetDecodeTestWorkload, TestBase):
@@ -22,7 +22,7 @@ class GatedDeltaNetDecodeTest(_GatedDeltaNetDecodeTestWorkload, TestBase):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = _gated_deltanet_decode_torch_ref(q, k, v, g, beta, state)
+        o, new_state = gated_deltanet_decode_torch(q, k, v, g, beta, state)
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
@@ -104,7 +104,7 @@ def test_gated_deltanet_decode_multi_step(
         g = -torch.rand(B, H, device="cuda", dtype=dtype)
         beta = torch.rand(B, H, device="cuda", dtype=dtype) * 0.5
 
-        o_ref, state_ref = _gated_deltanet_decode_torch_ref(q, k, v, g, beta, state_ref)
+        o_ref, state_ref = gated_deltanet_decode_torch(q, k, v, g, beta, state_ref)
         o_ref = o_ref.to(dtype)
         state_ref = state_ref.to(dtype)
 

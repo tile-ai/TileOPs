@@ -13,7 +13,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GLADecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.gla_recurrence import GLADecodeTest, _gla_decode_torch_ref
+from workloads.ops.gla_recurrence import GLADecodeTest, gla_decode_torch
 
 
 class _GLADecodeTestBaseline(GLADecodeTest):
@@ -27,7 +27,7 @@ class _GLADecodeTestBaseline(GLADecodeTest):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = _gla_decode_torch_ref(q, k, v, gk, state, self.scale)
+        o, new_state = gla_decode_torch(q, k, v, gk, state, self.scale)
         return o.to(self.dtype), new_state.to(self.dtype)
 
 try:

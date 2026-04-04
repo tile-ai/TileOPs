@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase
 from tileops.ops import DeltaNetBwdOp
-from workloads.ops.deltanet_chunkwise_bwd import _autograd_bwd_ref
+from workloads.ops.deltanet_chunkwise_bwd import deltanet_autograd_bwd_torch
 
 # =============================================================================
 # Autograd-based reference: differentiable forward -> torch.autograd.grad
@@ -62,7 +62,7 @@ def test_deltanet_bwd(
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
     # Reference via autograd
-    ref_dq, ref_dk, ref_dv, ref_dbeta = _autograd_bwd_ref(do, q, k, v, beta, BC)
+    ref_dq, ref_dk, ref_dv, ref_dbeta = deltanet_autograd_bwd_torch(do, q, k, v, beta, BC)
     ref_outputs = (ref_dq, ref_dk, ref_dv, ref_dbeta)
 
     # Kernel

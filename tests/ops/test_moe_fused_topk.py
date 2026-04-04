@@ -16,7 +16,7 @@ import torch
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedTopKOp
-from workloads.ops.moe_fused_topk import FusedTopKTest, _ref_fused_topk
+from workloads.ops.moe_fused_topk import FusedTopKTest, fused_topk_torch
 
 # ---------------------------------------------------------------------------
 # Reference implementation
@@ -69,7 +69,7 @@ def _check(test: FusedTopKTest) -> None:
         scoring_func=test.scoring_func,
         renormalize=test.renormalize,
     )
-    ref_w, ref_ids = _ref_fused_topk(gating, test.top_k, test.scoring_func, test.renormalize)
+    ref_w, ref_ids = fused_topk_torch(gating, test.top_k, test.scoring_func, test.renormalize)
     out_w, out_ids = op(gating)
 
     assert out_w.shape == (test.num_tokens, test.top_k), f"weights shape mismatch: {out_w.shape}"

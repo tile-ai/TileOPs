@@ -6,7 +6,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeltaNetDecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.deltanet_recurrence import DeltaNetDecodeTest, _deltanet_decode_torch_ref
+from workloads.ops.deltanet_recurrence import DeltaNetDecodeTest, deltanet_decode_torch
 
 
 class _DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
@@ -20,7 +20,7 @@ class _DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = _deltanet_decode_torch_ref(q, k, v, beta, state)
+        o, new_state = deltanet_decode_torch(q, k, v, beta, state)
         return o.to(self.dtype), new_state.to(self.dtype)
 
 

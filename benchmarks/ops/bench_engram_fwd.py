@@ -7,7 +7,7 @@ from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.engram_fwd import EngramGateConvFwdOp
 from workloads.ops.engram_fwd import (
     EngramGateConvFwdTest,
-    ref_engram_gate_conv_fwd,
+    engram_gate_conv_fwd_torch,
 )
 
 
@@ -54,7 +54,7 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype, tune):
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(*args):
-        return ref_engram_gate_conv_fwd(*args)
+        return engram_gate_conv_fwd_torch(*args)
     result_bl = bm.profile(baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 

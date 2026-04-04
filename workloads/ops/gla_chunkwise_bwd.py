@@ -3,7 +3,7 @@ from typing import Tuple
 import torch
 
 
-def _gla_autograd_bwd_ref(
+def gla_autograd_bwd_torch(
     do: torch.Tensor,
     q: torch.Tensor,
     k: torch.Tensor,
@@ -24,13 +24,13 @@ def _gla_autograd_bwd_ref(
     v_ = v.float().detach().requires_grad_(True)
     g_ = g.float().detach().requires_grad_(True)
 
-    o = _gla_fwd_torch_ref(q_, k_, v_, g_, chunk_size, scale=sc)
+    o = gla_fwd_chunked_torch(q_, k_, v_, g_, chunk_size, scale=sc)
     loss = (o * do.float()).sum()
     dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
     return dq, dk, dv, dg
 
 
-def _gla_fwd_torch_ref(q, k, v, g, chunk_size, scale=None):
+def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
     """Fully differentiable chunked GLA forward in float32.
 
     Args:

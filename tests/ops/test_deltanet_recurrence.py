@@ -7,7 +7,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import DeltaNetDecodeOp
 from workloads.ops.deltanet_recurrence import DeltaNetDecodeTest as _DeltaNetDecodeTestWorkload
-from workloads.ops.deltanet_recurrence import _deltanet_decode_torch_ref
+from workloads.ops.deltanet_recurrence import deltanet_decode_torch
 
 
 class DeltaNetDecodeTest(_DeltaNetDecodeTestWorkload, TestBase):
@@ -19,7 +19,7 @@ class DeltaNetDecodeTest(_DeltaNetDecodeTestWorkload, TestBase):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        o, new_state = _deltanet_decode_torch_ref(q, k, v, beta, state)
+        o, new_state = deltanet_decode_torch(q, k, v, beta, state)
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
@@ -98,7 +98,7 @@ def test_deltanet_decode_multi_step(
         v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
         beta = torch.rand(B, H, device="cuda", dtype=dtype) * 0.5
 
-        o_ref, state_ref = _deltanet_decode_torch_ref(q, k, v, beta, state_ref)
+        o_ref, state_ref = deltanet_decode_torch(q, k, v, beta, state_ref)
         o_ref = o_ref.to(dtype)
         state_ref = state_ref.to(dtype)
 

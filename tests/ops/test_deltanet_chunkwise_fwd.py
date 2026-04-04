@@ -8,9 +8,9 @@ from workloads.ops.deltanet_chunkwise_fwd import (
     DeltaNetFwdTest as _DeltaNetFwdTestWorkload,
 )
 from workloads.ops.deltanet_chunkwise_fwd import (
-    _compute_w_u_torch_ref,
-    _kernel2_torch_ref,
-    _prepare_wy_repr_torch_ref,
+    compute_w_u_torch,
+    kernel2_deltanet_torch,
+    prepare_wy_repr_deltanet_torch,
 )
 
 
@@ -24,10 +24,10 @@ class DeltaNetFwdTest(_DeltaNetFwdTestWorkload, TestBase):
     ) -> torch.Tensor:
         B, H, S, DK = k.shape
         _, _, _, DV = v.shape
-        Aw, Au = _prepare_wy_repr_torch_ref(k, beta, self.chunk_size)
-        w, u = _compute_w_u_torch_ref(Aw, Au, k, v, beta, self.chunk_size)
+        Aw, Au = prepare_wy_repr_deltanet_torch(k, beta, self.chunk_size)
+        w, u = compute_w_u_torch(Aw, Au, k, v, beta, self.chunk_size)
         S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-        _S, o = _kernel2_torch_ref(q, k, w, u, S_0, self.chunk_size)
+        _S, o = kernel2_deltanet_torch(q, k, w, u, S_0, self.chunk_size)
         return o.to(self.dtype)
 
 

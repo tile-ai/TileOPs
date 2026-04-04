@@ -5,7 +5,7 @@ import torch
 from workloads.base import WorkloadBase
 
 
-def _gla_decode_torch_ref(
+def gla_decode_torch(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,

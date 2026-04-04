@@ -1,18 +1,20 @@
-import pytest
 import torch
 
 from workloads.base import FixtureBase, WorkloadBase
 
 
 class DaCumsumFwdFixture(FixtureBase):
-    PARAMS = [
-        ("batch, num_chunks, chunk_len, n_heads, tune", [
-            pytest.param(1, 2, 64, 4, False, marks=pytest.mark.smoke),
-            pytest.param(2, 4, 64, 8, False, marks=pytest.mark.full),
-            pytest.param(1, 2, 128, 4, False, marks=pytest.mark.full),
-            pytest.param(2, 4, 128, 16, False, marks=pytest.mark.full),
-        ]),
-    ]
+    @classmethod
+    def get_params(cls):
+        import pytest
+        return [
+            ("batch, num_chunks, chunk_len, n_heads, tune", [
+                pytest.param(1, 2, 64, 4, False, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 64, 8, False, marks=pytest.mark.full),
+                pytest.param(1, 2, 128, 4, False, marks=pytest.mark.full),
+                pytest.param(2, 4, 128, 16, False, marks=pytest.mark.full),
+            ]),
+        ]
 
 class DaCumsumFwdTest(WorkloadBase):
     def __init__(
@@ -34,35 +36,3 @@ class DaCumsumFwdTest(WorkloadBase):
         dt = torch.rand(b, seq_len, h, dtype=torch.float32, device="cuda") * 0.1 + 0.01
         A = -torch.rand(h, dtype=torch.float32, device="cuda")
         return dt, A
-
-def da_cumsum_fwd_ref(
-    dt: torch.Tensor,   # (b, seq_len, h)  float32
-    A: torch.Tensor,    # (h,)             float32
-    num_chunks: int,
-    chunk_len: int,
-) -> torch.Tensor:
-    """
-    PyTorch reference for da_cumsum_fwd.
-
-    Returns:
-      dA_cumsum: (b, h, c, Q)  float32
-
-    Semantics:
-      dA_cumsum[b, h, c, l] = sum_{i=0}^{l} dt[b, c*Q+i, h] * A[h]
-
-    This matches A_cumsum in the Mamba-2 ssd_minimal_discrete reference:
-      A = rearrange(dt * A_log, "b (c l) h -> b h c l")
-      A_cumsum = torch.cumsum(A, dim=-1)
-    """
-    b, S, h = dt.shape
-    Q = chunk_len
-    C = num_chunks
-
-    # (b, S, h) -> (b, C, Q, h)
-    dt_chunked = dt.float().reshape(b, C, Q, h)
-    # dA = dt * A, broadcast A: (h,) -> (1, 1, 1, h)
-    dA = dt_chunked * A.float()          # (b, C, Q, h)
-    # Inclusive prefix sum along the position axis (dim=2)
-    dA_cumsum = dA.cumsum(dim=2)         # (b, C, Q, h)
-    # Rearrange to match output layout (b, h, C, Q)
-    return dA_cumsum.permute(0, 3, 1, 2).contiguous()

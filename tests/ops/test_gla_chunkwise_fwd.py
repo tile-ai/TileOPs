@@ -4,7 +4,7 @@ import torch
 from tests.ops.gla_test_utils import cosine_sim, get_tolerances
 from tests.test_base import FixtureBase
 from tileops.ops import GLAFwdOp
-from workloads.ops.gla_chunkwise_bwd import _gla_fwd_torch_ref
+from workloads.ops.gla_chunkwise_bwd import gla_fwd_chunked_torch
 
 try:
     from fla.ops.gla import chunk_gla
@@ -51,7 +51,7 @@ def test_gla_fwd(
     g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype)
 
     # --- Torch reference ---
-    ref_o = _gla_fwd_torch_ref(q, k, v, g, BC, scale=scale)
+    ref_o = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale)
 
     # --- FLA reference (if available) ---
     if chunk_gla is not None:

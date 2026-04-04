@@ -4,12 +4,12 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.engram_decode import EngramDecodeOp
 from workloads.ops.engram_decode import EngramDecodeTest as _EngramDecodeTestWorkload
-from workloads.ops.engram_decode import _ref_engram_decode_step
+from workloads.ops.engram_decode import engram_decode_step_torch
 
 
 class EngramDecodeTest(_EngramDecodeTestWorkload, TestBase):
     def ref_program(self, e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
-        y_ref, state_ref = _ref_engram_decode_step(
+        y_ref, state_ref = engram_decode_step_torch(
             e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
             self.max_conv_len, self.dilation, self.eps,
         )
@@ -69,7 +69,7 @@ def test_engram_decode_multi_step():
         h_t = torch.randn(B, d, dtype=dtype, device="cuda")
 
         y_op, conv_state = op(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
-        y_ref, conv_state_ref = _ref_engram_decode_step(
+        y_ref, conv_state_ref = engram_decode_step_torch(
             e_t, h_t, conv_state_ref, W_K, W_V, rms_w_h, rms_w_v, conv_w,
             max_conv_len, dilation, eps,
         )

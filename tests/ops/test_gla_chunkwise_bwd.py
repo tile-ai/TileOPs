@@ -6,7 +6,7 @@ import torch
 from tests.ops.gla_test_utils import cosine_sim, get_tolerances
 from tests.test_base import FixtureBase
 from tileops.ops import GLABwdOp, GLAFwdOp
-from workloads.ops.gla_chunkwise_bwd import _gla_autograd_bwd_ref
+from workloads.ops.gla_chunkwise_bwd import gla_autograd_bwd_torch
 
 try:
     from fla.ops.gla import chunk_gla
@@ -86,7 +86,7 @@ def test_gla_bwd(
     scale = K ** -0.5
 
     # --- Torch reference via autograd ---
-    ref_dq, ref_dk, ref_dv, ref_dg = _gla_autograd_bwd_ref(
+    ref_dq, ref_dk, ref_dv, ref_dg = gla_autograd_bwd_torch(
         do, q, k, v, g, BC, scale=scale
     )
     ref_grads = {"dq": ref_dq, "dk": ref_dk, "dv": ref_dv, "dg": ref_dg}

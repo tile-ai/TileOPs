@@ -19,7 +19,27 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoeUnpermuteOp
 from workloads.ops.moe_unpermute import MoeUnpermuteTest as _MoeUnpermuteTestWorkload
-from workloads.ops.moe_unpermute import _ref_moe_unpermute
+
+
+def _ref_moe_unpermute(
+    mm2_pad: torch.Tensor,
+    fwd_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+) -> torch.Tensor:
+    """Pure-PyTorch reference for moe_unpermute."""
+    _, H = mm2_pad.shape
+    T, K = topk_weights.shape
+    dtype = mm2_pad.dtype
+
+    output = torch.zeros(T, H, dtype=torch.float32, device=mm2_pad.device)
+    for i in range(T):
+        for k in range(K):
+            flat_idx = i * K + k
+            padded_slot = fwd_idx[flat_idx].item()
+            w = topk_weights[i, k].item()
+            output[i] += mm2_pad[padded_slot].float() * w
+
+    return output.to(dtype)
 
 
 class MoeUnpermuteTest(_MoeUnpermuteTestWorkload, TestBase):

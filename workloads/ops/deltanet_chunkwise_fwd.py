@@ -5,7 +5,7 @@ import torch
 from workloads.base import WorkloadBase
 
 
-def _compute_w_u_torch_ref(
+def compute_w_u_torch(
     Aw: torch.Tensor,
     Au: torch.Tensor,
     k: torch.Tensor,
@@ -27,7 +27,7 @@ def _compute_w_u_torch_ref(
     u = torch.einsum("bhcij,bhcjd->bhcid", Au_, v_beta_).reshape(B, H, S, DV)
     return w, u
 
-def _kernel2_torch_ref(
+def kernel2_deltanet_torch(
     q: torch.Tensor,
     k: torch.Tensor,
     w: torch.Tensor,
@@ -66,7 +66,7 @@ def _kernel2_torch_ref(
         h = h + torch.einsum("bhnk,bhnv->bhkv", k_c, v_new_c)
     return h, o
 
-def _prepare_wy_repr_torch_ref(
+def prepare_wy_repr_deltanet_torch(
     k: torch.Tensor,
     beta: torch.Tensor,
     chunk_size: int,
