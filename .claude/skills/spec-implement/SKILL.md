@@ -33,6 +33,12 @@ stateDiagram-v2
     BLOCKED --> [*]: return blocked to orchestrator
 ```
 
+## Dual-path policy
+
+When rewriting a base class shared by sibling ops, it is acceptable to create a dual-path `__init__` — a runtime branch supporting both the legacy `(M, N)` interface and the new spec `(dim)` interface. This keeps unmigrated siblings' tests passing.
+
+Dual-path is temporary debt. The orchestrator's cleanup gate removes it after all siblings are promoted or blocked. The implementer should NOT try to avoid dual-path by preemptively migrating siblings — that violates per-op scope.
+
 ## Steps
 
 ### 1. ANALYZE
