@@ -5,11 +5,26 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.ssd_state_passing_fwd import SsdStatePassingFwdOp
-from workloads.ops.ssd_state_passing_fwd import (
-    SsdStatePassingFwdFixture,
-    SsdStatePassingFwdTest,
-    ssd_state_passing_fwd_ref,
-)
+from workloads.ops.ssd_state_passing_fwd import SsdStatePassingFwdFixture, SsdStatePassingFwdTest
+
+
+def ssd_state_passing_fwd_ref(
+    states: torch.Tensor,
+    dA_chunk_cumsum: torch.Tensor,
+    initial_states: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """PyTorch reference for ssd_state_passing_fwd (benchmark-local copy)."""
+    b, c, h, d = states.shape
+    out = []
+    s = initial_states.float()
+
+    for ci in range(c):
+        scale = torch.exp(dA_chunk_cumsum[:, :, ci]).unsqueeze(-1)
+        u = states[:, ci, :, :].float()
+        s = scale * s + u
+        out.append(s.clone())
+
+    return torch.stack(out, dim=1), s
 
 
 class SsdStatePassingFwdBenchmark(BenchmarkBase):

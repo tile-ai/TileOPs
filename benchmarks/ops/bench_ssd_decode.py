@@ -5,11 +5,39 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.ssd_decode import SsdDecodeOp
-from workloads.ops.ssd_decode import (
-    SsdDecodeFixture,
-    SsdDecodeTest,
-    ssd_decode_ref,
-)
+from workloads.ops.ssd_decode import SsdDecodeFixture, SsdDecodeTest
+
+
+def ssd_decode_ref(
+    A: torch.Tensor,      # (H,)          float32
+    dt: torch.Tensor,     # (B, H)        float32
+    x: torch.Tensor,      # (B, H, P)     any dtype
+    B_in: torch.Tensor,   # (B, G, N)     any dtype
+    C_in: torch.Tensor,   # (B, G, N)     any dtype
+    state: torch.Tensor,  # (B, H, P, N)  float32  -- updated in-place
+) -> torch.Tensor:
+    """PyTorch reference for ssd_decode (benchmark-local copy)."""
+    B, H = dt.shape
+    G = B_in.shape[1]
+    heads_per_group = H // G
+
+    dA = torch.exp(dt.float() * A.float())
+
+    head_idx = torch.arange(H, device=B_in.device) // heads_per_group
+    B_heads = B_in.float()[:, head_idx, :]
+    C_heads = C_in.float()[:, head_idx, :]
+
+    dBx = (
+        dt.float()[:, :, None, None]
+        * x.float()[:, :, :, None]
+        * B_heads[:, :, None, :]
+    )
+
+    new_state = dA[:, :, None, None] * state.float() + dBx
+    state.copy_(new_state)
+
+    y_out = torch.einsum("bhpn,bhn->bhp", state.float(), C_heads)
+    return y_out
 
 
 class SsdDecodeBenchmark(BenchmarkBase):
