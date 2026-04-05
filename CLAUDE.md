@@ -21,7 +21,7 @@ TileOPs is a high-performance LLM operator library built on TileLang. The goal i
 
 ### Process
 
-- [workflow.md](docs/workflow.md) — development flow (Step 0→4), branch/commit conventions, coding standards, PR process, CI/CD
+- [trust-model.md](docs/trust-model.md) — trust boundaries (manifest → test → implementation → benchmark), workloads layer contract
 - [testing.md](docs/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
 
 ### External

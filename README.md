@@ -94,7 +94,7 @@ Design docs and development guides are in [`docs/`](docs/). The full API referen
 
 ## Contributing
 
-See [workflow.md](docs/workflow.md) for branch naming, commit conventions, and the PR process.
+See [docs/](docs/) for design docs. Branch and commit conventions are in [`.claude/conventions/types.sh`](.claude/conventions/types.sh).
 
 ## License
 
