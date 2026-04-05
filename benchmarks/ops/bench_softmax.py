@@ -24,12 +24,12 @@ class SoftmaxBenchmark(BenchmarkBase):
     """Benchmark for softmax op (4N FLOPs: max, exp, sum, div)."""
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return 4 * t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
         """Read x (M*N) + write y (M*N)."""
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         return (2 * t.m * t.n) * elem_bytes
 
@@ -38,12 +38,12 @@ class LogSoftmaxBenchmark(BenchmarkBase):
     """Benchmark for log_softmax op (5N FLOPs: max, exp, sum, div, log)."""
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return 5 * t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
         """Read x (M*N) + write y (M*N)."""
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         return (2 * t.m * t.n) * elem_bytes
 
@@ -52,12 +52,12 @@ class LogSumExpBenchmark(BenchmarkBase):
     """Benchmark for logsumexp op (3N FLOPs: max, exp, sum + 1 log+add)."""
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return 3 * t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
         """Read x (M*N) + write y (M)."""
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         return (t.m * t.n + t.m) * elem_bytes
 
