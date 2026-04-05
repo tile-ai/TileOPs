@@ -232,37 +232,43 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
 
 
 # ===================================================================
-# LogSumExp — 2D
+# LogSumExp — spec-conformant interface (shape, dim, keepdim, dtype)
 # ===================================================================
 
 
 class LogSumExpFixture(FixtureBase):
     PARAMS = [
         (
-            "m, n, dtype, tune",
+            "shape, dim, dtype, tune",
             [
-                pytest.param(32, 256, torch.float32, False, marks=pytest.mark.smoke),
-                pytest.param(32, 256, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(32, 256, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(32, 300, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(32, 300, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(32, 300, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(33, 256, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(33, 256, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(33, 256, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(33, 300, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(33, 300, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(33, 300, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
+                # Smoke: 2D, dim=-1, fp32, pow2
+                pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                # dim=-1: dtypes x pow2/non-pow2
+                pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
+                pytest.param((32, 300), -1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((32, 300), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=-1, tail-M
+                pytest.param((33, 256), -1, torch.float32, False, marks=pytest.mark.full),
+                pytest.param((33, 256), -1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((33, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=-1, 3D input
+                pytest.param((2, 16, 256), -1, torch.float32, False, marks=pytest.mark.full),
+                pytest.param((2, 16, 256), -1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((2, 16, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=-1, 4D input
+                pytest.param((2, 4, 8, 256), -1, torch.float32, False, marks=pytest.mark.full),
+                pytest.param((2, 4, 8, 256), -1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((2, 4, 8, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=0
+                pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
+                pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((256, 32), 0, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=1 (middle dim for 3D)
+                pytest.param((2, 256, 16), 1, torch.float32, False, marks=pytest.mark.full),
+                pytest.param((2, 256, 16), 1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((2, 256, 16), 1, torch.bfloat16, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -270,19 +276,23 @@ class LogSumExpFixture(FixtureBase):
 
 class LogSumExpTest(_LogSumExpTestWorkload, TestBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.logsumexp(x.float(), dim=-1).to(x.dtype)
+        return torch.logsumexp(x.float(), dim=self.dim).to(x.dtype)
+
+    def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
+        super().__init__(shape, dtype)
+        self.dim = dim
 
 
 @LogSumExpFixture
-def test_logsumexp_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSumExpTest(m, n, dtype)
-    op = LogSumExpOp(M=m, N=n, dtype=dtype, tune=tune)
+def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
+    test = LogSumExpTest(shape, dtype, dim=dim)
+    op = LogSumExpOp(dtype=dtype, dim=dim, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
 # ===================================================================
-# Non-contiguous input tests — log_softmax (spec) and logsumexp (legacy)
+# Non-contiguous input tests (spec interface)
 # ===================================================================
 
 
@@ -322,26 +332,27 @@ def test_log_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
 class LogSumExpNonContigFixture(FixtureBase):
     PARAMS = [
         (
-            "m, n, dtype",
+            "shape, dtype",
             [
-                pytest.param(32, 256, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(32, 256, torch.float16, marks=pytest.mark.full),
-                pytest.param(32, 256, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(32, 300, torch.float32, marks=pytest.mark.full),
-                pytest.param(32, 300, torch.float16, marks=pytest.mark.full),
-                pytest.param(32, 300, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param((32, 256), torch.float32, marks=pytest.mark.smoke),
+                pytest.param((32, 256), torch.float16, marks=pytest.mark.full),
+                pytest.param((32, 256), torch.bfloat16, marks=pytest.mark.full),
+                pytest.param((32, 300), torch.float32, marks=pytest.mark.full),
+                pytest.param((32, 300), torch.float16, marks=pytest.mark.full),
+                pytest.param((32, 300), torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
 @LogSumExpNonContigFixture
-def test_logsumexp_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
+def test_logsumexp_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     """Test logsumexp with non-contiguous input."""
+    m, n = shape
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
 
-    op = LogSumExpOp(M=m, N=n, dtype=dtype)
+    op = LogSumExpOp(dtype=dtype, dim=-1)
 
     y_ref = torch.logsumexp(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
@@ -352,7 +363,7 @@ def test_logsumexp_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 # ===================================================================
-# 1D input tests — log_softmax (spec) and logsumexp (legacy)
+# 1D input tests (spec interface)
 # ===================================================================
 
 
@@ -406,7 +417,7 @@ class LogSumExp1DFixture(FixtureBase):
 def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
     """Test logsumexp with 1D input -- output should be a scalar."""
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = LogSumExpOp(M=1, N=n, dtype=dtype)
+    op = LogSumExpOp(dtype=dtype, dim=-1)
 
     y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
     y = op(x)
@@ -414,81 +425,6 @@ def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
     assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
     assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
         f"1D logsumexp failed, max err: {(y - y_ref).abs().max()}"
-    )
-
-
-# ===================================================================
-# 3D/4D input tests — logsumexp only (legacy)
-# ===================================================================
-
-
-class Input3DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq, hidden, dtype",
-            [
-                pytest.param(2, 16, 256, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(2, 16, 256, torch.float16, marks=pytest.mark.full),
-                pytest.param(2, 16, 256, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(2, 16, 300, torch.float32, marks=pytest.mark.full),
-                pytest.param(2, 16, 300, torch.float16, marks=pytest.mark.full),
-                pytest.param(2, 16, 300, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.full),
-                pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.full),
-                pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@Input3DFixture
-def test_logsumexp_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    """Test logsumexp with 3D input -- output shape should be (batch, seq)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = LogSumExpOp(M=M, N=hidden, dtype=dtype)
-
-    y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
-    y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
-        f"3D logsumexp failed, max err: {(y - y_ref).abs().max()}"
-    )
-
-
-class Input4DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "b, h, s, d, dtype",
-            [
-                pytest.param(2, 4, 8, 256, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(2, 4, 8, 256, torch.float16, marks=pytest.mark.full),
-                pytest.param(2, 4, 8, 256, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(2, 4, 8, 300, torch.float32, marks=pytest.mark.full),
-                pytest.param(2, 4, 8, 300, torch.float16, marks=pytest.mark.full),
-                pytest.param(2, 4, 8, 300, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(2, 4, 128, 256, torch.float32, marks=pytest.mark.full),
-                pytest.param(2, 4, 128, 256, torch.float16, marks=pytest.mark.full),
-                pytest.param(2, 4, 128, 256, torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@Input4DFixture
-def test_logsumexp_4d(b: int, h: int, s: int, d: int, dtype: torch.dtype) -> None:
-    """Test logsumexp with 4D input -- output shape should be (b, h, s)."""
-    x = torch.randn(b, h, s, d, dtype=dtype, device="cuda")
-    M = b * h * s
-    op = LogSumExpOp(M=M, N=d, dtype=dtype)
-
-    y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
-    y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
-        f"4D logsumexp failed, max err: {(y - y_ref).abs().max()}"
     )
 
 

@@ -38,6 +38,7 @@ class _SoftmaxBaseOp(Op):
     Args:
         dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (spec path).  Ignored when M/N are given.
+        keepdim: Whether to retain the reduced dimension (spec path, default False).
         M: Number of rows (legacy path).
         N: Hidden dimension (legacy path).
         kernel_map: Optional override for kernel dispatch.
@@ -53,6 +54,7 @@ class _SoftmaxBaseOp(Op):
         *,
         dtype: torch.dtype,
         dim: int = -1,
+        keepdim: bool = False,
         M: Optional[int] = None,
         N: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -64,10 +66,12 @@ class _SoftmaxBaseOp(Op):
             self.M = M
             self.N = N
             self.dim = -1  # legacy always reduces last dim
+            self.keepdim = False
         else:
             # Spec path: dim provided, M/N computed at forward time.
             self._legacy = False
             self.dim = dim
+            self.keepdim = keepdim
             self.M: Optional[int] = None  # type: ignore[assignment]
             self.N: Optional[int] = None  # type: ignore[assignment]
 
@@ -234,8 +238,13 @@ class _SoftmaxBaseOp(Op):
             else:
                 y = y.reshape(orig_shape)
         else:
-            # Reduced-dim ops (logsumexp): (M,) -> remove dim from shape.
-            reduced_shape = [s for i, s in enumerate(orig_shape) if i != dim]
-            y = y.squeeze() if len(reduced_shape) == 0 else y.reshape(reduced_shape)
+            # Reduced-dim ops (logsumexp): (M,) -> remove or keep dim.
+            if self.keepdim:
+                kept_shape = list(orig_shape)
+                kept_shape[dim] = 1
+                y = y.reshape(kept_shape)
+            else:
+                reduced_shape = [s for i, s in enumerate(orig_shape) if i != dim]
+                y = y.squeeze() if len(reduced_shape) == 0 else y.reshape(reduced_shape)
 
         return y
