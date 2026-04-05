@@ -2,19 +2,74 @@ from typing import Optional
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_engram_decode import (
-    EngramDecodeTest,
-    _ref_engram_decode_step,
-)
 from tileops.ops.engram_decode import EngramDecodeOp
+from workloads.ops.engram_decode import EngramDecodeTest
+
+
+def _rmsnorm(x, w, eps=1e-6):
+    x_f = x.float()
+    rrms = (x_f ** 2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
+    return (x_f * rrms * w.float()), rrms
+
+
+def engram_decode_step_torch(
+    e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
+    max_conv_len, dilation, eps=1e-6,
+):
+    """PyTorch reference for a single decode step with dilated causal conv."""
+    B, d = h_t.shape
+    w = conv_w.shape[0]
+    L = conv_state.shape[1]
+
+    k = e_t.float() @ W_K.float()
+    v = e_t.float() @ W_V.float()
+
+    h_norm, _ = _rmsnorm(h_t.unsqueeze(1), rms_w_h)
+    k_norm, _ = _rmsnorm(k.unsqueeze(1).to(h_t.dtype), rms_w_h)
+    h_norm = h_norm.squeeze(1)
+    k_norm = k_norm.squeeze(1)
+
+    dot = (h_norm * k_norm).sum(dim=-1, keepdim=True)
+    alpha = torch.sigmoid(dot / (d ** 0.5))
+    v_hat = alpha * v
+
+    v_hat_norm, _ = _rmsnorm(v_hat.unsqueeze(1).to(h_t.dtype), rms_w_v)
+    v_hat_norm = v_hat_norm.squeeze(1)
+
+    if max_conv_len > L:
+        padded_state = F.pad(conv_state.float(), (0, 0, max_conv_len - L, 0))
+    else:
+        padded_state = conv_state.float()
+
+    conv_out = torch.zeros(B, d, device=h_t.device)
+    for p in range(w - 1):
+        state_idx = max_conv_len - (w - 1 - p) * dilation
+        if 0 <= state_idx < max_conv_len:
+            conv_out += conv_w[p].float().unsqueeze(0) * padded_state[:, state_idx, :]
+    conv_out += conv_w[w - 1].float().unsqueeze(0) * v_hat_norm
+
+    if max_conv_len > L:
+        new_conv_state = torch.cat([
+            conv_state,
+            v_hat_norm.unsqueeze(1).to(conv_state.dtype),
+        ], dim=1)
+    else:
+        new_conv_state = torch.cat([
+            conv_state[:, 1:, :],
+            v_hat_norm.unsqueeze(1).to(conv_state.dtype),
+        ], dim=1)
+
+    y_t = F.silu(conv_out) + v_hat
+    return y_t.to(h_t.dtype), new_conv_state
 
 
 class EngramDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, d_mem, d, w = t.batch, t.d_mem, t.d, t.conv_kernel_size
         # GEMV: 2 * B * d_mem * d (k) + 2 * B * d_mem * d (v)
         # 2x RMSNorm(d): ~4d each -> 8*B*d
@@ -27,7 +82,7 @@ class EngramDecodeBenchmark(BenchmarkBase):
                 + 20 * B)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, d_mem, d, mcl, w = t.batch, t.d_mem, t.d, t.max_conv_len, t.conv_kernel_size
         elem = torch.tensor([], dtype=t.dtype).element_size()
         # Read: e_t (B*d_mem) + h_t (B*d) + conv_state (B*mcl*d) + W_K,W_V (2*d_mem*d)
@@ -60,7 +115,7 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline(*args):
-        return _ref_engram_decode_step(*args, max_conv_len=max_conv_len, dilation=dilation)
+        return engram_decode_step_torch(*args, max_conv_len=max_conv_len, dilation=dilation)
     result_bl = bm.profile(baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 

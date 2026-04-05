@@ -12,8 +12,8 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
 from tileops.ops.elementwise import AddOp, ExpOp, ReluOp, SiluAndMulOp
+from workloads.base import FixtureBase
 
 # Shapes modeled on real LLM workloads: batch × seq_len × hidden_dim
 # Small:  1 × 2048 × 4096  =  8,388,608  (single-batch inference, LLaMA-7B hidden)
@@ -40,11 +40,11 @@ class Fp8UnaryBenchCase:
 
 class Fp8UnaryBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         # fp8 in (1B) + fp8 out (1B) per element
-        return self.test.n_total * 2
+        return self.workload.n_total * 2
 
 
 class Fp8BinaryBenchCase:
@@ -60,11 +60,11 @@ class Fp8BinaryBenchCase:
 
 class Fp8BinaryBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         # fp8 in a (1B) + fp8 in b (1B) + fp8 out (1B)
-        return self.test.n_total * 3
+        return self.workload.n_total * 3
 
 
 class Fp8FusedGatedBenchCase:
@@ -82,11 +82,11 @@ class Fp8FusedGatedBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
         # FIXME(ying): hardcoded for silu (4 FLOPs/elem + 1 mul with value = 5).
         # Must update when benchmarking other activations (e.g. gelu).
-        return self.test.M * self.test.N * 5
+        return self.workload.M * self.workload.N * 5
 
     def calculate_memory(self) -> Optional[float]:
         # Read x (M*2N*1B) + write y (M*N*1B)
-        return (self.test.M * 2 * self.test.N + self.test.M * self.test.N)
+        return (self.workload.M * 2 * self.workload.N + self.workload.M * self.workload.N)
 
 
 # ---------------------------------------------------------------------------

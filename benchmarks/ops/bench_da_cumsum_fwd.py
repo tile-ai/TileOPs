@@ -4,25 +4,37 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_da_cumsum_fwd import (
-    DaCumsumFwdFixture,
-    DaCumsumFwdTest,
-    da_cumsum_fwd_ref,
-)
 from tileops.ops.da_cumsum_fwd import DaCumsumFwdOp
+from workloads.ops.da_cumsum_fwd import DaCumsumFwdFixture, DaCumsumFwdTest
+
+
+def da_cumsum_fwd_ref(
+    dt: torch.Tensor,
+    A: torch.Tensor,
+    num_chunks: int,
+    chunk_len: int,
+) -> torch.Tensor:
+    """PyTorch reference for da_cumsum_fwd (benchmark-local copy)."""
+    b, S, h = dt.shape
+    Q = chunk_len
+    C = num_chunks
+    dt_chunked = dt.float().reshape(b, C, Q, h)
+    dA = dt_chunked * A.float()
+    dA_cumsum = dA.cumsum(dim=2)
+    return dA_cumsum.permute(0, 3, 1, 2).contiguous()
 
 
 class DaCumsumFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, L, h = t.batch, t.num_chunks, t.chunk_len, t.n_heads
         # One multiply (dt * A) and one add per element for the inclusive scan
         # Total: 2 * b * c * L * h
         return float(2 * b * c * L * h)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, L, h = t.batch, t.num_chunks, t.chunk_len, t.n_heads
         # float32 throughout
         elem = 4

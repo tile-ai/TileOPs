@@ -12,7 +12,6 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
 from tileops.ops.elementwise import (
     BitwiseAndOp,
     BitwiseOrOp,
@@ -33,6 +32,7 @@ from tileops.ops.elementwise import (
     SiluAndMulOp,
     SubOp,
 )
+from workloads.base import FixtureBase
 
 # DNN-realistic shapes: (tokens, hidden_dim)
 _SHAPES = ((1024, 4096), (1024, 10240), (1024, 20480))
@@ -67,10 +67,10 @@ class BinaryBenchmark(BenchmarkBase):
     """Bandwidth-oriented benchmark for binary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         in_bytes = t.dtype.itemsize
         out_bytes = t.output_dtype.itemsize
         return t.n_total * (2 * in_bytes + out_bytes)
@@ -95,10 +95,10 @@ class FusedGatedBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         # activation + multiply: ~2 flops per element
-        return 2 * self.test.n_total
+        return 2 * self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem = t.dtype.itemsize
         # Read (M, 2N) + write (M, N)
         return t.n_total * 3 * elem
@@ -465,10 +465,10 @@ class BroadcastBenchmark(BenchmarkBase):
     """Bandwidth-oriented benchmark for broadcast binary ops."""
 
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem = t.dtype.itemsize
         out_elem = t.output_dtype.itemsize
         # Read a + read b (smaller, broadcast) + write output

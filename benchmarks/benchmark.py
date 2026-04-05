@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional, Tuple
 import torch
 from torch.autograd.profiler import DeviceType
 
-from tests.test_base import TestBase
+from workloads.base import WorkloadBase
 
 _logger = logging.getLogger("tileops.bench")
 
@@ -211,12 +211,12 @@ def _get_env_metadata() -> list[str]:
 class BenchmarkBase(ABC):
     """Abstract base class for op benchmarking.
 
-    Takes a TestBase instance to share gen_inputs().
+    Takes a WorkloadBase instance to share gen_inputs().
     Subclass must implement calculate_flops() and calculate_memory().
     """
 
-    def __init__(self, test: TestBase):
-        self.test = test
+    def __init__(self, workload: WorkloadBase):
+        self.workload = workload
 
     @abstractmethod
     def calculate_flops(self) -> Optional[float]:

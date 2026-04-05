@@ -59,12 +59,12 @@ class Conv1dBenchCase:
 class Conv1dBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         out_l = (t.l_in + 2 * t.padding - t.kernel_size) // t.stride + 1
         return 2.0 * t.n * t.c_out * out_l * t.c_in * t.kernel_size
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         out_l = (t.l_in + 2 * t.padding - t.kernel_size) // t.stride + 1
         bytes_ = (
             t.n * t.c_in * t.l_in

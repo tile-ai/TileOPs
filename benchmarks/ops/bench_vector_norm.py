@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
+from workloads.base import FixtureBase, WorkloadBase
 
 
 class VectorNormBenchFixture(FixtureBase):
@@ -38,7 +38,7 @@ class VectorNormBenchFixture(FixtureBase):
 _ORD_MAP = {"l1": 1, "l2": 2, "inf": float("inf")}
 
 
-class VectorNormBenchTest(TestBase):
+class VectorNormBenchTest(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
         self.m = m
         self.n = n
@@ -56,14 +56,14 @@ class VectorNormBenchTest(TestBase):
 
 class VectorNormBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # l1: N abs + N-1 adds per row
         # l2: N muls + N-1 adds + 1 sqrt per row
         # inf: N abs + N-1 comparisons per row
         return t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         # Read x (M*N) + write output (M)
         return t.m * t.n * elem_bytes + t.m * elem_bytes

@@ -27,9 +27,29 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_moe_fused_topk import FusedTopKTest, _ref_fused_topk
-from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedTopKOp
+from workloads.base import FixtureBase
+from workloads.ops.moe_fused_topk import FusedTopKTest
+
+
+def fused_topk_torch(
+    gating_output: torch.Tensor,
+    top_k: int,
+    scoring_func: str = "softmax",
+    renormalize: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    logits = gating_output.to(torch.float32)
+    if scoring_func == "softmax":
+        scores = torch.softmax(logits, dim=-1)
+    elif scoring_func == "sigmoid":
+        scores = torch.sigmoid(logits)
+    else:
+        raise ValueError(f"Unknown scoring_func: {scoring_func}")
+
+    topk_weights, topk_ids = torch.topk(scores, top_k, dim=-1, sorted=False)
+    if renormalize:
+        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    return topk_weights, topk_ids.int()
 
 # ---------------------------------------------------------------------------
 # Benchmark class
@@ -39,11 +59,11 @@ from tileops.ops.moe import FusedTopKOp
 class FusedTopKBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.num_tokens * t.num_experts * 2 * (1 + t.top_k)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return (
             t.num_tokens * t.num_experts * 2
             + t.num_tokens * t.top_k * 4
@@ -116,7 +136,7 @@ def test_fused_topk_bench(
     # Fallback: torch reference baseline (only when no external baselines)
     if not has_external:
         def _ref_fn(gating_output):
-            return _ref_fused_topk(gating_output, top_k, scoring_func, renormalize)
+            return fused_topk_torch(gating_output, top_k, scoring_func, renormalize)
 
         _ref_fn(gating_output)  # warmup
         torch.cuda.synchronize()

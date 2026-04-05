@@ -16,6 +16,9 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.ops.reduction.log_softmax import LogSoftmaxOp
 from tileops.ops.reduction.logsumexp import LogSumExpOp
 from tileops.ops.reduction.softmax import SoftmaxOp
+from workloads.ops.softmax import LogSoftmaxTest as _LogSoftmaxTestWorkload
+from workloads.ops.softmax import LogSumExpTest as _LogSumExpTestWorkload
+from workloads.ops.softmax import SoftmaxTest as _SoftmaxTestWorkload
 
 # ---------------------------------------------------------------------------
 # Tolerances (from docs/testing.md)
@@ -72,16 +75,7 @@ class SoftmaxFixture(FixtureBase):
     ]
 
 
-class SoftmaxTest(TestBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
-
+class SoftmaxTest(_SoftmaxTestWorkload, TestBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.softmax(x.float(), dim=-1).to(x.dtype)
 
@@ -131,16 +125,7 @@ class LogSoftmaxFixture(FixtureBase):
     ]
 
 
-class LogSoftmaxTest(TestBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
-
+class LogSoftmaxTest(_LogSoftmaxTestWorkload, TestBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.log_softmax(x.float(), dim=-1).to(x.dtype)
 
@@ -190,16 +175,7 @@ class LogSumExpFixture(FixtureBase):
     ]
 
 
-class LogSumExpTest(TestBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
-
+class LogSumExpTest(_LogSumExpTestWorkload, TestBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return torch.logsumexp(x.float(), dim=-1).to(x.dtype)
 

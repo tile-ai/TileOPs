@@ -2,22 +2,37 @@ from typing import Optional
 
 import pytest
 import torch
+import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_mha_decode import MhaDecodeTest
 from tileops.ops import MultiHeadAttentionDecodeWithKVCacheOp
+from workloads.ops.mha_decode import MhaDecodeTest
+
+
+class _MhaDecodeTestBaseline(MhaDecodeTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        q_bhsd = q.transpose(1, 2)  # [B, H, S_q, D]
+        k_bhsd = k.transpose(1, 2)  # [B, H, S_kv, D]
+        v_bhsd = v.transpose(1, 2)  # [B, H, S_kv, D]
+        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
+            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
+        output = output_bhsd.transpose(1, 2).contiguous()
+        return output
 
 
 class MhaDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len_q * t.seq_len_kv * t.dim
         flops = flops_per_matmul * 2
         return flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Q: batch * seq_len_q * heads * dim
         # K, V: batch * seq_len_kv * heads * dim
         # Output: batch * seq_len_q * heads * dim
@@ -77,7 +92,7 @@ _MHA_DECODE_BENCH_PARAMS = [
 @pytest.mark.parametrize("b, h, s_q, s_kv, d, dtype, tune", _MHA_DECODE_BENCH_PARAMS)
 def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
                           tune: bool) -> None:
-    test = MhaDecodeTest(b, h, s_q, s_kv, d, dtype)
+    test = _MhaDecodeTestBaseline(b, h, s_q, s_kv, d, dtype)
     bm = MhaDecodeBenchmark(test)
     inputs = test.gen_inputs()
 

@@ -19,8 +19,6 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_activation import ReluTest
-from tests.test_base import FixtureBase
 from tileops.kernels.elementwise import (
     ErfKernel,
     MishKernel,
@@ -28,6 +26,8 @@ from tileops.kernels.elementwise import (
     _make_unary_explicit,
 )
 from tileops.ops.elementwise import ErfOp, GeluOp, MishOp, ReluOp
+from workloads.base import FixtureBase
+from workloads.ops.activation import ReluTest
 
 # ---------------------------------------------------------------------------
 # LLM-realistic shapes (LLaMA-family defaults)
@@ -69,10 +69,10 @@ class UnaryBenchmark(BenchmarkBase):
     """Bandwidth-oriented benchmark for unary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         out_dtype = getattr(t, "output_dtype", t.dtype)
         return t.n_total * (t.dtype.itemsize + out_dtype.itemsize)
 

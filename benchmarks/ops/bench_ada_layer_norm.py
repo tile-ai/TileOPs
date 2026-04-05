@@ -5,11 +5,11 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_ada_layer_norm import AdaLayerNormTest
-from tests.ops.test_ada_layer_norm_zero import AdaLayerNormZeroTest
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroOp
+from workloads.ops.ada_layer_norm import AdaLayerNormTest
+from workloads.ops.ada_layer_norm_zero import AdaLayerNormZeroTest
 
 _ADA_OP_NAME = "ada_layernorm_fwd"
 _ADA_ZERO_OP_NAME = "ada_layernorm_zero_fwd"
@@ -21,7 +21,7 @@ class AdaLayerNormBenchmark(BenchmarkBase):
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.test
+            t = self.workload
             elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
             self._roofline_cache = eval_roofline(
                 _ADA_OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)
@@ -40,7 +40,7 @@ class AdaLayerNormZeroBenchmark(BenchmarkBase):
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.test
+            t = self.workload
             elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
             self._roofline_cache = eval_roofline(
                 _ADA_ZERO_OP_NAME, M=t.m, N=t.n, elem_bytes=elem_bytes)

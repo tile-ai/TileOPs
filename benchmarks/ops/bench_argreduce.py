@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
+from workloads.base import FixtureBase, WorkloadBase
 
 
 class ArgreduceBenchFixture(FixtureBase):
@@ -25,7 +25,7 @@ class ArgreduceBenchFixture(FixtureBase):
     ]
 
 
-class ArgreduceBenchTest(TestBase):
+class ArgreduceBenchTest(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
         self.m = m
         self.n = n
@@ -46,12 +46,12 @@ class ArgreduceBenchTest(TestBase):
 
 class ArgreduceBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Argreduce: N comparisons per row, M rows
         return t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         # Read x (M*N) + write output indices (M * 8 bytes for int64)
         return t.m * t.n * elem_bytes + t.m * 8

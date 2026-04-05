@@ -1,7 +1,7 @@
 """Test GroupQueryAttentionDecodePagedWithKVCacheOp (paged GQA decode with dynamic KV cache)."""
 
+
 import math
-from typing import Tuple
 
 import pytest
 import torch
@@ -10,55 +10,21 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
+from workloads.ops.gqa_decode_paged import GqaDecodePagedTest as _GqaDecodePagedTestWorkload
 
 
-class GqaDecodePagedFixture(FixtureBase):
-    PARAMS = [
-        ("batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune", [
-            pytest.param(1, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 32, 8, 256, 128, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 16, 4, 2048, 128, 512, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 32, 16, 512, 64, 128, torch.float16, False, marks=pytest.mark.full),
-        ]),
-    ]
+class GqaDecodePagedTest(_GqaDecodePagedTestWorkload, TestBase):
 
-
-class GqaDecodePagedTest(TestBase):
-
-    def __init__(self, batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
-                 page_size: int, dtype: torch.dtype) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seqlen_kv = seqlen_kv
-        self.dim = dim
-        self.page_size = page_size
-        self.dtype = dtype
-
-    def gen_inputs(
-            self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        num_pages = self.seqlen_kv // self.page_size
-        real_seqlen_kv = torch.randint(
-            self.page_size, self.seqlen_kv + 1, (self.batch,), dtype=torch.int32, device="cuda")
-        real_seqlen_kv = (real_seqlen_kv // self.page_size) * self.page_size
-        real_seqlen_kv[0] = min(real_seqlen_kv[0].item(), self.seqlen_kv)
-
-        q = torch.randn(self.batch, self.heads, self.dim, dtype=self.dtype, device="cuda")
-        k = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
-        v = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
-        block_table = torch.arange(
-            num_pages, dtype=torch.int32, device="cuda").unsqueeze(0).expand(self.batch, -1)
-
-        q = q.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-        block_table = block_table.contiguous()
-        real_seqlen_kv = real_seqlen_kv.contiguous()
-
-        return q, k, v, real_seqlen_kv, block_table
+    def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor, atol: float = 0.001) -> None:
+        """Compare using max-diff and cosine similarity."""
+        if isinstance(output, (tuple, list)):
+            output = output[0]
+        max_diff = (output - output_ref).abs().max().item()
+        assert max_diff < atol, (
+            f"max diff {max_diff} too large (atol={atol})")
+        cos_sim = F.cosine_similarity(
+            output.reshape(self.batch, -1), output_ref.reshape(self.batch, -1), dim=-1, eps=1e-8)
+        assert cos_sim.min() > 0.99, f"cosine similarity {cos_sim.min().item()} too low"
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                     real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
@@ -92,16 +58,19 @@ class GqaDecodePagedTest(TestBase):
             out_list.append(out_b)
         return torch.cat(out_list, dim=0)
 
-    def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor, atol: float = 0.001) -> None:
-        """Compare using max-diff and cosine similarity."""
-        if isinstance(output, (tuple, list)):
-            output = output[0]
-        max_diff = (output - output_ref).abs().max().item()
-        assert max_diff < atol, (
-            f"max diff {max_diff} too large (atol={atol})")
-        cos_sim = F.cosine_similarity(
-            output.reshape(self.batch, -1), output_ref.reshape(self.batch, -1), dim=-1, eps=1e-8)
-        assert cos_sim.min() > 0.99, f"cosine similarity {cos_sim.min().item()} too low"
+
+class GqaDecodePagedFixture(FixtureBase):
+    PARAMS = [
+        ("batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune", [
+            pytest.param(1, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(2, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1, 32, 8, 256, 128, 64, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1, 16, 4, 2048, 128, 512, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1, 32, 16, 512, 64, 128, torch.float16, False, marks=pytest.mark.full),
+        ]),
+    ]
 
 
 @GqaDecodePagedFixture

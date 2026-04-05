@@ -16,9 +16,69 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gla_chunkwise_bwd import _gla_autograd_bwd_ref, _gla_fwd_torch_ref
-from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GLABwdOp, GLAFwdOp
+from workloads.base import FixtureBase, WorkloadBase
+
+
+def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
+    """Fully differentiable chunked GLA forward in float32."""
+    B, T, H, K = q.shape
+    V = v.shape[-1]
+    BC = chunk_size
+    NC = T // BC
+
+    if scale is None:
+        scale = K ** -0.5
+
+    q = q.float() * scale
+    k = k.float()
+    v = v.float()
+    g = g.float()
+
+    g_cum = g.reshape(B, NC, BC, H, K).cumsum(dim=2).reshape(B, T, H, K)
+
+    h = q.new_zeros(B, H, K, V)
+    mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
+
+    o_chunks = []
+    for c in range(NC):
+        sl = slice(c * BC, (c + 1) * BC)
+        qc = q[:, sl, :, :]
+        kc = k[:, sl, :, :]
+        vc = v[:, sl, :, :]
+        gc = g_cum[:, sl, :, :]
+        g_last = gc[:, -1:, :, :]
+
+        q_gated = qc * torch.exp(gc)
+        o_inter = torch.einsum("bthk,bhkv->bthv", q_gated, h)
+
+        k_ungated = kc * torch.exp(-gc)
+        A = torch.einsum("bihk,bjhk->bhij", q_gated, k_ungated)
+        A = A * mask.unsqueeze(0).unsqueeze(0)
+        o_intra = torch.einsum("bhij,bjhv->bihv", A, vc)
+
+        o_chunks.append(o_inter + o_intra)
+
+        k_adj = kc * torch.exp(g_last - gc)
+        h = h * torch.exp(g_last).permute(0, 2, 3, 1).squeeze(-1).unsqueeze(-1)
+        h = h + torch.einsum("bthk,bthv->bhkv", k_adj, vc)
+
+    return torch.cat(o_chunks, dim=1)
+
+
+def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
+    """Compute GLA backward gradients via autograd on the differentiable forward."""
+    sc = (q.shape[-1] ** -0.5) if scale <= 0 else scale
+
+    q_ = q.float().detach().requires_grad_(True)
+    k_ = k.float().detach().requires_grad_(True)
+    v_ = v.float().detach().requires_grad_(True)
+    g_ = g.float().detach().requires_grad_(True)
+
+    o = gla_fwd_chunked_torch(q_, k_, v_, g_, chunk_size, scale=sc)
+    loss = (o * do.float()).sum()
+    dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
+    return dq, dk, dv, dg
 
 try:
     from fla.ops.gla import chunk_gla
@@ -30,7 +90,7 @@ except ImportError:
 # Test helper (shared between fwd and bwd benchmarks)
 # =============================================================================
 
-class GLATest(TestBase):
+class GLATest(WorkloadBase):
 
     def __init__(self, batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype):
         self.batch = batch
@@ -50,7 +110,7 @@ class GLATest(TestBase):
         return q, k, v, g
 
     def ref_program(self, q, k, v, g):
-        return _gla_fwd_torch_ref(q, k, v, g, self.chunk_size)
+        return gla_fwd_chunked_torch(q, k, v, g, self.chunk_size)
 
 
 # =============================================================================
@@ -60,12 +120,12 @@ class GLATest(TestBase):
 class GLAFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         return 2.0 * B * H * T * K * V
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * T * H * (2 * K + 2 * V) * elem
@@ -130,12 +190,12 @@ def test_gla_fwd_bench(
 class GLABwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         return 4.0 * B * H * T * K * V
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * T * H * (4 * K + 3 * V) * elem
@@ -211,7 +271,7 @@ def test_gla_bwd_bench(
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
-            return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
+            return gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
         result_bl = bm.profile(torch_bwd)
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
@@ -223,12 +283,12 @@ def test_gla_bwd_bench(
 class GLAFwdBwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         return 6.0 * B * H * T * K * V
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, T, H, K, V = t.batch, t.seq_len, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * T * H * (6 * K + 5 * V) * elem
@@ -303,7 +363,7 @@ def test_gla_fwdbwd_bench(
         BenchmarkReport.record(fwd_op, locals(), result_fla, tag="fla")
     else:
         def ref_autograd_fwdbwd():
-            return _gla_autograd_bwd_ref(do, q, k, v, g, BC, scale=scale)
+            return gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
         result_bl = bm.profile_autograd(ref_autograd_fwdbwd)
         BenchmarkReport.record(fwd_op, locals(), result_bl, tag="torch")
 

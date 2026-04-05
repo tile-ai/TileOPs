@@ -1,53 +1,15 @@
-from typing import Tuple
 
 import pytest
 import torch
+import torch.nn.functional as F
 from einops import einsum, rearrange
-from torch.nn import functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
+from workloads.ops.deepseek_mla_decode import MlaDecodeTest as _MlaDecodeTestWorkload
 
 
-class MlaDecodeFixture(FixtureBase):
-    PARAMS = [
-        ("batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune", [
-            pytest.param(32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
-class MlaDecodeTest(TestBase):
-
-    def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
-                 dim_pe: int, dtype: torch.dtype) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len_kv = seq_len_kv
-        self.dim = dim
-        self.dim_pe = dim_pe
-        self.dtype = dtype
-
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
-        Q_pe = torch.randn(self.batch, self.heads, self.dim_pe, device='cuda', dtype=self.dtype)
-        K = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.heads_kv,
-            self.dim,
-            device='cuda',
-            dtype=self.dtype)
-        K_pe = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.heads_kv,
-            self.dim_pe,
-            device='cuda',
-            dtype=self.dtype)
-        return Q, Q_pe, K, K_pe
-
+class MlaDecodeTest(_MlaDecodeTestWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, q_pe: torch.Tensor, kv: torch.Tensor,
                     k_pe: torch.Tensor) -> torch.Tensor:
         """
@@ -90,6 +52,14 @@ class MlaDecodeTest(TestBase):
                      'b g h s, b h s d -> b g h d')  # [batch_size, num_head_groups, groups, dim]
         out = rearrange(out, 'b g h d -> b (h g) d')  # [batch_size, heads, dim]
         return out
+
+
+class MlaDecodeFixture(FixtureBase):
+    PARAMS = [
+        ("batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune", [
+            pytest.param(32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.smoke),
+        ]),
+    ]
 
 
 @MlaDecodeFixture

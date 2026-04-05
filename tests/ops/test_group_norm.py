@@ -4,6 +4,19 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.group_norm import GroupNormOp
+from workloads.ops.group_norm import GroupNormTest as _GroupNormTestWorkload
+
+
+class GroupNormTest(_GroupNormTestWorkload, TestBase):
+    def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
+                    bias: torch.Tensor) -> torch.Tensor:
+        return F.group_norm(
+            x.float(),
+            self.g,
+            weight=weight.float(),
+            bias=bias.float(),
+            eps=self.eps,
+        ).to(x.dtype)
 
 
 class GroupNormFixture(FixtureBase):
@@ -33,35 +46,6 @@ class GroupNormFixture(FixtureBase):
             pytest.param(2, 32, (7, 7), 8, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
-
-
-class GroupNormTest(TestBase):
-
-    def __init__(self, n: int, c: int, spatial: tuple, g: int,
-                 dtype: torch.dtype, eps: float = 1e-5):
-        self.n = n
-        self.c = c
-        self.spatial = spatial
-        self.g = g
-        self.dtype = dtype
-        self.eps = eps
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        shape = (self.n, self.c, *self.spatial)
-        x = torch.randn(shape, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.c, dtype=self.dtype, device="cuda")
-        bias = torch.randn(self.c, dtype=self.dtype, device="cuda")
-        return x, weight, bias
-
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
-                    bias: torch.Tensor) -> torch.Tensor:
-        return F.group_norm(
-            x.float(),
-            self.g,
-            weight=weight.float(),
-            bias=bias.float(),
-            eps=self.eps,
-        ).to(x.dtype)
 
 
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:

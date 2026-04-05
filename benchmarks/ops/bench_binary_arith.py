@@ -18,9 +18,9 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_binary_arith import AddSameShapeTest
-from tests.test_base import FixtureBase
 from tileops.ops.elementwise import AddOp, WhereOp
+from workloads.base import FixtureBase
+from workloads.ops.binary_arith import AddSameShapeTest
 
 # ---------------------------------------------------------------------------
 # LLM-realistic shapes (LLaMA-family defaults)
@@ -89,10 +89,10 @@ class BinaryBenchmark(BenchmarkBase):
     """Bandwidth-oriented benchmark for binary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem_bytes = t.dtype.itemsize
         # Read a + read b + write output
         a_elems = prod(t.a_shape) if hasattr(t, "a_shape") else t.n_total
@@ -118,10 +118,10 @@ class WhereBenchmark(BenchmarkBase):
     """Benchmark for where op."""
 
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem_bytes = t.dtype.itemsize
         # Read cond (1 byte) + read x + read y + write output
         return t.n_total * (1 + 3 * elem_bytes)

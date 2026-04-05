@@ -16,13 +16,10 @@ import torch
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedTopKOp
-
-# ---------------------------------------------------------------------------
-# Reference implementation
-# ---------------------------------------------------------------------------
+from workloads.ops.moe_fused_topk import FusedTopKTest
 
 
-def _ref_fused_topk(
+def fused_topk_torch(
     gating_output: torch.Tensor,
     top_k: int,
     scoring_func: str = "softmax",
@@ -41,23 +38,14 @@ def _ref_fused_topk(
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
     return topk_weights, topk_ids.int()
 
+# ---------------------------------------------------------------------------
+# Reference implementation
+# ---------------------------------------------------------------------------
+
 
 # ---------------------------------------------------------------------------
 # Test fixture
 # ---------------------------------------------------------------------------
-
-class FusedTopKTest:
-    def __init__(self, num_tokens, num_experts, top_k, scoring_func, renormalize, dtype):
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.scoring_func = scoring_func
-        self.renormalize = renormalize
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        torch.manual_seed(42)
-        return torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda")
 
 
 class FusedTopKFixture(FixtureBase):
@@ -101,7 +89,7 @@ def _check(test: FusedTopKTest) -> None:
         scoring_func=test.scoring_func,
         renormalize=test.renormalize,
     )
-    ref_w, ref_ids = _ref_fused_topk(gating, test.top_k, test.scoring_func, test.renormalize)
+    ref_w, ref_ids = fused_topk_torch(gating, test.top_k, test.scoring_func, test.renormalize)
     out_w, out_ids = op(gating)
 
     assert out_w.shape == (test.num_tokens, test.top_k), f"weights shape mismatch: {out_w.shape}"

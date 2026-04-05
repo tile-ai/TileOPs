@@ -7,30 +7,9 @@ from tests.ops.gla_test_utils import cosine_sim, get_tolerances
 from tests.test_base import FixtureBase
 from tileops.ops import GLABwdOp, GLAFwdOp
 
-try:
-    from fla.ops.gla import chunk_gla
-except ImportError:
-    chunk_gla = None
 
-# =============================================================================
-# Pure-torch differentiable forward (BTHD layout) for autograd-based reference
-# =============================================================================
-
-
-def _gla_fwd_torch_ref(q, k, v, g, chunk_size, scale=None):
-    """Fully differentiable chunked GLA forward in float32.
-
-    Args:
-        q: [B, T, H, K]
-        k: [B, T, H, K]
-        v: [B, T, H, V]
-        g: [B, T, H, K] — log-space forget gates (per head per dim_k)
-        chunk_size: int
-        scale: float or None (defaults to dim_k**-0.5)
-
-    Returns:
-        o: [B, T, H, V]
-    """
+def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
+    """Fully differentiable chunked GLA forward in float32."""
     B, T, H, K = q.shape
     V = v.shape[-1]
     BC = chunk_size
@@ -44,27 +23,23 @@ def _gla_fwd_torch_ref(q, k, v, g, chunk_size, scale=None):
     v = v.float()
     g = g.float()
 
-    # Intra-chunk cumulative sum of g: [B, T, H, K]
     g_cum = g.reshape(B, NC, BC, H, K).cumsum(dim=2).reshape(B, T, H, K)
 
-    # h: hidden state [B, H, K, V]
     h = q.new_zeros(B, H, K, V)
     mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
 
     o_chunks = []
     for c in range(NC):
         sl = slice(c * BC, (c + 1) * BC)
-        qc = q[:, sl, :, :]  # [B, BC, H, K]
+        qc = q[:, sl, :, :]
         kc = k[:, sl, :, :]
         vc = v[:, sl, :, :]
-        gc = g_cum[:, sl, :, :]  # [B, BC, H, K]
-        g_last = gc[:, -1:, :, :]  # [B, 1, H, K]
+        gc = g_cum[:, sl, :, :]
+        g_last = gc[:, -1:, :, :]
 
-        # Inter-chunk: o_inter = sum_k (q * exp(g_cum)) @ h
-        q_gated = qc * torch.exp(gc)  # [B, BC, H, K]
+        q_gated = qc * torch.exp(gc)
         o_inter = torch.einsum("bthk,bhkv->bthv", q_gated, h)
 
-        # Intra-chunk: causal attention with gating
         k_ungated = kc * torch.exp(-gc)
         A = torch.einsum("bihk,bjhk->bhij", q_gated, k_ungated)
         A = A * mask.unsqueeze(0).unsqueeze(0)
@@ -72,7 +47,6 @@ def _gla_fwd_torch_ref(q, k, v, g, chunk_size, scale=None):
 
         o_chunks.append(o_inter + o_intra)
 
-        # State update: h = h * exp(g_last) + k_adj^T @ v
         k_adj = kc * torch.exp(g_last - gc)
         h = h * torch.exp(g_last).permute(0, 2, 3, 1).squeeze(-1).unsqueeze(-1)
         h = h + torch.einsum("bthk,bthv->bhkv", k_adj, vc)
@@ -80,20 +54,8 @@ def _gla_fwd_torch_ref(q, k, v, g, chunk_size, scale=None):
     return torch.cat(o_chunks, dim=1)
 
 
-def _gla_autograd_bwd_ref(
-    do: torch.Tensor,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    chunk_size: int,
-    scale: float = -1.0,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Compute GLA backward gradients via autograd on the differentiable forward.
-
-    Returns:
-        (dq, dk, dv, dg) all in float32.
-    """
+def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
+    """Compute GLA backward gradients via autograd on the differentiable forward."""
     sc = (q.shape[-1] ** -0.5) if scale <= 0 else scale
 
     q_ = q.float().detach().requires_grad_(True)
@@ -101,10 +63,19 @@ def _gla_autograd_bwd_ref(
     v_ = v.float().detach().requires_grad_(True)
     g_ = g.float().detach().requires_grad_(True)
 
-    o = _gla_fwd_torch_ref(q_, k_, v_, g_, chunk_size, scale=sc)
+    o = gla_fwd_chunked_torch(q_, k_, v_, g_, chunk_size, scale=sc)
     loss = (o * do.float()).sum()
     dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
     return dq, dk, dv, dg
+
+try:
+    from fla.ops.gla import chunk_gla
+except ImportError:
+    chunk_gla = None
+
+# =============================================================================
+# Pure-torch differentiable forward (BTHD layout) for autograd-based reference
+# =============================================================================
 
 
 def _fla_autograd_bwd(
@@ -175,7 +146,7 @@ def test_gla_bwd(
     scale = K ** -0.5
 
     # --- Torch reference via autograd ---
-    ref_dq, ref_dk, ref_dv, ref_dg = _gla_autograd_bwd_ref(
+    ref_dq, ref_dk, ref_dv, ref_dg = gla_autograd_bwd_torch(
         do, q, k, v, g, BC, scale=scale
     )
     ref_grads = {"dq": ref_dq, "dk": ref_dk, "dv": ref_dv, "dg": ref_dg}
