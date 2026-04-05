@@ -1,13 +1,8 @@
 """Correctness tests for softmax-family ops (softmax, log_softmax, logsumexp).
 
-Tests cover fp16/bf16 dtypes, 2D-4D inputs, non-contiguous tensors,
-multi-dim reduction, power-of-2 and non-power-of-2 hidden dims, and validate
+Tests cover fp32/fp16/bf16 dtypes, 1D-4D inputs, non-contiguous tensors,
+power-of-2 and non-power-of-2 hidden dims, tail-M cases, and validate
 against PyTorch reference implementations.
-
-Softmax, LogSoftmax, and LogSumExp tests target the manifest-declared interface:
-  SoftmaxOp(dim=-1, dtype=...) / LogSoftmaxOp(dim=-1, dtype=...)
-  LogSumExpOp(dim=-1, keepdim=False, dtype=...)
-  with arbitrary-rank input tensors.
 
 Smoke tests (1 per function, first param) use small data for quick CI.
 Full tests use small data for config breadth + large data for stress.
@@ -25,24 +20,6 @@ from workloads.ops.softmax import LogSoftmaxTest as _LogSoftmaxTestWorkload
 from workloads.ops.softmax import LogSumExpTest as _LogSumExpTestWorkload
 from workloads.ops.softmax import SoftmaxTest as _SoftmaxTestWorkload
 
-
-class LogSoftmaxTest(_LogSoftmaxTestWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.log_softmax(x.float(), dim=self.dim).to(x.dtype)
-
-
-class LogSumExpTest(_LogSumExpTestWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.logsumexp(x.float(), dim=self.dim, keepdim=self.keepdim).to(
-            x.dtype
-        )
-
-
-class SoftmaxTest(_SoftmaxTestWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.softmax(x.float(), dim=self.dim).to(x.dtype)
-
-
 # ---------------------------------------------------------------------------
 # Tolerances (from docs/testing.md)
 # ---------------------------------------------------------------------------
@@ -58,130 +35,190 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 
 
 # ===================================================================
-# Softmax — spec interface: SoftmaxOp(dim, dtype)
+# Softmax — 2D
 # ===================================================================
 
 
-class SoftmaxFixture2D(FixtureBase):
-    """2D softmax: pow2/non-pow2 hidden dim x fp16/bf16."""
-
+class SoftmaxFixture(FixtureBase):
     PARAMS = [
         (
-            "shape, dtype",
+            "m, n, dtype, tune",
             [
-                # Smoke: small 2D, fp16, pow2
-                pytest.param((32, 256), torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
-                # Full: dtype coverage
-                pytest.param((32, 256), torch.bfloat16, marks=pytest.mark.full),
-                # Full: non-pow2 hidden dim
-                pytest.param((32, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.bfloat16, marks=pytest.mark.full),
-                # Full: tail-M (odd batch)
-                pytest.param((33, 256), torch.float16, marks=pytest.mark.full),
-                pytest.param((33, 256), torch.bfloat16, marks=pytest.mark.full),
-                # Full: larger LLM-scale shapes
-                pytest.param((1024, 4096), torch.float16, marks=pytest.mark.full),
-                pytest.param((1024, 4096), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((1024, 3000), torch.float16, marks=pytest.mark.full),
+                # Smoke: first param — small data, fp32, pow2 dim
+                pytest.param(32, 256, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                # Full: all dtypes x pow2/non-pow2 x normal-M/tail-M (small data)
+                pytest.param(32, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(32, 256, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(33, 256, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(33, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(33, 256, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(33, 300, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(33, 300, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(33, 300, torch.bfloat16, False, marks=pytest.mark.full),
+                # Full: larger configs
+                pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
-@SoftmaxFixture2D
-def test_softmax_2d(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    """Softmax on 2D input with dim=-1 (default)."""
-    dim = -1
-    test = SoftmaxTest(shape, dim, dtype)
-    op = SoftmaxOp(dim=dim, dtype=dtype)
+class SoftmaxTest(_SoftmaxTestWorkload, TestBase):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return F.softmax(x.float(), dim=-1).to(x.dtype)
+
+
+@SoftmaxFixture
+def test_softmax_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
+    test = SoftmaxTest(m, n, dtype)
+    op = SoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-class SoftmaxFixtureND(FixtureBase):
-    """3D/4D softmax: multi-rank inputs x fp16/bf16."""
+# ===================================================================
+# LogSoftmax — 2D
+# ===================================================================
 
+
+class LogSoftmaxFixture(FixtureBase):
     PARAMS = [
         (
-            "shape, dtype",
+            "m, n, dtype, tune",
             [
-                # 3D smoke
-                pytest.param((2, 16, 256), torch.float16, marks=pytest.mark.smoke),
-                # 3D full
-                pytest.param((2, 16, 256), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((2, 16, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 512, 4096), torch.float16, marks=pytest.mark.full),
-                # 4D: attention-score shape (batch, heads, seq, seq)
-                pytest.param((2, 4, 8, 256), torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 4, 128, 256), torch.float16, marks=pytest.mark.full),
+                pytest.param(32, 256, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(32, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(32, 256, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(33, 256, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(33, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(33, 256, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(33, 300, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(33, 300, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(33, 300, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
-@SoftmaxFixtureND
-def test_softmax_nd(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    """Softmax on 3D/4D input with dim=-1 (default)."""
-    dim = -1
-    test = SoftmaxTest(shape, dim, dtype)
-    op = SoftmaxOp(dim=dim, dtype=dtype)
+class LogSoftmaxTest(_LogSoftmaxTestWorkload, TestBase):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return F.log_softmax(x.float(), dim=-1).to(x.dtype)
+
+
+@LogSoftmaxFixture
+def test_log_softmax_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
+    test = LogSoftmaxTest(m, n, dtype)
+    op = LogSoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-class SoftmaxFixtureNonLastDim(FixtureBase):
-    """Softmax along non-last dimensions (dim=0, dim=1)."""
+# ===================================================================
+# LogSumExp — 2D
+# ===================================================================
 
+
+class LogSumExpFixture(FixtureBase):
     PARAMS = [
         (
-            "shape, dim, dtype",
+            "m, n, dtype, tune",
             [
-                # dim=0: reduce along batch
-                pytest.param((16, 256), 0, torch.float16, marks=pytest.mark.smoke),
-                pytest.param((16, 256), 0, torch.bfloat16, marks=pytest.mark.full),
-                # dim=1: reduce along middle axis of 3D
-                pytest.param((2, 16, 256), 1, torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), 1, torch.bfloat16, marks=pytest.mark.full),
-                # dim=0 on 3D
-                pytest.param((4, 16, 256), 0, torch.float16, marks=pytest.mark.full),
+                pytest.param(32, 256, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(32, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(32, 256, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(33, 256, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(33, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(33, 256, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(33, 300, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(33, 300, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(33, 300, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
-@SoftmaxFixtureNonLastDim
-def test_softmax_non_last_dim(shape: tuple[int, ...], dim: int, dtype: torch.dtype) -> None:
-    """Softmax along a non-last dimension — tests dim param generality."""
-    test = SoftmaxTest(shape, dim, dtype)
-    op = SoftmaxOp(dim=dim, dtype=dtype)
+class LogSumExpTest(_LogSumExpTestWorkload, TestBase):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.logsumexp(x.float(), dim=-1).to(x.dtype)
+
+
+@LogSumExpFixture
+def test_logsumexp_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
+    test = LogSumExpTest(m, n, dtype)
+    op = LogSumExpOp(M=m, N=n, dtype=dtype, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-class SoftmaxFixtureNonContig(FixtureBase):
-    """Non-contiguous input coverage for softmax."""
+# ===================================================================
+# Non-contiguous input tests — all 3 ops x all 3 dtypes
+# ===================================================================
 
+
+class NonContigFixture(FixtureBase):
     PARAMS = [
         (
             "m, n, dtype",
             [
-                pytest.param(32, 256, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(32, 256, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(32, 256, torch.float16, marks=pytest.mark.full),
                 pytest.param(32, 256, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.float32, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.float16, marks=pytest.mark.full),
+                pytest.param(32, 300, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.float32, marks=pytest.mark.full),
                 pytest.param(1024, 4096, torch.float16, marks=pytest.mark.full),
+                pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
-@SoftmaxFixtureNonContig
+@NonContigFixture
 def test_softmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    """Softmax with non-contiguous input (sliced tensor)."""
+    """Test softmax with non-contiguous input (sliced tensor)."""
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]  # non-contiguous slice
 
-    op = SoftmaxOp(dim=-1, dtype=dtype)
+    op = SoftmaxOp(M=m, N=n, dtype=dtype)
 
     y_ref = F.softmax(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
@@ -191,131 +228,13 @@ def test_softmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     )
 
 
-# ===================================================================
-# LogSoftmax — spec interface: LogSoftmaxOp(dim, dtype)
-# ===================================================================
-
-
-class LogSoftmaxFixture2D(FixtureBase):
-    """2D log_softmax: pow2/non-pow2 hidden dim x fp16/bf16."""
-
-    PARAMS = [
-        (
-            "shape, dtype",
-            [
-                # Smoke: small 2D, fp16, pow2
-                pytest.param((32, 256), torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
-                # Full: dtype coverage
-                pytest.param((32, 256), torch.bfloat16, marks=pytest.mark.full),
-                # Full: non-pow2 hidden dim
-                pytest.param((32, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.bfloat16, marks=pytest.mark.full),
-                # Full: tail-M (odd batch)
-                pytest.param((33, 256), torch.float16, marks=pytest.mark.full),
-                pytest.param((33, 256), torch.bfloat16, marks=pytest.mark.full),
-                # Full: larger LLM-scale shapes
-                pytest.param((1024, 4096), torch.float16, marks=pytest.mark.full),
-                pytest.param((1024, 4096), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((1024, 3000), torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSoftmaxFixture2D
-def test_log_softmax_2d(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    """LogSoftmax on 2D input with dim=-1 (default)."""
-    dim = -1
-    test = LogSoftmaxTest(shape, dim, dtype)
-    op = LogSoftmaxOp(dim=dim, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-class LogSoftmaxFixtureND(FixtureBase):
-    """3D/4D log_softmax: multi-rank inputs x fp16/bf16."""
-
-    PARAMS = [
-        (
-            "shape, dtype",
-            [
-                # 3D smoke
-                pytest.param((2, 16, 256), torch.float16, marks=pytest.mark.smoke),
-                # 3D full
-                pytest.param((2, 16, 256), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((2, 16, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 512, 4096), torch.float16, marks=pytest.mark.full),
-                # 4D: attention-score shape (batch, heads, seq, seq)
-                pytest.param((2, 4, 8, 256), torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 4, 128, 256), torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSoftmaxFixtureND
-def test_log_softmax_nd(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    """LogSoftmax on 3D/4D input with dim=-1 (default)."""
-    dim = -1
-    test = LogSoftmaxTest(shape, dim, dtype)
-    op = LogSoftmaxOp(dim=dim, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-class LogSoftmaxFixtureNonLastDim(FixtureBase):
-    """LogSoftmax along non-last dimensions (dim=0, dim=1)."""
-
-    PARAMS = [
-        (
-            "shape, dim, dtype",
-            [
-                # dim=0: reduce along batch
-                pytest.param((16, 256), 0, torch.float16, marks=pytest.mark.smoke),
-                pytest.param((16, 256), 0, torch.bfloat16, marks=pytest.mark.full),
-                # dim=1: reduce along middle axis of 3D
-                pytest.param((2, 16, 256), 1, torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), 1, torch.bfloat16, marks=pytest.mark.full),
-                # dim=0 on 3D
-                pytest.param((4, 16, 256), 0, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSoftmaxFixtureNonLastDim
-def test_log_softmax_non_last_dim(shape: tuple[int, ...], dim: int, dtype: torch.dtype) -> None:
-    """LogSoftmax along a non-last dimension -- tests dim param generality."""
-    test = LogSoftmaxTest(shape, dim, dtype)
-    op = LogSoftmaxOp(dim=dim, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-class LogSoftmaxFixtureNonContig(FixtureBase):
-    """Non-contiguous input coverage for log_softmax."""
-
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(32, 256, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(32, 256, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSoftmaxFixtureNonContig
+@NonContigFixture
 def test_log_softmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    """LogSoftmax with non-contiguous input (sliced tensor)."""
+    """Test log_softmax with non-contiguous input."""
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
-    x = x_full[:, :n]  # non-contiguous slice
+    x = x_full[:, :n]
 
-    op = LogSoftmaxOp(dim=-1, dtype=dtype)
+    op = LogSoftmaxOp(M=m, N=n, dtype=dtype)
 
     y_ref = F.log_softmax(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
@@ -325,168 +244,223 @@ def test_log_softmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     )
 
 
-# ===================================================================
-# LogSumExp — spec interface: LogSumExpOp(dim, keepdim, dtype)
-# ===================================================================
-
-
-class LogSumExpFixture2D(FixtureBase):
-    """2D logsumexp: pow2/non-pow2 hidden dim x fp16/bf16."""
-
-    PARAMS = [
-        (
-            "shape, dtype",
-            [
-                # Smoke: small 2D, fp16, pow2
-                pytest.param((32, 256), torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
-                # Full: dtype coverage
-                pytest.param((32, 256), torch.bfloat16, marks=pytest.mark.full),
-                # Full: non-pow2 hidden dim
-                pytest.param((32, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.bfloat16, marks=pytest.mark.full),
-                # Full: tail-M (odd batch)
-                pytest.param((33, 256), torch.float16, marks=pytest.mark.full),
-                pytest.param((33, 256), torch.bfloat16, marks=pytest.mark.full),
-                # Full: larger LLM-scale shapes
-                pytest.param((1024, 4096), torch.float16, marks=pytest.mark.full),
-                pytest.param((1024, 4096), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((1024, 3000), torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSumExpFixture2D
-def test_logsumexp_2d(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    """LogSumExp on 2D input with dim=-1 (default)."""
-    dim = -1
-    test = LogSumExpTest(shape, dim, dtype)
-    op = LogSumExpOp(dim=dim, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-class LogSumExpFixtureND(FixtureBase):
-    """3D/4D logsumexp: multi-rank inputs x fp16/bf16."""
-
-    PARAMS = [
-        (
-            "shape, dtype",
-            [
-                # 3D smoke
-                pytest.param((2, 16, 256), torch.float16, marks=pytest.mark.smoke),
-                # 3D full
-                pytest.param((2, 16, 256), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((2, 16, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 512, 4096), torch.float16, marks=pytest.mark.full),
-                # 4D: attention-score shape (batch, heads, seq, seq)
-                pytest.param((2, 4, 8, 256), torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 4, 128, 256), torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSumExpFixtureND
-def test_logsumexp_nd(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    """LogSumExp on 3D/4D input with dim=-1 (default)."""
-    dim = -1
-    test = LogSumExpTest(shape, dim, dtype)
-    op = LogSumExpOp(dim=dim, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-class LogSumExpFixtureNonLastDim(FixtureBase):
-    """LogSumExp along non-last dimensions (dim=0, dim=1)."""
-
-    PARAMS = [
-        (
-            "shape, dim, dtype",
-            [
-                # dim=0: reduce along batch
-                pytest.param((16, 256), 0, torch.float16, marks=pytest.mark.smoke),
-                pytest.param((16, 256), 0, torch.bfloat16, marks=pytest.mark.full),
-                # dim=1: reduce along middle axis of 3D
-                pytest.param((2, 16, 256), 1, torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), 1, torch.bfloat16, marks=pytest.mark.full),
-                # dim=0 on 3D
-                pytest.param((4, 16, 256), 0, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSumExpFixtureNonLastDim
-def test_logsumexp_non_last_dim(shape: tuple[int, ...], dim: int, dtype: torch.dtype) -> None:
-    """LogSumExp along a non-last dimension -- tests dim param generality."""
-    test = LogSumExpTest(shape, dim, dtype)
-    op = LogSumExpOp(dim=dim, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-class LogSumExpFixtureKeepdim(FixtureBase):
-    """LogSumExp with keepdim=True."""
-
-    PARAMS = [
-        (
-            "shape, dim, dtype",
-            [
-                # 2D keepdim smoke
-                pytest.param((32, 256), -1, torch.float16, marks=pytest.mark.smoke),
-                # 2D keepdim full
-                pytest.param((32, 256), -1, torch.bfloat16, marks=pytest.mark.full),
-                # 3D keepdim
-                pytest.param((2, 16, 256), -1, torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), 1, torch.float16, marks=pytest.mark.full),
-                # 4D keepdim
-                pytest.param((2, 4, 8, 256), -1, torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), -1, torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSumExpFixtureKeepdim
-def test_logsumexp_keepdim(shape: tuple[int, ...], dim: int, dtype: torch.dtype) -> None:
-    """LogSumExp with keepdim=True -- output retains reduced dimension."""
-    test = LogSumExpTest(shape, dim, dtype, keepdim=True)
-    op = LogSumExpOp(dim=dim, keepdim=True, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-class LogSumExpFixtureNonContig(FixtureBase):
-    """Non-contiguous input coverage for logsumexp."""
-
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(32, 256, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(32, 256, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSumExpFixtureNonContig
+@NonContigFixture
 def test_logsumexp_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    """LogSumExp with non-contiguous input (sliced tensor)."""
+    """Test logsumexp with non-contiguous input."""
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
-    x = x_full[:, :n]  # non-contiguous slice
+    x = x_full[:, :n]
 
-    op = LogSumExpOp(dim=-1, dtype=dtype)
+    op = LogSumExpOp(M=m, N=n, dtype=dtype)
 
     y_ref = torch.logsumexp(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
     assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
         f"Non-contiguous logsumexp failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+# ===================================================================
+# 1D input tests — all 3 ops x all 3 dtypes x pow2/non-pow2
+# ===================================================================
+
+
+class Input1DFixture(FixtureBase):
+    PARAMS = [
+        (
+            "n, dtype",
+            [
+                pytest.param(256, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(256, torch.float16, marks=pytest.mark.full),
+                pytest.param(256, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(300, torch.float32, marks=pytest.mark.full),
+                pytest.param(300, torch.float16, marks=pytest.mark.full),
+                pytest.param(300, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@Input1DFixture
+def test_softmax_1d(n: int, dtype: torch.dtype) -> None:
+    """Test softmax with 1D input (single row)."""
+    x = torch.randn(n, dtype=dtype, device="cuda")
+    op = SoftmaxOp(M=1, N=n, dtype=dtype)
+
+    y_ref = F.softmax(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"1D softmax failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@Input1DFixture
+def test_log_softmax_1d(n: int, dtype: torch.dtype) -> None:
+    """Test log_softmax with 1D input."""
+    x = torch.randn(n, dtype=dtype, device="cuda")
+    op = LogSoftmaxOp(M=1, N=n, dtype=dtype)
+
+    y_ref = F.log_softmax(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"1D log_softmax failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@Input1DFixture
+def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
+    """Test logsumexp with 1D input -- output should be a scalar."""
+    x = torch.randn(n, dtype=dtype, device="cuda")
+    op = LogSumExpOp(M=1, N=n, dtype=dtype)
+
+    y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    atol, rtol = _get_tolerances(dtype)
+    assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"1D logsumexp failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+# ===================================================================
+# 3D input tests — all 3 ops x all 3 dtypes x pow2/non-pow2
+# ===================================================================
+
+
+class Input3DFixture(FixtureBase):
+    PARAMS = [
+        (
+            "batch, seq, hidden, dtype",
+            [
+                pytest.param(2, 16, 256, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(2, 16, 256, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 16, 256, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 16, 300, torch.float32, marks=pytest.mark.full),
+                pytest.param(2, 16, 300, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 16, 300, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.full),
+                pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@Input3DFixture
+def test_softmax_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    """Test softmax with 3D input (batch, seq, hidden)."""
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    M = batch * seq
+    op = SoftmaxOp(M=M, N=hidden, dtype=dtype)
+
+    y_ref = F.softmax(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"3D softmax failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@Input3DFixture
+def test_log_softmax_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    """Test log_softmax with 3D input."""
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    M = batch * seq
+    op = LogSoftmaxOp(M=M, N=hidden, dtype=dtype)
+
+    y_ref = F.log_softmax(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"3D log_softmax failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@Input3DFixture
+def test_logsumexp_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    """Test logsumexp with 3D input -- output shape should be (batch, seq)."""
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    M = batch * seq
+    op = LogSumExpOp(M=M, N=hidden, dtype=dtype)
+
+    y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    atol, rtol = _get_tolerances(dtype)
+    assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"3D logsumexp failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+# ===================================================================
+# 4D input tests — all 3 ops x all 3 dtypes x pow2/non-pow2
+# ===================================================================
+
+
+class Input4DFixture(FixtureBase):
+    PARAMS = [
+        (
+            "b, h, s, d, dtype",
+            [
+                pytest.param(2, 4, 8, 256, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 8, 256, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 256, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 300, torch.float32, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 300, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 300, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 4, 128, 256, torch.float32, marks=pytest.mark.full),
+                pytest.param(2, 4, 128, 256, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 4, 128, 256, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@Input4DFixture
+def test_softmax_4d(b: int, h: int, s: int, d: int, dtype: torch.dtype) -> None:
+    """Test softmax with 4D input (batch, heads, seq, dim)."""
+    x = torch.randn(b, h, s, d, dtype=dtype, device="cuda")
+    M = b * h * s
+    op = SoftmaxOp(M=M, N=d, dtype=dtype)
+
+    y_ref = F.softmax(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"4D softmax failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@Input4DFixture
+def test_log_softmax_4d(b: int, h: int, s: int, d: int, dtype: torch.dtype) -> None:
+    """Test log_softmax with 4D input (batch, heads, seq, dim)."""
+    x = torch.randn(b, h, s, d, dtype=dtype, device="cuda")
+    M = b * h * s
+    op = LogSoftmaxOp(M=M, N=d, dtype=dtype)
+
+    y_ref = F.log_softmax(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"4D log_softmax failed, max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@Input4DFixture
+def test_logsumexp_4d(b: int, h: int, s: int, d: int, dtype: torch.dtype) -> None:
+    """Test logsumexp with 4D input -- output shape should be (b, h, s)."""
+    x = torch.randn(b, h, s, d, dtype=dtype, device="cuda")
+    M = b * h * s
+    op = LogSumExpOp(M=M, N=d, dtype=dtype)
+
+    y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    atol, rtol = _get_tolerances(dtype)
+    assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"4D logsumexp failed, max err: {(y - y_ref).abs().max()}"
     )
 
 

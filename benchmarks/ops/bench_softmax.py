@@ -24,72 +24,42 @@ class SoftmaxBenchmark(BenchmarkBase):
     """Benchmark for softmax op (4N FLOPs: max, exp, sum, div)."""
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        dim_normalized = t.dim % len(t.shape)
-        n = t.shape[dim_normalized]
-        m = 1
-        for i, s in enumerate(t.shape):
-            if i != dim_normalized:
-                m *= s
-        return 4 * m * n
+        t = self.test
+        return 4 * t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
         """Read x (M*N) + write y (M*N)."""
-        t = self.workload
-        total_elems = 1
-        for s in t.shape:
-            total_elems *= s
+        t = self.test
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return (2 * total_elems) * elem_bytes
+        return (2 * t.m * t.n) * elem_bytes
 
 
 class LogSoftmaxBenchmark(BenchmarkBase):
     """Benchmark for log_softmax op (5N FLOPs: max, exp, sum, div, log)."""
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        dim_normalized = t.dim % len(t.shape)
-        n = t.shape[dim_normalized]
-        m = 1
-        for i, s in enumerate(t.shape):
-            if i != dim_normalized:
-                m *= s
-        return 5 * m * n
+        t = self.test
+        return 5 * t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
         """Read x (M*N) + write y (M*N)."""
-        t = self.workload
-        total_elems = 1
-        for s in t.shape:
-            total_elems *= s
+        t = self.test
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return (2 * total_elems) * elem_bytes
+        return (2 * t.m * t.n) * elem_bytes
 
 
 class LogSumExpBenchmark(BenchmarkBase):
     """Benchmark for logsumexp op (3N FLOPs: max, exp, sum + 1 log+add)."""
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        dim_normalized = t.dim % len(t.shape)
-        n = t.shape[dim_normalized]
-        m = 1
-        for i, s in enumerate(t.shape):
-            if i != dim_normalized:
-                m *= s
-        return 3 * m * n
+        t = self.test
+        return 3 * t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
         """Read x (M*N) + write y (M)."""
-        t = self.workload
-        dim_normalized = t.dim % len(t.shape)
-        n = t.shape[dim_normalized]
-        m = 1
-        for i, s in enumerate(t.shape):
-            if i != dim_normalized:
-                m *= s
+        t = self.test
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return (m * n + m) * elem_bytes
+        return (t.m * t.n + t.m) * elem_bytes
 
 
 # ===================================================================
@@ -107,11 +77,11 @@ _SOFTMAX_BENCH_PARAMS = [
 
 @pytest.mark.parametrize("m, n, dtype, tune", _SOFTMAX_BENCH_PARAMS)
 def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = SoftmaxTest(shape=(m, n), dim=-1, dtype=dtype)
+    test = SoftmaxTest(m, n, dtype)
     bm = SoftmaxBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SoftmaxOp(dim=-1, dtype=dtype, tune=tune)
+    op = SoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -132,11 +102,11 @@ _LOG_SOFTMAX_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
 
 @pytest.mark.parametrize("m, n, dtype, tune", _LOG_SOFTMAX_BENCH_PARAMS)
 def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSoftmaxTest(shape=(m, n), dim=-1, dtype=dtype)
+    test = LogSoftmaxTest(m, n, dtype)
     bm = LogSoftmaxBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = LogSoftmaxOp(dim=-1, dtype=dtype, tune=tune)
+    op = LogSoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -157,11 +127,11 @@ _LOGSUMEXP_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
 
 @pytest.mark.parametrize("m, n, dtype, tune", _LOGSUMEXP_BENCH_PARAMS)
 def test_logsumexp_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSumExpTest(shape=(m, n), dim=-1, dtype=dtype)
+    test = LogSumExpTest(m, n, dtype)
     bm = LogSumExpBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = LogSumExpOp(dim=-1, dtype=dtype, tune=tune)
+    op = LogSumExpOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
