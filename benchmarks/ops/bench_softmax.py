@@ -40,13 +40,13 @@ class LogSoftmaxBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
-        return 5 * t.m * t.n
+        return 5 * prod(t.shape)
 
     def calculate_memory(self) -> Optional[float]:
-        """Read x (M*N) + write y (M*N)."""
+        """Read x + write y (same shape)."""
         t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return (2 * t.m * t.n) * elem_bytes
+        return 2 * prod(t.shape) * elem_bytes
 
 
 class LogSumExpBenchmark(BenchmarkBase):
@@ -103,11 +103,11 @@ _LOG_SOFTMAX_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
 
 @pytest.mark.parametrize("m, n, dtype, tune", _LOG_SOFTMAX_BENCH_PARAMS)
 def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSoftmaxTest(m, n, dtype)
+    test = LogSoftmaxTest((m, n), dtype)
     bm = LogSoftmaxBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = LogSoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
+    op = LogSoftmaxOp(dtype=dtype, dim=-1, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

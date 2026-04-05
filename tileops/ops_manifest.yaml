@@ -1326,7 +1326,7 @@ ops:
 
   softmax_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
