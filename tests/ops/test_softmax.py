@@ -7,9 +7,10 @@ against PyTorch reference implementations.
 Smoke tests (1 per function, first param) use small data for quick CI.
 Full tests use small data for config breadth + large data for stress.
 
-Softmax tests target the spec-conformant interface:
-  SoftmaxOp(dtype=dtype, dim=dim)  -- no M/N params
-Log_softmax and logsumexp tests still use the legacy interface.
+All operators use the spec-conformant interface:
+  SoftmaxOp(dtype=dtype, dim=dim)
+  LogSoftmaxOp(dtype=dtype, dim=dim)
+  LogSumExpOp(dtype=dtype, dim=dim, keepdim=keepdim)
 """
 
 import pytest
@@ -289,6 +290,45 @@ def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) ->
     op = LogSumExpOp(dtype=dtype, dim=dim, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+# ===================================================================
+# LogSumExp — keepdim=True (exercises _reshape_output keepdim path)
+# ===================================================================
+
+
+class LogSumExpKeepdimFixture(FixtureBase):
+    PARAMS = [
+        (
+            "shape, dim, dtype",
+            [
+                # dim=-1 (last dim, no transpose)
+                pytest.param((32, 256), -1, torch.float32, marks=pytest.mark.smoke),
+                pytest.param((32, 256), -1, torch.float16, marks=pytest.mark.full),
+                pytest.param((2, 16, 256), -1, torch.float32, marks=pytest.mark.full),
+                # dim=0 (non-last dim, exercises transpose + keepdim)
+                pytest.param((256, 32), 0, torch.float32, marks=pytest.mark.full),
+                pytest.param((256, 32), 0, torch.float16, marks=pytest.mark.full),
+                # dim=1 (middle dim, 3D)
+                pytest.param((2, 256, 16), 1, torch.float32, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@LogSumExpKeepdimFixture
+def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
+    """Test logsumexp with keepdim=True — output retains reduced dim as size 1."""
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = LogSumExpOp(dtype=dtype, dim=dim, keepdim=True)
+
+    y_ref = torch.logsumexp(x.float(), dim=dim, keepdim=True).to(dtype)
+    y = op(x)
+    assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"keepdim logsumexp failed, max err: {(y - y_ref).abs().max()}"
+    )
 
 
 # ===================================================================

@@ -3,7 +3,7 @@
 Provides the shared validate -> reshape -> pad -> kernel -> trim -> reshape
 pattern for softmax, log_softmax, and logsumexp ops.
 
-Construction: ``op(dtype, dim=-1, keepdim=False)``.  M and N are derived
+Construction: ``op(dtype=..., dim=-1, keepdim=False)``.  M and N are derived
 from the input tensor at forward time, and kernels are cached by
 ``(M, N)`` to avoid rebuilds.
 """
@@ -53,8 +53,8 @@ class _SoftmaxBaseOp(Op):
         self.dtype = dtype
         self.dim = dim
         self.keepdim = keepdim
-        self._kernel_map_override = kernel_map
         self._tune = tune
+        self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, object] = {}
 
     @property
@@ -120,7 +120,6 @@ class _SoftmaxBaseOp(Op):
         """Return a cached kernel for (M, N), creating one if needed."""
         key = (M, N)
         if key not in self._kernel_cache:
-            self.dispatch_kernel(self._kernel_map_override)
             kernel_cls = self.kernel_map[self._kernel_key]
             self._kernel_cache[key] = kernel_cls(
                 M, N, self._op_kind, self.dtype, tune=self._tune
