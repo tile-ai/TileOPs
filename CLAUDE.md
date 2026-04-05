@@ -47,3 +47,4 @@ Read the relevant context file **before** modifying files in that domain. Do not
 | `scripts/validate_manifest.py`, `tests/test_validate_manifest.py` | [.claude/domain-rules/manifest-validator.md](.claude/domain-rules/manifest-validator.md) |
 | `tileops/ops/`, `tileops/kernels/`                                | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
 | `benchmarks/`                                                     | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |
+| `workloads/`                                                      | [docs/trust-model.md](docs/trust-model.md)                                               |

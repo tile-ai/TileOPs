@@ -21,11 +21,10 @@ Bottom-up development flow: Kernel → Op → Test → Benchmark → PR.
 - **Location**: under `tileops/ops/`, e.g. `{family}/{op}.py` or `{op}.py` depending on whether the op belongs to an existing family subpackage.
 - Wrap the kernel in a Python function.
 - Google-style docstrings (Args, Returns, Example).
-- Unit test comparing output against a pure PyTorch reference.
 - Dtype contract: explicitly define supported input dtypes, output dtype, rejected dtypes.
 - Parameter contract: validate scalar parameters at the Op boundary. Invalid values fail with `ValueError` before any TIR/codegen step.
 - Do not fix interface-contract bugs with kernel-local workarounds. Fix the validation boundary first.
-- **Done when**: op passes unit tests.
+- **Done when**: op passes existing unit tests (tests are written by the test stage — see [trust-model.md §Test](trust-model.md#test)).
 
 ## Step 3: Benchmark
 
@@ -36,6 +35,10 @@ Bottom-up development flow: Kernel → Op → Test → Benchmark → PR.
 - **Done when**: benchmark results are posted in the tracking issue.
 
 See [testing.md](testing.md) for framework details, tolerances, and reporting rules.
+
+### Workload sharing (double-inheritance note)
+
+Tests and benchmarks share workload definitions through `workloads/`. `TestBase` inherits from `WorkloadBase` (getting `gen_inputs()`), while `BenchmarkBase` composes a `WorkloadBase` instance. Both reuse the same `FixtureBase` parametrize decorators. This means each op's workload definition is written once in `workloads/` and consumed by both `tests/` and `benchmarks/` without duplication. See [trust-model.md -- Workloads Layer Contract](trust-model.md#workloads-layer-contract) for boundary details.
 
 ## Step 4: PR Submission
 
@@ -123,4 +126,4 @@ Keep commit messages concise. Long verification sections, benchmark tables, and 
 - **Formatter/Linter**: `ruff`.
 - **Docstrings**: Google-style on all public functions and classes. Type info goes in Python type hints, not repeated in docstrings.
 - **Type Hints**: all function signatures (inputs and outputs) must be type-hinted.
-- **Strict Typing** *(planned)*: L2 (Op) APIs will be checked with `mypy` in strict mode.
+- **Strict Typing**: L2 (Op) APIs should use type hints that pass `mypy` strict mode where practical.
