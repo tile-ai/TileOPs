@@ -3,10 +3,8 @@
 Provides:
   - LogSoftmaxOp: y = log_softmax(x, dim)
 
-Supports both spec path (dtype + dim) and legacy path (M, N, dtype).
-
-Example (legacy):
-    >>> op = LogSoftmaxOp(M=1024, N=4096, dtype=torch.float16)
+Example:
+    >>> op = LogSoftmaxOp(dtype=torch.float16, dim=-1)
     >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
     >>> y = op(x)  # shape: (1024, 4096)
 """
@@ -26,8 +24,6 @@ class LogSoftmaxOp(_SoftmaxBaseOp):
     Args:
         dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default -1).
-        M: Number of rows (legacy path, optional).
-        N: Hidden dimension (legacy path, optional).
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
