@@ -122,8 +122,10 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = SoftmaxOp(dtype=dtype, dim=-1, tune=True)
     try:
         result = bm.profile(op, *inputs)
-    except (ValueError, Exception) as exc:
-        pytest.skip(f"Kernel does not support this shape: {exc}")
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
@@ -147,8 +149,10 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = LogSoftmaxOp(dtype=dtype, dim=-1, tune=True)
     try:
         result = bm.profile(op, *inputs)
-    except (ValueError, Exception) as exc:
-        pytest.skip(f"Kernel does not support this shape: {exc}")
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
@@ -172,8 +176,10 @@ def test_logsumexp_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = LogSumExpOp(dtype=dtype, dim=-1, tune=True)
     try:
         result = bm.profile(op, *inputs)
-    except (ValueError, Exception) as exc:
-        pytest.skip(f"Kernel does not support this shape: {exc}")
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
