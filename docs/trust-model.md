@@ -1,11 +1,11 @@
 # Trust Model
 
-Each development stage owns a specific concern. Boundaries prevent one stage from silently weakening another's guarantees. See #789 for case study.
+Each development stage owns a specific concern. Boundaries prevent one stage from silently weakening another's guarantees.
 
 ## Pipeline
 
 ```
-Manifest → Implementation → Test → Benchmark
+Manifest → Test → Implementation → Benchmark
 ```
 
 Each stage declares **OWNS** / **MUST NOT** / **MAY READ** in its [domain rule file](../.claude/domain-rules/).
@@ -20,16 +20,6 @@ Source of truth for op interfaces. Human-reviewed, separate PR.
 
 → Rules: [manifest-spec.md](../.claude/domain-rules/manifest-spec.md) | Guide: [testing.md §Writing a Test](testing.md#writing-a-test)
 
-## Implementation
-
-Kernel (L1) + Op (L2). Developer reads manifest + ref_program for behavior; high-perf optimization is independent.
-
-- **OWNS**: TileLang kernels, op dispatch, class variable protocol
-- **MUST NOT**: define workload shapes, own correctness assertions, modify manifest
-- **MAY READ**: manifest (interface), `tests/` (behavior understanding — not to reverse-engineer passing)
-
-→ Rules: [ops-design.md](../.claude/domain-rules/ops-design.md) | Guide: [ops-design.md](ops-design.md), [testing.md §Writing an Op](testing.md#writing-an-op-implementation)
-
 ## Test
 
 PR-level correctness verification. QA writes tests against manifest spec.
@@ -39,6 +29,16 @@ PR-level correctness verification. QA writes tests against manifest spec.
 - **MAY READ**: manifest (to verify interface), `workloads/` (via WorkloadBase inheritance)
 
 → Rules: [testing-budget.md](../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Writing a Test](testing.md#writing-a-test)
+
+## Implementation
+
+Kernel (L1) + Op (L2). Developer reads manifest + ref_program for behavior; high-perf optimization is independent.
+
+- **OWNS**: TileLang kernels, op dispatch, class variable protocol
+- **MUST NOT**: define workload shapes, own correctness assertions, modify manifest
+- **MAY READ**: manifest (interface), `tests/` (behavior understanding — not to reverse-engineer passing)
+
+→ Rules: [ops-design.md](../.claude/domain-rules/ops-design.md) | Guide: [ops-design.md](ops-design.md), [testing.md §Writing an Op](testing.md#writing-an-op-implementation)
 
 ## Benchmark
 
@@ -64,4 +64,4 @@ WorkloadBase (workloads/base.py)        # gen_inputs() only
   └── BenchmarkBase (benchmarks/)       # composes WorkloadBase, adds profiling
 ```
 
-→ Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md), [workflow.md](workflow.md)
+→ Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)
