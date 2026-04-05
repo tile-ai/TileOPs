@@ -66,16 +66,17 @@ graph TD
 
 ### Module reference
 
-| Module              | Responsibility                                                                                       | Key Artifact                       |
-| ------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **M1: Spec**        | Declare op interface, workloads, roofline formulas                                                   | `ops_manifest.yaml`                |
-| **M2: Kernel + Op** | GPU kernel implementations and user-facing Python API                                                | `tileops/kernels/`, `tileops/ops/` |
-| **M3: Correctness** | Numerical correctness against PyTorch reference                                                      | `tests/`                           |
-| **M4: Perf Tuning** | Benchmark execution time and drive kernel optimization loop                                          | `benchmarks/`                      |
-| **M5: Roofline**    | Hardware efficiency from raw time + formulas + HW profile                                            | `tileops/perf/`                    |
-| **M6: HW Profile**  | GPU hardware parameters (bandwidth, FLOPS) from offline calibration                                  | `tileops/perf/profiles/`           |
-| **M7: CI Gate**     | Correctness and performance regression guard per PR                                                  | CI pipeline                        |
-| **M8: Docs**        | Design docs, API reference, perf tables — agent artifacts published alongside auto-generated content | TileOPs.github.io                  |
+| Module                                       | Responsibility                                                                                                                         | Key Artifact                       |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| **M1: Spec**                                 | Declare op interface, workloads, roofline formulas                                                                                     | `ops_manifest.yaml`                |
+| **M2: Kernel + Op**                          | GPU kernel implementations and user-facing Python API                                                                                  | `tileops/kernels/`, `tileops/ops/` |
+| **M3: Correctness**                          | Numerical correctness against PyTorch reference                                                                                        | `tests/`                           |
+| **M4: Perf Tuning**                          | Benchmark execution time and drive kernel optimization loop                                                                            | `benchmarks/`                      |
+| **M5: Roofline**                             | Hardware efficiency from raw time + formulas + HW profile                                                                              | `tileops/perf/`                    |
+| **M6: HW Profile**                           | GPU hardware parameters (bandwidth, FLOPS) from offline calibration                                                                    | `tileops/perf/profiles/`           |
+| **M7: CI Gate**                              | Correctness and performance regression guard per PR                                                                                    | CI pipeline                        |
+| **M8: Docs**                                 | Design docs, API reference, perf tables — agent artifacts published alongside auto-generated content                                   | TileOPs.github.io                  |
+| **Workloads** _(shared layer, not a module)_ | Shared input generation + parametrize decorators consumed by M3 and M4. See [trust-model.md](trust-model.md#workloads-layer-contract). | `workloads/`                       |
 
 ## Data Contracts
 
@@ -144,6 +145,9 @@ TileOPs/
 │       └── profiles/                 # GPU hardware parameters
 │           ├── h100.yaml
 │           └── h200.yaml
+├── workloads/                        # Shared workload definitions (WorkloadBase, FixtureBase)
+│   ├── base.py                       # WorkloadBase, FixtureMeta, FixtureBase
+│   └── ops/                          # Per-op workload subclasses
 ├── benchmarks/
 │   ├── hardware/                     # Microbench (GPU characterization)
 │   │   ├── memory/

@@ -4,24 +4,33 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 ## Core Abstractions
 
-| Class             | Location                                                | Role                                                                                                                        |
-| ----------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `FixtureBase`     | [`tests/test_base.py`](../tests/test_base.py)           | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute.                           |
-| `TestBase`        | [`tests/test_base.py`](../tests/test_base.py)           | ABC with `gen_inputs()`, `ref_program()`, `check()`, `check_fn()`. Each op subclasses this.                                 |
-| `BenchmarkBase`   | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | ABC wrapping a `TestBase` instance. Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
-| `BenchmarkReport` | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | Static collector — `record()` stores results, `dump()` writes markdown, `clear()` resets.                                   |
+| Class             | Location                                                | Role                                                                                                                             |
+| ----------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkloadBase`    | [`workloads/base.py`](../workloads/base.py)             | ABC defining `gen_inputs()`. Shared base for input generation used by both tests and benchmarks.                                 |
+| `FixtureBase`     | [`workloads/base.py`](../workloads/base.py)             | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.  |
+| `TestBase`        | [`tests/test_base.py`](../tests/test_base.py)           | Inherits `WorkloadBase`. Adds `ref_program()` and `check()`. Each op subclasses this for correctness testing.                    |
+| `BenchmarkBase`   | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | ABC composing a `WorkloadBase` instance. Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
+| `BenchmarkReport` | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                       |
 
 ## Test/Benchmark Pattern
 
 ```python
+# workloads/ops/mha.py
+class MhaFwdWorkload(WorkloadBase):
+    def __init__(self, batch, heads, seq_len, dim, causal, dtype): ...
+    def gen_inputs(self): ...
+
+
 # tests/ops/test_mha.py
+from workloads.ops.mha import MhaFwdWorkload
+
+
+class MhaFwdTest(MhaFwdWorkload, TestBase):
+    def ref_program(self, q, k, v): ...  # correctness oracle, local to test
+
+
 class MhaFwdFixture(FixtureBase):
     PARAMS = [("batch, seq_len, heads, dim, causal, dtype, tune", [...])]
-
-
-class MhaFwdTest(TestBase):
-    def gen_inputs(self): ...
-    def ref_program(self, q, k, v): ...
 
 
 @MhaFwdFixture
@@ -32,6 +41,9 @@ def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune):
 
 
 # benchmarks/ops/bench_mha.py
+from workloads.ops.mha import MhaFwdWorkload  # import workload, NOT test
+
+
 class MhaFwdBenchmark(BenchmarkBase):
     def calculate_flops(self): ...
     def calculate_memory(self): ...
@@ -39,12 +51,12 @@ class MhaFwdBenchmark(BenchmarkBase):
 
 @MhaFwdFixture  # reuses the same parametrize decorator
 def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
-    test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
-    bm = MhaFwdBenchmark(test)
-    inputs = test.gen_inputs()
+    workload = MhaFwdWorkload(batch, heads, seq_len, dim, causal, dtype)
+    bm = MhaFwdBenchmark(workload)
+    inputs = workload.gen_inputs()
     op = MultiHeadAttentionFwdOp(...)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("mha_fwd", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 ```
 
 ## Unit Test Requirements
@@ -131,13 +143,63 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 - **Growth on existing files**: include script output and a one-line justification in PR description.
 - **New test files only**: no delta to report — follow the policy above.
 
+## Writing a Test
+
+→ Trust boundary: [trust-model.md §Test](trust-model.md#test) | Rules: [testing-budget.md](../.claude/domain-rules/testing-budget.md)
+
+### File checklist
+
+1. **Workload class** in `workloads/ops/` — subclass `WorkloadBase`, implement `gen_inputs()`.
+1. **Fixture class** — subclass `FixtureBase`, define `PARAMS` with `smoke`/`full` marks.
+1. **Test class** in `tests/ops/test_<op>.py` — inherit `(MyWorkload, TestBase)`, implement `ref_program()` locally.
+1. **Test function** — `@YourFixture` decorated, call `test.check(op, *test.gen_inputs())`.
+
+### Class hierarchy
+
+```
+WorkloadBase (workloads/base.py)
+  gen_inputs() -> Any                                    # abstract
+
+TestBase (tests/test_base.py, inherits WorkloadBase)
+  ref_program() -> Any                                   # abstract
+  check(op, *inputs, compare=None, atol, rtol) -> None
+```
+
+## Writing an Op Implementation
+
+→ Trust boundary: [trust-model.md §Implementation](trust-model.md#implementation) | Guide: [ops-design.md](ops-design.md)
+
+## Writing a Benchmark
+
+→ Trust boundary: [trust-model.md §Benchmark](trust-model.md#benchmark) | Rules: [benchmark.md](../.claude/domain-rules/benchmark.md)
+
+### File checklist
+
+1. **Workload class** in `workloads/ops/` — reuse the `WorkloadBase` subclass from the test.
+1. **Fixture class** — reuse the `FixtureBase` subclass from the test.
+1. **Benchmark class** in `benchmarks/ops/bench_<op>.py` — subclass `BenchmarkBase`, implement `calculate_flops()` and `calculate_memory()` (return `None` if not applicable).
+1. **Benchmark function** — `@YourFixture` decorated, construct workload + benchmark, call `inputs = workload.gen_inputs()`, then `bm.profile(op, *inputs)` and `BenchmarkReport.record(op, locals(), result, tag="tileops")`.
+1. **Independent baseline** — record at least one non-`"tileops"` baseline (e.g., `"torch"`, `"fa3"`). If benchmark needs a ref function, define it locally — never import from `tests/` or `workloads/`.
+
+### Class hierarchy
+
+```
+BenchmarkBase (benchmarks/benchmark.py, composes WorkloadBase)
+  __init__(workload: WorkloadBase)
+  calculate_flops() -> Optional[float]
+  calculate_memory() -> Optional[float]
+  profile(op, *inputs) -> dict
+```
+
+See [Reporting Rules](#reporting-rules) below for `record()` and tag conventions.
+
 ## Benchmark Requirements
 
 **Framework:** `benchmarks.benchmark.BenchmarkBase`. **Location:** [`benchmarks/ops/`](../benchmarks/ops/).
 
 **Execution:** `pytest benchmarks/` auto-generates `profile_run.log` (markdown format).
 
-### Metrics (all required)
+### Metrics
 
 - Latency (ms)
 - TFLOPS (Tera Floating-point Operations Per Second)
@@ -151,4 +213,4 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 - Run the targeted correctness suite on the same GPU before reporting benchmark numbers.
 - `BenchmarkReport.record()` first argument may be the Op instance or a string name; stay consistent within a given benchmark file.
 - `calculate_flops()` and `calculate_memory()` should return numeric values when the metric is available; return `None` only if the metric is not applicable, in which case it will be omitted from the report.
-- Every benchmark must record at least one non-`"tileops"` baseline. Use existing tags (`"baseline"`, `"torch"`, `"FA3"`, `"fla"`, `"triton"`) and avoid introducing ad-hoc tags without updating downstream consumers.
+- Every benchmark must record at least one non-`"tileops"` baseline. Use existing tags (`"baseline"`, `"torch"`, `"fa3"`, `"fla"`, `"triton"`) and avoid introducing ad-hoc tags without updating downstream consumers.

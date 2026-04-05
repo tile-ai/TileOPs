@@ -1,4 +1,14 @@
-- These are condensed rules. If unclear, read [docs/manifest.md](../../docs/manifest.md) for full spec, examples, and design rationale.
+## Boundary
+
+- **OWNS**: `tileops/ops_manifest.yaml`
+- **MUST NOT modify**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `benchmarks/`
+- **MAY READ**: PyTorch public API (to match signatures)
+- Manifest changes require human review in a separate PR.
+
+→ [trust-model.md §Manifest](../../docs/trust-model.md#manifest)
+
+______________________________________________________________________
+
 - `inputs`, `outputs`, `params` are ordered dicts. Key order = function signature position. Do not reorder.
 - Params include all PyTorch-supported parameters, even if the current kernel only supports the default.
 - `dtype` syntax: `|` for alternatives, `same_as(ref)` for dependent types.
