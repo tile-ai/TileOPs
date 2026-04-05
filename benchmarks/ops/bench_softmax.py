@@ -3,6 +3,7 @@
 Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
 """
 
+from math import prod
 from typing import Optional
 
 import pytest
@@ -25,13 +26,13 @@ class SoftmaxBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
-        return 4 * t.m * t.n
+        return 4 * prod(t.shape)
 
     def calculate_memory(self) -> Optional[float]:
-        """Read x (M*N) + write y (M*N)."""
+        """Read x + write y (same shape)."""
         t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return (2 * t.m * t.n) * elem_bytes
+        return 2 * prod(t.shape) * elem_bytes
 
 
 class LogSoftmaxBenchmark(BenchmarkBase):
@@ -77,11 +78,11 @@ _SOFTMAX_BENCH_PARAMS = [
 
 @pytest.mark.parametrize("m, n, dtype, tune", _SOFTMAX_BENCH_PARAMS)
 def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = SoftmaxTest(m, n, dtype)
+    test = SoftmaxTest((m, n), dtype)
     bm = SoftmaxBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
+    op = SoftmaxOp(dtype=dtype, dim=-1, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
