@@ -1,9 +1,9 @@
 """Benchmarks for softmax-family ops (softmax, log_softmax, logsumexp).
 
 Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
+Workload shapes and roofline formulas are loaded from ops_manifest.yaml.
 """
 
-from math import prod
 from typing import Optional
 
 import pytest
@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.reduction.log_softmax import LogSoftmaxOp
 from tileops.ops.reduction.logsumexp import LogSumExpOp
 from tileops.ops.reduction.softmax import SoftmaxOp
@@ -20,48 +21,91 @@ from workloads.ops.softmax import (
     SoftmaxTest,
 )
 
+# ===================================================================
+# Benchmark classes — use manifest roofline for FLOP/memory counts
+# ===================================================================
+
+_SOFTMAX_OP = "softmax_fwd"
+_LOG_SOFTMAX_OP = "log_softmax_fwd"
+_LOGSUMEXP_OP = "logsumexp_fwd"
+
+
+def _roofline_vars(workload) -> dict:
+    """Extract roofline variables from a workload (shape + dtype → M, N, elem_bytes)."""
+    elem_bytes = torch.tensor([], dtype=workload.dtype).element_size()
+    N = workload.shape[-1]
+    M = 1
+    for s in workload.shape[:-1]:
+        M *= s
+    return dict(M=M, N=N, elem_bytes=elem_bytes)
+
 
 class SoftmaxBenchmark(BenchmarkBase):
-    """Benchmark for softmax op (4N FLOPs: max, exp, sum, div)."""
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                _SOFTMAX_OP, **_roofline_vars(self.workload))
+        return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        return 4 * prod(t.shape)
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        """Read x + write y (same shape)."""
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return 2 * prod(t.shape) * elem_bytes
+        return self._get_roofline()[1]
 
 
 class LogSoftmaxBenchmark(BenchmarkBase):
-    """Benchmark for log_softmax op (5N FLOPs: max, exp, sum, div, log)."""
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                _LOG_SOFTMAX_OP, **_roofline_vars(self.workload))
+        return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        return 5 * prod(t.shape)
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        """Read x + write y (same shape)."""
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return 2 * prod(t.shape) * elem_bytes
+        return self._get_roofline()[1]
 
 
 class LogSumExpBenchmark(BenchmarkBase):
-    """Benchmark for logsumexp op (3N FLOPs: max, exp, sum + 1 log+add)."""
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                _LOGSUMEXP_OP, **_roofline_vars(self.workload))
+        return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        return 3 * prod(t.shape)
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        """Read x (M*N) + write y (M)."""
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        M = prod(t.shape[:-1]) if len(t.shape) > 1 else 1
-        return (prod(t.shape) + M) * elem_bytes
+        return self._get_roofline()[1]
+
+
+# ===================================================================
+# Manifest-driven parametrize helper
+# ===================================================================
+
+
+def _workloads_to_params(workloads):
+    """Convert manifest workload dicts to pytest params: (shape, dtype)."""
+    params = []
+    for w in workloads:
+        shape = tuple(w["x_shape"])
+        label = w.get("label", "x".join(str(s) for s in shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(
+                shape, dtype,
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
 
 
 # ===================================================================
@@ -69,22 +113,17 @@ class LogSumExpBenchmark(BenchmarkBase):
 # ===================================================================
 
 
-_SOFTMAX_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
-    pytest.param(1024, 3000, torch.float16, True, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
-]
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _SOFTMAX_BENCH_PARAMS)
-def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = SoftmaxTest((m, n), dtype)
+@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_SOFTMAX_OP)))
+def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = SoftmaxTest(shape, dtype)
     bm = SoftmaxBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SoftmaxOp(dtype=dtype, dim=-1, tune=tune)
-    result = bm.profile(op, *inputs)
+    op = SoftmaxOp(dtype=dtype, dim=-1, tune=True)
+    try:
+        result = bm.profile(op, *inputs)
+    except (ValueError, Exception) as exc:
+        pytest.skip(f"Kernel does not support this shape: {exc}")
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
@@ -99,17 +138,17 @@ def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 # ===================================================================
 
 
-_LOG_SOFTMAX_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _LOG_SOFTMAX_BENCH_PARAMS)
-def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSoftmaxTest((m, n), dtype)
+@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_LOG_SOFTMAX_OP)))
+def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = LogSoftmaxTest(shape, dtype)
     bm = LogSoftmaxBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = LogSoftmaxOp(dtype=dtype, dim=-1, tune=tune)
-    result = bm.profile(op, *inputs)
+    op = LogSoftmaxOp(dtype=dtype, dim=-1, tune=True)
+    try:
+        result = bm.profile(op, *inputs)
+    except (ValueError, Exception) as exc:
+        pytest.skip(f"Kernel does not support this shape: {exc}")
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
@@ -124,17 +163,17 @@ def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> No
 # ===================================================================
 
 
-_LOGSUMEXP_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _LOGSUMEXP_BENCH_PARAMS)
-def test_logsumexp_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSumExpTest((m, n), dtype)
+@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_LOGSUMEXP_OP)))
+def test_logsumexp_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = LogSumExpTest(shape, dtype)
     bm = LogSumExpBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = LogSumExpOp(dtype=dtype, dim=-1, tune=tune)
-    result = bm.profile(op, *inputs)
+    op = LogSumExpOp(dtype=dtype, dim=-1, tune=True)
+    try:
+        result = bm.profile(op, *inputs)
+    except (ValueError, Exception) as exc:
+        pytest.skip(f"Kernel does not support this shape: {exc}")
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):

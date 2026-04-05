@@ -3,7 +3,7 @@
 Provides the shared validate -> reshape -> pad -> kernel -> trim -> reshape
 pattern for softmax, log_softmax, and logsumexp ops.
 
-Construction: ``op(dtype=..., dim=-1, keepdim=False)``.  M and N are derived
+Construction: ``op(dtype=..., dim=-1)``.  M and N are derived
 from the input tensor at forward time, and kernels are cached by
 ``(M, N)`` to avoid rebuilds.
 """
@@ -32,7 +32,6 @@ class _SoftmaxBaseOp(Op):
     Args:
         dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default -1).
-        keepdim: Whether to retain the reduced dimension (default False).
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
@@ -46,13 +45,12 @@ class _SoftmaxBaseOp(Op):
         *,
         dtype: torch.dtype,
         dim: int = -1,
-        keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.dtype = dtype
         self.dim = dim
-        self.keepdim = keepdim
+        self.keepdim = False
         self._tune = tune
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, object] = {}
@@ -86,7 +84,12 @@ class _SoftmaxBaseOp(Op):
         self._validate(x)
         orig_shape = x.shape
 
-        # Normalize dim.
+        # Validate and normalize dim (match PyTorch IndexError behavior).
+        if self.dim < -x.ndim or self.dim >= x.ndim:
+            raise IndexError(
+                f"Dimension out of range (expected to be in range of "
+                f"[{-x.ndim}, {x.ndim - 1}], but got {self.dim})"
+            )
         dim = self.dim % x.ndim
 
         # N = size along reduction dim, M = product of all other dims.

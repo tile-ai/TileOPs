@@ -9,6 +9,11 @@ Example:
     >>> y = op(x)  # shape: (1024,)
 """
 
+from typing import Dict, Optional
+
+import torch
+
+from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction.softmax import LogSumExpKernel
 
 from ._softmax_base import _SoftmaxBaseOp
@@ -33,3 +38,15 @@ class LogSumExpOp(_SoftmaxBaseOp):
     _op_kind = "logsumexp"
     _kernel_key = "logsumexp_fwd"
     _kernel_class = LogSumExpKernel
+
+    def __init__(
+        self,
+        *,
+        dtype: torch.dtype,
+        dim: int = -1,
+        keepdim: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        super().__init__(dtype=dtype, dim=dim, kernel_map=kernel_map, tune=tune)
+        self.keepdim = keepdim
