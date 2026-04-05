@@ -5,46 +5,6 @@ import torch
 from workloads.base import WorkloadBase
 
 
-def gla_decode_torch(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    gk: torch.Tensor,
-    state: torch.Tensor,
-    scale: float = -1.0,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Pure-PyTorch reference for single-step GLA recurrence.
-
-    Args:
-        q: [B, H, DK]
-        k: [B, H, DK]
-        v: [B, H, DV]
-        gk: [B, H, DK]   (log-space per-key gate)
-        state: [B, H, DK, DV]
-        scale: query scale factor (default: DK^{-0.5})
-
-    Returns:
-        o: [B, H, DV]
-        new_state: [B, H, DK, DV]
-    """
-    DK = q.shape[-1]
-    if scale <= 0:
-        scale = DK ** -0.5
-
-    q, k, v = q.float(), k.float(), v.float()
-    gk = gk.float()
-    state = state.float()
-
-    alpha = torch.exp(gk)  # [B, H, DK]
-
-    # State update: new_state[dk, dv] = alpha[dk] * state[dk, dv] + k[dk] * v[dv]
-    new_state = alpha.unsqueeze(-1) * state + k.unsqueeze(-1) * v.unsqueeze(-2)
-
-    # Output: o = scale * q^T @ new_state
-    o = scale * torch.einsum("bhk,bhkv->bhv", q, new_state)
-
-    return o, new_state
-
 class GLADecodeTest(WorkloadBase):
 
     def __init__(

@@ -6,7 +6,67 @@ import torch
 from tests.ops.gla_test_utils import cosine_sim, get_tolerances
 from tests.test_base import FixtureBase
 from tileops.ops import GLABwdOp, GLAFwdOp
-from workloads.ops.gla_chunkwise_bwd import gla_autograd_bwd_torch
+
+
+def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
+    """Fully differentiable chunked GLA forward in float32."""
+    B, T, H, K = q.shape
+    V = v.shape[-1]
+    BC = chunk_size
+    NC = T // BC
+
+    if scale is None:
+        scale = K ** -0.5
+
+    q = q.float() * scale
+    k = k.float()
+    v = v.float()
+    g = g.float()
+
+    g_cum = g.reshape(B, NC, BC, H, K).cumsum(dim=2).reshape(B, T, H, K)
+
+    h = q.new_zeros(B, H, K, V)
+    mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
+
+    o_chunks = []
+    for c in range(NC):
+        sl = slice(c * BC, (c + 1) * BC)
+        qc = q[:, sl, :, :]
+        kc = k[:, sl, :, :]
+        vc = v[:, sl, :, :]
+        gc = g_cum[:, sl, :, :]
+        g_last = gc[:, -1:, :, :]
+
+        q_gated = qc * torch.exp(gc)
+        o_inter = torch.einsum("bthk,bhkv->bthv", q_gated, h)
+
+        k_ungated = kc * torch.exp(-gc)
+        A = torch.einsum("bihk,bjhk->bhij", q_gated, k_ungated)
+        A = A * mask.unsqueeze(0).unsqueeze(0)
+        o_intra = torch.einsum("bhij,bjhv->bihv", A, vc)
+
+        o_chunks.append(o_inter + o_intra)
+
+        k_adj = kc * torch.exp(g_last - gc)
+        h = h * torch.exp(g_last).permute(0, 2, 3, 1).squeeze(-1).unsqueeze(-1)
+        h = h + torch.einsum("bthk,bthv->bhkv", k_adj, vc)
+
+    return torch.cat(o_chunks, dim=1)
+
+
+def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
+    """Compute GLA backward gradients via autograd on the differentiable forward."""
+    sc = (q.shape[-1] ** -0.5) if scale <= 0 else scale
+
+    q_ = q.float().detach().requires_grad_(True)
+    k_ = k.float().detach().requires_grad_(True)
+    v_ = v.float().detach().requires_grad_(True)
+    g_ = g.float().detach().requires_grad_(True)
+
+    o = gla_fwd_chunked_torch(q_, k_, v_, g_, chunk_size, scale=sc)
+    loss = (o * do.float()).sum()
+    dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
+    return dq, dk, dv, dg
 
 try:
     from fla.ops.gla import chunk_gla

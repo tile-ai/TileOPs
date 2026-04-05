@@ -13,7 +13,31 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GLADecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.gla_recurrence import GLADecodeTest, gla_decode_torch
+from workloads.ops.gla_recurrence import GLADecodeTest
+
+
+def gla_decode_torch(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    gk: torch.Tensor,
+    state: torch.Tensor,
+    scale: float = -1.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pure-PyTorch reference for single-step GLA recurrence."""
+    DK = q.shape[-1]
+    if scale <= 0:
+        scale = DK ** -0.5
+
+    q, k, v = q.float(), k.float(), v.float()
+    gk = gk.float()
+    state = state.float()
+
+    alpha = torch.exp(gk)
+    new_state = alpha.unsqueeze(-1) * state + k.unsqueeze(-1) * v.unsqueeze(-2)
+    o = scale * torch.einsum("bhk,bhkv->bhv", q, new_state)
+
+    return o, new_state
 
 
 class _GLADecodeTestBaseline(GLADecodeTest):

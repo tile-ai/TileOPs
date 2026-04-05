@@ -1,55 +1,9 @@
 import torch
-import torch.nn.functional as F
 
 from workloads.base import WorkloadBase
 
 CONV_KERNEL_SIZE = 4
 
-def ref_engram_gate_conv_bwd(dY, H, k, v, rms_w_h, rms_w_v, conv_w,
-                              vhat, alpha, rrms_h, rrms_k, rrms_v, eps=1e-6):
-    """PyTorch reference backward via autograd."""
-    M, T, d = H.shape
-
-    # Re-run forward with autograd to get exact gradients
-    H_ag = H.float().detach().requires_grad_(True)
-    k_ag = k.float().detach().requires_grad_(True)
-    v_ag = v.float().detach().requires_grad_(True)
-    w_h_ag = rms_w_h.float().detach().requires_grad_(True)
-    w_v_ag = rms_w_v.float().detach().requires_grad_(True)
-    cw_ag = conv_w.float().detach().requires_grad_(True)
-
-    # Forward (autograd-friendly)
-    def _rmsnorm(x, w):
-        return x * (x ** 2).mean(dim=-1, keepdim=True).add(eps).rsqrt() * w
-
-    h_norm = _rmsnorm(H_ag, w_h_ag)
-    k_norm = _rmsnorm(k_ag, w_h_ag)
-
-    dot = (h_norm * k_norm).sum(dim=-1, keepdim=True)
-    alpha_ag = torch.sigmoid(dot / (d ** 0.5))
-
-    v_hat_ag = alpha_ag * v_ag
-
-    v_hat_norm = _rmsnorm(v_hat_ag, w_v_ag)
-
-    v_perm = v_hat_norm.permute(0, 2, 1)
-    v_padded = F.pad(v_perm, (CONV_KERNEL_SIZE - 1, 0))
-    cw_expanded = cw_ag.T.unsqueeze(1)
-    conv_out = F.conv1d(v_padded, cw_expanded, groups=d).permute(0, 2, 1)
-
-    Y_ag = F.silu(conv_out) + v_hat_ag
-
-    # Backward
-    Y_ag.backward(dY.float())
-
-    return (
-        H_ag.grad.to(H.dtype),
-        k_ag.grad.to(H.dtype),
-        v_ag.grad.to(H.dtype),
-        w_h_ag.grad,   # fp32
-        w_v_ag.grad,   # fp32
-        cw_ag.grad,    # fp32
-    )
 
 class EngramGateConvBwdTest(WorkloadBase):
     def __init__(self, M, seq_len, d, dtype, eps=1e-6):

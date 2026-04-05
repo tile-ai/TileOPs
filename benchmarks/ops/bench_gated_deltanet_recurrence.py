@@ -6,10 +6,37 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetDecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.gated_deltanet_recurrence import (
-    GatedDeltaNetDecodeTest,
-    gated_deltanet_decode_torch,
-)
+from workloads.ops.gated_deltanet_recurrence import GatedDeltaNetDecodeTest
+
+
+def gated_deltanet_decode_torch(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    state: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pure-PyTorch reference for single-step gated delta rule."""
+    q, k, v = q.float(), k.float(), v.float()
+    g, beta = g.float(), beta.float()
+    state = state.float()
+
+    alpha = torch.exp(g)
+    old_val = torch.einsum("bhkv,bhk->bhv", state, k)
+
+    beta_unsq = beta.unsqueeze(-1)
+    alpha_unsq = alpha.unsqueeze(-1)
+    v_new = beta_unsq * v - alpha_unsq * beta_unsq * old_val
+
+    o_inter = alpha_unsq * torch.einsum("bhkv,bhk->bhv", state, q)
+    qk_dot = torch.einsum("bhk,bhk->bh", q, k).unsqueeze(-1)
+    o_intra = qk_dot * v_new
+    o = o_inter + o_intra
+
+    new_state = alpha_unsq.unsqueeze(-1) * state + k.unsqueeze(-1) * v_new.unsqueeze(-2)
+
+    return o, new_state
 
 
 class _GatedDeltaNetDecodeTestBaseline(GatedDeltaNetDecodeTest):

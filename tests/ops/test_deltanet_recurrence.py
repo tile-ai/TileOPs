@@ -7,7 +7,32 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import DeltaNetDecodeOp
 from workloads.ops.deltanet_recurrence import DeltaNetDecodeTest as _DeltaNetDecodeTestWorkload
-from workloads.ops.deltanet_recurrence import deltanet_decode_torch
+
+
+def deltanet_decode_torch(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    beta: torch.Tensor,
+    state: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pure-PyTorch reference for single-step delta rule (ungated)."""
+    q, k, v = q.float(), k.float(), v.float()
+    beta = beta.float()
+    state = state.float()
+
+    old_val = torch.einsum("bhkv,bhk->bhv", state, k)
+    beta_unsq = beta.unsqueeze(-1)
+    v_new = beta_unsq * (v - old_val)
+
+    o_inter = torch.einsum("bhkv,bhk->bhv", state, q)
+    qk_dot = torch.einsum("bhk,bhk->bh", q, k).unsqueeze(-1)
+    o_intra = qk_dot * v_new
+    o = o_inter + o_intra
+
+    new_state = state + k.unsqueeze(-1) * v_new.unsqueeze(-2)
+
+    return o, new_state
 
 
 class DeltaNetDecodeTest(_DeltaNetDecodeTestWorkload, TestBase):

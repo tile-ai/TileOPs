@@ -15,22 +15,3 @@ class FusedTopKTest(WorkloadBase):
     def gen_inputs(self):
         torch.manual_seed(42)
         return torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda")
-
-def fused_topk_torch(
-    gating_output: torch.Tensor,
-    top_k: int,
-    scoring_func: str = "softmax",
-    renormalize: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    logits = gating_output.to(torch.float32)
-    if scoring_func == "softmax":
-        scores = torch.softmax(logits, dim=-1)
-    elif scoring_func == "sigmoid":
-        scores = torch.sigmoid(logits)
-    else:
-        raise ValueError(f"Unknown scoring_func: {scoring_func}")
-
-    topk_weights, topk_ids = torch.topk(scores, top_k, dim=-1, sorted=False)
-    if renormalize:
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-    return topk_weights, topk_ids.int()
