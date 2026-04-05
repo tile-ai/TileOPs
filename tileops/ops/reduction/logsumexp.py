@@ -1,10 +1,14 @@
 """LogSumExp operator (L2 Op layer).
 
 Provides:
-  - LogSumExpOp: y = logsumexp(x, dim=-1)
+  - LogSumExpOp: y = logsumexp(x, dim)
 
-Follows the validate -> reshape -> pad -> kernel -> trim -> reshape pattern
-and supports 1D-4D input with dim=-1.
+Supports both spec path (dtype + dim) and legacy path (M, N, dtype).
+
+Example (legacy):
+    >>> op = LogSumExpOp(M=1024, N=4096, dtype=torch.float16)
+    >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+    >>> y = op(x)  # shape: (1024,)
 """
 
 import torch
@@ -17,21 +21,17 @@ __all__ = ["LogSumExpOp"]
 
 
 class LogSumExpOp(_SoftmaxBaseOp):
-    """LogSumExp operator: y = logsumexp(x, dim=-1).
+    """LogSumExp operator: y = logsumexp(x, dim).
 
-    Output shape is input shape without the last dimension (*leading,).
+    Output shape is input shape without the reduction dimension.
 
     Args:
-        M: Number of rows (product of all dims except last).
-        N: Hidden dimension (last dim).
         dtype: Data type (float32, float16, or bfloat16).
+        dim: Reduction dimension (default -1).
+        M: Number of rows (legacy path, optional).
+        N: Hidden dimension (legacy path, optional).
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
-
-    Example:
-        >>> op = LogSumExpOp(M=1024, N=4096, dtype=torch.float16)
-        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
-        >>> y = op(x)  # shape: (1024,)
     """
 
     _op_kind = "logsumexp"
@@ -43,7 +43,7 @@ class LogSumExpOp(_SoftmaxBaseOp):
         y: torch.Tensor,
         orig_shape: torch.Size,
     ) -> torch.Tensor:
-        """Restore leading dims without the last dimension."""
+        """Restore leading dims without the last dimension (legacy path)."""
         # y is (M,) -- reshape to (*leading_dims,)
         leading_shape = orig_shape[:-1]
         if len(leading_shape) == 0:
