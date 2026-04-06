@@ -106,9 +106,13 @@ def _make_op(m, n, dtype, op_kind):
         "var_mean": VarMeanOp,
     }
     cls = op_map[op_kind]
+    # Simple reduce ops: new spec-conformant interface
+    if op_kind in ("sum", "mean", "amax", "amin", "prod"):
+        return cls(dtype=dtype)
+    # Welford ops: still legacy interface
     if op_kind in ("std", "var", "var_mean"):
         return cls(M=m, N=n, dtype=dtype, correction=1)
-    return cls(M=m, N=n, dtype=dtype)
+    raise ValueError(f"Unknown op_kind: {op_kind}")
 
 
 @ReduceBenchFixture
