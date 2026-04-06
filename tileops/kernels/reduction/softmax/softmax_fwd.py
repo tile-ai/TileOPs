@@ -9,8 +9,8 @@ N_padded does not fit in shared memory.  Uses the online softmax recurrence
 (track running max and rescaled running sum) across N-tiles.
 
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
-memory instructions. Padding zeros are handled by using -infinity fill so
-they contribute 0 to the softmax denominator.
+memory instructions. Padded columns are filled with -infinity so they
+contribute 0 to exp-sums and never win the max reduction.
 """
 
 import functools
