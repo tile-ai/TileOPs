@@ -69,6 +69,9 @@ class SoftmaxFixture(FixtureBase):
                 pytest.param((2, 4, 8, 256), -1, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=-1, large-N (triggers N-tiling path)
+                pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
                 # dim=0 (reduce along first dim — different M/N split)
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
@@ -202,6 +205,9 @@ class LogSoftmaxFixture(FixtureBase):
                 pytest.param((2, 4, 8, 256), -1, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=-1, large-N (triggers N-tiling path)
+                pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
                 # dim=0 (reduce along first dim)
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
@@ -262,6 +268,9 @@ class LogSumExpFixture(FixtureBase):
                 pytest.param((2, 4, 8, 256), -1, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=-1, large-N (triggers N-tiling path)
+                pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
                 # dim=0
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
