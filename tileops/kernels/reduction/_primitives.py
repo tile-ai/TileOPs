@@ -12,6 +12,7 @@ import tilelang.language as T
 
 __all__ = [
     "align_up",
+    "compute_tile_n",
     "DEFAULT_ALIGNMENT",
     "SHARED_MEMORY_BUDGET_BYTES",
     "make_reduce_epilogue",
@@ -45,6 +46,48 @@ def align_up(n: int, alignment: int) -> int:
     if alignment <= 0:
         raise ValueError(f"alignment must be positive, got {alignment}")
     return ((n + alignment - 1) // alignment) * alignment
+
+
+def compute_tile_n(
+    block_m: int,
+    elem_bytes: int,
+    N_padded: int,
+    alignment: int = DEFAULT_ALIGNMENT,
+    budget: int = SHARED_MEMORY_BUDGET_BYTES,
+) -> int:
+    """Compute the largest tile_n (column chunk) that fits in shared memory.
+
+    The tile_n is the largest multiple of *alignment* such that
+    ``block_m * tile_n * elem_bytes <= budget``.
+
+    If N_padded already fits, returns N_padded (no tiling needed).
+
+    Args:
+        block_m: Number of rows per thread block.
+        elem_bytes: Bytes per element (e.g. 2 for fp16/bf16, 4 for fp32).
+        N_padded: Padded hidden dimension (already aligned to *alignment*).
+        alignment: Column alignment boundary (default DEFAULT_ALIGNMENT).
+        budget: Shared memory budget in bytes (default 48 KiB).
+
+    Returns:
+        tile_n: column tile size, a multiple of *alignment*, or N_padded
+        if it fits entirely.
+
+    Raises:
+        ValueError: If even a single alignment-width slice cannot fit.
+    """
+    if block_m * N_padded * elem_bytes <= budget:
+        return N_padded
+
+    # Largest multiple of alignment that fits in shared memory
+    max_cols = budget // (block_m * elem_bytes)
+    tile_n = (max_cols // alignment) * alignment
+    if tile_n == 0:
+        raise ValueError(
+            f"Cannot fit even {alignment} columns in {budget} bytes "
+            f"with block_m={block_m}, elem_bytes={elem_bytes}."
+        )
+    return tile_n
 
 
 # ---------------------------------------------------------------------------
