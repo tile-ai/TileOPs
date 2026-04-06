@@ -140,10 +140,12 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
     The input/output tensor column count is total_cols = num_tiles * tile_n,
     which may be larger than N_padded. Extra columns must be -inf padded.
 
-    NOTE: Pass 2 uses dedicated fragment and shared memory allocations to
-    avoid register aliasing with the pass 1 accumulators (row_max, row_sum).
-    TileLang's register allocator may reuse registers across T.Serial loop
-    boundaries, corrupting accumulators if the same fragments are written to.
+    NOTE: Pass 2 uses a dedicated shared memory buffer AND dedicated register
+    fragments. TileLang's allocator may alias both shared buffers and register
+    fragments across T.Serial loop boundaries, corrupting pass-1 accumulators
+    (row_max, row_sum) if the same names are reused.  The dual-buffer shared
+    memory cost is accounted for by passing ``num_buffers=2`` to
+    ``compute_tile_n``.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
@@ -197,7 +199,13 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                 row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
                             )
 
-                    # --- Pass 2 fragments (dedicated to avoid register aliasing) ---
+                    # --- Pass 2: dedicated shared + register fragments ---
+                    # TileLang's allocator aliases both shared buffers and
+                    # register fragments across T.Serial loop boundaries.
+                    # Using separate allocations for pass 2 prevents
+                    # corruption of pass-1 accumulators (row_max, row_sum).
+                    # compute_tile_n accounts for 2x shared memory via
+                    # num_buffers=2.
                     p2_shared = T.alloc_shared((block_m, tile_n), dtype)
                     p2_local = T.alloc_fragment((block_m, tile_n), dtype)
                     p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
@@ -274,7 +282,8 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                     for i in T.Parallel(block_m):
                         log_sum[i] = T.log(row_sum[i])
 
-                    # --- Pass 2 fragments (dedicated to avoid register aliasing) ---
+                    # --- Pass 2: dedicated shared + register fragments ---
+                    # (Same aliasing workaround as softmax — see note above.)
                     p2_shared = T.alloc_shared((block_m, tile_n), dtype)
                     p2_local = T.alloc_fragment((block_m, tile_n), dtype)
                     p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
@@ -414,10 +423,22 @@ class SoftmaxKernel(Kernel):
         )
         self.init_config(config, tune)
 
+    # Tiled softmax/log_softmax allocates 2 shared buffers (one per pass)
+    # due to TileLang allocator aliasing — see _softmax_kernel_tiled docstring.
+    _NUM_SHARED_BUFFERS = 2
+
     def _tile_n_for_block_m(self, block_m: int) -> int:
         """Return tile_n for a given block_m (0 means no tiling needed)."""
-        tile_n = compute_tile_n(block_m, self._elem_bytes, self.N_padded)
-        return 0 if tile_n == self.N_padded else tile_n
+        # First check if N fits in a single buffer (no tiling → single-tile path,
+        # which only allocates 1 shared buffer).
+        single = compute_tile_n(block_m, self._elem_bytes, self.N_padded)
+        if single == self.N_padded:
+            return 0
+        # Tiled path: budget must accommodate num_buffers shared allocations.
+        return compute_tile_n(
+            block_m, self._elem_bytes, self.N_padded,
+            num_buffers=self._NUM_SHARED_BUFFERS,
+        )
 
     @property
     def default_config(self) -> dict:

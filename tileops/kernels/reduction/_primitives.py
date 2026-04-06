@@ -54,13 +54,15 @@ def compute_tile_n(
     N_padded: int,
     alignment: int = DEFAULT_ALIGNMENT,
     budget: int = SHARED_MEMORY_BUDGET_BYTES,
+    num_buffers: int = 1,
 ) -> int:
     """Compute the largest tile_n (column chunk) that fits in shared memory.
 
     The tile_n is the largest multiple of *alignment* such that
-    ``block_m * tile_n * elem_bytes <= budget``.
+    ``num_buffers * block_m * tile_n * elem_bytes <= budget``.
 
-    If N_padded already fits, returns N_padded (no tiling needed).
+    If N_padded already fits (with *num_buffers* copies), returns N_padded
+    (no tiling needed).
 
     Args:
         block_m: Number of rows per thread block.
@@ -68,6 +70,10 @@ def compute_tile_n(
         N_padded: Padded hidden dimension (already aligned to *alignment*).
         alignment: Column alignment boundary (default DEFAULT_ALIGNMENT).
         budget: Shared memory budget in bytes (default 48 KiB).
+        num_buffers: Number of shared memory buffers of shape
+            ``(block_m, tile_n)`` that must fit simultaneously (default 1).
+            Softmax/log_softmax tiled kernels use 2 (one per pass) due to
+            TileLang allocator aliasing constraints.
 
     Returns:
         tile_n: column tile size, a multiple of *alignment*, or N_padded
@@ -76,16 +82,18 @@ def compute_tile_n(
     Raises:
         ValueError: If even a single alignment-width slice cannot fit.
     """
-    if block_m * N_padded * elem_bytes <= budget:
+    per_buffer = block_m * elem_bytes
+    if num_buffers * per_buffer * N_padded <= budget:
         return N_padded
 
     # Largest multiple of alignment that fits in shared memory
-    max_cols = budget // (block_m * elem_bytes)
+    max_cols = budget // (num_buffers * per_buffer)
     tile_n = (max_cols // alignment) * alignment
     if tile_n == 0:
         raise ValueError(
             f"Cannot fit even {alignment} columns in {budget} bytes "
-            f"with block_m={block_m}, elem_bytes={elem_bytes}."
+            f"with block_m={block_m}, elem_bytes={elem_bytes}, "
+            f"num_buffers={num_buffers}."
         )
     return tile_n
 
