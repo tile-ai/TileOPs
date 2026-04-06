@@ -1,15 +1,22 @@
-"""CountNonzeroOp: counts non-zero elements along dim=-1, returning int64.
+"""CountNonzeroOp: counts non-zero elements along ``dim``, returning int64.
 
-The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment
-(with 0, which is neutral for sum/count), calls the kernel, and reshapes the
-output back. Output dtype is always int64.
+The Op layer validates inputs, normalizes ``dim``, reshapes to 2D (M, N),
+pads to alignment (with 0, which is neutral for sum/count), calls the kernel,
+and reshapes the output back.  Output dtype is always int64.
 
 Supports any numeric dtype as input including torch.bool, int32, int64, and
 complex types. Inputs with unsupported TileLang storage dtypes (bool, int32,
 int64, complex64, complex128) are pre-converted to float32 before the kernel
 call.
+
+Kernels are cached by ``(M, N)`` so that the same op instance can handle
+varying shapes.
+
+Note: Unlike AllOp/AnyOp, CountNonzeroOp does NOT accept ``keepdim``.
+The reduction dimension is always removed, matching ``torch.count_nonzero``.
 """
 
+from math import prod
 from typing import Dict, Optional
 
 import torch
@@ -29,70 +36,89 @@ __all__ = ["CountNonzeroOp"]
 
 
 class CountNonzeroOp(Op):
-    """Count nonzero reduction along dim=-1, returning int64.
+    """Count nonzero reduction along ``dim``, returning int64.
 
-    Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
+    Construction: ``CountNonzeroOp(dtype=..., dim=-1)``.  M and N are
+    derived from the input tensor at forward time, and kernels are cached
+    by ``(M, N)`` to avoid rebuilds.
+
     Padded positions use 0, which is neutral for sum/count.
+
+    Note: No ``keepdim`` parameter -- the reduction dimension is always
+    removed, matching ``torch.count_nonzero`` semantics.
 
     Supports any numeric dtype including torch.bool, int32, int64, and complex
     types. Inputs with unsupported TileLang storage dtypes (bool, int32, int64,
     complex64, complex128) are pre-converted to float32 in forward().
 
     Args:
-        M: Product of all leading dimensions.
-        N: Last dimension size.
         dtype: Input data type (float16, bfloat16, float32, int32, int64,
                bool, complex64, complex128).
+        dim: Reduction dimension (default -1).  Only a single ``int`` is
+            supported; passing ``list[int]`` raises ``NotImplementedError``.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
 
     def __init__(
         self,
-        M: int,
-        N: int,
+        *,
         dtype: torch.dtype,
+        dim: int = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
-        self.N = N
+        if isinstance(dim, (list, tuple)):
+            raise NotImplementedError("Multi-dim reduction not yet supported")
         self.dtype = dtype
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
+        self.dim = dim
+        self._tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["logical_reduce"](
-            M,
-            N,
-            "count_nonzero",
-            dtype,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, object] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"logical_reduce": LogicalReduceKernel}
 
+    def _get_or_create_kernel(self, M: int, N: int) -> object:
+        """Return a cached kernel for (M, N), creating one if needed."""
+        key = (M, N)
+        if key not in self._kernel_cache:
+            kernel_cls = self.kernel_map["logical_reduce"]
+            self._kernel_cache[key] = kernel_cls(
+                M, N, "count_nonzero", self.dtype, tune=self._tune,
+            )
+        return self._kernel_cache[key]
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute count_nonzero along dim=-1.
-
-        Args:
-            x: Input tensor with last dim == N.
-
-        Returns:
-            Int64 tensor with shape == x.shape[:-1].
-        """
+        """Compute count_nonzero along the configured dim."""
+        # --- validation ---
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.dtype != self.dtype:
             raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.shape[-1] != self.N:
-            raise ValueError(f"Expected last dim {self.N}, got {x.shape[-1]}")
+        if x.ndim == 0:
+            raise ValueError("Input tensor must be at least 1D")
 
-        orig_shape = x.shape[:-1]  # output shape (leading dims)
-        x = x.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
-            raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
+        orig_shape = x.shape
+
+        # Validate and normalize dim.
+        if self.dim < -x.ndim or self.dim >= x.ndim:
+            raise IndexError(
+                f"Dimension out of range (expected to be in range of "
+                f"[{-x.ndim}, {x.ndim - 1}], but got {self.dim})"
+            )
+        dim = self.dim % x.ndim
+
+        # N = size along reduction dim, M = product of all other dims.
+        N = x.shape[dim]
+        M = prod(s for i, s in enumerate(x.shape) if i != dim)
+
+        # If reduction dim is not the last, move it to the end.
+        if dim != x.ndim - 1:
+            x = x.movedim(dim, -1)
+
+        x = x.contiguous().reshape(M, N)
 
         # Pre-convert unsupported storage dtypes (bool, int32, int64, complex)
         # to float32. TileLang cannot handle these as shared-memory storage
@@ -100,10 +126,18 @@ class CountNonzeroOp(Op):
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_float32(x)
 
-        # Pad to alignment with 0 (zero is neutral for sum/count)
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N), value=0.0)
+        # Get or create cached kernel for this (M, N).
+        kernel = self._get_or_create_kernel(M, N)
 
-        y = self.kernel(x)
+        # Pad to alignment with 0 (zero is neutral for sum/count).
+        N_padded = align_up(N, DEFAULT_ALIGNMENT)
+        if N_padded != N:
+            x = F.pad(x, (0, N_padded - N), value=0.0)
 
-        return y.reshape(orig_shape)
+        y = kernel(x)
+
+        # --- reshape output (no keepdim for count_nonzero) ---
+        reduced_shape = [s for i, s in enumerate(orig_shape) if i != dim]
+        y = y.squeeze() if len(reduced_shape) == 0 else y.reshape(reduced_shape)
+
+        return y

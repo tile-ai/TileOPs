@@ -1398,7 +1398,7 @@ ops:
 
   logsumexp_fwd:
     family: reduction
-    status: spec-only  # impl supports single int dim only; spec requires int | list[int]
+    status: spec-only
 
     signature:
       inputs:

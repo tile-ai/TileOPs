@@ -82,7 +82,7 @@ class ReduceBenchmark(BenchmarkBase):
         return (t.m * t.n + out_elems) * elem_bytes
 
 
-def _make_op(m, n, dtype, op_kind):
+def _make_op(dtype, op_kind):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.reduce import (
         AmaxOp,
@@ -107,8 +107,8 @@ def _make_op(m, n, dtype, op_kind):
     }
     cls = op_map[op_kind]
     if op_kind in ("std", "var", "var_mean"):
-        return cls(M=m, N=n, dtype=dtype, correction=1)
-    return cls(M=m, N=n, dtype=dtype)
+        return cls(dtype=dtype, correction=1)
+    return cls(dtype=dtype)
 
 
 @ReduceBenchFixture
@@ -117,7 +117,7 @@ def test_reduce_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> None:
     bm = ReduceBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _make_op(m, n, dtype, op_kind)
+    op = _make_op(dtype, op_kind)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
