@@ -24,3 +24,4 @@ ______________________________________________________________________
   - `variant_of` is one level only. Variant → primary. Primary must not have `variant_of`.
   - Variants share `source.kernel` and `source.op`. Each has its own `signature`, `workloads`, `roofline`.
 - Tensor layout defaults to contiguous row-major. When an op requires non-default layout (e.g., `channels_last`), add `layout` field to the tensor declaration. `shape` dimension names reflect actual memory order.
+- Never modify manifest to match non-conforming code. If code doesn't match spec: set `status: spec-only`, fix implementation in a follow-up PR. Never remove params, vars, or shape_rules to silence validator errors.

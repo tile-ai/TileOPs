@@ -35,6 +35,8 @@ TileOPs is a high-performance LLM operator library built on TileLang. The goal i
 - If unrelated failures appear, report them but do not fix them in the same task.
 - Add necessary docs and tests when introducing files/interfaces.
 - Response should include: change summary, affected paths, validation steps, and next suggestions.
+- No GitHub issue numbers or ad-hoc issue annotations in source/test files. Issue refs belong in commit messages and PR descriptions only.
+- When orchestrating sub-agents: verify clean worktree (`git diff --quiet && git diff --cached --quiet`) after each sub-agent returns. Commit on behalf if dirty.
 
 ## Domain Rules (load on demand)
 
