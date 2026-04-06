@@ -793,6 +793,69 @@ class TestCheckOp:
 
 
 # ---------------------------------------------------------------------------
+# _resolve_op_class: multi-class file resolution
+# ---------------------------------------------------------------------------
+
+class TestResolveOpClass:
+    """_resolve_op_class correctly resolves op names to classes in multi-class files."""
+
+    def test_single_class_file_resolves(self, validator):
+        """Single-class files resolve without ambiguity."""
+        result = validator._resolve_op_class(
+            "tileops/ops/reduction/softmax.py", "softmax_fwd",
+        )
+        assert result.cls is not None
+        assert result.cls.__name__ == "SoftmaxOp"
+
+    def test_fwd_suffix_resolves_single_class_file(self, validator):
+        """A _fwd op name resolves correctly for a single-class file."""
+        result = validator._resolve_op_class(
+            "tileops/ops/reduction/softmax.py", "softmax_fwd",
+        )
+        assert result.cls is not None
+        assert result.cls.__name__ == "SoftmaxOp"
+
+    @pytest.mark.parametrize(
+        "op_name,expected_class",
+        [
+            ("sum_fwd", "SumOp"),
+            ("mean_fwd", "MeanOp"),
+            ("amax_fwd", "AmaxOp"),
+            ("amin_fwd", "AminOp"),
+            ("prod_fwd", "ProdOp"),
+            ("var_fwd", "VarOp"),
+            ("std_fwd", "StdOp"),
+            ("var_mean_fwd", "VarMeanOp"),
+        ],
+    )
+    def test_reduce_multi_class_resolution(self, validator, op_name, expected_class):
+        """All 8 reduce ops in reduce.py resolve to the correct class."""
+        result = validator._resolve_op_class(
+            "tileops/ops/reduction/reduce.py", op_name,
+        )
+        assert result.cls is not None, (
+            f"{op_name}: expected {expected_class}, got None"
+        )
+        assert result.cls.__name__ == expected_class, (
+            f"{op_name}: expected {expected_class}, got {result.cls.__name__}"
+        )
+
+    def test_nonexistent_module_returns_import_error(self, validator):
+        """Module that cannot be imported returns import_error=True."""
+        result = validator._resolve_op_class(
+            "tileops/ops/nonexistent.py", "some_op",
+        )
+        assert result.import_error
+
+    def test_module_with_no_op_classes_returns_none(self, validator):
+        """Module with no forward()-bearing classes returns cls=None."""
+        result = validator._resolve_op_class(
+            "tileops/__init__.py", "some_op",
+        )
+        assert result.cls is None
+
+
+# ---------------------------------------------------------------------------
 # Integration: validate_manifest.py passes on the real codebase
 # ---------------------------------------------------------------------------
 

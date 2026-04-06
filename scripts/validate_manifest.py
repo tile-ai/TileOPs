@@ -429,6 +429,18 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
             if "bwd" in cls.__name__.lower():
                 return _ResolveResult(cls=cls)
 
+    # Strip _fwd/_bwd suffix, convert remainder to PascalCase + "Op", and match.
+    # e.g., "sum_fwd" -> "sum" -> "SumOp", "var_mean_fwd" -> "var_mean" -> "VarMeanOp"
+    base_name = op_name
+    for suffix in ("_fwd", "_bwd"):
+        if base_name.endswith(suffix):
+            base_name = base_name[: -len(suffix)]
+            break
+    pascal = "".join(part.capitalize() for part in base_name.split("_")) + "Op"
+    for cls in candidates:
+        if cls.__name__ == pascal:
+            return _ResolveResult(cls=cls)
+
     return _ResolveResult(cls=candidates[0]) if candidates else _ResolveResult()
 
 
