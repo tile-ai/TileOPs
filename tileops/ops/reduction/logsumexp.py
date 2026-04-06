@@ -9,7 +9,7 @@ Example:
     >>> y = op(x)  # shape: (1024,)
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Union
 
 import torch
 
@@ -43,7 +43,7 @@ class LogSumExpOp(_SoftmaxBaseOp):
         self,
         *,
         dtype: torch.dtype,
-        dim: int = -1,
+        dim: Union[int, List[int]] = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,

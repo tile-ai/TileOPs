@@ -17,7 +17,7 @@ The reduction dimension is always removed, matching ``torch.count_nonzero``.
 """
 
 from math import prod
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -31,6 +31,7 @@ from tileops.kernels.reduction.logical_reduce.fwd import (
 )
 
 from ..op import Op
+from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = ["CountNonzeroOp"]
 
@@ -54,8 +55,8 @@ class CountNonzeroOp(Op):
     Args:
         dtype: Input data type (float16, bfloat16, float32, int32, int64,
                bool, complex64, complex128).
-        dim: Reduction dimension (default -1).  Only a single ``int`` is
-            supported; passing ``list[int]`` raises ``NotImplementedError``.
+        dim: Reduction dimension (default -1).  Accepts ``int`` or
+            ``list[int]`` for multi-dim reduction.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -64,12 +65,10 @@ class CountNonzeroOp(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: int = -1,
+        dim: Union[int, List[int]] = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if isinstance(dim, (list, tuple)):
-            raise NotImplementedError("Multi-dim reduction not yet supported")
         self.dtype = dtype
         self.dim = dim
         self._tune = tune
@@ -90,6 +89,16 @@ class CountNonzeroOp(Op):
             )
         return self._kernel_cache[key]
 
+    def _reduce_2d(self, x: torch.Tensor, M: int, N: int) -> torch.Tensor:
+        """Run kernel on 2D (M, N) tensor: dtype-convert, pad, call kernel."""
+        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
+            x = to_logical_float32(x)
+        kernel = self._get_or_create_kernel(M, N)
+        N_padded = align_up(N, DEFAULT_ALIGNMENT)
+        if N_padded != N:
+            x = F.pad(x, (0, N_padded - N), value=0.0)
+        return kernel(x)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Compute count_nonzero along the configured dim."""
         # --- validation ---
@@ -102,6 +111,18 @@ class CountNonzeroOp(Op):
 
         orig_shape = x.shape
 
+        # --- multi-dim path ---
+        if isinstance(self.dim, (list, tuple)):
+            dims = normalize_dim(self.dim, x.ndim)
+            x, orig_shape, _kept = flatten_for_multidim(x, dims)
+            N = x.shape[-1]
+            M = prod(x.shape[:-1])
+            x = x.reshape(M, N)
+            y = self._reduce_2d(x, M, N)
+            # count_nonzero has no keepdim
+            return restore_multidim_shape(y, orig_shape, dims, keepdim=False)
+
+        # --- single-dim path ---
         # Validate and normalize dim.
         if self.dim < -x.ndim or self.dim >= x.ndim:
             raise IndexError(
@@ -119,22 +140,7 @@ class CountNonzeroOp(Op):
             x = x.movedim(dim, -1)
 
         x = x.contiguous().reshape(M, N)
-
-        # Pre-convert unsupported storage dtypes (bool, int32, int64, complex)
-        # to float32. TileLang cannot handle these as shared-memory storage
-        # dtypes; the kernel is compiled for float32 in those cases.
-        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
-            x = to_logical_float32(x)
-
-        # Get or create cached kernel for this (M, N).
-        kernel = self._get_or_create_kernel(M, N)
-
-        # Pad to alignment with 0 (zero is neutral for sum/count).
-        N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        if N_padded != N:
-            x = F.pad(x, (0, N_padded - N), value=0.0)
-
-        y = kernel(x)
+        y = self._reduce_2d(x, M, N)
 
         # --- reshape output (no keepdim for count_nonzero) ---
         reduced_shape = [s for i, s in enumerate(orig_shape) if i != dim]

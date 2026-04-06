@@ -1398,7 +1398,7 @@ ops:
 
   logsumexp_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1440,7 +1440,7 @@ ops:
 
   sum_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1477,7 +1477,7 @@ ops:
 
   mean_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1514,7 +1514,7 @@ ops:
 
   amax_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1551,7 +1551,7 @@ ops:
 
   amin_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1588,7 +1588,7 @@ ops:
 
   prod_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1629,7 +1629,7 @@ ops:
 
   var_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1667,7 +1667,7 @@ ops:
 
   std_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1705,7 +1705,7 @@ ops:
 
   var_mean_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1750,7 +1750,7 @@ ops:
 
   argmax_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1787,7 +1787,7 @@ ops:
 
   argmin_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1828,7 +1828,7 @@ ops:
 
   all_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1864,7 +1864,7 @@ ops:
 
   any_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1900,7 +1900,7 @@ ops:
 
   count_nonzero_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1940,7 +1940,7 @@ ops:
 
   l1_norm_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1977,7 +1977,7 @@ ops:
 
   l2_norm_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -2014,7 +2014,7 @@ ops:
 
   inf_norm_fwd:
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:

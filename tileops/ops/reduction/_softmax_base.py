@@ -9,7 +9,7 @@ from the input tensor at forward time, and kernels are cached by
 """
 
 from math import prod
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -18,6 +18,7 @@ from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 
 from ..op import Op
+from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = ["_SoftmaxBaseOp"]
 
@@ -44,7 +45,7 @@ class _SoftmaxBaseOp(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: int = -1,
+        dim: Union[int, List[int]] = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -80,10 +81,35 @@ class _SoftmaxBaseOp(Op):
         """Run the softmax-family op.
 
         Accepts arbitrary-dim input along the configured dim.
+        Supports ``dim=list[int]`` for multi-dim reduction (logsumexp).
         """
         self._validate(x)
         orig_shape = x.shape
 
+        # --- multi-dim path ---
+        if isinstance(self.dim, (list, tuple)):
+            dims = normalize_dim(self.dim, x.ndim)
+            x, orig_shape, _kept = flatten_for_multidim(x, dims)
+            N = x.shape[-1]
+            M = prod(x.shape[:-1])
+            x = x.reshape(M, N)
+            kernel = self._get_or_create_kernel(M, N)
+            N_padded = align_up(N, DEFAULT_ALIGNMENT)
+            if N_padded != N:
+                x = F.pad(x, (0, N_padded - N), value=float("-inf"))
+            y = kernel(x)
+            if N_padded != N:
+                y = y[:, :N] if y.ndim == 2 else y
+            # For same-shape ops (softmax/log_softmax), multi-dim is not
+            # meaningful.  For reduced-dim ops (logsumexp), reshape output.
+            if y.ndim == 2:
+                # Same-shape: unsupported multi-dim for softmax/log_softmax.
+                raise ValueError(
+                    "Multi-dim is not supported for same-shape softmax ops"
+                )
+            return restore_multidim_shape(y, orig_shape, dims, self.keepdim)
+
+        # --- single-dim path ---
         # Validate and normalize dim (match PyTorch IndexError behavior).
         if self.dim < -x.ndim or self.dim >= x.ndim:
             raise IndexError(
