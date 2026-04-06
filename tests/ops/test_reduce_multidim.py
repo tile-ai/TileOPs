@@ -344,5 +344,41 @@ def test_inf_norm_multidim(
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
+# ---------------------------------------------------------------------------
+# Regression: empty dim list must be rejected before reaching the helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_empty_dim_list_raises() -> None:
+    """dim=[] must raise ValueError; the helper cannot produce correct semantics."""
+    from tileops.ops.reduction._multidim import normalize_dim
+
+    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+        normalize_dim([], ndim=3)
+
+
+@pytest.mark.smoke
+def test_sum_empty_dim_raises() -> None:
+    """SumOp(dim=[]) must raise before dispatching to the multi-dim helper."""
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
+    op = SumOp(dtype=torch.float16, dim=[], keepdim=False)
+    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_mean_empty_dim_raises() -> None:
+    """MeanOp(dim=[]) must raise before dispatching to the multi-dim helper."""
+    from tileops.ops.reduction.reduce import MeanOp
+
+    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
+    op = MeanOp(dtype=torch.float16, dim=[], keepdim=False)
+    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+        op(x)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

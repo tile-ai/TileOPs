@@ -36,9 +36,15 @@ def normalize_dim(
 
     Raises:
         IndexError: If any dim is out of range.
-        ValueError: If duplicate dims are given.
+        ValueError: If duplicate dims are given or dim is an empty list.
     """
     dims = [dim] if isinstance(dim, int) else list(dim)
+
+    if len(dims) == 0:
+        raise ValueError(
+            "dim=[] is not supported. Provide at least one dimension to reduce, "
+            "or omit dim to reduce over all dimensions."
+        )
 
     normalized = []
     for d in dims:
