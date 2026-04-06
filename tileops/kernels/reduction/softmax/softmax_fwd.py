@@ -414,6 +414,7 @@ class SoftmaxKernel(Kernel):
 
         self.init_config(config, tune)
         self._tile_n = self._tile_n_for_block_m(self.config["block_m"])
+        self.config["tile_n"] = self._tile_n
         self.kernel = _softmax_kernel(
             self.M,
             self.N,

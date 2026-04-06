@@ -250,6 +250,7 @@ class LogSumExpKernel(Kernel):
 
         self.init_config(config, tune)
         self._tile_n = self._tile_n_for_block_m(self.config["block_m"])
+        self.config["tile_n"] = self._tile_n
         self.kernel = _logsumexp_kernel(
             self.M,
             self.N,
