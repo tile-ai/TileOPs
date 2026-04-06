@@ -82,7 +82,7 @@ class ReduceBenchmark(BenchmarkBase):
         return (t.m * t.n + out_elems) * elem_bytes
 
 
-def _make_op(m, n, dtype, op_kind):
+def _make_op(dtype, op_kind):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.reduce import (
         AmaxOp,
@@ -106,13 +106,9 @@ def _make_op(m, n, dtype, op_kind):
         "var_mean": VarMeanOp,
     }
     cls = op_map[op_kind]
-    # Simple reduce ops: new spec-conformant interface
-    if op_kind in ("sum", "mean", "amax", "amin", "prod"):
-        return cls(dtype=dtype)
-    # Welford ops: still legacy interface
     if op_kind in ("std", "var", "var_mean"):
-        return cls(M=m, N=n, dtype=dtype, correction=1)
-    raise ValueError(f"Unknown op_kind: {op_kind}")
+        return cls(dtype=dtype, correction=1)
+    return cls(dtype=dtype)
 
 
 @ReduceBenchFixture
@@ -121,7 +117,7 @@ def test_reduce_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> None:
     bm = ReduceBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _make_op(m, n, dtype, op_kind)
+    op = _make_op(dtype, op_kind)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

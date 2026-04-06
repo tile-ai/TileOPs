@@ -78,7 +78,7 @@ class LogicalReduceBenchmark(BenchmarkBase):
         return t.m * t.n * elem_bytes + t.m * out_elem_bytes
 
 
-def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
+def _make_op(dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.all_op import AllOp
     from tileops.ops.reduction.any_op import AnyOp
@@ -99,7 +99,7 @@ def test_logical_reduce_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) 
     bm = LogicalReduceBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _make_op(m, n, dtype, op_kind)
+    op = _make_op(dtype, op_kind)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

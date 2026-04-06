@@ -137,8 +137,7 @@ class _SimpleReduceOp(Op):
         M = prod(s for i, s in enumerate(x.shape) if i != dim)
 
         # If reduction dim is not the last, move it to the end.
-        needs_transpose = dim != x.ndim - 1
-        if needs_transpose:
+        if dim != x.ndim - 1:
             x = x.movedim(dim, -1)
 
         x = x.contiguous().reshape(M, N)
@@ -150,7 +149,8 @@ class _SimpleReduceOp(Op):
         N_padded = _align_up(N, ALIGNMENT)
         if N_padded != N:
             pv = self._pad_value()
-            x = F.pad(x, (0, N_padded - N)) if pv == 0.0 else F.pad(x, (0, N_padded - N), value=pv)
+            pad = (0, N_padded - N)
+            x = F.pad(x, pad) if pv == 0.0 else F.pad(x, pad, value=pv)
 
         y = kernel(x)
 
@@ -255,10 +255,12 @@ class _WelfordReduceOp(Op):
             )
         return self._kernel_cache[key]
 
-    def _forward_common(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Size, int]:
+    def _forward_common(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Size, int, object]:
         """Validate, derive M/N, transpose, reshape, pad.
 
-        Returns (x_2d_padded, orig_shape, normalized_dim).
+        Returns (x_2d_padded, orig_shape, normalized_dim, kernel).
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")

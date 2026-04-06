@@ -57,7 +57,7 @@ class ArgreduceBenchmark(BenchmarkBase):
         return t.m * t.n * elem_bytes + t.m * 8
 
 
-def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
+def _make_op(dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.argmax import ArgmaxOp
     from tileops.ops.reduction.argmin import ArgminOp
@@ -76,7 +76,7 @@ def test_argreduce_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> No
     bm = ArgreduceBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _make_op(m, n, dtype, op_kind)
+    op = _make_op(dtype, op_kind)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
