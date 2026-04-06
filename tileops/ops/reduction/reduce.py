@@ -202,87 +202,140 @@ class ProdOp(_SimpleReduceOp):
 
 
 class _WelfordReduceOp(Op):
-    """Base for Welford-based reduce ops along dim=-1."""
+    """Base for Welford-based reduce ops (std, var, var_mean).
+
+    Construction: ``op(dtype=..., dim=-1, correction=1, keepdim=False)``.
+    M and N are derived from the input tensor at forward time, and kernels
+    are cached by ``(M, N)`` to avoid rebuilds.
+
+    Args:
+        dtype: Data type (float32, float16, or bfloat16).
+        dim: Reduction dimension (default -1).  Only a single ``int`` is
+            supported; passing ``list[int]`` raises ``NotImplementedError``.
+        correction: Bessel's correction (default 1).
+        keepdim: Whether to retain the reduced dimension as size 1.
+        kernel_map: Optional override for kernel dispatch.
+        tune: Whether to autotune (default False).
+    """
 
     _op_kind: str = ""
 
     def __init__(
         self,
-        M: int,
-        N: int,
+        *,
         dtype: torch.dtype,
+        dim: int = -1,
         correction: int = 1,
+        keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
-        self.N = N
+        if isinstance(dim, (list, tuple)):
+            raise NotImplementedError("Multi-dim reduction not yet supported")
         self.dtype = dtype
+        self.dim = dim
         self.correction = correction
-        self.N_padded = _align_up(N, ALIGNMENT)
+        self.keepdim = keepdim
+        self._tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["reduce"](
-            M,
-            N,
-            self._op_kind,
-            dtype,
-            correction=correction,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, object] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"reduce": ReduceKernel}
 
-    def _prepare_input(self, x: torch.Tensor) -> Tuple[torch.Tensor, tuple]:
-        """Validate, reshape, and pad input. Returns (x_2d_padded, orig_shape)."""
+    def _get_or_create_kernel(self, M: int, N: int) -> object:
+        """Return a cached kernel for (M, N), creating one if needed."""
+        key = (M, N)
+        if key not in self._kernel_cache:
+            kernel_cls = self.kernel_map["reduce"]
+            self._kernel_cache[key] = kernel_cls(
+                M, N, self._op_kind, self.dtype,
+                correction=self.correction, tune=self._tune,
+            )
+        return self._kernel_cache[key]
+
+    def _forward_common(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Size, int]:
+        """Validate, derive M/N, transpose, reshape, pad.
+
+        Returns (x_2d_padded, orig_shape, normalized_dim).
+        """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.dtype != self.dtype:
             raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.shape[-1] != self.N:
-            raise ValueError(f"Expected last dim {self.N}, got {x.shape[-1]}")
+        if x.ndim == 0:
+            raise ValueError("Input tensor must be at least 1D")
 
-        orig_shape = x.shape[:-1]
-        x = x.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
-            raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
+        orig_shape = x.shape
 
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N))
+        if self.dim < -x.ndim or self.dim >= x.ndim:
+            raise IndexError(
+                f"Dimension out of range (expected to be in range of "
+                f"[{-x.ndim}, {x.ndim - 1}], but got {self.dim})"
+            )
+        dim = self.dim % x.ndim
 
-        return x, orig_shape
+        N = x.shape[dim]
+        M = prod(s for i, s in enumerate(x.shape) if i != dim)
+
+        if dim != x.ndim - 1:
+            x = x.movedim(dim, -1)
+
+        x = x.contiguous().reshape(M, N)
+
+        kernel = self._get_or_create_kernel(M, N)
+
+        N_padded = _align_up(N, ALIGNMENT)
+        if N_padded != N:
+            x = F.pad(x, (0, N_padded - N))
+
+        return x, orig_shape, dim, kernel
+
+    def _reshape_output(
+        self, y: torch.Tensor, orig_shape: torch.Size, dim: int
+    ) -> torch.Tensor:
+        """Reshape (M,) kernel output to match keepdim setting."""
+        if self.keepdim:
+            kept_shape = list(orig_shape)
+            kept_shape[dim] = 1
+            return y.reshape(kept_shape)
+        else:
+            reduced_shape = [s for i, s in enumerate(orig_shape) if i != dim]
+            return y.squeeze() if len(reduced_shape) == 0 else y.reshape(reduced_shape)
 
 
 class StdOp(_WelfordReduceOp):
-    """Standard deviation reduction along dim=-1 with Bessel's correction."""
+    """Standard deviation reduction with Bessel's correction."""
 
     _op_kind = "std"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x, orig_shape = self._prepare_input(x)
-        y = self.kernel(x)
-        return y.reshape(orig_shape)
+        x, orig_shape, dim, kernel = self._forward_common(x)
+        y = kernel(x)
+        return self._reshape_output(y, orig_shape, dim)
 
 
 class VarOp(_WelfordReduceOp):
-    """Variance reduction along dim=-1 with Bessel's correction."""
+    """Variance reduction with Bessel's correction."""
 
     _op_kind = "var"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x, orig_shape = self._prepare_input(x)
-        y = self.kernel(x)
-        return y.reshape(orig_shape)
+        x, orig_shape, dim, kernel = self._forward_common(x)
+        y = kernel(x)
+        return self._reshape_output(y, orig_shape, dim)
 
 
 class VarMeanOp(_WelfordReduceOp):
-    """Variance and mean reduction along dim=-1."""
+    """Variance and mean reduction."""
 
     _op_kind = "var_mean"
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x, orig_shape = self._prepare_input(x)
-        var_out, mean_out = self.kernel(x)
-        return var_out.reshape(orig_shape), mean_out.reshape(orig_shape)
+        x, orig_shape, dim, kernel = self._forward_common(x)
+        var_out, mean_out = kernel(x)
+        return (
+            self._reshape_output(var_out, orig_shape, dim),
+            self._reshape_output(mean_out, orig_shape, dim),
+        )

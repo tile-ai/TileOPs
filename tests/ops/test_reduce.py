@@ -293,7 +293,7 @@ def test_std_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import StdOp
 
     test = WelfordTest(m, n, dtype, "std", correction=1)
-    op = StdOp(M=m, N=n, dtype=dtype, correction=1)
+    op = StdOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -302,7 +302,7 @@ def test_std_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
     from tileops.ops.reduction.reduce import StdOp
 
     test = WelfordTest(m, n, dtype, "std", correction=correction)
-    op = StdOp(M=m, N=n, dtype=dtype, correction=correction)
+    op = StdOp(dtype=dtype, correction=correction)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -316,7 +316,7 @@ def test_var_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarOp
 
     test = WelfordTest(m, n, dtype, "var", correction=1)
-    op = VarOp(M=m, N=n, dtype=dtype, correction=1)
+    op = VarOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -325,7 +325,7 @@ def test_var_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
     from tileops.ops.reduction.reduce import VarOp
 
     test = WelfordTest(m, n, dtype, "var", correction=correction)
-    op = VarOp(M=m, N=n, dtype=dtype, correction=correction)
+    op = VarOp(dtype=dtype, correction=correction)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -339,7 +339,7 @@ def test_var_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarMeanOp
 
     test = WelfordTest(m, n, dtype, "var_mean", correction=1)
-    op = VarMeanOp(M=m, N=n, dtype=dtype, correction=1)
+    op = VarMeanOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -348,7 +348,7 @@ def test_var_mean_bessel(m: int, n: int, dtype: torch.dtype, correction: int) ->
     from tileops.ops.reduction.reduce import VarMeanOp
 
     test = WelfordTest(m, n, dtype, "var_mean", correction=correction)
-    op = VarMeanOp(M=m, N=n, dtype=dtype, correction=correction)
+    op = VarMeanOp(dtype=dtype, correction=correction)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -362,8 +362,7 @@ def test_var_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = VarOp(M=M, N=hidden, dtype=dtype, correction=1)
+    op = VarOp(dtype=dtype)
     ref = x.float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -375,8 +374,7 @@ def test_std_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import StdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = StdOp(M=M, N=hidden, dtype=dtype, correction=1)
+    op = StdOp(dtype=dtype)
     ref = x.float().std(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -407,7 +405,7 @@ def test_var_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = VarOp(M=1, N=n, dtype=dtype, correction=1)
+    op = VarOp(dtype=dtype)
     ref = x.float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -427,7 +425,7 @@ def test_var_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = VarOp(M=m, N=n, dtype=dtype, correction=1)
+    op = VarOp(dtype=dtype)
     ref = x.contiguous().float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -440,7 +438,7 @@ def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = StdOp(M=m, N=n, dtype=dtype, correction=1)
+    op = StdOp(dtype=dtype)
     ref = x.contiguous().float().std(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -578,6 +576,51 @@ def test_prod_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
     tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"prod spec max err: {(y - ref).abs().max()}"
+
+
+@SpecReduceFixture
+def test_var_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: VarOp with dim + keepdim + correction."""
+    from tileops.ops.reduction.reduce import VarOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = VarOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref = torch.var(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.allclose(y, ref, **tol), f"var spec max err: {(y - ref).abs().max()}"
+
+
+@SpecReduceFixture
+def test_std_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: StdOp with dim + keepdim + correction."""
+    from tileops.ops.reduction.reduce import StdOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = StdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref = torch.std(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.allclose(y, ref, **tol), f"std spec max err: {(y - ref).abs().max()}"
+
+
+@SpecReduceFixture
+def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: VarMeanOp with dim + keepdim."""
+    from tileops.ops.reduction.reduce import VarMeanOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = VarMeanOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref_var = torch.var(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
+    ref_mean = torch.mean(x.float(), dim=dim, keepdim=keepdim).to(dtype)
+    var_out, mean_out = op(x)
+    tol = _tol(dtype)
+    assert var_out.shape == ref_var.shape, f"var shape mismatch: {var_out.shape} vs {ref_var.shape}"
+    assert mean_out.shape == ref_mean.shape, "mean shape mismatch"
+    assert torch.allclose(var_out, ref_var, **tol), f"var_mean spec var err: {(var_out - ref_var).abs().max()}"
+    assert torch.allclose(mean_out, ref_mean, **tol), f"var_mean spec mean err: {(mean_out - ref_mean).abs().max()}"
 
 
 if __name__ == "__main__":
