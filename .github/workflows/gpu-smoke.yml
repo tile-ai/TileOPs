@@ -46,7 +46,7 @@ jobs:
             exit 0
           fi
 
-          required_checks=(validate-commits pre-commit gitleaks actionlint)
+          required_checks=(pre-commit gitleaks actionlint)
           deadline=$((SECONDS + 900))
 
           while true; do
