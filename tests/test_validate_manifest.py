@@ -840,6 +840,32 @@ class TestResolveOpClass:
             f"{op_name}: expected {expected_class}, got {result.cls.__name__}"
         )
 
+    @pytest.mark.parametrize(
+        "op_file,op_name,expected_class",
+        [
+            ("tileops/ops/reduction/argmax.py", "argmax_fwd", "ArgmaxOp"),
+            ("tileops/ops/reduction/argmin.py", "argmin_fwd", "ArgminOp"),
+            ("tileops/ops/reduction/all_op.py", "all_fwd", "AllOp"),
+            ("tileops/ops/reduction/any_op.py", "any_fwd", "AnyOp"),
+            ("tileops/ops/reduction/count_nonzero.py", "count_nonzero_fwd", "CountNonzeroOp"),
+            ("tileops/ops/reduction/l1_norm.py", "l1_norm_fwd", "L1NormOp"),
+            ("tileops/ops/reduction/l2_norm.py", "l2_norm_fwd", "L2NormOp"),
+            ("tileops/ops/reduction/inf_norm.py", "inf_norm_fwd", "InfNormOp"),
+            ("tileops/ops/reduction/softmax.py", "softmax_fwd", "SoftmaxOp"),
+            ("tileops/ops/reduction/log_softmax.py", "log_softmax_fwd", "LogSoftmaxOp"),
+            ("tileops/ops/reduction/logsumexp.py", "logsumexp_fwd", "LogSumExpOp"),
+        ],
+    )
+    def test_single_file_reduction_ops(self, validator, op_file, op_name, expected_class):
+        """All single-file reduction ops resolve correctly via their source.op path."""
+        result = validator._resolve_op_class(op_file, op_name)
+        assert result.cls is not None, (
+            f"{op_name}: expected {expected_class}, got None"
+        )
+        assert result.cls.__name__ == expected_class, (
+            f"{op_name}: expected {expected_class}, got {result.cls.__name__}"
+        )
+
     def test_nonexistent_module_returns_import_error(self, validator):
         """Module that cannot be imported returns import_error=True."""
         result = validator._resolve_op_class(
