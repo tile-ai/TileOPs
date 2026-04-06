@@ -410,16 +410,26 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
     if len(candidates) == 1:
         return _ResolveResult(cls=candidates[0])
 
-    # Multiple candidates — try to match by name convention
-    # e.g., batchnorm_fwd -> BatchNormFwdOp, batchnorm_bwd -> BatchNormBwdOp
+    # Multiple candidates — try exact PascalCase match first (most reliable).
+    # Strip _fwd/_bwd suffix, convert remainder to PascalCase + "Op".
+    # e.g., "sum_fwd" -> "SumOp", "var_mean_fwd" -> "VarMeanOp"
+    base_name = op_name
+    for suffix in ("_fwd", "_bwd"):
+        if base_name.endswith(suffix):
+            base_name = base_name[: -len(suffix)]
+            break
+    pascal = "".join(part.capitalize() for part in base_name.split("_")) + "Op"
     for cls in candidates:
-        cls_lower = cls.__name__.lower()
-        # Check if the op_name parts appear in the class name
-        parts = op_name.split("_")
-        if all(p in cls_lower for p in parts):
+        if cls.__name__ == pascal:
             return _ResolveResult(cls=cls)
 
-    # Fallback: use suffix matching for fwd/bwd
+    # Fallback: full op_name as PascalCase (e.g., "sum_fwd" -> "SumFwdOp")
+    full_pascal = "".join(part.capitalize() for part in op_name.split("_")) + "Op"
+    for cls in candidates:
+        if cls.__name__ == full_pascal:
+            return _ResolveResult(cls=cls)
+
+    # Fallback: suffix matching for fwd/bwd
     if op_name.endswith("_fwd"):
         for cls in candidates:
             if "fwd" in cls.__name__.lower():

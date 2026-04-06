@@ -793,6 +793,87 @@ class TestCheckOp:
 
 
 # ---------------------------------------------------------------------------
+# _resolve_op_class: multi-class file resolution
+# ---------------------------------------------------------------------------
+
+class TestResolveOpClass:
+    """_resolve_op_class correctly resolves op names to classes in multi-class files."""
+
+    def test_single_class_file_resolves(self, validator):
+        """Single-class files resolve without ambiguity."""
+        result = validator._resolve_op_class(
+            "tileops/ops/reduction/softmax.py", "softmax_fwd",
+        )
+        assert result.cls is not None
+        assert result.cls.__name__ == "SoftmaxOp"
+
+    @pytest.mark.parametrize(
+        "op_name,expected_class",
+        [
+            ("sum_fwd", "SumOp"),
+            ("mean_fwd", "MeanOp"),
+            ("amax_fwd", "AmaxOp"),
+            ("amin_fwd", "AminOp"),
+            ("prod_fwd", "ProdOp"),
+            ("var_fwd", "VarOp"),
+            ("std_fwd", "StdOp"),
+            ("var_mean_fwd", "VarMeanOp"),
+        ],
+    )
+    def test_reduce_multi_class_resolution(self, validator, op_name, expected_class):
+        """All 8 reduce ops in reduce.py resolve to the correct class."""
+        result = validator._resolve_op_class(
+            "tileops/ops/reduction/reduce.py", op_name,
+        )
+        assert result.cls is not None, (
+            f"{op_name}: expected {expected_class}, got None"
+        )
+        assert result.cls.__name__ == expected_class, (
+            f"{op_name}: expected {expected_class}, got {result.cls.__name__}"
+        )
+
+    @pytest.mark.parametrize(
+        "op_file,op_name,expected_class",
+        [
+            ("tileops/ops/reduction/argmax.py", "argmax_fwd", "ArgmaxOp"),
+            ("tileops/ops/reduction/argmin.py", "argmin_fwd", "ArgminOp"),
+            ("tileops/ops/reduction/all_op.py", "all_fwd", "AllOp"),
+            ("tileops/ops/reduction/any_op.py", "any_fwd", "AnyOp"),
+            ("tileops/ops/reduction/count_nonzero.py", "count_nonzero_fwd", "CountNonzeroOp"),
+            ("tileops/ops/reduction/l1_norm.py", "l1_norm_fwd", "L1NormOp"),
+            ("tileops/ops/reduction/l2_norm.py", "l2_norm_fwd", "L2NormOp"),
+            ("tileops/ops/reduction/inf_norm.py", "inf_norm_fwd", "InfNormOp"),
+            ("tileops/ops/reduction/softmax.py", "softmax_fwd", "SoftmaxOp"),
+            ("tileops/ops/reduction/log_softmax.py", "log_softmax_fwd", "LogSoftmaxOp"),
+            ("tileops/ops/reduction/logsumexp.py", "logsumexp_fwd", "LogSumExpOp"),
+        ],
+    )
+    def test_single_file_reduction_ops(self, validator, op_file, op_name, expected_class):
+        """All single-file reduction ops resolve correctly via their source.op path."""
+        result = validator._resolve_op_class(op_file, op_name)
+        assert result.cls is not None, (
+            f"{op_name}: expected {expected_class}, got None"
+        )
+        assert result.cls.__name__ == expected_class, (
+            f"{op_name}: expected {expected_class}, got {result.cls.__name__}"
+        )
+
+    def test_nonexistent_module_returns_import_error(self, validator):
+        """Module that cannot be imported returns import_error=True."""
+        result = validator._resolve_op_class(
+            "tileops/ops/nonexistent.py", "some_op",
+        )
+        assert result.import_error
+
+    def test_module_with_no_op_classes_returns_none(self, validator):
+        """Module with no forward()-bearing classes returns cls=None."""
+        result = validator._resolve_op_class(
+            "tileops/__init__.py", "some_op",
+        )
+        assert result.cls is None
+
+
+# ---------------------------------------------------------------------------
 # Integration: validate_manifest.py passes on the real codebase
 # ---------------------------------------------------------------------------
 
