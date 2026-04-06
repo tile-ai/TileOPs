@@ -67,7 +67,7 @@ def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
         "argmin": ArgminOp,
     }
     cls = op_map[op_kind]
-    return cls(M=m, N=n, dtype=dtype)
+    return cls(dtype=dtype)
 
 
 @ArgreduceBenchFixture
