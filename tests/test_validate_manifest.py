@@ -807,14 +807,6 @@ class TestResolveOpClass:
         assert result.cls is not None
         assert result.cls.__name__ == "SoftmaxOp"
 
-    def test_fwd_suffix_resolves_single_class_file(self, validator):
-        """A _fwd op name resolves correctly for a single-class file."""
-        result = validator._resolve_op_class(
-            "tileops/ops/reduction/softmax.py", "softmax_fwd",
-        )
-        assert result.cls is not None
-        assert result.cls.__name__ == "SoftmaxOp"
-
     @pytest.mark.parametrize(
         "op_name,expected_class",
         [

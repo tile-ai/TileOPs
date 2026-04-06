@@ -423,7 +423,7 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
         if cls.__name__ == pascal:
             return _ResolveResult(cls=cls)
 
-    # Fallback: full op_name as PascalCase (e.g., "batchnorm_fwd" -> "BatchnormFwdOp")
+    # Fallback: full op_name as PascalCase (e.g., "sum_fwd" -> "SumFwdOp")
     full_pascal = "".join(part.capitalize() for part in op_name.split("_")) + "Op"
     for cls in candidates:
         if cls.__name__ == full_pascal:
