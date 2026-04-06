@@ -40,6 +40,7 @@ class _SoftmaxBaseOp(Op):
     _op_kind: str  # set by subclass
     _kernel_key: str  # set by subclass
     _kernel_class: type  # set by subclass
+    _supports_multidim: bool = False  # override to True in reduced-dim ops (e.g. LogSumExpOp)
 
     def __init__(
         self,
@@ -88,6 +89,11 @@ class _SoftmaxBaseOp(Op):
 
         # --- multi-dim path ---
         if isinstance(self.dim, (list, tuple)):
+            if not self._supports_multidim:
+                raise ValueError(
+                    f"{type(self).__name__} does not support multi-dim reduction. "
+                    "Use a scalar dim."
+                )
             dims = normalize_dim(self.dim, x.ndim)
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
@@ -100,13 +106,6 @@ class _SoftmaxBaseOp(Op):
             y = kernel(x)
             if N_padded != N:
                 y = y[:, :N] if y.ndim == 2 else y
-            # For same-shape ops (softmax/log_softmax), multi-dim is not
-            # meaningful.  For reduced-dim ops (logsumexp), reshape output.
-            if y.ndim == 2:
-                # Same-shape: unsupported multi-dim for softmax/log_softmax.
-                raise ValueError(
-                    "Multi-dim is not supported for same-shape softmax ops"
-                )
             return restore_multidim_shape(y, orig_shape, dims, self.keepdim)
 
         # --- single-dim path ---

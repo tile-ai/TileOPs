@@ -38,6 +38,7 @@ class LogSumExpOp(_SoftmaxBaseOp):
     _op_kind = "logsumexp"
     _kernel_key = "logsumexp_fwd"
     _kernel_class = LogSumExpKernel
+    _supports_multidim = True
 
     def __init__(
         self,
