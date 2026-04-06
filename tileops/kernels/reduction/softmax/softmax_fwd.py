@@ -412,8 +412,8 @@ class SoftmaxKernel(Kernel):
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
 
-        default_cfg = self.default_config
-        self._tile_n = default_cfg["tile_n"]
+        self.init_config(config, tune)
+        self._tile_n = self._tile_n_for_block_m(self.config["block_m"])
         self.kernel = _softmax_kernel(
             self.M,
             self.N,
@@ -421,7 +421,6 @@ class SoftmaxKernel(Kernel):
             self.dtype_str,
             self._tile_n,
         )
-        self.init_config(config, tune)
 
     # Tiled softmax/log_softmax allocates 2 shared buffers (one per pass)
     # due to TileLang allocator aliasing — see _softmax_kernel_tiled docstring.
