@@ -1,8 +1,8 @@
 """Correctness tests for logical reduce ops (any, all, count_nonzero).
 
 Covers: AnyOp, AllOp, CountNonzeroOp.
-any/all reduce along dim=-1 and return bool dtype.
-count_nonzero reduces along dim=-1 and returns int64 dtype.
+any/all reduce along the configured dim and return bool dtype.
+count_nonzero reduces along the configured dim and returns int64 dtype.
 Uses exact match (torch.equal) for comparison.
 """
 
@@ -89,6 +89,42 @@ class LogicalReduce1DFixture(FixtureBase):
                 pytest.param(512, torch.float32, marks=pytest.mark.full),
                 pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(512, torch.bool, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+class LogicalReduceDimFixture(FixtureBase):
+    """Fixture for testing dim=0, dim=1, and keepdim variants."""
+
+    PARAMS = [
+        (
+            "shape, dim, dtype",
+            [
+                # dim=0 reduction on 2D
+                pytest.param((64, 512), 0, torch.float16, marks=pytest.mark.smoke),
+                pytest.param((64, 512), 0, torch.float32, marks=pytest.mark.full),
+                # dim=1 reduction on 3D (reduces middle dim)
+                pytest.param((4, 64, 512), 1, torch.float16, marks=pytest.mark.full),
+                # dim=0 reduction on 3D
+                pytest.param((4, 64, 512), 0, torch.float16, marks=pytest.mark.full),
+                # negative dim on 3D (dim=-2 = middle)
+                pytest.param((4, 64, 512), -2, torch.float16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+class LogicalReduceKeepdimFixture(FixtureBase):
+    """Fixture for keepdim=True tests (AllOp, AnyOp only)."""
+
+    PARAMS = [
+        (
+            "shape, dim, dtype",
+            [
+                pytest.param((64, 512), -1, torch.float16, marks=pytest.mark.smoke),
+                pytest.param((64, 512), 0, torch.float16, marks=pytest.mark.full),
+                pytest.param((4, 64, 512), 1, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -194,6 +230,13 @@ def _make_1d_input(n: int, dtype: torch.dtype) -> torch.Tensor:
     return torch.randn(n, dtype=dtype, device="cuda")
 
 
+def _make_nd_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
+    """Create an N-D tensor for dim/keepdim tests."""
+    if dtype == torch.bool:
+        return torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    return torch.randn(shape, dtype=dtype, device="cuda")
+
+
 # ---------------------------------------------------------------------------
 # AnyOp tests
 # ---------------------------------------------------------------------------
@@ -204,7 +247,7 @@ def test_any_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyOp(M=m, N=n, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -214,7 +257,7 @@ def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
-    op = AnyOp(M=m, N=n, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     ref = x.contiguous().bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -226,8 +269,7 @@ def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = AnyOp(M=M, N=hidden, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     ref = x.bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -239,8 +281,7 @@ def test_any_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    M = b0 * b1 * b2
-    op = AnyOp(M=M, N=n, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     ref = x.bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -252,11 +293,37 @@ def test_any_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
     x = _make_1d_input(n, dtype)
-    op = AnyOp(M=1, N=n, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     ref = x.bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
     assert torch.equal(y.view_as(ref), ref), "1D any mismatch"
+
+
+@LogicalReduceDimFixture
+def test_any_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.any_op import AnyOp
+
+    x = _make_nd_input(shape, dtype)
+    op = AnyOp(dtype=dtype, dim=dim)
+    ref = x.bool().any(dim=dim)
+    y = op(x)
+    assert y.dtype == torch.bool
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.equal(y, ref), f"any dim={dim} mismatch: {(y != ref).sum().item()}"
+
+
+@LogicalReduceKeepdimFixture
+def test_any_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.any_op import AnyOp
+
+    x = _make_nd_input(shape, dtype)
+    op = AnyOp(dtype=dtype, dim=dim, keepdim=True)
+    ref = x.bool().any(dim=dim, keepdim=True)
+    y = op(x)
+    assert y.dtype == torch.bool
+    assert y.shape == ref.shape, f"keepdim shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.equal(y, ref), f"any keepdim dim={dim} mismatch: {(y != ref).sum().item()}"
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +336,7 @@ def test_all_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllOp(M=m, N=n, dtype=dtype)
+    op = AllOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -279,7 +346,7 @@ def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
-    op = AllOp(M=m, N=n, dtype=dtype)
+    op = AllOp(dtype=dtype)
     ref = x.contiguous().bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -291,8 +358,7 @@ def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = AllOp(M=M, N=hidden, dtype=dtype)
+    op = AllOp(dtype=dtype)
     ref = x.bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -304,8 +370,7 @@ def test_all_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    M = b0 * b1 * b2
-    op = AllOp(M=M, N=n, dtype=dtype)
+    op = AllOp(dtype=dtype)
     ref = x.bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -317,11 +382,37 @@ def test_all_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
     x = _make_1d_input(n, dtype)
-    op = AllOp(M=1, N=n, dtype=dtype)
+    op = AllOp(dtype=dtype)
     ref = x.bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
     assert torch.equal(y.view_as(ref), ref), "1D all mismatch"
+
+
+@LogicalReduceDimFixture
+def test_all_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.all_op import AllOp
+
+    x = _make_nd_input(shape, dtype)
+    op = AllOp(dtype=dtype, dim=dim)
+    ref = x.bool().all(dim=dim)
+    y = op(x)
+    assert y.dtype == torch.bool
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.equal(y, ref), f"all dim={dim} mismatch: {(y != ref).sum().item()}"
+
+
+@LogicalReduceKeepdimFixture
+def test_all_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.all_op import AllOp
+
+    x = _make_nd_input(shape, dtype)
+    op = AllOp(dtype=dtype, dim=dim, keepdim=True)
+    ref = x.bool().all(dim=dim, keepdim=True)
+    y = op(x)
+    assert y.dtype == torch.bool
+    assert y.shape == ref.shape, f"keepdim shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.equal(y, ref), f"all keepdim dim={dim} mismatch: {(y != ref).sum().item()}"
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +425,7 @@ def test_count_nonzero_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroOp(M=m, N=n, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -344,7 +435,7 @@ def test_count_nonzero_non_contiguous(m: int, n: int, dtype: torch.dtype) -> Non
 
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
-    op = CountNonzeroOp(M=m, N=n, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     ref = torch.count_nonzero(x.contiguous(), dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
@@ -356,8 +447,7 @@ def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype)
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = CountNonzeroOp(M=M, N=hidden, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
@@ -369,8 +459,7 @@ def test_count_nonzero_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype)
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    M = b0 * b1 * b2
-    op = CountNonzeroOp(M=M, N=n, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
@@ -382,11 +471,24 @@ def test_count_nonzero_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     x = _make_1d_input(n, dtype)
-    op = CountNonzeroOp(M=1, N=n, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
     assert torch.equal(y.view_as(ref), ref), "1D count_nonzero mismatch"
+
+
+@LogicalReduceDimFixture
+def test_count_nonzero_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
+
+    x = _make_nd_input(shape, dtype)
+    op = CountNonzeroOp(dtype=dtype, dim=dim)
+    ref = torch.count_nonzero(x, dim=dim).to(torch.int64)
+    y = op(x)
+    assert y.dtype == torch.int64
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.equal(y, ref), f"count_nonzero dim={dim} mismatch: {(y != ref).sum().item()}"
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +530,7 @@ def test_any_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyOp(M=m, N=n, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -437,7 +539,7 @@ def test_any_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyOp(M=m, N=n, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -446,7 +548,7 @@ def test_any_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyOp(M=m, N=n, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -455,7 +557,7 @@ def test_any_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyOp(M=m, N=n, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -464,7 +566,7 @@ def test_any_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyOp(M=m, N=n, dtype=dtype)
+    op = AnyOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -473,7 +575,7 @@ def test_all_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllOp(M=m, N=n, dtype=dtype)
+    op = AllOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -482,7 +584,7 @@ def test_all_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllOp(M=m, N=n, dtype=dtype)
+    op = AllOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -491,7 +593,7 @@ def test_all_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllOp(M=m, N=n, dtype=dtype)
+    op = AllOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -500,7 +602,7 @@ def test_all_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllOp(M=m, N=n, dtype=dtype)
+    op = AllOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -509,7 +611,7 @@ def test_all_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllOp(M=m, N=n, dtype=dtype)
+    op = AllOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -518,7 +620,7 @@ def test_count_nonzero_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroOp(M=m, N=n, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -527,7 +629,7 @@ def test_count_nonzero_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> Non
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroOp(M=m, N=n, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -536,7 +638,7 @@ def test_count_nonzero_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroOp(M=m, N=n, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -545,7 +647,7 @@ def test_count_nonzero_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroOp(M=m, N=n, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -554,7 +656,7 @@ def test_count_nonzero_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroOp(M=m, N=n, dtype=dtype)
+    op = CountNonzeroOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 

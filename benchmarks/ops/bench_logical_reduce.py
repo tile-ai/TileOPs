@@ -90,7 +90,7 @@ def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
         "count_nonzero": CountNonzeroOp,
     }
     cls = op_map[op_kind]
-    return cls(M=m, N=n, dtype=dtype)
+    return cls(dtype=dtype)
 
 
 @LogicalReduceBenchFixture
