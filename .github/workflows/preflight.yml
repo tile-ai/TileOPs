@@ -18,53 +18,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate-commits:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Source type conventions
-        id: types
-        run: |
-          source .claude/conventions/types.sh
-          echo "pattern=$COMMIT_MSG_PATTERN" >> "$GITHUB_OUTPUT"
-      - name: Validate commit messages
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-
-          if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            echo "Not a pull request event; skipping commit validation."
-            exit 0
-          fi
-
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          echo "Checking commits from $BASE_SHA to $HEAD_SHA"
-
-          PATTERN='${{ steps.types.outputs.pattern }}'
-
-          STATUS=0
-          while IFS= read -r COMMIT_SHA; do
-            SUBJECT="$(git log -1 --format=%s "$COMMIT_SHA")"
-            if [[ "$SUBJECT" =~ ^Merge\  ]]; then
-              echo "SKIP (merge): $SUBJECT"
-              continue
-            fi
-            if [[ ! "$SUBJECT" =~ $PATTERN ]]; then
-              echo "::error::Commit $COMMIT_SHA does not follow TileOPs format."
-              echo "  Expected: [Type] description  or  [Type][Scope] description"
-              echo "  Got: $SUBJECT"
-              STATUS=1
-            else
-              echo "OK: $SUBJECT"
-            fi
-          done < <(git log --format=%H "${BASE_SHA}..${HEAD_SHA}")
-
-          exit $STATUS
-
   validate-pr-title:
     runs-on: ubuntu-latest
     steps:
@@ -145,7 +98,7 @@ jobs:
           fi
 
   pre-commit:
-    needs: [validate-commits, validate-pr-title, ci-gate]
+    needs: [validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -165,7 +118,7 @@ jobs:
           extra_args: --all-files --show-diff-on-failure
 
   gitleaks:
-    needs: [validate-commits, validate-pr-title, ci-gate]
+    needs: [validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -193,7 +146,7 @@ jobs:
         run: gitleaks dir . --redact --no-banner
 
   validate-manifest:
-    needs: [validate-commits, validate-pr-title]
+    needs: [validate-pr-title]
     if: ${{ github.repository == 'tile-ai/TileOPs' }}
     runs-on: ubuntu-latest
     steps:
@@ -214,7 +167,7 @@ jobs:
         run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench
 
   actionlint:
-    needs: [validate-commits, validate-pr-title, ci-gate]
+    needs: [validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
