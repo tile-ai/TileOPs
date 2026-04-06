@@ -37,7 +37,7 @@ TileOPs is a high-performance LLM operator library built on TileLang. The goal i
 - Response should include: change summary, affected paths, validation steps, and next suggestions.
 - No GitHub issue numbers or ad-hoc issue annotations in source/test files. Issue refs belong in commit messages and PR descriptions only.
 - When orchestrating sub-agents: verify clean worktree (`git diff --quiet && git diff --cached --quiet`) after each sub-agent returns. If dirty, commit on behalf using a descriptive message (e.g., `Sub-agent [name]: [task summary]`).
-- Write commit messages in `[Type][Scope] description` format per `COMMIT_MSG_PATTERN` in `.claude/conventions/types.sh`. Not CI-enforced, but expected for readability.
+- Write commit messages in `[Type] description` or `[Type][Scope] description` format per `COMMIT_MSG_PATTERN` in `.claude/conventions/types.sh` (scope is optional). Not CI-enforced, but expected for readability.
 
 ## Domain Rules (load on demand)
 
