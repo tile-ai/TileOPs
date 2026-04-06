@@ -249,11 +249,12 @@ class LogSumExpKernel(Kernel):
         self._elem_bytes = _elem_bytes(dtype)
 
         default_cfg = self.default_config
+        self._tile_n = default_cfg["tile_n"]
         self.kernel = _logsumexp_kernel(
             self.M,
             self.N,
             self.dtype_str,
-            default_cfg["tile_n"],
+            self._tile_n,
         )
         self.init_config(config, tune)
 
@@ -279,6 +280,12 @@ class LogSumExpKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        """Generate autotune configs (block_m, threads only).
+
+        tile_n is baked into the kernel at build time, so we only expose
+        block_m and threads to the autotuner.
+        """
+        tile_n = getattr(self, "_tile_n", self.default_config["tile_n"])
         smem_per_row = self.N_padded * self._elem_bytes
         max_block_m_no_tile = SHARED_MEMORY_BUDGET_BYTES // smem_per_row if smem_per_row > 0 else 16
         threads_list = [128, 256]
@@ -289,21 +296,22 @@ class LogSumExpKernel(Kernel):
                 compute_tile_n(bm, self._elem_bytes, self.N_padded)
             except ValueError:
                 continue
-            tile_n = self._tile_n_for_block_m(bm)
+            bm_tile_n = self._tile_n_for_block_m(bm)
+            if bm_tile_n != tile_n:
+                continue
             if tile_n == 0 and bm > max_block_m_no_tile:
                 continue
             for t in threads_list:
-                configs.append({"block_m": bm, "threads": t, "tile_n": tile_n})
+                configs.append({"block_m": bm, "threads": t})
 
         if not configs:
-            tile_n = self._tile_n_for_block_m(1)
-            configs = [{"block_m": 1, "threads": 256, "tile_n": tile_n}]
+            configs = [{"block_m": 1, "threads": 256}]
 
         return configs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the logsumexp kernel."""
-        tile_n = self.config.get("tile_n", 0)
+        tile_n = self._tile_n
 
         # For the tiled path, the input may need extra padding beyond N_padded
         # to make columns a multiple of tile_n.
