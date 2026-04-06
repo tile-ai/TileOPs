@@ -449,5 +449,82 @@ def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     assert torch.allclose(y, ref, **tol), f"non-contig std max err: {(y - ref).abs().max()}"
 
 
+# ---------------------------------------------------------------------------
+# Spec-conformant tests (dim + keepdim interface)
+# ---------------------------------------------------------------------------
+
+
+class SpecReduceFixture(FixtureBase):
+    PARAMS = [
+        (
+            "shape, dim, keepdim, dtype",
+            [
+                pytest.param((128, 512), -1, False, torch.float16, marks=pytest.mark.smoke),
+                pytest.param((128, 512), -1, True, torch.float16, marks=pytest.mark.full),
+                pytest.param((4, 32, 512), 0, False, torch.float16, marks=pytest.mark.full),
+                pytest.param((4, 32, 512), 1, False, torch.float16, marks=pytest.mark.full),
+                pytest.param((4, 32, 512), -1, False, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param((4, 32, 512), -1, True, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@ReduceBasicFixture
+def test_sum_spec_basic(m: int, n: int, dtype: torch.dtype) -> None:
+    """Spec interface: SumOp(dtype=..., dim=-1) on 2D input, multiple dtypes."""
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(m, n, dtype=dtype, device="cuda")
+    op = SumOp(dtype=dtype, dim=-1)
+    ref = torch.sum(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y, ref, **tol), f"spec basic max err: {(y - ref).abs().max()}"
+
+
+@SpecReduceFixture
+def test_sum_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: reduction along arbitrary dim (0, 1, -1) for 2D/3D tensors."""
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = SumOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref = torch.sum(x.float(), dim=dim, keepdim=keepdim).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y, ref, **tol), f"spec dim={dim} max err: {(y - ref).abs().max()}"
+
+
+@SpecReduceFixture
+def test_sum_spec_keepdim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: keepdim=True preserves the reduced dimension as size 1."""
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    # Force keepdim=True regardless of fixture param to specifically test shape preservation
+    op = SumOp(dtype=dtype, dim=dim, keepdim=True)
+    ref = torch.sum(x.float(), dim=dim, keepdim=True).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert y.shape == ref.shape, f"keepdim shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.allclose(y, ref, **tol), f"spec keepdim max err: {(y - ref).abs().max()}"
+
+
+@Reduce1DFixture
+def test_sum_spec_1d(n: int, dtype: torch.dtype) -> None:
+    """Spec interface: 1D input reduces to scalar."""
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(n, dtype=dtype, device="cuda")
+    op = SumOp(dtype=dtype, dim=-1)
+    ref = torch.sum(x.float(), dim=-1).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert torch.allclose(y.view_as(ref), ref, **tol), (
+        f"spec 1D max err: {(y.view_as(ref) - ref).abs().max()}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
