@@ -184,7 +184,7 @@ def test_sum_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumOp
 
     test = ReduceTest(m, n, dtype, "sum")
-    op = SumOp(M=m, N=n, dtype=dtype)
+    op = SumOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -194,7 +194,7 @@ def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = SumOp(M=m, N=n, dtype=dtype)
+    op = SumOp(dtype=dtype)
     ref = x.contiguous().float().sum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -206,8 +206,7 @@ def test_sum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = SumOp(M=M, N=hidden, dtype=dtype)
+    op = SumOp(dtype=dtype)
     ref = x.float().sum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -219,8 +218,7 @@ def test_sum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    M = b0 * b1 * b2
-    op = SumOp(M=M, N=n, dtype=dtype)
+    op = SumOp(dtype=dtype)
     ref = x.float().sum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -237,7 +235,7 @@ def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import MeanOp
 
     test = ReduceTest(m, n, dtype, "mean")
-    op = MeanOp(M=m, N=n, dtype=dtype)
+    op = MeanOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -251,7 +249,7 @@ def test_amin_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import AminOp
 
     test = ReduceTest(m, n, dtype, "amin")
-    op = AminOp(M=m, N=n, dtype=dtype)
+    op = AminOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -265,7 +263,7 @@ def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import AmaxOp
 
     test = ReduceTest(m, n, dtype, "amax")
-    op = AmaxOp(M=m, N=n, dtype=dtype)
+    op = AmaxOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -279,7 +277,7 @@ def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import ProdOp
 
     test = ReduceTest(m, n, dtype, "prod", use_small_range=True)
-    op = ProdOp(M=m, N=n, dtype=dtype)
+    op = ProdOp(dtype=dtype)
     # Prod is more numerically sensitive
     tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
     test.check(op, *test.gen_inputs(), **tol)
@@ -395,7 +393,7 @@ def test_sum_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = SumOp(M=1, N=n, dtype=dtype)
+    op = SumOp(dtype=dtype)
     ref = x.float().sum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -524,6 +522,62 @@ def test_sum_spec_1d(n: int, dtype: torch.dtype) -> None:
     assert torch.allclose(y.view_as(ref), ref, **tol), (
         f"spec 1D max err: {(y.view_as(ref) - ref).abs().max()}"
     )
+
+
+@SpecReduceFixture
+def test_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: MeanOp with dim + keepdim."""
+    from tileops.ops.reduction.reduce import MeanOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = MeanOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref = torch.mean(x.float(), dim=dim, keepdim=keepdim).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.allclose(y, ref, **tol), f"mean spec max err: {(y - ref).abs().max()}"
+
+
+@SpecReduceFixture
+def test_amax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: AmaxOp with dim + keepdim."""
+    from tileops.ops.reduction.reduce import AmaxOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = AmaxOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref = torch.amax(x.float(), dim=dim, keepdim=keepdim).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.allclose(y, ref, **tol), f"amax spec max err: {(y - ref).abs().max()}"
+
+
+@SpecReduceFixture
+def test_amin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: AminOp with dim + keepdim."""
+    from tileops.ops.reduction.reduce import AminOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = AminOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref = torch.amin(x.float(), dim=dim, keepdim=keepdim).to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.allclose(y, ref, **tol), f"amin spec max err: {(y - ref).abs().max()}"
+
+
+@SpecReduceFixture
+def test_prod_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: ProdOp with dim + keepdim."""
+    from tileops.ops.reduction.reduce import ProdOp
+
+    x = torch.rand(*shape, dtype=dtype, device="cuda") * 0.01 + 0.99
+    op = ProdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref = torch.prod(x.float(), dim=dim, keepdim=keepdim).to(dtype)
+    y = op(x)
+    tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.allclose(y, ref, **tol), f"prod spec max err: {(y - ref).abs().max()}"
 
 
 if __name__ == "__main__":
