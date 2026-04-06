@@ -153,17 +153,38 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Check if manifest changed
+        id: changed
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -q '^tileops/ops_manifest\.yaml$'; then
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "Manifest not changed; skipping validation."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Python
+        if: steps.changed.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
       - name: Install TileOPs and validator dependencies
+        if: steps.changed.outputs.skip != 'true'
         run: pip install -e .
 
       - name: Validate ops_manifest.yaml
+        if: steps.changed.outputs.skip != 'true'
         run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench
 
   actionlint:
