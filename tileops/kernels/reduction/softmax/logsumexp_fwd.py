@@ -248,15 +248,34 @@ class LogSumExpKernel(Kernel):
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
 
-        self.init_config(config, tune)
-        self._tile_n = self._tile_n_for_block_m(self.config["block_m"])
-        self.config["tile_n"] = self._tile_n
+        # Build self.kernel BEFORE init_config: when tune=True, init_config
+        # delegates to autotune() which requires self.kernel to exist.
+        # tile_n is baked into the kernel at build time, so we pre-compute it
+        # from the heuristic block_m (default_config); autotune_configs is
+        # already filtered to only include configs with the same tile_n.
+        self._tile_n = self.default_config["tile_n"]
         self.kernel = _logsumexp_kernel(
             self.M,
             self.N,
             self.dtype_str,
             self._tile_n,
         )
+
+        self.init_config(config, tune)
+
+        # If a user-provided config picked a block_m mapping to a different
+        # tile_n, rebuild the kernel for the new tile_n. _logsumexp_kernel is
+        # lru_cache'd, so this is cheap on the common path.
+        new_tile_n = self._tile_n_for_block_m(self.config["block_m"])
+        if new_tile_n != self._tile_n:
+            self._tile_n = new_tile_n
+            self.kernel = _logsumexp_kernel(
+                self.M,
+                self.N,
+                self.dtype_str,
+                self._tile_n,
+            )
+        self.config["tile_n"] = self._tile_n
 
     def _tile_n_for_block_m(self, block_m: int) -> int:
         """Return tile_n for a given block_m (0 means no tiling needed)."""
