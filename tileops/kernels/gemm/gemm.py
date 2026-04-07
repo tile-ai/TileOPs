@@ -25,7 +25,7 @@ def _gemm_kernel(m: int,
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gemm_func(block_m: int, block_n: int, block_k: int, threads: int, num_stages: int,
-                   enable_rasteration: bool) -> Callable:
+                   enable_rasterization: bool) -> Callable:
 
         a_shape = (k, m) if trans_a else (m, k)
         b_shape = (n, k) if trans_b else (k, n)
@@ -48,7 +48,7 @@ def _gemm_kernel(m: int,
                 T.annotate_layout({
                     c_shared: tilelang.layout.make_swizzled_layout(c_shared),
                 })
-                T.use_swizzle(10, enable=enable_rasteration)
+                T.use_swizzle(10, enable=enable_rasterization)
 
                 T.clear(c_local)
 
@@ -89,19 +89,19 @@ def _gemm_wrapped_kernel(
     block_k: int,
     num_stages: int,
     threads: int,
-    enable_rasteration: bool,
+    enable_rasterization: bool,
     a: torch.Tensor,
     b: torch.Tensor,
 ) -> torch.Tensor:
     return _gemm_kernel(m, n, k, trans_a, trans_b, dtype)(block_m, block_n, block_k, threads,
-                                                          num_stages, enable_rasteration)(a, b)
+                                                          num_stages, enable_rasterization)(a, b)
 
 
 @_gemm_wrapped_kernel.register_fake
 def _(m: int, n: int, k: int,
       trans_a: bool, trans_b: bool,
       dtype: str, block_m: int, block_n: int, block_k: int,
-      num_stages: int, threads: int, enable_rasteration: bool,
+      num_stages: int, threads: int, enable_rasterization: bool,
       *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
     return torch.empty((m, n), dtype=inputs[0].dtype, device=inputs[0].device)
 
@@ -142,7 +142,7 @@ class GemmKernel(Kernel):
                 "block_k": 32,
                 "num_stages": 2,
                 "threads": 128,
-                "enable_rasteration": True
+                "enable_rasterization": True
             }
         if sm_version in {90}:
             return {
@@ -151,7 +151,7 @@ class GemmKernel(Kernel):
                 "block_k": 64,
                 "num_stages": 3,
                 "threads": 256,
-                "enable_rasteration": True
+                "enable_rasterization": True
             }
 
         return {
@@ -160,7 +160,7 @@ class GemmKernel(Kernel):
             "block_k": 32,
             "num_stages": 0,
             "threads": 128,
-            "enable_rasteration": True
+            "enable_rasterization": True
         }
 
     @property
@@ -171,9 +171,9 @@ class GemmKernel(Kernel):
         block_k = [32, 64]
         num_stages = [0, 1, 2, 3]
         threads = [128, 256]
-        enable_rasteration = [True, False]
+        enable_rasterization = [True, False]
         _configs = list(
-            itertools.product(block_m, block_n, block_k, num_stages, threads, enable_rasteration))
+            itertools.product(block_m, block_n, block_k, num_stages, threads, enable_rasterization))
 
         return [{
             'block_m': c[0],
@@ -181,14 +181,14 @@ class GemmKernel(Kernel):
             'block_k': c[2],
             'num_stages': c[3],
             'threads': c[4],
-            'enable_rasteration': c[5]
+            'enable_rasterization': c[5]
         } for c in _configs]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return _gemm_wrapped_kernel(self.m, self.n, self.k, self.trans_a, self.trans_b,
                                     self.dtype_str, self.config["block_m"], self.config["block_n"],
                                     self.config["block_k"], self.config["num_stages"],
-                                    self.config["threads"], self.config["enable_rasteration"], a, b)
+                                    self.config["threads"], self.config["enable_rasterization"], a, b)
 
 
 # TODO: add persistent, split-k, steam-k...
