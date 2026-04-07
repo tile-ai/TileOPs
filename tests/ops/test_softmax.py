@@ -51,6 +51,8 @@ class SoftmaxFixture(FixtureBase):
             [
                 # Smoke: 2D, dim=-1, fp32, pow2
                 pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                # tune=True regression: kernel must be built before autotune runs
+                pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
@@ -187,6 +189,8 @@ class LogSoftmaxFixture(FixtureBase):
             [
                 # Smoke: 2D, dim=-1, fp32, pow2
                 pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                # tune=True regression: kernel must be built before autotune runs
+                pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
@@ -250,6 +254,8 @@ class LogSumExpFixture(FixtureBase):
             [
                 # Smoke: 2D, dim=-1, fp32, pow2
                 pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                # tune=True regression: kernel must be built before autotune runs
+                pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1: dtypes x pow2/non-pow2
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
