@@ -45,10 +45,11 @@ def _align_up(n: int, alignment: int) -> int:
 class _ReduceOpBase(Op):
     """Common base for all reduce ops (simple and Welford-based).
 
-    Consolidates shared init params (dtype, dim, keepdim, tune, kernel_cache),
-    input preparation (validate, transpose, reshape to 2D, pad), and output
-    reshaping.  Subclasses override ``_pad_value``, ``_build_kernel_kwargs``,
-    and ``forward``.
+    Consolidates shared init params (dtype, dim, keepdim, tune), initializes
+    and owns an internal kernel cache, and handles input preparation
+    (validate, transpose, reshape to 2D, pad) and output reshaping.
+    Subclasses override ``_pad_value``, ``_build_kernel_kwargs``, and
+    ``forward``.
     """
 
     _op_kind: str = ""  # overridden by subclasses
@@ -175,7 +176,7 @@ class _ReduceOpBase(Op):
     # ------------------------------------------------------------------
 
     def _reshape_output(
-        self, y: torch.Tensor, orig_shape: torch.Size, dim_info: object,
+        self, y: torch.Tensor, orig_shape: torch.Size, dim_info: Union[int, List[int]],
     ) -> torch.Tensor:
         """Reshape (M,) kernel output to match keepdim setting.
 

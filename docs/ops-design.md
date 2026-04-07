@@ -4,7 +4,7 @@
 
 ```
 Op (base)
-  └── FamilyBase (e.g., RowNormOp → NormBase, _ReduceOpBase, ...)
+  └── FamilyBase (e.g., RowNormOp, _ReduceOpBase, ...)
         └── SubFamilyBase (optional, e.g., _SimpleReduceOp, _WelfordReduceOp)
               └── ConcreteOp (declaration only)
 ```
