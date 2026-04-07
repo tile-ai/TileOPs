@@ -260,6 +260,48 @@ class BenchmarkBase(ABC):
         return result
 
 
+def _extract_op_config(op: object) -> Optional[dict]:
+    """Return the kernel config for an Op instance, or None if unavailable.
+
+    Handles the three Op patterns currently used in tileops:
+
+      1. **Eager-init** (e.g. ``GemmOp``): ``op.kernel`` is a Kernel
+         instance set in ``__init__``.
+      2. **Lazy with dummy kernel** (e.g. ``FFTC2COp``): ``op.kernel`` is a
+         default Kernel and ``op._kernel_cache`` may hold others.
+      3. **Pure lazy cache** (e.g. ``_SoftmaxBaseOp`` and the spec-conformant
+         reduction ops): ``op._kernel_cache`` is the only source; ``op.kernel``
+         is unset.
+
+    A direct ``op.config`` attribute (legacy / explicit override) takes
+    precedence over kernel introspection.
+    """
+    op_config = getattr(op, "config", None)
+    if op_config:
+        return op_config
+
+    kernel = getattr(op, "kernel", None)
+    op_config = getattr(kernel, "config", None) if kernel is not None else None
+    if op_config:
+        return op_config
+
+    # Pure lazy-cache pattern: pick any cached kernel's config. All cached
+    # kernels for a given op share dtype/op_kind, so taking the first is
+    # sufficient for the benchmark report (which records one entry per call).
+    cache = getattr(op, "_kernel_cache", None)
+    if cache:
+        try:
+            first_kernel = next(iter(cache.values()))
+        except StopIteration:
+            first_kernel = None
+        if first_kernel is not None:
+            op_config = getattr(first_kernel, "config", None)
+            if op_config:
+                return op_config
+
+    return None
+
+
 class BenchmarkReport:
     """Collects benchmark results and dumps a markdown report.
 
@@ -286,7 +328,7 @@ class BenchmarkReport:
         else:
             name = op_or_name.__class__.__name__
             op_module = op_or_name.__class__.__module__
-            op_config = getattr(op_or_name, "config", None)
+            op_config = _extract_op_config(op_or_name)
 
         # Filter params to only include serializable benchmark parameters
         filtered_params = {
