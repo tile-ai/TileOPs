@@ -245,9 +245,25 @@ class MultiDimLogicalFixture(FixtureBase):
                     (4, 32, 256), [0, 1], False, torch.bool,
                     marks=pytest.mark.full,
                 ),
+                # complex64: distinct truthiness (nonzero if real or imag != 0)
+                pytest.param(
+                    (4, 32, 256), [0, 1], False, torch.complex64,
+                    marks=pytest.mark.full,
+                ),
             ],
         ),
     ]
+
+
+def _make_logical_input(
+    shape: tuple, dtype: torch.dtype,
+) -> torch.Tensor:
+    """Generate input tensor for logical reduce ops."""
+    if dtype == torch.bool:
+        return torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    if dtype.is_complex:
+        return torch.randn(*shape, dtype=dtype, device="cuda")
+    return torch.randn(*shape, dtype=dtype, device="cuda")
 
 
 @MultiDimLogicalFixture
@@ -256,10 +272,7 @@ def test_all_multidim(
 ) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
-    if dtype == torch.bool:
-        x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
-    else:
-        x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = _make_logical_input(shape, dtype)
     op = AllOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.all(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
@@ -273,10 +286,7 @@ def test_any_multidim(
 ) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
-    if dtype == torch.bool:
-        x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
-    else:
-        x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = _make_logical_input(shape, dtype)
     op = AnyOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.any(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
@@ -298,6 +308,11 @@ class MultiDimCountFixture(FixtureBase):
                     (4, 32, 256), [0, 1], torch.bool,
                     marks=pytest.mark.full,
                 ),
+                # complex64: distinct truthiness (nonzero if real or imag != 0)
+                pytest.param(
+                    (4, 32, 256), [0, 1], torch.complex64,
+                    marks=pytest.mark.full,
+                ),
             ],
         ),
     ]
@@ -311,6 +326,8 @@ def test_count_nonzero_multidim(
 
     if dtype == torch.bool:
         x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    elif dtype.is_complex:
+        x = torch.randn(*shape, dtype=dtype, device="cuda")
     else:
         x = torch.randn(*shape, dtype=dtype, device="cuda")
         # Zero out some elements to make it interesting
