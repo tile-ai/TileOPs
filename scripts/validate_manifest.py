@@ -25,7 +25,7 @@ import importlib
 import inspect
 import re
 import sys
-import warnings
+import warnings as _warnings
 from pathlib import Path
 
 import yaml
@@ -442,7 +442,7 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
 
     # All heuristics exhausted — resolution is ambiguous.
     candidate_names = [c.__name__ for c in candidates]
-    warnings.warn(
+    _warnings.warn(
         f"Ambiguous op class resolution for '{op_name}': "
         f"candidates {candidate_names} in '{op_file}', "
         f"but no naming heuristic matched. "
