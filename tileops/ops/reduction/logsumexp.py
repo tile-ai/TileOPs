@@ -9,7 +9,7 @@ Example:
     >>> y = op(x)  # shape: (1024,)
 """
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional
 
 import torch
 
@@ -38,13 +38,12 @@ class LogSumExpOp(_SoftmaxBaseOp):
     _op_kind = "logsumexp"
     _kernel_key = "logsumexp_fwd"
     _kernel_class = LogSumExpKernel
-    _supports_multidim = True
 
     def __init__(
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int]] = -1,
+        dim: int = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,

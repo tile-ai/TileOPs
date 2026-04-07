@@ -6,7 +6,7 @@ output back. Output dtype matches input dtype; internal computation in fp32.
 """
 
 from math import prod
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional
 
 import torch
 import torch.nn.functional as F
@@ -16,7 +16,6 @@ from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 
 from ..op import Op
-from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = ["L1NormOp"]
 
@@ -30,8 +29,8 @@ class L1NormOp(Op):
 
     Args:
         dtype: Input data type (float16, bfloat16, float32).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension (default -1).  Only a single ``int`` is
+            supported; passing ``list[int]`` raises ``NotImplementedError``.
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
@@ -41,11 +40,13 @@ class L1NormOp(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int]] = -1,
+        dim: int = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        if isinstance(dim, (list, tuple)):
+            raise NotImplementedError("Multi-dim reduction not yet supported")
         self.dtype = dtype
         self.dim = dim
         self.keepdim = keepdim
@@ -67,14 +68,6 @@ class L1NormOp(Op):
             )
         return self._kernel_cache[key]
 
-    def _reduce_2d(self, x: torch.Tensor, M: int, N: int) -> torch.Tensor:
-        """Run kernel on 2D (M, N) tensor: pad and call kernel."""
-        kernel = self._get_or_create_kernel(M, N)
-        N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        if N_padded != N:
-            x = F.pad(x, (0, N_padded - N))
-        return kernel(x)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Compute L1 norm along the configured dim."""
         if not x.is_cuda:
@@ -86,17 +79,6 @@ class L1NormOp(Op):
 
         orig_shape = x.shape
 
-        # --- multi-dim path ---
-        if isinstance(self.dim, (list, tuple)):
-            dims = normalize_dim(self.dim, x.ndim)
-            x, orig_shape, _kept = flatten_for_multidim(x, dims)
-            N = x.shape[-1]
-            M = prod(x.shape[:-1])
-            x = x.reshape(M, N)
-            y = self._reduce_2d(x, M, N)
-            return restore_multidim_shape(y, orig_shape, dims, self.keepdim)
-
-        # --- single-dim path ---
         if self.dim < -x.ndim or self.dim >= x.ndim:
             raise IndexError(
                 f"Dimension out of range (expected to be in range of "
@@ -111,7 +93,14 @@ class L1NormOp(Op):
             x = x.movedim(dim, -1)
 
         x = x.contiguous().reshape(M, N)
-        y = self._reduce_2d(x, M, N)
+
+        kernel = self._get_or_create_kernel(M, N)
+
+        N_padded = align_up(N, DEFAULT_ALIGNMENT)
+        if N_padded != N:
+            x = F.pad(x, (0, N_padded - N))
+
+        y = kernel(x)
 
         if self.keepdim:
             kept_shape = list(orig_shape)

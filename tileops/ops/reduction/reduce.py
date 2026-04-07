@@ -1,14 +1,13 @@
 """Reduce ops: SumOp, MeanOp, AminOp, AmaxOp, ProdOp, StdOp, VarOp, VarMeanOp.
 
 Each op reduces along the configured ``dim`` and supports arbitrary-rank input.
-The ``dim`` parameter accepts ``int`` or ``list[int]`` for multi-dim reduction.
 The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment,
 calls the kernel, trims padding, and reshapes the output back.  Kernels are
 cached by ``(M, N)`` so that the same op instance can handle varying shapes.
 """
 
 from math import prod
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -17,7 +16,6 @@ from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction.reduce import ReduceKernel
 
 from ..op import Op
-from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = [
     "SumOp",
@@ -51,8 +49,8 @@ class _SimpleReduceOp(Op):
 
     Args:
         dtype: Data type (float32, float16, or bfloat16).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension (default -1).  Only a single ``int`` is
+            supported; passing ``list[int]`` raises ``NotImplementedError``.
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
@@ -64,11 +62,13 @@ class _SimpleReduceOp(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int]] = -1,
+        dim: int = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        if isinstance(dim, (list, tuple)):
+            raise NotImplementedError("Multi-dim reduction not yet supported")
         self.dtype = dtype
         self.dim = dim
         self.keepdim = keepdim
@@ -124,25 +124,6 @@ class _SimpleReduceOp(Op):
 
         orig_shape = x.shape
 
-        # --- multi-dim path ---
-        if isinstance(self.dim, (list, tuple)):
-            dims = normalize_dim(self.dim, x.ndim)
-            x, orig_shape, _kept = flatten_for_multidim(x, dims)
-            # x now has target dims flattened into the last dim.
-            # Reduce along the last dim (single-dim path on reshaped tensor).
-            N = x.shape[-1]
-            M = prod(x.shape[:-1])
-            x = x.reshape(M, N)
-            kernel = self._get_or_create_kernel(M, N)
-            N_padded = _align_up(N, ALIGNMENT)
-            if N_padded != N:
-                pv = self._pad_value()
-                pad = (0, N_padded - N)
-                x = F.pad(x, pad) if pv == 0.0 else F.pad(x, pad, value=pv)
-            y = kernel(x)
-            return restore_multidim_shape(y, orig_shape, dims, self.keepdim)
-
-        # --- single-dim path ---
         # Validate and normalize dim (match PyTorch IndexError message).
         if self.dim < -x.ndim or self.dim >= x.ndim:
             raise IndexError(
@@ -229,8 +210,8 @@ class _WelfordReduceOp(Op):
 
     Args:
         dtype: Data type (float32, float16, or bfloat16).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension (default -1).  Only a single ``int`` is
+            supported; passing ``list[int]`` raises ``NotImplementedError``.
         correction: Bessel's correction (default 1).
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional override for kernel dispatch.
@@ -243,12 +224,14 @@ class _WelfordReduceOp(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int]] = -1,
+        dim: int = -1,
         correction: int = 1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        if isinstance(dim, (list, tuple)):
+            raise NotImplementedError("Multi-dim reduction not yet supported")
         self.dtype = dtype
         self.dim = dim
         self.correction = correction
@@ -274,11 +257,10 @@ class _WelfordReduceOp(Op):
 
     def _forward_common(
         self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Size, object, object]:
+    ) -> Tuple[torch.Tensor, torch.Size, int, object]:
         """Validate, derive M/N, transpose, reshape, pad.
 
-        Returns (x_2d_padded, orig_shape, dim_info, kernel) where
-        dim_info is either an int (single-dim) or list[int] (multi-dim).
+        Returns (x_2d_padded, orig_shape, normalized_dim, kernel).
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
@@ -289,20 +271,6 @@ class _WelfordReduceOp(Op):
 
         orig_shape = x.shape
 
-        # --- multi-dim path ---
-        if isinstance(self.dim, (list, tuple)):
-            dims = normalize_dim(self.dim, x.ndim)
-            x, orig_shape, _kept = flatten_for_multidim(x, dims)
-            N = x.shape[-1]
-            M = prod(x.shape[:-1])
-            x = x.reshape(M, N)
-            kernel = self._get_or_create_kernel(M, N)
-            N_padded = _align_up(N, ALIGNMENT)
-            if N_padded != N:
-                x = F.pad(x, (0, N_padded - N))
-            return x, orig_shape, dims, kernel
-
-        # --- single-dim path ---
         if self.dim < -x.ndim or self.dim >= x.ndim:
             raise IndexError(
                 f"Dimension out of range (expected to be in range of "
@@ -327,16 +295,9 @@ class _WelfordReduceOp(Op):
         return x, orig_shape, dim, kernel
 
     def _reshape_output(
-        self, y: torch.Tensor, orig_shape: torch.Size, dim_info: object,
+        self, y: torch.Tensor, orig_shape: torch.Size, dim: int
     ) -> torch.Tensor:
-        """Reshape (M,) kernel output to match keepdim setting.
-
-        dim_info is either an int (single-dim) or list[int] (multi-dim).
-        """
-        if isinstance(dim_info, list):
-            return restore_multidim_shape(y, orig_shape, dim_info, self.keepdim)
-
-        dim = dim_info
+        """Reshape (M,) kernel output to match keepdim setting."""
         if self.keepdim:
             kept_shape = list(orig_shape)
             kept_shape[dim] = 1
