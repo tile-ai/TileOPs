@@ -230,23 +230,19 @@ class SharedFusedMoE(FusedMoe):
                         "Pass complete weights; the op shards them internally per tp_rank."
                     )
             # TP sharding: ColumnParallel on gate_up (dim=0), RowParallel on down (dim=1)
-            if self.tp_size > 1:
-                if self.pre_sharded:
-                    # Weights already sliced by caller — use directly, zero transient alloc.
-                    gate_up_shard = shared_w_gate_up
-                    down_shard = shared_w_down
-                else:
-                    # Stateless path: slice full weights internally each forward() call.
-                    shard_size = F_s // self.tp_size
-                    r, s = self.tp_rank, shard_size
-                    # shared_w_gate_up is [2*F_s, H]: first F_s rows = gate, last F_s rows = up.
-                    # ColumnParallel: rank r computes neurons [r*s, (r+1)*s), so it needs
-                    # gate[r*s:(r+1)*s] and up[r*s:(r+1)*s] concatenated into [2*s, H].
-                    gate_shard = shared_w_gate_up[r * s : (r + 1) * s]          # [s, H]
-                    up_shard   = shared_w_gate_up[F_s + r * s : F_s + (r + 1) * s]  # [s, H]
-                    gate_up_shard = torch.cat([gate_shard, up_shard], dim=0).contiguous()  # [2*s, H]
-                    down_shard = shared_w_down.narrow(1, r * s, s).contiguous()
+            if self.tp_size > 1 and not self.pre_sharded:
+                # Stateless path: slice full weights internally each forward() call.
+                shard_size = F_s // self.tp_size
+                r, s = self.tp_rank, shard_size
+                # shared_w_gate_up is [2*F_s, H]: first F_s rows = gate, last F_s rows = up.
+                # ColumnParallel: rank r computes neurons [r*s, (r+1)*s), so it needs
+                # gate[r*s:(r+1)*s] and up[r*s:(r+1)*s] concatenated into [2*s, H].
+                gate_shard = shared_w_gate_up[r * s : (r + 1) * s]          # [s, H]
+                up_shard   = shared_w_gate_up[F_s + r * s : F_s + (r + 1) * s]  # [s, H]
+                gate_up_shard = torch.cat([gate_shard, up_shard], dim=0)  # [2*s, H], cat is contiguous
+                down_shard = shared_w_down.narrow(1, r * s, s).contiguous()
             else:
+                # Weights already sliced (pre_sharded=True) or no slicing needed (tp_size=1).
                 gate_up_shard = shared_w_gate_up
                 down_shard = shared_w_down
 
