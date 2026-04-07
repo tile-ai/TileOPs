@@ -4,12 +4,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_ssd_chunk_scan_fwd import (
-    SsdChunkScanFwdTest,
-    ssd_chunk_scan_fwd_ref,
-)
 from tileops.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdOp
-from workloads.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdFixture, SsdChunkScanFwdTest
+from workloads.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdTest
 
 
 def ssd_chunk_scan_fwd_torch(x, cb, dA_cumsum, C, prev_states, dt):
@@ -42,12 +38,17 @@ def _to_mamba_inputs(x, cb, dA_cumsum, C, prev_states, dt):
     b, c, L, h, p = x.shape
     n = C.shape[-1]
 
+    # TileOPs x:         (b, c, L, h, p) -> mamba: (b, c*L, h, p)
     x_m = x.reshape(b, c * L, h, p).contiguous()
-    cb_m = cb.contiguous()                          # (b, c, h, L, L) -- already correct
-    dt_m = dA_cumsum.contiguous()                   # mamba's dt_m == dA_cumsum here
+    # TileOPs cb:        (b, c, h, L, L) -- already matches mamba (b, nchunks, ngroups, L, L)
+    cb_m = cb.contiguous()
+    # TileOPs dt:        (b, c, L, h)    -> mamba: (b, h, c, L)
+    dt_m = dt.permute(0, 3, 1, 2).contiguous()
+    # TileOPs dA_cumsum: (b, h, c, L)    -- already matches mamba (b, nheads, nchunks, L)
     dA_m = dA_cumsum.contiguous()
-    C_m = C.reshape(b, c * L, h, n).contiguous()   # ngroups == nheads
-    # TileOPs prev_states: (b, c, h, n, p) -> mamba states: (b, c, h, p, n)
+    # TileOPs C:         (b, c, L, h, n) -> mamba: (b, c*L, ngroups, n)  (ngroups == nheads)
+    C_m = C.reshape(b, c * L, h, n).contiguous()
+    # TileOPs prev_states: (b, c, h, n, p) -> mamba: (b, nchunks, nheads, headdim, dstate) = (b, c, h, p, n)
     states_m = prev_states.permute(0, 1, 2, 4, 3).contiguous()
 
     return x_m, cb_m, dt_m, dA_m, C_m, states_m
@@ -166,7 +167,7 @@ def test_ssd_chunk_scan_fwd_bench(
         BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")
     else:
         def baseline(*args):
-            return ssd_chunk_scan_fwd_ref(*args)
+            return ssd_chunk_scan_fwd_torch(*args)
         result_bl = bm.profile(baseline, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
