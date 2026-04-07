@@ -917,6 +917,53 @@ class TestResolveOpClass:
         # Should return empty result (no cls) since resolution is ambiguous
         assert result.cls is None
         assert not result.import_error
+        assert "Ambiguous" in result.warning
+
+    def test_ambiguous_warning_plumbed_through_check_l1(self, validator):
+        """Ambiguity warning surfaces in check_l1's structured warnings list."""
+        import importlib
+        import types
+        import unittest.mock as mock
+
+        fake_mod = types.ModuleType("tileops.ops.fake_ambiguous")
+        fake_mod.__name__ = "tileops.ops.fake_ambiguous"
+
+        class AlphaKernel:
+            @staticmethod
+            def forward():
+                pass
+
+        class BetaKernel:
+            @staticmethod
+            def forward():
+                pass
+
+        AlphaKernel.__module__ = fake_mod.__name__
+        BetaKernel.__module__ = fake_mod.__name__
+        fake_mod.AlphaKernel = AlphaKernel
+        fake_mod.BetaKernel = BetaKernel
+
+        original_import = importlib.import_module
+
+        def patched_import(name):
+            if name == "tileops.ops.fake_ambiguous":
+                return fake_mod
+            return original_import(name)
+
+        entry = {
+            "source": {"op": "tileops/ops/fake_ambiguous.py"},
+            "signature": {"inputs": {}, "params": {}},
+        }
+        warn_list: list[str] = []
+
+        with (
+            mock.patch.object(importlib, "import_module", side_effect=patched_import),
+            pytest.warns(UserWarning, match="Ambiguous"),
+        ):
+            errors = validator.check_l1("mystery_fwd", entry, warnings=warn_list)
+
+        assert any("Ambiguous" in w for w in warn_list)
+        assert any("could not resolve" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------

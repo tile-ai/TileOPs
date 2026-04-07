@@ -369,11 +369,12 @@ def check_l1_signature(
 class _ResolveResult:
     """Result of attempting to resolve an Op class from a module path."""
 
-    __slots__ = ("cls", "import_error")
+    __slots__ = ("cls", "import_error", "warning")
 
-    def __init__(self, cls=None, import_error: bool = False):
+    def __init__(self, cls=None, import_error: bool = False, warning: str = ""):
         self.cls = cls
         self.import_error = import_error
+        self.warning = warning
 
 
 def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
@@ -442,15 +443,14 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
 
     # All heuristics exhausted — resolution is ambiguous.
     candidate_names = [c.__name__ for c in candidates]
-    _warnings.warn(
+    ambiguity_msg = (
         f"Ambiguous op class resolution for '{op_name}': "
         f"candidates {candidate_names} in '{op_file}', "
         f"but no naming heuristic matched. "
-        f"Returning unresolved (cls=None).",
-        UserWarning,
-        stacklevel=2,
+        f"Returning unresolved (cls=None)."
     )
-    return _ResolveResult()
+    _warnings.warn(ambiguity_msg, UserWarning, stacklevel=2)
+    return _ResolveResult(warning=ambiguity_msg)
 
 
 _EXPLICIT_KINDS = {
@@ -534,6 +534,9 @@ def check_l1(
     op_file = source.get("op", "")
 
     result = _resolve_op_class(op_file, op_name)
+
+    if result.warning and warnings is not None:
+        warnings.append(f"[signature] {op_name}: {result.warning}")
 
     if result.import_error:
         errors.append(
