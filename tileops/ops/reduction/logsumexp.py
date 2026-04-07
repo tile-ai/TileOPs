@@ -64,6 +64,11 @@ class LogSumExpOp(_SoftmaxBaseOp):
         # placeholder (the base __init__ only uses dim for storage;
         # we override forward to handle multi-dim).
         if isinstance(dim, (list, tuple)):
+            if len(dim) == 0:
+                raise ValueError(
+                    "dim must be non-empty when provided as a list; "
+                    "pass a single int to reduce over one dimension"
+                )
             super().__init__(
                 dtype=dtype, dim=-1, kernel_map=kernel_map, tune=tune
             )

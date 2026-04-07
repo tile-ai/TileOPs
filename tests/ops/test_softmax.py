@@ -395,6 +395,18 @@ def test_logsumexp_multi_dim(shape: tuple, dim: list, keepdim: bool, dtype: torc
 
 
 # ===================================================================
+# LogSumExp — empty dim rejection (regression for issue #795)
+# ===================================================================
+
+
+@pytest.mark.smoke
+def test_logsumexp_empty_dim_rejected() -> None:
+    """Empty dim=[] must raise ValueError, not silently return input."""
+    with pytest.raises(ValueError, match="empty"):
+        LogSumExpOp(dtype=torch.float32, dim=[])
+
+
+# ===================================================================
 # Non-contiguous input tests (spec interface)
 # ===================================================================
 
