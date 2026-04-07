@@ -414,9 +414,18 @@ class SoftmaxKernel(Kernel):
 
         # Build self.kernel BEFORE init_config: when tune=True, init_config
         # delegates to autotune() which requires self.kernel to exist.
-        # tile_n is baked into the kernel at build time, so we pre-compute it
-        # from the heuristic block_m (default_config); autotune_configs is
-        # already filtered to only include configs with the same tile_n.
+        #
+        # tile_n is baked into the kernel at build time, so we pre-compute
+        # it from the heuristic block_m in default_config. The matching
+        # `autotune_configs` property below filters out any block_m whose
+        # tile_n differs from this pre-built one, so the autotuner stays
+        # within a single tiling regime by design.
+        #
+        # Known follow-up: exploring alternate tile_n regimes would require
+        # building one kernel per regime, autotuning each, and picking the
+        # global best. That refactor is deliberately out of scope for this
+        # fix, which is restoring the broken tune=True path; the single-
+        # regime restriction is inherited from #801, not introduced here.
         self._tile_n = self.default_config["tile_n"]
         self.kernel = _softmax_kernel(
             self.M,
