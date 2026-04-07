@@ -17,7 +17,6 @@ Verifies:
 import pytest
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedMoe, SharedFusedMoE
@@ -197,14 +196,11 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
     expert_map = torch.full((E_global,), -1, dtype=torch.int32, device=dev)
     expert_map[start_expert:end_expert] = torch.arange(E_local, dtype=torch.int32, device=dev)
 
-    # Create shared expert MLP (same on all ranks)
-    shared_mlp = nn.Sequential(
-        nn.Linear(H, shared_F, bias=False, dtype=dtype, device=dev),
-        nn.SiLU(),
-        nn.Linear(shared_F, H, bias=False, dtype=dtype, device=dev),
-    )
+    # Shared expert weights (same on all ranks — each rank computes full shared expert)
+    shared_w_gate_up = torch.randn(shared_F * 2, H, dtype=dtype, device=dev) * 0.02
+    shared_w_down = torch.randn(H, shared_F, dtype=dtype, device=dev) * 0.02
 
-    # TileOPs: local computation with expert_map + shared expert
+    # TileOPs: local computation with expert_map + shared expert (tp_size=1, no TP on shared)
     op_local = SharedFusedMoE(
         num_tokens=T, num_experts=E_global, top_k=K,
         hidden_size=H, ffn_size=F,
@@ -212,9 +208,12 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
         routed_scaling_factor=2.827,
         layout="nopad", dtype=dtype,
         expert_map=expert_map,
-        shared_experts_fn=shared_mlp,
+        shared_ffn_size=shared_F,
     )
-    shared_out, routed_out_local = op_local(hidden, gating, w_gate_up_local, w_down_local, correction_bias)
+    shared_out, routed_out_local = op_local(
+        hidden, gating, w_gate_up_local, w_down_local, correction_bias,
+        shared_w_gate_up=shared_w_gate_up, shared_w_down=shared_w_down,
+    )
 
     # All-reduce routed output
     dist.all_reduce(routed_out_local, op=dist.ReduceOp.SUM)
@@ -227,9 +226,12 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
             scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
             routed_scaling_factor=2.827,
             layout="nopad", dtype=dtype,
-            shared_experts_fn=shared_mlp,
+            shared_ffn_size=shared_F,
         )
-        shared_out_full, routed_out_full = op_full(hidden, gating, w_gate_up_full, w_down_full, correction_bias)
+        shared_out_full, routed_out_full = op_full(
+            hidden, gating, w_gate_up_full, w_down_full, correction_bias,
+            shared_w_gate_up=shared_w_gate_up, shared_w_down=shared_w_down,
+        )
 
         # Verify shared output (should be identical across ranks)
         torch.testing.assert_close(shared_out.float(), shared_out_full.float(), rtol=1e-5, atol=1e-5)
