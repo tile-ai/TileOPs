@@ -36,7 +36,7 @@ def _conv1d_kernel(
         block_k: int,
         num_stages: int,
         threads: int,
-        enable_rasteration: bool,
+        enable_rasterization: bool,
     ):
         @T.prim_func
         def _conv1d_main(
@@ -58,7 +58,7 @@ def _conv1d_kernel(
                 weight_flat = T.Tensor((k_total, c_out), dtype, weight.data)
                 out_flat = T.Tensor((n * out_l, c_out), dtype, out.data)
 
-                T.use_swizzle(10, enable=enable_rasteration)
+                T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -128,14 +128,14 @@ def _conv1d_wrapped_kernel(
     block_k: int,
     num_stages: int,
     threads: int,
-    enable_rasteration: bool,
+    enable_rasterization: bool,
     x: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv1d_kernel(
         n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, has_bias, dtype
-    )(block_m, block_n, block_k, num_stages, threads, enable_rasteration)(x, weight, bias)
+    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
 @_conv1d_wrapped_kernel.register_fake
@@ -154,7 +154,7 @@ def _(
     block_k: int,
     num_stages: int,
     threads: int,
-    enable_rasteration: bool,
+    enable_rasterization: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
     out_l = (l_in + 2 * pad_l - kernel_l) // stride_l + 1
@@ -215,7 +215,7 @@ class Conv1dKernel(Kernel):
                 "block_k": 64,
                 "num_stages": 3,
                 "threads": 128,
-                "enable_rasteration": True,
+                "enable_rasterization": True,
             }
         return {
             "block_m": 128,
@@ -223,7 +223,7 @@ class Conv1dKernel(Kernel):
             "block_k": 64,
             "num_stages": 2,
             "threads": 128,
-            "enable_rasteration": True,
+            "enable_rasterization": True,
         }
 
     @property
@@ -238,7 +238,7 @@ class Conv1dKernel(Kernel):
             [True],
         )
         valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasteration in configs:
+        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
             shared_memory_bytes = conv_shared_memory_bytes(
                 block_m, block_n, block_k, num_stages, self.dtype)
             if shared_memory_bytes > shared_memory_limit_bytes:
@@ -249,7 +249,7 @@ class Conv1dKernel(Kernel):
                 "block_k": block_k,
                 "num_stages": num_stages,
                 "threads": threads,
-                "enable_rasteration": enable_rasteration,
+                "enable_rasterization": enable_rasterization,
             })
         return valid_configs
 
@@ -278,7 +278,7 @@ class Conv1dKernel(Kernel):
             self.config["block_k"],
             self.config["num_stages"],
             self.config["threads"],
-            self.config["enable_rasteration"],
+            self.config["enable_rasterization"],
             x,
             weight_kio,
             bias,

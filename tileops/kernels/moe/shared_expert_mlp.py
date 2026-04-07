@@ -12,7 +12,7 @@ from tileops.kernels.kernel import Kernel
 
 __all__ = ["SharedExpertMLPKernel"]
 
-_DEFAULT_CONFIG = {"block_m": 128, "block_n": 256, "block_k": 64, "num_stages": 3, "threads": 256, "enable_rasteration": True}
+_DEFAULT_CONFIG = {"block_m": 128, "block_n": 256, "block_k": 64, "num_stages": 3, "threads": 256, "enable_rasterization": True}
 
 
 @functools.lru_cache(maxsize=16)
