@@ -306,27 +306,23 @@ class _WelfordReduceOp(_ReduceOpBase):
         """Pass correction to the kernel constructor."""
         return {"correction": self.correction}
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run a single-output Welford reduce on *x* along the configured dim."""
+        x, orig_shape, dim_info, kernel = self._prepare_input(x)
+        y = kernel(x)
+        return self._reshape_output(y, orig_shape, dim_info)
+
 
 class StdOp(_WelfordReduceOp):
     """Standard deviation reduction with Bessel's correction."""
 
     _op_kind = "std"
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        y = kernel(x)
-        return self._reshape_output(y, orig_shape, dim_info)
-
 
 class VarOp(_WelfordReduceOp):
     """Variance reduction with Bessel's correction."""
 
     _op_kind = "var"
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        y = kernel(x)
-        return self._reshape_output(y, orig_shape, dim_info)
 
 
 class VarMeanOp(_WelfordReduceOp):
