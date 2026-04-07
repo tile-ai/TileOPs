@@ -164,3 +164,48 @@ def test_shared_fused_moe_tp():
     torch.testing.assert_close(partial_sum, partial_sum_ref, rtol=1e-2, atol=1e-2)
 
     print(f"PASS SharedFusedMoE TP [T={T}, H={H}, F_s={F_s}, tp_size={tp_size}]")
+
+
+@pytest.mark.smoke
+def test_shared_fused_moe_tp_rejects_local_shards():
+    """TP contract: forward() must reject pre-sharded weights with a clear ValueError.
+
+    When tp_size > 1 the op shards weights internally. Callers must always pass
+    full weights. Passing TP-local shards would silently produce wrong results
+    without this guard.
+    """
+    T, E, K, H, F, F_s, tp_size = 32, 8, 2, 64, 32, 16, 2
+    dtype = torch.bfloat16
+    dev = "cuda"
+
+    op = SharedFusedMoE(
+        num_tokens=T, num_experts=E, top_k=K,
+        hidden_size=H, ffn_size=F,
+        scoring_func="softmax", renormalize=False,
+        layout="nopad", dtype=dtype,
+        shared_ffn_size=F_s,
+        tp_size=tp_size, tp_rank=0,
+    )
+
+    hidden = torch.randn(T, H, dtype=dtype, device=dev)
+    gating = torch.randn(T, E, dtype=dtype, device=dev)
+    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
+    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
+
+    shard_size = F_s // tp_size
+
+    # Pass TP-local gate_up shard instead of full weights → must raise
+    bad_gate_up = torch.randn(2 * shard_size, H, dtype=dtype, device=dev)
+    good_w_down = torch.randn(H, F_s, dtype=dtype, device=dev)
+    with pytest.raises(ValueError, match="full weights"):
+        op(hidden, gating, w_gate_up, w_down,
+           shared_w_gate_up=bad_gate_up, shared_w_down=good_w_down)
+
+    # Pass TP-local down shard instead of full weights → must raise
+    good_gate_up = torch.randn(2 * F_s, H, dtype=dtype, device=dev)
+    bad_w_down = torch.randn(H, shard_size, dtype=dtype, device=dev)
+    with pytest.raises(ValueError, match="full weights"):
+        op(hidden, gating, w_gate_up, w_down,
+           shared_w_gate_up=good_gate_up, shared_w_down=bad_w_down)
+
+    print("PASS SharedFusedMoE TP rejects TP-local shards")

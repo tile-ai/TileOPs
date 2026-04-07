@@ -28,7 +28,8 @@ Usage (TP, tp_size>1):
         shared_w_gate_up=shared_w_gate_up,  # [2*F_s, H]  complete
         shared_w_down=shared_w_down,         # [H, F_s]   complete
     )
-    # dist.all_reduce(shared_out_partial)  ← caller's responsibility
+    # dist.all_reduce(shared_out_partial, group=tp_group)  ← caller's responsibility
+    # Must use the TP process group, not the default group (important in EP/DP setups).
 """
 
 from typing import Dict, Optional
@@ -168,6 +169,23 @@ class SharedFusedMoE(FusedMoe):
                 raise ValueError(
                     "shared_w_gate_up and shared_w_down must be provided "
                     "when shared_ffn_size is set"
+                )
+            F_s = self.shared_ffn_size
+            H = shared_w_gate_up.shape[1]
+            # Validate that caller passes full weights, not TP-local shards.
+            # In TP mode the op shards internally; passing pre-sharded weights
+            # would produce silently wrong results.
+            if shared_w_gate_up.shape != (2 * F_s, H):
+                raise ValueError(
+                    f"shared_w_gate_up must be full weights with shape ({2 * F_s}, {H}), "
+                    f"got {tuple(shared_w_gate_up.shape)}. "
+                    "Pass complete weights; the op shards them internally per tp_rank."
+                )
+            if shared_w_down.shape != (H, F_s):
+                raise ValueError(
+                    f"shared_w_down must be full weights with shape ({H}, {F_s}), "
+                    f"got {tuple(shared_w_down.shape)}. "
+                    "Pass complete weights; the op shards them internally per tp_rank."
                 )
             # TP sharding: ColumnParallel on gate_up (dim=0), RowParallel on down (dim=1)
             if self.tp_size > 1:
