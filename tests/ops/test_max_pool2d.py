@@ -10,7 +10,14 @@ from tileops.kernels.pool import MaxPool2dKernel
 from tileops.ops import MaxPool2dOp
 
 
-class _DummyKernel(Kernel):
+class _DummyValuesKernel(Kernel):
+    supported_archs = [80]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
+
+class _DummyValuesIndicesKernel(Kernel):
     supported_archs = [80]
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -36,6 +43,16 @@ class MaxPool2dFixture(FixtureBase):
                     1, 80, 28, 30, (3, 3), (2, 2), (1, 1), (2, 1), False, False, torch.bfloat16, False,
                     marks=pytest.mark.full,
                     id="full-dilation-bf16",
+                ),
+                pytest.param(
+                    2, 64, 56, 56, (3, 3), (2, 2), (1, 1), (2, 2), False, False, torch.float16, False,
+                    marks=pytest.mark.full,
+                    id="full-dilated-maxpool-2x2-fp16",
+                ),
+                pytest.param(
+                    1, 48, 35, 35, (3, 3), (1, 1), (1, 1), (3, 3), False, False, torch.float16, False,
+                    marks=pytest.mark.full,
+                    id="full-dilated-maxpool-3x3-fp16",
                 ),
                 pytest.param(
                     1, 32, 16, 18, (2, 3), (2, 2), (0, 1), (1, 1), True, False, torch.float16, False,
@@ -160,13 +177,79 @@ def test_max_pool2d_returns_indices_when_requested(monkeypatch: pytest.MonkeyPat
         kernel_size=(2, 2),
         stride=(2, 2),
         return_indices=True,
-        kernel_map={"max_pool2d_kernel": _DummyKernel},
+        kernel_map={"max_pool2d_kernel": _DummyValuesIndicesKernel},
     )
     x = torch.randn(1, 8, 8, 4, device="cuda", dtype=torch.float16)
     values, indices = op(x)
     assert values is x
     assert indices.dtype == torch.int64
     assert indices.shape == x.shape
+
+
+@pytest.mark.smoke
+def test_max_pool2d_default_path_uses_values_only_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("indices kernel should not be used when return_indices=False")
+
+    def return_values(*args, **kwargs):
+        x = args[-1]
+        return x
+
+    monkeypatch.setattr(
+        "tileops.kernels.pool.max_pool2d._max_pool2d_values_indices_wrapped_kernel",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        "tileops.kernels.pool.max_pool2d._max_pool2d_values_wrapped_kernel",
+        return_values,
+    )
+    op = MaxPool2dOp(
+        n=1,
+        c_in=4,
+        h_in=8,
+        w_in=8,
+        kernel_size=(2, 2),
+        stride=(2, 2),
+    )
+    x = torch.randn(1, 8, 8, 4, device="cuda", dtype=torch.float16)
+    out = op(x)
+    assert out is x
+
+
+@pytest.mark.smoke
+def test_max_pool2d_indices_path_uses_values_indices_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("values-only kernel should not be used when return_indices=True")
+
+    def return_values_indices(*args, **kwargs):
+        x = args[-1]
+        return x, torch.zeros_like(x, dtype=torch.int64)
+
+    monkeypatch.setattr(
+        "tileops.kernels.pool.max_pool2d._max_pool2d_values_wrapped_kernel",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        "tileops.kernels.pool.max_pool2d._max_pool2d_values_indices_wrapped_kernel",
+        return_values_indices,
+    )
+    op = MaxPool2dOp(
+        n=1,
+        c_in=4,
+        h_in=8,
+        w_in=8,
+        kernel_size=(2, 2),
+        stride=(2, 2),
+        return_indices=True,
+    )
+    x = torch.randn(1, 8, 8, 4, device="cuda", dtype=torch.float16)
+    values, indices = op(x)
+    assert values is x
+    assert indices.dtype == torch.int64
 
 
 @pytest.mark.smoke
@@ -244,7 +327,7 @@ def test_max_pool2d_forward_rejects_non_cuda_input(monkeypatch: pytest.MonkeyPat
         w_in=8,
         kernel_size=(2, 2),
         stride=(2, 2),
-        kernel_map={"max_pool2d_kernel": _DummyKernel},
+        kernel_map={"max_pool2d_kernel": _DummyValuesKernel},
     )
     x = torch.randn(1, 8, 8, 4)
     with pytest.raises(ValueError, match="CUDA"):
@@ -262,7 +345,7 @@ def test_max_pool2d_forward_rejects_nchw_shape(monkeypatch: pytest.MonkeyPatch) 
         w_in=8,
         kernel_size=(2, 2),
         stride=(2, 2),
-        kernel_map={"max_pool2d_kernel": _DummyKernel},
+        kernel_map={"max_pool2d_kernel": _DummyValuesKernel},
     )
     x = torch.randn(1, 4, 8, 8, device="cuda", dtype=torch.float16)
     with pytest.raises(ValueError, match="NHWC"):
@@ -280,7 +363,7 @@ def test_max_pool2d_forward_warns_on_ambiguous_nhwc_shape(monkeypatch: pytest.Mo
         w_in=8,
         kernel_size=(2, 2),
         stride=(2, 2),
-        kernel_map={"max_pool2d_kernel": _DummyKernel},
+        kernel_map={"max_pool2d_kernel": _DummyValuesKernel},
     )
     x = torch.randn(1, 8, 8, 8, device="cuda", dtype=torch.float16)
     with pytest.warns(UserWarning, match="ambiguous NHWC shape"):

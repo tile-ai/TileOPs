@@ -51,13 +51,13 @@ class MaxPool2dBenchCase:
 
 class MaxPool2dBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         out_h = pool_output_dim(t.h_in, t.kernel_size[0], t.stride[0], t.padding[0], t.ceil_mode, t.dilation[0])
         out_w = pool_output_dim(t.w_in, t.kernel_size[1], t.stride[1], t.padding[1], t.ceil_mode, t.dilation[1])
         return t.n * t.c_in * out_h * out_w * t.kernel_size[0] * t.kernel_size[1]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         out_h = pool_output_dim(t.h_in, t.kernel_size[0], t.stride[0], t.padding[0], t.ceil_mode, t.dilation[0])
         out_w = pool_output_dim(t.w_in, t.kernel_size[1], t.stride[1], t.padding[1], t.ceil_mode, t.dilation[1])
         return (t.n * t.c_in * t.h_in * t.w_in + t.n * t.c_in * out_h * out_w) * t.dtype.itemsize
@@ -120,6 +120,7 @@ def test_max_pool2d_bench(
         stride=stride,
         padding=padding,
         dilation=dilation,
+        return_indices=False,
         ceil_mode=ceil_mode,
         dtype=dtype,
         tune=tune,

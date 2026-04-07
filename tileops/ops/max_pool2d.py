@@ -74,6 +74,7 @@ class MaxPool2dOp(Op):
             dilation_h=self.dilation[0],
             dilation_w=self.dilation[1],
             ceil_mode=ceil_mode,
+            return_indices=return_indices,
             dtype=dtype,
             tune=tune,
         )
@@ -94,7 +95,7 @@ class MaxPool2dOp(Op):
             layout="NHWC",
             ambiguous_layout_shape=(self.n, self.c_in, self.h_in, self.w_in),
         )
-        values, indices = self.kernel(x)
         if self.return_indices:
+            values, indices = self.kernel(x)
             return values, indices
-        return values
+        return self.kernel(x)
