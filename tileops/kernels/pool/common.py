@@ -40,10 +40,13 @@ def validate_pool_params(
     kernel_size: tuple[int, ...],
     stride: tuple[int, ...],
     padding: tuple[int, ...],
+    dilation: tuple[int, ...] | None = None,
     divisor_override: int | None = None,
 ) -> None:
     if len(kernel_size) != ndim or len(stride) != ndim or len(padding) != ndim:
         raise ValueError("kernel_size, stride, and padding must match pooling dimensionality")
+    if dilation is not None and len(dilation) != ndim:
+        raise ValueError("dilation must match pooling dimensionality")
 
     for name, values in (
         ("kernel_size", kernel_size),
@@ -62,7 +65,18 @@ def validate_pool_params(
     if any(v < 0 for v in padding):
         raise ValueError("padding must be non-negative")
 
-    for pad, kernel in zip(padding, kernel_size, strict=True):
+    if dilation is not None:
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in dilation):
+            raise TypeError("dilation must contain only ints")
+        if any(v <= 0 for v in dilation):
+            raise ValueError("dilation must be greater than zero")
+        effective_kernel = tuple(
+            (kernel - 1) * step + 1 for kernel, step in zip(kernel_size, dilation, strict=True)
+        )
+    else:
+        effective_kernel = kernel_size
+
+    for pad, kernel in zip(padding, effective_kernel, strict=True):
         if pad > kernel // 2:
             raise ValueError("padding must be at most half of the effective kernel size")
 
@@ -103,11 +117,13 @@ def pool_output_dim(
     stride: int,
     padding: int,
     ceil_mode: bool,
+    dilation: int = 1,
 ) -> int:
+    effective_kernel = (kernel_size - 1) * dilation + 1
     if ceil_mode:
-        out = (input_size + 2 * padding - kernel_size + stride - 1) // stride + 1
+        out = (input_size + 2 * padding - effective_kernel + stride - 1) // stride + 1
     else:
-        out = (input_size + 2 * padding - kernel_size) // stride + 1
+        out = (input_size + 2 * padding - effective_kernel) // stride + 1
 
     if ceil_mode and out > 0 and (out - 1) * stride >= input_size + padding:
         out -= 1
