@@ -5,7 +5,6 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_da_cumsum_fwd import (
-    DaCumsumFwdFixture,
     DaCumsumFwdTest,
     da_cumsum_fwd_ref,
 )
@@ -33,8 +32,21 @@ class DaCumsumFwdBenchmark(BenchmarkBase):
         return float(reads + writes)
 
 
-@DaCumsumFwdFixture
-def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, tune):
+_DA_CUMSUM_FWD_BENCH_PARAMS = [
+    pytest.param(1, 2,  64,  4, False, id="b1-c2-L64-h4"),
+    pytest.param(2, 4,  64,  8, False, id="b2-c4-L64-h8"),
+    pytest.param(1, 2, 128,  4, False, id="b1-c2-L128-h4"),
+    pytest.param(2, 4, 128, 16, False, id="b2-c4-L128-h16"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, num_chunks, chunk_len, n_heads, tune",
+    _DA_CUMSUM_FWD_BENCH_PARAMS,
+)
+def test_da_cumsum_fwd_bench(
+    batch: int, num_chunks: int, chunk_len: int, n_heads: int, tune: bool,
+) -> None:
     test = DaCumsumFwdTest(batch, num_chunks, chunk_len, n_heads)
     bm = DaCumsumFwdBenchmark(test)
     inputs = test.gen_inputs()
@@ -46,7 +58,7 @@ def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, tune):
     def baseline(dt, A):
         return da_cumsum_fwd_ref(dt, A, num_chunks, chunk_len)
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record("da_cumsum_fwd", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

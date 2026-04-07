@@ -5,11 +5,15 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_ssd_state_passing_fwd import (
-    SsdStatePassingFwdFixture,
     SsdStatePassingFwdTest,
     ssd_state_passing_fwd_ref,
 )
 from tileops.ops.ssd_state_passing_fwd import SsdStatePassingFwdOp
+
+try:
+    from mamba_ssm.ops.triton.ssd_state_passing import _state_passing_fwd
+except ImportError:
+    _state_passing_fwd = None
 
 
 class SsdStatePassingFwdBenchmark(BenchmarkBase):
@@ -35,8 +39,21 @@ class SsdStatePassingFwdBenchmark(BenchmarkBase):
         return float(reads + writes)
 
 
-@SsdStatePassingFwdFixture
-def test_ssd_state_passing_fwd_bench(batch, num_chunks, n_heads, d_state, dtype, tune):
+_SSD_STATE_PASSING_FWD_BENCH_PARAMS = [
+    pytest.param(1, 2, 4,  32, torch.float16,  False, id="b1-c2-h4-d32-fp16"),
+    pytest.param(2, 4, 8,  64, torch.float16,  False, id="b2-c4-h8-d64-fp16"),
+    pytest.param(1, 2, 4,  32, torch.bfloat16, False, id="b1-c2-h4-d32-bf16"),
+    pytest.param(2, 4, 8,  64, torch.bfloat16, False, id="b2-c4-h8-d64-bf16"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, num_chunks, n_heads, d_state, dtype, tune",
+    _SSD_STATE_PASSING_FWD_BENCH_PARAMS,
+)
+def test_ssd_state_passing_fwd_bench(
+    batch: int, num_chunks: int, n_heads: int, d_state: int, dtype: torch.dtype, tune: bool,
+) -> None:
     test = SsdStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
     bm = SsdStatePassingFwdBenchmark(test)
     inputs = test.gen_inputs()
@@ -45,10 +62,23 @@ def test_ssd_state_passing_fwd_bench(batch, num_chunks, n_heads, d_state, dtype,
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    def baseline(states, dA_chunk_cumsum, initial_states):
-        return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
-    result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record("ssd_state_passing_fwd", locals(), result_bl, tag="baseline")
+    if _state_passing_fwd is not None:
+        states, dA_chunk_cumsum, initial_states = inputs
+
+        def mamba_fwd():
+            return _state_passing_fwd(
+                states.contiguous(),
+                dA_chunk_cumsum.contiguous(),
+                initial_states=initial_states.contiguous(),
+            )
+
+        result_mamba = bm.profile(mamba_fwd)
+        BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")
+    else:
+        def baseline(states, dA_chunk_cumsum, initial_states):
+            return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
+        result_bl = bm.profile(baseline, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,6 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tests.ops.test_ssd_decode import (
-    SsdDecodeFixture,
     SsdDecodeTest,
     ssd_decode_ref,
 )
@@ -40,14 +39,56 @@ class SsdDecodeBenchmark(BenchmarkBase):
         return float(reads + writes)
 
 
-@SsdDecodeFixture
-def test_ssd_decode_bench(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
+# Mamba2 (SSD) decode benchmark parameters.
+#
+# Model-to-shape mapping (Mamba2 defaults):
+#   n_heads = d_model / 32,  head_dim = 64,  d_state = 128,  n_groups = 8
+#
+#   130M -> n_heads=24   370M -> n_heads=32   780M -> n_heads=48
+#   1.3B -> n_heads=64   2.7B -> n_heads=80
+#
+# Schema: (batch, n_heads, d_head, d_state, n_groups, dtype, tune)
+_SSD_DECODE_BENCH_PARAMS = [
+    # ── smoke / unit-scale ──
+    pytest.param(1,  4,  64,  16, 1, torch.float16,  False, id="b1-h4-p64-n16-g1-fp16"),
+    pytest.param(2,  8,  64,  32, 2, torch.float16,  False, id="b2-h8-p64-n32-g2-fp16"),
+    pytest.param(1,  4,  64,  16, 1, torch.bfloat16, False, id="b1-h4-p64-n16-g1-bf16"),
+    pytest.param(2,  8, 128,  64, 4, torch.bfloat16, False, id="b2-h8-p128-n64-g4-bf16"),
+    # ── 130M (n_heads=24) ──
+    pytest.param(1,  24, 64, 128, 8, torch.float16, True, id="latency-130m"),
+    pytest.param(8,  24, 64, 128, 8, torch.float16, True, id="serving-130m"),
+    pytest.param(64, 24, 64, 128, 8, torch.float16, True, id="throughput-130m"),
+    # ── 370M (n_heads=32) ──
+    pytest.param(1,  32, 64, 128, 8, torch.float16, True, id="latency-370m"),
+    pytest.param(8,  32, 64, 128, 8, torch.float16, True, id="serving-370m"),
+    pytest.param(64, 32, 64, 128, 8, torch.float16, True, id="throughput-370m"),
+    # ── 780M (n_heads=48) ──
+    pytest.param(1,  48, 64, 128, 8, torch.float16, True, id="latency-780m"),
+    pytest.param(8,  48, 64, 128, 8, torch.float16, True, id="serving-780m"),
+    pytest.param(32, 48, 64, 128, 8, torch.float16, True, id="throughput-780m"),
+    # ── 1.3B (n_heads=64) ──
+    pytest.param(1,  64, 64, 128, 8, torch.float16, True, id="latency-1p3b"),
+    pytest.param(8,  64, 64, 128, 8, torch.float16, True, id="serving-1p3b"),
+    pytest.param(16, 64, 64, 128, 8, torch.float16, True, id="throughput-1p3b"),
+    # ── 2.7B (n_heads=80) ──
+    pytest.param(1,  80, 64, 128, 8, torch.float16, True, id="latency-2p7b"),
+    pytest.param(4,  80, 64, 128, 8, torch.float16, True, id="serving-2p7b"),
+    pytest.param(8,  80, 64, 128, 8, torch.float16, True, id="throughput-2p7b"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, n_heads, d_head, d_state, n_groups, dtype, tune",
+    _SSD_DECODE_BENCH_PARAMS,
+)
+def test_ssd_decode_bench(
+    batch: int, n_heads: int, d_head: int, d_state: int,
+    n_groups: int, dtype: torch.dtype, tune: bool,
+) -> None:
     test = SsdDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
     bm = SsdDecodeBenchmark(test)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
 
-    # Clone state before each profile run so both start from identical initial
-    # conditions (op mutates state in-place across iterations).
     state_for_op = state.clone()
     state_bl = state.clone()
 
@@ -59,7 +100,7 @@ def test_ssd_decode_bench(batch, n_heads, d_head, d_state, n_groups, dtype, tune
         return ssd_decode_ref(A, dt, x, B_in, C_in, state)
 
     result_bl = bm.profile(baseline, A, dt, x, B_in, C_in, state_bl)
-    BenchmarkReport.record("ssd_decode", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":
