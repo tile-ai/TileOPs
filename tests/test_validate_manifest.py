@@ -872,6 +872,52 @@ class TestResolveOpClass:
         )
         assert result.cls is None
 
+    def test_ambiguous_fallback_returns_none_with_warning(self, validator):
+        """When multiple candidates exist but no heuristic matches, return cls=None."""
+        import importlib
+        import types
+
+        # Create a fake module with two candidate classes whose names don't
+        # match any heuristic for the given op_name.
+        fake_mod = types.ModuleType("tileops.ops.fake_ambiguous")
+        fake_mod.__name__ = "tileops.ops.fake_ambiguous"
+
+        class AlphaKernel:
+            @staticmethod
+            def forward():
+                pass
+
+        class BetaKernel:
+            @staticmethod
+            def forward():
+                pass
+
+        AlphaKernel.__module__ = fake_mod.__name__
+        BetaKernel.__module__ = fake_mod.__name__
+        fake_mod.AlphaKernel = AlphaKernel
+        fake_mod.BetaKernel = BetaKernel
+
+        # Patch importlib.import_module to return the fake module
+        original_import = importlib.import_module
+
+        def patched_import(name):
+            if name == "tileops.ops.fake_ambiguous":
+                return fake_mod
+            return original_import(name)
+
+        import unittest.mock as mock
+
+        with (
+            mock.patch.object(importlib, "import_module", side_effect=patched_import),
+            pytest.warns(UserWarning, match="ambiguous"),
+        ):
+            result = validator._resolve_op_class(
+                "tileops/ops/fake_ambiguous.py", "mystery_fwd",
+            )
+        # Should return empty result (no cls) since resolution is ambiguous
+        assert result.cls is None
+        assert not result.import_error
+
 
 # ---------------------------------------------------------------------------
 # Integration: validate_manifest.py passes on the real codebase

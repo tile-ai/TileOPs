@@ -25,6 +25,7 @@ import importlib
 import inspect
 import re
 import sys
+import warnings
 from pathlib import Path
 
 import yaml
@@ -439,7 +440,17 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
             if "bwd" in cls.__name__.lower():
                 return _ResolveResult(cls=cls)
 
-    return _ResolveResult(cls=candidates[0]) if candidates else _ResolveResult()
+    # All heuristics exhausted — resolution is ambiguous.
+    candidate_names = [c.__name__ for c in candidates]
+    warnings.warn(
+        f"Ambiguous op class resolution for '{op_name}': "
+        f"candidates {candidate_names} in '{op_file}', "
+        f"but no naming heuristic matched. "
+        f"Returning unresolved (cls=None).",
+        UserWarning,
+        stacklevel=2,
+    )
+    return _ResolveResult()
 
 
 _EXPLICIT_KINDS = {
