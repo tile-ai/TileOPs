@@ -21,7 +21,7 @@ TileOPs is a high-performance LLM operator library built on TileLang. The goal i
 
 ### Process
 
-- [workflow.md](docs/workflow.md) — development flow (Step 0→4), branch/commit conventions, coding standards, PR process, CI/CD
+- [trust-model.md](docs/trust-model.md) — trust boundaries (manifest → test → implementation → benchmark), workloads layer contract
 - [testing.md](docs/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
 
 ### External
@@ -35,6 +35,9 @@ TileOPs is a high-performance LLM operator library built on TileLang. The goal i
 - If unrelated failures appear, report them but do not fix them in the same task.
 - Add necessary docs and tests when introducing files/interfaces.
 - Response should include: change summary, affected paths, validation steps, and next suggestions.
+- No GitHub issue numbers or ad-hoc issue annotations in source/test files. Issue refs belong in commit messages and PR descriptions only.
+- When orchestrating sub-agents: verify clean worktree (`git diff --quiet && git diff --cached --quiet`) after each sub-agent returns. If dirty, commit on behalf using a descriptive message (e.g., `Sub-agent [name]: [task summary]`).
+- Write commit messages in `[Type] description` or `[Type][Scope] description` format per `COMMIT_MSG_PATTERN` in `.claude/conventions/types.sh` (scope is optional). Not CI-enforced, but expected for readability.
 
 ## Domain Rules (load on demand)
 
@@ -47,3 +50,4 @@ Read the relevant context file **before** modifying files in that domain. Do not
 | `scripts/validate_manifest.py`, `tests/test_validate_manifest.py` | [.claude/domain-rules/manifest-validator.md](.claude/domain-rules/manifest-validator.md) |
 | `tileops/ops/`, `tileops/kernels/`                                | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
 | `benchmarks/`                                                     | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |
+| `workloads/`                                                      | [docs/trust-model.md](docs/trust-model.md)                                               |

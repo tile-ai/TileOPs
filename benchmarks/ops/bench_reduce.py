@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
+from workloads.base import FixtureBase, WorkloadBase
 
 
 class ReduceBenchFixture(FixtureBase):
@@ -29,7 +29,7 @@ class ReduceBenchFixture(FixtureBase):
     ]
 
 
-class ReduceBenchTest(TestBase):
+class ReduceBenchTest(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
         self.m = m
         self.n = n
@@ -68,21 +68,21 @@ class ReduceBenchTest(TestBase):
 
 class ReduceBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Approximate: N operations per row for reduce, M rows
         if t.op_kind in ("std", "var", "var_mean"):
             return 3 * t.m * t.n  # sum + sq_diff + sum
         return t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         # Read x (M*N) + write output (M) -- or (2*M) for var_mean
         out_elems = 2 * t.m if t.op_kind == "var_mean" else t.m
         return (t.m * t.n + out_elems) * elem_bytes
 
 
-def _make_op(m, n, dtype, op_kind):
+def _make_op(dtype, op_kind):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.reduce import (
         AmaxOp,
@@ -107,8 +107,8 @@ def _make_op(m, n, dtype, op_kind):
     }
     cls = op_map[op_kind]
     if op_kind in ("std", "var", "var_mean"):
-        return cls(M=m, N=n, dtype=dtype, correction=1)
-    return cls(M=m, N=n, dtype=dtype)
+        return cls(dtype=dtype, correction=1)
+    return cls(dtype=dtype)
 
 
 @ReduceBenchFixture
@@ -117,7 +117,7 @@ def test_reduce_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> None:
     bm = ReduceBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _make_op(m, n, dtype, op_kind)
+    op = _make_op(dtype, op_kind)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

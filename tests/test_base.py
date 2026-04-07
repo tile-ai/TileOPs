@@ -1,16 +1,26 @@
 import logging
 import threading
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from functools import partial
 from typing import Any, Tuple
 
-import pytest
 import torch
+
+from workloads.base import FixtureBase, FixtureMeta, WorkloadBase
 
 _logger = logging.getLogger("tileops.ops")
 
 # Thread-local storage for conftest hook to pick up per-test Op info.
 _check_result = threading.local()
+
+# Re-export for backward compatibility with tests that import from here.
+__all__ = [
+    "FixtureMeta",
+    "FixtureBase",
+    "TestBase",
+    "allclose_compare",
+    "exact_compare",
+]
 
 
 def _to_tuple(outputs):
@@ -41,47 +51,23 @@ def exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     assert torch.equal(output, output_ref), "output does not exactly match reference"
 
 
-class FixtureMeta(type):
-    """Metaclass that makes Fixture subclasses usable as @decorators.
-
-    Usage:
-        class MyFixture(FixtureBase):
-            PARAMS = [("a, b", [(1, 2), (3, 4)])]
-
-        @MyFixture
-        def test_something(a, b): ...
-    """
-
-    def __call__(cls, fn):
-        for names, values in reversed(cls.PARAMS):
-            fn = pytest.mark.parametrize(names, values)(fn)
-        return fn
-
-
-class FixtureBase(metaclass=FixtureMeta):
-    """Base class for reusable parametrize decorators.
-
-    Subclass and set PARAMS to a list of (names_str, values_list) tuples.
-    - Single entry with multiple param names -> explicit combinations
-    - Multiple entries each with one param name -> cross-product
-    """
-    PARAMS = []
-
-
-class TestBase(ABC):
+class TestBase(WorkloadBase):
     """Abstract base class for op correctness testing.
 
-    Subclass must implement gen_inputs() and ref_program().
+    Inherits gen_inputs() from WorkloadBase.
+    Subclasses must implement ref_program() for correctness checking.
     Provides check() for comparing op output against reference.
     """
     __test__ = False
 
     @abstractmethod
-    def gen_inputs(self) -> Any:
-        raise NotImplementedError
+    def ref_program(self, *inputs: Any) -> Any:
+        """Reference implementation for correctness checking.
 
-    @abstractmethod
-    def ref_program(self, *inputs: Tuple[torch.Tensor]) -> Any:
+        Must be overridden by every concrete test subclass.
+        Should return the same outputs as the op under test, using a
+        simpler/trusted implementation (e.g. PyTorch built-ins).
+        """
         raise NotImplementedError
 
     def check(self,

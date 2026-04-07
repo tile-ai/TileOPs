@@ -4,6 +4,21 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormOp
+from workloads.ops.ada_layer_norm import AdaLayerNormTest as _AdaLayerNormTestWorkload
+
+
+class AdaLayerNormTest(_AdaLayerNormTestWorkload, TestBase):
+    def ref_program(self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor) -> torch.Tensor:
+        # AdaLN: y = scale * LayerNorm(x) + shift
+        normed = F.layer_norm(
+            x.float(),
+            (self.n,),
+            weight=None,
+            bias=None,
+            eps=self.eps,
+        )
+        y = scale.float() * normed + shift.float()
+        return y.to(x.dtype)
 
 
 class AdaLayerNormFixture(FixtureBase):
@@ -27,33 +42,6 @@ class AdaLayerNormFixture(FixtureBase):
             pytest.param(1025, 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
-
-
-class AdaLayerNormTest(TestBase):
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.eps = eps
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        scale = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        shift = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return x, scale, shift
-
-    def ref_program(self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor) -> torch.Tensor:
-        # AdaLN: y = scale * LayerNorm(x) + shift
-        normed = F.layer_norm(
-            x.float(),
-            (self.n,),
-            weight=None,
-            bias=None,
-            eps=self.eps,
-        )
-        y = scale.float() * normed + shift.float()
-        return y.to(x.dtype)
 
 
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:

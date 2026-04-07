@@ -1,5 +1,15 @@
-- These are condensed rules. If unclear, read [docs/testing.md](../../docs/testing.md) (Benchmark Requirements section) for full spec.
-- `BenchmarkReport.record()` first argument must be the Op object, never a string literal. This enables automatic Op metadata extraction for the nightly report.
-- Every benchmark function must record at least one baseline with a tag other than `"tileops"`. If an external baseline (FA3, fla) is conditional on library availability, add `test.ref_program` as a torch fallback in the `else` branch.
-- Use specific baseline tag names, not generic `"baseline"`. Lowercase, hyphen-separated. `"torch"` for built-in PyTorch API; `"torch-cublas"` / `"torch-cufft"` / `"torch-sdpa"` / `"torch-cudnn"` / `"torch-autograd"` for specific backends; `"torch-ref"` for hand-written references; `"fa3"` / `"fla"` / `"triton"` / `"sgl-kernel"` / `"vllm"` for external libraries. Tags starting with `"tileops"` are treated as TileOPs entries; all others are baselines.
-- `calculate_flops()` and `calculate_memory()` must return non-None values. The nightly report uses these to compute TFLOPS and bandwidth columns.
+## Boundary
+
+- **OWNS**: `benchmarks/`
+- **MUST NOT modify**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `workloads/`, `tileops/ops_manifest.yaml`
+- **MAY READ**: `workloads/`, `tileops/ops/`
+
+→ [trust-model.md §Benchmark](../../docs/trust-model.md#benchmark) | [testing.md §Writing a Benchmark](../../docs/testing.md#writing-a-benchmark)
+
+______________________________________________________________________
+
+- `BenchmarkReport.record()` first arg: Op object (preferred) or string name. Stay consistent per file.
+- Every benchmark must record ≥1 non-`"tileops"` baseline. If external baseline is conditional, add a local torch fallback.
+- Tag names: lowercase, hyphen-separated. `"torch"`, `"torch-cublas"`, `"torch-sdpa"`, `"fa3"`, `"fla"`, `"triton"`, etc. Tags starting with `"tileops"` = TileOPs entries; all others = baselines.
+- `calculate_flops()` / `calculate_memory()`: return numeric or `None` (omits metric from report).
+- Benchmark shapes must reflect real DNN workloads. Use LLaMA-family dimensions as defaults. Annotate shape constants with the model/scenario they represent. Do not use arbitrary flat numbers (262K, 1M, 4M).

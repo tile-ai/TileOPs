@@ -56,13 +56,13 @@ class AvgPool2dBenchCase:
 class AvgPool2dBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         out_h = pool_output_dim(t.h_in, t.kernel_size[0], t.stride[0], t.padding[0], t.ceil_mode)
         out_w = pool_output_dim(t.w_in, t.kernel_size[1], t.stride[1], t.padding[1], t.ceil_mode)
         return t.n * t.c_in * out_h * out_w * t.kernel_size[0] * t.kernel_size[1]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         out_h = pool_output_dim(t.h_in, t.kernel_size[0], t.stride[0], t.padding[0], t.ceil_mode)
         out_w = pool_output_dim(t.w_in, t.kernel_size[1], t.stride[1], t.padding[1], t.ceil_mode)
         return (t.n * t.c_in * t.h_in * t.w_in + t.n * t.c_in * out_h * out_w) * t.dtype.itemsize

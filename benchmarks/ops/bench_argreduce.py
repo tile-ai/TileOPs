@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
+from workloads.base import FixtureBase, WorkloadBase
 
 
 class ArgreduceBenchFixture(FixtureBase):
@@ -25,7 +25,7 @@ class ArgreduceBenchFixture(FixtureBase):
     ]
 
 
-class ArgreduceBenchTest(TestBase):
+class ArgreduceBenchTest(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
         self.m = m
         self.n = n
@@ -46,18 +46,18 @@ class ArgreduceBenchTest(TestBase):
 
 class ArgreduceBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Argreduce: N comparisons per row, M rows
         return t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         # Read x (M*N) + write output indices (M * 8 bytes for int64)
         return t.m * t.n * elem_bytes + t.m * 8
 
 
-def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
+def _make_op(dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.argmax import ArgmaxOp
     from tileops.ops.reduction.argmin import ArgminOp
@@ -67,7 +67,7 @@ def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
         "argmin": ArgminOp,
     }
     cls = op_map[op_kind]
-    return cls(M=m, N=n, dtype=dtype)
+    return cls(dtype=dtype)
 
 
 @ArgreduceBenchFixture
@@ -76,7 +76,7 @@ def test_argreduce_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> No
     bm = ArgreduceBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _make_op(m, n, dtype, op_kind)
+    op = _make_op(dtype, op_kind)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

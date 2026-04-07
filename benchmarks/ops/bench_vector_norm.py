@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
+from workloads.base import FixtureBase, WorkloadBase
 
 
 class VectorNormBenchFixture(FixtureBase):
@@ -38,7 +38,7 @@ class VectorNormBenchFixture(FixtureBase):
 _ORD_MAP = {"l1": 1, "l2": 2, "inf": float("inf")}
 
 
-class VectorNormBenchTest(TestBase):
+class VectorNormBenchTest(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
         self.m = m
         self.n = n
@@ -56,20 +56,20 @@ class VectorNormBenchTest(TestBase):
 
 class VectorNormBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # l1: N abs + N-1 adds per row
         # l2: N muls + N-1 adds + 1 sqrt per row
         # inf: N abs + N-1 comparisons per row
         return t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         # Read x (M*N) + write output (M)
         return t.m * t.n * elem_bytes + t.m * elem_bytes
 
 
-def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
+def _make_op(dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.inf_norm import InfNormOp
     from tileops.ops.reduction.l1_norm import L1NormOp
@@ -81,7 +81,7 @@ def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
         "inf": InfNormOp,
     }
     cls = op_map[op_kind]
-    return cls(M=m, N=n, dtype=dtype)
+    return cls(dtype=dtype)
 
 
 @VectorNormBenchFixture
@@ -90,7 +90,7 @@ def test_vector_norm_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> 
     bm = VectorNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _make_op(m, n, dtype, op_kind)
+    op = _make_op(dtype, op_kind)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

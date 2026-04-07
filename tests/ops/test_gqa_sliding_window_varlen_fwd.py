@@ -1,95 +1,17 @@
 """Tests for GqaSlidingWindowVarlenFwdOp against a pure-PyTorch reference."""
-from typing import List, Tuple
+from typing import List
 
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GqaSlidingWindowVarlenFwdOp
+from workloads.ops.gqa_sliding_window_varlen_fwd import (
+    GqaSlidingWindowVarlenFwdTest as _GqaSlidingWindowVarlenFwdTestWorkload,
+)
 
 
-class GqaSlidingWindowVarlenFwdFixture(FixtureBase):
-    # Parameters: (batch, seqlens_q, seqlens_k, heads, heads_kv, dim,
-    #              is_causal, wl, wr, dtype, tune)
-    PARAMS = [
-        ("batch, seqlens_q, seqlens_k, heads, heads_kv, dim,"
-         " is_causal, wl, wr, dtype, tune", [
-             # ── Prefill: seqlen_q == seqlen_k (offset=0) ─────────────────────
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.smoke),   # causal
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True, 128,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal + wl
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # bidirectional
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, 64,  64, torch.float16,  False, marks=pytest.mark.full),    # window
-             # ── KV-cache: seqlen_k > seqlen_q (offset > 0) ───────────────────
-             pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal kvcache
-             pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, True, 128,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal+wl kvcache
-             pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, False, 64,  64, torch.float16,  False, marks=pytest.mark.full),    # window kvcache
-             # ── bfloat16 ─────────────────────────────────────────────────────
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.full),    # causal bf16
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, 64,  64, torch.bfloat16, False, marks=pytest.mark.full),    # window bf16
-             # ── GQA ratios ───────────────────────────────────────────────────
-             pytest.param(2, [256, 512], [256, 512], 8, 8, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # MHA 1:1
-             pytest.param(2, [256, 512], [256, 512], 16, 1, 64, True, -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # ratio 16:1
-             # ── Mixed lengths within batch ────────────────────────────────────
-             pytest.param(3, [128, 256, 384], [128, 256, 384], 8, 2, 64, True, -1, -1, torch.float16, False, marks=pytest.mark.full),
-             # ── Right window only ─────────────────────────────────────────────
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, -1,  64, torch.float16,  False, marks=pytest.mark.full),    # right window
-             # ── wl=0 boundary ────────────────────────────────────────────────
-             pytest.param(2, [128, 256], [128, 256], 8, 2, 64, True,   0,  -1, torch.float16,  False, marks=pytest.mark.full),    # wl=0
-         ]),
-    ]
-
-
-class GqaSlidingWindowVarlenFwdTest(TestBase):
-
-    def __init__(
-        self,
-        batch: int,
-        seqlens_q: List[int],
-        seqlens_k: List[int],
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        is_causal: bool,
-        wl: int,
-        wr: int,
-        dtype: torch.dtype,
-    ) -> None:
-        self.batch = batch
-        self.seqlens_q = seqlens_q
-        self.seqlens_k = seqlens_k
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
-        self.is_causal = is_causal
-        self.wl = wl
-        self.wr = wr
-        self.dtype = dtype
-
-    def gen_inputs(
-        self,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-               torch.Tensor, torch.Tensor, int]:
-        total_q = sum(self.seqlens_q)
-        total_k = sum(self.seqlens_k)
-        q = torch.randn(total_q, self.heads, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
-        k = torch.randn(total_k, self.heads_kv, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
-        v = torch.randn(total_k, self.heads_kv, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
-
-        cu_seqlens_q = torch.tensor(
-            [0] + list(torch.cumsum(
-                torch.tensor(self.seqlens_q), 0).tolist()),
-            dtype=torch.int32, device="cuda")
-        cu_seqlens_k = torch.tensor(
-            [0] + list(torch.cumsum(
-                torch.tensor(self.seqlens_k), 0).tolist()),
-            dtype=torch.int32, device="cuda")
-        max_seqlen_q = max(self.seqlens_q)
-
-        return q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q
-
+class GqaSlidingWindowVarlenFwdTest(_GqaSlidingWindowVarlenFwdTestWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,
@@ -152,6 +74,37 @@ class GqaSlidingWindowVarlenFwdTest(TestBase):
             outputs.append(out_i.transpose(0, 1).to(q.dtype))   # [sq, H, D]
 
         return torch.cat(outputs, dim=0)  # [total_q, H, D]
+
+
+class GqaSlidingWindowVarlenFwdFixture(FixtureBase):
+    # Parameters: (batch, seqlens_q, seqlens_k, heads, heads_kv, dim,
+    #              is_causal, wl, wr, dtype, tune)
+    PARAMS = [
+        ("batch, seqlens_q, seqlens_k, heads, heads_kv, dim,"
+         " is_causal, wl, wr, dtype, tune", [
+             # ── Prefill: seqlen_q == seqlen_k (offset=0) ─────────────────────
+             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.smoke),   # causal
+             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True, 128,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal + wl
+             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # bidirectional
+             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, 64,  64, torch.float16,  False, marks=pytest.mark.full),    # window
+             # ── KV-cache: seqlen_k > seqlen_q (offset > 0) ───────────────────
+             pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal kvcache
+             pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, True, 128,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal+wl kvcache
+             pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, False, 64,  64, torch.float16,  False, marks=pytest.mark.full),    # window kvcache
+             # ── bfloat16 ─────────────────────────────────────────────────────
+             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.full),    # causal bf16
+             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, 64,  64, torch.bfloat16, False, marks=pytest.mark.full),    # window bf16
+             # ── GQA ratios ───────────────────────────────────────────────────
+             pytest.param(2, [256, 512], [256, 512], 8, 8, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # MHA 1:1
+             pytest.param(2, [256, 512], [256, 512], 16, 1, 64, True, -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # ratio 16:1
+             # ── Mixed lengths within batch ────────────────────────────────────
+             pytest.param(3, [128, 256, 384], [128, 256, 384], 8, 2, 64, True, -1, -1, torch.float16, False, marks=pytest.mark.full),
+             # ── Right window only ─────────────────────────────────────────────
+             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, -1,  64, torch.float16,  False, marks=pytest.mark.full),    # right window
+             # ── wl=0 boundary ────────────────────────────────────────────────
+             pytest.param(2, [128, 256], [128, 256], 8, 2, 64, True,   0,  -1, torch.float16,  False, marks=pytest.mark.full),    # wl=0
+         ]),
+    ]
 
 
 @GqaSlidingWindowVarlenFwdFixture

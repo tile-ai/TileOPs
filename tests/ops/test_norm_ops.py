@@ -13,6 +13,8 @@ import torch
 # ---------------------------------------------------------------------------
 
 @pytest.mark.smoke
+
+
 class TestBatchNormFwdValidation:
 
     def _make_op(self):
@@ -54,6 +56,8 @@ class TestBatchNormFwdValidation:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.smoke
+
+
 class TestBatchNormCustomOp:
 
     def test_fwd_torch_compile_smoke(self):

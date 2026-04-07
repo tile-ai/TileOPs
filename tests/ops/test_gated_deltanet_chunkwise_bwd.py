@@ -1,4 +1,3 @@
-from typing import Tuple
 
 import pytest
 import torch
@@ -6,15 +5,9 @@ import torch
 from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetBwdOp
 
-# =============================================================================
-# Autograd-based reference: differentiable forward → torch.autograd.grad
-# =============================================================================
 
 def _differentiable_fwd(q, k, v, g_raw, beta, chunk_size):
-    """Fully differentiable chunked forward matching paper (Eq. 10 via WY).
-
-    Inputs use raw per-step g (cumsum is computed inside).
-    """
+    """Fully differentiable chunked forward matching paper (Eq. 10 via WY)."""
     B, H, S, DK = q.shape
     DV = v.shape[-1]
     BC = chunk_size
@@ -31,7 +24,6 @@ def _differentiable_fwd(q, k, v, g_raw, beta, chunk_size):
         vc = v[:, :, sl, :].float()
         gc = g_cum[:, :, sl]
         bc = beta[:, :, sl].float()
-        # WY: A_g = I + strictLower(diag(β) · (Γ ⊙ KK^T))
         Gram = torch.einsum("bhik,bhjk->bhij", kc, kc)
         Gamma = torch.exp(gc.unsqueeze(-1) - gc.unsqueeze(-2))
         M = bc.unsqueeze(-1) * (Gamma * Gram)
@@ -40,28 +32,17 @@ def _differentiable_fwd(q, k, v, g_raw, beta, chunk_size):
         wc = A_inv @ (kc * bc.unsqueeze(-1))
         uc = A_inv @ (vc * bc.unsqueeze(-1))
         g_last = gc[:, :, -1:]
-        # v_new = u - w * exp(g + g_last) @ h
         v_new = uc - (wc * torch.exp(gc + g_last).unsqueeze(-1)) @ h
-        # output = q @ h * exp(g) + causal(Γ * q @ k^T) @ v_new
         o_part = (qc @ h) * torch.exp(gc).unsqueeze(-1)
         attn = (qc @ kc.transpose(-2, -1)) * Gamma * mask
         o_c = o_part + attn @ v_new
         o_chunks.append(o_c)
-        # state update
         k_sc = kc * torch.exp(g_last - gc).unsqueeze(-1)
         h = h * torch.exp(g_last).unsqueeze(-1) + k_sc.transpose(-2, -1) @ v_new
     return torch.cat(o_chunks, dim=2)
 
 
-def _autograd_bwd_ref(
-    do: torch.Tensor,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-    chunk_size: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, chunk_size):
     """Compute backward gradients via autograd on the differentiable forward."""
     q_ = q.float().detach().requires_grad_(True)
     k_ = k.float().detach().requires_grad_(True)
@@ -73,6 +54,10 @@ def _autograd_bwd_ref(
     loss = (o * do.float()).sum()
     dq, dk, dv, dg, dbeta = torch.autograd.grad(loss, [q_, k_, v_, g_, beta_])
     return dq, dk, dv, dg, dbeta
+
+# =============================================================================
+# Autograd-based reference: differentiable forward → torch.autograd.grad
+# =============================================================================
 
 
 # =============================================================================
@@ -128,7 +113,7 @@ def test_gated_deltanet_bwd(
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
     # Reference via autograd
-    ref_dq, ref_dk, ref_dv, ref_dg, ref_dbeta = _autograd_bwd_ref(do, q, k, v, g, beta, BC)
+    ref_dq, ref_dk, ref_dv, ref_dg, ref_dbeta = gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, BC)
     ref_outputs = (ref_dq, ref_dk, ref_dv, ref_dg, ref_dbeta)
 
     # Kernel

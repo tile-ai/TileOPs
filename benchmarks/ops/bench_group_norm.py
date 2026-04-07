@@ -6,9 +6,9 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_group_norm import GroupNormTest
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.group_norm import GroupNormOp
+from workloads.ops.group_norm import GroupNormTest
 
 _OP_NAME = "groupnorm_fwd"
 
@@ -19,7 +19,7 @@ class GroupNormBenchmark(BenchmarkBase):
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.test
+            t = self.workload
             spatial_size = math.prod(t.spatial)
             elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
             self._roofline_cache = eval_roofline(

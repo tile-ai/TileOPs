@@ -46,7 +46,7 @@ jobs:
             exit 0
           fi
 
-          required_checks=(validate-commits pre-commit gitleaks actionlint)
+          required_checks=(pre-commit gitleaks actionlint)
           deadline=$((SECONDS + 900))
 
           while true; do
@@ -620,7 +620,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "=== Trusted cache stats ==="
-          for cache_dir in "${TILELANG_CACHE_DIR}" "${TRITON_CACHE_DIR}" "${WHEEL_DIR}"; do
+          for cache_dir in "${TILELANG_CACHE_DIR:-}" "${TRITON_CACHE_DIR:-}" "${WHEEL_DIR:-}"; do
+            if [[ -z "${cache_dir}" ]]; then
+              continue
+            fi
             if [[ -d "${cache_dir}" ]]; then
               file_count=$(find "${cache_dir}" -type f | wc -l)
               cache_size=$(du -sh "${cache_dir}" 2>/dev/null | cut -f1)
@@ -643,4 +646,7 @@ jobs:
 
       - name: Cleanup isolated fork state
         if: ${{ always() && needs.security-policy.outputs.is_fork == 'true' }}
-        run: rm -rf "${RUNTIME_ROOT}"
+        run: |
+          if [[ -n "${RUNTIME_ROOT:-}" ]]; then
+            rm -rf "${RUNTIME_ROOT}"
+          fi

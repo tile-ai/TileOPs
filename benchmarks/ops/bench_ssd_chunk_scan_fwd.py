@@ -9,6 +9,28 @@ from tests.ops.test_ssd_chunk_scan_fwd import (
     ssd_chunk_scan_fwd_ref,
 )
 from tileops.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdOp
+from workloads.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdFixture, SsdChunkScanFwdTest
+
+
+def ssd_chunk_scan_fwd_torch(x, cb, dA_cumsum, C, prev_states, dt):
+    """Triton-aligned PyTorch reference for chunk scan."""
+    b, c, L, h, p = x.shape
+
+    y_off = torch.einsum("bclhn,bchnp->bclhp", C.float(), prev_states.float())
+    a_l = dA_cumsum.permute(0, 2, 3, 1).unsqueeze(-1)
+    y_off = y_off * torch.exp(a_l)
+
+    a_lhs = dA_cumsum.unsqueeze(-1)
+    a_rhs = dA_cumsum.unsqueeze(-2)
+    decay = torch.exp(a_lhs - a_rhs)
+    mask = torch.tril(torch.ones(L, L, device=x.device, dtype=torch.bool))
+    decay = decay.masked_fill(~mask, 0)
+    decay = decay.permute(0, 2, 1, 3, 4)
+    dt_s = dt.float().permute(0, 1, 3, 2).unsqueeze(-2)
+    lcb = cb.float() * decay * dt_s
+    y_diag = torch.einsum("bchls,bcshp->bclhp", lcb, x.float())
+
+    return y_off + y_diag
 
 try:
     from mamba_ssm.ops.triton.ssd_chunk_scan import _chunk_scan_fwd
@@ -34,7 +56,7 @@ def _to_mamba_inputs(x, cb, dA_cumsum, C, prev_states, dt):
 class SsdChunkScanFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, L, h, p, n = (
             t.batch, t.num_chunks, t.chunk_len,
             t.n_heads, t.d_head, t.d_state,
@@ -48,7 +70,7 @@ class SsdChunkScanFwdBenchmark(BenchmarkBase):
         return float(history_flops + diag_flops)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, L, h, p, n = (
             t.batch, t.num_chunks, t.chunk_len,
             t.n_heads, t.d_head, t.d_state,

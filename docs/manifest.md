@@ -24,7 +24,7 @@ Three roles govern the manifest lifecycle:
 1. [`ops_manifest.yaml`](../tileops/ops_manifest.yaml) is the sole source of truth for op interfaces.
 1. Programmatic validation ([`scripts/validate_manifest.py`](../scripts/validate_manifest.py)) is derived from the manifest, not from the generating agent.
 1. `workloads` define benchmark shapes and dtypes for nightly/performance coverage, not unit-test coverage.
-1. `Op.forward()` signature must match the manifest. The validator's L1 check enforces this.
+1. Manifest `signature.params` must be a subset of the Op's `__init__()` + `forward()` param names. `forward()` params must match manifest inputs plus forward-visible params, in order. CI enforces this.
 1. Benchmarks must use declared workloads. No hardcoded shapes. The validator's L4 check enforces this.
 
 ## Rules
@@ -70,7 +70,7 @@ dtype_combos:
 
 **R12. Shape derivation.** `shape`, `same_as(ref)`, and `shape_rules` fully specify how output shape is derived from inputs. Agent generates shape computation code from these declarations. Manifest and implementation must be consistent.
 
-**R13. Status gating.** `status` declares whether an op is a forward-looking spec or a shipped implementation. When `status: spec-only`, the validator applies schema checks (L0) only — signature, shape, dtype, and benchmark checks (L1-L4) are skipped. `source` paths declare intended locations. When `status: implemented`, all validation levels apply and all `source` paths must resolve to existing files. **Default:** When `status` is absent, it defaults to `implemented`. New entries SHOULD include `status` explicitly. See [Manifest Validation](#manifest-validation) for L0-L4 definitions.
+**R13. Status gating.** `status` declares whether an op is a forward-looking spec or a shipped implementation. When `status: spec-only`, the validator applies schema checks (L0) only — signature, shape, dtype, and benchmark checks (L1-L4) are skipped. `source` paths declare intended locations. When `status: implemented`, all validation levels apply and all `source` paths must resolve to existing files. **Default:** When `status` is absent, it defaults to `implemented`. New entries SHOULD include `status` explicitly. For local development, the validator also supports `--check-op <name>` to force L0-L4 on a targeted entry. If `<name>` is a primary entry, its direct `variant_of` dependents are validated with it so family-level invariants still hold. See [Manifest Validation](#manifest-validation) for L0-L4 definitions.
 
 **R14. Roofline variable binding.** See [Roofline](#roofline) section.
 
@@ -443,15 +443,19 @@ Benchmark files must not hardcode workload shapes. The L4 check in [`scripts/val
 
 [`scripts/validate_manifest.py`](../scripts/validate_manifest.py) runs five check levels against every entry in [`ops_manifest.yaml`](../tileops/ops_manifest.yaml):
 
-| Level | Check             | Description                                                                                                 |
-| ----- | ----------------- | ----------------------------------------------------------------------------------------------------------- |
-| L0    | YAML schema       | Required fields exist and have correct types                                                                |
-| L1    | Signature         | `Op.forward()` params match manifest inputs, plus any manifest-declared runtime params it accepts, in order |
-| L2    | Shape rules       | `shape_rules` entries are valid Python expressions                                                          |
-| L3    | Dtype conformance | dtype strings are valid torch types or `same_as()` refs                                                     |
-| L4    | Benchmark file    | Bench file imports and calls `load_workloads` / `eval_roofline` with this op name                           |
+| Level | Check             | Description                                                                                                                                                                     |
+| ----- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L0    | YAML schema       | Required fields exist and have correct types                                                                                                                                    |
+| L1    | Signature         | Manifest `signature.params` must be a subset of `__init__()` + `forward()` param names; `forward()` params must match manifest inputs plus any forward-visible params, in order |
+| L2    | Shape rules       | `shape_rules` entries are valid Python expressions                                                                                                                              |
+| L3    | Dtype conformance | dtype strings are valid torch types or `same_as()` refs                                                                                                                         |
+| L4    | Benchmark file    | Bench file imports and calls `load_workloads` / `eval_roofline` with this op name                                                                                               |
 
 **Spec-only ops** (`status: spec-only`) receive L0 only; L1-L4 are skipped. Implemented ops are expected to pass all checks in CI.
+
+**Targeted validation.** `python scripts/validate_manifest.py --check-op <name>` is a local development aid for forcing L0-L4 on a specific op without editing `status`. If `<name>` is a primary entry, the validator also checks its direct variants (`variant_of == <name>`) so R17/R18 family constraints are still enforced. This mode is narrower than full-manifest validation and does **not** replace CI's full-repository gate.
+
+**L1 scope and limits.** L1 is a static signature check — it verifies that manifest-declared param names exist as explicit named parameters in `__init__()` or `forward()`. `*args` and `**kwargs` do not count; every manifest param must appear as a named argument. L1 does **not** verify semantic correctness (whether a param actually affects computation) — that belongs to unit tests.
 
 For L4, strict CI enforcement is enabled per entry by setting `source.bench_manifest_driven: true`. This makes the migration state explicit in the manifest instead of inferring it from benchmark code.
 
@@ -460,6 +464,7 @@ The validator runs in CI as part of the preflight workflow. Run locally:
 ```bash
 python scripts/validate_manifest.py          # normal
 python scripts/validate_manifest.py --verbose # per-op progress
+python scripts/validate_manifest.py --check-op softmax_fwd
 ```
 
 ## Exclusions

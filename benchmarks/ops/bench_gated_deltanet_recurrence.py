@@ -1,12 +1,58 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gated_deltanet_recurrence import GatedDeltaNetDecodeTest
-from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetDecodeOp
+from workloads.base import FixtureBase
+from workloads.ops.gated_deltanet_recurrence import GatedDeltaNetDecodeTest
+
+
+def gated_deltanet_decode_torch(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    state: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pure-PyTorch reference for single-step gated delta rule."""
+    q, k, v = q.float(), k.float(), v.float()
+    g, beta = g.float(), beta.float()
+    state = state.float()
+
+    alpha = torch.exp(g)
+    old_val = torch.einsum("bhkv,bhk->bhv", state, k)
+
+    beta_unsq = beta.unsqueeze(-1)
+    alpha_unsq = alpha.unsqueeze(-1)
+    v_new = beta_unsq * v - alpha_unsq * beta_unsq * old_val
+
+    o_inter = alpha_unsq * torch.einsum("bhkv,bhk->bhv", state, q)
+    qk_dot = torch.einsum("bhk,bhk->bh", q, k).unsqueeze(-1)
+    o_intra = qk_dot * v_new
+    o = o_inter + o_intra
+
+    new_state = alpha_unsq.unsqueeze(-1) * state + k.unsqueeze(-1) * v_new.unsqueeze(-2)
+
+    return o, new_state
+
+
+class _GatedDeltaNetDecodeTestBaseline(GatedDeltaNetDecodeTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        o, new_state = gated_deltanet_decode_torch(q, k, v, g, beta, state)
+        return o.to(self.dtype), new_state.to(self.dtype)
 
 try:
     from fla.ops.gated_delta_rule import fused_recurrent_gated_delta_rule
@@ -17,7 +63,7 @@ except ImportError:
 class GatedDeltaNetDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         # Two matvecs: S@k and S@q -> 2 * B*H*DK*DV each (multiply + add)
         # dot product q.k -> B*H*DK
@@ -25,7 +71,7 @@ class GatedDeltaNetDecodeBenchmark(BenchmarkBase):
         return 2.0 * B * H * (2 * DK * DV + DK * DV + DK)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         # Read: q(DK) + k(DK) + v(DV) + g(1) + beta(1) + state(DK*DV)
@@ -61,7 +107,7 @@ def test_gated_deltanet_decode_bench(
     dim_v: int,
     dtype: torch.dtype,
 ) -> None:
-    test = GatedDeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
+    test = _GatedDeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
     bm = GatedDeltaNetDecodeBenchmark(test)
     inputs = test.gen_inputs()
 

@@ -11,7 +11,6 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
 from tileops.ops.elementwise import (
     BitwiseNotOp,
     ExpOp,
@@ -19,6 +18,7 @@ from tileops.ops.elementwise import (
     IsnanOp,
     LogicalNotOp,
 )
+from workloads.base import FixtureBase
 
 _SHAPES = (262_144, 1_048_576, 4_000_000)
 
@@ -46,11 +46,11 @@ class UnaryElementwiseBenchmark(BenchmarkBase):
     """Bandwidth-oriented benchmark for unary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        return self.test.n_total * (
-            self.test.dtype.itemsize + self.test.output_dtype.itemsize
+        return self.workload.n_total * (
+            self.workload.dtype.itemsize + self.workload.output_dtype.itemsize
         )
 
 

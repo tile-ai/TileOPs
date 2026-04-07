@@ -9,6 +9,44 @@ from tests.ops.test_ssd_chunk_state_fwd import (
     ssd_chunk_state_fwd_ref,
 )
 from tileops.ops.ssd_chunk_state_fwd import SsdChunkStateFwdOp
+from workloads.ops.ssd_chunk_state_fwd import SsdChunkStateFwdFixture, SsdChunkStateFwdTest
+
+
+def ssd_chunk_state_fwd_ref(
+    x: torch.Tensor,
+    Bmat: torch.Tensor,
+    dt: torch.Tensor,
+    dA_cumsum: torch.Tensor,
+    n_groups: int,
+    seq_idx=None,
+) -> torch.Tensor:
+    """PyTorch reference for ssd_chunk_state_fwd (benchmark-local copy)."""
+    b, seq_len, h, p = x.shape
+    _, _, c, Q = dt.shape
+    n = Bmat.shape[-1]
+    heads_per_group = h // n_groups
+
+    x_chunked = x.float().reshape(b, c, Q, h, p)
+    B_chunked = Bmat.float().reshape(b, c, Q, n_groups, n)
+    B_heads = B_chunked[:, :, :, torch.arange(h) // heads_per_group, :]
+
+    dA = dA_cumsum.float().permute(0, 2, 1, 3)
+    dA_end = dA[:, :, :, -1:]
+    decay = torch.exp(torch.clamp(dA_end - dA, max=0.0))
+
+    dt_chunked = dt.float().permute(0, 2, 1, 3)
+    weight = decay * dt_chunked
+
+    if seq_idx is not None:
+        seq_chunked = seq_idx.reshape(b, c, Q)
+        seq_end = seq_chunked[..., -1:]
+        same = (seq_chunked == seq_end).unsqueeze(3)
+        weight = weight * same.permute(0, 1, 3, 2)
+
+    w = weight.permute(0, 1, 3, 2).unsqueeze(-1).unsqueeze(-1)
+    contrib = w * B_heads.unsqueeze(-1) * x_chunked.unsqueeze(-2)
+    out = contrib.sum(dim=2)
+    return out.permute(0, 1, 2, 4, 3)
 
 try:
     from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_state_fwd
@@ -19,7 +57,7 @@ except ImportError:
 class SsdChunkStateFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, Q, h, p, n = (
             t.batch, t.num_chunks, t.chunk_len,
             t.n_heads, t.d_head, t.d_state,
@@ -31,7 +69,7 @@ class SsdChunkStateFwdBenchmark(BenchmarkBase):
         return float(flops)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, Q, h, p, n, g = (
             t.batch, t.num_chunks, t.chunk_len,
             t.n_heads, t.d_head, t.d_state, t.n_groups,

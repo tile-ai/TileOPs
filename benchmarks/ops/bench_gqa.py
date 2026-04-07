@@ -5,23 +5,23 @@ import torch
 from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gqa import (
+from tileops.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
+from workloads.ops.gqa import (
     GqaBwdTest,
     GqaFwdTest,
 )
-from tileops.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
 
 
 class GqaFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len * t.seq_len * t.dim
         flops = flops_per_matmul * 2
         return flops / 2 if t.is_causal else flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         query_size = t.batch * t.seq_len * t.heads * t.dim
         kv_size = t.batch * t.seq_len * t.heads_kv * t.dim
         return 2 * (query_size + kv_size) * t.dtype.itemsize
@@ -30,13 +30,13 @@ class GqaFwdBenchmark(BenchmarkBase):
 class GqaBwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len * t.seq_len * t.dim
         flops = flops_per_matmul * 5
         return flops / 2 if t.is_causal else flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         total_heads = (3 * t.heads + 4 * t.heads_kv)
         return t.batch * total_heads * t.seq_len * t.dim * t.dtype.itemsize
 

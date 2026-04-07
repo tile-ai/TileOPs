@@ -1,4 +1,3 @@
-from typing import Tuple
 
 import pytest
 import torch
@@ -6,15 +5,9 @@ import torch
 from tests.test_base import FixtureBase
 from tileops.ops import DeltaNetBwdOp
 
-# =============================================================================
-# Autograd-based reference: differentiable forward -> torch.autograd.grad
-# =============================================================================
 
 def _differentiable_fwd(q, k, v, beta, chunk_size):
-    """Fully differentiable chunked forward matching DeltaNet (ungated).
-
-    No gate parameter g, no cumsum, no exp scaling.
-    """
+    """Fully differentiable chunked forward matching DeltaNet (ungated)."""
     B, H, S, DK = q.shape
     DV = v.shape[-1]
     BC = chunk_size
@@ -29,33 +22,22 @@ def _differentiable_fwd(q, k, v, beta, chunk_size):
         kc = k[:, :, sl, :].float()
         vc = v[:, :, sl, :].float()
         bc = beta[:, :, sl].float()
-        # WY: A = I + strictLower(diag(beta) * KK^T) (no Gamma)
         Gram = torch.einsum("bhik,bhjk->bhij", kc, kc)
         M = bc.unsqueeze(-1) * Gram
         A = eye + torch.tril(M, diagonal=-1)
         A_inv = torch.linalg.inv(A)
         wc = A_inv @ (kc * bc.unsqueeze(-1))
         uc = A_inv @ (vc * bc.unsqueeze(-1))
-        # v_new = u - w @ h (no exp scaling)
         v_new = uc - wc @ h
-        # output = q @ h + causal(q @ k^T) @ v_new (no exp scaling)
         o_part = qc @ h
         attn = (qc @ kc.transpose(-2, -1)) * mask
         o_c = o_part + attn @ v_new
         o_chunks.append(o_c)
-        # state update: h = h + k^T @ v_new (no decay)
         h = h + kc.transpose(-2, -1) @ v_new
     return torch.cat(o_chunks, dim=2)
 
 
-def _autograd_bwd_ref(
-    do: torch.Tensor,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    beta: torch.Tensor,
-    chunk_size: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def deltanet_autograd_bwd_torch(do, q, k, v, beta, chunk_size):
     """Compute backward gradients via autograd on the differentiable forward."""
     q_ = q.float().detach().requires_grad_(True)
     k_ = k.float().detach().requires_grad_(True)
@@ -66,6 +48,10 @@ def _autograd_bwd_ref(
     loss = (o * do.float()).sum()
     dq, dk, dv, dbeta = torch.autograd.grad(loss, [q_, k_, v_, beta_])
     return dq, dk, dv, dbeta
+
+# =============================================================================
+# Autograd-based reference: differentiable forward -> torch.autograd.grad
+# =============================================================================
 
 
 # =============================================================================
@@ -119,7 +105,7 @@ def test_deltanet_bwd(
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
     # Reference via autograd
-    ref_dq, ref_dk, ref_dv, ref_dbeta = _autograd_bwd_ref(do, q, k, v, beta, BC)
+    ref_dq, ref_dk, ref_dv, ref_dbeta = deltanet_autograd_bwd_torch(do, q, k, v, beta, BC)
     ref_outputs = (ref_dq, ref_dk, ref_dv, ref_dbeta)
 
     # Kernel

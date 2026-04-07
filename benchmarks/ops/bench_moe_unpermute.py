@@ -31,9 +31,9 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_moe_unpermute import MoeUnpermuteTest
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoeUnpermuteOp
+from workloads.ops.moe_unpermute import MoeUnpermuteTest
 
 _OP_NAME = "moe_unpermute"
 
@@ -48,7 +48,7 @@ class MoeUnpermuteBenchmark(BenchmarkBase):
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.test
+            t = self.workload
             elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
             self._roofline_cache = eval_roofline(
                 _OP_NAME,

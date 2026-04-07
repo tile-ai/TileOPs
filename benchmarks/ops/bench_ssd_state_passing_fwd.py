@@ -9,6 +9,26 @@ from tests.ops.test_ssd_state_passing_fwd import (
     ssd_state_passing_fwd_ref,
 )
 from tileops.ops.ssd_state_passing_fwd import SsdStatePassingFwdOp
+from workloads.ops.ssd_state_passing_fwd import SsdStatePassingFwdFixture, SsdStatePassingFwdTest
+
+
+def ssd_state_passing_fwd_ref(
+    states: torch.Tensor,
+    dA_chunk_cumsum: torch.Tensor,
+    initial_states: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """PyTorch reference for ssd_state_passing_fwd (benchmark-local copy)."""
+    b, c, h, d = states.shape
+    out = []
+    s = initial_states.float()
+
+    for ci in range(c):
+        scale = torch.exp(dA_chunk_cumsum[:, :, ci]).unsqueeze(-1)
+        u = states[:, ci, :, :].float()
+        s = scale * s + u
+        out.append(s.clone())
+
+    return torch.stack(out, dim=1), s
 
 try:
     from mamba_ssm.ops.triton.ssd_state_passing import _state_passing_fwd
@@ -19,7 +39,7 @@ except ImportError:
 class SsdStatePassingFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, h, d = t.batch, t.num_chunks, t.n_heads, t.d_state
         # Per chunk: scale multiply + add for each (b, h, d) element
         # 2 FLOPs (mul + add) per element per chunk
@@ -27,7 +47,7 @@ class SsdStatePassingFwdBenchmark(BenchmarkBase):
         return float(flops)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         b, c, h, d = t.batch, t.num_chunks, t.n_heads, t.d_state
         elem = torch.tensor([], dtype=t.dtype).element_size()
         # Reads (input dtype): states

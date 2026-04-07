@@ -1,10 +1,15 @@
-from typing import Tuple
 
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import FFTC2COp
+from workloads.ops.fft import FFTTest as _FFTTestWorkload
+
+
+class FFTTest(_FFTTestWorkload, TestBase):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.fft.fft(x, dim=-1)
 
 
 class FFTFixture(FixtureBase):
@@ -21,21 +26,6 @@ class FFTFixture(FixtureBase):
             pytest.param(128, torch.complex128, False, (4,), marks=pytest.mark.full),
         ]),
     ]
-
-
-class FFTTest(TestBase):
-
-    def __init__(self, n: int, dtype: torch.dtype, batch_shape: tuple = ()):
-        self.n = n
-        self.dtype = dtype
-        self.batch_shape = batch_shape
-
-    def gen_inputs(self) -> Tuple[torch.Tensor]:
-        x = torch.randn(*self.batch_shape, self.n, device='cuda', dtype=self.dtype)
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.fft.fft(x, dim=-1)
 
 
 @FFTFixture

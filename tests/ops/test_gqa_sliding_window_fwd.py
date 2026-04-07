@@ -1,74 +1,16 @@
 """Tests for GqaSlidingWindowFwdOp against a pure-PyTorch reference."""
-from typing import Tuple
 
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GqaSlidingWindowFwdOp
+from workloads.ops.gqa_sliding_window_fwd import (
+    GqaSlidingWindowFwdTest as _GqaSlidingWindowFwdTestWorkload,
+)
 
 
-class GqaSlidingWindowFwdFixture(FixtureBase):
-    PARAMS = [
-        ("batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune", [
-            # ── Basic correctness ─────────────────────────────────────────────
-            pytest.param(2, 512,  8, 2,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 512,  8, 2,  64, True,  128, -1, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 512,  8, 2,  64, False, -1,  -1, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 512,  8, 2,  64, False, 64,  64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 128,  8, 1, 128, True,   1,  -1, torch.float16, False, marks=pytest.mark.full),
-            # ── dtype ─────────────────────────────────────────────────────────
-            pytest.param(2, 512,  8, 2,  64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 512,  8, 2,  64, False, 64,  64, torch.bfloat16, False, marks=pytest.mark.full),
-            # ── GQA ratio ─────────────────────────────────────────────────────
-            pytest.param(2, 512,  8, 8,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 512, 16, 1,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),
-            # ── Non-power-of-2 sequence lengths ───────────────────────────────
-            pytest.param(2, 384,  8, 2,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 768,  8, 2,  64, False, 256, -1, torch.float16, False, marks=pytest.mark.full),
-            # ── Large sequence ─────────────────────────────────────────────────
-            pytest.param(1, 2048, 8, 2,  64, True,  512, -1, torch.float16, False, marks=pytest.mark.full),
-            # ── Right window only ──────────────────────────────────────────────
-            pytest.param(2, 512,  8, 2,  64, False, -1,  64, torch.float16, False, marks=pytest.mark.full),
-            # ── wl=0 boundary: only current-position left context ─────────────
-            pytest.param(2, 256,  8, 2,  64, True,   0,  -1, torch.float16, False, marks=pytest.mark.full),
-        ]),
-    ]
-
-
-class GqaSlidingWindowFwdTest(TestBase):
-
-    def __init__(
-        self,
-        batch: int,
-        seq: int,
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        is_causal: bool,
-        wl: int,
-        wr: int,
-        dtype: torch.dtype,
-    ) -> None:
-        self.batch = batch
-        self.seq = seq
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
-        self.is_causal = is_causal
-        self.wl = wl
-        self.wr = wr
-        self.dtype = dtype
-
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q = torch.randn(self.batch, self.seq, self.heads,    self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
-        k = torch.randn(self.batch, self.seq, self.heads_kv, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
-        v = torch.randn(self.batch, self.seq, self.heads_kv, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
-        return q, k, v
-
+class GqaSlidingWindowFwdTest(_GqaSlidingWindowFwdTestWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,
@@ -105,6 +47,34 @@ class GqaSlidingWindowFwdTest(TestBase):
         probs = torch.softmax(scores, dim=-1)
         output = torch.matmul(probs, v_exp.transpose(1, 2))  # [B, H, S, D]
         return output.transpose(1, 2).to(q.dtype)            # [B, S, H, D]
+
+
+class GqaSlidingWindowFwdFixture(FixtureBase):
+    PARAMS = [
+        ("batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune", [
+            # ── Basic correctness ─────────────────────────────────────────────
+            pytest.param(2, 512,  8, 2,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(2, 512,  8, 2,  64, True,  128, -1, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 512,  8, 2,  64, False, -1,  -1, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 512,  8, 2,  64, False, 64,  64, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 128,  8, 1, 128, True,   1,  -1, torch.float16, False, marks=pytest.mark.full),
+            # ── dtype ─────────────────────────────────────────────────────────
+            pytest.param(2, 512,  8, 2,  64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(2, 512,  8, 2,  64, False, 64,  64, torch.bfloat16, False, marks=pytest.mark.full),
+            # ── GQA ratio ─────────────────────────────────────────────────────
+            pytest.param(2, 512,  8, 8,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 512, 16, 1,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),
+            # ── Non-power-of-2 sequence lengths ───────────────────────────────
+            pytest.param(2, 384,  8, 2,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 768,  8, 2,  64, False, 256, -1, torch.float16, False, marks=pytest.mark.full),
+            # ── Large sequence ─────────────────────────────────────────────────
+            pytest.param(1, 2048, 8, 2,  64, True,  512, -1, torch.float16, False, marks=pytest.mark.full),
+            # ── Right window only ──────────────────────────────────────────────
+            pytest.param(2, 512,  8, 2,  64, False, -1,  64, torch.float16, False, marks=pytest.mark.full),
+            # ── wl=0 boundary: only current-position left context ─────────────
+            pytest.param(2, 256,  8, 2,  64, True,   0,  -1, torch.float16, False, marks=pytest.mark.full),
+        ]),
+    ]
 
 
 @GqaSlidingWindowFwdFixture

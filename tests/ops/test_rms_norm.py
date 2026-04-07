@@ -3,6 +3,14 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.rms_norm import RmsNormOp
+from workloads.ops.rms_norm import RmsNormTest as _RmsNormTestWorkload
+
+
+class RmsNormTest(_RmsNormTestWorkload, TestBase):
+    def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return ((x_f32 / rms) * weight.float()).to(x.dtype)
 
 
 class RmsNormFixture(FixtureBase):
@@ -25,25 +33,6 @@ class RmsNormFixture(FixtureBase):
             pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
-
-
-class RmsNormTest(TestBase):
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.eps = eps
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.n, dtype=self.dtype, device="cuda")
-        return x, weight
-
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return ((x_f32 / rms) * weight.float()).to(x.dtype)
 
 
 @RmsNormFixture

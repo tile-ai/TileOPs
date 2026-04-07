@@ -19,10 +19,159 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gated_deltanet_chunkwise_bwd import _autograd_bwd_ref
-from tests.ops.test_gated_deltanet_chunkwise_fwd import GatedDeltaNetFwdTest
-from tests.test_base import FixtureBase
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
+from workloads.base import FixtureBase
+from workloads.ops.gated_deltanet_chunkwise_fwd import GatedDeltaNetFwdTest
+
+
+def _differentiable_fwd(q, k, v, g_raw, beta, chunk_size):
+    """Fully differentiable chunked forward matching paper (Eq. 10 via WY)."""
+    B, H, S, DK = q.shape
+    DV = v.shape[-1]
+    BC = chunk_size
+    NC = S // BC
+    g_cum = g_raw.float().reshape(B, H, NC, BC).cumsum(-1).reshape(B, H, S)
+    h = q.new_zeros(B, H, DK, DV)
+    o_chunks = []
+    eye = torch.eye(BC, device=q.device, dtype=torch.float32)
+    mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
+    for c in range(NC):
+        sl = slice(c * BC, (c + 1) * BC)
+        qc = q[:, :, sl, :].float()
+        kc = k[:, :, sl, :].float()
+        vc = v[:, :, sl, :].float()
+        gc = g_cum[:, :, sl]
+        bc = beta[:, :, sl].float()
+        Gram = torch.einsum("bhik,bhjk->bhij", kc, kc)
+        Gamma = torch.exp(gc.unsqueeze(-1) - gc.unsqueeze(-2))
+        M = bc.unsqueeze(-1) * (Gamma * Gram)
+        A = eye + torch.tril(M, diagonal=-1)
+        A_inv = torch.linalg.inv(A)
+        wc = A_inv @ (kc * bc.unsqueeze(-1))
+        uc = A_inv @ (vc * bc.unsqueeze(-1))
+        g_last = gc[:, :, -1:]
+        v_new = uc - (wc * torch.exp(gc + g_last).unsqueeze(-1)) @ h
+        o_part = (qc @ h) * torch.exp(gc).unsqueeze(-1)
+        attn = (qc @ kc.transpose(-2, -1)) * Gamma * mask
+        o_c = o_part + attn @ v_new
+        o_chunks.append(o_c)
+        k_sc = kc * torch.exp(g_last - gc).unsqueeze(-1)
+        h = h * torch.exp(g_last).unsqueeze(-1) + k_sc.transpose(-2, -1) @ v_new
+    return torch.cat(o_chunks, dim=2)
+
+
+def gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, chunk_size):
+    """Compute backward gradients via autograd on the differentiable forward."""
+    q_ = q.float().detach().requires_grad_(True)
+    k_ = k.float().detach().requires_grad_(True)
+    v_ = v.float().detach().requires_grad_(True)
+    g_ = g.float().detach().requires_grad_(True)
+    beta_ = beta.float().detach().requires_grad_(True)
+
+    o = _differentiable_fwd(q_, k_, v_, g_, beta_, chunk_size)
+    loss = (o * do.float()).sum()
+    dq, dk, dv, dg, dbeta = torch.autograd.grad(loss, [q_, k_, v_, g_, beta_])
+    return dq, dk, dv, dg, dbeta
+
+
+def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
+    B, H, S, DK = k.shape
+    _, _, _, DV = v.shape
+    BC = chunk_size
+    num_chunks = S // BC
+    k_beta = k.float() * beta.unsqueeze(-1)
+    v_beta = v.float() * beta.unsqueeze(-1)
+    Aw_ = Aw.reshape(B, H, num_chunks, BC, BC)
+    Au_ = Au.reshape(B, H, num_chunks, BC, BC)
+    k_beta_ = k_beta.reshape(B, H, num_chunks, BC, DK)
+    v_beta_ = v_beta.reshape(B, H, num_chunks, BC, DV)
+    w = torch.einsum("bhcij,bhcjd->bhcid", Aw_, k_beta_).reshape(B, H, S, DK)
+    u = torch.einsum("bhcij,bhcjd->bhcid", Au_, v_beta_).reshape(B, H, S, DV)
+    return w, u
+
+
+def kernel2_gated_deltanet_torch(q, k, g, w, u, S_0, chunk_size):
+    B, H, S_len, DK = q.shape
+    _, _, _, DV = u.shape
+    BC = chunk_size
+    num_chunks = S_len // BC
+    q, k, g, w, u = q.float(), k.float(), g.float(), w.float(), u.float()
+    h = S_0.float().clone()
+
+    o = torch.zeros(B, H, S_len, DV, dtype=torch.float32, device=q.device)
+    for c in range(num_chunks):
+        i0, i1 = c * BC, (c + 1) * BC
+        q_c = q[:, :, i0:i1, :]
+        k_c = k[:, :, i0:i1, :]
+        g_c = g[:, :, i0:i1]
+        w_c = w[:, :, i0:i1, :]
+        u_c = u[:, :, i0:i1, :]
+
+        g_last_val = g_c[:, :, -1:]
+        v_new_c = u_c - (w_c * torch.exp(g_c + g_last_val).unsqueeze(-1)) @ h
+
+        o_part = torch.einsum("bhnk,bhkv->bhnv", q_c, h)
+        o_part = o_part * torch.exp(g_c).unsqueeze(-1)
+        attn = torch.einsum("bhnk,bhmk->bhnm", q_c, k_c)
+        Gamma_causal = torch.exp(g_c.unsqueeze(-1) - g_c.unsqueeze(-2))
+        mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.bool), diagonal=0)
+        attn = (attn * Gamma_causal).masked_fill(~mask.unsqueeze(0).unsqueeze(0), 0.0)
+        o_c = o_part + torch.einsum("bhnm,bhmv->bhnv", attn, v_new_c)
+        o[:, :, i0:i1, :] = o_c
+
+        g_last = g_c[:, :, -1:]
+        k_scaled = k_c * torch.exp(g_last - g_c).unsqueeze(-1)
+        h = h * torch.exp(g_last).view(B, H, 1, 1)
+        h = h + torch.einsum("bhnk,bhnv->bhkv", k_scaled, v_new_c)
+    return h, o
+
+
+def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
+    B, H, S, DK = k.shape
+    assert S % chunk_size == 0
+    BC = chunk_size
+    Aw = torch.empty(B, H, S, BC, dtype=torch.float32, device=k.device)
+    Au = torch.empty(B, H, S, BC, dtype=torch.float32, device=k.device)
+
+    for b in range(B):
+        for h in range(H):
+            for c in range(S // BC):
+                i0, i1 = c * BC, (c + 1) * BC
+                kc = k[b, h, i0:i1, :].float()
+                gc = g_cum[b, h, i0:i1].float()
+                bc = beta[b, h, i0:i1].float()
+                Gram = kc @ kc.T
+                Gamma = torch.exp(gc.unsqueeze(1) - gc.unsqueeze(0))
+                M = bc.unsqueeze(-1) * (Gamma * Gram)
+                A_g = torch.eye(BC, device=k.device) + torch.tril(M, diagonal=-1)
+                A_g_inv = torch.linalg.inv(A_g)
+                Aw[b, h, i0:i1, :] = A_g_inv
+                Au[b, h, i0:i1, :] = A_g_inv
+
+    return Aw, Au
+
+
+class _GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> torch.Tensor:
+        B, H, S, DK = k.shape
+        _, _, _, DV = v.shape
+        # Chunk-local cumulative sum of g (paper requires cumulated gates)
+        BC = self.chunk_size
+        g_cum = g.float().reshape(B, H, S // BC, BC).cumsum(-1).reshape(B, H, S).to(g.dtype)
+        Aw, Au = prepare_wy_repr_gated_torch(k, g_cum, beta, self.chunk_size)
+        w, u = compute_w_u_torch(Aw, Au, k, v, beta, self.chunk_size)
+        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
+        _S, o = kernel2_gated_deltanet_torch(q, k, g_cum, w, u, S_0, self.chunk_size)
+        return o.to(self.dtype)
 
 try:
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule
@@ -48,12 +197,12 @@ def _to_fla_layout(q, k, v, g, beta):
 class GatedDeltaNetFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         return 2.0 * B * H * S * DK * DV
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * H * S * (2 * DK + 2 * DV + 2) * elem
@@ -100,7 +249,7 @@ def test_gated_deltanet_vs_fla_fwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GatedDeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = _GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetFwdBenchmark(test)
     inputs = test.gen_inputs()  # q, k, v, g, beta  (BHSD)
 
@@ -133,12 +282,12 @@ def test_gated_deltanet_vs_fla_fwd(
 class GatedDeltaNetBwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         return 4.0 * B * H * S * DK * DV
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * H * S * (4 * DK + 3 * DV + 4) * elem
@@ -183,7 +332,7 @@ def test_gated_deltanet_vs_fla_bwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GatedDeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = _GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
@@ -227,7 +376,7 @@ def test_gated_deltanet_vs_fla_bwd(
     else:
         # --- Torch autograd reference baseline ---
         def torch_bwd():
-            return _autograd_bwd_ref(do, q, k, v, g, beta, BC)
+            return gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, BC)
         result_bl = bm.profile(torch_bwd)
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
@@ -239,12 +388,12 @@ def test_gated_deltanet_vs_fla_bwd(
 class GatedDeltaNetFwdBwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         return 6.0 * B * H * S * DK * DV  # fwd (2x) + bwd (4x)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, S, DK, DV = t.batch, t.heads, t.seq_len, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         return B * H * S * (6 * DK + 5 * DV + 6) * elem
@@ -289,7 +438,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GatedDeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = _GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetFwdBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
@@ -334,7 +483,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
     else:
         # --- Torch autograd reference baseline ---
         def torch_fwdbwd():
-            return _autograd_bwd_ref(do, q.data, k.data, v.data, g.data, beta.data, BC)
+            return gated_deltanet_autograd_bwd_torch(do, q.data, k.data, v.data, g.data, beta.data, BC)
         result_bl = bm.profile_autograd(torch_fwdbwd)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 

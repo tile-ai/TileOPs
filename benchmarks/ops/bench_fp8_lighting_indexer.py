@@ -1,11 +1,42 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerTest
 from tileops.ops import Fp8LightingIndexerOp
+from workloads.ops.fp8_lighting_indexer import Fp8LightingIndexerTest
+
+
+class _Fp8LightingIndexerTestBaseline(Fp8LightingIndexerTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
+                    cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> Tuple[torch.Tensor]:
+        k = kv
+        q = q.float()
+        k = k.float()
+        batch, seq_len, heads, index_dim = q.shape
+        seq_len_kv = self.seq_len_kv
+        kv_group = self.kv_group
+        heads_per_group = heads // kv_group
+
+        k = k.view(batch, seq_len_kv, kv_group, index_dim)
+        q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
+
+        mask_lo = torch.arange(0, seq_len_kv, device="cuda")[None, :] >= cu_seqlen_ks[:, None]
+        mask_hi = torch.arange(0, seq_len_kv, device="cuda")[None, :] < cu_seqlen_ke[:, None]
+        mask = mask_lo & mask_hi
+
+        score = torch.einsum("bsghd,bngd->bghsn", q, k)
+        weights = weights.view(seq_len, kv_group, heads_per_group)
+        weights = weights.permute(1, 2, 0).unsqueeze(0).unsqueeze(-1)
+        score = score.relu() * weights
+        logits = score.sum(dim=2)
+        logits = logits.permute(0, 2, 3, 1)
+        mask_expanded = mask.unsqueeze(0).unsqueeze(-1)
+        logits = logits.masked_fill(~mask_expanded, float("-inf"))
+        return (logits,)
 
 
 class Fp8LightingIndexerBenchmark(BenchmarkBase):
@@ -15,7 +46,7 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
         return None
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         dtype = torch.float8_e4m3fn
         accum_dtype = torch.float32
         index_dtype = torch.int32
@@ -45,7 +76,7 @@ _FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
 def test_fp8_lighting_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
                                     seq_len_kv: int, kv_group: int, clean_logits: bool,
                                     config: Optional[dict], tune: bool) -> None:
-    test = Fp8LightingIndexerTest(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+    test = _Fp8LightingIndexerTestBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
                                   clean_logits, config)
     bm = Fp8LightingIndexerBenchmark(test)
     inputs = test.gen_inputs()

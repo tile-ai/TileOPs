@@ -5,15 +5,54 @@ Compares single-step decode latency across batch sizes, dimensions, and dtypes.
 When FLA is not installed, benchmarks still run using a pure-torch reference
 implementation as baseline, so CI is never blocked by a missing optional dependency.
 """
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gla_recurrence import GLADecodeTest
-from tests.test_base import FixtureBase
 from tileops.ops import GLADecodeOp
+from workloads.base import FixtureBase
+from workloads.ops.gla_recurrence import GLADecodeTest
+
+
+def gla_decode_torch(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    gk: torch.Tensor,
+    state: torch.Tensor,
+    scale: float = -1.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pure-PyTorch reference for single-step GLA recurrence."""
+    DK = q.shape[-1]
+    if scale <= 0:
+        scale = DK ** -0.5
+
+    q, k, v = q.float(), k.float(), v.float()
+    gk = gk.float()
+    state = state.float()
+
+    alpha = torch.exp(gk)
+    new_state = alpha.unsqueeze(-1) * state + k.unsqueeze(-1) * v.unsqueeze(-2)
+    o = scale * torch.einsum("bhk,bhkv->bhv", q, new_state)
+
+    return o, new_state
+
+
+class _GLADecodeTestBaseline(GLADecodeTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        gk: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        o, new_state = gla_decode_torch(q, k, v, gk, state, self.scale)
+        return o.to(self.dtype), new_state.to(self.dtype)
 
 try:
     from fla.ops.gla import fused_recurrent_gla
@@ -24,7 +63,7 @@ except ImportError:
 class GLADecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         # One matvec: S @ q_gated -> B*H*DK*DV (multiply + add)
         # dot product q.k -> B*H*DK
@@ -32,7 +71,7 @@ class GLADecodeBenchmark(BenchmarkBase):
         return 2.0 * B * H * (DK * DV + DK * DV + DK)
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         B, H, DK, DV = t.batch, t.heads, t.dim_k, t.dim_v
         elem = t.dtype.itemsize
         # Read: q(DK) + k(DK) + v(DV) + gk(DK) + state(DK*DV)
@@ -72,7 +111,7 @@ def test_gla_decode_bench(
     dtype: torch.dtype,
 ) -> None:
     scale = dim_k ** -0.5
-    test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype, scale=scale)
+    test = _GLADecodeTestBaseline(batch, heads, dim_k, dim_v, dtype, scale=scale)
     bm = GLADecodeBenchmark(test)
     inputs = test.gen_inputs()
 

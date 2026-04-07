@@ -5,36 +5,36 @@ import torch
 from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_mha import (
+from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
+from workloads.ops.mha import (
     MhaBwdTest,
     MhaFwdTest,
 )
-from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 
 
 class MhaFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len * t.seq_len * t.dim
         flops = flops_per_matmul * 2
         return flops / 2 if t.is_causal else flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return 4 * t.batch * t.heads * t.seq_len * t.dim * t.dtype.itemsize
 
 
 class MhaBwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len * t.seq_len * t.dim
         flops = flops_per_matmul * 5
         return flops / 2 if t.is_causal else flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return 7 * t.batch * t.heads * t.seq_len * t.dim * t.dtype.itemsize
 
 

@@ -6,8 +6,8 @@ import torch
 from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdTest
 from tileops.ops import GqaSlidingWindowVarlenFwdOp
+from workloads.ops.gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdTest
 
 _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = [
     pytest.param(1, [3000], [3000], 32, 8, 128, True, -1, -1, torch.float16, False, id="single-seq-causal"),
@@ -22,7 +22,7 @@ class GqaSlidingWindowVarlenFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         """Approximate FLOPs for QK^T and PV GEMMs, summed over all samples."""
-        t = self.test
+        t = self.workload
         total = 0.0
         for sq, sk in zip(t.seqlens_q, t.seqlens_k, strict=True):
             offset = sk - sq
@@ -37,7 +37,7 @@ class GqaSlidingWindowVarlenFwdBenchmark(BenchmarkBase):
 
     def calculate_memory(self) -> Optional[float]:
         """Approximate bytes accessed: read Q/K/V, write O."""
-        t = self.test
+        t = self.workload
         elem = torch.tensor([], dtype=t.dtype).element_size()
         total_q = sum(t.seqlens_q)
         total_k = sum(t.seqlens_k)

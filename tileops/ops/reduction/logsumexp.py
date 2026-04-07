@@ -1,14 +1,19 @@
 """LogSumExp operator (L2 Op layer).
 
 Provides:
-  - LogSumExpOp: y = logsumexp(x, dim=-1)
+  - LogSumExpOp: y = logsumexp(x, dim, keepdim)
 
-Follows the validate -> reshape -> pad -> kernel -> trim -> reshape pattern
-and supports 1D-4D input with dim=-1.
+Example:
+    >>> op = LogSumExpOp(dtype=torch.float16, dim=-1)
+    >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+    >>> y = op(x)  # shape: (1024,)
 """
+
+from typing import Dict, List, Optional, Union
 
 import torch
 
+from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction.softmax import LogSumExpKernel
 
 from ._softmax_base import _SoftmaxBaseOp
@@ -17,36 +22,32 @@ __all__ = ["LogSumExpOp"]
 
 
 class LogSumExpOp(_SoftmaxBaseOp):
-    """LogSumExp operator: y = logsumexp(x, dim=-1).
+    """LogSumExp operator: y = logsumexp(x, dim, keepdim).
 
-    Output shape is input shape without the last dimension (*leading,).
+    Output shape is input shape without the reduction dimension
+    (or with size-1 if keepdim=True).
 
     Args:
-        M: Number of rows (product of all dims except last).
-        N: Hidden dimension (last dim).
         dtype: Data type (float32, float16, or bfloat16).
+        dim: Reduction dimension (default -1).
+        keepdim: Retain reduced dimension (default False).
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
-
-    Example:
-        >>> op = LogSumExpOp(M=1024, N=4096, dtype=torch.float16)
-        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
-        >>> y = op(x)  # shape: (1024,)
     """
 
     _op_kind = "logsumexp"
     _kernel_key = "logsumexp_fwd"
     _kernel_class = LogSumExpKernel
+    _supports_multidim = True
 
-    def _reshape_output(
+    def __init__(
         self,
-        y: torch.Tensor,
-        orig_shape: torch.Size,
-    ) -> torch.Tensor:
-        """Restore leading dims without the last dimension."""
-        # y is (M,) -- reshape to (*leading_dims,)
-        leading_shape = orig_shape[:-1]
-        if len(leading_shape) == 0:
-            # 1D input -> scalar output
-            return y.squeeze()
-        return y.reshape(leading_shape)
+        *,
+        dtype: torch.dtype,
+        dim: Union[int, List[int]] = -1,
+        keepdim: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        super().__init__(dtype=dtype, dim=dim, kernel_map=kernel_map, tune=tune)
+        self.keepdim = keepdim

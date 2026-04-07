@@ -22,6 +22,12 @@ from tileops.ops.elementwise import (
     SubOp,
     coalesce_broadcast_dims,
 )
+from workloads.ops.binary_arith import AddSameShapeTest as _AddSameShapeTestWorkload
+
+
+class AddSameShapeTest(_AddSameShapeTestWorkload, TestBase):
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return (a.float() + b.float()).to(a.dtype)
 
 # ---------------------------------------------------------------------------
 # coalesce_broadcast_dims unit tests
@@ -97,21 +103,6 @@ class AddSameShapeFixture(FixtureBase):
             pytest.param(16_384, torch.float16, marks=pytest.mark.full),
         ]),
     ]
-
-
-class AddSameShapeTest(TestBase):
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        return a, b
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return (a.float() + b.float()).to(a.dtype)
 
 
 @AddSameShapeFixture

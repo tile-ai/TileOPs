@@ -1,7 +1,7 @@
 """Correctness tests for argreduce ops (argmax, argmin).
 
 Covers: ArgmaxOp, ArgminOp.
-Each op reduces along dim=-1 and returns int64 indices.
+Each op reduces along a configurable dim and returns int64 indices.
 Uses exact match (torch.equal) instead of allclose.
 """
 
@@ -84,6 +84,22 @@ class Argreduce1DFixture(FixtureBase):
     ]
 
 
+class SpecArgreduceFixture(FixtureBase):
+    PARAMS = [
+        (
+            "shape, dim, keepdim, dtype",
+            [
+                pytest.param((128, 512), -1, False, torch.float16, marks=pytest.mark.smoke),
+                pytest.param((128, 512), -1, True, torch.float16, marks=pytest.mark.full),
+                pytest.param((512, 4, 32), 0, False, torch.float16, marks=pytest.mark.full),
+                pytest.param((4, 32, 512), 1, False, torch.float16, marks=pytest.mark.full),
+                pytest.param((4, 32, 512), -1, False, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param((4, 32, 512), -1, True, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # TestBase helpers
 # ---------------------------------------------------------------------------
@@ -132,7 +148,7 @@ def test_argmax_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argmax import ArgmaxOp
 
     test = ArgreduceTest(m, n, dtype, "argmax")
-    op = ArgmaxOp(M=m, N=n, dtype=dtype)
+    op = ArgmaxOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -142,7 +158,7 @@ def test_argmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = ArgmaxOp(M=m, N=n, dtype=dtype)
+    op = ArgmaxOp(dtype=dtype)
     ref = x.contiguous().argmax(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -154,8 +170,7 @@ def test_argmax_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
     from tileops.ops.reduction.argmax import ArgmaxOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = ArgmaxOp(M=M, N=hidden, dtype=dtype)
+    op = ArgmaxOp(dtype=dtype)
     ref = x.argmax(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -167,8 +182,7 @@ def test_argmax_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
     from tileops.ops.reduction.argmax import ArgmaxOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    M = b0 * b1 * b2
-    op = ArgmaxOp(M=M, N=n, dtype=dtype)
+    op = ArgmaxOp(dtype=dtype)
     ref = x.argmax(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -180,11 +194,25 @@ def test_argmax_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argmax import ArgmaxOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = ArgmaxOp(M=1, N=n, dtype=dtype)
+    op = ArgmaxOp(dtype=dtype)
     ref = x.argmax(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
     assert torch.equal(y.view_as(ref), ref), "1D argmax mismatch"
+
+
+@SpecArgreduceFixture
+def test_argmax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: ArgmaxOp with dim + keepdim."""
+    from tileops.ops.reduction.argmax import ArgmaxOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = ArgmaxOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref = x.argmax(dim=dim, keepdim=keepdim)
+    y = op(x)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert y.dtype == torch.int64
+    assert torch.equal(y, ref), f"spec dim={dim} argmax mismatch: {(y != ref).sum().item()}"
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +225,7 @@ def test_argmin_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argmin import ArgminOp
 
     test = ArgreduceTest(m, n, dtype, "argmin")
-    op = ArgminOp(M=m, N=n, dtype=dtype)
+    op = ArgminOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -207,7 +235,7 @@ def test_argmin_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = ArgminOp(M=m, N=n, dtype=dtype)
+    op = ArgminOp(dtype=dtype)
     ref = x.contiguous().argmin(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -219,8 +247,7 @@ def test_argmin_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
     from tileops.ops.reduction.argmin import ArgminOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = ArgminOp(M=M, N=hidden, dtype=dtype)
+    op = ArgminOp(dtype=dtype)
     ref = x.argmin(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -232,8 +259,7 @@ def test_argmin_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
     from tileops.ops.reduction.argmin import ArgminOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    M = b0 * b1 * b2
-    op = ArgminOp(M=M, N=n, dtype=dtype)
+    op = ArgminOp(dtype=dtype)
     ref = x.argmin(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -245,11 +271,25 @@ def test_argmin_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argmin import ArgminOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = ArgminOp(M=1, N=n, dtype=dtype)
+    op = ArgminOp(dtype=dtype)
     ref = x.argmin(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
     assert torch.equal(y.view_as(ref), ref), "1D argmin mismatch"
+
+
+@SpecArgreduceFixture
+def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    """Spec interface: ArgminOp with dim + keepdim."""
+    from tileops.ops.reduction.argmin import ArgminOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = ArgminOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    ref = x.argmin(dim=dim, keepdim=keepdim)
+    y = op(x)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert y.dtype == torch.int64
+    assert torch.equal(y, ref), f"spec dim={dim} argmin mismatch: {(y != ref).sum().item()}"
 
 
 if __name__ == "__main__":

@@ -22,8 +22,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
 from tileops.ops.elementwise import ReluOp
+from workloads.base import FixtureBase
 
 # DNN-realistic 2D shapes flattened to 1D total element counts
 _SHAPES_2D = [
@@ -59,10 +59,10 @@ class UnaryStrategyBenchmark(BenchmarkBase):
     """Bandwidth-oriented benchmark for unary elementwise strategy comparison."""
 
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.n_total * (t.dtype.itemsize + t.output_dtype.itemsize)
 
 

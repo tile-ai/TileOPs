@@ -40,15 +40,15 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import FusedMoe, FusedTopKOp
+from workloads.base import FixtureBase, WorkloadBase
 
 # ---------------------------------------------------------------------------
 # Test / fixture types
 # ---------------------------------------------------------------------------
 
 
-class FusedMoeBenchTest(TestBase):
+class FusedMoeBenchTest(WorkloadBase):
     def __init__(
         self,
         num_tokens,
@@ -108,7 +108,7 @@ class FusedMoeBenchTest(TestBase):
 class FusedMoeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return (
             t.num_tokens * t.top_k
             * (2 * t.ffn_size * t.hidden_size * 2
@@ -116,7 +116,7 @@ class FusedMoeBenchmark(BenchmarkBase):
         )
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem = 2
         w = (t.num_experts * 2 * t.ffn_size * t.hidden_size
              + t.num_experts * t.hidden_size * t.ffn_size) * elem

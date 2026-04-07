@@ -7,10 +7,11 @@ error handling) and correctness of the generated macro logic.
 
 import pytest
 
-
 # -----------------------------------------------------------------------
 # align_up
 # -----------------------------------------------------------------------
+
+
 class TestAlignUp:
     """Tests for align_up utility function."""
 
@@ -70,6 +71,8 @@ class TestAlignUp:
 # -----------------------------------------------------------------------
 # DEFAULT_ALIGNMENT
 # -----------------------------------------------------------------------
+
+
 class TestDefaultAlignment:
     """Tests for DEFAULT_ALIGNMENT constant."""
 
@@ -89,6 +92,8 @@ class TestDefaultAlignment:
 # -----------------------------------------------------------------------
 # make_reduce_epilogue
 # -----------------------------------------------------------------------
+
+
 class TestMakeReduceEpilogue:
     """Tests for make_reduce_epilogue factory."""
 
@@ -118,6 +123,8 @@ class TestMakeReduceEpilogue:
 # -----------------------------------------------------------------------
 # make_welford_update
 # -----------------------------------------------------------------------
+
+
 class TestMakeWelfordUpdate:
     """Tests for make_welford_update factory."""
 
@@ -180,6 +187,8 @@ class TestMakeWelfordUpdate:
 # -----------------------------------------------------------------------
 # make_softmax_epilogue
 # -----------------------------------------------------------------------
+
+
 class TestMakeSoftmaxEpilogue:
     """Tests for make_softmax_epilogue factory."""
 
@@ -237,6 +246,8 @@ class TestMakeSoftmaxEpilogue:
 # -----------------------------------------------------------------------
 # make_cumulative_scan
 # -----------------------------------------------------------------------
+
+
 class TestMakeCumulativeScan:
     """Tests for make_cumulative_scan factory."""
 
@@ -308,6 +319,8 @@ class TestMakeCumulativeScan:
 # -----------------------------------------------------------------------
 # __init__.py re-exports (AC-2)
 # -----------------------------------------------------------------------
+
+
 class TestInitReExports:
     """Tests for __init__.py re-exports (AC-2)."""
 
