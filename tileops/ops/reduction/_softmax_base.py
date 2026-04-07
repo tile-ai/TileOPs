@@ -46,7 +46,7 @@ class _SoftmaxBaseOp(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int]] = -1,
+        dim: Union[int, List[int], None] = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -87,8 +87,8 @@ class _SoftmaxBaseOp(Op):
         self._validate(x)
         orig_shape = x.shape
 
-        # --- multi-dim path ---
-        if isinstance(self.dim, (list, tuple)):
+        # --- multi-dim path (includes dim=None for full reduction) ---
+        if isinstance(self.dim, (list, tuple)) or self.dim is None:
             if not self._supports_multidim:
                 raise ValueError(
                     f"{type(self).__name__} does not support multi-dim reduction. "

@@ -44,7 +44,7 @@ class LogSumExpOp(_SoftmaxBaseOp):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int]] = -1,
+        dim: Union[int, List[int], None] = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,

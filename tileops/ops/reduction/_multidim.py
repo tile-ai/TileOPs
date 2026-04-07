@@ -23,12 +23,12 @@ __all__ = [
 
 
 def normalize_dim(
-    dim: Union[int, list[int]], ndim: int,
+    dim: Union[int, list[int], None], ndim: int,
 ) -> list[int]:
     """Normalize and validate a dim specification.
 
     Args:
-        dim: Single int or list of ints.
+        dim: Single int, list of ints, or ``None`` (reduce all dims).
         ndim: Number of dimensions in the input tensor.
 
     Returns:
@@ -38,6 +38,9 @@ def normalize_dim(
         IndexError: If any dim is out of range.
         ValueError: If duplicate dims are given or dim is an empty list.
     """
+    if dim is None:
+        return list(range(ndim))
+
     dims = [dim] if isinstance(dim, int) else list(dim)
 
     if len(dims) == 0:
