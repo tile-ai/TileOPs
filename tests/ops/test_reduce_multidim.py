@@ -114,6 +114,25 @@ def test_amax_multidim(
 
 
 @MultiDimFixture
+def test_prod_multidim(
+    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
+) -> None:
+    from tileops.ops.reduction.reduce import ProdOp
+
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = ProdOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    # PyTorch doesn't support list[int] for prod, so iterate dims manually.
+    ref = x.float()
+    for d in sorted(dims, reverse=True):
+        ref = torch.prod(ref, dim=d, keepdim=keepdim)
+    ref = ref.to(dtype)
+    y = op(x)
+    tol = _tol(dtype)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+
+
+@MultiDimFixture
 def test_amin_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
@@ -221,6 +240,11 @@ class MultiDimLogicalFixture(FixtureBase):
                     (4, 32, 256), [0, 1], True, torch.float32,
                     marks=pytest.mark.full,
                 ),
+                # bool: exercises storage-dtype conversion (bool -> float32)
+                pytest.param(
+                    (4, 32, 256), [0, 1], False, torch.bool,
+                    marks=pytest.mark.full,
+                ),
             ],
         ),
     ]
@@ -232,16 +256,15 @@ def test_all_multidim(
 ) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    if dtype == torch.bool:
+        x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    else:
+        x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = AllOp(dtype=dtype, dim=dims, keepdim=keepdim)
-    ref = torch.all(x > 0, dim=dims, keepdim=keepdim)
+    ref = torch.all(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    # allclose not applicable for bool, check exact
-    # all_op takes raw tensor, not bool; it checks nonzero
-    # The op treats nonzero as True, so we compare differently
-    ref_from_raw = torch.all(x.bool(), dim=dims, keepdim=keepdim)
-    assert torch.equal(y, ref_from_raw), "all multi-dim mismatch"
+    assert torch.equal(y, ref), "all multi-dim mismatch"
 
 
 @MultiDimLogicalFixture
@@ -250,7 +273,10 @@ def test_any_multidim(
 ) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    if dtype == torch.bool:
+        x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    else:
+        x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = AnyOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.any(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
@@ -267,6 +293,11 @@ class MultiDimCountFixture(FixtureBase):
                     (4, 32, 256), [0, 1], torch.float32,
                     marks=pytest.mark.smoke,
                 ),
+                # bool: exercises storage-dtype conversion (bool -> float32)
+                pytest.param(
+                    (4, 32, 256), [0, 1], torch.bool,
+                    marks=pytest.mark.full,
+                ),
             ],
         ),
     ]
@@ -278,9 +309,12 @@ def test_count_nonzero_multidim(
 ) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
-    # Zero out some elements to make it interesting
-    x[x < 0] = 0.0
+    if dtype == torch.bool:
+        x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    else:
+        x = torch.randn(*shape, dtype=dtype, device="cuda")
+        # Zero out some elements to make it interesting
+        x[x < 0] = 0.0
     op = CountNonzeroOp(dtype=dtype, dim=dims)
     ref = torch.count_nonzero(x, dim=dims)
     y = op(x)
@@ -377,6 +411,30 @@ def test_mean_empty_dim_raises() -> None:
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
     op = MeanOp(dtype=torch.float16, dim=[], keepdim=False)
     with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_negative_dims_accepted() -> None:
+    """Negative dims should be normalized and produce correct results."""
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(4, 8, 256, dtype=torch.float16, device="cuda")
+    op = SumOp(dtype=torch.float16, dim=[-1, 0], keepdim=False)
+    ref = torch.sum(x.float(), dim=[0, 2], keepdim=False).to(torch.float16)
+    y = op(x)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.allclose(y, ref, **_tol(torch.float16))
+
+
+@pytest.mark.smoke
+def test_duplicate_dims_raises() -> None:
+    """Duplicate dims (after normalization) must raise ValueError at op level."""
+    from tileops.ops.reduction.reduce import SumOp
+
+    x = torch.randn(4, 8, 256, dtype=torch.float16, device="cuda")
+    op = SumOp(dtype=torch.float16, dim=[1, 1], keepdim=False)
+    with pytest.raises(ValueError, match="Duplicate dims"):
         op(x)
 
 
