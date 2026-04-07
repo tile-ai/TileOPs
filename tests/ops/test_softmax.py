@@ -341,6 +341,60 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 
 
 # ===================================================================
+# LogSumExp — multi-dim reduction (dim=list[int])
+# ===================================================================
+
+
+class LogSumExpMultiDimFixture(FixtureBase):
+    PARAMS = [
+        (
+            "shape, dim, keepdim, dtype",
+            [
+                # Smoke: 3D, reduce last two dims, fp32
+                pytest.param((4, 16, 256), [1, 2], False, torch.float32, marks=[pytest.mark.smoke]),
+                # 3D, reduce last two dims — all dtypes
+                pytest.param((4, 16, 256), [1, 2], False, torch.float16, marks=pytest.mark.full),
+                pytest.param((4, 16, 256), [1, 2], False, torch.bfloat16, marks=pytest.mark.full),
+                # 3D, non-contiguous dims [0, 2] — exercises permutation
+                pytest.param((4, 16, 256), [0, 2], False, torch.float32, marks=pytest.mark.full),
+                pytest.param((4, 16, 256), [0, 2], False, torch.float16, marks=pytest.mark.full),
+                # 3D, reduce first two dims
+                pytest.param((4, 16, 256), [0, 1], False, torch.float32, marks=pytest.mark.full),
+                pytest.param((4, 16, 256), [0, 1], False, torch.float16, marks=pytest.mark.full),
+                # 4D, reduce middle two dims
+                pytest.param((2, 4, 8, 256), [1, 2], False, torch.float32, marks=pytest.mark.full),
+                pytest.param((2, 4, 8, 256), [1, 2], False, torch.float16, marks=pytest.mark.full),
+                # keepdim=True variants
+                pytest.param((4, 16, 256), [1, 2], True, torch.float32, marks=pytest.mark.full),
+                pytest.param((4, 16, 256), [0, 2], True, torch.float32, marks=pytest.mark.full),
+                pytest.param((4, 16, 256), [0, 2], True, torch.float16, marks=pytest.mark.full),
+                # 4D, keepdim=True
+                pytest.param((2, 4, 8, 256), [1, 2], True, torch.float32, marks=pytest.mark.full),
+                # Negative dim indices
+                pytest.param((4, 16, 256), [-2, -1], False, torch.float32, marks=pytest.mark.full),
+                pytest.param((4, 16, 256), [-2, -1], False, torch.float16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@LogSumExpMultiDimFixture
+def test_logsumexp_multi_dim(shape: tuple, dim: list, keepdim: bool, dtype: torch.dtype) -> None:
+    """Test logsumexp with multi-dim reduction (dim=list[int])."""
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    op = LogSumExpOp(dtype=dtype, dim=dim, keepdim=keepdim)
+
+    y_ref = torch.logsumexp(x.float(), dim=dim, keepdim=keepdim).to(dtype)
+    y = op(x)
+    assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"Multi-dim logsumexp failed (dim={dim}, keepdim={keepdim}), "
+        f"max err: {(y - y_ref).abs().max()}"
+    )
+
+
+# ===================================================================
 # Non-contiguous input tests (spec interface)
 # ===================================================================
 
