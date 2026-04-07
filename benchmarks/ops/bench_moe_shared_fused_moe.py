@@ -188,7 +188,7 @@ def test_shared_fused_moe_bench(
     bm = SharedFusedMoEBenchmark(test)
     hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down = test.gen_inputs()
 
-    # ── TileOPs ───────────────────────────────────────────────────────────────
+    # ── TileOPs (stateless: full weights, op slices internally) ──────────────
     op = SharedFusedMoE(
         num_tokens=num_tokens,
         num_experts=num_experts,
@@ -217,6 +217,43 @@ def test_shared_fused_moe_bench(
         shared_w_gate_up, shared_w_down,
     )
     BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    # ── TileOPs pre_sharded (tp_size=1, weights pre-sliced by caller) ─────────
+    # tp_size=1 is the single-GPU case; with pre_sharded=True the caller owns
+    # weight layout — no internal cat/contiguous on every forward() call.
+    # Demonstrates zero transient shared-weight alloc path.
+    op_pre = SharedFusedMoE(
+        num_tokens=num_tokens,
+        num_experts=num_experts,
+        top_k=top_k,
+        hidden_size=hidden_size,
+        ffn_size=ffn_size,
+        scoring_func=scoring_func,
+        renormalize=renormalize,
+        with_correction_bias=with_correction_bias,
+        routed_scaling_factor=routed_scaling_factor,
+        layout="nopad",
+        dtype=dtype,
+        shared_ffn_size=shared_ffn_size,
+        tp_size=1,
+        tp_rank=0,
+        pre_sharded=True,
+    )
+    # With tp_size=1 the shard == full weights; no slicing occurs either way.
+    op_pre(hidden, gating, w_gate_up, w_down, correction_bias,
+           shared_w_gate_up=shared_w_gate_up, shared_w_down=shared_w_down)  # warmup
+    torch.cuda.synchronize()
+
+    def _tileops_pre_fn(hidden, gating, w_gate_up, w_down, correction_bias,
+                        shared_w_gate_up, shared_w_down):
+        return op_pre(hidden, gating, w_gate_up, w_down, correction_bias,
+                      shared_w_gate_up=shared_w_gate_up, shared_w_down=shared_w_down)
+
+    result_pre = bm.profile(
+        _tileops_pre_fn, hidden, gating, w_gate_up, w_down, correction_bias,
+        shared_w_gate_up, shared_w_down,
+    )
+    BenchmarkReport.record(op_pre, locals(), result_pre, tag="tileops-pre-sharded")
 
     # ── vLLM baseline (optional) ──────────────────────────────────────────────
     if _VLLM_AVAILABLE:

@@ -237,7 +237,6 @@ class SharedFusedMoE(FusedMoe):
                     down_shard = shared_w_down
                 else:
                     # Stateless path: slice full weights internally each forward() call.
-                    # Note: F_s already assigned above; no need to reassign.
                     shard_size = F_s // self.tp_size
                     r, s = self.tp_rank, shard_size
                     # shared_w_gate_up is [2*F_s, H]: first F_s rows = gate, last F_s rows = up.

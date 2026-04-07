@@ -6,10 +6,14 @@ Verifies:
   - routed_output matches FusedMoe output
   - When shared_ffn_size=None, shared_output is None
   - TP sharding: partial outputs sum to float32 math reference
+  - pre_sharded=True: output is bit-for-bit identical to stateless path
+  - pre_sharded=True: rejects full weights with a clear ValueError
+  - pre_sharded=True: does not allocate shard copy buffers in forward()
 """
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from tileops.ops.moe import FusedMoe, SharedFusedMoE
 
@@ -102,15 +106,15 @@ def test_shared_fused_moe_tp():
     TP-sharded and single-GPU computation paths.
     """
     torch.manual_seed(42)
-    T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
+    T, E, K, H, ffn, F_s = 32, 8, 2, 64, 32, 16
     tp_size = 2
     dtype = torch.bfloat16
     dev = "cuda"
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, dtype=dtype, device=dev)
-    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
+    w_gate_up = torch.randn(E, ffn * 2, H, dtype=dtype, device=dev) * 0.02
+    w_down = torch.randn(E, H, ffn, dtype=dtype, device=dev) * 0.02
     shared_w_gate_up = torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02
     shared_w_down = torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02
 
@@ -126,13 +130,13 @@ def test_shared_fused_moe_tp():
         down_shard = shared_w_down[:, tp_rank * shard_size: (tp_rank + 1) * shard_size]              # [H, shard]
         gate_up_out = hidden.float() @ gate_up_shard.float().T     # [T, 2*shard]
         gate, up = gate_up_out.chunk(2, dim=1)
-        act = gate * torch.sigmoid(gate) * up                       # [T, shard]
+        act = F.silu(gate) * up                              # [T, shard]
         partial_sum_ref += act @ down_shard.float().T               # [T, H]
 
     # routed reference (not affected by TP)
     op_routed = FusedMoe(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
+        hidden_size=H, ffn_size=ffn,
         scoring_func="softmax", renormalize=False,
         layout="nopad", dtype=dtype,
     )
@@ -143,7 +147,7 @@ def test_shared_fused_moe_tp():
     for tp_rank in range(tp_size):
         op_tp = SharedFusedMoE(
             num_tokens=T, num_experts=E, top_k=K,
-            hidden_size=H, ffn_size=F,
+            hidden_size=H, ffn_size=ffn,
             scoring_func="softmax", renormalize=False,
             layout="nopad", dtype=dtype,
             shared_ffn_size=F_s,
@@ -174,13 +178,13 @@ def test_shared_fused_moe_tp_rejects_local_shards():
     full weights. Passing TP-local shards would silently produce wrong results
     without this guard.
     """
-    T, E, K, H, F, F_s, tp_size = 32, 8, 2, 64, 32, 16, 2
+    T, E, K, H, ffn, F_s, tp_size = 32, 8, 2, 64, 32, 16, 2
     dtype = torch.bfloat16
     dev = "cuda"
 
     op = SharedFusedMoE(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
+        hidden_size=H, ffn_size=ffn,
         scoring_func="softmax", renormalize=False,
         layout="nopad", dtype=dtype,
         shared_ffn_size=F_s,
@@ -189,8 +193,8 @@ def test_shared_fused_moe_tp_rejects_local_shards():
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, dtype=dtype, device=dev)
-    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
+    w_gate_up = torch.randn(E, ffn * 2, H, dtype=dtype, device=dev) * 0.02
+    w_down = torch.randn(E, H, ffn, dtype=dtype, device=dev) * 0.02
 
     shard_size = F_s // tp_size
 
@@ -212,7 +216,8 @@ def test_shared_fused_moe_tp_rejects_local_shards():
 
 
 @pytest.mark.smoke
-def test_shared_fused_moe_pre_sharded_matches_stateless():
+@pytest.mark.parametrize("tp_size", [2, 4])
+def test_shared_fused_moe_pre_sharded_matches_stateless(tp_size):
     """pre_sharded=True must produce identical output to pre_sharded=False (stateless).
 
     Uses bfloat16 to match the kernel's default dtype.
@@ -225,15 +230,15 @@ def test_shared_fused_moe_pre_sharded_matches_stateless():
     expert path; the routed expert call (super().forward()) is unchanged.
     """
     torch.manual_seed(42)
-    T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
-    tp_size = 2
+    # F_s=32 is divisible by both tp_size=2 and tp_size=4 (parametrized above)
+    T, E, K, H, ffn, F_s = 32, 8, 2, 64, 32, 32
     dtype = torch.bfloat16
     dev = "cuda"
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, dtype=dtype, device=dev)
-    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
+    w_gate_up = torch.randn(E, ffn * 2, H, dtype=dtype, device=dev) * 0.02
+    w_down = torch.randn(E, H, ffn, dtype=dtype, device=dev) * 0.02
     shared_w_gate_up = torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02
     shared_w_down = torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02
 
@@ -244,7 +249,7 @@ def test_shared_fused_moe_pre_sharded_matches_stateless():
         # Stateless path (full weights, op shards internally)
         op_stateless = SharedFusedMoE(
             num_tokens=T, num_experts=E, top_k=K,
-            hidden_size=H, ffn_size=F,
+            hidden_size=H, ffn_size=ffn,
             scoring_func="softmax", renormalize=False,
             layout="nopad", dtype=dtype,
             shared_ffn_size=F_s,
@@ -266,7 +271,7 @@ def test_shared_fused_moe_pre_sharded_matches_stateless():
         # pre_sharded path (TP-local weights, no internal slicing)
         op_pre = SharedFusedMoE(
             num_tokens=T, num_experts=E, top_k=K,
-            hidden_size=H, ffn_size=F,
+            hidden_size=H, ffn_size=ffn,
             scoring_func="softmax", renormalize=False,
             layout="nopad", dtype=dtype,
             shared_ffn_size=F_s,
@@ -283,7 +288,7 @@ def test_shared_fused_moe_pre_sharded_matches_stateless():
         # so outputs must be bit-for-bit equal (SharedExpertMLPKernel is deterministic).
         torch.testing.assert_close(shared_pre, shared_stateless, rtol=0, atol=0)
 
-    print(f"PASS pre_sharded matches stateless [tp_size={tp_size}]")
+    print(f"PASS pre_sharded matches stateless [tp_size={tp_size}, F_s={F_s}]")
 
 
 @pytest.mark.smoke
@@ -293,13 +298,13 @@ def test_shared_fused_moe_pre_sharded_rejects_full_weights():
     The error message must mention 'pre_sharded=True' so callers can diagnose
     the mismatch. This is distinct from the stateless-path error ('full weights').
     """
-    T, E, K, H, F, F_s, tp_size = 32, 8, 2, 64, 32, 16, 2
+    T, E, K, H, ffn, F_s, tp_size = 32, 8, 2, 64, 32, 16, 2
     dtype = torch.bfloat16
     dev = "cuda"
 
     op = SharedFusedMoE(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
+        hidden_size=H, ffn_size=ffn,
         scoring_func="softmax", renormalize=False,
         layout="nopad", dtype=dtype,
         shared_ffn_size=F_s,
@@ -308,8 +313,8 @@ def test_shared_fused_moe_pre_sharded_rejects_full_weights():
     )
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, dtype=dtype, device=dev)
-    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
+    w_gate_up = torch.randn(E, ffn * 2, H, dtype=dtype, device=dev) * 0.02
+    w_down = torch.randn(E, H, ffn, dtype=dtype, device=dev) * 0.02
     shard_size = F_s // tp_size
 
     # Pass full gate_up (wrong shape) → must raise with pre_sharded=True mention
@@ -346,7 +351,7 @@ def test_shared_fused_moe_pre_sharded_zero_transient_alloc():
       - pre_sharded=False delta must be >= shard_alloc_bytes (copies present).
     """
     # Use larger dims so shard copies (MB-scale) dominate over output tensors (KB-scale)
-    T, E, K, H, F, F_s, tp_size = 16, 8, 2, 512, 32, 512, 2
+    T, E, K, H, ffn, F_s, tp_size = 16, 8, 2, 512, 32, 512, 2
     dtype = torch.bfloat16
     dev = "cuda"
     shard_size = F_s // tp_size
@@ -365,13 +370,13 @@ def test_shared_fused_moe_pre_sharded_zero_transient_alloc():
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, dtype=dtype, device=dev)
-    w_gate_up_r = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down_r = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
+    w_gate_up_r = torch.randn(E, ffn * 2, H, dtype=dtype, device=dev) * 0.02
+    w_down_r = torch.randn(E, H, ffn, dtype=dtype, device=dev) * 0.02
 
     def make_op(pre_sharded):
         return SharedFusedMoE(
             num_tokens=T, num_experts=E, top_k=K,
-            hidden_size=H, ffn_size=F,
+            hidden_size=H, ffn_size=ffn,
             scoring_func="softmax", renormalize=False,
             layout="nopad", dtype=dtype,
             shared_ffn_size=F_s,
