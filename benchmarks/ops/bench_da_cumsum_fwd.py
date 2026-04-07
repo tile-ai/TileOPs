@@ -4,12 +4,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_da_cumsum_fwd import (
-    DaCumsumFwdTest,
-    da_cumsum_fwd_ref,
-)
 from tileops.ops.da_cumsum_fwd import DaCumsumFwdOp
-from workloads.ops.da_cumsum_fwd import DaCumsumFwdFixture, DaCumsumFwdTest
+from workloads.ops.da_cumsum_fwd import DaCumsumFwdTest
 
 
 def da_cumsum_fwd_ref(

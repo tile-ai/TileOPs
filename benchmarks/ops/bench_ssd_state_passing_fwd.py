@@ -82,9 +82,10 @@ def test_ssd_state_passing_fwd_bench(
         states, dA_chunk_cumsum, initial_states = inputs
 
         def mamba_fwd():
+            # mamba_ssm expects (b, c, h) layout; TileOPs uses (b, h, c)
             return _state_passing_fwd(
                 states.contiguous(),
-                dA_chunk_cumsum.contiguous(),
+                dA_chunk_cumsum.permute(0, 2, 1).contiguous(),
                 initial_states=initial_states.contiguous(),
             )
 

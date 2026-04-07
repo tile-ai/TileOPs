@@ -4,12 +4,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_ssd_decode import (
-    SsdDecodeTest,
-    ssd_decode_ref,
-)
 from tileops.ops.ssd_decode import SsdDecodeOp
-from workloads.ops.ssd_decode import SsdDecodeFixture, SsdDecodeTest
+from workloads.ops.ssd_decode import SsdDecodeTest
 
 
 def ssd_decode_ref(
