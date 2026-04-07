@@ -909,7 +909,7 @@ class TestResolveOpClass:
 
         with (
             mock.patch.object(importlib, "import_module", side_effect=patched_import),
-            pytest.warns(UserWarning, match="ambiguous"),
+            pytest.warns(UserWarning, match="Ambiguous"),
         ):
             result = validator._resolve_op_class(
                 "tileops/ops/fake_ambiguous.py", "mystery_fwd",
