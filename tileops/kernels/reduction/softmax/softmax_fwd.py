@@ -421,11 +421,9 @@ class SoftmaxKernel(Kernel):
         # tile_n differs from this pre-built one, so the autotuner stays
         # within a single tiling regime by design.
         #
-        # Known follow-up: exploring alternate tile_n regimes would require
-        # building one kernel per regime, autotuning each, and picking the
-        # global best. That refactor is deliberately out of scope for this
-        # fix, which is restoring the broken tune=True path; the single-
-        # regime restriction is inherited from #801, not introduced here.
+        # Cross-tile_n autotune exploration is tracked as a known follow-up:
+        # see issue #821. The single-regime restriction is inherited from
+        # #801, not introduced by this fix.
         self._tile_n = self.default_config["tile_n"]
         self.kernel = _softmax_kernel(
             self.M,
