@@ -119,7 +119,10 @@ def test_shared_fused_moe_tp():
     shard_size = F_s // tp_size
     partial_sum_ref = torch.zeros(T, H, dtype=torch.float32, device=dev)
     for tp_rank in range(tp_size):
-        gate_up_shard = shared_w_gate_up[tp_rank * shard_size * 2: (tp_rank + 1) * shard_size * 2]  # [2*shard, H]
+        gate_up_shard = torch.cat([
+            shared_w_gate_up[tp_rank * shard_size : (tp_rank + 1) * shard_size],          # gate shard
+            shared_w_gate_up[F_s + tp_rank * shard_size : F_s + (tp_rank + 1) * shard_size],  # up shard
+        ], dim=0)  # [2*shard, H]
         down_shard = shared_w_down[:, tp_rank * shard_size: (tp_rank + 1) * shard_size]              # [H, shard]
         gate_up_out = hidden.float() @ gate_up_shard.float().T     # [T, 2*shard]
         gate, up = gate_up_out.chunk(2, dim=1)

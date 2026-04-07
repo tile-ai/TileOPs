@@ -172,7 +172,10 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
             ).to(dtype=dtype, device=dev)
 
             # gate_up: ColumnParallel → each rank holds [2*shard, H]
-            gate_up_shard = shared_w_gate_up[tp_rank * shard_size * 2 : (tp_rank + 1) * shard_size * 2]
+            gate_up_shard = torch.cat([
+                shared_w_gate_up[tp_rank * shard_size : (tp_rank + 1) * shard_size],
+                shared_w_gate_up[F_s + tp_rank * shard_size : F_s + (tp_rank + 1) * shard_size],
+            ], dim=0)  # [2*shard, H]
             # down: RowParallel → vLLM stores [H, shard] (input dim partitioned, no transpose)
             down_shard = shared_w_down[:, tp_rank * shard_size : (tp_rank + 1) * shard_size].contiguous()
 

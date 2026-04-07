@@ -173,8 +173,14 @@ class SharedFusedMoE(FusedMoe):
             if self.tp_size > 1:
                 F_s = self.shared_ffn_size
                 shard_size = F_s // self.tp_size
-                gate_up_shard = shared_w_gate_up.narrow(0, self.tp_rank * shard_size * 2, shard_size * 2).contiguous()
-                down_shard = shared_w_down.narrow(1, self.tp_rank * shard_size, shard_size).contiguous()
+                r, s = self.tp_rank, shard_size
+                # shared_w_gate_up is [2*F_s, H]: first F_s rows = gate, last F_s rows = up.
+                # ColumnParallel: rank r computes neurons [r*s, (r+1)*s), so it needs
+                # gate[r*s:(r+1)*s] and up[r*s:(r+1)*s] concatenated into [2*s, H].
+                gate_shard = shared_w_gate_up[r * s : (r + 1) * s]          # [s, H]
+                up_shard   = shared_w_gate_up[F_s + r * s : F_s + (r + 1) * s]  # [s, H]
+                gate_up_shard = torch.cat([gate_shard, up_shard], dim=0).contiguous()  # [2*s, H]
+                down_shard = shared_w_down.narrow(1, r * s, s).contiguous()
             else:
                 gate_up_shard = shared_w_gate_up
                 down_shard = shared_w_down
