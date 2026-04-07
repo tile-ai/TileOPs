@@ -36,15 +36,15 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import FusedTopKOp, SharedFusedMoE
+from workloads.base import FixtureBase, WorkloadBase
 
 # ---------------------------------------------------------------------------
 # Test / fixture types
 # ---------------------------------------------------------------------------
 
 
-class SharedFusedMoEBenchTest(TestBase):
+class SharedFusedMoEBenchTest(WorkloadBase):
     def __init__(
         self,
         num_tokens,
@@ -101,9 +101,6 @@ class SharedFusedMoEBenchTest(TestBase):
         ) * 0.02
         return hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down
 
-    def ref_program(self, *args):
-        return None
-
 
 class SharedFusedMoEBenchFixture(FixtureBase):
     PARAMS = [
@@ -146,7 +143,7 @@ class SharedFusedMoEBenchFixture(FixtureBase):
 class SharedFusedMoEBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         routed = t.num_tokens * t.top_k * (
             2 * t.ffn_size * t.hidden_size * 2   # gate+up
             + t.hidden_size * t.ffn_size * 2      # down
@@ -158,7 +155,7 @@ class SharedFusedMoEBenchmark(BenchmarkBase):
         return routed + shared
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem = 2  # bf16 = 2 bytes
         routed_w = (
             t.num_experts * 2 * t.ffn_size * t.hidden_size

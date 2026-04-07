@@ -4,11 +4,11 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.moe import SharedExpertMLPKernel
+from workloads.base import FixtureBase, WorkloadBase
 
 
-class SharedMLPBenchTest(TestBase):
+class SharedMLPBenchTest(WorkloadBase):
     def __init__(self, num_tokens, hidden_size, ffn_size, dtype):
         self.num_tokens = num_tokens
         self.hidden_size = hidden_size
@@ -21,12 +21,6 @@ class SharedMLPBenchTest(TestBase):
         w_gate_up = torch.randn(self.ffn_size * 2, self.hidden_size, dtype=self.dtype, device=device)
         w_down = torch.randn(self.hidden_size, self.ffn_size, dtype=self.dtype, device=device)
         return hidden, w_gate_up, w_down
-
-    def ref_program(self, hidden, w_gate_up, w_down):
-        gate = torch.nn.functional.linear(hidden, w_gate_up[:self.ffn_size])
-        up = torch.nn.functional.linear(hidden, w_gate_up[self.ffn_size:])
-        gate_up = torch.nn.functional.silu(gate) * up
-        return torch.nn.functional.linear(gate_up, w_down)
 
 
 class SharedMLPBenchFixture(FixtureBase):
@@ -44,11 +38,11 @@ class SharedMLPBenchFixture(FixtureBase):
 
 class SharedMLPBenchmark(BenchmarkBase):
     def calculate_flops(self):
-        t = self.test
+        t = self.workload
         return 2 * t.num_tokens * t.hidden_size * t.ffn_size * 3  # gate + up + down
 
     def calculate_memory(self):
-        t = self.test
+        t = self.workload
         elem = 2  # bf16
         return elem * (t.num_tokens * t.hidden_size + 3 * t.ffn_size * t.hidden_size + 3 * t.num_tokens * t.ffn_size)
 
