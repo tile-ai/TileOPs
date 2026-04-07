@@ -26,6 +26,7 @@ import inspect
 import re
 import sys
 import warnings as _warnings
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -397,11 +398,15 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
 
     # Find Op subclass in the module. We look for classes defined in this module
     # that have a forward() method.
+    seen_ids: set[int] = set()
     candidates = []
     for _name, obj in inspect.getmembers(mod, inspect.isclass):
         if obj.__module__ != mod.__name__:
             continue
+        if id(obj) in seen_ids:
+            continue
         if hasattr(obj, "forward") and callable(obj.forward):
+            seen_ids.add(id(obj))
             candidates.append(obj)
 
     if not candidates:
@@ -438,7 +443,8 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
         suffix_keyword = "bwd"
 
     # Build ordered match strategies: (label, matcher)
-    strategies: list[tuple[str, object]] = [
+    Matcher = Callable[[type], bool]
+    strategies: list[tuple[str, Matcher]] = [
         ("stripped_pascal", lambda c: c.__name__ == stripped_pascal),
         ("full_pascal", lambda c: c.__name__ == full_pascal),
     ]
