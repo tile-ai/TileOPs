@@ -18,8 +18,8 @@ from .deltanet_recurrence import DeltaNetDecodeOp
 from .dropout import DropoutOp
 from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2COp
-from .fp8_lighting_indexer import Fp8LightingIndexerOp
-from .fp8_quant import Fp8QuantOp
+from .fp8_lighting_indexer import FP8LightingIndexerOp
+from .fp8_quant import FP8QuantOp
 from .gated_deltanet_chunkwise import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 from .gated_deltanet_recurrence import GatedDeltaNetDecodeOp
 from .gemm import GemmOp
@@ -106,8 +106,8 @@ __all__ = [
     "DeepSeekSparseAttentionDecodeWithKVCacheOp",
     "DropoutOp",
     "FFTC2COp",
-    "Fp8LightingIndexerOp",
-    "Fp8QuantOp",
+    "FP8LightingIndexerOp",
+    "FP8QuantOp",
     "FusedAddLayerNormOp",
     "FusedAddRmsNormOp",
     "FusedGatedOp",
