@@ -3,14 +3,14 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.mhc import mhc_pre_kernel
+from tileops.kernels.mhc import MHCPreKernel
 
 from .op import Op
 
-__all__ = ["ManifoldConstrainedHyperConnectionPreOp"]
+__all__ = ["MHCPreOp"]
 
 
-class ManifoldConstrainedHyperConnectionPreOp(Op):
+class MHCPreOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -31,7 +31,7 @@ class ManifoldConstrainedHyperConnectionPreOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mhc_pre_kernel": mhc_pre_kernel}
+        return {"mhc_pre_kernel": MHCPreKernel}
 
     def forward(self,
                 phi: torch.Tensor,

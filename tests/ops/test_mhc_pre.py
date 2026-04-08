@@ -9,11 +9,11 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import ManifoldConstrainedHyperConnectionPreOp
-from workloads.ops.mhc_pre import MhcPreTest as _MhcPreTestWorkload
+from tileops.ops import MHCPreOp
+from workloads.ops.mhc_pre import MHCPreTest as _MHCPreTestWorkload
 
 
-class MhcPreTest(_MhcPreTestWorkload, TestBase):
+class MHCPreTest(_MHCPreTestWorkload, TestBase):
     def ref_program(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor,
                     alpha_pre, alpha_post, alpha_res,
                     sinkhorn_repeat: int, eps: float) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -66,7 +66,7 @@ class MhcPreTest(_MhcPreTestWorkload, TestBase):
         return x_res_ref, x_layer_ref
 
 
-class MhcPreFixture(FixtureBase):
+class MHCPreFixture(FixtureBase):
     PARAMS = [
         ("batch, n_expand, c_x, dtype, tune", [
             pytest.param(1, 4, 1280, torch.bfloat16, False, marks=pytest.mark.smoke),
@@ -83,11 +83,11 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
         f"cosine similarity too low: {cos_sim.min().item()}"
 
 
-@MhcPreFixture
+@MHCPreFixture
 def test_mhc_pre_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                     tune: bool) -> None:
-    test = MhcPreTest(batch, n_expand, c_x, dtype)
-    op = ManifoldConstrainedHyperConnectionPreOp(batch, n_expand, c_x, dtype=torch.bfloat16)
+    test = MHCPreTest(batch, n_expand, c_x, dtype)
+    op = MHCPreOp(batch, n_expand, c_x, dtype=torch.bfloat16)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 

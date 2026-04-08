@@ -5,7 +5,7 @@ import torch
 from workloads.base import WorkloadBase
 
 
-class MhcPostTest(WorkloadBase):
+class MHCPostTest(WorkloadBase):
 
     def __init__(self, batch: int, n_expand: int, c_x: int, dtype: torch.dtype):
         self.batch = batch

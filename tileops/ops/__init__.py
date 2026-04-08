@@ -34,8 +34,8 @@ from .grouped_gemm import GroupedGemmOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
-from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
-from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
+from .mhc_post import MHCPostOp
+from .mhc_pre import MHCPreOp
 from .moe import MoePermuteAlignOp
 from .norm import (
     AdaLayerNormOp,
@@ -133,8 +133,8 @@ __all__ = [
     "GroupedGemmOp",
     "InstanceNormOp",
     "LayerNormOp",
-    "ManifoldConstrainedHyperConnectionPostOp",
-    "ManifoldConstrainedHyperConnectionPreOp",
+    "MHCPostOp",
+    "MHCPreOp",
     "MeanPoolingForwardOp",
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheOp",
