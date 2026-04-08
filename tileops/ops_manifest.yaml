@@ -2168,7 +2168,7 @@ ops:
       # Whisper-large encoder conv1: mel spectrogram → hidden (most common ASR entry point)
       - {input_shape: [1, 80, 3000], C_out: 1280, kW: 3, dtypes: [float16, bfloat16], label: "whisper-large-conv1"}
       # Wav2Vec2 feature extractor layer1: raw 1s waveform, large kernel + stride downsampling
-      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
+      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, stride: 5, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
       # EnCodec SEANet encoder init: raw 1s audio @24kHz, narrow channels
       - {input_shape: [1, 1, 24000], C_out: 32, kW: 7, dtypes: [float16, bfloat16], label: "encodec-init"}
       # EnCodec SEANet deep block: short sequence, wide channels, large kernel
@@ -2217,7 +2217,7 @@ ops:
     # Same shapes as conv1d_fwd; bias adds negligible memory traffic
     workloads:
       - {input_shape: [1, 80, 3000], C_out: 1280, kW: 3, dtypes: [float16, bfloat16], label: "whisper-large-conv1"}
-      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
+      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, stride: 5, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
       - {input_shape: [1, 1, 24000], C_out: 32, kW: 7, dtypes: [float16, bfloat16], label: "encodec-init"}
       - {input_shape: [1, 128, 600], C_out: 256, kW: 10, dtypes: [float16, bfloat16], label: "encodec-deep"}
 
