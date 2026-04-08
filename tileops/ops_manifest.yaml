@@ -1448,7 +1448,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
@@ -1485,7 +1485,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
@@ -1522,7 +1522,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
@@ -1559,7 +1559,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
@@ -1596,11 +1596,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: int, default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - 1"
-        - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
+        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1610,8 +1610,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-        N: "x.shape[dim % x.ndim]"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
+        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
       # N-1 multiplications per output element
       flops: "M * N"
       # Read x + write y
@@ -1637,7 +1637,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
@@ -1675,7 +1675,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
@@ -1714,7 +1714,7 @@ ops:
         var: {dtype: "same_as(x)"}
         mean: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
