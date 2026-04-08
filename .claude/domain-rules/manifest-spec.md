@@ -20,6 +20,7 @@ ______________________________________________________________________
 - `status: implemented` = all validator levels apply. `status: spec-only` = L0 only. Default is `implemented`.
 - Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
 - Op signatures must match PyTorch's public API (parameter names, parameter set, semantics). Do not invent parameters.
+- `dtype` fields align to PyTorch's supported dtypes **minus float64 and complex types** (complex32, complex64, complex128). TileOPs is a GPU kernel library; float64 and complex dtypes are not target dtypes.
 - No `Optional[Tensor]` in manifest. Ops with conditional inputs are split into variant entries linked by `variant_of`.
   - `variant_of` is one level only. Variant → primary. Primary must not have `variant_of`.
   - Variants share `source.kernel` and `source.op`. Each has its own `signature`, `workloads`, `roofline`.
