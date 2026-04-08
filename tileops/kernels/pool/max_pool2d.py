@@ -131,7 +131,10 @@ def _max_pool2d_values_indices_kernel(
                                 iw = ow * stride_w + kw * dilation_w - pad_w
                                 if ih >= 0 and ih < h_in and iw >= 0 and iw < w_in:
                                     candidate = T.cast(x[batch, ih, iw, c_idx], accum_dtype)
-                                    candidate_index = T.cast(ih * w_in + iw, "int64")
+                                    candidate_index = (
+                                        T.cast(ih, "int64") * T.cast(w_in, "int64")
+                                        + T.cast(iw, "int64")
+                                    )
                                     should_update = candidate > max_val
                                     max_val = T.if_then_else(should_update, candidate, max_val)
                                     max_index = T.if_then_else(should_update, candidate_index, max_index)
