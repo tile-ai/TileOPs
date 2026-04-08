@@ -965,6 +965,95 @@ class TestResolveOpClass:
         assert any("Ambiguous" in w for w in warn_list)
         assert any("could not resolve" in e for e in errors)
 
+    def test_suffix_match_ambiguity_emits_warning(self, validator):
+        """When multiple candidates match _fwd suffix, emit ambiguity warning."""
+        import importlib
+        import types
+        import unittest.mock as mock
+
+        fake_mod = types.ModuleType("tileops.ops.fake_suffix_ambig")
+        fake_mod.__name__ = "tileops.ops.fake_suffix_ambig"
+
+        # Two classes both containing "fwd" in their name — suffix heuristic
+        # should detect ambiguity instead of silently picking the first.
+        class AlphaFwdOp:
+            @staticmethod
+            def forward():
+                pass
+
+        class BetaFwdOp:
+            @staticmethod
+            def forward():
+                pass
+
+        AlphaFwdOp.__module__ = fake_mod.__name__
+        BetaFwdOp.__module__ = fake_mod.__name__
+        fake_mod.AlphaFwdOp = AlphaFwdOp
+        fake_mod.BetaFwdOp = BetaFwdOp
+
+        original_import = importlib.import_module
+
+        def patched_import(name):
+            if name == "tileops.ops.fake_suffix_ambig":
+                return fake_mod
+            return original_import(name)
+
+        with (
+            mock.patch.object(importlib, "import_module", side_effect=patched_import),
+            pytest.warns(UserWarning, match="Ambiguous"),
+        ):
+            result = validator._resolve_op_class(
+                "tileops/ops/fake_suffix_ambig.py", "gamma_fwd",
+            )
+        # Ambiguous suffix match: cls should be None and warning emitted
+        assert result.cls is None
+        assert not result.import_error
+        assert "Ambiguous" in result.warning
+
+    def test_stripped_pascal_takes_priority_over_full_pascal(self, validator):
+        """stripped_pascal strategy must resolve before full_pascal.
+
+        For op_name='sum_fwd' with both SumOp and SumFwdOp in the module,
+        stripped_pascal ('sum_fwd' -> 'SumOp') should win over full_pascal
+        ('sum_fwd' -> 'SumFwdOp').
+        """
+        import importlib
+        import types
+        import unittest.mock as mock
+
+        fake_mod = types.ModuleType("tileops.ops.fake_priority")
+        fake_mod.__name__ = "tileops.ops.fake_priority"
+
+        class SumOp:
+            @staticmethod
+            def forward():
+                pass
+
+        class SumFwdOp:
+            @staticmethod
+            def forward():
+                pass
+
+        SumOp.__module__ = fake_mod.__name__
+        SumFwdOp.__module__ = fake_mod.__name__
+        fake_mod.SumOp = SumOp
+        fake_mod.SumFwdOp = SumFwdOp
+
+        original_import = importlib.import_module
+
+        def patched_import(name):
+            if name == "tileops.ops.fake_priority":
+                return fake_mod
+            return original_import(name)
+
+        with mock.patch.object(importlib, "import_module", side_effect=patched_import):
+            result = validator._resolve_op_class(
+                "tileops/ops/fake_priority.py", "sum_fwd",
+            )
+        assert result.cls is SumOp, (
+            f"Expected SumOp (stripped_pascal) but got {result.cls.__name__}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Integration: validate_manifest.py passes on the real codebase

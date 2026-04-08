@@ -26,6 +26,7 @@ import inspect
 import re
 import sys
 import warnings as _warnings
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -397,11 +398,15 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
 
     # Find Op subclass in the module. We look for classes defined in this module
     # that have a forward() method.
+    seen_ids: set[int] = set()
     candidates = []
     for _name, obj in inspect.getmembers(mod, inspect.isclass):
         if obj.__module__ != mod.__name__:
             continue
+        if id(obj) in seen_ids:
+            continue
         if hasattr(obj, "forward") and callable(obj.forward):
+            seen_ids.add(id(obj))
             candidates.append(obj)
 
     if not candidates:
@@ -412,34 +417,56 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
     if len(candidates) == 1:
         return _ResolveResult(cls=candidates[0])
 
-    # Multiple candidates — try exact PascalCase match first (most reliable).
-    # Strip _fwd/_bwd suffix, convert remainder to PascalCase + "Op".
-    # e.g., "sum_fwd" -> "SumOp", "var_mean_fwd" -> "VarMeanOp"
+    # Multiple candidates — resolve via an ordered list of match strategies.
+    # Priority: stripped-suffix PascalCase → full-name PascalCase → suffix match.
+    # Each strategy collects all matches; if exactly one, return it.
+    # If multiple match, emit an ambiguity warning and return unresolved.
+
+    # Precompute PascalCase variants
     base_name = op_name
     for suffix in ("_fwd", "_bwd"):
         if base_name.endswith(suffix):
             base_name = base_name[: -len(suffix)]
             break
-    pascal = "".join(part.capitalize() for part in base_name.split("_")) + "Op"
-    for cls in candidates:
-        if cls.__name__ == pascal:
-            return _ResolveResult(cls=cls)
+    stripped_pascal = (
+        "".join(part.capitalize() for part in base_name.split("_")) + "Op"
+    )
+    full_pascal = (
+        "".join(part.capitalize() for part in op_name.split("_")) + "Op"
+    )
 
-    # Fallback: full op_name as PascalCase (e.g., "sum_fwd" -> "SumFwdOp")
-    full_pascal = "".join(part.capitalize() for part in op_name.split("_")) + "Op"
-    for cls in candidates:
-        if cls.__name__ == full_pascal:
-            return _ResolveResult(cls=cls)
-
-    # Fallback: suffix matching for fwd/bwd
+    # Determine the suffix keyword for fwd/bwd matching (if applicable)
+    suffix_keyword = ""
     if op_name.endswith("_fwd"):
-        for cls in candidates:
-            if "fwd" in cls.__name__.lower():
-                return _ResolveResult(cls=cls)
-    if op_name.endswith("_bwd"):
-        for cls in candidates:
-            if "bwd" in cls.__name__.lower():
-                return _ResolveResult(cls=cls)
+        suffix_keyword = "fwd"
+    elif op_name.endswith("_bwd"):
+        suffix_keyword = "bwd"
+
+    # Build ordered match strategies: (label, matcher)
+    Matcher = Callable[[type], bool]
+    strategies: list[tuple[str, Matcher]] = [
+        ("stripped_pascal", lambda c: c.__name__ == stripped_pascal),
+        ("full_pascal", lambda c: c.__name__ == full_pascal),
+    ]
+    if suffix_keyword:
+        strategies.append(
+            ("suffix_fwd_bwd", lambda c: suffix_keyword in c.__name__.lower()),
+        )
+
+    for label, matcher in strategies:
+        matches = [c for c in candidates if matcher(c)]
+        if len(matches) == 1:
+            return _ResolveResult(cls=matches[0])
+        if len(matches) > 1:
+            match_names = [c.__name__ for c in matches]
+            ambiguity_msg = (
+                f"Ambiguous op class resolution for '{op_name}' "
+                f"(strategy: {label}): "
+                f"candidates {match_names} in '{op_file}'. "
+                f"Returning unresolved (cls=None)."
+            )
+            _warnings.warn(ambiguity_msg, UserWarning, stacklevel=2)
+            return _ResolveResult(warning=ambiguity_msg)
 
     # All heuristics exhausted — resolution is ambiguous.
     candidate_names = [c.__name__ for c in candidates]
