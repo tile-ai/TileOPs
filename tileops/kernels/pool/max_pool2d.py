@@ -120,10 +120,19 @@ def _max_pool2d_values_indices_kernel(
                         out_idx = m_idx % (out_h * out_w)
                         oh = out_idx // out_w
                         ow = out_idx % out_w
+                        window_h_start = oh * stride_h - pad_h
+                        window_w_start = ow * stride_w - pad_w
+                        first_kh = T.ceildiv(T.max(-window_h_start, 0), dilation_h)
+                        first_kw = T.ceildiv(T.max(-window_w_start, 0), dilation_w)
+                        first_ih = window_h_start + first_kh * dilation_h
+                        first_iw = window_w_start + first_kw * dilation_w
                         max_val = T.alloc_var(T.float32)
                         max_index = T.alloc_var(T.int64)
-                        max_val = -T.infinity(accum_dtype)
-                        max_index = T.int64(0)
+                        max_val = T.cast(x[batch, first_ih, first_iw, c_idx], accum_dtype)
+                        max_index = (
+                            T.cast(first_ih, "int64") * T.cast(w_in, "int64")
+                            + T.cast(first_iw, "int64")
+                        )
 
                         for kh in T.serial(kernel_h):
                             for kw in T.serial(kernel_w):
@@ -135,9 +144,9 @@ def _max_pool2d_values_indices_kernel(
                                         T.cast(ih, "int64") * T.cast(w_in, "int64")
                                         + T.cast(iw, "int64")
                                     )
-                                    should_update = candidate > max_val
-                                    max_val = T.if_then_else(should_update, candidate, max_val)
-                                    max_index = T.if_then_else(should_update, candidate_index, max_index)
+                                    if candidate > max_val:
+                                        max_val = candidate
+                                        max_index = candidate_index
 
                         out_flat[m_idx, c_idx] = T.cast(max_val, dtype)
                         indices_flat[m_idx, c_idx] = max_index

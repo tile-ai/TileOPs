@@ -70,15 +70,10 @@ def validate_pool_params(
             raise TypeError("dilation must contain only ints")
         if any(v <= 0 for v in dilation):
             raise ValueError("dilation must be greater than zero")
-        effective_kernel = tuple(
-            (kernel - 1) * step + 1 for kernel, step in zip(kernel_size, dilation, strict=True)
-        )
-    else:
-        effective_kernel = kernel_size
 
-    for pad, kernel in zip(padding, effective_kernel, strict=True):
+    for pad, kernel in zip(padding, kernel_size, strict=True):
         if pad > kernel // 2:
-            raise ValueError("padding must be at most half of the effective kernel size")
+            raise ValueError("padding must be at most half of the kernel size")
 
     if divisor_override is not None and (not isinstance(divisor_override, int) or isinstance(divisor_override, bool)):
         raise TypeError("divisor_override must be an int or None")
