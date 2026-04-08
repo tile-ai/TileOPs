@@ -468,6 +468,66 @@ class TestDtype:
         errors = validator.check_l3("test_op", entry)
         assert errors == []
 
+    def test_dtype_combos_same_as_identity_pass(self, validator):
+        """dtype_combos with matching dtypes for same_as-bound tensors pass."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert errors == []
+
+    def test_dtype_combos_same_as_mismatch_fails(self, validator):
+        """dtype_combos with different dtypes for same_as-bound tensors must fail."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "bfloat16"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any("same_as" in e and "identity" in e for e in errors), (
+            f"Expected identity constraint error, got: {errors}"
+        )
+
+    def test_dtype_combos_same_as_chain_mismatch_fails(self, validator):
+        """dtype_combos violating transitive same_as identity must fail."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "q": {"dtype": "float16 | bfloat16"},
+                    "k": {"dtype": "same_as(q)"},
+                    "v": {"dtype": "same_as(q)"},
+                },
+                "outputs": {"o": {"dtype": "same_as(q)"}},
+                "dtype_combos": [
+                    {"q": "float16", "k": "float16", "v": "bfloat16"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any("same_as" in e and "identity" in e for e in errors), (
+            f"Expected identity constraint error, got: {errors}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # bench: benchmark uses manifest workloads

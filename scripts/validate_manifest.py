@@ -643,10 +643,55 @@ def _validate_dtype_token(
     return None
 
 
+def _build_same_as_map(all_tensors: dict) -> dict[str, str]:
+    """Build a mapping from tensor name to its same_as reference target.
+
+    For each tensor whose dtype is ``same_as(ref)``, maps tensor → ref.
+    Only pure same_as dtypes are tracked (not ``float16 | same_as(x)``).
+    """
+    same_as_map: dict[str, str] = {}
+    for tname, attrs in all_tensors.items():
+        dtype_str = attrs.get("dtype", "")
+        tokens = _parse_dtype_expr(dtype_str)
+        if len(tokens) == 1:
+            m = _SAME_AS_RE.match(tokens[0])
+            if m:
+                same_as_map[tname] = m.group(1)
+    return same_as_map
+
+
+def _check_dtype_combos_same_as_identity(
+    op_name: str, dtype_combos: list, same_as_map: dict[str, str],
+) -> list[str]:
+    """Enforce same_as identity constraint in dtype_combos entries.
+
+    For each dtype_combos entry, every tensor bound by same_as(ref) must
+    have the exact same dtype as its reference tensor (R3 identity constraint).
+    """
+    errors: list[str] = []
+    for i, combo in enumerate(dtype_combos):
+        if not isinstance(combo, dict):
+            continue
+        for tensor, ref in same_as_map.items():
+            if (
+                tensor in combo
+                and ref in combo
+                and combo[tensor] != combo[ref]
+            ):
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}] violates "
+                    f"same_as identity constraint — {tensor} "
+                    f"({combo[tensor]}) must match {ref} "
+                    f"({combo[ref]}) per R3"
+                )
+    return errors
+
+
 def check_l3(op_name: str, entry: dict) -> list[str]:
     """Validate dtype strings are recognized torch types or same_as references.
 
     Checks both signature tensor dtypes and workload dtype entries.
+    Also enforces same_as identity constraint in dtype_combos (R3).
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
@@ -664,6 +709,14 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
             err = _validate_dtype_token(op_name, tname, token, tensor_names)
             if err:
                 errors.append(err)
+
+    # Validate same_as identity constraint in dtype_combos (R3)
+    dtype_combos = sig.get("dtype_combos", [])
+    if isinstance(dtype_combos, list) and dtype_combos:
+        same_as_map = _build_same_as_map(all_tensors)
+        errors.extend(
+            _check_dtype_combos_same_as_identity(op_name, dtype_combos, same_as_map)
+        )
 
     # Validate workload dtypes
     workloads = entry.get("workloads", [])
