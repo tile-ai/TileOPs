@@ -223,7 +223,6 @@ def test_fused_moe_bench(
                 topk=top_k,
                 renormalize=renormalize,
                 scoring_func=scoring_func,
-                correction_bias=correction_bias,
             )
             out = _vllm_fused_experts(hidden, w_gate_up, w_down, tw, tids)
             if routed_scaling_factor != 1.0:
