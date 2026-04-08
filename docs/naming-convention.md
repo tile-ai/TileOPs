@@ -2,6 +2,20 @@
 
 Class naming rules for `tileops/ops/` and `tileops/kernels/`.
 
+> **Status: working proposal.** This document is one possible answer to the canonical operator-identity question raised in tile-ai/TileOPs#860. Until that issue is resolved, the rules below are the working policy used by the rename initiative tracked in tile-ai/TileOPs#850; they may be revised once the project agrees on the final identity rule. The vocabulary list is also a working draft and is frozen in Phase 9 of tile-ai/TileOPs#850.
+
+## Relationship to canonical identity (tile-ai/TileOPs#860)
+
+The premise of this convention is that **`ops_manifest.yaml`'s `op_name` is the canonical identifier of an operator**, and the Python `OpClass` / `KernelClass` names are *mechanically derived* from that identifier — not the other way around. Concretely:
+
+- The manifest op_name (e.g. `mha_fwd`, `rmsnorm_fwd`, `gqa_sliding_window_varlen_fwd`) is the source of truth.
+- The class name is computed by the mapping rule below, which is a deterministic function of `op_name` plus two explicit lookup tables (the abbreviation vocabulary and the proper-noun allow-list).
+- No reviewer, validator, or agent should ever need to *guess* which class corresponds to a manifest entry. The same input always yields the same class name.
+
+The two lookup tables are the only "non-mechanical" elements, and both are version-controlled in this document. They are intentionally small and stable — closer to a `keywords.txt` than to a configuration DSL — so that mechanical derivation remains tractable. The lookup tables are not the same thing as case-by-case heuristics like the ones critiqued in tile-ai/TileOPs#803.
+
+If tile-ai/TileOPs#860 ultimately settles on a different identity rule (for example, "no allow-list at all — class name is purely a function of `op_name` and the abbreviation vocabulary, with no proper-noun exception"), this doc will be revised before any further rename PR lands. The current version of the doc is the convention the rename initiative is operating against today, not a final commitment.
+
 ## Problem
 
 TileOPs class names currently mix three styles:
@@ -41,7 +55,9 @@ For each underscore-separated segment in the file name:
 
 Append `Op` or `Kernel`.
 
-> **Note on slugs vs class names.** The snake_case file name is a slug — it loses internal capitalization that exists in the literature spelling of the term. `deltanet_fwd.py` → `DeltaNetFwdOp` because "DeltaNet" is the spelling used in Yang et al. 2024. Similarly `batchnorm` → `BatchNorm`, `layernorm` → `LayerNorm`, `groupnorm` → `GroupNorm`. The file name is the convenient snake_case identifier; the class name is the canonical literature form. The lint script in Phase 9 of tile-ai/TileOPs#850 will recognize these proper-noun spellings via an explicit allow-list rather than try to derive them mechanically from the slug.
+> **Note on slugs vs class names.** The snake_case file name is a slug — it loses internal capitalization that exists in the literature spelling of the term. `deltanet_fwd.py` → `DeltaNetFwdOp` because "DeltaNet" is the spelling used in Yang et al. 2024. Similarly `batchnorm` → `BatchNorm`, `layernorm` → `LayerNorm`, `groupnorm` → `GroupNorm`, `instancenorm` → `InstanceNorm`. The file name is the convenient snake_case identifier; the class name is the canonical literature form. The lint script in Phase 9 of tile-ai/TileOPs#850 will recognize these proper-noun spellings via an explicit allow-list rather than try to derive them mechanically from the slug.
+>
+> **PyTorch alignment.** For ops whose name corresponds to a public PyTorch class (`torch.nn.LayerNorm`, `torch.nn.BatchNorm1d`, `torch.nn.GroupNorm`, `torch.nn.InstanceNorm2d`, `torch.nn.Conv2d`, `torch.topk`, ...), the proper-noun allow-list **preserves the PyTorch spelling rather than abbreviating it**. `LayerNorm` does not become `LN`. `BatchNorm` does not become `BN`. `Conv2d` does not become `Conv2D`. The abbreviation vocabulary is for domain terms that are universally written as acronyms in literature (`MHA`, `GQA`, `MLA`, `FFT`, `RMS`, `FP8`, `GEMM`); not for shortening every multi-word term. When the proper-noun allow-list and the abbreviation vocabulary disagree on a token, the proper-noun allow-list wins.
 
 ## Vocabulary
 
