@@ -50,7 +50,7 @@ def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
     bm = MHCPostBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = MHCPostOp(batch, n_expand, c_x, dtype=str(dtype).split('.')[-1], tune=tune)
+    op = MHCPostOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

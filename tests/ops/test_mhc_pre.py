@@ -87,7 +87,7 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
 def test_mhc_pre_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                     tune: bool) -> None:
     test = MHCPreTest(batch, n_expand, c_x, dtype)
-    op = MHCPreOp(batch, n_expand, c_x, dtype=torch.bfloat16)
+    op = MHCPreOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 
