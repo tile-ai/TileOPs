@@ -2143,13 +2143,14 @@ ops:
         groups: {type: int, default: 1}
       shape_rules:
         - "C_in_g == C_in // groups"
-        - "L_out == (L_in + 2 * padding - dilation * (kW - 1) - 1) // stride + 1"
+        # padding='valid' → 0, padding='same' → L_out == L_in (stride must be 1)
+        - "L_out == L_in if padding == 'same' else (L_in + 2 * (0 if padding == 'valid' else padding) - dilation * (kW - 1) - 1) // stride + 1"
 
     workloads: []
+    # workloads TBD: audio/speech models (ConvTasNet, SEANet, WaveNet)
 
     roofline:
-      # Standard conv1d FLOPs: 2 * N * C_out * L_out * C_in * kW / groups
-      flops: "2 * N * C_out * L_out * C_in * kW // groups"
+      flops: "2 * N * C_out * L_out * C_in_g * kW"
       bytes: "(N * C_in * L_in + C_out * C_in_g * kW + N * C_out * L_out) * elem_bytes"
 
     source:
@@ -2158,8 +2159,6 @@ ops:
       test: tests/ops/test_conv1d.py
       bench: benchmarks/ops/bench_conv1d.py
       bench_manifest_driven: false
-
-  # TODO: workloads — human decision (audio/speech models: ConvTasNet, SEANet, WaveNet)
 
   conv1d_fwd_bias:
     family: conv
@@ -2180,12 +2179,13 @@ ops:
         groups: {type: int, default: 1}
       shape_rules:
         - "C_in_g == C_in // groups"
-        - "L_out == (L_in + 2 * padding - dilation * (kW - 1) - 1) // stride + 1"
+        - "L_out == L_in if padding == 'same' else (L_in + 2 * (0 if padding == 'valid' else padding) - dilation * (kW - 1) - 1) // stride + 1"
 
     workloads: []
 
     roofline:
-      flops: "2 * N * C_out * L_out * C_in * kW // groups + N * C_out * L_out"
+      # bias adds one addition per output element
+      flops: "2 * N * C_out * L_out * C_in_g * kW + N * C_out * L_out"
       bytes: "(N * C_in * L_in + C_out * C_in_g * kW + C_out + N * C_out * L_out) * elem_bytes"
 
     source:
