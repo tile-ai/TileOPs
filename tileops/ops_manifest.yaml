@@ -2122,3 +2122,77 @@ ops:
       op: tileops/ops/reduction/cumprod.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
+
+  # ---------------------------------------------------------------------------
+  # conv — convolution ops (sliding-window matmul, shape: [N, C, *spatial])
+  # ---------------------------------------------------------------------------
+
+  conv1d_fwd:
+    family: conv
+    status: spec-only
+
+    signature:
+      inputs:
+        input: {dtype: "float32 | float16 | bfloat16", shape: [N, C_in, L_in]}
+        weight: {dtype: "same_as(input)", shape: [C_out, C_in_g, K]}
+      outputs:
+        output: {dtype: "same_as(input)", shape: [N, C_out, L_out]}
+      params:
+        stride: {type: int, default: 1}
+        padding: {type: int, default: 0}
+        dilation: {type: int, default: 1}
+        groups: {type: int, default: 1}
+      shape_rules:
+        - "C_in_g == C_in // groups"
+        - "L_out == (L_in + 2 * padding - dilation * (K - 1) - 1) // stride + 1"
+
+    workloads: []  # human decision
+
+    roofline:
+      # Conv1d as implicit GEMM: each output element = dot(C_in_g * K)
+      flops: "2 * N * C_out * L_out * C_in_g * K"
+      # Read input + read weight + write output
+      bytes: "(N * C_in * L_in + C_out * C_in_g * K + N * C_out * L_out) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/conv/conv1d.py
+      op: tileops/ops/conv1d.py
+      test: tests/ops/test_conv1d.py
+      bench: benchmarks/ops/bench_conv1d.py
+      bench_manifest_driven: false
+
+  conv1d_fwd_bias:
+    family: conv
+    status: spec-only
+    variant_of: conv1d_fwd
+
+    signature:
+      inputs:
+        input: {dtype: "float32 | float16 | bfloat16", shape: [N, C_in, L_in]}
+        weight: {dtype: "same_as(input)", shape: [C_out, C_in_g, K]}
+        bias: {dtype: "same_as(input)", shape: [C_out]}
+      outputs:
+        output: {dtype: "same_as(input)", shape: [N, C_out, L_out]}
+      params:
+        stride: {type: int, default: 1}
+        padding: {type: int, default: 0}
+        dilation: {type: int, default: 1}
+        groups: {type: int, default: 1}
+      shape_rules:
+        - "C_in_g == C_in // groups"
+        - "L_out == (L_in + 2 * padding - dilation * (K - 1) - 1) // stride + 1"
+
+    workloads: []  # human decision
+
+    roofline:
+      # Conv1d as implicit GEMM + bias add
+      flops: "2 * N * C_out * L_out * C_in_g * K + N * C_out * L_out"
+      # Read input + read weight + read bias + write output
+      bytes: "(N * C_in * L_in + C_out * C_in_g * K + C_out + N * C_out * L_out) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/conv/conv1d.py
+      op: tileops/ops/conv1d.py
+      test: tests/ops/test_conv1d.py
+      bench: benchmarks/ops/bench_conv1d.py
+      bench_manifest_driven: false
