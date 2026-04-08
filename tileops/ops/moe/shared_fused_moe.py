@@ -243,8 +243,9 @@ class SharedFusedMoE(FusedMoe):
                 down_shard = shared_w_down.narrow(1, r * s, s).contiguous()
             else:
                 # Weights already sliced (pre_sharded=True) or no slicing needed (tp_size=1).
-                gate_up_shard = shared_w_gate_up
-                down_shard = shared_w_down
+                # Normalize contiguity: caller may pass non-contiguous views (e.g. slices).
+                gate_up_shard = shared_w_gate_up.contiguous()
+                down_shard = shared_w_down.contiguous()
 
             shared_out = self._shared_mlp_kernel(hidden_states, gate_up_shard, down_shard)
         else:

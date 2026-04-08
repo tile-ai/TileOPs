@@ -218,10 +218,20 @@ def test_shared_fused_moe_bench(
     )
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    # ── TileOPs pre_sharded (tp_size=1, weights pre-sliced by caller) ─────────
-    # tp_size=1 is the single-GPU case; with pre_sharded=True the caller owns
-    # weight layout — no internal cat/contiguous on every forward() call.
-    # Demonstrates zero transient shared-weight alloc path.
+    # ── TileOPs pre_sharded (tp_size=2, rank=0, weights pre-sliced by caller) ──
+    # Simulates the TP use-case: caller pre-slices weights at model-load time so
+    # forward() skips the internal cat/narrow/contiguous on every call.
+    # This is the path the optimization is designed to accelerate.
+    _tp_size = 2
+    _tp_rank = 0
+    _shard = shared_ffn_size // _tp_size
+    # Pre-slice: gate[r*s:(r+1)*s] + up[r*s:(r+1)*s] → [2*s, H], down → [H, s]
+    _gate_up_local = torch.cat([
+        shared_w_gate_up[_tp_rank * _shard : (_tp_rank + 1) * _shard],
+        shared_w_gate_up[shared_ffn_size + _tp_rank * _shard : shared_ffn_size + (_tp_rank + 1) * _shard],
+    ], dim=0).contiguous()
+    _down_local = shared_w_down[:, _tp_rank * _shard : (_tp_rank + 1) * _shard].contiguous()
+
     op_pre = SharedFusedMoE(
         num_tokens=num_tokens,
         num_experts=num_experts,
@@ -235,23 +245,22 @@ def test_shared_fused_moe_bench(
         layout="nopad",
         dtype=dtype,
         shared_ffn_size=shared_ffn_size,
-        tp_size=1,
-        tp_rank=0,
+        tp_size=_tp_size,
+        tp_rank=_tp_rank,
         pre_sharded=True,
     )
-    # With tp_size=1 the shard == full weights; no slicing occurs either way.
     op_pre(hidden, gating, w_gate_up, w_down, correction_bias,
-           shared_w_gate_up=shared_w_gate_up, shared_w_down=shared_w_down)  # warmup
+           shared_w_gate_up=_gate_up_local, shared_w_down=_down_local)  # warmup
     torch.cuda.synchronize()
 
     def _tileops_pre_fn(hidden, gating, w_gate_up, w_down, correction_bias,
-                        shared_w_gate_up, shared_w_down):
+                        gate_up_local, down_local):
         return op_pre(hidden, gating, w_gate_up, w_down, correction_bias,
-                      shared_w_gate_up=shared_w_gate_up, shared_w_down=shared_w_down)
+                      shared_w_gate_up=gate_up_local, shared_w_down=down_local)
 
     result_pre = bm.profile(
         _tileops_pre_fn, hidden, gating, w_gate_up, w_down, correction_bias,
-        shared_w_gate_up, shared_w_down,
+        _gate_up_local, _down_local,
     )
     BenchmarkReport.record(op_pre, locals(), result_pre, tag="tileops-pre-sharded")
 
