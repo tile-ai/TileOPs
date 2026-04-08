@@ -46,15 +46,10 @@ class _SoftmaxBaseOp(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = -1,
+        dim: Union[int, List[int]] = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if not self._supports_multidim and not isinstance(dim, int):
-            raise TypeError(
-                f"{self.__class__.__name__} expects 'dim' to be an int; "
-                f"got {type(dim).__name__}."
-            )
         self.dtype = dtype
         self.dim = dim
         self.keepdim = False

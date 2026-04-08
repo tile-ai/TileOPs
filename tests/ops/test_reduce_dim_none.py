@@ -231,25 +231,6 @@ def test_var_mean_dim_none(
     assert torch.allclose(mean_out, ref_mean, **tol), f"mean err: {(mean_out - ref_mean).abs().max()}"
 
 
-# ---------------------------------------------------------------------------
-# LogSumExp
-# ---------------------------------------------------------------------------
-
-
-@DimNoneFixture
-def test_logsumexp_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
-) -> None:
-    from tileops.ops.reduction.logsumexp import LogSumExpOp
-
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = LogSumExpOp(dtype=dtype, dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.logsumexp(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-    tol = _tol(dtype)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
 # ---------------------------------------------------------------------------

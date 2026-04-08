@@ -491,16 +491,23 @@ def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 def test_softmax_rejects_multidim_before_kernel() -> None:
-    """SoftmaxOp must raise TypeError for non-int dim at construction."""
-    with pytest.raises(TypeError, match="expects 'dim' to be an int"):
-        SoftmaxOp(dtype=torch.float32, dim=[-1, 0])
+    """SoftmaxOp must raise ValueError for list dim before touching the kernel."""
+    x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
+    op = SoftmaxOp(dtype=torch.float32, dim=[-1, 0])
+    with pytest.raises(ValueError, match="does not support multi-dim"):
+        op(x)
+    # Verify no kernel was built (cache must remain empty).
+    assert len(op._kernel_cache) == 0
 
 
 @pytest.mark.smoke
 def test_log_softmax_rejects_multidim_before_kernel() -> None:
-    """LogSoftmaxOp must raise TypeError for non-int dim at construction."""
-    with pytest.raises(TypeError, match="expects 'dim' to be an int"):
-        LogSoftmaxOp(dtype=torch.float32, dim=[-1, 0])
+    """LogSoftmaxOp must raise ValueError for list dim before touching the kernel."""
+    x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
+    op = LogSoftmaxOp(dtype=torch.float32, dim=[-1, 0])
+    with pytest.raises(ValueError, match="does not support multi-dim"):
+        op(x)
+    assert len(op._kernel_cache) == 0
 
 
 @pytest.mark.smoke
