@@ -638,10 +638,6 @@ def _validate_dtype_token(
                 f"[dtype] {op_name}: {context} dtype same_as({ref}) "
                 f"references unknown tensor"
             )
-        # TODO: same_as(ref) is an identity constraint — the tensor must have
-        # the exact same dtype as ref at runtime. Validate that:
-        # 1. Workload dtype entries use the same dtype for both tensors
-        # 2. same_as tensors are excluded from Cartesian product in dtype_combos
     elif token not in _TORCH_DTYPES:
         return f"[dtype] {op_name}: {context} has unrecognized dtype '{token}'"
     return None
