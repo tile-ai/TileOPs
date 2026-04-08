@@ -37,7 +37,7 @@ Three roles govern the manifest lifecycle:
 
 **R2. Full interface.** Params include all mathematically supported parameters, even if the current kernel only supports the default.
 
-**R3. `dtype` syntax.** `|` for alternatives, `same_as(ref)` for dependent types.
+**R3. `dtype` syntax.** `|` for alternatives, `same_as(ref)` for dependent types. `same_as(ref)` is a **dtype constraint** (identity), not a dtype declaration — it means "must be the exact same dtype as `ref` at runtime". Tensors declared with `same_as(ref)` do not contribute independent axes to the Cartesian product in R4; they are bound to the referenced tensor's dtype.
 
 **R4. `dtype_combos`.** Enumerates the actually supported cross-tensor dtype combinations.
 

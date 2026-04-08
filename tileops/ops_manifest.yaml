@@ -2127,8 +2127,9 @@ ops:
   # ---------------------------------------------------------------------------
 
   conv1d_fwd:
+    # Equivalent to torch.nn.functional.conv1d (bias=None)
     family: conv
-    status: spec-only  # kernel lacks dilation, groups, string padding
+    status: spec-only  # TODO: impl lacks dilation, groups, string padding
 
     signature:
       inputs:
@@ -2137,17 +2138,33 @@ ops:
       outputs:
         output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
       params:
-        stride: {type: int, default: 1}
-        padding: {type: "int | str", default: 0}
-        dilation: {type: int, default: 1}
+        stride: {type: "int | tuple[int]", default: 1}
+        padding: {type: "int | tuple[int] | str", default: 0}
+        dilation: {type: "int | tuple[int]", default: 1}
         groups: {type: int, default: 1}
       shape_rules:
         - "C_in_g == C_in // groups"
         # padding='valid' → 0, padding='same' → L_out == L_in (stride must be 1)
         - "L_out == L_in if padding == 'same' else (L_in + 2 * (0 if padding == 'valid' else padding) - dilation * (kW - 1) - 1) // stride + 1"
 
-    workloads: []
-    # workloads TBD: audio/speech models (ConvTasNet, SEANet, WaveNet)
+    # Workloads selected from three dominant Conv1d model families:
+    #   Whisper (OpenAI ASR)  — https://huggingface.co/openai/whisper-large-v3
+    #     src: transformers/models/whisper/modeling_whisper.py WhisperEncoder (nn.Conv1d)
+    #   Wav2Vec2 (Meta ASR)   — https://huggingface.co/facebook/wav2vec2-base
+    #     src: transformers/models/wav2vec2/modeling_wav2vec2.py Wav2Vec2NoLayerNormConvLayer (nn.Conv1d)
+    #   EnCodec (Meta codec)  — https://huggingface.co/facebook/encodec_24khz
+    #     src: transformers/models/encodec/modeling_encodec.py EncodecEncoder (EncodecConv1d → nn.Conv1d)
+    # Selection criteria: cover small/large kernel, narrow/wide channels,
+    #   short/long sequences, and different pipeline stages (entry vs deep layer).
+    workloads:
+      # Whisper-large encoder conv1: mel spectrogram → hidden (most common ASR entry point)
+      - {input_shape: [1, 80, 3000], C_out: 1280, kW: 3, dtypes: [float16, bfloat16], label: "whisper-large-conv1"}
+      # Wav2Vec2 feature extractor layer1: raw 1s waveform, large kernel + stride downsampling
+      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
+      # EnCodec SEANet encoder init: raw 1s audio @24kHz, narrow channels
+      - {input_shape: [1, 1, 24000], C_out: 32, kW: 7, dtypes: [float16, bfloat16], label: "encodec-init"}
+      # EnCodec SEANet deep block: short sequence, wide channels, large kernel
+      - {input_shape: [1, 128, 600], C_out: 256, kW: 10, dtypes: [float16, bfloat16], label: "encodec-deep"}
 
     roofline:
       flops: "2 * N * C_out * L_out * C_in_g * kW"
@@ -2161,8 +2178,9 @@ ops:
       bench_manifest_driven: false
 
   conv1d_fwd_bias:
+    # Equivalent to torch.nn.functional.conv1d (bias≠None)
     family: conv
-    status: spec-only  # kernel lacks dilation, groups, string padding
+    status: spec-only  # TODO: impl lacks dilation, groups, string padding
     variant_of: conv1d_fwd
 
     signature:
@@ -2173,15 +2191,20 @@ ops:
       outputs:
         output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
       params:
-        stride: {type: int, default: 1}
-        padding: {type: "int | str", default: 0}
-        dilation: {type: int, default: 1}
+        stride: {type: "int | tuple[int]", default: 1}
+        padding: {type: "int | tuple[int] | str", default: 0}
+        dilation: {type: "int | tuple[int]", default: 1}
         groups: {type: int, default: 1}
       shape_rules:
         - "C_in_g == C_in // groups"
         - "L_out == L_in if padding == 'same' else (L_in + 2 * (0 if padding == 'valid' else padding) - dilation * (kW - 1) - 1) // stride + 1"
 
-    workloads: []
+    # Same shapes as conv1d_fwd; bias adds negligible memory traffic
+    workloads:
+      - {input_shape: [1, 80, 3000], C_out: 1280, kW: 3, dtypes: [float16, bfloat16], label: "whisper-large-conv1"}
+      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
+      - {input_shape: [1, 1, 24000], C_out: 32, kW: 7, dtypes: [float16, bfloat16], label: "encodec-init"}
+      - {input_shape: [1, 128, 600], C_out: 256, kW: 10, dtypes: [float16, bfloat16], label: "encodec-deep"}
 
     roofline:
       # bias adds one addition per output element
