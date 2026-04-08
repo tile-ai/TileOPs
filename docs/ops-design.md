@@ -16,6 +16,8 @@ Op (base)
 
 For trust boundaries (what implementation OWNS, MUST NOT do, and MAY READ), see [trust-model.md -- Implementation](trust-model.md#implementation).
 
+For class naming rules (ALL CAPS for abbreviations, no snake_case classes, controlled vocabulary), see [naming-convention.md](naming-convention.md).
+
 ## Principle 1: Two-Layer Boundary
 
 Every operator splits into Op (L2) and Kernel (L1):
