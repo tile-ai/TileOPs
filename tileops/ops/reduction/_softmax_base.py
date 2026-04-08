@@ -50,6 +50,11 @@ class _SoftmaxBaseOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        if not self._supports_multidim and not isinstance(dim, int):
+            raise TypeError(
+                f"{self.__class__.__name__} expects 'dim' to be an int; "
+                f"got {type(dim).__name__}."
+            )
         self.dtype = dtype
         self.dim = dim
         self.keepdim = False
