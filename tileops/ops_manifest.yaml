@@ -2143,6 +2143,8 @@ ops:
         dilation: {type: "int | tuple[int]", default: 1}
         groups: {type: int, default: 1}
       shape_rules:
+        - "C_in % groups == 0"
+        - "C_out % groups == 0"
         - "C_in_g == C_in // groups"
         # padding='valid' → 0, padding='same' → L_out == L_in (stride must be 1)
         - "L_out == L_in if padding == 'same' else (L_in + 2 * (0 if padding == 'valid' else padding) - dilation * (kW - 1) - 1) // stride + 1"
@@ -2196,6 +2198,8 @@ ops:
         dilation: {type: "int | tuple[int]", default: 1}
         groups: {type: int, default: 1}
       shape_rules:
+        - "C_in % groups == 0"
+        - "C_out % groups == 0"
         - "C_in_g == C_in // groups"
         - "L_out == L_in if padding == 'same' else (L_in + 2 * (0 if padding == 'valid' else padding) - dilation * (kW - 1) - 1) // stride + 1"
 
