@@ -2121,3 +2121,114 @@ ops:
       op: tileops/ops/reduction/cumprod.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
+
+  # ---------------------------------------------------------------------------
+  # conv — convolution ops (1D/2D/3D forward)
+  # ---------------------------------------------------------------------------
+
+  conv1d_fwd:
+    # Equivalent to torch.nn.functional.conv1d (bias=None)
+    family: conv
+    status: spec-only  # TODO: impl lacks dilation, groups, string padding
+
+    signature:
+      inputs:
+        input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+        weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
+      outputs:
+        output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
+      params:
+        stride: {type: "int | tuple[int]", default: 1}
+        padding: {type: "int | tuple[int] | str", default: 0}
+        dilation: {type: "int | tuple[int]", default: 1}
+        groups: {type: int, default: 1}
+      shape_rules:
+        - "C_in % groups == 0"
+        - "C_out % groups == 0"
+        - "C_in_g == C_in // groups"
+        # Normalize tuple params to scalar (conv1d tuples are always 1-element)
+        - "_s == (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+        - "_p == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+        - "_d == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+        # String padding validation
+        - "not isinstance(_p, str) or _p in ('valid', 'same')"
+        - "_p != 'same' or _s == 1"
+        - "L_out == L_in if _p == 'same' else (L_in + 2 * (0 if _p == 'valid' else _p) - _d * (kW - 1) - 1) // _s + 1"
+
+    # Workloads selected from three dominant Conv1d model families:
+    #   Whisper (OpenAI ASR)  — https://huggingface.co/openai/whisper-large-v3
+    #     src: transformers/models/whisper/modeling_whisper.py WhisperEncoder (nn.Conv1d)
+    #   Wav2Vec2 (Meta ASR)   — https://huggingface.co/facebook/wav2vec2-base
+    #     src: transformers/models/wav2vec2/modeling_wav2vec2.py Wav2Vec2NoLayerNormConvLayer (nn.Conv1d)
+    #   EnCodec (Meta codec)  — https://huggingface.co/facebook/encodec_24khz
+    #     src: transformers/models/encodec/modeling_encodec.py EncodecEncoder (EncodecConv1d → nn.Conv1d)
+    # Selection criteria: cover small/large kernel, narrow/wide channels,
+    #   short/long sequences, and different pipeline stages (entry vs deep layer).
+    workloads:
+      # Whisper-large encoder conv1: mel spectrogram → hidden (most common ASR entry point)
+      - {input_shape: [1, 80, 3000], C_out: 1280, kW: 3, dtypes: [float16, bfloat16], label: "whisper-large-conv1"}
+      # Wav2Vec2 feature extractor layer1: raw 1s waveform, large kernel + stride downsampling
+      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, stride: 5, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
+      # EnCodec SEANet encoder init: raw 1s audio @24kHz, narrow channels
+      - {input_shape: [1, 1, 24000], C_out: 32, kW: 7, dtypes: [float16, bfloat16], label: "encodec-init"}
+      # EnCodec SEANet deep block: short sequence, wide channels, large kernel
+      - {input_shape: [1, 128, 600], C_out: 256, kW: 10, dtypes: [float16, bfloat16], label: "encodec-deep"}
+
+    roofline:
+      flops: "2 * N * C_out * L_out * C_in_g * kW"
+      bytes: "(N * C_in * L_in + C_out * C_in_g * kW + N * C_out * L_out) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/conv/conv1d.py
+      op: tileops/ops/conv1d.py
+      test: tests/ops/test_conv1d.py
+      bench: benchmarks/ops/bench_conv1d.py
+      bench_manifest_driven: false
+
+  conv1d_fwd_bias:
+    # Equivalent to torch.nn.functional.conv1d (bias≠None)
+    family: conv
+    status: spec-only  # TODO: impl lacks dilation, groups, string padding
+    variant_of: conv1d_fwd
+
+    signature:
+      inputs:
+        input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+        weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
+        bias: {dtype: "same_as(input)", shape: "[C_out]"}
+      outputs:
+        output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
+      params:
+        stride: {type: "int | tuple[int]", default: 1}
+        padding: {type: "int | tuple[int] | str", default: 0}
+        dilation: {type: "int | tuple[int]", default: 1}
+        groups: {type: int, default: 1}
+      shape_rules:
+        - "C_in % groups == 0"
+        - "C_out % groups == 0"
+        - "C_in_g == C_in // groups"
+        - "_s == (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+        - "_p == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+        - "_d == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+        - "not isinstance(_p, str) or _p in ('valid', 'same')"
+        - "_p != 'same' or _s == 1"
+        - "L_out == L_in if _p == 'same' else (L_in + 2 * (0 if _p == 'valid' else _p) - _d * (kW - 1) - 1) // _s + 1"
+
+    # Same shapes as conv1d_fwd; bias adds negligible memory traffic
+    workloads:
+      - {input_shape: [1, 80, 3000], C_out: 1280, kW: 3, dtypes: [float16, bfloat16], label: "whisper-large-conv1"}
+      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, stride: 5, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
+      - {input_shape: [1, 1, 24000], C_out: 32, kW: 7, dtypes: [float16, bfloat16], label: "encodec-init"}
+      - {input_shape: [1, 128, 600], C_out: 256, kW: 10, dtypes: [float16, bfloat16], label: "encodec-deep"}
+
+    roofline:
+      # bias adds one addition per output element
+      flops: "2 * N * C_out * L_out * C_in_g * kW + N * C_out * L_out"
+      bytes: "(N * C_in * L_in + C_out * C_in_g * kW + C_out + N * C_out * L_out) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/conv/conv1d.py
+      op: tileops/ops/conv1d.py
+      test: tests/ops/test_conv1d.py
+      bench: benchmarks/ops/bench_conv1d.py
+      bench_manifest_driven: false
