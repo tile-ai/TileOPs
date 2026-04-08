@@ -43,6 +43,11 @@ class DimNoneFixture(FixtureBase):
                     (4, 8, 256), False, torch.bfloat16,
                     marks=pytest.mark.full,
                 ),
+                # float32
+                pytest.param(
+                    (4, 8, 256), False, torch.float32,
+                    marks=pytest.mark.full,
+                ),
             ],
         ),
     ]
@@ -265,9 +270,31 @@ class DimNoneLogicalFixture(FixtureBase):
                     (4, 8, 256), True, torch.float32,
                     marks=pytest.mark.full,
                 ),
+                # bool: canonical dtype for all/any
+                pytest.param(
+                    (4, 8, 256), False, torch.bool,
+                    marks=pytest.mark.full,
+                ),
+                # fp16: supported dtype for count_nonzero
+                pytest.param(
+                    (4, 8, 256), False, torch.float16,
+                    marks=pytest.mark.full,
+                ),
+                # bf16: supported dtype for count_nonzero
+                pytest.param(
+                    (4, 8, 256), False, torch.bfloat16,
+                    marks=pytest.mark.full,
+                ),
             ],
         ),
     ]
+
+
+def _make_logical_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
+    """Create test input appropriate for the dtype."""
+    if dtype == torch.bool:
+        return torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    return torch.randn(*shape, dtype=dtype, device="cuda")
 
 
 @DimNoneLogicalFixture
@@ -276,7 +303,7 @@ def test_all_dim_none(
 ) -> None:
     from tileops.ops.reduction.all_op import AllOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = _make_logical_input(shape, dtype)
     op = AllOp(dtype=dtype, dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.all(x.bool(), dim=dims, keepdim=keepdim)
@@ -291,7 +318,7 @@ def test_any_dim_none(
 ) -> None:
     from tileops.ops.reduction.any_op import AnyOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = _make_logical_input(shape, dtype)
     op = AnyOp(dtype=dtype, dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.any(x.bool(), dim=dims, keepdim=keepdim)
@@ -313,6 +340,24 @@ def test_count_nonzero_dim_none() -> None:
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.equal(y, ref), "count_nonzero dim=None mismatch"
+
+
+@pytest.mark.parametrize("dtype", [
+    pytest.param(torch.float16, marks=pytest.mark.smoke),
+    pytest.param(torch.bfloat16, marks=pytest.mark.full),
+])
+def test_count_nonzero_dim_none_dtypes(dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
+
+    shape = (4, 8, 256)
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x[x < 0] = 0.0
+    op = CountNonzeroOp(dtype=dtype, dim=None)
+    dims = _all_dims(shape)
+    ref = torch.count_nonzero(x, dim=dims)
+    y = op(x)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert torch.equal(y, ref), f"count_nonzero dim=None mismatch for {dtype}"
 
 
 # ---------------------------------------------------------------------------
