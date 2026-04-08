@@ -1,7 +1,6 @@
 from .avg_pool1d import AvgPool1dOp
 from .avg_pool2d import AvgPool2dOp
 from .avg_pool3d import AvgPool3dOp
-from .max_pool2d import MaxPool2dOp
 from .conv1d import Conv1dOp
 from .conv2d import Conv2dOp
 from .conv3d import Conv3dOp
@@ -32,6 +31,7 @@ from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
 from .gqa_sliding_window_fwd import GqaSlidingWindowFwdOp
 from .gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdOp
 from .grouped_gemm import GroupedGemmOp
+from .max_pool2d import MaxPool2dOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
