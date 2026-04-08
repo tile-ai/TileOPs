@@ -1588,19 +1588,18 @@ ops:
 
   prod_fwd:
     family: reduction
-    status: implemented
-
+    status: spec-only  # dim=None not yet implemented; update when impl lands
     signature:
       inputs:
         x: {dtype: "float16 | bfloat16 | float32"}
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: int, default: -1}
+        dim: {type: "int | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - 1"
-        - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else 1)"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else [dim % x.ndim]) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1610,8 +1609,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-        N: "x.shape[dim % x.ndim]"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else [dim % x.ndim])))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else [dim % x.ndim]))"
       # N-1 multiplications per output element
       flops: "M * N"
       # Read x + write y
