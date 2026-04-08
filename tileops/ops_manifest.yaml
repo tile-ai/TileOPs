@@ -2121,3 +2121,76 @@ ops:
       op: tileops/ops/reduction/cumprod.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
+
+  # ---------------------------------------------------------------------------
+  # conv — convolution ops (1D/2D/3D forward)
+  # ---------------------------------------------------------------------------
+
+  conv1d_fwd:
+    family: conv
+    status: spec-only  # kernel lacks dilation, groups, string padding
+
+    signature:
+      inputs:
+        input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+        weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
+      outputs:
+        output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
+      params:
+        stride: {type: int, default: 1}
+        padding: {type: "int | str", default: 0}
+        dilation: {type: int, default: 1}
+        groups: {type: int, default: 1}
+      shape_rules:
+        - "C_in_g == C_in // groups"
+        - "L_out == (L_in + 2 * padding - dilation * (kW - 1) - 1) // stride + 1"
+
+    workloads: []
+
+    roofline:
+      # Standard conv1d FLOPs: 2 * N * C_out * L_out * C_in * kW / groups
+      flops: "2 * N * C_out * L_out * C_in * kW // groups"
+      bytes: "(N * C_in * L_in + C_out * C_in_g * kW + N * C_out * L_out) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/conv/conv1d.py
+      op: tileops/ops/conv1d.py
+      test: tests/ops/test_conv1d.py
+      bench: benchmarks/ops/bench_conv1d.py
+      bench_manifest_driven: false
+
+  # TODO: workloads — human decision (audio/speech models: ConvTasNet, SEANet, WaveNet)
+
+  conv1d_fwd_bias:
+    family: conv
+    status: spec-only  # kernel lacks dilation, groups, string padding
+    variant_of: conv1d_fwd
+
+    signature:
+      inputs:
+        input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+        weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
+        bias: {dtype: "same_as(input)", shape: "[C_out]"}
+      outputs:
+        output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
+      params:
+        stride: {type: int, default: 1}
+        padding: {type: "int | str", default: 0}
+        dilation: {type: int, default: 1}
+        groups: {type: int, default: 1}
+      shape_rules:
+        - "C_in_g == C_in // groups"
+        - "L_out == (L_in + 2 * padding - dilation * (kW - 1) - 1) // stride + 1"
+
+    workloads: []
+
+    roofline:
+      flops: "2 * N * C_out * L_out * C_in * kW // groups + N * C_out * L_out"
+      bytes: "(N * C_in * L_in + C_out * C_in_g * kW + C_out + N * C_out * L_out) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/conv/conv1d.py
+      op: tileops/ops/conv1d.py
+      test: tests/ops/test_conv1d.py
+      bench: benchmarks/ops/bench_conv1d.py
+      bench_manifest_driven: false
