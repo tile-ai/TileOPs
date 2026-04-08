@@ -58,7 +58,7 @@ class _ReduceOpBase(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int]] = -1,
+        dim: Union[int, List[int], None] = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -130,8 +130,8 @@ class _ReduceOpBase(Op):
 
         orig_shape = x.shape
 
-        # --- multi-dim path ---
-        if isinstance(self.dim, (list, tuple)):
+        # --- multi-dim path (includes dim=None for full reduction) ---
+        if isinstance(self.dim, (list, tuple)) or self.dim is None:
             dims = normalize_dim(self.dim, x.ndim)
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
@@ -290,7 +290,7 @@ class _WelfordReduceOp(_ReduceOpBase):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int]] = -1,
+        dim: Union[int, List[int], None] = -1,
         correction: int = 1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,

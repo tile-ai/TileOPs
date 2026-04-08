@@ -65,7 +65,7 @@ class CountNonzeroOp(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int]] = -1,
+        dim: Union[int, List[int], None] = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -111,8 +111,8 @@ class CountNonzeroOp(Op):
 
         orig_shape = x.shape
 
-        # --- multi-dim path ---
-        if isinstance(self.dim, (list, tuple)):
+        # --- multi-dim path (includes dim=None for full reduction) ---
+        if isinstance(self.dim, (list, tuple)) or self.dim is None:
             dims = normalize_dim(self.dim, x.ndim)
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
