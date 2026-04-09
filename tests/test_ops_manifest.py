@@ -267,7 +267,7 @@ class TestManifestAPI:
 
         # Stubs raise NotImplementedError — dispatch succeeds if it reaches them
         with pytest.raises(NotImplementedError):
-            eval_roofline("MhaFwdOp")
+            eval_roofline("MultiHeadAttentionFwdOp")
 
     def test_eval_roofline_func_mode_bad_module_raises(self):
         """Verify func-mode raises ValueError for non-importable module."""
@@ -275,13 +275,13 @@ class TestManifestAPI:
         from tileops.manifest import _load_manifest, eval_roofline
 
         ops = _load_manifest()
-        original = ops["MhaFwdOp"]["roofline"]["func"]
+        original = ops["MultiHeadAttentionFwdOp"]["roofline"]["func"]
         try:
-            ops["MhaFwdOp"]["roofline"]["func"] = "nonexistent.module.fn"
+            ops["MultiHeadAttentionFwdOp"]["roofline"]["func"] = "nonexistent.module.fn"
             with pytest.raises(ValueError, match="Failed to import"):
-                eval_roofline("MhaFwdOp")
+                eval_roofline("MultiHeadAttentionFwdOp")
         finally:
-            ops["MhaFwdOp"]["roofline"]["func"] = original
+            ops["MultiHeadAttentionFwdOp"]["roofline"]["func"] = original
 
 
 class TestCanonicalKeyResolution:
