@@ -1153,7 +1153,7 @@ class TestIntegration:
 
     @pytest.mark.xfail(
         reason="Manifest keys renamed but Op classes not yet renamed (PR-B follows)",
-        strict=False,
+        strict=True,
     )
     def test_validator_passes_on_current_codebase(self):
         result = subprocess.run(
