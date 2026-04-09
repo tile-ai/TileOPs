@@ -120,7 +120,7 @@ ops:
     ...
 ```
 
-`ref_api` is informational — it documents which external API the signature follows. It does not affect validation or code generation.
+`ref_api` is required but informational — the validator checks for presence, but the value does not affect signature validation or code generation.
 
 ## Entry Structure
 
