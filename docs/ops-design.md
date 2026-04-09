@@ -100,22 +100,24 @@ Examples: `RMSNormFwdKernel`, `SoftmaxFwdKernel`.
 
 `kernel_map` keys are **stable snake_case dispatch identifiers**. They are protocol-level names and MUST NOT be derived from `cls.__name__`. Renaming a Kernel class does not by itself require renaming the dispatch key.
 
-**`_kernel_key` (family base dispatch):** A bare snake_case name identifying the kernel within the family. No `_kernel` suffix — this is the family's internal dispatch token.
+**Family-based ops** declare `_kernel_key` as a bare snake_case name. The family base class builds `default_kernel_map` from it automatically (`{self._kernel_key: self._kernel_cls}`):
 
 ```python
 _kernel_key = "rms_norm"  # RowNormOp family
 _kernel_key = "softmax_fwd"  # _ReduceOpBase family
 ```
 
-**`default_kernel_map` (per-op dispatch):** Keys use descriptive snake_case with a `_kernel` suffix.
+**Standalone ops** (no family base) define `default_kernel_map` directly. Keys use descriptive snake_case, conventionally with a `_kernel` suffix:
 
 ```python
-# Single-kernel op
+# Single-kernel standalone op
 def default_kernel_map(self):
     return {"fp8_quant_kernel": FP8QuantKernel}
+```
 
+**Multi-kernel ops** use descriptive snake_case keys:
 
-# Multi-kernel op
+```python
 def default_kernel_map(self):
     return {
         "mha_bwd_preprocess_kernel": MhaBwdPreprocessKernel,
