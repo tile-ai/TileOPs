@@ -528,6 +528,26 @@ class TestDtype:
             f"Expected identity constraint error, got: {errors}"
         )
 
+    def test_dtype_combos_same_as_partial_combo_fails(self, validator):
+        """dtype_combos with same_as-bound tensor but missing reference must fail."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"w": "float16"},  # x missing — cannot verify identity
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any("without its reference" in e for e in errors), (
+            f"Expected partial-combo error, got: {errors}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # bench: benchmark uses manifest workloads

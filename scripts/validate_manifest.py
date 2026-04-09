@@ -673,16 +673,20 @@ def _check_dtype_combos_same_as_identity(
         if not isinstance(combo, dict):
             continue
         for tensor, ref in same_as_map.items():
-            if (
-                tensor in combo
-                and ref in combo
-                and combo[tensor] != combo[ref]
-            ):
+            t_in = tensor in combo
+            r_in = ref in combo
+            if t_in and r_in and combo[tensor] != combo[ref]:
                 errors.append(
                     f"[dtype] {op_name}: dtype_combos[{i}] violates "
                     f"same_as identity constraint — {tensor} "
                     f"({combo[tensor]}) must match {ref} "
                     f"({combo[ref]}) per R3"
+                )
+            elif t_in and not r_in:
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}] has "
+                    f"same_as-bound tensor '{tensor}' without its "
+                    f"reference '{ref}' — cannot verify identity"
                 )
     return errors
 
