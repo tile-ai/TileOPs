@@ -6,11 +6,11 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import Fp8QuantOp
-from workloads.ops.fp8_quant import Fp8QuantTest as _Fp8QuantTestWorkload
+from tileops.ops import FP8QuantOp
+from workloads.ops.fp8_quant import FP8QuantTest as _FP8QuantTestWorkload
 
 
-class Fp8QuantTest(_Fp8QuantTestWorkload, TestBase):
+class FP8QuantTest(_FP8QuantTestWorkload, TestBase):
     def ref_program(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # input_tensor: (batch, seq_len_kv, kv_group, index_dim)
         amax_value = torch.abs(input_tensor).amax(dim=-1, keepdim=True).clamp(min=1e-4)
@@ -20,7 +20,7 @@ class Fp8QuantTest(_Fp8QuantTestWorkload, TestBase):
         return scale_tensor.squeeze(dim=-1), output_tensor
 
 
-class Fp8QuantFixture(FixtureBase):
+class FP8QuantFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len_kv, kv_group, index_dim, in_dtype, tune", [
             pytest.param(1, 8192, 1, 64, torch.float16, False, marks=pytest.mark.smoke),
@@ -41,11 +41,11 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
         f"Cosine similarity too low: {cos_sim.item()}"
 
 
-@Fp8QuantFixture
+@FP8QuantFixture
 def test_fp8_quant_op(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
                       in_dtype: torch.dtype, tune: bool) -> None:
-    test = Fp8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
-    op = Fp8QuantOp(
+    test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
+    op = FP8QuantOp(
         batch=batch,
         seq_len_kv=seq_len_kv,
         kv_group=kv_group,

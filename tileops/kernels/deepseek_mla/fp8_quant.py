@@ -8,7 +8,7 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["Fp8QuantKernel"]
+__all__ = ["FP8QuantKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -78,7 +78,7 @@ def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, num_stages, block_m, *in
                            device=inputs[0].device)
 
 
-class Fp8QuantKernel(Kernel):
+class FP8QuantKernel(Kernel):
 
     supported_archs: list[int] = [90]
 

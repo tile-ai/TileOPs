@@ -5,7 +5,7 @@ import torch
 from workloads.base import WorkloadBase
 
 
-class Fp8LightingIndexerTest(WorkloadBase):
+class FP8LightingIndexerTest(WorkloadBase):
 
     def __init__(self,
                  batch: int,

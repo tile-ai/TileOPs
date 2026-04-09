@@ -1,7 +1,7 @@
 from .conv import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
 from .deepseek_mla import (
-    Fp8LightingIndexerKernel,
-    Fp8QuantKernel,
+    FP8LightingIndexerKernel,
+    FP8QuantKernel,
     SparseMlaKernel,
     TopkSelectorKernel,
     mla_decode_kernel,
@@ -87,8 +87,8 @@ __all__ = [
     "FusedGatedKernel",
     "FlashAttnBwdPostprocessKernel",
     "FlashAttnBwdPreprocessKernel",
-    "Fp8LightingIndexerKernel",
-    "Fp8QuantKernel",
+    "FP8LightingIndexerKernel",
+    "FP8QuantKernel",
     "GqaSlidingWindowFwdKernel",
     "GqaSlidingWindowFwdWgmmaPipelinedKernel",
     "GqaSlidingWindowVarlenFwdKernel",

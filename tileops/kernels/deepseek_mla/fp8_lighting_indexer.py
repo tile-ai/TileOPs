@@ -9,7 +9,7 @@ from tilelang.autotuner import autotune
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["Fp8LightingIndexerKernel"]
+__all__ = ["FP8LightingIndexerKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -201,7 +201,7 @@ def _(
     return fake_o
 
 
-class Fp8LightingIndexerKernel(Kernel):
+class FP8LightingIndexerKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,

@@ -4,11 +4,11 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import Fp8LightingIndexerOp
-from workloads.ops.fp8_lighting_indexer import Fp8LightingIndexerTest
+from tileops.ops import FP8LightingIndexerOp
+from workloads.ops.fp8_lighting_indexer import FP8LightingIndexerTest
 
 
-class _Fp8LightingIndexerTestBaseline(Fp8LightingIndexerTest):
+class _FP8LightingIndexerTestBaseline(FP8LightingIndexerTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
@@ -39,7 +39,7 @@ class _Fp8LightingIndexerTestBaseline(Fp8LightingIndexerTest):
         return (logits,)
 
 
-class Fp8LightingIndexerBenchmark(BenchmarkBase):
+class FP8LightingIndexerBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         # Flops depend on the actual mask cost which varies per input
@@ -76,12 +76,12 @@ _FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
 def test_fp8_lighting_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
                                     seq_len_kv: int, kv_group: int, clean_logits: bool,
                                     config: Optional[dict], tune: bool) -> None:
-    test = _Fp8LightingIndexerTestBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+    test = _FP8LightingIndexerTestBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
                                   clean_logits, config)
-    bm = Fp8LightingIndexerBenchmark(test)
+    bm = FP8LightingIndexerBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = Fp8LightingIndexerOp(batch=batch,
+    op = FP8LightingIndexerOp(batch=batch,
                               seq_len=seq_len,
                               heads=heads,
                               index_dim=index_dim,
