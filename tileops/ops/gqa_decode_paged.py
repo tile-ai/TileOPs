@@ -2,15 +2,15 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.flash_decode.gqa_decode_paged import gqa_decode_paged_kernel
+from tileops.kernels.flash_decode.gqa_decode_paged import GqaDecodePagedKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["GroupQueryAttentionDecodePagedWithKVCacheOp"]
+__all__ = ["GqaDecodePagedFwdOp"]
 
 
-class GroupQueryAttentionDecodePagedWithKVCacheOp(Op):
+class GqaDecodePagedFwdOp(Op):
     """Paged GQA decode with dynamic KV cache. Layout: Q [batch, heads, dim] (BHD);
     K, V physical cache [seqlen_kv, heads_kv, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
@@ -39,7 +39,7 @@ class GroupQueryAttentionDecodePagedWithKVCacheOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_decode_paged_kernel": gqa_decode_paged_kernel}
+        return {"gqa_decode_paged_kernel": GqaDecodePagedKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:

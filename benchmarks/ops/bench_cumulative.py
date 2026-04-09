@@ -63,12 +63,12 @@ class CumulativeBenchmark(BenchmarkBase):
 
 def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.cumprod import CumprodOp
-    from tileops.ops.reduction.cumsum import CumsumOp
+    from tileops.ops.reduction.cumprod import CumprodFwdOp
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     op_map = {
-        "cumsum": CumsumOp,
-        "cumprod": CumprodOp,
+        "cumsum": CumsumFwdOp,
+        "cumprod": CumprodFwdOp,
     }
     cls = op_map[op_kind]
     return cls(M=m, N=n, dtype=dtype)

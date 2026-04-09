@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheOp
+from tileops.ops import DeepSeekDsaDecodeFwdOp
 from workloads.ops.deepseek_dsa_decode import DsaDecodeTest
 
 
@@ -104,7 +104,7 @@ def test_dsa_decode_bench(batch: int, heads: int, seq_len_q: int, seq_len_kv: in
     bm = DsaDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = DeepSeekSparseAttentionDecodeWithKVCacheOp(
+    op = DeepSeekDsaDecodeFwdOp(
         batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)

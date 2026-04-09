@@ -3,15 +3,15 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.flash_decode import gqa_decode_kernel
+from tileops.kernels.flash_decode import GqaDecodeKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["GroupQueryAttentionDecodeWithKVCacheOp"]
+__all__ = ["GqaDecodeFwdOp"]
 
 
-class GroupQueryAttentionDecodeWithKVCacheOp(Op):
+class GqaDecodeFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -37,7 +37,7 @@ class GroupQueryAttentionDecodeWithKVCacheOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_decode_kernel": gqa_decode_kernel}
+        return {"gqa_decode_kernel": GqaDecodeKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]

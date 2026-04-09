@@ -1,4 +1,4 @@
-"""Benchmark for MoePermuteNopadOp (tight layout, no padding).
+"""Benchmark for MoePermuteNopadFwdOp (tight layout, no padding).
 
 Baselines:
   - vLLM moe_permute (optional): vLLM's CUDA kernel for tight permute.
@@ -29,10 +29,10 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.moe import MoePermuteNopadOp
+from tileops.ops.moe import MoePermuteNopadFwdOp
 from workloads.base import WorkloadBase
 
-_OP_NAME = "moe_permute_nopad"
+_OP_NAME = "MoePermuteNopadFwdOp"
 
 # ---------------------------------------------------------------------------
 # Test class
@@ -124,7 +124,7 @@ def test_moe_permute_nopad_bench(
     hidden_states, topk_ids = test.gen_inputs()
 
     # TileOPs
-    op = MoePermuteNopadOp(total_tokens, top_k, num_experts, hidden_size, dtype)
+    op = MoePermuteNopadFwdOp(total_tokens, top_k, num_experts, hidden_size, dtype)
     op(hidden_states, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()
 

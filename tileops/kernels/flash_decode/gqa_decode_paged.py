@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
-__all__ = ["gqa_decode_paged_kernel"]
+__all__ = ["GqaDecodePagedKernel"]
 
 # ---------------------------------------------------------------------------
 # JIT kernel: no-split variant (paged)
@@ -357,7 +357,7 @@ def _(batch: int, heads: int, groups: int, seqlen_kv: int, dim: int, page_size: 
 # ---------------------------------------------------------------------------
 
 
-class gqa_decode_paged_kernel(Kernel):
+class GqaDecodePagedKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,

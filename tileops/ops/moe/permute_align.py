@@ -9,10 +9,10 @@ from tileops.kernels.moe import MoePermuteAlignKernel
 
 from ..op import Op
 
-__all__ = ["MoePermuteAlignOp"]
+__all__ = ["MoePermuteAlignFwdOp"]
 
 
-class MoePermuteAlignOp(Op):
+class MoePermuteAlignFwdOp(Op):
     """Route tokens to experts and pad each expert's token count to block_size.
 
     Takes ``topk_ids`` and produces the three index arrays required by MoE
@@ -27,7 +27,7 @@ class MoePermuteAlignOp(Op):
         tune: Whether to autotune the kernel.
 
     Example:
-        >>> op = MoePermuteAlignOp(numel=32, num_experts=8, block_size=16)
+        >>> op = MoePermuteAlignFwdOp(numel=32, num_experts=8, block_size=16)
         >>> sorted_ids, expert_ids, num_post_pad = op(topk_ids)
     """
 

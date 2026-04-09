@@ -2,10 +2,10 @@ from .conv import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
 from .deepseek_mla import (
     FP8LightingIndexerKernel,
     FP8QuantKernel,
+    MlaDecodeKernel,
+    MlaDecodeWsKernel,
     SparseMlaKernel,
     TopkSelectorKernel,
-    mla_decode_kernel,
-    mla_decode_ws_kernel,
 )
 from .deepseek_nsa import (
     GqaSlidingWindowFwdKernel,
@@ -36,17 +36,17 @@ from .flash_attn import (
     MhaFwdWgmmaPipelinedKernel,
 )
 from .flash_decode import (
-    gqa_decode_kernel,
-    gqa_decode_paged_kernel,
-    mha_decode_kernel,
-    mha_decode_paged_kernel,
+    GqaDecodeKernel,
+    GqaDecodePagedKernel,
+    MhaDecodeKernel,
+    MhaDecodePagedKernel,
 )
 from .gated_deltanet_chunkwise import GatedDeltaNetBwdKernel, GatedDeltaNetFwdKernel
 from .gated_deltanet_recurrence import GatedDeltaNetDecodeFP32Kernel, GatedDeltaNetDecodeKernel
 from .gemm import GemmKernel, GemvKernel
 from .gla_chunkwise import GLABwdKernel, GLAFwdKernel
 from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
-from .grouped_gemm import grouped_gemm_kernel
+from .grouped_gemm import GroupedGemmKernel
 from .kernel import Kernel
 from .mhc import MHCPostKernel, MHCPreKernel
 from .moe import MoePermuteAlignKernel
@@ -131,14 +131,14 @@ __all__ = [
     "SparseMlaKernel",
     "TopkSelectorKernel",
     "UnaryKernel",
-    "gqa_decode_kernel",
-    "gqa_decode_paged_kernel",
-    "grouped_gemm_kernel",
+    "GqaDecodeKernel",
+    "GqaDecodePagedKernel",
+    "GroupedGemmKernel",
     "MoePermuteAlignKernel",
     "MHCPostKernel",
     "MHCPreKernel",
-    "mha_decode_kernel",
-    "mha_decode_paged_kernel",
-    "mla_decode_kernel",
-    "mla_decode_ws_kernel",
+    "MhaDecodeKernel",
+    "MhaDecodePagedKernel",
+    "MlaDecodeKernel",
+    "MlaDecodeWsKernel",
 ]

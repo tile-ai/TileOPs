@@ -1,7 +1,7 @@
 """RowNormOp base class for row-wise normalization operators.
 
 Encapsulates the shared validate -> reshape -> pad -> kernel -> trim -> reshape
-pattern used by RmsNormOp, LayerNormOp, and similar dim=-1 normalization ops.
+pattern used by RMSNormFwdOp, LayerNormFwdOp, and similar dim=-1 normalization ops.
 
 BatchNorm uses spatial reduction (not dim=-1), so it does NOT inherit from this.
 """

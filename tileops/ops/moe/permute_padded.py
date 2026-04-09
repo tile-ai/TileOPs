@@ -9,10 +9,10 @@ from tileops.kernels.moe import MoePermutePaddedKernel
 
 from ..op import Op
 
-__all__ = ["MoePermutePaddedOp"]
+__all__ = ["MoePermutePaddedFwdOp"]
 
 
-class MoePermutePaddedOp(Op):
+class MoePermutePaddedFwdOp(Op):
     """Route tokens to block_m-aligned padded expert layout for NT grouped-GEMM.
 
     Args:
@@ -25,7 +25,7 @@ class MoePermutePaddedOp(Op):
         kernel_map: Optional kernel override dict.
 
     Example:
-        >>> op = MoePermutePaddedOp(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
+        >>> op = MoePermutePaddedFwdOp(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
         >>> perm_h_pad, p_offsets, p_sizes, offsets, fwd_idx = op(hidden_states, topk_ids)
     """
 

@@ -1,7 +1,7 @@
 """Cumulative product operator (L2 Op layer).
 
 Provides:
-  - CumprodOp: y = cumprod(x, dim=-1)
+  - CumprodFwdOp: y = cumprod(x, dim=-1)
 
 Follows the validate -> reshape -> pad -> kernel -> trim -> reshape pattern
 and supports 1D-4D input with dim=-1. Output has the same shape as input.
@@ -18,10 +18,10 @@ from tileops.kernels.reduction.cumulative import CumulativeKernel
 
 from ..op import Op
 
-__all__ = ["CumprodOp"]
+__all__ = ["CumprodFwdOp"]
 
 
-class CumprodOp(Op):
+class CumprodFwdOp(Op):
     """Cumulative product operator: y = cumprod(x, dim=-1).
 
     Output has the same shape and dtype as input.
@@ -34,7 +34,7 @@ class CumprodOp(Op):
         tune: Whether to autotune (default False).
 
     Example:
-        >>> op = CumprodOp(M=1024, N=4096, dtype=torch.float16)
+        >>> op = CumprodFwdOp(M=1024, N=4096, dtype=torch.float16)
         >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
         >>> y = op(x)  # shape: (1024, 4096)
     """

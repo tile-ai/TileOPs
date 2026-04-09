@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
+from tileops.ops import GqaDecodePagedFwdOp
 from workloads.ops.gqa_decode_paged import GqaDecodePagedTest
 
 
@@ -192,7 +192,7 @@ def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
-    op = GroupQueryAttentionDecodePagedWithKVCacheOp(
+    op = GqaDecodePagedFwdOp(
         batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

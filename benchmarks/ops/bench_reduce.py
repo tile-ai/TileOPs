@@ -85,25 +85,25 @@ class ReduceBenchmark(BenchmarkBase):
 def _make_op(dtype, op_kind):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.reduce import (
-        AmaxOp,
-        AminOp,
-        MeanOp,
-        ProdOp,
-        StdOp,
-        SumOp,
-        VarMeanOp,
-        VarOp,
+        AmaxFwdOp,
+        AminFwdOp,
+        MeanFwdOp,
+        ProdFwdOp,
+        StdFwdOp,
+        SumFwdOp,
+        VarFwdOp,
+        VarMeanFwdOp,
     )
 
     op_map = {
-        "sum": SumOp,
-        "mean": MeanOp,
-        "amax": AmaxOp,
-        "amin": AminOp,
-        "prod": ProdOp,
-        "std": StdOp,
-        "var": VarOp,
-        "var_mean": VarMeanOp,
+        "sum": SumFwdOp,
+        "mean": MeanFwdOp,
+        "amax": AmaxFwdOp,
+        "amin": AminFwdOp,
+        "prod": ProdFwdOp,
+        "std": StdFwdOp,
+        "var": VarFwdOp,
+        "var_mean": VarMeanFwdOp,
     }
     cls = op_map[op_kind]
     if op_kind in ("std", "var", "var_mean"):

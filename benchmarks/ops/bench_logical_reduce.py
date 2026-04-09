@@ -80,14 +80,14 @@ class LogicalReduceBenchmark(BenchmarkBase):
 
 def _make_op(dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.all_op import AllOp
-    from tileops.ops.reduction.any_op import AnyOp
-    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
+    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     op_map = {
-        "any": AnyOp,
-        "all": AllOp,
-        "count_nonzero": CountNonzeroOp,
+        "any": AnyFwdOp,
+        "all": AllFwdOp,
+        "count_nonzero": CountNonzeroFwdOp,
     }
     cls = op_map[op_kind]
     return cls(dtype=dtype)

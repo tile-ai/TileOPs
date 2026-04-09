@@ -93,7 +93,7 @@ def _vector_norm_kernel(M: int, N: int, op_kind: str, dtype: str):
                 else:
                     # inf norm: max(|x|)
                     # Note: T.reduce_max does not propagate NaN.
-                    # NaN handling is done at the Op layer (InfNormOp)
+                    # NaN handling is done at the Op layer (InfNormFwdOp)
                     # by detecting NaN rows and patching the output.
                     for i, j in T.Parallel(block_m, N_padded):
                         transformed[i, j] = T.abs(x_f32[i, j])

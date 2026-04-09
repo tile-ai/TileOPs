@@ -12,9 +12,9 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.reduction.log_softmax import LogSoftmaxOp
-from tileops.ops.reduction.logsumexp import LogSumExpOp
-from tileops.ops.reduction.softmax import SoftmaxOp
+from tileops.ops.reduction.log_softmax import LogSoftmaxFwdOp
+from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
+from tileops.ops.reduction.softmax import SoftmaxFwdOp
 from workloads.ops.softmax import (
     LogSoftmaxTest,
     LogSumExpTest,
@@ -119,7 +119,7 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = SoftmaxBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SoftmaxOp(dtype=dtype, dim=-1, tune=True)
+    op = SoftmaxFwdOp(dtype=dtype, dim=-1, tune=True)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -146,7 +146,7 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = LogSoftmaxBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = LogSoftmaxOp(dtype=dtype, dim=-1, tune=True)
+    op = LogSoftmaxFwdOp(dtype=dtype, dim=-1, tune=True)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -173,7 +173,7 @@ def test_logsumexp_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = LogSumExpBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = LogSumExpOp(dtype=dtype, dim=-1, tune=True)
+    op = LogSumExpFwdOp(dtype=dtype, dim=-1, tune=True)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:

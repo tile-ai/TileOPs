@@ -1,8 +1,8 @@
 """Correctness tests for multi-dim reduction (dim=list[int]).
 
-Covers: SumOp, MeanOp, AmaxOp, AminOp, VarOp, StdOp, VarMeanOp with
-list[int] dim. Also covers multi-dim for LogSumExpOp, AllOp, AnyOp,
-CountNonzeroOp, L1NormOp, L2NormOp, InfNormOp.
+Covers: SumFwdOp, MeanFwdOp, AmaxFwdOp, AminFwdOp, VarFwdOp, StdFwdOp, VarMeanFwdOp with
+list[int] dim. Also covers multi-dim for LogSumExpFwdOp, AllFwdOp, AnyFwdOp,
+CountNonzeroFwdOp, L1NormFwdOp, L2NormFwdOp, InfNormFwdOp.
 
 Each test verifies that reducing over multiple dims at once matches
 the corresponding PyTorch reference.
@@ -72,10 +72,10 @@ def _tol(dtype: torch.dtype) -> dict:
 def test_sum_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.reduce import SumOp
+    from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = SumOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = SumFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.sum(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -87,10 +87,10 @@ def test_sum_multidim(
 def test_mean_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.reduce import MeanOp
+    from tileops.ops.reduction.reduce import MeanFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = MeanOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = MeanFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -102,10 +102,10 @@ def test_mean_multidim(
 def test_amax_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.reduce import AmaxOp
+    from tileops.ops.reduction.reduce import AmaxFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = AmaxOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = AmaxFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.amax(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -117,10 +117,10 @@ def test_amax_multidim(
 def test_prod_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.reduce import ProdOp
+    from tileops.ops.reduction.reduce import ProdFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = ProdOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = ProdFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     # PyTorch doesn't support list[int] for prod, so iterate dims manually.
     ref = x.float()
     for d in sorted(dims, reverse=True):
@@ -136,10 +136,10 @@ def test_prod_multidim(
 def test_amin_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.reduce import AminOp
+    from tileops.ops.reduction.reduce import AminFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = AminOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = AminFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.amin(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -156,10 +156,10 @@ def test_amin_multidim(
 def test_var_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.reduce import VarOp
+    from tileops.ops.reduction.reduce import VarFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = VarOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = VarFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -171,10 +171,10 @@ def test_var_multidim(
 def test_std_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.reduce import StdOp
+    from tileops.ops.reduction.reduce import StdFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = StdOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = StdFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.std(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -186,10 +186,10 @@ def test_std_multidim(
 def test_var_mean_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.reduce import VarMeanOp
+    from tileops.ops.reduction.reduce import VarMeanFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = VarMeanOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = VarMeanFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref_var = torch.var(
         x.float(), dim=dims, keepdim=keepdim, correction=1,
     ).to(dtype)
@@ -211,10 +211,10 @@ def test_var_mean_multidim(
 def test_logsumexp_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.logsumexp import LogSumExpOp
+    from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = LogSumExpOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = LogSumExpFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.logsumexp(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -270,10 +270,10 @@ def _make_logical_input(
 def test_all_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.all_op import AllOp
+    from tileops.ops.reduction.all_op import AllFwdOp
 
     x = _make_logical_input(shape, dtype)
-    op = AllOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = AllFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.all(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
@@ -284,10 +284,10 @@ def test_all_multidim(
 def test_any_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.any_op import AnyOp
+    from tileops.ops.reduction.any_op import AnyFwdOp
 
     x = _make_logical_input(shape, dtype)
-    op = AnyOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = AnyFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.any(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
@@ -322,7 +322,7 @@ class MultiDimCountFixture(FixtureBase):
 def test_count_nonzero_multidim(
     shape: tuple, dims: list, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroOp
+    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     if dtype == torch.bool:
         x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
@@ -332,7 +332,7 @@ def test_count_nonzero_multidim(
         x = torch.randn(*shape, dtype=dtype, device="cuda")
         # Zero out some elements to make it interesting
         x[x < 0] = 0.0
-    op = CountNonzeroOp(dtype=dtype, dim=dims)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=dims)
     ref = torch.count_nonzero(x, dim=dims)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
@@ -348,10 +348,10 @@ def test_count_nonzero_multidim(
 def test_l1_norm_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.l1_norm import L1NormOp
+    from tileops.ops.reduction.l1_norm import L1NormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = L1NormOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = L1NormFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.linalg.vector_norm(
         x.float(), ord=1, dim=dims, keepdim=keepdim,
     ).to(dtype)
@@ -365,10 +365,10 @@ def test_l1_norm_multidim(
 def test_l2_norm_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.l2_norm import L2NormOp
+    from tileops.ops.reduction.l2_norm import L2NormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = L2NormOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = L2NormFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.linalg.vector_norm(
         x.float(), ord=2, dim=dims, keepdim=keepdim,
     ).to(dtype)
@@ -382,10 +382,10 @@ def test_l2_norm_multidim(
 def test_inf_norm_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.inf_norm import InfNormOp
+    from tileops.ops.reduction.inf_norm import InfNormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = InfNormOp(dtype=dtype, dim=dims, keepdim=keepdim)
+    op = InfNormFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
     ref = torch.linalg.vector_norm(
         x.float(), ord=float("inf"), dim=dims, keepdim=keepdim,
     ).to(dtype)
@@ -411,22 +411,22 @@ def test_empty_dim_list_raises() -> None:
 
 @pytest.mark.smoke
 def test_sum_empty_dim_raises() -> None:
-    """SumOp(dim=[]) must raise before dispatching to the multi-dim helper."""
-    from tileops.ops.reduction.reduce import SumOp
+    """SumFwdOp(dim=[]) must raise before dispatching to the multi-dim helper."""
+    from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
-    op = SumOp(dtype=torch.float16, dim=[], keepdim=False)
+    op = SumFwdOp(dtype=torch.float16, dim=[], keepdim=False)
     with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
         op(x)
 
 
 @pytest.mark.smoke
 def test_mean_empty_dim_raises() -> None:
-    """MeanOp(dim=[]) must raise before dispatching to the multi-dim helper."""
-    from tileops.ops.reduction.reduce import MeanOp
+    """MeanFwdOp(dim=[]) must raise before dispatching to the multi-dim helper."""
+    from tileops.ops.reduction.reduce import MeanFwdOp
 
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
-    op = MeanOp(dtype=torch.float16, dim=[], keepdim=False)
+    op = MeanFwdOp(dtype=torch.float16, dim=[], keepdim=False)
     with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
         op(x)
 
@@ -434,10 +434,10 @@ def test_mean_empty_dim_raises() -> None:
 @pytest.mark.smoke
 def test_negative_dims_accepted() -> None:
     """Negative dims should be normalized and produce correct results."""
-    from tileops.ops.reduction.reduce import SumOp
+    from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(4, 8, 256, dtype=torch.float16, device="cuda")
-    op = SumOp(dtype=torch.float16, dim=[-1, 0], keepdim=False)
+    op = SumFwdOp(dtype=torch.float16, dim=[-1, 0], keepdim=False)
     ref = torch.sum(x.float(), dim=[0, 2], keepdim=False).to(torch.float16)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
@@ -447,10 +447,10 @@ def test_negative_dims_accepted() -> None:
 @pytest.mark.smoke
 def test_duplicate_dims_raises() -> None:
     """Duplicate dims (after normalization) must raise ValueError at op level."""
-    from tileops.ops.reduction.reduce import SumOp
+    from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(4, 8, 256, dtype=torch.float16, device="cuda")
-    op = SumOp(dtype=torch.float16, dim=[1, 1], keepdim=False)
+    op = SumFwdOp(dtype=torch.float16, dim=[1, 1], keepdim=False)
     with pytest.raises(ValueError, match="Duplicate dims"):
         op(x)
 

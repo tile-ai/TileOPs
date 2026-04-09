@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
-__all__ = ["mha_decode_paged_kernel"]
+__all__ = ["MhaDecodePagedKernel"]
 
 # ---------------------------------------------------------------------------
 # JIT kernel: no-split variant (paged)
@@ -438,7 +438,7 @@ def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int, page_size
 # ---------------------------------------------------------------------------
 
 
-class mha_decode_paged_kernel(Kernel):
+class MhaDecodePagedKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,

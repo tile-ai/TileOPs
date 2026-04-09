@@ -17,13 +17,13 @@ from tileops.kernels.reduction.argreduce import ArgreduceKernel
 
 from ..op import Op
 
-__all__ = ["ArgminOp"]
+__all__ = ["ArgminFwdOp"]
 
 
-class ArgminOp(Op):
+class ArgminFwdOp(Op):
     """Argmin reduction along an arbitrary dim, returning int64 indices.
 
-    Construction: ``ArgminOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
+    Construction: ``ArgminFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

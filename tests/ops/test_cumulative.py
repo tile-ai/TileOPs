@@ -1,6 +1,6 @@
 """Correctness tests for cumulative ops (cumsum, cumprod).
 
-Covers: CumsumOp, CumprodOp.
+Covers: CumsumFwdOp, CumprodFwdOp.
 Each op computes an inclusive prefix scan along dim=-1 and supports 1D-4D input.
 Output has the same shape as input.
 """
@@ -137,26 +137,26 @@ def _cumprod_tol(dtype: torch.dtype) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# CumsumOp tests
+# CumsumFwdOp tests
 # ---------------------------------------------------------------------------
 
 
 @CumulativeBasicFixture
 def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumsum import CumsumOp
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     test = CumulativeTest(m, n, dtype, "cumsum")
-    op = CumsumOp(M=m, N=n, dtype=dtype)
+    op = CumsumFwdOp(M=m, N=n, dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
 @CumulativeNonContigFixture
 def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumsum import CumsumOp
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = CumsumOp(M=m, N=n, dtype=dtype)
+    op = CumsumFwdOp(M=m, N=n, dtype=dtype)
     ref = x.contiguous().float().cumsum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -165,11 +165,11 @@ def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @Cumulative3DFixture
 def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumsum import CumsumOp
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
     M = batch * seq
-    op = CumsumOp(M=M, N=hidden, dtype=dtype)
+    op = CumsumFwdOp(M=M, N=hidden, dtype=dtype)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -178,11 +178,11 @@ def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
 
 @Cumulative4DFixture
 def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumsum import CumsumOp
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
     M = b0 * b1 * b2
-    op = CumsumOp(M=M, N=n, dtype=dtype)
+    op = CumsumFwdOp(M=M, N=n, dtype=dtype)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -191,10 +191,10 @@ def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
 
 @Cumulative1DFixture
 def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumsum import CumsumOp
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = CumsumOp(M=1, N=n, dtype=dtype)
+    op = CumsumFwdOp(M=1, N=n, dtype=dtype)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -202,26 +202,26 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CumprodOp tests
+# CumprodFwdOp tests
 # ---------------------------------------------------------------------------
 
 
 @CumulativeBasicFixture
 def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumprod import CumprodOp
+    from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     test = CumulativeTest(m, n, dtype, "cumprod", use_small_range=True)
-    op = CumprodOp(M=m, N=n, dtype=dtype)
+    op = CumprodFwdOp(M=m, N=n, dtype=dtype)
     test.check(op, *test.gen_inputs(), **_cumprod_tol(dtype))
 
 
 @CumulativeNonContigFixture
 def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumprod import CumprodOp
+    from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     x_full = torch.rand(m, n * 2, dtype=dtype, device="cuda") * 0.01 + 0.99
     x = x_full[:, :n]
-    op = CumprodOp(M=m, N=n, dtype=dtype)
+    op = CumprodFwdOp(M=m, N=n, dtype=dtype)
     ref = x.contiguous().float().cumprod(dim=-1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)
@@ -230,11 +230,11 @@ def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @Cumulative3DFixture
 def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumprod import CumprodOp
+    from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     x = torch.rand(batch, seq, hidden, dtype=dtype, device="cuda") * 0.01 + 0.99
     M = batch * seq
-    op = CumprodOp(M=M, N=hidden, dtype=dtype)
+    op = CumprodFwdOp(M=M, N=hidden, dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)
@@ -243,11 +243,11 @@ def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> No
 
 @Cumulative4DFixture
 def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumprod import CumprodOp
+    from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     x = torch.rand(b0, b1, b2, n, dtype=dtype, device="cuda") * 0.01 + 0.99
     M = b0 * b1 * b2
-    op = CumprodOp(M=M, N=n, dtype=dtype)
+    op = CumprodFwdOp(M=M, N=n, dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)
@@ -256,10 +256,10 @@ def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> No
 
 @Cumulative1DFixture
 def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumprod import CumprodOp
+    from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     x = torch.rand(n, dtype=dtype, device="cuda") * 0.01 + 0.99
-    op = CumprodOp(M=1, N=n, dtype=dtype)
+    op = CumprodFwdOp(M=1, N=n, dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)

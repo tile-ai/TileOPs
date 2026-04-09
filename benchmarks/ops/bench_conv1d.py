@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import Conv1dOp
+from tileops.ops import Conv1dFwdOp
 
 
 class Conv1dBenchCase:
@@ -104,7 +104,7 @@ def test_conv1d_bench(
     x, weight, bias = inputs
     x_ncl = x.permute(0, 2, 1).contiguous()
 
-    op = Conv1dOp(
+    op = Conv1dFwdOp(
         n=n,
         c_in=c_in,
         l_in=l_in,

@@ -8,7 +8,7 @@ from tileops.kernels.norm import AdaLayerNormKernel
 
 from ..op import Op
 
-__all__ = ["AdaLayerNormOp"]
+__all__ = ["AdaLayerNormFwdOp"]
 
 ALIGNMENT = 256
 
@@ -17,7 +17,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
-class AdaLayerNormOp(Op):
+class AdaLayerNormFwdOp(Op):
     """Adaptive Layer Normalization (AdaLN) operator.
 
     Applies layer normalization with per-token adaptive scale and shift:

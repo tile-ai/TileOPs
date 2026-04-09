@@ -1,4 +1,4 @@
-"""AnyOp: returns bool indicating if any element is non-zero along ``dim``.
+"""AnyFwdOp: returns bool indicating if any element is non-zero along ``dim``.
 
 The Op layer validates inputs, normalizes ``dim``, reshapes to 2D (M, N),
 pads to alignment (with 0, which is neutral for OR/any), calls the kernel,
@@ -30,13 +30,13 @@ from tileops.kernels.reduction.logical_reduce.fwd import (
 from ..op import Op
 from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
-__all__ = ["AnyOp"]
+__all__ = ["AnyFwdOp"]
 
 
-class AnyOp(Op):
+class AnyFwdOp(Op):
     """Any reduction along ``dim``, returning bool.
 
-    Construction: ``AnyOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
+    Construction: ``AnyFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

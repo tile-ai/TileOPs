@@ -1,6 +1,6 @@
 """Correctness tests for argreduce ops (argmax, argmin).
 
-Covers: ArgmaxOp, ArgminOp.
+Covers: ArgmaxFwdOp, ArgminFwdOp.
 Each op reduces along a configurable dim and returns int64 indices.
 Uses exact match (torch.equal) instead of allclose.
 """
@@ -139,26 +139,26 @@ def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ArgmaxOp tests
+# ArgmaxFwdOp tests
 # ---------------------------------------------------------------------------
 
 
 @ArgreduceBasicFixture
 def test_argmax_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmax import ArgmaxOp
+    from tileops.ops.reduction.argmax import ArgmaxFwdOp
 
     test = ArgreduceTest(m, n, dtype, "argmax")
-    op = ArgmaxOp(dtype=dtype)
+    op = ArgmaxFwdOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
 @ArgreduceNonContigFixture
 def test_argmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmax import ArgmaxOp
+    from tileops.ops.reduction.argmax import ArgmaxFwdOp
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = ArgmaxOp(dtype=dtype)
+    op = ArgmaxFwdOp(dtype=dtype)
     ref = x.contiguous().argmax(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -167,10 +167,10 @@ def test_argmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @Argreduce3DFixture
 def test_argmax_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmax import ArgmaxOp
+    from tileops.ops.reduction.argmax import ArgmaxFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = ArgmaxOp(dtype=dtype)
+    op = ArgmaxFwdOp(dtype=dtype)
     ref = x.argmax(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -179,10 +179,10 @@ def test_argmax_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
 
 @Argreduce4DFixture
 def test_argmax_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmax import ArgmaxOp
+    from tileops.ops.reduction.argmax import ArgmaxFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = ArgmaxOp(dtype=dtype)
+    op = ArgmaxFwdOp(dtype=dtype)
     ref = x.argmax(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -191,10 +191,10 @@ def test_argmax_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
 
 @Argreduce1DFixture
 def test_argmax_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmax import ArgmaxOp
+    from tileops.ops.reduction.argmax import ArgmaxFwdOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = ArgmaxOp(dtype=dtype)
+    op = ArgmaxFwdOp(dtype=dtype)
     ref = x.argmax(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -203,11 +203,11 @@ def test_argmax_1d(n: int, dtype: torch.dtype) -> None:
 
 @SpecArgreduceFixture
 def test_argmax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: ArgmaxOp with dim + keepdim."""
-    from tileops.ops.reduction.argmax import ArgmaxOp
+    """Spec interface: ArgmaxFwdOp with dim + keepdim."""
+    from tileops.ops.reduction.argmax import ArgmaxFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = ArgmaxOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = ArgmaxFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
     ref = x.argmax(dim=dim, keepdim=keepdim)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
@@ -216,26 +216,26 @@ def test_argmax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
 
 
 # ---------------------------------------------------------------------------
-# ArgminOp tests
+# ArgminFwdOp tests
 # ---------------------------------------------------------------------------
 
 
 @ArgreduceBasicFixture
 def test_argmin_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmin import ArgminOp
+    from tileops.ops.reduction.argmin import ArgminFwdOp
 
     test = ArgreduceTest(m, n, dtype, "argmin")
-    op = ArgminOp(dtype=dtype)
+    op = ArgminFwdOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
 @ArgreduceNonContigFixture
 def test_argmin_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmin import ArgminOp
+    from tileops.ops.reduction.argmin import ArgminFwdOp
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = ArgminOp(dtype=dtype)
+    op = ArgminFwdOp(dtype=dtype)
     ref = x.contiguous().argmin(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -244,10 +244,10 @@ def test_argmin_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @Argreduce3DFixture
 def test_argmin_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmin import ArgminOp
+    from tileops.ops.reduction.argmin import ArgminFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = ArgminOp(dtype=dtype)
+    op = ArgminFwdOp(dtype=dtype)
     ref = x.argmin(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -256,10 +256,10 @@ def test_argmin_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
 
 @Argreduce4DFixture
 def test_argmin_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmin import ArgminOp
+    from tileops.ops.reduction.argmin import ArgminFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = ArgminOp(dtype=dtype)
+    op = ArgminFwdOp(dtype=dtype)
     ref = x.argmin(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -268,10 +268,10 @@ def test_argmin_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
 
 @Argreduce1DFixture
 def test_argmin_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.argmin import ArgminOp
+    from tileops.ops.reduction.argmin import ArgminFwdOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = ArgminOp(dtype=dtype)
+    op = ArgminFwdOp(dtype=dtype)
     ref = x.argmin(dim=-1)
     y = op(x)
     assert y.dtype == torch.int64
@@ -280,11 +280,11 @@ def test_argmin_1d(n: int, dtype: torch.dtype) -> None:
 
 @SpecArgreduceFixture
 def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: ArgminOp with dim + keepdim."""
-    from tileops.ops.reduction.argmin import ArgminOp
+    """Spec interface: ArgminFwdOp with dim + keepdim."""
+    from tileops.ops.reduction.argmin import ArgminFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = ArgminOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = ArgminFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
     ref = x.argmin(dim=dim, keepdim=keepdim)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"

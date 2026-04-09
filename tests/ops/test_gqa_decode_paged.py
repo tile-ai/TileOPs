@@ -1,4 +1,4 @@
-"""Test GroupQueryAttentionDecodePagedWithKVCacheOp (paged GQA decode with dynamic KV cache)."""
+"""Test GqaDecodePagedFwdOp (paged GQA decode with dynamic KV cache)."""
 
 
 import math
@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GroupQueryAttentionDecodePagedWithKVCacheOp
+from tileops.ops import GqaDecodePagedFwdOp
 from workloads.ops.gqa_decode_paged import GqaDecodePagedTest as _GqaDecodePagedTestWorkload
 
 
@@ -85,7 +85,7 @@ def test_gqa_decode_paged_op(
     tune: bool,
 ) -> None:
     test = GqaDecodePagedTest(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
-    op = GroupQueryAttentionDecodePagedWithKVCacheOp(
+    op = GqaDecodePagedFwdOp(
         batch=batch,
         heads=heads,
         heads_kv=heads_kv,

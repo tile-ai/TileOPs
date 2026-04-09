@@ -71,14 +71,14 @@ class VectorNormBenchmark(BenchmarkBase):
 
 def _make_op(dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.inf_norm import InfNormOp
-    from tileops.ops.reduction.l1_norm import L1NormOp
-    from tileops.ops.reduction.l2_norm import L2NormOp
+    from tileops.ops.reduction.inf_norm import InfNormFwdOp
+    from tileops.ops.reduction.l1_norm import L1NormFwdOp
+    from tileops.ops.reduction.l2_norm import L2NormFwdOp
 
     op_map = {
-        "l1": L1NormOp,
-        "l2": L2NormOp,
-        "inf": InfNormOp,
+        "l1": L1NormFwdOp,
+        "l2": L2NormFwdOp,
+        "inf": InfNormFwdOp,
     }
     cls = op_map[op_kind]
     return cls(dtype=dtype)

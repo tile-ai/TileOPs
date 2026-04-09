@@ -1,4 +1,4 @@
-"""Test MultiHeadAttentionDecodePagedWithKVCacheOp (paged MHA decode with dynamic KV cache)."""
+"""Test MhaDecodePagedFwdOp (paged MHA decode with dynamic KV cache)."""
 
 
 import math
@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheOp
+from tileops.ops import MhaDecodePagedFwdOp
 from workloads.ops.mha_decode_paged import MhaDecodePagedTest as _MhaDecodePagedTestWorkload
 
 
@@ -93,7 +93,7 @@ def test_mha_decode_paged_op(
     tune: bool,
 ) -> None:
     test = MhaDecodePagedTest(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
-    op = MultiHeadAttentionDecodePagedWithKVCacheOp(
+    op = MhaDecodePagedFwdOp(
         batch=batch,
         heads=heads,
         seqlen_q=seqlen_q,

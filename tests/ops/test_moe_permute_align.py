@@ -1,4 +1,4 @@
-"""Op-level tests for MoePermuteAlignOp.
+"""Op-level tests for MoePermuteAlignFwdOp.
 
 Verifies that the op correctly routes tokens to experts and pads each
 expert's slot count to the GEMM block_size boundary.
@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.moe import MoePermuteAlignOp
+from tileops.ops.moe import MoePermuteAlignFwdOp
 from workloads.ops.moe_permute_align import MoePermuteAlignTest as _MoePermuteAlignTestWorkload
 
 
@@ -191,14 +191,14 @@ def test_permute_align_op(
 ) -> None:
     numel = total_tokens * top_k
     test = MoePermuteAlignTest(total_tokens, top_k, num_experts, block_size)
-    op = MoePermuteAlignOp(numel, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(numel, num_experts, block_size)
     inputs = test.gen_inputs()
 
     outputs = tuple(op(*inputs))
     outputs_ref = tuple(test.ref_program(*inputs))
 
     _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
-    print(f"All checks passed for MoePermuteAlignOp [{total_tokens}tok, top{top_k}, "
+    print(f"All checks passed for MoePermuteAlignFwdOp [{total_tokens}tok, top{top_k}, "
           f"E={num_experts}, bs={block_size}].")
 
 
@@ -213,7 +213,7 @@ def test_permute_align_sentinel_padding() -> None:
     topk_ids = torch.randint(0, num_experts, (total_tokens, top_k),
                               dtype=torch.int32, device="cuda")
 
-    op = MoePermuteAlignOp(numel, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(numel, num_experts, block_size)
     sorted_ids, _, num_post_pad = op(topk_ids)
 
     n = num_post_pad.item()
@@ -230,7 +230,7 @@ def test_permute_align_expert_ids_range() -> None:
     topk_ids = torch.randint(0, num_experts, (total_tokens, top_k),
                               dtype=torch.int32, device="cuda")
 
-    op = MoePermuteAlignOp(total_tokens * top_k, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(total_tokens * top_k, num_experts, block_size)
     _, expert_ids, num_post_pad = op(topk_ids)
 
     n = num_post_pad.item()
@@ -254,7 +254,7 @@ def test_permute_align_skewed_distribution() -> None:
     # All tokens go to expert 0
     topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device="cuda")
 
-    op = MoePermuteAlignOp(numel, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(numel, num_experts, block_size)
     outputs = tuple(op(topk_ids))
     outputs_ref = tuple(_ref_permute_align(topk_ids, block_size, num_experts))
 

@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroOp
+from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.ops.ada_layer_norm_zero import AdaLayerNormZeroTest as _AdaLayerNormZeroTestWorkload
 
 
@@ -58,7 +58,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @AdaLayerNormZeroFixture
 def test_ada_layer_norm_zero_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormZeroTest(m, n, dtype)
-    op = AdaLayerNormZeroOp(M=m, N=n, dtype=dtype)
+    op = AdaLayerNormZeroFwdOp(M=m, N=n, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -82,7 +82,7 @@ def test_ada_layer_norm_zero_3d(batch: int, seq: int, hidden: int, dtype: torch.
     gate = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
 
     M = batch * seq
-    op = AdaLayerNormZeroOp(M=M, N=hidden, dtype=dtype)
+    op = AdaLayerNormZeroFwdOp(M=M, N=hidden, dtype=dtype)
 
     # Reference: gate * (scale * LayerNorm(x) + shift)
     eps = 1e-5
