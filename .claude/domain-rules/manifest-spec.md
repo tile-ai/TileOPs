@@ -9,7 +9,7 @@
 
 ______________________________________________________________________
 
-- Manifest keys are PascalCase Op class names: `{PascalCaseName}{Direction}Op` (e.g., `RMSNormFwdOp`). The key must exactly match the Python class name (`cls.__name__`). No abbreviation rules — the manifest author determines the name.
+- **Post-#860**: Manifest keys are PascalCase Op class names: `{PascalCaseName}{Direction}Op` (e.g., `RMSNormFwdOp`). The key must exactly match the Python class name (`cls.__name__`). No abbreviation rules — the manifest author determines the name. Until #860 lands, keys remain snake_case (e.g., `rmsnorm_fwd`).
 - `ref_api` (optional) — declares the external API the signature follows (e.g., `torch.nn.functional.rms_norm`). Informational only; does not affect validation.
 - `inputs`, `outputs`, `params` are ordered dicts. Key order = function signature position. Do not reorder.
 - Params include all PyTorch-supported parameters, even if the current kernel only supports the default.
