@@ -36,12 +36,12 @@ class MhaDecodePagedFwdOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["MhaDecodePagedKernel"](
+        self.kernel = self.kernel_map["mha_decode_paged_kernel"](
             batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"MhaDecodePagedKernel": MhaDecodePagedKernel}
+        return {"mha_decode_paged_kernel": MhaDecodePagedKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:

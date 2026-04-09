@@ -34,12 +34,12 @@ class DeepSeekMlaDecodeFwdOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["MlaDecodeKernel"](
+        self.kernel = self.kernel_map["mla_decode_kernel"](
             batch, heads, heads_kv, seqlen_kv, dim, pe_dim, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"MlaDecodeKernel": MlaDecodeWsKernel if is_hopper() else MlaDecodeKernel}
+        return {"mla_decode_kernel": MlaDecodeWsKernel if is_hopper() else MlaDecodeKernel}
 
     def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
                 k_pe: torch.Tensor) -> torch.Tensor:

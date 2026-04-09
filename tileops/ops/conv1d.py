@@ -86,6 +86,11 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        if not bias:
+            raise ValueError(
+                "Conv1dBiasFwdOp requires bias=True. "
+                "Use Conv1dFwdOp for the no-bias variant."
+            )
         super().__init__(
             n=n, c_in=c_in, l_in=l_in, c_out=c_out,
             kernel_size=kernel_size, stride=stride, padding=padding,

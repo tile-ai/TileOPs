@@ -32,12 +32,12 @@ class MhaDecodeFwdOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["MhaDecodeKernel"](
+        self.kernel = self.kernel_map["mha_decode_kernel"](
             batch, heads, seqlen_q, seqlen_kv, dim, False, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"MhaDecodeKernel": MhaDecodeKernel}
+        return {"mha_decode_kernel": MhaDecodeKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]

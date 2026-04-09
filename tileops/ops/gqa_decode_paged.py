@@ -34,12 +34,12 @@ class GqaDecodePagedFwdOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["GqaDecodePagedKernel"](
+        self.kernel = self.kernel_map["gqa_decode_paged_kernel"](
             batch, heads, heads_kv, seqlen_kv, dim, page_size, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"GqaDecodePagedKernel": GqaDecodePagedKernel}
+        return {"gqa_decode_paged_kernel": GqaDecodePagedKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:

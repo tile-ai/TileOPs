@@ -32,12 +32,12 @@ class GqaDecodeFwdOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["GqaDecodeKernel"](
+        self.kernel = self.kernel_map["gqa_decode_kernel"](
             batch, heads, heads_kv, seqlen_kv, dim, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"GqaDecodeKernel": GqaDecodeKernel}
+        return {"gqa_decode_kernel": GqaDecodeKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]

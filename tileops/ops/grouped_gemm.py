@@ -39,7 +39,7 @@ class GroupedGemmOp(Op):
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["GroupedGemmKernel"](
+        self.kernel = self.kernel_map["grouped_gemm_kernel"](
             batch_sum,
             batch_count,
             n,
@@ -51,7 +51,7 @@ class GroupedGemmOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict:
-        return {"GroupedGemmKernel": GroupedGemmKernel}
+        return {"grouped_gemm_kernel": GroupedGemmKernel}
 
     def forward(self, a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor,
                 batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor) -> torch.Tensor:
