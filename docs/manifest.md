@@ -96,7 +96,7 @@ Each entry in `ops:` is keyed by the **Python class name** of the Op — PascalC
 ```
 
 - **PascalCaseName** — the op's descriptive name in PascalCase (e.g., `RMSNorm`, `BatchNorm`, `Softmax`). No abbreviation rules are enforced; the manifest author determines the name.
-- **Direction** — a mandatory suffix indicating the computation direction: `Fwd`, `Bwd`, `FwdBwd`, etc.
+- **Direction** — a mandatory suffix indicating the computation direction: `Fwd` or `Bwd`.
 - **Op** — the literal suffix `Op`.
 
 Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`.

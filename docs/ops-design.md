@@ -81,7 +81,7 @@ Op class names use PascalCase with a mandatory direction suffix and `Op` suffix:
 ```
 
 - **PascalCaseName** — descriptive name (e.g., `RMSNorm`, `BatchNorm`, `Softmax`). No mechanical abbreviation rules are enforced — the manifest author determines the name (see [#860](https://github.com/tile-ai/TileOPs/pull/860) for the abbreviation policy).
-- **Direction** — mandatory suffix: `Fwd`, `Bwd`, `FwdBwd`, etc.
+- **Direction** — mandatory suffix: `Fwd` or `Bwd`.
 - **Op** — literal suffix.
 
 Examples: `RMSNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`, `BatchNormFwdOp`.
