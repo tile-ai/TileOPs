@@ -26,7 +26,6 @@ import inspect
 import re
 import sys
 import warnings as _warnings
-from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -236,6 +235,16 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
             f"[schema] {op_name}: variant_of must be a string"
         )
 
+    # ref_api: required string — fully qualified PyTorch API equivalent or "none"
+    if "ref_api" not in entry:
+        errors.append(
+            f"[schema] {op_name}: missing required field 'ref_api'"
+        )
+    elif not isinstance(entry["ref_api"], str):
+        errors.append(
+            f"[schema] {op_name}: ref_api must be a string"
+        )
+
     return errors
 
 
@@ -417,64 +426,28 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
     if len(candidates) == 1:
         return _ResolveResult(cls=candidates[0])
 
-    # Multiple candidates — resolve via an ordered list of match strategies.
-    # Priority: stripped-suffix PascalCase → full-name PascalCase → suffix match.
-    # Each strategy collects all matches; if exactly one, return it.
-    # If multiple match, emit an ambiguity warning and return unresolved.
+    # Multiple candidates — require exact class-name identity.
+    # The manifest key must equal cls.__name__; no heuristic fallback.
+    direct = [c for c in candidates if c.__name__ == op_name]
+    if len(direct) == 1:
+        return _ResolveResult(cls=direct[0])
 
-    # Precompute PascalCase variants
-    base_name = op_name
-    for suffix in ("_fwd", "_bwd"):
-        if base_name.endswith(suffix):
-            base_name = base_name[: -len(suffix)]
-            break
-    stripped_pascal = (
-        "".join(part.capitalize() for part in base_name.split("_")) + "Op"
-    )
-    full_pascal = (
-        "".join(part.capitalize() for part in op_name.split("_")) + "Op"
-    )
-
-    # Determine the suffix keyword for fwd/bwd matching (if applicable)
-    suffix_keyword = ""
-    if op_name.endswith("_fwd"):
-        suffix_keyword = "fwd"
-    elif op_name.endswith("_bwd"):
-        suffix_keyword = "bwd"
-
-    # Build ordered match strategies: (label, matcher)
-    Matcher = Callable[[type], bool]
-    strategies: list[tuple[str, Matcher]] = [
-        ("stripped_pascal", lambda c: c.__name__ == stripped_pascal),
-        ("full_pascal", lambda c: c.__name__ == full_pascal),
-    ]
-    if suffix_keyword:
-        strategies.append(
-            ("suffix_fwd_bwd", lambda c: suffix_keyword in c.__name__.lower()),
+    if len(direct) > 1:
+        match_names = [c.__name__ for c in direct]
+        ambiguity_msg = (
+            f"Ambiguous op class resolution for '{op_name}': "
+            f"multiple classes named '{op_name}' in '{op_file}': {match_names}. "
+            f"Returning unresolved (cls=None)."
         )
+        _warnings.warn(ambiguity_msg, UserWarning, stacklevel=2)
+        return _ResolveResult(warning=ambiguity_msg)
 
-    for label, matcher in strategies:
-        matches = [c for c in candidates if matcher(c)]
-        if len(matches) == 1:
-            return _ResolveResult(cls=matches[0])
-        if len(matches) > 1:
-            match_names = [c.__name__ for c in matches]
-            ambiguity_msg = (
-                f"Ambiguous op class resolution for '{op_name}' "
-                f"(strategy: {label}): "
-                f"candidates {match_names} in '{op_file}'. "
-                f"Returning unresolved (cls=None)."
-            )
-            _warnings.warn(ambiguity_msg, UserWarning, stacklevel=2)
-            return _ResolveResult(warning=ambiguity_msg)
-
-    # All heuristics exhausted — resolution is ambiguous.
+    # No exact match found among multiple candidates.
     candidate_names = [c.__name__ for c in candidates]
     ambiguity_msg = (
-        f"Ambiguous op class resolution for '{op_name}': "
-        f"candidates {candidate_names} in '{op_file}', "
-        f"but no naming heuristic matched. "
-        f"Returning unresolved (cls=None)."
+        f"No class named '{op_name}' found in '{op_file}'. "
+        f"Candidates: {candidate_names}. "
+        f"Manifest key must exactly match cls.__name__."
     )
     _warnings.warn(ambiguity_msg, UserWarning, stacklevel=2)
     return _ResolveResult(warning=ambiguity_msg)

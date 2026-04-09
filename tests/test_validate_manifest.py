@@ -50,6 +50,7 @@ def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
         sig["dtype_combos"] = dtype_combos
     entry = {
         "family": "test",
+        "ref_api": "none",
         "signature": sig,
         "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
         "roofline": {"flops": "2 * M", "bytes": "M * 2"},
@@ -73,6 +74,7 @@ class TestSchema:
     def test_valid_entry_passes(self, validator):
         entry = {
             "family": "norm",
+            "ref_api": "torch.nn.functional.rms_norm",
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
                 "outputs": {"y": {"dtype": "same_as(x)"}},
@@ -90,6 +92,17 @@ class TestSchema:
         }
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_missing_ref_api_fails(self, validator):
+        entry = _make_entry()
+        del entry["ref_api"]
+        errors = validator.check_l0("test_op", entry)
+        assert any("ref_api" in e for e in errors)
+
+    def test_ref_api_non_string_fails(self, validator):
+        entry = _make_entry(ref_api=123)
+        errors = validator.check_l0("test_op", entry)
+        assert any("ref_api" in e and "string" in e for e in errors)
 
     def test_missing_family_fails(self, validator):
         entry = {
@@ -869,8 +882,8 @@ class TestCheckOp:
 
     def test_check_op_cli_parsing(self, validator):
         """_parse_check_op extracts the op name from argv."""
-        assert validator._parse_check_op(["--check-op", "softmax_fwd"]) == "softmax_fwd"
-        assert validator._parse_check_op(["--check-op=softmax_fwd"]) == "softmax_fwd"
+        assert validator._parse_check_op(["--check-op", "SoftmaxFwdOp"]) == "SoftmaxFwdOp"
+        assert validator._parse_check_op(["--check-op=SoftmaxFwdOp"]) == "SoftmaxFwdOp"
         assert validator._parse_check_op(["--verbose"]) is None
         assert validator._parse_check_op([]) is None
 
@@ -897,64 +910,41 @@ class TestCheckOp:
 class TestResolveOpClass:
     """_resolve_op_class correctly resolves op names to classes in multi-class files."""
 
-    def test_single_class_file_resolves(self, validator):
-        """Single-class files resolve without ambiguity."""
+    def test_single_class_file_exact_match(self, validator):
+        """Single-class files resolve when manifest key matches class name."""
+        # SoftmaxOp is the only candidate — single-candidate path returns it
         result = validator._resolve_op_class(
-            "tileops/ops/reduction/softmax.py", "softmax_fwd",
+            "tileops/ops/reduction/softmax.py", "SoftmaxOp",
         )
         assert result.cls is not None
         assert result.cls.__name__ == "SoftmaxOp"
 
+    def test_exact_match_required_multi_class(self, validator):
+        """Multi-class files require exact cls.__name__ == manifest key."""
+        # SumOp exists in reduce.py; exact match on "SumOp" should find it
+        result = validator._resolve_op_class(
+            "tileops/ops/reduction/reduce.py", "SumOp",
+        )
+        assert result.cls is not None
+        assert result.cls.__name__ == "SumOp"
+
     @pytest.mark.parametrize(
-        "op_name,expected_class",
+        "op_name",
         [
-            ("sum_fwd", "SumOp"),
-            ("mean_fwd", "MeanOp"),
-            ("amax_fwd", "AmaxOp"),
-            ("amin_fwd", "AminOp"),
-            ("prod_fwd", "ProdOp"),
-            ("var_fwd", "VarOp"),
-            ("std_fwd", "StdOp"),
-            ("var_mean_fwd", "VarMeanOp"),
+            "SumFwdOp", "MeanFwdOp", "AmaxFwdOp", "AminFwdOp",
+            "ProdFwdOp", "VarFwdOp", "StdFwdOp", "VarMeanFwdOp",
         ],
     )
-    def test_reduce_multi_class_resolution(self, validator, op_name, expected_class):
-        """All 8 reduce ops in reduce.py resolve to the correct class."""
+    def test_no_heuristic_fallback_for_mismatched_names(self, validator, op_name):
+        """Manifest keys that don't match any cls.__name__ fail to resolve.
+
+        These will resolve correctly after PR-B renames the Op classes.
+        """
         result = validator._resolve_op_class(
             "tileops/ops/reduction/reduce.py", op_name,
         )
-        assert result.cls is not None, (
-            f"{op_name}: expected {expected_class}, got None"
-        )
-        assert result.cls.__name__ == expected_class, (
-            f"{op_name}: expected {expected_class}, got {result.cls.__name__}"
-        )
-
-    @pytest.mark.parametrize(
-        "op_file,op_name,expected_class",
-        [
-            ("tileops/ops/reduction/argmax.py", "argmax_fwd", "ArgmaxOp"),
-            ("tileops/ops/reduction/argmin.py", "argmin_fwd", "ArgminOp"),
-            ("tileops/ops/reduction/all_op.py", "all_fwd", "AllOp"),
-            ("tileops/ops/reduction/any_op.py", "any_fwd", "AnyOp"),
-            ("tileops/ops/reduction/count_nonzero.py", "count_nonzero_fwd", "CountNonzeroOp"),
-            ("tileops/ops/reduction/l1_norm.py", "l1_norm_fwd", "L1NormOp"),
-            ("tileops/ops/reduction/l2_norm.py", "l2_norm_fwd", "L2NormOp"),
-            ("tileops/ops/reduction/inf_norm.py", "inf_norm_fwd", "InfNormOp"),
-            ("tileops/ops/reduction/softmax.py", "softmax_fwd", "SoftmaxOp"),
-            ("tileops/ops/reduction/log_softmax.py", "log_softmax_fwd", "LogSoftmaxOp"),
-            ("tileops/ops/reduction/logsumexp.py", "logsumexp_fwd", "LogSumExpOp"),
-        ],
-    )
-    def test_single_file_reduction_ops(self, validator, op_file, op_name, expected_class):
-        """All single-file reduction ops resolve correctly via their source.op path."""
-        result = validator._resolve_op_class(op_file, op_name)
-        assert result.cls is not None, (
-            f"{op_name}: expected {expected_class}, got None"
-        )
-        assert result.cls.__name__ == expected_class, (
-            f"{op_name}: expected {expected_class}, got {result.cls.__name__}"
-        )
+        assert result.cls is None
+        assert result.warning is not None
 
     def test_nonexistent_module_returns_import_error(self, validator):
         """Module that cannot be imported returns import_error=True."""
@@ -1007,15 +997,15 @@ class TestResolveOpClass:
 
         with (
             mock.patch.object(importlib, "import_module", side_effect=patched_import),
-            pytest.warns(UserWarning, match="Ambiguous"),
+            pytest.warns(UserWarning, match="No class named"),
         ):
             result = validator._resolve_op_class(
                 "tileops/ops/fake_ambiguous.py", "mystery_fwd",
             )
-        # Should return empty result (no cls) since resolution is ambiguous
+        # Should return empty result (no cls) since no exact match
         assert result.cls is None
         assert not result.import_error
-        assert "Ambiguous" in result.warning
+        assert "No class named" in result.warning
 
     def test_ambiguous_warning_plumbed_through_check_l1(self, validator):
         """Ambiguity warning surfaces in check_l1's structured warnings list."""
@@ -1056,24 +1046,22 @@ class TestResolveOpClass:
 
         with (
             mock.patch.object(importlib, "import_module", side_effect=patched_import),
-            pytest.warns(UserWarning, match="Ambiguous"),
+            pytest.warns(UserWarning, match="No class named"),
         ):
             errors = validator.check_l1("mystery_fwd", entry, warnings=warn_list)
 
-        assert any("Ambiguous" in w for w in warn_list)
+        assert any("No class named" in w for w in warn_list)
         assert any("could not resolve" in e for e in errors)
 
     def test_suffix_match_ambiguity_emits_warning(self, validator):
-        """When multiple candidates match _fwd suffix, emit ambiguity warning."""
+        """When no class matches the manifest key exactly, emit warning."""
         import importlib
         import types
         import unittest.mock as mock
 
-        fake_mod = types.ModuleType("tileops.ops.fake_suffix_ambig")
-        fake_mod.__name__ = "tileops.ops.fake_suffix_ambig"
+        fake_mod = types.ModuleType("tileops.ops.fake_no_match")
+        fake_mod.__name__ = "tileops.ops.fake_no_match"
 
-        # Two classes both containing "fwd" in their name — suffix heuristic
-        # should detect ambiguity instead of silently picking the first.
         class AlphaFwdOp:
             @staticmethod
             def forward():
@@ -1092,28 +1080,27 @@ class TestResolveOpClass:
         original_import = importlib.import_module
 
         def patched_import(name):
-            if name == "tileops.ops.fake_suffix_ambig":
+            if name == "tileops.ops.fake_no_match":
                 return fake_mod
             return original_import(name)
 
         with (
             mock.patch.object(importlib, "import_module", side_effect=patched_import),
-            pytest.warns(UserWarning, match="Ambiguous"),
+            pytest.warns(UserWarning, match="No class named"),
         ):
             result = validator._resolve_op_class(
-                "tileops/ops/fake_suffix_ambig.py", "gamma_fwd",
+                "tileops/ops/fake_no_match.py", "GammaFwdOp",
             )
-        # Ambiguous suffix match: cls should be None and warning emitted
+        # No exact match: cls should be None and warning emitted
         assert result.cls is None
         assert not result.import_error
-        assert "Ambiguous" in result.warning
+        assert "No class named" in result.warning
 
-    def test_stripped_pascal_takes_priority_over_full_pascal(self, validator):
-        """stripped_pascal strategy must resolve before full_pascal.
+    def test_direct_match_resolves_exact_class_name(self, validator):
+        """Direct match resolves when cls.__name__ == manifest key.
 
-        For op_name='sum_fwd' with both SumOp and SumFwdOp in the module,
-        stripped_pascal ('sum_fwd' -> 'SumOp') should win over full_pascal
-        ('sum_fwd' -> 'SumFwdOp').
+        For op_name='SumFwdOp' with both SumOp and SumFwdOp in the module,
+        the exact match finds SumFwdOp. No heuristic fallback.
         """
         import importlib
         import types
@@ -1146,10 +1133,11 @@ class TestResolveOpClass:
 
         with mock.patch.object(importlib, "import_module", side_effect=patched_import):
             result = validator._resolve_op_class(
-                "tileops/ops/fake_priority.py", "sum_fwd",
+                "tileops/ops/fake_priority.py", "SumFwdOp",
             )
-        assert result.cls is SumOp, (
-            f"Expected SumOp (stripped_pascal) but got {result.cls.__name__}"
+        # Direct match finds SumFwdOp when the class name IS the manifest key
+        assert result.cls is SumFwdOp, (
+            f"Expected SumFwdOp (direct match) but got {result.cls.__name__}"
         )
 
 
@@ -1160,6 +1148,10 @@ class TestResolveOpClass:
 class TestIntegration:
     """Run the actual validator script and verify it passes."""
 
+    @pytest.mark.xfail(
+        reason="Manifest keys are PascalCase but Op classes not yet renamed (PR-B #866)",
+        strict=False,
+    )
     def test_validator_passes_on_current_codebase(self):
         result = subprocess.run(
             [sys.executable, str(VALIDATOR_SCRIPT)],

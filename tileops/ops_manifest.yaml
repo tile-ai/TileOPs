@@ -3,7 +3,8 @@
 # Schema
 # ------
 # ops:
-#   <op_name>:                       # Unique op identifier (e.g. rmsnorm_fwd)
+#   <OpName>:                        # PascalCase class name (e.g. RMSNormFwdOp)
+#     ref_api: <str>                 # Required: fully qualified PyTorch API equivalent, or "none"
 #     family: <str>                  # Op family for grouping (e.g. norm, attention)
 #     status: <str>                  # Implementation status: "implemented" or "spec-only"
 #     signature:
@@ -26,8 +27,10 @@
 #       bench:  <path>                       # Path to benchmark file
 #
 # Notes:
+# - Op keys are PascalCase class names in {Name}{Direction}Op format.
+# - ref_api is required: fully qualified PyTorch API equivalent, or "none" if none exists.
 # - Signature uses dict (name as key), not list. See docs/manifest.md.
-# - Backward ops are registered as independent entries (e.g. batchnorm_bwd).
+# - Backward ops are registered as independent entries (e.g. BatchNormBwdOp).
 # - shape_rules use Python expression syntax and are optional.
 # - roofline supports two modes: inline expressions (flops/bytes) or func.
 # - Tensor shape is intentionally unconstrained; shape relationships go in shape_rules.
@@ -38,7 +41,8 @@ ops:
   # norm — row-norm ops (operate along last dim, shape: [*leading, N])
   # ---------------------------------------------------------------------------
 
-  rmsnorm_fwd:
+  RMSNormFwdOp:
+    ref_api: "torch.nn.functional.rms_norm"
     family: norm
     status: spec-only  # impl lacks dim param; fix in follow-up PR
 
@@ -80,7 +84,8 @@ ops:
       test: tests/ops/test_rms_norm.py
       bench: benchmarks/ops/bench_rms_norm.py
 
-  layernorm_fwd:
+  LayerNormFwdOp:
+    ref_api: "torch.nn.functional.layer_norm"
     family: norm
     status: implemented
 
@@ -124,7 +129,8 @@ ops:
       test: tests/ops/test_layer_norm.py
       bench: benchmarks/ops/bench_layer_norm.py
 
-  ada_layernorm_fwd:
+  AdaLayerNormFwdOp:
+    ref_api: "none"
     family: norm
     status: implemented
 
@@ -164,7 +170,8 @@ ops:
       test: tests/ops/test_ada_layer_norm.py
       bench: benchmarks/ops/bench_ada_layer_norm.py
 
-  ada_layernorm_zero_fwd:
+  AdaLayerNormZeroFwdOp:
+    ref_api: "none"
     family: norm
     status: implemented
 
@@ -206,7 +213,8 @@ ops:
       test: tests/ops/test_ada_layer_norm_zero.py
       bench: benchmarks/ops/bench_ada_layer_norm.py
 
-  fused_add_layernorm_fwd:
+  FusedAddLayerNormFwdOp:
+    ref_api: "none"
     family: norm
     status: implemented
 
@@ -251,7 +259,8 @@ ops:
       test: tests/ops/test_fused_add_layer_norm.py
       bench: benchmarks/ops/bench_fused_add_layer_norm.py
 
-  fused_add_rmsnorm_fwd:
+  FusedAddRMSNormFwdOp:
+    ref_api: "none"
     family: norm
     status: implemented
 
@@ -301,7 +310,8 @@ ops:
   # norm — spatial-norm ops (operate over spatial/channel dims, shape: [N, C, *spatial])
   # ---------------------------------------------------------------------------
 
-  batchnorm_fwd:
+  BatchNormFwdOp:
+    ref_api: "torch.nn.functional.batch_norm"
     family: norm
     status: implemented
 
@@ -353,7 +363,8 @@ ops:
       test: tests/ops/test_batch_norm.py
       bench: benchmarks/ops/bench_batch_norm.py
 
-  batchnorm_bwd:
+  BatchNormBwdOp:
+    ref_api: "torch.nn.functional.batch_norm"
     family: norm
     status: implemented
 
@@ -402,7 +413,8 @@ ops:
       test: tests/ops/test_batch_norm.py
       bench: benchmarks/ops/bench_batch_norm.py
 
-  groupnorm_fwd:
+  GroupNormFwdOp:
+    ref_api: "torch.nn.functional.group_norm"
     family: norm
     status: spec-only  # impl uses G instead of groups; fix in follow-up PR
 
@@ -444,7 +456,8 @@ ops:
       test: tests/ops/test_group_norm.py
       bench: benchmarks/ops/bench_group_norm.py
 
-  instancenorm_fwd:
+  InstanceNormFwdOp:
+    ref_api: "torch.nn.functional.instance_norm"
     family: norm
     status: implemented
 
@@ -488,7 +501,8 @@ ops:
   # attention — multi-head / grouped-query attention (prefill, decode, paged)
   # ---------------------------------------------------------------------------
 
-  mha_fwd:
+  MhaFwdOp:
+    ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
 
@@ -524,7 +538,8 @@ ops:
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
 
-  mha_bwd:
+  MhaBwdOp:
+    ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
 
@@ -570,7 +585,8 @@ ops:
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
 
-  gqa_fwd:
+  GqaFwdOp:
+    ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
 
@@ -607,7 +623,8 @@ ops:
       test: tests/ops/test_gqa.py
       bench: benchmarks/ops/bench_gqa.py
 
-  gqa_bwd:
+  GqaBwdOp:
+    ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
 
@@ -658,7 +675,8 @@ ops:
   # attention — decode (single-query against KV cache)
   # ---------------------------------------------------------------------------
 
-  mha_decode:
+  MhaDecodeFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -695,7 +713,8 @@ ops:
       test: tests/ops/test_mha_decode.py
       bench: benchmarks/ops/bench_mha_decode.py
 
-  mha_decode_paged:
+  MhaDecodePagedFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -746,7 +765,8 @@ ops:
       test: tests/ops/test_mha_decode_paged.py
       bench: benchmarks/ops/bench_mha_decode_paged.py
 
-  gqa_decode:
+  GqaDecodeFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -784,7 +804,8 @@ ops:
       test: tests/ops/test_gqa_decode.py
       bench: benchmarks/ops/bench_gqa_decode.py
 
-  gqa_decode_paged:
+  GqaDecodePagedFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -839,7 +860,8 @@ ops:
   # attention — sliding window
   # ---------------------------------------------------------------------------
 
-  gqa_sliding_window_fwd:
+  GqaSlidingWindowFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -878,7 +900,8 @@ ops:
       test: tests/ops/test_gqa_sliding_window_fwd.py
       bench: benchmarks/ops/bench_gqa_sliding_window_fwd.py
 
-  gqa_sliding_window_varlen_fwd:
+  GqaSlidingWindowVarlenFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -926,7 +949,8 @@ ops:
   # attention — DeepSeek MLA / DSA decode
   # ---------------------------------------------------------------------------
 
-  deepseek_mla_decode:
+  DeepSeekMlaDecodeFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -966,7 +990,8 @@ ops:
       test: tests/ops/test_deepseek_mla_decode.py
       bench: benchmarks/ops/bench_deepseek_mla_decode.py
 
-  deepseek_dsa_decode:
+  DeepSeekDsaDecodeFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -1009,7 +1034,8 @@ ops:
   # moe — Mixture-of-Experts ops
   # ---------------------------------------------------------------------------
 
-  moe_permute_padded:
+  MoePermutePaddedFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
 
@@ -1066,7 +1092,8 @@ ops:
       bench: benchmarks/ops/bench_moe_permute.py
       bench_manifest_driven: true
 
-  moe_permute_align:
+  MoePermuteAlignFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only  # impl uses numel instead of total_tokens/top_k; fix in follow-up PR
 
@@ -1115,7 +1142,8 @@ ops:
       bench: benchmarks/ops/bench_moe_permute_align.py
       bench_manifest_driven: true
 
-  moe_permute_nopad:
+  MoePermuteNopadFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
 
@@ -1172,7 +1200,8 @@ ops:
       bench: benchmarks/ops/bench_moe_permute_nopad.py
       bench_manifest_driven: true
 
-  moe_unpermute:
+  MoeUnpermuteFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
 
@@ -1215,7 +1244,8 @@ ops:
       bench: benchmarks/ops/bench_moe_unpermute.py
       bench_manifest_driven: true
 
-  moe_fused_experts:
+  MoeFusedExpertsFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only
 
@@ -1251,7 +1281,8 @@ ops:
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
 
-  moe_fused_experts_padded:
+  MoeFusedExpertsPaddedFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only
 
@@ -1287,7 +1318,8 @@ ops:
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
 
-  moe_grouped_gemm_nopad:
+  MoeGroupedGemmNopadFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only
 
@@ -1324,7 +1356,8 @@ ops:
   # reduction -- softmax family (output shape == input shape, no keepdim)
   # ---------------------------------------------------------------------------
 
-  softmax_fwd:
+  SoftmaxFwdOp:
+    ref_api: "torch.nn.functional.softmax"
     family: reduction
     status: implemented
 
@@ -1360,7 +1393,8 @@ ops:
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
 
-  log_softmax_fwd:
+  LogSoftmaxFwdOp:
+    ref_api: "torch.nn.functional.log_softmax"
     family: reduction
     status: implemented
 
@@ -1396,7 +1430,8 @@ ops:
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
 
-  logsumexp_fwd:
+  LogSumExpFwdOp:
+    ref_api: "torch.logsumexp"
     family: reduction
     status: implemented
 
@@ -1438,7 +1473,8 @@ ops:
   # reduction -- simple reductions (dim + keepdim)
   # ---------------------------------------------------------------------------
 
-  sum_fwd:
+  SumFwdOp:
+    ref_api: "torch.sum"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1475,7 +1511,8 @@ ops:
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
 
-  mean_fwd:
+  MeanFwdOp:
+    ref_api: "torch.mean"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1512,7 +1549,8 @@ ops:
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
 
-  amax_fwd:
+  AmaxFwdOp:
+    ref_api: "torch.amax"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1549,7 +1587,8 @@ ops:
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
 
-  amin_fwd:
+  AminFwdOp:
+    ref_api: "torch.amin"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1586,7 +1625,8 @@ ops:
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
 
-  prod_fwd:
+  ProdFwdOp:
+    ref_api: "torch.prod"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
     signature:
@@ -1626,7 +1666,8 @@ ops:
   # reduction -- Welford reductions (correction + dim + keepdim)
   # ---------------------------------------------------------------------------
 
-  var_fwd:
+  VarFwdOp:
+    ref_api: "torch.var"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1664,7 +1705,8 @@ ops:
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
 
-  std_fwd:
+  StdFwdOp:
+    ref_api: "torch.std"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1702,7 +1744,8 @@ ops:
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
 
-  var_mean_fwd:
+  VarMeanFwdOp:
+    ref_api: "torch.var_mean"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1747,7 +1790,8 @@ ops:
   # reduction -- argmax/argmin (output dtype: int64)
   # ---------------------------------------------------------------------------
 
-  argmax_fwd:
+  ArgmaxFwdOp:
+    ref_api: "torch.argmax"
     family: reduction
     status: implemented
 
@@ -1784,7 +1828,8 @@ ops:
       test: tests/ops/test_argreduce.py
       bench: benchmarks/ops/bench_argreduce.py
 
-  argmin_fwd:
+  ArgminFwdOp:
+    ref_api: "torch.argmin"
     family: reduction
     status: implemented
 
@@ -1825,7 +1870,8 @@ ops:
   # reduction -- logical reductions (output dtype: bool)
   # ---------------------------------------------------------------------------
 
-  all_fwd:
+  AllFwdOp:
+    ref_api: "torch.all"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1861,7 +1907,8 @@ ops:
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
 
-  any_fwd:
+  AnyFwdOp:
+    ref_api: "torch.any"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1897,7 +1944,8 @@ ops:
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
 
-  count_nonzero_fwd:
+  CountNonzeroFwdOp:
+    ref_api: "torch.count_nonzero"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1937,7 +1985,8 @@ ops:
   # reduction -- vector norms (output dtype: same_as(x))
   # ---------------------------------------------------------------------------
 
-  l1_norm_fwd:
+  L1NormFwdOp:
+    ref_api: "torch.linalg.vector_norm"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -1974,7 +2023,8 @@ ops:
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
 
-  l2_norm_fwd:
+  L2NormFwdOp:
+    ref_api: "torch.linalg.vector_norm"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -2011,7 +2061,8 @@ ops:
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
 
-  inf_norm_fwd:
+  InfNormFwdOp:
+    ref_api: "torch.linalg.vector_norm"
     family: reduction
     status: spec-only  # dim=None not yet implemented; update when impl lands
 
@@ -2052,7 +2103,8 @@ ops:
   # scan -- prefix scan ops (output shape == input shape, no keepdim)
   # ---------------------------------------------------------------------------
 
-  cumsum_fwd:
+  CumsumFwdOp:
+    ref_api: "torch.cumsum"
     family: scan
     status: spec-only
 
@@ -2087,7 +2139,8 @@ ops:
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
 
-  cumprod_fwd:
+  CumprodFwdOp:
+    ref_api: "torch.cumprod"
     family: scan
     status: spec-only
 
@@ -2126,7 +2179,8 @@ ops:
   # conv — convolution ops (1D/2D/3D forward)
   # ---------------------------------------------------------------------------
 
-  conv1d_fwd:
+  Conv1dFwdOp:
+    ref_api: "torch.nn.functional.conv1d"
     # Equivalent to torch.nn.functional.conv1d (bias=None)
     family: conv
     status: spec-only  # TODO: impl lacks dilation, groups, string padding
@@ -2185,11 +2239,12 @@ ops:
       bench: benchmarks/ops/bench_conv1d.py
       bench_manifest_driven: false
 
-  conv1d_fwd_bias:
+  Conv1dBiasFwdOp:
+    ref_api: "torch.nn.functional.conv1d"
     # Equivalent to torch.nn.functional.conv1d (bias≠None)
     family: conv
     status: spec-only  # TODO: impl lacks dilation, groups, string padding
-    variant_of: conv1d_fwd
+    variant_of: Conv1dFwdOp
 
     signature:
       inputs:
