@@ -48,7 +48,7 @@ from .gla_chunkwise import GLABwdKernel, GLAFwdKernel
 from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 from .grouped_gemm import grouped_gemm_kernel
 from .kernel import Kernel
-from .mhc import mhc_post_kernel, mhc_pre_kernel
+from .mhc import MHCPostKernel, MHCPreKernel
 from .moe import MoePermuteAlignKernel
 from .norm import (
     BatchNormBwdKernel,
@@ -135,10 +135,10 @@ __all__ = [
     "gqa_decode_paged_kernel",
     "grouped_gemm_kernel",
     "MoePermuteAlignKernel",
+    "MHCPostKernel",
+    "MHCPreKernel",
     "mha_decode_kernel",
     "mha_decode_paged_kernel",
-    "mhc_post_kernel",
-    "mhc_pre_kernel",
     "mla_decode_kernel",
     "mla_decode_ws_kernel",
 ]

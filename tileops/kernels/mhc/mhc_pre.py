@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
-__all__ = ["mhc_pre_kernel"]
+__all__ = ["MHCPreKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -285,7 +285,7 @@ def _(
     return torch.empty_like(input[0], dtype=input[0].dtype, device=input[0].device)
 
 
-class mhc_pre_kernel(Kernel):
+class MHCPreKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
