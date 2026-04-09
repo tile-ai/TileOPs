@@ -22,6 +22,7 @@ class MhaFwdWorkload(WorkloadBase):
 
 
 # tests/ops/test_mha.py
+from tileops.ops import MhaFwdOp
 from workloads.ops.mha import MhaFwdWorkload
 
 
@@ -41,6 +42,7 @@ def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune):
 
 
 # benchmarks/ops/bench_mha.py
+from tileops.ops import MhaFwdOp
 from workloads.ops.mha import MhaFwdWorkload  # import workload, NOT test
 
 
