@@ -31,6 +31,7 @@ from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
 from .gqa_sliding_window_fwd import GqaSlidingWindowFwdOp
 from .gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdOp
 from .grouped_gemm import GroupedGemmOp
+from .max_pool2d import MaxPool2dOp
 from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
 from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
@@ -95,6 +96,7 @@ __all__ = [
     "AvgPool1dOp",
     "AvgPool2dOp",
     "AvgPool3dOp",
+    "MaxPool2dOp",
     "AdaLayerNormOp",
     "AdaLayerNormZeroOp",
     "BatchNormBwdOp",
