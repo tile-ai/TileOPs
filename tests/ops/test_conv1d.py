@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.conv import Conv1dKernel
-from tileops.ops import Conv1dFwdBiasOp, Conv1dFwdOp
+from tileops.ops import Conv1dBiasFwdOp, Conv1dFwdOp
 
 
 class Conv1dFixture(FixtureBase):
@@ -122,7 +122,7 @@ def test_conv1d(
     tune: bool,
 ) -> None:
     test = Conv1dTest(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    op = Conv1dFwdBiasOp(
+    op = Conv1dBiasFwdOp(
         n=n,
         c_in=c_in,
         l_in=l_in,
@@ -141,7 +141,7 @@ def test_conv1d(
 
 @pytest.mark.smoke
 def test_conv1d_accepts_zero_bias() -> None:
-    op = Conv1dFwdBiasOp(
+    op = Conv1dBiasFwdOp(
         n=1,
         c_in=32,
         l_in=256,
@@ -187,7 +187,7 @@ def test_conv1d_fwd_variant_without_bias() -> None:
 
 @pytest.mark.smoke
 def test_conv1d_dispatches_kernel() -> None:
-    op = Conv1dFwdBiasOp(
+    op = Conv1dBiasFwdOp(
         n=1,
         c_in=32,
         l_in=256,

@@ -12,7 +12,7 @@ from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["Conv1dFwdOp", "Conv1dFwdBiasOp"]
+__all__ = ["Conv1dFwdOp", "Conv1dBiasFwdOp"]
 
 
 class _Conv1dBaseOp(Op):
@@ -110,7 +110,7 @@ class Conv1dFwdOp(_Conv1dBaseOp):
         return self._run(input, weight)
 
 
-class Conv1dFwdBiasOp(_Conv1dBaseOp):
+class Conv1dBiasFwdOp(_Conv1dBaseOp):
     has_bias = True
 
     def forward(
