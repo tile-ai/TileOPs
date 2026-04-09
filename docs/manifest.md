@@ -87,8 +87,6 @@ x: {dtype: "float16", shape: "[N, H, W, C]", layout: "channels_last"}
 
 ## Manifest Key Format
 
-> **Note**: This section describes behavior introduced by #860. Until that PR lands, the manifest still uses snake_case keys and heuristic resolution.
-
 Each entry in `ops:` is keyed by the **Python class name** of the Op — PascalCase with a mandatory direction suffix and `Op` suffix:
 
 ```

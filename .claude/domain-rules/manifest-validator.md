@@ -1,6 +1,6 @@
 - These are condensed rules. If unclear, read [docs/manifest.md](../../docs/manifest.md) (Manifest Validation section) for full spec.
 - `scripts/validate_manifest.py` is infrastructure, not part of normal op implementation work. When adding or updating an op manifest entry, do not modify the validator to make the new entry pass.
-- **Post-#860**: The validator resolves manifest keys to Op classes via direct equality: `assert cls.__name__ == manifest_key`. There is no heuristic snake_case-to-PascalCase resolution. Manifest keys must be PascalCase Op class names (e.g., `RMSNormFwdOp`). Until #860 lands, the validator still uses `_resolve_op_class()` heuristics with snake_case keys.
+- The validator resolves manifest keys to Op classes via direct equality: `assert cls.__name__ == manifest_key`. There is no heuristic snake_case-to-PascalCase resolution. Manifest keys must be PascalCase Op class names (e.g., `RMSNormFwdOp`).
 - Treat validator failures as issues in the op, manifest, or benchmark unless the manifest schema or trust model has explicitly changed.
 - Only modify validator-related files when the PR is explicitly about manifest schema, trust-model policy, or validator infrastructure. In that case, document the schema/policy change in the PR.
 - Files that count as validator-related infrastructure: `scripts/validate_manifest.py`, `tests/test_validate_manifest.py`, and `docs/manifest.md`.

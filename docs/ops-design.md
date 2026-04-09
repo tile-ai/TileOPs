@@ -70,8 +70,6 @@ Adding a new protocol variable requires updating: (1) the base class, (2) all co
 
 ## Naming Conventions
 
-> **Note**: This section describes behavior introduced by #860. Until that PR lands, the manifest still uses snake_case keys and heuristic resolution.
-
 ### Op Classes
 
 Op class names use PascalCase with a mandatory direction suffix and `Op` suffix:
@@ -80,7 +78,7 @@ Op class names use PascalCase with a mandatory direction suffix and `Op` suffix:
 {PascalCaseName}{Direction}Op
 ```
 
-- **PascalCaseName** — descriptive name (e.g., `RMSNorm`, `BatchNorm`, `Softmax`). No mechanical abbreviation rules are enforced — the manifest author determines the name (see [#860](https://github.com/tile-ai/TileOPs/pull/860) for the abbreviation policy).
+- **PascalCaseName** — descriptive name (e.g., `RMSNorm`, `BatchNorm`, `Softmax`). No mechanical abbreviation rules are enforced — the manifest author determines the name.
 - **Direction** — mandatory suffix: `Fwd` or `Bwd`.
 - **Op** — literal suffix.
 
