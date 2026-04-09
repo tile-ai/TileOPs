@@ -160,6 +160,7 @@ def _grouped_conv1d_kernel(
             out: T.Tensor((n, out_l, groups * c_out_per_group), dtype),  # type: ignore
             bias: T.Tensor((groups, c_out_per_group), dtype),  # type: ignore
         ):
+            weight_flat = T.Tensor((groups, k_total, c_out_per_group), dtype, weight.data)
             with T.Kernel(
                 T.ceildiv(c_out_per_group, block_n),
                 T.ceildiv(n * out_l, block_m),
@@ -194,16 +195,7 @@ def _grouped_conv1d_kernel(
                             x[batch, il, bz * c_in_per_group + ci],
                             T.cast(0.0, dtype),
                         )
-                    for i, j in T.Parallel(block_k, block_n):
-                        k_idx = k_iter * block_k + i
-                        oc = bx * block_n + j
-                        kw = k_idx // c_in_per_group
-                        ci = k_idx % c_in_per_group
-                        weight_shared[i, j] = T.if_then_else(
-                            (k_idx < k_total) & (oc < c_out_per_group),
-                            weight[bz, kw, ci, oc],
-                            T.cast(0.0, dtype),
-                        )
+                    T.copy(weight_flat[bz, k_iter * block_k, bx * block_n], weight_shared)
                     T.gemm(data_shared, weight_shared, out_local)
 
                 for i, j in T.Parallel(block_m, block_n):
@@ -350,7 +342,6 @@ def _(
     enable_rasterization: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    _ = (groups, c_in_per_group, has_bias, dtype, block_m, block_n, block_k, num_stages, threads, enable_rasterization)
     out_l = _conv1d_out_length(l_in, kernel_l, stride_l, pad_left, pad_right, dilation_l)
     return torch.empty((n, out_l, groups * c_out_per_group), dtype=inputs[0].dtype, device=inputs[0].device)
 
