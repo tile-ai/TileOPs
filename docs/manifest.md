@@ -226,13 +226,51 @@ roofline:
 
 ### Source
 
-| Field                   | Required | Description                                     |
-| ----------------------- | -------- | ----------------------------------------------- |
-| `kernel`                | yes      | Kernel file path(s).                            |
-| `op`                    | yes      | Op class file path.                             |
-| `test`                  | yes      | Test file path.                                 |
-| `bench`                 | yes      | Benchmark file path.                            |
-| `bench_manifest_driven` | no       | `true` = L4 is a hard CI error. Migration flag. |
+| Field                   | Required | Description                                                            |
+| ----------------------- | -------- | ---------------------------------------------------------------------- |
+| `kernel`                | yes      | Kernel file path(s).                                                   |
+| `kernel_map`            | \*       | Dispatch key → Kernel class name. Required when `status: implemented`. |
+| `op`                    | yes      | Op class file path.                                                    |
+| `test`                  | yes      | Test file path.                                                        |
+| `bench`                 | yes      | Benchmark file path.                                                   |
+| `bench_manifest_driven` | no       | `true` = L4 is a hard CI error. Migration flag.                        |
+
+#### kernel_map
+
+Declares the static mapping between dispatch keys and Kernel classes that the Op registers in `default_kernel_map`.
+
+```yaml
+# Single-kernel op
+source:
+  kernel: tileops/kernels/norm/rms_norm.py
+  kernel_map:
+    rms_norm: RmsNormKernel
+  op: tileops/ops/norm/rms_norm.py
+  test: tests/ops/test_rms_norm.py
+  bench: benchmarks/ops/bench_rms_norm.py
+
+# Multi-kernel op
+source:
+  kernel:
+    - tileops/kernels/flash_attn/bwd_preprocess.py
+    - tileops/kernels/flash_attn/bwd.py
+    - tileops/kernels/flash_attn/bwd_postprocess.py
+  kernel_map:
+    mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+    mha_bwd_kernel: MhaBwdKernel
+    mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
+  op: tileops/ops/mha.py
+  test: tests/ops/test_mha.py
+  bench: benchmarks/ops/bench_mha.py
+```
+
+Rules:
+
+- **Keys** are stable snake_case dispatch identifiers. They MUST NOT be derived from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key.
+- **Values** are Kernel class names (PascalCase). Must match `cls.__name__`.
+- Every file listed in `source.kernel` MUST contain at least one class referenced in `kernel_map`.
+- The manifest `kernel_map` MUST match the Op's `default_kernel_map` exactly — same keys, same class names. No runtime conditionals: the manifest declares one static mapping per Op.
+- Optional when `status: spec-only`. Required when `status: implemented`.
 
 ## Entry Examples
 
@@ -378,4 +416,4 @@ python scripts/validate_manifest.py --check-op SoftmaxFwdOp
 
 ## Exclusions
 
-The manifest does NOT describe: kernel dispatch, multi-kernel pipelines, accumulator dtypes, persistent state, tile sizes, or autotuning config.
+The manifest does NOT describe: multi-kernel execution ordering, accumulator dtypes, persistent state, tile sizes, or autotuning config.

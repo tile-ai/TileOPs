@@ -27,4 +27,6 @@ ______________________________________________________________________
   - `variant_of` is one level only. Variant → primary. Primary must not have `variant_of`.
   - Variants share `source.kernel` and `source.op`. Each has its own `signature`, `workloads`, `roofline`.
 - Tensor layout defaults to contiguous row-major. When an op requires non-default layout (e.g., `channels_last`), add `layout` field to the tensor declaration. `shape` dimension names reflect actual memory order.
+- `source.kernel_map` declares the static dispatch key → Kernel class mapping. Keys are stable snake_case identifiers; they MUST NOT be derived from `cls.__name__`. Values are Kernel class names matching `cls.__name__`. Required when `status: implemented`, optional when `status: spec-only`.
+- The manifest `kernel_map` MUST match the Op's `default_kernel_map` exactly — same keys, same class names. Runtime conditionals (e.g., architecture-dependent dispatch) are not represented in the manifest.
 - Never modify manifest to match non-conforming code. If code doesn't match spec: set `status: spec-only` and add a comment explaining the discrepancy, then fix implementation in a follow-up PR. Never remove params, vars, or shape_rules to silence validator errors.

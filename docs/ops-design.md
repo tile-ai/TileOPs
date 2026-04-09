@@ -64,7 +64,7 @@ Contiguous conversion is the family base class's responsibility. Concrete ops sh
 | `ALIGNMENT`        | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm) |
 | `_op_name`         | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging    |
 
-Single-kernel ops declare `_kernel_key` and `_kernel_cls`. Multi-kernel ops define `default_kernel_map` returning a dict. Dispatch is determined by the family base class.
+Single-kernel ops declare `_kernel_key` and `_kernel_class`. Multi-kernel ops define `default_kernel_map` returning a dict. Dispatch is determined by the family base class.
 
 Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
 
