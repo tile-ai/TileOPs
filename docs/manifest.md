@@ -87,6 +87,8 @@ x: {dtype: "float16", shape: "[N, H, W, C]", layout: "channels_last"}
 
 ## Manifest Key Format
 
+> **Note**: This section describes behavior introduced by #860. Until that PR lands, the manifest still uses snake_case keys and heuristic resolution.
+
 Each entry in `ops:` is keyed by the **Python class name** of the Op — PascalCase with a mandatory direction suffix and `Op` suffix:
 
 ```
@@ -106,10 +108,11 @@ The validator enforces `assert cls.__name__ == manifest_key` — the manifest ke
 When an op's interface aligns with an external API (typically PyTorch), declare the reference with `ref_api`:
 
 ```yaml
-RMSNormFwdOp:
-  family: norm
-  ref_api: "torch.nn.functional.rms_norm"
-  ...
+ops:
+  RMSNormFwdOp:
+    family: norm
+    ref_api: "torch.nn.functional.rms_norm"
+    ...
 ```
 
 `ref_api` is informational — it documents which external API the signature follows (per R15). It does not affect validation or code generation.
