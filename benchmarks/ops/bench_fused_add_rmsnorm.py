@@ -8,7 +8,7 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.fused_add_rmsnorm import FusedAddRMSNormFwdOp
 from workloads.ops.fused_add_rmsnorm import FusedAddRmsNormTest
 
-_OP_NAME = "fused_add_rmsnorm_fwd"
+_OP_NAME = "FusedAddRMSNormFwdOp"
 
 
 class FusedAddRmsNormBenchmark(BenchmarkBase):

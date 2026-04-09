@@ -30,7 +30,7 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoePermuteAlignFwdOp
 from workloads.ops.moe_permute_align import MoePermuteAlignTest
 
-_OP_NAME = "moe_permute_align"
+_OP_NAME = "MoePermuteAlignFwdOp"
 
 # ---------------------------------------------------------------------------
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)

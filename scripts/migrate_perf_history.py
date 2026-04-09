@@ -86,13 +86,22 @@ def _rename_op_keys(ops: dict) -> tuple[dict, int]:
     for key, value in ops.items():
         new_key = RENAME_MAP.get(key, key)
         if new_key != key:
+            if new_key in ops:
+                print(
+                    f"WARNING: skipping rename '{key}' -> '{new_key}' because "
+                    f"'{new_key}' already exists as an original key in the data.",
+                    file=sys.stderr,
+                )
+                migrated[key] = value
+                continue
             renamed += 1
         if new_key in migrated:
             print(
                 f"WARNING: key collision — both '{key}' and another key map to "
-                f"'{new_key}'. Keeping the last occurrence.",
+                f"'{new_key}'. Keeping the first occurrence.",
                 file=sys.stderr,
             )
+            continue
         migrated[new_key] = value
     return migrated, renamed
 

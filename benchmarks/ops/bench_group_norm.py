@@ -10,7 +10,7 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.ops.group_norm import GroupNormTest
 
-_OP_NAME = "groupnorm_fwd"
+_OP_NAME = "GroupNormFwdOp"
 
 
 class GroupNormBenchmark(BenchmarkBase):

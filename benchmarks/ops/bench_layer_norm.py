@@ -9,7 +9,7 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.ops.layer_norm import LayerNormTest
 
-_OP_NAME = "layernorm_fwd"
+_OP_NAME = "LayerNormFwdOp"
 
 
 class LayerNormBenchmark(BenchmarkBase):

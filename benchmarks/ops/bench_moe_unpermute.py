@@ -35,7 +35,7 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoeUnpermuteFwdOp
 from workloads.ops.moe_unpermute import MoeUnpermuteTest
 
-_OP_NAME = "moe_unpermute"
+_OP_NAME = "MoeUnpermuteFwdOp"
 
 # ---------------------------------------------------------------------------
 # Benchmark class

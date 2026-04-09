@@ -11,8 +11,8 @@ from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.ops.ada_layer_norm import AdaLayerNormTest
 from workloads.ops.ada_layer_norm_zero import AdaLayerNormZeroTest
 
-_ADA_OP_NAME = "ada_layernorm_fwd"
-_ADA_ZERO_OP_NAME = "ada_layernorm_zero_fwd"
+_ADA_OP_NAME = "AdaLayerNormFwdOp"
+_ADA_ZERO_OP_NAME = "AdaLayerNormZeroFwdOp"
 
 
 class AdaLayerNormBenchmark(BenchmarkBase):

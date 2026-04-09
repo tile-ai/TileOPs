@@ -34,7 +34,7 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoePermutePaddedFwdOp
 from workloads.ops.moe_permute import MoePermuteTest
 
-_OP_NAME = "moe_permute_padded"
+_OP_NAME = "MoePermutePaddedFwdOp"
 
 # ---------------------------------------------------------------------------
 # Benchmark class

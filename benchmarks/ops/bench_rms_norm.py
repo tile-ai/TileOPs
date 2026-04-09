@@ -18,7 +18,7 @@ class _RmsNormTestBaseline(RmsNormTest):
         return ((x_f32 / rms) * weight.float()).to(x.dtype)
 
 
-_OP_NAME = "rmsnorm_fwd"
+_OP_NAME = "RMSNormFwdOp"
 
 
 class RmsNormBenchmark(BenchmarkBase):

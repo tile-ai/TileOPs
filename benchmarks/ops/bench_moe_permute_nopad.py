@@ -32,7 +32,7 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoePermuteNopadFwdOp
 from workloads.base import WorkloadBase
 
-_OP_NAME = "moe_permute_nopad"
+_OP_NAME = "MoePermuteNopadFwdOp"
 
 # ---------------------------------------------------------------------------
 # Test class
