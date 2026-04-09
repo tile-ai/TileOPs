@@ -504,7 +504,7 @@ ops:
   MultiHeadAttentionFwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
@@ -541,7 +541,7 @@ ops:
   MultiHeadAttentionBwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
@@ -588,7 +588,7 @@ ops:
   GroupQueryAttentionFwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
@@ -626,7 +626,7 @@ ops:
   GroupQueryAttentionBwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
@@ -678,7 +678,7 @@ ops:
   MultiHeadAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
@@ -716,7 +716,7 @@ ops:
   MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
@@ -768,7 +768,7 @@ ops:
   GroupQueryAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
@@ -807,7 +807,7 @@ ops:
   GroupQueryAttentionDecodePagedWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
@@ -952,7 +952,7 @@ ops:
   MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
@@ -993,7 +993,7 @@ ops:
   DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
-    status: spec-only  # class rename pending (PR-B)
+    status: implemented
 
     signature:
       inputs:
