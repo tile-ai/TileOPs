@@ -101,12 +101,12 @@ Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`.
 
 The validator enforces `assert cls.__name__ == manifest_key` — the manifest key must exactly match the Op class name. There is no heuristic resolution or snake_case-to-PascalCase conversion.
 
-### `ref_api` (optional)
+### `ref_api`
 
-Declares which external API the op's signature follows. Every op must have a `ref_api` field:
+Every op must have a `ref_api` field:
 
 - If the op aligns with an external API (typically PyTorch), set to the fully qualified name.
-- If there is no direct external counterpart, set to `none`.
+- If there is no direct external counterpart, set to `"none"`.
 
 ```yaml
 ops:
@@ -116,7 +116,7 @@ ops:
     ...
   NSAFwdOp:
     family: attention
-    ref_api: none
+    ref_api: "none"
     ...
 ```
 
@@ -124,15 +124,15 @@ ops:
 
 ## Entry Structure
 
-| Field       | Required | Description                                                 |
-| ----------- | -------- | ----------------------------------------------------------- |
-| `family`    | yes      | Op family (e.g., `norm`, `attention`).                      |
-| `ref_api`   | yes      | External API reference, or `none` if no direct counterpart. |
-| `status`    | no       | `spec-only` or `implemented`. Default: `spec-only`.         |
-| `signature` | yes      | Op interface. See [Signature](#signature).                  |
-| `workloads` | yes      | Benchmark shapes/dtypes.                                    |
-| `roofline`  | yes      | Performance model.                                          |
-| `source`    | yes      | Implementation paths.                                       |
+| Field       | Required | Description                                                   |
+| ----------- | -------- | ------------------------------------------------------------- |
+| `family`    | yes      | Op family (e.g., `norm`, `attention`).                        |
+| `ref_api`   | yes      | External API reference, or `"none"` if no direct counterpart. |
+| `status`    | no       | `spec-only` or `implemented`. Default: `spec-only`.           |
+| `signature` | yes      | Op interface. See [Signature](#signature).                    |
+| `workloads` | yes      | Benchmark shapes/dtypes.                                      |
+| `roofline`  | yes      | Performance model.                                            |
+| `source`    | yes      | Implementation paths.                                         |
 
 ### Signature
 
@@ -183,7 +183,7 @@ Op has Optional[Tensor] inputs?
    └─ 3+ → decompose the op first
 ```
 
-**Naming:** Variants follow the same PascalCase key format, with a descriptive suffix before `Op` (e.g., `MoEFusedMoeCbFwdOp`).
+**Naming:** Variants follow the same PascalCase key format, with a descriptive suffix inserted before `{Direction}Op` (e.g., `MoEFusedMoeCbFwdOp` where `Cb` is the variant suffix).
 
 ### Workloads
 
