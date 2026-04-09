@@ -945,17 +945,25 @@ def _gqa_fwd_ws_kernel(batch: int,
                                 k_smem_1, barrier=k_full)
                         T.barrier_arrive(k_full)
                         # Load V[n-1] into v_smem[(n-1)%2]
-                        # Wait-phase invariant: this kernel is correct only
-                        # because the V pipeline lags K by exactly one
-                        # iteration (V[n-1] is loaded in iter n).  The wait
-                        # parity ``n_idx % 2`` here is asymmetric vs the K
-                        # pipeline's ``(n_idx + 1) % 2`` — it works because
-                        # the consumer's iter n-1 arrive on v_empty has
-                        # already advanced v_empty's phase by the time the
-                        # producer reaches iter n's wait.  If pipeline depth
-                        # changes (e.g., V is also loaded in iter 0), this
-                        # formula must be revisited.  See tile-ai/TileOPs#871
-                        # review (Gabbering) for the analysis.
+                        # V wait-parity bootstrap: the V pipeline lags K by
+                        # one iteration (V[n-1] is loaded in iter n), so
+                        # this in-loop wait first fires at n_idx=1 with
+                        # parity ``1 % 2 = 1``.  Per PTX semantics
+                        # ``mbarrier.try_wait.parity P`` returns true when
+                        # current parity differs from P; mbarriers init at
+                        # parity 0, so this very first wait is satisfied
+                        # by initialization (no consumer arrive needed).
+                        # Subsequent waits ``n_idx % 2 ∈ {0,1}`` are
+                        # satisfied by consumer arrives in iter n-1 (each
+                        # 256 arrives flips one phase).  The producer
+                        # epilogue's last V wait ``loop_range % 2`` falls
+                        # into the same recurrence — including
+                        # ``loop_range == 1``, where 0 consumer arrives
+                        # are needed and the single producer wait is
+                        # served entirely by the bootstrap.  If V ever
+                        # starts loading at n_idx=0 (no lag), the wait
+                        # phase formula and the bootstrap reasoning both
+                        # need to be redone.
                         if n_idx > 0:
                             T.barrier_wait(v_empty, n_idx % 2)
                             if (n_idx - 1) % 2 == 0:
