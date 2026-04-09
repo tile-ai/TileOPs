@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
+from tileops.ops import GqaBwdOp, GqaFwdOp
 from workloads.ops.gqa import GqaBwdTest as _GqaBwdTestWorkload
 from workloads.ops.gqa import GqaFwdTest as _GqaFwdTestWorkload
 
@@ -65,7 +65,7 @@ class GqaBwdFixture(FixtureBase):
 def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
     test = GqaFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GroupQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GqaFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 
@@ -73,7 +73,7 @@ def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, 
 def test_gqa_bwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
     test = GqaBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GroupQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GqaBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 

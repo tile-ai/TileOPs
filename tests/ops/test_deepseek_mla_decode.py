@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from einops import einsum, rearrange
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheOp
+from tileops.ops import DeepSeekMlaDecodeFwdOp
 from workloads.ops.deepseek_mla_decode import MlaDecodeTest as _MlaDecodeTestWorkload
 
 
@@ -66,7 +66,7 @@ class MlaDecodeFixture(FixtureBase):
 def test_mla_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                     dim_pe: int, dtype: torch.dtype, tune: bool):
     test = MlaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
-    op = MultiHeadLatentAttentionDecodeWithKVCacheOp(
+    op = DeepSeekMlaDecodeFwdOp(
         batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)
 

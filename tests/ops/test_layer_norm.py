@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.layer_norm import LayerNormOp
+from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.ops.layer_norm import LayerNormTest as _LayerNormTestWorkload
 
 
@@ -60,7 +60,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @LayerNormFixture
 def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
-    op = LayerNormOp(M=m, N=n, dtype=dtype)
+    op = LayerNormFwdOp(M=m, N=n, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -83,7 +83,7 @@ def test_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     weight = torch.randn(n, dtype=dtype, device="cuda")
     bias = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = LayerNormOp(M=m, N=n, dtype=dtype)
+    op = LayerNormFwdOp(M=m, N=n, dtype=dtype)
 
     # Reference using torch.nn.functional.layer_norm
     x_ref = x.contiguous()
@@ -116,7 +116,7 @@ def test_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) ->
     bias = torch.randn(hidden, dtype=dtype, device="cuda")
 
     M = batch * seq
-    op = LayerNormOp(M=M, N=hidden, dtype=dtype)
+    op = LayerNormFwdOp(M=M, N=hidden, dtype=dtype)
 
     # Reference using torch.nn.functional.layer_norm
     y_ref = F.layer_norm(
@@ -159,7 +159,7 @@ def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
     weight = torch.ones(n, dtype=dtype, device="cuda")
     bias = torch.zeros(n, dtype=dtype, device="cuda")
 
-    op = LayerNormOp(M=m, N=n, dtype=dtype)
+    op = LayerNormFwdOp(M=m, N=n, dtype=dtype)
 
     y_ref = F.layer_norm(
         x.float(), (n,),

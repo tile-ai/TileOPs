@@ -17,13 +17,13 @@ from tileops.kernels.reduction.argreduce import ArgreduceKernel
 
 from ..op import Op
 
-__all__ = ["ArgmaxOp"]
+__all__ = ["ArgmaxFwdOp"]
 
 
-class ArgmaxOp(Op):
+class ArgmaxFwdOp(Op):
     """Argmax reduction along an arbitrary dim, returning int64 indices.
 
-    Construction: ``ArgmaxOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
+    Construction: ``ArgmaxFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

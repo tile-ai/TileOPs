@@ -15,10 +15,10 @@ from tileops.utils import is_hopper
 
 from .op import Op
 
-__all__ = ['GroupQueryAttentionFwdOp', 'GroupQueryAttentionBwdOp']
+__all__ = ['GqaFwdOp', 'GqaBwdOp']
 
 
-class GroupQueryAttentionFwdOp(Op):
+class GqaFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -52,7 +52,7 @@ class GroupQueryAttentionFwdOp(Op):
         return self.kernel(q, k, v)
 
 
-class GroupQueryAttentionBwdOp(Op):
+class GqaBwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

@@ -1,6 +1,6 @@
 """Correctness tests for vector norm ops (l1_norm, l2_norm, inf_norm).
 
-Covers: L1NormOp, L2NormOp, InfNormOp.
+Covers: L1NormFwdOp, L2NormFwdOp, InfNormFwdOp.
 All norms reduce along a configurable dim and return the same dtype as input.
 Uses torch.linalg.vector_norm as the reference implementation.
 """
@@ -139,21 +139,21 @@ def _make_1d_input(n: int, dtype: torch.dtype) -> torch.Tensor:
 
 def _make_op(dtype: torch.dtype, op_kind: str, dim: int = -1, keepdim: bool = False):
     """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.inf_norm import InfNormOp
-    from tileops.ops.reduction.l1_norm import L1NormOp
-    from tileops.ops.reduction.l2_norm import L2NormOp
+    from tileops.ops.reduction.inf_norm import InfNormFwdOp
+    from tileops.ops.reduction.l1_norm import L1NormFwdOp
+    from tileops.ops.reduction.l2_norm import L2NormFwdOp
 
     op_map = {
-        "l1": L1NormOp,
-        "l2": L2NormOp,
-        "inf": InfNormOp,
+        "l1": L1NormFwdOp,
+        "l2": L2NormFwdOp,
+        "inf": InfNormFwdOp,
     }
     cls = op_map[op_kind]
     return cls(dtype=dtype, dim=dim, keepdim=keepdim)
 
 
 # ---------------------------------------------------------------------------
-# L1NormOp tests
+# L1NormFwdOp tests
 # ---------------------------------------------------------------------------
 
 
@@ -207,7 +207,7 @@ def test_l1_1d(n: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
-# L2NormOp tests
+# L2NormFwdOp tests
 # ---------------------------------------------------------------------------
 
 
@@ -261,7 +261,7 @@ def test_l2_1d(n: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
-# InfNormOp tests
+# InfNormFwdOp tests
 # ---------------------------------------------------------------------------
 
 
@@ -335,7 +335,7 @@ class VectorNormNaNFixture(FixtureBase):
 
 @VectorNormNaNFixture
 def test_inf_nan_propagation(m: int, n: int, dtype: torch.dtype) -> None:
-    """InfNormOp must return NaN for rows containing NaN, matching PyTorch."""
+    """InfNormFwdOp must return NaN for rows containing NaN, matching PyTorch."""
     x = torch.randn(m, n, dtype=dtype, device="cuda")
     # Inject NaN into the first row
     x[0, 0] = float("nan")

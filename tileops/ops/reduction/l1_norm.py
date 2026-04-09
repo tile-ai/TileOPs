@@ -1,4 +1,4 @@
-"""L1NormOp: computes L1 norm (sum of absolute values) along a given dim.
+"""L1NormFwdOp: computes L1 norm (sum of absolute values) along a given dim.
 
 The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment
 (with 0.0, which is neutral for sum), calls the kernel, and reshapes the
@@ -18,13 +18,13 @@ from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from ..op import Op
 from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
-__all__ = ["L1NormOp"]
+__all__ = ["L1NormFwdOp"]
 
 
-class L1NormOp(Op):
+class L1NormFwdOp(Op):
     """L1 norm reduction along a configurable dim.
 
-    Construction: ``L1NormOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
+    Construction: ``L1NormFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

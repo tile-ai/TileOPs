@@ -6,8 +6,8 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.norm.ada_layer_norm import AdaLayerNormOp
-from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroOp
+from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
+from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.ops.ada_layer_norm import AdaLayerNormTest
 from workloads.ops.ada_layer_norm_zero import AdaLayerNormZeroTest
 
@@ -71,7 +71,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
     bm = AdaLayerNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = AdaLayerNormOp(M=m, N=n, dtype=dtype)
+    op = AdaLayerNormFwdOp(M=m, N=n, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -90,7 +90,7 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
     bm = AdaLayerNormZeroBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = AdaLayerNormZeroOp(M=m, N=n, dtype=dtype)
+    op = AdaLayerNormZeroFwdOp(M=m, N=n, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

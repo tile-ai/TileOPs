@@ -1,4 +1,4 @@
-"""InfNormOp: computes infinity norm (max absolute value) along a given dim.
+"""InfNormFwdOp: computes infinity norm (max absolute value) along a given dim.
 
 The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment
 (with 0.0, which is neutral for max of absolute values), calls the kernel,
@@ -24,13 +24,13 @@ from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from ..op import Op
 from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
-__all__ = ["InfNormOp"]
+__all__ = ["InfNormFwdOp"]
 
 
-class InfNormOp(Op):
+class InfNormFwdOp(Op):
     """Infinity norm reduction along a configurable dim.
 
-    Construction: ``InfNormOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
+    Construction: ``InfNormFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

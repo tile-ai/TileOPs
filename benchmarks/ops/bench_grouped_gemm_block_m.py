@@ -1,6 +1,6 @@
 """Benchmark: impact of block_m on NT grouped GEMM for MoE workloads.
 
-Varies block_m (16 / 32 / 64 / 128) in the existing grouped_gemm_kernel (NT
+Varies block_m (16 / 32 / 64 / 128) in the existing GroupedGemmKernel (NT
 layout) to find the sweet spot for small-M-per-expert distributions typical of
 Qwen3-MoE with E=256.
 
@@ -25,7 +25,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from tileops.kernels.grouped_gemm import grouped_gemm_kernel
+from tileops.kernels.grouped_gemm import GroupedGemmKernel
 
 _WARMUP = 100
 _REP = 200
@@ -42,7 +42,7 @@ def _padded_batch_sum(true_batch_sizes: List[int], block_m: int) -> int:
 
 
 def _build_inputs(true_batch_sizes, N, K, dtype, device, block_m):
-    """Build padded A, B and metadata for grouped_gemm_kernel (NT)."""
+    """Build padded A, B and metadata for GroupedGemmKernel (NT)."""
     E = len(true_batch_sizes)
     pad_sum = _padded_batch_sum(true_batch_sizes, block_m)
 
@@ -132,7 +132,7 @@ def test_grouped_gemm_block_m(label, true_batch_sizes, N, K):
         A, B, sizes, offsets, pad_offsets = _build_inputs(
             true_batch_sizes, N, K, dtype, device, bm)
 
-        kernel = grouped_gemm_kernel(
+        kernel = GroupedGemmKernel(
             batch_sum=pad_sum,
             batch_count=E,
             N=N,

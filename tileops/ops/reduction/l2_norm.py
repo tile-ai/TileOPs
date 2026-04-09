@@ -1,4 +1,4 @@
-"""L2NormOp: computes L2 norm (Euclidean norm) along a given dim.
+"""L2NormFwdOp: computes L2 norm (Euclidean norm) along a given dim.
 
 The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment
 (with 0.0, which is neutral for sum of squares), calls the kernel, and reshapes
@@ -18,13 +18,13 @@ from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from ..op import Op
 from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
-__all__ = ["L2NormOp"]
+__all__ = ["L2NormFwdOp"]
 
 
-class L2NormOp(Op):
+class L2NormFwdOp(Op):
     """L2 norm reduction along a configurable dim.
 
-    Construction: ``L2NormOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
+    Construction: ``L2NormFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

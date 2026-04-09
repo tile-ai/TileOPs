@@ -15,10 +15,10 @@ from tileops.utils import is_hopper
 
 from .op import Op
 
-__all__ = ['MultiHeadAttentionFwdOp', 'MultiHeadAttentionBwdOp']
+__all__ = ['MhaFwdOp', 'MhaBwdOp']
 
 
-class MultiHeadAttentionFwdOp(Op):
+class MhaFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -50,7 +50,7 @@ class MultiHeadAttentionFwdOp(Op):
         return self.kernel(q, k, v)
 
 
-class MultiHeadAttentionBwdOp(Op):
+class MhaBwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

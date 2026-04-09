@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
+from tileops.ops import GqaDecodeFwdOp
 from workloads.ops.gqa_decode import GqaDecodeTest
 
 
@@ -134,7 +134,7 @@ def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int
     bm = GqaDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = GroupQueryAttentionDecodeWithKVCacheOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
+    op = GqaDecodeFwdOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

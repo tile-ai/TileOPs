@@ -1,4 +1,4 @@
-"""CountNonzeroOp: counts non-zero elements along ``dim``, returning int64.
+"""CountNonzeroFwdOp: counts non-zero elements along ``dim``, returning int64.
 
 The Op layer validates inputs, normalizes ``dim``, reshapes to 2D (M, N),
 pads to alignment (with 0, which is neutral for sum/count), calls the kernel,
@@ -12,7 +12,7 @@ call.
 Kernels are cached by ``(M, N)`` so that the same op instance can handle
 varying shapes.
 
-Note: Unlike AllOp/AnyOp, CountNonzeroOp does NOT accept ``keepdim``.
+Note: Unlike AllFwdOp/AnyFwdOp, CountNonzeroFwdOp does NOT accept ``keepdim``.
 The reduction dimension is always removed, matching ``torch.count_nonzero``.
 """
 
@@ -33,13 +33,13 @@ from tileops.kernels.reduction.logical_reduce.fwd import (
 from ..op import Op
 from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
-__all__ = ["CountNonzeroOp"]
+__all__ = ["CountNonzeroFwdOp"]
 
 
-class CountNonzeroOp(Op):
+class CountNonzeroFwdOp(Op):
     """Count nonzero reduction along ``dim``, returning int64.
 
-    Construction: ``CountNonzeroOp(dtype=..., dim=-1)``.  M and N are
+    Construction: ``CountNonzeroFwdOp(dtype=..., dim=-1)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

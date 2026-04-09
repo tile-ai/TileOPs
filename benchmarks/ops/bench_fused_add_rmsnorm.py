@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.norm.fused_add_rmsnorm import FusedAddRmsNormOp
+from tileops.ops.norm.fused_add_rmsnorm import FusedAddRMSNormFwdOp
 from workloads.ops.fused_add_rmsnorm import FusedAddRmsNormTest
 
 _OP_NAME = "fused_add_rmsnorm_fwd"
@@ -56,7 +56,7 @@ def test_fused_add_rmsnorm_bench(m: int, n: int, dtype: torch.dtype, tune: bool)
     bm = FusedAddRmsNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = FusedAddRmsNormOp(M=m, N=n, dtype=dtype, tune=tune)
+    op = FusedAddRMSNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

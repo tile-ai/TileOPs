@@ -1,5 +1,5 @@
-from .grouped_gemm import grouped_gemm_kernel
+from .grouped_gemm import GroupedGemmKernel
 
 __all__ = [
-    "grouped_gemm_kernel",
+    "GroupedGemmKernel",
 ]

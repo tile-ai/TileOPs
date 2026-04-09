@@ -9,13 +9,13 @@ from tileops.kernels.moe.permute_nopad import MoePermuteNopadKernel
 
 from ..op import Op
 
-__all__ = ["MoePermuteNopadOp"]
+__all__ = ["MoePermuteNopadFwdOp"]
 
 
-class MoePermuteNopadOp(Op):
+class MoePermuteNopadFwdOp(Op):
     """Route tokens to tight (non-padded) expert-contiguous layout.
 
-    Unlike MoePermutePaddedOp, the output perm_h has exactly T*K rows with no
+    Unlike MoePermutePaddedFwdOp, the output perm_h has exactly T*K rows with no
     inter-expert padding, enabling smaller intermediate tensors throughout
     the MoE pipeline.
 
@@ -31,7 +31,7 @@ class MoePermuteNopadOp(Op):
         kernel_map: Optional kernel override dict.
 
     Example:
-        >>> op = MoePermuteNopadOp(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
+        >>> op = MoePermuteNopadFwdOp(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
         >>> perm_h, offsets, sizes, expert_offset, fwd_idx = op(hidden_states, topk_ids)
     """
 

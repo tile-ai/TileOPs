@@ -9,10 +9,10 @@ from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 
 from ..op import Op
 
-__all__ = ["MoeGroupedGemmNopadOp"]
+__all__ = ["MoeGroupedGemmNopadFwdOp"]
 
 
-class MoeGroupedGemmNopadOp(Op):
+class MoeGroupedGemmNopadFwdOp(Op):
     """NT grouped GEMM for MoE without block_m-aligned padding.
 
     Uses a GPU tile scheduler to map each CTA to its (expert, row_offset) in O(1),
@@ -31,7 +31,7 @@ class MoeGroupedGemmNopadOp(Op):
         tune: Whether to autotune.
 
     Example:
-        >>> op = MoeGroupedGemmNopadOp(numel=16384, num_experts=256, n=4096, k=2048,
+        >>> op = MoeGroupedGemmNopadFwdOp(numel=16384, num_experts=256, n=4096, k=2048,
         ...                       dtype=torch.bfloat16)
         >>> C = op(A, B, true_sizes, true_offsets)  # [numel, N]
     """

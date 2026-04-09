@@ -28,7 +28,12 @@ from tileops.kernels.moe.moe_grouped_gemm_nopad import (
 )
 from tileops.ops.elementwise import SiluAndMulOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
-from tileops.ops.moe import FusedTopKOp, MoePermuteNopadOp, MoePermutePaddedOp, MoeUnpermuteOp
+from tileops.ops.moe import (
+    FusedTopKOp,
+    MoePermuteNopadFwdOp,
+    MoePermutePaddedFwdOp,
+    MoeUnpermuteFwdOp,
+)
 
 # ── Config ───────────────────────────────────────────────────────────────────
 CONFIGS = [
@@ -94,11 +99,11 @@ def profile_padded(T, E, K, H, F, scoring_func, renormalize):
 
     # Build ops
     topk_op    = FusedTopKOp(T, E, K, scoring_func, renormalize)
-    permute_op = MoePermutePaddedOp(T, K, E, H, DTYPE, block_m=_BLOCK_M)
+    permute_op = MoePermutePaddedFwdOp(T, K, E, H, DTYPE, block_m=_BLOCK_M)
     gemm_gu    = GroupedGemmOp(padded, E, F * 2, H, DTYPE)
     silu_op    = SiluAndMulOp(M=padded, N=F, dtype=DTYPE)
     gemm_dn    = GroupedGemmOp(padded, E, H, F, DTYPE)
-    unp_op     = MoeUnpermuteOp(T, K, H, DTYPE, padded_batch_sum=padded)
+    unp_op     = MoeUnpermuteFwdOp(T, K, H, DTYPE, padded_batch_sum=padded)
 
     # Warm-up full pass to compile all kernels
     tw, tids = topk_op(gating)
@@ -139,8 +144,8 @@ def profile_nopad(T, E, K, H, F, scoring_func, renormalize):
 
     # Build ops
     topk_op    = FusedTopKOp(T, E, K, scoring_func, renormalize)
-    permute_op = MoePermuteNopadOp(T, K, E, H, DTYPE)
-    unp_op     = MoeUnpermuteOp(T, K, H, DTYPE, padded_batch_sum=numel)
+    permute_op = MoePermuteNopadFwdOp(T, K, E, H, DTYPE)
+    unp_op     = MoeUnpermuteFwdOp(T, K, H, DTYPE, padded_batch_sum=numel)
     silu_op    = SiluAndMulOp(M=numel, N=F, dtype=DTYPE)
 
     # Build tile scheduler + GEMM kernels directly (nopad internal)

@@ -1,4 +1,4 @@
-"""Reduce ops: SumOp, MeanOp, AminOp, AmaxOp, ProdOp, StdOp, VarOp, VarMeanOp.
+"""Reduce ops: SumFwdOp, MeanFwdOp, AminFwdOp, AmaxFwdOp, ProdFwdOp, StdFwdOp, VarFwdOp, VarMeanFwdOp.
 
 Each op reduces along the configured ``dim`` and supports arbitrary-rank input.
 The ``dim`` parameter accepts ``int`` or ``list[int]`` for multi-dim reduction.
@@ -20,14 +20,14 @@ from ..op import Op
 from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = [
-    "SumOp",
-    "MeanOp",
-    "AminOp",
-    "AmaxOp",
-    "ProdOp",
-    "StdOp",
-    "VarOp",
-    "VarMeanOp",
+    "SumFwdOp",
+    "MeanFwdOp",
+    "AminFwdOp",
+    "AmaxFwdOp",
+    "ProdFwdOp",
+    "StdFwdOp",
+    "VarFwdOp",
+    "VarMeanFwdOp",
 ]
 
 ALIGNMENT = 256
@@ -234,31 +234,31 @@ class _SimpleReduceOp(_ReduceOpBase):
         return self._reshape_output(y, orig_shape, dim_info)
 
 
-class SumOp(_SimpleReduceOp):
+class SumFwdOp(_SimpleReduceOp):
     """Sum reduction along dim=-1."""
 
     _op_kind = "sum"
 
 
-class MeanOp(_SimpleReduceOp):
+class MeanFwdOp(_SimpleReduceOp):
     """Mean reduction along dim=-1."""
 
     _op_kind = "mean"
 
 
-class AminOp(_SimpleReduceOp):
+class AminFwdOp(_SimpleReduceOp):
     """Amin (element-wise minimum) reduction along dim=-1."""
 
     _op_kind = "amin"
 
 
-class AmaxOp(_SimpleReduceOp):
+class AmaxFwdOp(_SimpleReduceOp):
     """Amax (element-wise maximum) reduction along dim=-1."""
 
     _op_kind = "amax"
 
 
-class ProdOp(_SimpleReduceOp):
+class ProdFwdOp(_SimpleReduceOp):
     """Product reduction along dim=-1."""
 
     _op_kind = "prod"
@@ -313,19 +313,19 @@ class _WelfordReduceOp(_ReduceOpBase):
         return self._reshape_output(y, orig_shape, dim_info)
 
 
-class StdOp(_WelfordReduceOp):
+class StdFwdOp(_WelfordReduceOp):
     """Standard deviation reduction with Bessel's correction."""
 
     _op_kind = "std"
 
 
-class VarOp(_WelfordReduceOp):
+class VarFwdOp(_WelfordReduceOp):
     """Variance reduction with Bessel's correction."""
 
     _op_kind = "var"
 
 
-class VarMeanOp(_WelfordReduceOp):
+class VarMeanFwdOp(_WelfordReduceOp):
     """Variance and mean reduction."""
 
     _op_kind = "var_mean"

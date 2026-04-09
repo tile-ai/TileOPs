@@ -59,12 +59,12 @@ class ArgreduceBenchmark(BenchmarkBase):
 
 def _make_op(dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.argmax import ArgmaxOp
-    from tileops.ops.reduction.argmin import ArgminOp
+    from tileops.ops.reduction.argmax import ArgmaxFwdOp
+    from tileops.ops.reduction.argmin import ArgminFwdOp
 
     op_map = {
-        "argmax": ArgmaxOp,
-        "argmin": ArgminOp,
+        "argmax": ArgmaxFwdOp,
+        "argmin": ArgminFwdOp,
     }
     cls = op_map[op_kind]
     return cls(dtype=dtype)

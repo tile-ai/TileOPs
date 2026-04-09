@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.norm.instance_norm import InstanceNormOp
+from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.ops.instance_norm import InstanceNormTest
 
 _OP_NAME = "instancenorm_fwd"
@@ -54,7 +54,7 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
     bm = InstanceNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = InstanceNormOp(N=n, C=c, spatial=spatial, dtype=dtype, tune=tune)
+    op = InstanceNormFwdOp(N=n, C=c, spatial=spatial, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

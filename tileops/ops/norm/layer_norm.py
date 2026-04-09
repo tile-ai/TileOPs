@@ -8,7 +8,7 @@ from tileops.kernels.norm import LayerNormKernel
 
 from ..op import Op
 
-__all__ = ["LayerNormOp"]
+__all__ = ["LayerNormFwdOp"]
 
 ALIGNMENT = 256
 
@@ -17,7 +17,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
-class LayerNormOp(Op):
+class LayerNormFwdOp(Op):
     """Layer Normalization operator.
 
     Computes layer normalization over the last dimension:

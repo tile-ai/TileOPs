@@ -3,15 +3,15 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.flash_decode import mha_decode_kernel
+from tileops.kernels.flash_decode import MhaDecodeKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["MultiHeadAttentionDecodeWithKVCacheOp"]
+__all__ = ["MhaDecodeFwdOp"]
 
 
-class MultiHeadAttentionDecodeWithKVCacheOp(Op):
+class MhaDecodeFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -32,12 +32,12 @@ class MultiHeadAttentionDecodeWithKVCacheOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["mha_decode_kernel"](
+        self.kernel = self.kernel_map["MhaDecodeKernel"](
             batch, heads, seqlen_q, seqlen_kv, dim, False, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mha_decode_kernel": mha_decode_kernel}
+        return {"MhaDecodeKernel": MhaDecodeKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]

@@ -40,7 +40,7 @@ class _SoftmaxBaseOp(Op):
     _op_kind: str  # set by subclass
     _kernel_key: str  # set by subclass
     _kernel_class: type  # set by subclass
-    _supports_multidim: bool = False  # override to True in reduced-dim ops (e.g. LogSumExpOp)
+    _supports_multidim: bool = False  # override to True in reduced-dim ops (e.g. LogSumExpFwdOp)
 
     def __init__(
         self,

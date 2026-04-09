@@ -9,10 +9,10 @@ from tileops.kernels.moe import MoeUnpermuteKernel
 
 from ..op import Op
 
-__all__ = ["MoeUnpermuteOp"]
+__all__ = ["MoeUnpermuteFwdOp"]
 
 
-class MoeUnpermuteOp(Op):
+class MoeUnpermuteFwdOp(Op):
     """Scatter padded expert outputs back to original token order with weighted reduction.
 
     Args:
@@ -29,7 +29,7 @@ class MoeUnpermuteOp(Op):
         kernel_map: Optional kernel override dict.
 
     Example:
-        >>> op = MoeUnpermuteOp(num_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
+        >>> op = MoeUnpermuteFwdOp(num_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
         >>> output = op(mm2_pad, fwd_idx, topk_weights)
     """
 

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GroupQueryAttentionDecodeWithKVCacheOp
+from tileops.ops import GqaDecodeFwdOp
 from workloads.ops.gqa_decode import GqaDecodeTest as _GqaDecodeTestWorkload
 
 
@@ -34,7 +34,7 @@ class GqaDecodeFixture(FixtureBase):
 def test_gqa_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                     dtype: torch.dtype, tune: bool) -> None:
     test = GqaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dtype)
-    op = GroupQueryAttentionDecodeWithKVCacheOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
+    op = GqaDecodeFwdOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 

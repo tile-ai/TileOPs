@@ -2,16 +2,16 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.deepseek_mla import mla_decode_kernel, mla_decode_ws_kernel
+from tileops.kernels.deepseek_mla import MlaDecodeKernel, MlaDecodeWsKernel
 from tileops.kernels.kernel import Kernel
 from tileops.utils import is_hopper
 
 from .op import Op
 
-__all__ = ["MultiHeadLatentAttentionDecodeWithKVCacheOp"]
+__all__ = ["DeepSeekMlaDecodeFwdOp"]
 
 
-class MultiHeadLatentAttentionDecodeWithKVCacheOp(Op):
+class DeepSeekMlaDecodeFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
@@ -34,12 +34,12 @@ class MultiHeadLatentAttentionDecodeWithKVCacheOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["mla_decode_kernel"](
+        self.kernel = self.kernel_map["MlaDecodeKernel"](
             batch, heads, heads_kv, seqlen_kv, dim, pe_dim, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mla_decode_kernel": mla_decode_ws_kernel if is_hopper() else mla_decode_kernel}
+        return {"MlaDecodeKernel": MlaDecodeWsKernel if is_hopper() else MlaDecodeKernel}
 
     def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
                 k_pe: torch.Tensor) -> torch.Tensor:

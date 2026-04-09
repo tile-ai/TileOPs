@@ -2,15 +2,15 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.flash_decode.mha_decode_paged import mha_decode_paged_kernel
+from tileops.kernels.flash_decode.mha_decode_paged import MhaDecodePagedKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["MultiHeadAttentionDecodePagedWithKVCacheOp"]
+__all__ = ["MhaDecodePagedFwdOp"]
 
 
-class MultiHeadAttentionDecodePagedWithKVCacheOp(Op):
+class MhaDecodePagedFwdOp(Op):
     """Paged MHA decode with dynamic KV cache. Layout: Q [batch, seqlen_q, heads, dim] (BSHD);
     K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
@@ -36,12 +36,12 @@ class MultiHeadAttentionDecodePagedWithKVCacheOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["mha_decode_paged_kernel"](
+        self.kernel = self.kernel_map["MhaDecodePagedKernel"](
             batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mha_decode_paged_kernel": mha_decode_paged_kernel}
+        return {"MhaDecodePagedKernel": MhaDecodePagedKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:

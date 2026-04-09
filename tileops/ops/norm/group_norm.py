@@ -4,7 +4,7 @@ Wraps GroupNormKernel in the standard TileOPs Op interface.
 
 User-facing API mirrors torch.nn.functional.group_norm:
 
-    op = GroupNormOp(N=batch, C=channels, spatial=(H, W), G=groups, dtype=dtype)
+    op = GroupNormFwdOp(N=batch, C=channels, spatial=(H, W), G=groups, dtype=dtype)
     y = op(x, weight, bias)
 
 Input tensors accept shape (N, C, *spatial); the op reshapes to
@@ -22,7 +22,7 @@ from tileops.kernels.norm import GroupNormKernel
 
 from ..op import Op
 
-__all__ = ["GroupNormOp"]
+__all__ = ["GroupNormFwdOp"]
 
 ALIGNMENT = 256
 
@@ -31,7 +31,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
-class GroupNormOp(Op):
+class GroupNormFwdOp(Op):
     """Group Normalization forward operator.
 
     Computes group normalization over ``(C/G, *spatial)`` slices:

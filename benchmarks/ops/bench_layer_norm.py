@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.norm.layer_norm import LayerNormOp
+from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.ops.layer_norm import LayerNormTest
 
 _OP_NAME = "layernorm_fwd"
@@ -49,7 +49,7 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
     bm = LayerNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = LayerNormOp(M=m, N=n, dtype=dtype, tune=tune)
+    op = LayerNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

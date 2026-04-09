@@ -913,15 +913,15 @@ class TestResolveOpClass:
     def test_single_class_file_exact_match(self, validator):
         """Single-class files resolve only when manifest key matches class name."""
         result = validator._resolve_op_class(
-            "tileops/ops/reduction/softmax.py", "SoftmaxOp",
+            "tileops/ops/reduction/softmax.py", "SoftmaxFwdOp",
         )
         assert result.cls is not None
-        assert result.cls.__name__ == "SoftmaxOp"
+        assert result.cls.__name__ == "SoftmaxFwdOp"
 
     def test_single_class_file_rejects_mismatched_name(self, validator):
         """Single-class files reject mismatched manifest keys — no bypass."""
         result = validator._resolve_op_class(
-            "tileops/ops/reduction/softmax.py", "SoftmaxFwdOp",
+            "tileops/ops/reduction/softmax.py", "SoftmaxBwdOp",
         )
         assert result.cls is None
         assert result.warning is not None
@@ -929,10 +929,10 @@ class TestResolveOpClass:
     def test_exact_match_required_multi_class(self, validator):
         """Multi-class files require exact cls.__name__ == manifest key."""
         result = validator._resolve_op_class(
-            "tileops/ops/reduction/reduce.py", "SumOp",
+            "tileops/ops/reduction/reduce.py", "SumFwdOp",
         )
         assert result.cls is not None
-        assert result.cls.__name__ == "SumOp"
+        assert result.cls.__name__ == "SumFwdOp"
 
     @pytest.mark.parametrize(
         "op_name",
@@ -941,16 +941,13 @@ class TestResolveOpClass:
             "ProdFwdOp", "VarFwdOp", "StdFwdOp", "VarMeanFwdOp",
         ],
     )
-    def test_no_heuristic_fallback_for_mismatched_names(self, validator, op_name):
-        """Manifest keys that don't match any cls.__name__ fail to resolve.
-
-        These will resolve correctly after PR-B renames the Op classes.
-        """
+    def test_reduce_ops_resolve_by_exact_name(self, validator, op_name):
+        """Reduce Op classes resolve correctly by exact cls.__name__ match."""
         result = validator._resolve_op_class(
             "tileops/ops/reduction/reduce.py", op_name,
         )
-        assert result.cls is None
-        assert result.warning is not None
+        assert result.cls is not None
+        assert result.cls.__name__ == op_name
 
     def test_nonexistent_module_returns_import_error(self, validator):
         """Module that cannot be imported returns import_error=True."""
@@ -1105,7 +1102,7 @@ class TestResolveOpClass:
     def test_direct_match_resolves_exact_class_name(self, validator):
         """Direct match resolves when cls.__name__ == manifest key.
 
-        For op_name='SumFwdOp' with both SumOp and SumFwdOp in the module,
+        For op_name='SumFwdOp' with both _SumHelper and SumFwdOp in the module,
         the exact match finds SumFwdOp. No heuristic fallback.
         """
         import importlib
@@ -1115,7 +1112,7 @@ class TestResolveOpClass:
         fake_mod = types.ModuleType("tileops.ops.fake_priority")
         fake_mod.__name__ = "tileops.ops.fake_priority"
 
-        class SumOp:
+        class _SumHelper:
             @staticmethod
             def forward():
                 pass
@@ -1125,9 +1122,9 @@ class TestResolveOpClass:
             def forward():
                 pass
 
-        SumOp.__module__ = fake_mod.__name__
+        _SumHelper.__module__ = fake_mod.__name__
         SumFwdOp.__module__ = fake_mod.__name__
-        fake_mod.SumOp = SumOp
+        fake_mod._SumHelper = _SumHelper
         fake_mod.SumFwdOp = SumFwdOp
 
         original_import = importlib.import_module

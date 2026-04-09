@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.kernel import Kernel
 
 __all__ = [
-    "grouped_gemm_kernel",
+    "GroupedGemmKernel",
 ]
 
 # Default configs per layout variant (transpose_a, transpose_b)
@@ -195,7 +195,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
     return _grouped_gemm_func
 
 
-class grouped_gemm_kernel(Kernel):
+class GroupedGemmKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     def __init__(self,

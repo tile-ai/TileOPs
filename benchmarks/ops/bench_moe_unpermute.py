@@ -1,4 +1,4 @@
-"""Benchmark for MoeUnpermuteOp.
+"""Benchmark for MoeUnpermuteFwdOp.
 
 Baselines:
   - vLLM moe_unpermute (optional): vLLM's CUDA kernel.
@@ -32,7 +32,7 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.moe import MoeUnpermuteOp
+from tileops.ops.moe import MoeUnpermuteFwdOp
 from workloads.ops.moe_unpermute import MoeUnpermuteTest
 
 _OP_NAME = "moe_unpermute"
@@ -100,7 +100,7 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
     mm2_pad, fwd_idx, topk_weights = test.gen_inputs()
 
     # TileOPs
-    op = MoeUnpermuteOp(total_tokens, top_k, hidden_size, dtype)
+    op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden_size, dtype)
     op(mm2_pad, fwd_idx, topk_weights)  # warmup / JIT compile
     torch.cuda.synchronize()
 
