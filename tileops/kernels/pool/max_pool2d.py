@@ -126,12 +126,26 @@ def _max_pool2d_values_indices_kernel(
                         first_kw = T.ceildiv(T.max(-window_w_start, 0), dilation_w)
                         first_ih = window_h_start + first_kh * dilation_h
                         first_iw = window_w_start + first_kw * dilation_w
+                        has_valid = (
+                            first_kh < kernel_h
+                            and first_kw < kernel_w
+                            and first_ih >= 0
+                            and first_ih < h_in
+                            and first_iw >= 0
+                            and first_iw < w_in
+                        )
                         max_val = T.alloc_var(T.float32)
                         max_index = T.alloc_var(T.int64)
-                        max_val = T.cast(x[batch, first_ih, first_iw, c_idx], accum_dtype)
-                        max_index = (
+                        max_val = T.if_then_else(
+                            has_valid,
+                            T.cast(x[batch, first_ih, first_iw, c_idx], accum_dtype),
+                            -T.infinity(accum_dtype),
+                        )
+                        max_index = T.if_then_else(
+                            has_valid,
                             T.cast(first_ih, "int64") * T.cast(w_in, "int64")
-                            + T.cast(first_iw, "int64")
+                            + T.cast(first_iw, "int64"),
+                            T.cast(pad_h, "int64") * T.cast(w_in, "int64") + T.cast(pad_w, "int64"),
                         )
 
                         for kh in T.serial(kernel_h):
