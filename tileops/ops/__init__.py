@@ -1,7 +1,7 @@
 from .avg_pool1d import AvgPool1dOp
 from .avg_pool2d import AvgPool2dOp
 from .avg_pool3d import AvgPool3dOp
-from .conv1d import Conv1dBiasFwdOp, Conv1dFwdOp
+from .conv1d import Conv1dFwdBiasOp, Conv1dFwdOp
 from .conv2d import Conv2dOp
 from .conv3d import Conv3dOp
 from .da_cumsum_fwd import DaCumsumFwdOp
@@ -99,7 +99,7 @@ __all__ = [
     "AdaLayerNormZeroFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
-    "Conv1dBiasFwdOp",
+    "Conv1dFwdBiasOp",
     "Conv1dFwdOp",
     "Conv2dOp",
     "Conv3dOp",
