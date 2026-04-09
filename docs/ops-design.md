@@ -96,6 +96,34 @@ Kernel classes use PascalCase with a `Kernel` suffix:
 
 Examples: `RMSNormFwdKernel`, `SoftmaxFwdKernel`.
 
+### Kernel Map Keys
+
+`kernel_map` keys are **stable snake_case dispatch identifiers**. They are protocol-level names and MUST NOT be derived from `cls.__name__`. Renaming a Kernel class does not by itself require renaming the dispatch key.
+
+For single-kernel ops, prefer `<op_or_family>_kernel`:
+
+```python
+_kernel_key = "rms_norm"  # RowNormOp family — family name as key
+```
+
+```python
+# Single-kernel op with default_kernel_map
+def default_kernel_map(self):
+    return {"fp8_quant_kernel": FP8QuantKernel}
+```
+
+For multi-kernel ops, use descriptive snake_case keys:
+
+```python
+def default_kernel_map(self):
+    return {
+        "mha_bwd_preprocess_kernel": MhaBwdPreprocessKernel,
+        "mha_bwd_kernel": MhaBwdKernel,
+    }
+```
+
+Examples from the codebase: `ssd_decode`, `fused_topk_kernel`, `permute_nopad_kernel`, `avg_pool2d_kernel`.
+
 ### Builder Functions
 
 Kernel builder functions (that construct TileLang programs) remain `snake_case`:
