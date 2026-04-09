@@ -72,14 +72,14 @@ RENAME_MAP: dict[str, str] = {
 }
 
 
-def migrate(data: dict) -> tuple[dict, int]:
-    """Rename top-level keys in *data* using RENAME_MAP.
+def _rename_op_keys(ops: dict) -> tuple[dict, int]:
+    """Rename op keys in an ops dict using RENAME_MAP.
 
-    Returns (new_data, count_of_renamed_keys).
+    Returns (new_ops_dict, count_of_renamed_keys).
     """
     migrated: dict = {}
     renamed = 0
-    for key, value in data.items():
+    for key, value in ops.items():
         new_key = RENAME_MAP.get(key, key)
         if new_key != key:
             renamed += 1
@@ -91,6 +91,36 @@ def migrate(data: dict) -> tuple[dict, int]:
             )
         migrated[new_key] = value
     return migrated, renamed
+
+
+def migrate(data: dict) -> tuple[dict, int]:
+    """Rename op keys in *data* using RENAME_MAP.
+
+    Supports the real perf_history.json format::
+
+        {"runs": [{"date": "...", "ops": {"OldName": {...}}}]}
+
+    as well as a flat dict format (top-level keys are op names).
+
+    Returns (new_data, count_of_renamed_keys).
+    """
+    # Nested format: {"runs": [...]}
+    if "runs" in data:
+        total_renamed = 0
+        new_runs = []
+        for run in data["runs"]:
+            if "ops" not in run:
+                new_runs.append(run)
+                continue
+            new_ops, count = _rename_op_keys(run["ops"])
+            total_renamed += count
+            new_run = {k: v for k, v in run.items() if k != "ops"}
+            new_run["ops"] = new_ops
+            new_runs.append(new_run)
+        return {"runs": new_runs}, total_renamed
+
+    # Flat format: top-level keys are op names
+    return _rename_op_keys(data)
 
 
 def main() -> None:
