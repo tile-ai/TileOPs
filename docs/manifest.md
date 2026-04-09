@@ -51,7 +51,7 @@ dtype_combos:
   - {x: bfloat16, weight: bfloat16}
 ```
 
-**R5. Explicit shape.** Every tensor's shape must be declared via `shape` and/or `shape_rules`. `same_as` is dtype-only — do not use it for shape.
+**R5. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R7). `same_as` is dtype-only — do not use it for shape.
 
 **R6. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). Names become roofline variables. No ellipsis or wildcards.
 

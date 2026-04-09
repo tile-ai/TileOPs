@@ -14,7 +14,7 @@ ______________________________________________________________________
 - `dtype` syntax: `|` for alternatives, `same_as(ref)` = same dtype as ref.
 - `same_as(ref)` is a dtype identity constraint: the tensor must have the exact same dtype as `ref` at runtime. `same_as`-bound tensors do not contribute independent axes to the Cartesian product in `dtype_combos`.
 - `dtype_combos` when supported set is a strict subset of the Cartesian product. Omit when all combinations are valid.
-- Every tensor shape must be explicitly declared via `shape` and/or `shape_rules`. Do not use `same_as(ref)` for shape — `same_as` is dtype-only.
+- Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Inputs may omit `shape` (→ arbitrary rank). `same_as` is dtype-only — do not use it for shape.
 - `shape` present = fixed rank. Names become roofline variables. `shape` absent = arbitrary rank, use `params` + `shape_rules`.
 - Shared dimension names across tensors = sizes must match.
 - `shape_rules` are Python expressions for shape relationships. `shape` and `shape_rules` fully specify output shape derivation.
