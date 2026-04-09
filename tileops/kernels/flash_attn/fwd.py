@@ -827,6 +827,24 @@ def _gqa_fwd_ws_kernel(batch: int,
     def _gqa_fwd_ws_func(block_m: int, block_n: int) -> Callable:
         if block_m % 2 != 0:
             raise ValueError(f"block_m must be even, got block_m={block_m}")
+        # seq_len alignment is required by both axes of the kernel:
+        #   - block_m: the grid is ``ceildiv(seq_len, block_m)``; the last bx
+        #     would otherwise write output rows past ``seq_len`` (OOB store).
+        #   - block_n: the K loop runs ``ceildiv((bx+1)*block_m, block_n)``
+        #     iterations and the producer epilogue tail-loads
+        #     ``v[..., (loop_range-1)*block_n : loop_range*block_n, ...]``,
+        #     reading past ``seq_len`` when not aligned.  TMA descriptors
+        #     hardware-zero past the seq dim, but the resulting attention
+        #     scores against zero K vectors still pollute non-causal output,
+        #     and the OOB output store is undefined.  Reject upfront.
+        if seq_len % block_m != 0:
+            raise ValueError(
+                f"GqaFwdWsKernel requires seq_len to be a multiple of "
+                f"block_m, got seq_len={seq_len}, block_m={block_m}")
+        if seq_len % block_n != 0:
+            raise ValueError(
+                f"GqaFwdWsKernel requires seq_len to be a multiple of "
+                f"block_n, got seq_len={seq_len}, block_n={block_n}")
         q_shape = (batch, seq_len, heads, dim)
         kv_shape = (batch, seq_len, heads_kv, dim)
         half_m = block_m // 2
@@ -1241,16 +1259,25 @@ class GqaFwdWsKernel(Kernel):
         self.heads = heads
         if heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        # The producer's epilogue tail V load reads
-        # ``v[bz, (loop_range-1)*block_n : loop_range*block_n, ...]``
-        # which can read past ``seq_len`` if ``seq_len < block_n``.
-        # The default block_n is 128; require seq_len to be at least
-        # 128 to avoid out-of-bounds TMA reads in the epilogue.
-        if seq_len < 128:
+        # seq_len must be a multiple of the default block_m AND block_n
+        # (both 128) to avoid out-of-bounds TMA loads on the producer's
+        # epilogue tail V load and OOB output stores from the last bx tile.
+        # Autotune may select smaller block_n=64; that's re-validated at
+        # JIT-compile time inside ``_gqa_fwd_ws_func`` against the actual
+        # autotuned config, so a user who picks ``block_n=64`` via
+        # ``config={...}`` is allowed seq_lens that are 64-aligned but not
+        # 128-aligned.  The default-config check here is the conservative
+        # construction-time gate; full alignment validation lives in the
+        # JIT body.
+        default_block_m = 128
+        default_block_n = 128
+        if seq_len % default_block_m != 0 or seq_len % default_block_n != 0:
             raise ValueError(
-                f"GqaFwdWsKernel requires seq_len >= 128 to avoid "
-                f"out-of-bounds V loads in the producer epilogue.  "
-                f"Got seq_len={seq_len}.")
+                f"GqaFwdWsKernel requires seq_len to be a multiple of "
+                f"the default block_m={default_block_m} and "
+                f"block_n={default_block_n} (avoids OOB V loads in the "
+                f"producer epilogue and OOB output stores from the last "
+                f"row tile).  Got seq_len={seq_len}.")
         self.heads_kv = heads_kv
         self.seq_len = seq_len
         self.dim = dim
@@ -1370,6 +1397,19 @@ def _gqa_fwd_ws_persistent_kernel(batch: int,
     def _gqa_fwd_ws_persistent_func(block_m: int, block_n: int) -> Callable:
         if block_m % 2 != 0:
             raise ValueError(f"block_m must be even, got block_m={block_m}")
+        # seq_len alignment: same rationale as GqaFwdWsKernel.  The
+        # persistent kernel additionally requires ``M_blocks`` to be even
+        # for causal tile pairing, but that check is downstream of the
+        # alignment check (a non-aligned seq_len would never reach a
+        # well-defined M_blocks value anyway).
+        if seq_len % block_m != 0:
+            raise ValueError(
+                f"GqaFwdWsPersistentKernel requires seq_len to be a multiple "
+                f"of block_m, got seq_len={seq_len}, block_m={block_m}")
+        if seq_len % block_n != 0:
+            raise ValueError(
+                f"GqaFwdWsPersistentKernel requires seq_len to be a multiple "
+                f"of block_n, got seq_len={seq_len}, block_n={block_n}")
         half_m = block_m // 2
         M_blocks = (seq_len + block_m - 1) // block_m
         if M_blocks % 2 != 0:
@@ -1923,21 +1963,27 @@ class GqaFwdWsPersistentKernel(Kernel):
             raise ValueError(
                 "GqaFwdWsPersistentKernel only supports is_causal=True. "
                 "For non-causal use GqaFwdWsKernel.")
-        # The producer's epilogue tail V load reads
-        # ``v[..., (loop_range-1)*block_n : loop_range*block_n, ...]``
-        # which can read past ``seq_len`` if ``seq_len < block_n``.
-        # Default block_n is 128; require seq_len >= 128.
-        if seq_len < 128:
-            raise ValueError(
-                f"GqaFwdWsPersistentKernel requires seq_len >= 128 to "
-                f"avoid out-of-bounds V loads in the producer epilogue.  "
-                f"Got seq_len={seq_len}.")
-        # Default block_m is 128; validate seq_len divisibility for the
-        # default config using the SAME ceil-div formula as the JIT-time
-        # check inside _gqa_fwd_ws_persistent_func.  If user overrides
-        # block_m via tune, the JIT-time check re-validates with the
-        # actual block_m.
+        # seq_len must be a multiple of the default block_m AND block_n
+        # to avoid OOB TMA loads (producer epilogue tail V load) and OOB
+        # output stores.  Autotune-selected smaller block_n is
+        # re-validated at JIT-compile time inside
+        # ``_gqa_fwd_ws_persistent_func`` against the actual config.
         default_block_m = 128
+        default_block_n = 128
+        if seq_len % default_block_m != 0 or seq_len % default_block_n != 0:
+            raise ValueError(
+                f"GqaFwdWsPersistentKernel requires seq_len to be a "
+                f"multiple of the default block_m={default_block_m} and "
+                f"block_n={default_block_n} (avoids OOB V loads in the "
+                f"producer epilogue and OOB output stores).  Got "
+                f"seq_len={seq_len}.")
+        # Validate ceil(seq_len / block_m) is even for causal tile
+        # pairing.  Same ceil-div formula as the JIT-time check inside
+        # _gqa_fwd_ws_persistent_func.  Now that the alignment check
+        # above guarantees ``seq_len % default_block_m == 0``, ceil ==
+        # floor for the default config and ``m_blocks_default ==
+        # seq_len // default_block_m``; the ceil form is kept so the
+        # error message stays consistent if alignment is relaxed later.
         m_blocks_default = (seq_len + default_block_m - 1) // default_block_m
         if m_blocks_default == 0 or m_blocks_default % 2 != 0:
             raise ValueError(
