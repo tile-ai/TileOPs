@@ -68,6 +68,42 @@ Single-kernel ops declare `_kernel_key` and `_kernel_cls`. Multi-kernel ops defi
 
 Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
 
+## Naming Conventions
+
+### Op Classes
+
+Op class names use PascalCase with a mandatory direction suffix and `Op` suffix:
+
+```
+{PascalCaseName}{Direction}Op
+```
+
+- **PascalCaseName** — descriptive name (e.g., `RMSNorm`, `BatchNorm`, `Softmax`). No mechanical abbreviation rules are enforced — the manifest author determines the name.
+- **Direction** — mandatory suffix: `Fwd` or `Bwd`.
+- **Op** — literal suffix.
+
+Examples: `RMSNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`, `BatchNormFwdOp`.
+
+The manifest key must exactly equal `cls.__name__`. The validator enforces this via direct equality check — there is no heuristic snake_case-to-PascalCase resolution.
+
+### Kernel Classes
+
+Kernel classes use PascalCase with a `Kernel` suffix:
+
+```
+{PascalCaseName}{Direction}Kernel
+```
+
+Examples: `RMSNormFwdKernel`, `SoftmaxFwdKernel`.
+
+### Builder Functions
+
+Kernel builder functions (that construct TileLang programs) remain `snake_case`:
+
+```python
+def rms_norm_fwd(M, N, dtype, ...): ...
+```
+
 ## Adding a New Intermediate Base Class
 
 1. **Implement 2-3 concrete ops inheriting `Op` directly** — understand the pattern before abstracting
