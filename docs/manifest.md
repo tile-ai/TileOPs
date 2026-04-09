@@ -103,7 +103,10 @@ The validator enforces `assert cls.__name__ == manifest_key` — the manifest ke
 
 ### `ref_api` (optional)
 
-When an op's interface aligns with an external API (typically PyTorch), declare the reference with `ref_api`:
+Declares which external API the op's signature follows. Every op must have a `ref_api` field:
+
+- If the op aligns with an external API (typically PyTorch), set to the fully qualified name.
+- If there is no direct external counterpart, set to `none`.
 
 ```yaml
 ops:
@@ -111,21 +114,25 @@ ops:
     family: norm
     ref_api: "torch.nn.functional.rms_norm"
     ...
+  NSAFwdOp:
+    family: attention
+    ref_api: none
+    ...
 ```
 
-`ref_api` is informational — it documents which external API the signature follows (per R15). It does not affect validation or code generation.
+`ref_api` is informational — it documents which external API the signature follows. It does not affect validation or code generation.
 
 ## Entry Structure
 
-| Field       | Required | Description                                                    |
-| ----------- | -------- | -------------------------------------------------------------- |
-| `family`    | yes      | Op family (e.g., `norm`, `attention`).                         |
-| `ref_api`   | no       | External API reference (e.g., `torch.nn.functional.rms_norm`). |
-| `status`    | no       | `spec-only` or `implemented`. Default: `spec-only`.            |
-| `signature` | yes      | Op interface. See [Signature](#signature).                     |
-| `workloads` | yes      | Benchmark shapes/dtypes.                                       |
-| `roofline`  | yes      | Performance model.                                             |
-| `source`    | yes      | Implementation paths.                                          |
+| Field       | Required | Description                                                 |
+| ----------- | -------- | ----------------------------------------------------------- |
+| `family`    | yes      | Op family (e.g., `norm`, `attention`).                      |
+| `ref_api`   | yes      | External API reference, or `none` if no direct counterpart. |
+| `status`    | no       | `spec-only` or `implemented`. Default: `spec-only`.         |
+| `signature` | yes      | Op interface. See [Signature](#signature).                  |
+| `workloads` | yes      | Benchmark shapes/dtypes.                                    |
+| `roofline`  | yes      | Performance model.                                          |
+| `source`    | yes      | Implementation paths.                                       |
 
 ### Signature
 
