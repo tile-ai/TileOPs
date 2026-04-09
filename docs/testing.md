@@ -36,7 +36,7 @@ class MhaFwdFixture(FixtureBase):
 @MhaFwdFixture
 def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune):
     test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
-    op = MultiHeadAttentionFwdOp(...)
+    op = MhaFwdOp(...)
     test.check(op, *test.gen_inputs())
 
 
@@ -54,7 +54,7 @@ def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
     workload = MhaFwdWorkload(batch, heads, seq_len, dim, causal, dtype)
     bm = MhaFwdBenchmark(workload)
     inputs = workload.gen_inputs()
-    op = MultiHeadAttentionFwdOp(...)
+    op = MhaFwdOp(...)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 ```
