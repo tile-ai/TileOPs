@@ -132,6 +132,34 @@ class TestMigrateNestedFormat:
         assert count == 0
 
 
+    def test_conv1d_maps_to_primary_non_bias_op(self):
+        """Conv1dOp maps to Conv1dFwdOp (primary, non-bias variant).
+
+        The old Conv1dOp encompassed both biased and non-biased runs.
+        Historical data cannot distinguish the variant, so we map to the
+        primary op. Conv1dBiasFwdOp never existed as a historical key.
+        """
+        data = {
+            "runs": [
+                {
+                    "date": "2026-02-01",
+                    "ops": {
+                        "Conv1dOp": {
+                            "default": {"tileops": {"latency_ms": 1.5}}
+                        },
+                    },
+                }
+            ]
+        }
+        migrated, count = migrate(data)
+        ops = migrated["runs"][0]["ops"]
+        assert "Conv1dFwdOp" in ops
+        assert "Conv1dOp" not in ops
+        # Must not produce Conv1dBiasFwdOp — historical data predates the split
+        assert "Conv1dBiasFwdOp" not in ops
+        assert count == 1
+
+
 class TestMigrateFlatFormat:
     """Test migration of a flat dict format (backward compat)."""
 

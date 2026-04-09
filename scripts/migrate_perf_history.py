@@ -48,7 +48,11 @@ RENAME_MAP: dict[str, str] = {
     "SumOp": "SumFwdOp",
     "VarOp": "VarFwdOp",
     "VarMeanOp": "VarMeanFwdOp",
-    # Conv
+    # Conv — The old Conv1dOp encompassed both biased and non-biased variants.
+    # The manifest now splits them into Conv1dFwdOp and Conv1dBiasFwdOp (variant).
+    # Historical data cannot distinguish which variant was run, so we map to the
+    # primary (non-bias) op as the safe default. This split happened simultaneously
+    # with the rename, so no historical data was ever keyed as Conv1dBiasFwdOp.
     "Conv1dOp": "Conv1dFwdOp",
     # Attention
     "GroupQueryAttentionFwdOp": "GqaFwdOp",
