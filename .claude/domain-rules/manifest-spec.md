@@ -11,7 +11,7 @@ ______________________________________________________________________
 
 - `inputs`, `outputs`, `params` are ordered dicts. Key order = function signature position. Do not reorder.
 - Params include all PyTorch-supported parameters, even if the current kernel only supports the default.
-- `dtype` syntax: `|` for alternatives, `same_as(ref)` for dependent types.
+- `dtype` syntax: `|` for alternatives, `same_as(ref)` = same dtype as ref.
 - `same_as(ref)` is a dtype identity constraint: the tensor must have the exact same dtype as `ref` at runtime. `same_as`-bound tensors do not contribute independent axes to the Cartesian product in `dtype_combos`.
 - `dtype_combos` when supported set is a strict subset of the Cartesian product. Omit when all combinations are valid.
 - Every tensor shape must be explicitly declared via `shape` and/or `shape_rules`. Do not use `same_as(ref)` for shape — `same_as` is dtype-only.

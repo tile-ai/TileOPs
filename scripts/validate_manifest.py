@@ -854,8 +854,8 @@ def check_l4_benchmark(
 # ---------------------------------------------------------------------------
 
 def _is_spec_only(entry: dict) -> bool:
-    """Spec-only behavior must be explicit in the manifest status."""
-    return entry.get("status") == "spec-only"
+    """Default is spec-only when status is absent."""
+    return entry.get("status", "spec-only") == "spec-only"
 
 
 def _is_bench_manifest_driven(entry: dict) -> bool:

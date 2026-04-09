@@ -33,7 +33,7 @@ flowchart LR
 
 **R2. Full interface.** Params include all PyTorch-supported parameters, even if the kernel only supports the default.
 
-**R3. `dtype` syntax.** `|` for alternatives, `same_as(ref)` for dependent types.
+**R3. `dtype` syntax.** `|` for alternatives, `same_as(ref)` to indicate the dtype is the same as `ref`.
 
 **R3a. `same_as(ref)` identity constraint.** `same_as(ref)` is dtype-only: the tensor must have the exact same dtype as `ref` at runtime. `same_as`-bound tensors do not contribute independent axes to the Cartesian product in R4. Do not use `same_as` for shape.
 
@@ -111,7 +111,7 @@ signature:
 
 | Field         | Required | Description                                                |
 | ------------- | -------- | ---------------------------------------------------------- |
-| `dtype`       | yes      | `\|` for alternatives, `same_as(ref)` for dependent types. |
+| `dtype`       | yes      | `\|` for alternatives, `same_as(ref)` = same dtype as ref. |
 | `shape`       | no       | Dimension names (e.g., `"[M, K]"`). Present = fixed rank.  |
 | `constraints` | no       | Dimension restrictions (requires `shape`).                 |
 | `layout`      | no       | Memory format when non-default (R19).                      |

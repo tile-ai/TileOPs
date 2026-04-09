@@ -507,8 +507,8 @@ class TestDtype:
             f"Expected identity constraint error, got: {errors}"
         )
 
-    def test_dtype_combos_same_as_chain_mismatch_fails(self, validator):
-        """dtype_combos violating transitive same_as identity must fail."""
+    def test_dtype_combos_same_as_multi_binding_mismatch_fails(self, validator):
+        """dtype_combos with multiple same_as(q) bindings where one mismatches must fail."""
         entry = {
             "signature": {
                 "inputs": {
