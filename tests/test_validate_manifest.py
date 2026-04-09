@@ -670,6 +670,24 @@ class TestCheckOp:
             f"Spec-only op should only have schema errors (if any), got: {non_schema}"
         )
 
+    def test_missing_status_defaults_to_spec_only(self, validator, tmp_path):
+        """Entry without status field defaults to spec-only (skips L1-L4)."""
+        entry = _make_entry()
+        entry.pop("status", None)  # remove status entirely
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        import yaml
+        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+
+        errors, warnings = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+        )
+        non_schema = [e for e in errors if "[schema]" not in e]
+        assert non_schema == [], (
+            f"Missing-status op should default to spec-only (L0 only), got: {non_schema}"
+        )
+
     def test_check_op_nonexistent_op_reports_error(self, validator, tmp_path):
         """--check-op with a name not in manifest reports an error."""
         entry = _make_entry()
