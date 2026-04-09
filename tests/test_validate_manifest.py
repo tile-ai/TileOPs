@@ -911,17 +911,23 @@ class TestResolveOpClass:
     """_resolve_op_class correctly resolves op names to classes in multi-class files."""
 
     def test_single_class_file_exact_match(self, validator):
-        """Single-class files resolve when manifest key matches class name."""
-        # SoftmaxOp is the only candidate — single-candidate path returns it
+        """Single-class files resolve only when manifest key matches class name."""
         result = validator._resolve_op_class(
             "tileops/ops/reduction/softmax.py", "SoftmaxOp",
         )
         assert result.cls is not None
         assert result.cls.__name__ == "SoftmaxOp"
 
+    def test_single_class_file_rejects_mismatched_name(self, validator):
+        """Single-class files reject mismatched manifest keys — no bypass."""
+        result = validator._resolve_op_class(
+            "tileops/ops/reduction/softmax.py", "SoftmaxFwdOp",
+        )
+        assert result.cls is None
+        assert result.warning is not None
+
     def test_exact_match_required_multi_class(self, validator):
         """Multi-class files require exact cls.__name__ == manifest key."""
-        # SumOp exists in reduce.py; exact match on "SumOp" should find it
         result = validator._resolve_op_class(
             "tileops/ops/reduction/reduce.py", "SumOp",
         )

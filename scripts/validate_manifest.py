@@ -421,13 +421,8 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
     if not candidates:
         return _ResolveResult()
 
-    # If the op_name gives a hint (e.g., "batchnorm_fwd" -> "Fwd", "batchnorm_bwd" -> "Bwd")
-    # try to match more precisely
-    if len(candidates) == 1:
-        return _ResolveResult(cls=candidates[0])
-
-    # Multiple candidates — require exact class-name identity.
-    # The manifest key must equal cls.__name__; no heuristic fallback.
+    # Require exact class-name identity: cls.__name__ == manifest key.
+    # No single-candidate bypass, no heuristic fallback.
     direct = [c for c in candidates if c.__name__ == op_name]
     if len(direct) == 1:
         return _ResolveResult(cls=direct[0])
