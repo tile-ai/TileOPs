@@ -1151,10 +1151,6 @@ class TestResolveOpClass:
 class TestIntegration:
     """Run the actual validator script and verify it passes."""
 
-    @pytest.mark.xfail(
-        reason="Manifest keys are PascalCase but Op classes not yet renamed (PR-B #866)",
-        strict=False,
-    )
     def test_validator_passes_on_current_codebase(self):
         result = subprocess.run(
             [sys.executable, str(VALIDATOR_SCRIPT)],
