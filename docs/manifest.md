@@ -85,16 +85,46 @@ dtype_combos:
 x: {dtype: "float16", shape: "[N, H, W, C]", layout: "channels_last"}
 ```
 
+## Manifest Key Format
+
+Each entry in `ops:` is keyed by the **Python class name** of the Op — PascalCase with a mandatory direction suffix and `Op` suffix:
+
+```
+{PascalCaseName}{Direction}Op
+```
+
+- **PascalCaseName** — the op's descriptive name in PascalCase (e.g., `RMSNorm`, `BatchNorm`, `Softmax`). No abbreviation rules are enforced; the manifest author determines the name.
+- **Direction** — a mandatory suffix indicating the computation direction: `Fwd`, `Bwd`, `FwdBwd`, etc.
+- **Op** — the literal suffix `Op`.
+
+Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`.
+
+The validator enforces `assert cls.__name__ == manifest_key` — the manifest key must exactly match the Op class name. There is no heuristic resolution or snake_case-to-PascalCase conversion.
+
+### `ref_api` (optional)
+
+When an op's interface aligns with an external API (typically PyTorch), declare the reference with `ref_api`:
+
+```yaml
+RMSNormFwdOp:
+  family: norm
+  ref_api: "torch.nn.functional.rms_norm"
+  ...
+```
+
+`ref_api` is informational — it documents which external API the signature follows (per R15). It does not affect validation or code generation.
+
 ## Entry Structure
 
-| Field       | Required | Description                                         |
-| ----------- | -------- | --------------------------------------------------- |
-| `family`    | yes      | Op family (e.g., `norm`, `attention`).              |
-| `status`    | no       | `spec-only` or `implemented`. Default: `spec-only`. |
-| `signature` | yes      | Op interface. See [Signature](#signature).          |
-| `workloads` | yes      | Benchmark shapes/dtypes.                            |
-| `roofline`  | yes      | Performance model.                                  |
-| `source`    | yes      | Implementation paths.                               |
+| Field       | Required | Description                                                    |
+| ----------- | -------- | -------------------------------------------------------------- |
+| `family`    | yes      | Op family (e.g., `norm`, `attention`).                         |
+| `ref_api`   | no       | External API reference (e.g., `torch.nn.functional.rms_norm`). |
+| `status`    | no       | `spec-only` or `implemented`. Default: `spec-only`.            |
+| `signature` | yes      | Op interface. See [Signature](#signature).                     |
+| `workloads` | yes      | Benchmark shapes/dtypes.                                       |
+| `roofline`  | yes      | Performance model.                                             |
+| `source`    | yes      | Implementation paths.                                          |
 
 ### Signature
 
@@ -145,7 +175,7 @@ Op has Optional[Tensor] inputs?
    └─ 3+ → decompose the op first
 ```
 
-**Naming:** `{op_name}_{suffix}` (descriptive, e.g., `moe_fused_moe_cb`).
+**Naming:** Variants follow the same PascalCase key format, with a descriptive suffix before `Op` (e.g., `MoEFusedMoeCbFwdOp`).
 
 ### Workloads
 
@@ -254,8 +284,9 @@ All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax 
 
 ```yaml
 ops:
-  rmsnorm_fwd:
+  RMSNormFwdOp:
     family: norm
+    ref_api: "torch.nn.functional.rms_norm"
     status: implemented
 
     signature:
@@ -296,7 +327,7 @@ Benchmarks must use manifest-driven workloads:
 ```python
 from tileops.manifest import eval_roofline, load_workloads
 
-_OP_NAME = "rmsnorm_fwd"
+_OP_NAME = "RMSNormFwdOp"
 
 
 def _manifest_params():
@@ -334,7 +365,7 @@ flops, mem_bytes = eval_roofline(_OP_NAME, M=m, N=n, elem_bytes=elem_bytes)
 
 ```bash
 python scripts/validate_manifest.py
-python scripts/validate_manifest.py --check-op softmax_fwd
+python scripts/validate_manifest.py --check-op SoftmaxFwdOp
 ```
 
 ## Exclusions
