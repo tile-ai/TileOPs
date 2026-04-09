@@ -104,10 +104,6 @@ Kernel builder functions (that construct TileLang programs) remain `snake_case`:
 def rms_norm_fwd(M, N, dtype, ...): ...
 ```
 
-### Migration
-
-The naming cutover is hard — no aliases or backward-compatible mappings. Migration proceeds in two PRs: PR-A renames manifest keys, PR-B renames code (class names, imports, registrations).
-
 ## Adding a New Intermediate Base Class
 
 1. **Implement 2-3 concrete ops inheriting `Op` directly** — understand the pattern before abstracting
