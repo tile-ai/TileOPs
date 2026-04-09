@@ -16,17 +16,17 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 ```python
 # workloads/ops/mha.py
-class MhaFwdTest(WorkloadBase):
+class MhaFwdWorkload(WorkloadBase):
     def __init__(self, batch, heads, seq_len, dim, causal, dtype): ...
     def gen_inputs(self): ...
 
 
 # tests/ops/test_mha.py
 from tileops.ops import MhaFwdOp
-from workloads.ops.mha import MhaFwdTest
+from workloads.ops.mha import MhaFwdWorkload
 
 
-class MhaFwdTestCase(MhaFwdTest, TestBase):
+class MhaFwdTest(MhaFwdWorkload, TestBase):
     def ref_program(self, q, k, v): ...  # correctness oracle, local to test
 
 
@@ -43,7 +43,7 @@ def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune):
 
 # benchmarks/ops/bench_mha.py
 from tileops.ops import MhaFwdOp
-from workloads.ops.mha import MhaFwdTest  # import workload, NOT test
+from workloads.ops.mha import MhaFwdWorkload  # import workload, NOT test
 
 
 class MhaFwdBenchmark(BenchmarkBase):
@@ -53,7 +53,7 @@ class MhaFwdBenchmark(BenchmarkBase):
 
 @MhaFwdFixture  # reuses the same parametrize decorator
 def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
-    workload = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
+    workload = MhaFwdWorkload(batch, heads, seq_len, dim, causal, dtype)
     bm = MhaFwdBenchmark(workload)
     inputs = workload.gen_inputs()
     op = MhaFwdOp(...)

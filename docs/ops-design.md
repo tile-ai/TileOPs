@@ -98,24 +98,16 @@ Examples: `RMSNormFwdKernel`, `SoftmaxFwdKernel`.
 
 ### Kernel Map Keys
 
-`kernel_map` keys are **stable snake_case dispatch identifiers**. They are protocol-level names and SHOULD NOT be derived from `cls.__name__`. Renaming a Kernel class does not by itself require renaming the dispatch key.
+`kernel_map` keys are **stable snake_case dispatch identifiers**. They are protocol-level names and MUST NOT be derived from `cls.__name__`. Renaming a Kernel class does not by itself require renaming the dispatch key.
 
-> **Migration note:** Some ops (e.g., `GLAFwdKernel`, `DeltaNetFwdKernel`) still use PascalCase class names as dispatch keys. The convention below is the target state; these will be migrated in follow-up PRs.
-
-**Family-based ops** define these keys via the family base's existing convention or `default_kernel_map`. Not all families use the same attribute name — follow the pattern already established by that family base:
+**Family-based ops** declare `_kernel_key` as a bare snake_case name. The family base class builds `default_kernel_map` from it automatically (`{self._kernel_key: self._kernel_cls}`):
 
 ```python
-_kernel_key = (
-    "rms_norm"  # RowNormOp family (_SoftmaxBaseOp uses _kernel_key + _kernel_class)
-)
-_kernel_key = "softmax_fwd"  # _SoftmaxBaseOp family
-
-
-def default_kernel_map(self):  # _ReduceOpBase uses a fixed dispatch key
-    return {"reduce": ReduceKernel}
+_kernel_key = "rms_norm"  # RowNormOp family
+_kernel_key = "softmax_fwd"  # _ReduceOpBase family
 ```
 
-**Standalone ops** (no family base) define `default_kernel_map` directly. Keys typically use descriptive snake_case, often with a `_kernel` suffix, but some use established non-suffixed keys (e.g., `DropoutOp` uses `"dropout"`):
+**Standalone ops** (no family base) define `default_kernel_map` directly. Keys use descriptive snake_case, conventionally with a `_kernel` suffix:
 
 ```python
 # Single-kernel standalone op
