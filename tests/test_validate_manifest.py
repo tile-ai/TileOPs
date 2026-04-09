@@ -468,6 +468,86 @@ class TestDtype:
         errors = validator.check_l3("test_op", entry)
         assert errors == []
 
+    def test_dtype_combos_same_as_identity_pass(self, validator):
+        """dtype_combos with matching dtypes for same_as-bound tensors pass."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert errors == []
+
+    def test_dtype_combos_same_as_mismatch_fails(self, validator):
+        """dtype_combos with different dtypes for same_as-bound tensors must fail."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "bfloat16"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any("same_as" in e and "identity" in e for e in errors), (
+            f"Expected identity constraint error, got: {errors}"
+        )
+
+    def test_dtype_combos_same_as_multi_binding_mismatch_fails(self, validator):
+        """dtype_combos with multiple same_as(q) bindings where one mismatches must fail."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "q": {"dtype": "float16 | bfloat16"},
+                    "k": {"dtype": "same_as(q)"},
+                    "v": {"dtype": "same_as(q)"},
+                },
+                "outputs": {"o": {"dtype": "same_as(q)"}},
+                "dtype_combos": [
+                    {"q": "float16", "k": "float16", "v": "bfloat16"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any("same_as" in e and "identity" in e for e in errors), (
+            f"Expected identity constraint error, got: {errors}"
+        )
+
+    def test_dtype_combos_same_as_partial_combo_fails(self, validator):
+        """dtype_combos with same_as-bound tensor but missing reference must fail."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"w": "float16"},  # x missing — cannot verify identity
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any("without its reference" in e for e in errors), (
+            f"Expected partial-combo error, got: {errors}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # bench: benchmark uses manifest workloads
@@ -588,6 +668,24 @@ class TestCheckOp:
         non_schema = [e for e in errors if "[schema]" not in e]
         assert non_schema == [], (
             f"Spec-only op should only have schema errors (if any), got: {non_schema}"
+        )
+
+    def test_missing_status_defaults_to_spec_only(self, validator, tmp_path):
+        """Entry without status field defaults to spec-only (skips L1-L4)."""
+        entry = _make_entry()
+        entry.pop("status", None)  # remove status entirely
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        import yaml
+        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+
+        errors, warnings = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+        )
+        non_schema = [e for e in errors if "[schema]" not in e]
+        assert non_schema == [], (
+            f"Missing-status op should default to spec-only (L0 only), got: {non_schema}"
         )
 
     def test_check_op_nonexistent_op_reports_error(self, validator, tmp_path):
