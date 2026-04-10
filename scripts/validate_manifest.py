@@ -273,12 +273,12 @@ def check_l0(
                 if not isinstance(k, str) or not isinstance(v, str):
                     errors.append(
                         f"[schema] {op_name}: kernel_map entries must be "
-                        f"str → str, got {k!r}: {v!r}"
+                        f"str -> str, got {k!r}: {v!r}"
                     )
     elif status == "implemented" and warnings is not None:
         warnings.append(
             f"[schema] {op_name}: status is 'implemented' but "
-            f"kernel_map is missing (should be a mapping of str → str)"
+            f"kernel_map is missing (should be a mapping of str -> str)"
         )
 
     return errors
@@ -868,11 +868,10 @@ def _is_spec_only(entry: dict) -> bool:
     validation (which requires ``status``) has passed before calling.
     """
     status = entry.get("status")
-    if status is None:
-        raise KeyError(
-            "Entry is missing required 'status' field; "
-            "schema validation should have caught this"
-        )
+    if not isinstance(status, str):
+        # Missing or non-string status — treat as spec-only (safe default).
+        # Schema validation catches this; defensive here for --levels bypass.
+        return True
     return status == "spec-only"
 
 
