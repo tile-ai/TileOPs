@@ -313,7 +313,7 @@ All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax 
 ```yaml
 ops:
   RMSNormFwdOp:
-    family: norm
+    family: normalization
     ref_api: "torch.nn.functional.rms_norm"
     status: implemented
 
