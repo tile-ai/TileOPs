@@ -2306,7 +2306,7 @@ ops:
 
     source:
       kernel: tileops/kernels/conv/conv1d.py
-      op: tileops/ops/conv1d.py
+      op: tileops/ops/convolution.py
       test: tests/ops/test_conv1d.py
       bench: benchmarks/ops/bench_conv1d.py
       bench_manifest_driven: false
@@ -2355,7 +2355,7 @@ ops:
 
     source:
       kernel: tileops/kernels/conv/conv1d.py
-      op: tileops/ops/conv1d.py
+      op: tileops/ops/convolution.py
       test: tests/ops/test_conv1d.py
       bench: benchmarks/ops/bench_conv1d.py
       bench_manifest_driven: false
