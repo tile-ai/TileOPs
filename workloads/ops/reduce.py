@@ -3,52 +3,32 @@ import torch
 from workloads.base import WorkloadBase
 
 
-class SumWorkload(WorkloadBase):
+class _RandnWorkload(WorkloadBase):
+    """Base for workloads that generate inputs via torch.randn."""
+
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        return (x,)
+
+
+class SumWorkload(_RandnWorkload):
     """Workload definition for SumFwdOp."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-
-class MeanWorkload(WorkloadBase):
+class MeanWorkload(_RandnWorkload):
     """Workload definition for MeanFwdOp."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-
-class AmaxWorkload(WorkloadBase):
+class AmaxWorkload(_RandnWorkload):
     """Workload definition for AmaxFwdOp."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-
-class AminWorkload(WorkloadBase):
+class AminWorkload(_RandnWorkload):
     """Workload definition for AminFwdOp."""
-
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
 
 
 class ProdWorkload(WorkloadBase):
@@ -66,37 +46,13 @@ class ProdWorkload(WorkloadBase):
         return (x,)
 
 
-class StdWorkload(WorkloadBase):
+class StdWorkload(_RandnWorkload):
     """Workload definition for StdFwdOp."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-
-class VarWorkload(WorkloadBase):
+class VarWorkload(_RandnWorkload):
     """Workload definition for VarFwdOp."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-
-class VarMeanWorkload(WorkloadBase):
+class VarMeanWorkload(_RandnWorkload):
     """Workload definition for VarMeanFwdOp."""
-
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)

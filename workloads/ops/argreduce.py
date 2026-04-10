@@ -3,8 +3,8 @@ import torch
 from workloads.base import WorkloadBase
 
 
-class ArgmaxTest(WorkloadBase):
-    """Workload definition for ArgmaxFwdOp (spec interface: shape + dtype)."""
+class _RandnWorkload(WorkloadBase):
+    """Base for workloads that generate inputs via torch.randn."""
 
     def __init__(self, shape: tuple, dtype: torch.dtype):
         self.shape = shape
@@ -15,13 +15,14 @@ class ArgmaxTest(WorkloadBase):
         return (x,)
 
 
-class ArgminTest(WorkloadBase):
-    """Workload definition for ArgminFwdOp (spec interface: shape + dtype)."""
+class ArgmaxWorkload(_RandnWorkload):
+    """Workload definition for ArgmaxFwdOp."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
+class ArgminWorkload(_RandnWorkload):
+    """Workload definition for ArgminFwdOp."""
+
+
+# Backward-compatible aliases for existing consumers
+ArgmaxTest = ArgmaxWorkload
+ArgminTest = ArgminWorkload
