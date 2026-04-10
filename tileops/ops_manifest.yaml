@@ -946,7 +946,7 @@ ops:
       bench: benchmarks/ops/bench_gqa_sliding_window_varlen_fwd.py
 
   # ---------------------------------------------------------------------------
-  # attention — DeepSeek MLA / DSA decode
+  # attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
   # ---------------------------------------------------------------------------
 
   MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
