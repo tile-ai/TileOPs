@@ -12,9 +12,7 @@ Op (base)
 - **FamilyBase** — per-family intermediate base. Owns shared `forward()` flow: validation, reshape, padding, kernel dispatch, trim. One per op family. Current families: `RowNormOp` (norm ops), `_ReduceOpBase` (reduce ops).
 - **ConcreteOp** — leaf class. Pure declaration: kernel class, supported dtypes, input wiring. No logic override.
 
-> **Reduction-specific note:** `_ReduceOpBase` covers most dimension-reducing ops: the simple-reduce family (sum, mean, amin, amax, prod), Welford-based ops (std, var, var_mean), argreduce ops (argmax, argmin), logical ops (all, any, count_nonzero), and vector-norm ops (inf_norm, l1_norm, l2_norm). It provides hooks for subclass customization: `_kernel_key` (kernel map key), `_pad_value()` (alignment padding identity), `_build_kernel_kwargs()` (extra kernel constructor args), `_pre_kernel(x)` (transform input before kernel call, e.g. dtype conversion), and `_post_kernel(y, context)` (transform output, e.g. NaN patching). It has two sub-bases — `_SimpleReduceOp` (overrides `_pad_value`) and `_WelfordReduceOp` (adds `correction` kwarg). Only `VarMeanOp` overrides `forward()` for tuple output.
->
-> Not all reduction ops use `_ReduceOpBase`. Softmax, log-softmax, and logsumexp use `_SoftmaxBaseOp` because they produce same-shape output and have different padding/trim semantics. Cumulative ops (cumsum, cumprod) keep their own bases because they perform no dimension reduction and use a fundamentally different forward flow.
+> **Reduction-specific note:** `_ReduceOpBase` has two sub-bases — `_SimpleReduceOp` (overrides `_pad_value`) and `_WelfordReduceOp` (adds `correction` kwarg and owns single-output `forward()`). This is a reduction-specific arrangement, not a general hierarchy pattern. Only `VarMeanOp` overrides `forward()` for tuple output.
 
 For trust boundaries (what implementation OWNS, MUST NOT do, and MAY READ), see [trust-model.md -- Implementation](trust-model.md#implementation).
 
