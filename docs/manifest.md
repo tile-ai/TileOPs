@@ -67,7 +67,7 @@ dtype_combos:
 
 **R12. Shape derivation.** `shape` + `shape_rules` fully specify output shape derivation. Manifest and implementation must be consistent.
 
-**R13. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. Default: `spec-only`. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
+**R13. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
 
 **R14. Roofline variable binding.** See [Roofline](#roofline).
 
@@ -101,38 +101,32 @@ Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`.
 
 The validator enforces `assert cls.__name__ == manifest_key` — the manifest key must exactly match the Op class name. There is no heuristic resolution or snake_case-to-PascalCase conversion.
 
-### `ref_api`
-
-Every op must have a `ref_api` field:
-
-- If the op aligns with an external API (typically PyTorch), set to the fully qualified name.
-- If there is no direct external counterpart, set to `"none"`.
-
-```yaml
-ops:
-  RMSNormFwdOp:
-    family: norm
-    ref_api: "torch.nn.functional.rms_norm"
-    ...
-  NSAFwdOp:
-    family: attention
-    ref_api: "none"
-    ...
-```
-
-`ref_api` is required but informational — the validator checks for presence, but the value does not affect signature validation or code generation.
-
 ## Entry Structure
 
 | Field       | Required | Description                                                   |
 | ----------- | -------- | ------------------------------------------------------------- |
-| `family`    | yes      | Op family (e.g., `norm`, `attention`).                        |
+| `family`    | yes      | Op family. See [below](#family).                              |
 | `ref_api`   | yes      | External API reference, or `"none"` if no direct counterpart. |
-| `status`    | no       | `spec-only` or `implemented`. Default: `spec-only`.           |
+| `status`    | yes      | `spec-only` or `implemented`.                                 |
 | `signature` | yes      | Op interface. See [Signature](#signature).                    |
 | `workloads` | yes      | Benchmark shapes/dtypes.                                      |
 | `roofline`  | yes      | Performance model.                                            |
 | `source`    | yes      | Implementation paths.                                         |
+
+### `family`
+
+Closed set: `elementwise`, `reduction`, `normalization`, `convolution`, `gemm`, `quantize`, `sampling`, `attention`, `moe`, `linear_attention`, `ssm`, `scan`.
+
+### `ref_api`
+
+Fully qualified external API name (typically PyTorch), or `"none"` if no direct counterpart. Required but informational — validator checks presence only, does not affect signature validation or code generation.
+
+```yaml
+RMSNormFwdOp:
+  ref_api: "torch.nn.functional.rms_norm"
+NSAFwdOp:
+  ref_api: "none"
+```
 
 ### Signature
 
@@ -226,13 +220,39 @@ roofline:
 
 ### Source
 
-| Field                   | Required | Description                                     |
-| ----------------------- | -------- | ----------------------------------------------- |
-| `kernel`                | yes      | Kernel file path(s).                            |
-| `op`                    | yes      | Op class file path.                             |
-| `test`                  | yes      | Test file path.                                 |
-| `bench`                 | yes      | Benchmark file path.                            |
-| `bench_manifest_driven` | no       | `true` = L4 is a hard CI error. Migration flag. |
+| Field                   | Required | Description                                                            |
+| ----------------------- | -------- | ---------------------------------------------------------------------- |
+| `kernel`                | yes      | Kernel file path(s).                                                   |
+| `kernel_map`            | \*       | Dispatch key → Kernel class name. Required when `status: implemented`. |
+| `op`                    | yes      | Op class file path.                                                    |
+| `test`                  | yes      | Test file path.                                                        |
+| `bench`                 | yes      | Benchmark file path.                                                   |
+| `bench_manifest_driven` | no       | `true` = L4 is a hard CI error. Migration flag.                        |
+
+#### kernel_map
+
+Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design.md § Kernel Dispatch](ops-design.md#kernel-dispatch-kernel_map).
+
+```yaml
+# Single-kernel op
+source:
+  kernel: tileops/kernels/norm/rms_norm.py
+  kernel_map:
+    rms_norm: RmsNormKernel
+  op: tileops/ops/norm/rms_norm.py
+
+# Multi-kernel op
+source:
+  kernel:
+    - tileops/kernels/flash_attn/bwd.py
+  kernel_map:
+    mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+    mha_bwd_kernel: MhaBwdKernel
+    mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
+  op: tileops/ops/mha.py
+```
+
+- Optional when `status: spec-only`. Required when `status: implemented`.
 
 ## Entry Examples
 
@@ -293,7 +313,7 @@ All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax 
 ```yaml
 ops:
   RMSNormFwdOp:
-    family: norm
+    family: normalization
     ref_api: "torch.nn.functional.rms_norm"
     status: implemented
 
@@ -378,4 +398,4 @@ python scripts/validate_manifest.py --check-op SoftmaxFwdOp
 
 ## Exclusions
 
-The manifest does NOT describe: kernel dispatch, multi-kernel pipelines, accumulator dtypes, persistent state, tile sizes, or autotuning config.
+The manifest does NOT describe: multi-kernel execution ordering, accumulator dtypes, persistent state, tile sizes, or autotuning config.

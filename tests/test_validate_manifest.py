@@ -73,7 +73,7 @@ class TestSchema:
 
     def test_valid_entry_passes(self, validator):
         entry = {
-            "family": "norm",
+            "family": "normalization",
             "ref_api": "torch.nn.functional.rms_norm",
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
@@ -123,7 +123,7 @@ class TestSchema:
 
     def test_missing_signature_fields_fails(self, validator):
         entry = {
-            "family": "norm",
+            "family": "normalization",
             "signature": {"inputs": {"x": {"dtype": "float16"}}},
             "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
             "roofline": {"flops": "2 * M", "bytes": "M * 2"},
@@ -137,7 +137,7 @@ class TestSchema:
 
     def test_roofline_needs_flops_and_bytes_or_func(self, validator):
         entry = {
-            "family": "norm",
+            "family": "normalization",
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
                 "outputs": {"y": {"dtype": "float16"}},
@@ -156,7 +156,7 @@ class TestSchema:
     def test_params_as_list_fails(self, validator):
         """signature.params as a YAML list must produce schema error, not crash."""
         entry = {
-            "family": "norm",
+            "family": "normalization",
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
                 "outputs": {"y": {"dtype": "same_as(x)"}},
@@ -177,7 +177,7 @@ class TestSchema:
 
     def test_tensor_missing_dtype_fails(self, validator):
         entry = {
-            "family": "norm",
+            "family": "normalization",
             "signature": {
                 "inputs": {"x": {}},  # no dtype
                 "outputs": {"y": {"dtype": "float16"}},

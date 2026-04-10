@@ -12,8 +12,6 @@ Op (base)
 - **FamilyBase** — per-family intermediate base. Owns shared `forward()` flow: validation, reshape, padding, kernel dispatch, trim. One per op family. Current families: `RowNormOp` (norm ops), `_ReduceOpBase` (reduce ops).
 - **ConcreteOp** — leaf class. Pure declaration: kernel class, supported dtypes, input wiring. No logic override.
 
-> **Reduction-specific note:** `_ReduceOpBase` has two sub-bases — `_SimpleReduceOp` (overrides `_pad_value`) and `_WelfordReduceOp` (adds `correction` kwarg and owns single-output `forward()`). This is a reduction-specific arrangement, not a general hierarchy pattern. Only `VarMeanOp` overrides `forward()` for tuple output.
-
 For trust boundaries (what implementation OWNS, MUST NOT do, and MAY READ), see [trust-model.md -- Implementation](trust-model.md#implementation).
 
 ## Principle 1: Two-Layer Boundary
@@ -64,7 +62,7 @@ Contiguous conversion is the family base class's responsibility. Concrete ops sh
 | `ALIGNMENT`        | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm) |
 | `_op_name`         | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging    |
 
-Single-kernel ops declare `_kernel_key` and `_kernel_cls`. Multi-kernel ops define `default_kernel_map` returning a dict. Dispatch is determined by the family base class.
+Single-kernel ops declare a kernel key and kernel class attribute. Multi-kernel ops define `default_kernel_map` returning a dict. See [Kernel Dispatch](#kernel-dispatch-kernel_map).
 
 Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
 
@@ -95,6 +93,31 @@ Kernel classes use PascalCase with a `Kernel` suffix:
 ```
 
 Examples: `RMSNormFwdKernel`, `SoftmaxFwdKernel`.
+
+### Kernel Dispatch (kernel_map)
+
+An Op dispatches to one or more Kernels via `kernel_map` — a flat dict mapping dispatch keys to Kernel classes. A single Op may dispatch to different Kernels based on shape, dtype, or hardware architecture.
+
+The manifest declares `kernel_map` as a registration table so that kernel-layer design decisions stay at the spec level: human reviewer decides what Kernels an Op needs, agent implements them.
+
+```python
+# Single-kernel op
+def default_kernel_map(self):
+    return {"rms_norm": RmsNormKernel}
+
+
+# Multi-kernel pipeline
+def default_kernel_map(self):
+    return {
+        "mha_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
+        "mha_bwd_kernel": MhaBwdKernel,
+        "mha_bwd_postprocess_kernel": FlashAttnBwdPostprocessKernel,
+    }
+```
+
+- **Keys**: snake_case identifiers, decoupled from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key. (Convention for new ops — some existing ops use PascalCase keys.)
+- **Values**: Kernel class names (PascalCase), must match `cls.__name__`.
+- The table does not describe dispatch strategy. Strategy is a runtime concern.
 
 ### Builder Functions
 

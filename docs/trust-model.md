@@ -14,8 +14,8 @@ Each stage declares **OWNS** / **MUST NOT** / **MAY READ** in its [domain rule f
 
 Source of truth for op interfaces. Human-reviewed, separate PR.
 
-- **OWNS**: op signatures, dtypes, workload shapes, roofline formulas, status
-- **MUST NOT**: contain implementation details or test logic
+- **OWNS**: op signatures, dtypes, workload shapes, roofline formulas, status, kernel_map (dispatch registration table)
+- **MUST NOT**: contain kernel internals, dispatch strategy, or test logic
 - **MAY READ**: PyTorch public API (to match signatures)
 
 → Rules: [manifest-spec.md](../.claude/domain-rules/manifest-spec.md) | Guide: [testing.md §Writing a Test](testing.md#writing-a-test)
