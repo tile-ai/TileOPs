@@ -67,7 +67,7 @@ dtype_combos:
 
 **R12. Shape derivation.** `shape` + `shape_rules` fully specify output shape derivation. Manifest and implementation must be consistent.
 
-**R13. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. Default: `spec-only`. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
+**R13. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
 
 **R14. Roofline variable binding.** See [Roofline](#roofline).
 
@@ -101,38 +101,32 @@ Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`.
 
 The validator enforces `assert cls.__name__ == manifest_key` — the manifest key must exactly match the Op class name. There is no heuristic resolution or snake_case-to-PascalCase conversion.
 
-### `ref_api`
-
-Every op must have a `ref_api` field:
-
-- If the op aligns with an external API (typically PyTorch), set to the fully qualified name.
-- If there is no direct external counterpart, set to `"none"`.
-
-```yaml
-ops:
-  RMSNormFwdOp:
-    family: norm
-    ref_api: "torch.nn.functional.rms_norm"
-    ...
-  NSAFwdOp:
-    family: attention
-    ref_api: "none"
-    ...
-```
-
-`ref_api` is required but informational — the validator checks for presence, but the value does not affect signature validation or code generation.
-
 ## Entry Structure
 
 | Field       | Required | Description                                                   |
 | ----------- | -------- | ------------------------------------------------------------- |
-| `family`    | yes      | Op family (e.g., `norm`, `attention`).                        |
+| `family`    | yes      | Op family. See [below](#family).                              |
 | `ref_api`   | yes      | External API reference, or `"none"` if no direct counterpart. |
-| `status`    | no       | `spec-only` or `implemented`. Default: `spec-only`.           |
+| `status`    | yes      | `spec-only` or `implemented`.                                 |
 | `signature` | yes      | Op interface. See [Signature](#signature).                    |
 | `workloads` | yes      | Benchmark shapes/dtypes.                                      |
 | `roofline`  | yes      | Performance model.                                            |
 | `source`    | yes      | Implementation paths.                                         |
+
+### `family`
+
+Closed set: `elementwise`, `reduction`, `norm`, `conv`, `gemm`, `quantize`, `sampling`, `attention`, `moe`, `linear_attention`, `ssm`.
+
+### `ref_api`
+
+Fully qualified external API name (typically PyTorch), or `"none"` if no direct counterpart. Required but informational — validator checks presence only, does not affect signature validation or code generation.
+
+```yaml
+RMSNormFwdOp:
+  ref_api: "torch.nn.functional.rms_norm"
+NSAFwdOp:
+  ref_api: "none"
+```
 
 ### Signature
 
