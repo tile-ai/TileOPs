@@ -1151,19 +1151,11 @@ class TestResolveOpClass:
 class TestIntegration:
     """Run the actual validator script and verify it passes."""
 
-    # FIXME: Temporary xfail — remove when Op classes are renamed.
+    # FIXME(staged-rollout): validator xfail — 12 manifest keys don't match cls.__name__
     #
-    # Broken invariant: 12 manifest keys (e.g. MultiHeadAttentionFwdOp,
-    #   GroupQueryAttentionFwdOp) no longer match their Op cls.__name__
-    #   (still MhaFwdOp, GqaFwdOp etc.), so _resolve_op_class() fails
-    #   the exact-identity check for these entries.
-    # Why expected: trust model requires manifest and code changes in
-    #   separate PRs. Manifest keys are renamed first; Op class rename
-    #   follows in a separate code-only PR.
-    # This is a temporary migration state, not the final contract.
-    # Cleanup condition: once all 12 Op classes are renamed to match
-    #   their manifest keys, this xfail must be removed (strict=True
-    #   ensures CI fails if the test starts passing).
+    # Broken invariant: cls.__name__ != manifest_key for 12 attention/MoE ops
+    # Why: trust model requires manifest and code renames in separate PRs
+    # Cleanup: remove when all 12 Op classes are renamed to match their manifest keys
     @pytest.mark.xfail(
         reason="12 manifest keys renamed; Op classes not yet renamed to match",
         strict=True,
