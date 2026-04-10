@@ -12,7 +12,7 @@ Op (base)
 - **FamilyBase** — per-family intermediate base. Owns shared `forward()` flow: validation, reshape, padding, kernel dispatch, trim. One per op family. Current families: `RowNormOp` (norm ops), `_ReduceOpBase` (reduce ops).
 - **ConcreteOp** — leaf class. Pure declaration: kernel class, supported dtypes, input wiring. No logic override.
 
-> **Reduction-specific note:** `_ReduceOpBase` has two sub-bases — `_SimpleReduceOp` (overrides `_pad_value`) and `_WelfordReduceOp` (adds `correction` kwarg and owns single-output `forward()`). This is a reduction-specific arrangement, not a general hierarchy pattern. Only `VarMeanOp` overrides `forward()` for tuple output.
+> **Reduction-specific note:** `_ReduceOpBase` serves as the shared base for all reduction ops. It provides hooks for subclass customization: `_kernel_key` (kernel map key), `_pad_value()` (alignment padding identity), `_build_kernel_kwargs()` (extra kernel constructor args), `_pre_kernel(x)` (transform input before kernel call, e.g. dtype conversion), and `_post_kernel(y, context)` (transform output, e.g. NaN patching). It has two sub-bases — `_SimpleReduceOp` (overrides `_pad_value`) and `_WelfordReduceOp` (adds `correction` kwarg). Additionally, argreduce, logical, and vector_norm ops inherit `_ReduceOpBase` directly with family-specific `_kernel_key` and hook overrides. Only `VarMeanOp` overrides `forward()` for tuple output.
 
 For trust boundaries (what implementation OWNS, MUST NOT do, and MAY READ), see [trust-model.md -- Implementation](trust-model.md#implementation).
 
