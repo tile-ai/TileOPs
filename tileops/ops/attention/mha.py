@@ -13,7 +13,7 @@ from tileops.kernels.flash_attn import (
 from tileops.kernels.kernel import Kernel
 from tileops.utils import is_hopper
 
-from .op import Op
+from ..op import Op
 
 __all__ = ["MultiHeadAttentionFwdOp", "MultiHeadAttentionBwdOp"]
 

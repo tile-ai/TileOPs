@@ -553,7 +553,7 @@ ops:
       kernel: tileops/kernels/flash_attn/fwd.py
       kernel_map:
         mha_fwd_kernel: MhaFwdKernel
-      op: tileops/ops/mha.py
+      op: tileops/ops/attention/mha.py
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
 
@@ -604,7 +604,7 @@ ops:
         mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
         mha_bwd_kernel: MhaBwdKernel
         mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
-      op: tileops/ops/mha.py
+      op: tileops/ops/attention/mha.py
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
 
@@ -644,7 +644,7 @@ ops:
       kernel: tileops/kernels/flash_attn/fwd.py
       kernel_map:
         gqa_fwd_kernel: GqaFwdKernel
-      op: tileops/ops/gqa.py
+      op: tileops/ops/attention/gqa.py
       test: tests/ops/test_gqa.py
       bench: benchmarks/ops/bench_gqa.py
 
@@ -696,7 +696,7 @@ ops:
         gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
         gqa_bwd_kernel: GqaBwdKernel
         gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
-      op: tileops/ops/gqa.py
+      op: tileops/ops/attention/gqa.py
       test: tests/ops/test_gqa.py
       bench: benchmarks/ops/bench_gqa.py
 
@@ -740,7 +740,7 @@ ops:
       kernel: tileops/kernels/flash_decode/mha_decode.py
       kernel_map:
         mha_decode_kernel: MhaDecodeKernel
-      op: tileops/ops/mha_decode.py
+      op: tileops/ops/attention/mha_decode.py
       test: tests/ops/test_mha_decode.py
       bench: benchmarks/ops/bench_mha_decode.py
 
@@ -794,7 +794,7 @@ ops:
       kernel: tileops/kernels/flash_decode/mha_decode_paged.py
       kernel_map:
         mha_decode_paged_kernel: MhaDecodePagedKernel
-      op: tileops/ops/mha_decode_paged.py
+      op: tileops/ops/attention/mha_decode_paged.py
       test: tests/ops/test_mha_decode_paged.py
       bench: benchmarks/ops/bench_mha_decode_paged.py
 
@@ -835,7 +835,7 @@ ops:
       kernel: tileops/kernels/flash_decode/gqa_decode.py
       kernel_map:
         gqa_decode_kernel: GqaDecodeKernel
-      op: tileops/ops/gqa_decode.py
+      op: tileops/ops/attention/gqa_decode.py
       test: tests/ops/test_gqa_decode.py
       bench: benchmarks/ops/bench_gqa_decode.py
 
@@ -889,7 +889,7 @@ ops:
       kernel: tileops/kernels/flash_decode/gqa_decode_paged.py
       kernel_map:
         gqa_decode_paged_kernel: GqaDecodePagedKernel
-      op: tileops/ops/gqa_decode_paged.py
+      op: tileops/ops/attention/gqa_decode_paged.py
       test: tests/ops/test_gqa_decode_paged.py
       bench: benchmarks/ops/bench_gqa_decode_paged.py
 
@@ -935,7 +935,7 @@ ops:
       kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_fwd.py
       kernel_map:
         gqa_sliding_window_fwd: GqaSlidingWindowFwdKernel
-      op: tileops/ops/gqa_sliding_window_fwd.py
+      op: tileops/ops/attention/gqa_sliding_window.py
       test: tests/ops/test_gqa_sliding_window_fwd.py
       bench: benchmarks/ops/bench_gqa_sliding_window_fwd.py
 
@@ -982,7 +982,7 @@ ops:
       kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_varlen_fwd.py
       kernel_map:
         gqa_sliding_window_varlen_fwd: GqaSlidingWindowVarlenFwdKernel
-      op: tileops/ops/gqa_sliding_window_varlen_fwd.py
+      op: tileops/ops/attention/gqa_sliding_window_varlen.py
       test: tests/ops/test_gqa_sliding_window_varlen_fwd.py
       bench: benchmarks/ops/bench_gqa_sliding_window_varlen_fwd.py
 
@@ -1029,7 +1029,7 @@ ops:
       kernel: tileops/kernels/deepseek_mla/deepseek_mla_decode.py
       kernel_map:
         mla_decode_kernel: MlaDecodeKernel
-      op: tileops/ops/deepseek_mla_decode.py
+      op: tileops/ops/attention/deepseek_mla_decode.py
       test: tests/ops/test_deepseek_mla_decode.py
       bench: benchmarks/ops/bench_deepseek_mla_decode.py
 
@@ -1073,7 +1073,7 @@ ops:
       kernel: tileops/kernels/deepseek_mla/deepseek_dsa_decode.py
       kernel_map:
         sparse_mla_kernel: SparseMlaKernel
-      op: tileops/ops/deepseek_dsa_decode.py
+      op: tileops/ops/attention/deepseek_dsa_decode.py
       test: tests/ops/test_deepseek_dsa_decode.py
       bench: benchmarks/ops/bench_deepseek_dsa_decode.py
   # moe — Mixture-of-Experts ops

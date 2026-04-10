@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops.ssd_state_passing_fwd import SsdStatePassingFwdOp
+from tileops.ops.ssd_state_passing import SsdStatePassingFwdOp
 from workloads.ops.ssd_state_passing_fwd import SsdStatePassingFwdFixture, SsdStatePassingFwdTest
 
 

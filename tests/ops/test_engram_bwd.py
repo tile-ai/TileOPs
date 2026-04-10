@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.engram_bwd import EngramGateConvBwdOp
+from tileops.ops.engram import EngramGateConvBwdOp
 from workloads.ops.engram_bwd import CONV_KERNEL_SIZE
 from workloads.ops.engram_bwd import EngramGateConvBwdTest as _EngramGateConvBwdTestWorkload
 

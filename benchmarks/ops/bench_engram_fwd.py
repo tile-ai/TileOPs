@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops.engram_fwd import EngramGateConvFwdOp
+from tileops.ops.engram import EngramGateConvFwdOp
 from workloads.ops.engram_fwd import CONV_KERNEL_SIZE, EngramGateConvFwdTest
 
 

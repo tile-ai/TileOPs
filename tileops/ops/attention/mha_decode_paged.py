@@ -5,7 +5,7 @@ import torch
 from tileops.kernels.flash_decode.mha_decode_paged import MhaDecodePagedKernel
 from tileops.kernels.kernel import Kernel
 
-from .op import Op
+from ..op import Op
 
 __all__ = ["MultiHeadAttentionDecodePagedWithKVCacheFwdOp"]
 

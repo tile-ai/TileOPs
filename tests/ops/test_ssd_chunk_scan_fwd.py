@@ -1,7 +1,7 @@
 import torch
 
 from tests.test_base import TestBase
-from tileops.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdOp
+from tileops.ops.ssd_chunk_scan import SsdChunkScanFwdOp
 from workloads.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdFixture
 from workloads.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdTest as _SsdChunkScanFwdTestWorkload
 

@@ -5,7 +5,7 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.mhc import MHCPostKernel
 
-from .op import Op
+from ..op import Op
 
 __all__ = ["MHCPostOp"]
 

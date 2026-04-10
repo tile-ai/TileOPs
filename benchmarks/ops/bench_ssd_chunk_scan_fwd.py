@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdOp
+from tileops.ops.ssd_chunk_scan import SsdChunkScanFwdOp
 from workloads.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdFixture, SsdChunkScanFwdTest
 
 
