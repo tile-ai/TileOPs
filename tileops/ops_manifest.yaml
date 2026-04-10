@@ -501,7 +501,7 @@ ops:
   # attention — multi-head / grouped-query attention (prefill, decode, paged)
   # ---------------------------------------------------------------------------
 
-  MhaFwdOp:
+  MultiHeadAttentionFwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
@@ -538,7 +538,7 @@ ops:
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
 
-  MhaBwdOp:
+  MultiHeadAttentionBwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
@@ -585,7 +585,7 @@ ops:
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
 
-  GqaFwdOp:
+  GroupedQueryAttentionFwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
@@ -623,7 +623,7 @@ ops:
       test: tests/ops/test_gqa.py
       bench: benchmarks/ops/bench_gqa.py
 
-  GqaBwdOp:
+  GroupedQueryAttentionBwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
@@ -675,7 +675,7 @@ ops:
   # attention — decode (single-query against KV cache)
   # ---------------------------------------------------------------------------
 
-  MhaDecodeFwdOp:
+  MultiHeadAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
     status: implemented
@@ -713,7 +713,7 @@ ops:
       test: tests/ops/test_mha_decode.py
       bench: benchmarks/ops/bench_mha_decode.py
 
-  MhaDecodePagedFwdOp:
+  MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
     status: implemented
@@ -765,7 +765,7 @@ ops:
       test: tests/ops/test_mha_decode_paged.py
       bench: benchmarks/ops/bench_mha_decode_paged.py
 
-  GqaDecodeFwdOp:
+  GroupedQueryAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
     status: implemented
@@ -804,7 +804,7 @@ ops:
       test: tests/ops/test_gqa_decode.py
       bench: benchmarks/ops/bench_gqa_decode.py
 
-  GqaDecodePagedFwdOp:
+  GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
     status: implemented
@@ -946,10 +946,10 @@ ops:
       bench: benchmarks/ops/bench_gqa_sliding_window_varlen_fwd.py
 
   # ---------------------------------------------------------------------------
-  # attention — DeepSeek MLA / DSA decode
+  # attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
   # ---------------------------------------------------------------------------
 
-  DeepSeekMlaDecodeFwdOp:
+  MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
     status: implemented
@@ -990,7 +990,7 @@ ops:
       test: tests/ops/test_deepseek_mla_decode.py
       bench: benchmarks/ops/bench_deepseek_mla_decode.py
 
-  DeepSeekDsaDecodeFwdOp:
+  DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
     status: implemented
@@ -1244,7 +1244,7 @@ ops:
       bench: benchmarks/ops/bench_moe_unpermute.py
       bench_manifest_driven: true
 
-  MoeFusedExpertsFwdOp:
+  FusedMoeExpertsFwdOp:
     ref_api: "none"
     family: moe
     status: spec-only
@@ -1281,7 +1281,7 @@ ops:
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
 
-  MoeFusedExpertsPaddedFwdOp:
+  FusedMoeExpertsPaddedFwdOp:
     ref_api: "none"
     family: moe
     status: spec-only
