@@ -115,7 +115,7 @@ The validator enforces `assert cls.__name__ == manifest_key` — the manifest ke
 
 ### `family`
 
-Closed set: `elementwise`, `reduction`, `norm`, `conv`, `gemm`, `quantize`, `sampling`, `attention`, `moe`, `linear_attention`, `ssm`.
+Closed set: `elementwise`, `reduction`, `normalization`, `convolution`, `gemm`, `quantize`, `sampling`, `attention`, `moe`, `linear_attention`, `ssm`.
 
 ### `ref_api`
 
