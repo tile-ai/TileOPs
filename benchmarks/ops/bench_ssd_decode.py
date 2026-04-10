@@ -118,6 +118,10 @@ def test_ssd_decode_bench(
     bm = SsdDecodeBenchmark(test)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
 
+    # Clone state before each profile run so both start from identical initial
+    # conditions (op mutates state in-place across iterations).
+    # Clone state before each profile run so both start from identical initial
+    # conditions (op mutates state in-place across iterations).
     state_for_op = state.clone()
     state_bl = state.clone()
 

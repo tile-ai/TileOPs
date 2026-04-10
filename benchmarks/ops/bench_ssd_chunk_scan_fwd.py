@@ -42,23 +42,6 @@ except ImportError:
     _mamba_chunk_scan_fwd = None
 
 
-def _to_mamba_inputs(x, cb, dA_cumsum, C, prev_states, dt):
-    """All inputs are already in official mamba_ssm layout — pass through as-is.
-
-    Official layouts (both TileOPs and mamba_ssm):
-      x:           [B, S, H, P]       (seqlen-fused)
-      cb:          [B, C, G, L, L]    (group-owned)
-      dA_cumsum:   [B, H, C, L]
-      C:           [B, S, G, N]       (seqlen-fused, group-owned)
-      prev_states: [B, C, H, P, N]    (P before N)
-      dt:          [B, H, C, L]
-
-    mamba_ssm._chunk_scan_fwd signature:
-      _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states, ...)
-    """
-    return x, cb, dA_cumsum, C, prev_states, dt
-
-
 # ---------------------------------------------------------------------------
 # Benchmark class
 # ---------------------------------------------------------------------------

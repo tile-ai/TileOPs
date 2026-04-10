@@ -55,11 +55,43 @@ class SsdStatePassingFwdBenchmark(BenchmarkBase):
         return float(reads + writes)
 
 
+# State passing benchmark parameters.
+#
+# Model-to-shape mapping (Mamba-2 defaults):
+#   n_heads = d_model / 32,  d_state = 128
+#   num_chunks = seq_len // chunk_len  (chunk_len=256: 2k->8, 4k->16, 32k->128)
+#
+#   130M -> n_heads=24   370M -> n_heads=32   780M -> n_heads=48
+#   1.3B -> n_heads=64   2.7B -> n_heads=80
+#
+# Schema: (batch, num_chunks, n_heads, d_state, dtype, tune)
 _SSD_STATE_PASSING_FWD_BENCH_PARAMS = [
+    # ── unit-scale ──
     pytest.param(1, 2, 4,  32, torch.float16,  False, id="b1-c2-h4-d32-fp16"),
     pytest.param(2, 4, 8,  64, torch.float16,  False, id="b2-c4-h8-d64-fp16"),
     pytest.param(1, 2, 4,  32, torch.bfloat16, False, id="b1-c2-h4-d32-bf16"),
     pytest.param(2, 4, 8,  64, torch.bfloat16, False, id="b2-c4-h8-d64-bf16"),
+    # ── 130M (n_heads=24) ──
+    pytest.param(1,  16, 24, 128, torch.float16, True, id="latency-130m-4k"),
+    pytest.param(8,  16, 24, 128, torch.float16, True, id="serving-130m-4k"),
+    pytest.param(4, 128, 24, 128, torch.float16, True, id="longctx-130m-32k"),
+    # ── 370M (n_heads=32) ──
+    pytest.param(1,  16, 32, 128, torch.float16, True, id="latency-370m-4k"),
+    pytest.param(8,  16, 32, 128, torch.float16, True, id="serving-370m-4k"),
+    pytest.param(4, 128, 32, 128, torch.float16, True, id="longctx-370m-32k"),
+    pytest.param(32,  8, 32, 128, torch.float16, True, id="throughput-370m-2k"),
+    # ── 780M (n_heads=48) ──
+    pytest.param(1,  16, 48, 128, torch.float16, True, id="latency-780m-4k"),
+    pytest.param(8,  16, 48, 128, torch.float16, True, id="serving-780m-4k"),
+    pytest.param(4, 128, 48, 128, torch.float16, True, id="longctx-780m-32k"),
+    # ── 1.3B (n_heads=64) ──
+    pytest.param(1,  16, 64, 128, torch.float16, True, id="latency-1p3b-4k"),
+    pytest.param(8,  16, 64, 128, torch.float16, True, id="serving-1p3b-4k"),
+    pytest.param(2, 128, 64, 128, torch.float16, True, id="longctx-1p3b-32k"),
+    # ── 2.7B (n_heads=80) ──
+    pytest.param(1,  16, 80, 128, torch.float16, True, id="latency-2p7b-4k"),
+    pytest.param(4,  16, 80, 128, torch.float16, True, id="serving-2p7b-4k"),
+    pytest.param(2, 128, 80, 128, torch.float16, True, id="longctx-2p7b-32k"),
 ]
 
 
