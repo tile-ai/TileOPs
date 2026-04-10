@@ -585,7 +585,7 @@ ops:
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
 
-  GroupQueryAttentionFwdOp:
+  GroupedQueryAttentionFwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
@@ -623,7 +623,7 @@ ops:
       test: tests/ops/test_gqa.py
       bench: benchmarks/ops/bench_gqa.py
 
-  GroupQueryAttentionBwdOp:
+  GroupedQueryAttentionBwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
@@ -765,7 +765,7 @@ ops:
       test: tests/ops/test_mha_decode_paged.py
       bench: benchmarks/ops/bench_mha_decode_paged.py
 
-  GroupQueryAttentionDecodeWithKVCacheFwdOp:
+  GroupedQueryAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
     status: implemented
@@ -804,7 +804,7 @@ ops:
       test: tests/ops/test_gqa_decode.py
       bench: benchmarks/ops/bench_gqa_decode.py
 
-  GroupQueryAttentionDecodePagedWithKVCacheFwdOp:
+  GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     ref_api: "none"
     family: attention
     status: implemented
