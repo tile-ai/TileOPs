@@ -43,8 +43,10 @@ class _ReduceOpBase(Op):
     Consolidates shared init params (dtype, dim, keepdim, tune), initializes
     and owns an internal kernel cache, and handles input preparation
     (validate, transpose, reshape to 2D, pad) and output reshaping.
-    Subclasses override ``_pad_value``, ``_build_kernel_kwargs``, and
-    ``forward``.
+    Subclasses declare ``_op_kind``, ``_kernel_key``, ``_kernel_cls``, and
+    override hooks as needed.  ``forward()`` is provided by this base class;
+    only ops with non-standard returns (e.g. ``VarMeanFwdOp``) need to
+    override it.
 
     Hooks for subclass customization:
 
