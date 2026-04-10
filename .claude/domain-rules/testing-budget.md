@@ -30,4 +30,4 @@ ______________________________________________________________________
   # Cleanup: <concrete condition that triggers removal of this marker>
   ```
 
-  Do not use ad-hoc references like "PR-B" or "next PR" — state the cleanup condition in terms of the technical invariant being restored. These markers are machine-greppable: `grep -rn 'FIXME(staged-rollout)'`.
+  Cleanup must describe the invariant to restore, not reference a specific PR. Scan with `grep -rn 'FIXME(staged-rollout)'`.
