@@ -249,7 +249,7 @@ def check_l0(
 
     # status: must be "implemented" or "spec-only"
     status = entry.get("status")
-    if status is not None and not isinstance(status, str):
+    if not isinstance(status, str):
         errors.append(
             f"[schema] {op_name}: status must be a string, "
             f"got {type(status).__name__}"
