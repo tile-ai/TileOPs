@@ -15,7 +15,7 @@ from tileops.utils import is_hopper
 
 from .op import Op
 
-__all__ = ['MultiHeadAttentionFwdOp', 'MultiHeadAttentionBwdOp']
+__all__ = ["MultiHeadAttentionFwdOp", "MultiHeadAttentionBwdOp"]
 
 
 class MultiHeadAttentionFwdOp(Op):

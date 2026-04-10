@@ -15,7 +15,7 @@ from tileops.utils import is_hopper
 
 from .op import Op
 
-__all__ = ['GroupedQueryAttentionFwdOp', 'GroupedQueryAttentionBwdOp']
+__all__ = ["GroupedQueryAttentionFwdOp", "GroupedQueryAttentionBwdOp"]
 
 
 class GroupedQueryAttentionFwdOp(Op):

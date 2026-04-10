@@ -49,7 +49,7 @@ class GqaBwdTest(WorkloadBase):
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
 
         fwd_op = GroupedQueryAttentionFwdOp(self.batch, self.heads, self.heads_kv, self.seq_len,
-                                          self.dim, self.is_causal, self.dtype)
+                                            self.dim, self.is_causal, self.dtype)
         with torch.no_grad():
             o, lse = fwd_op(q, k, v)
 
