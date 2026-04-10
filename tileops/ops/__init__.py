@@ -5,8 +5,8 @@ from .conv1d import Conv1dBiasFwdOp, Conv1dFwdOp
 from .conv2d import Conv2dOp
 from .conv3d import Conv3dOp
 from .da_cumsum_fwd import DaCumsumFwdOp
-from .deepseek_dsa_decode import DeepSeekDsaDecodeFwdOp
-from .deepseek_mla_decode import DeepSeekMlaDecodeFwdOp
+from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
+from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from .deepseek_nsa import (
     MeanPoolingForwardOp,
     NSACmpFwdVarlenOp,
@@ -25,15 +25,15 @@ from .gated_deltanet_recurrence import GatedDeltaNetDecodeOp
 from .gemm import GemmOp
 from .gla_chunkwise import GLABwdOp, GLAFwdOp
 from .gla_recurrence import GLADecodeOp
-from .gqa import GqaBwdOp, GqaFwdOp
-from .gqa_decode import GqaDecodeFwdOp
-from .gqa_decode_paged import GqaDecodePagedFwdOp
+from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
+from .gqa_decode import GroupedQueryAttentionDecodeWithKVCacheFwdOp
+from .gqa_decode_paged import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
 from .gqa_sliding_window_fwd import GqaSlidingWindowFwdOp
 from .gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdOp
 from .grouped_gemm import GroupedGemmOp
-from .mha import MhaBwdOp, MhaFwdOp
-from .mha_decode import MhaDecodeFwdOp
-from .mha_decode_paged import MhaDecodePagedFwdOp
+from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
+from .mha_decode import MultiHeadAttentionDecodeWithKVCacheFwdOp
+from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from .mhc_post import MHCPostOp
 from .mhc_pre import MHCPreOp
 from .moe import MoePermuteAlignFwdOp
@@ -104,7 +104,7 @@ __all__ = [
     "Conv2dOp",
     "Conv3dOp",
     "DaCumsumFwdOp",
-    "DeepSeekDsaDecodeFwdOp",
+    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "DropoutOp",
     "FFTC2COp",
     "FP8LightingIndexerOp",
@@ -126,10 +126,10 @@ __all__ = [
     "GemmOp",
     "GqaSlidingWindowFwdOp",
     "GqaSlidingWindowVarlenFwdOp",
-    "GqaBwdOp",
-    "GqaDecodePagedFwdOp",
-    "GqaDecodeFwdOp",
-    "GqaFwdOp",
+    "GroupedQueryAttentionBwdOp",
+    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
+    "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
+    "GroupedQueryAttentionFwdOp",
     "GroupNormFwdOp",
     "GroupedGemmOp",
     "InstanceNormFwdOp",
@@ -137,11 +137,11 @@ __all__ = [
     "MHCPostOp",
     "MHCPreOp",
     "MeanPoolingForwardOp",
-    "MhaBwdOp",
-    "MhaDecodePagedFwdOp",
-    "MhaDecodeFwdOp",
-    "MhaFwdOp",
-    "DeepSeekMlaDecodeFwdOp",
+    "MultiHeadAttentionBwdOp",
+    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
+    "MultiHeadAttentionDecodeWithKVCacheFwdOp",
+    "MultiHeadAttentionFwdOp",
+    "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
     "NSACmpFwdVarlenOp",
     "NSAFwdVarlenOp",
     "NSATopkVarlenOp",

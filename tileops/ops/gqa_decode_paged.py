@@ -7,10 +7,10 @@ from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["GqaDecodePagedFwdOp"]
+__all__ = ["GroupedQueryAttentionDecodePagedWithKVCacheFwdOp"]
 
 
-class GqaDecodePagedFwdOp(Op):
+class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
     """Paged GQA decode with dynamic KV cache. Layout: Q [batch, heads, dim] (BHD);
     K, V physical cache [seqlen_kv, heads_kv, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """

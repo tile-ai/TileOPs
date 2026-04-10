@@ -7,10 +7,10 @@ from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["DeepSeekDsaDecodeFwdOp"]
+__all__ = ["DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"]
 
 
-class DeepSeekDsaDecodeFwdOp(Op):
+class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
     """
     Sparse Attention Decode Operation with Key-Value Cache for DeepSeek.
 

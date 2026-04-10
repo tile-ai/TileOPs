@@ -8,10 +8,10 @@ from tileops.utils import is_hopper
 
 from .op import Op
 
-__all__ = ["DeepSeekMlaDecodeFwdOp"]
+__all__ = ["MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"]
 
 
-class DeepSeekMlaDecodeFwdOp(Op):
+class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

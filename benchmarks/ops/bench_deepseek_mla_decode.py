@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from einops import einsum, rearrange
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import DeepSeekMlaDecodeFwdOp
+from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from workloads.ops.deepseek_mla_decode import MlaDecodeTest
 
 
@@ -94,7 +94,7 @@ def test_mla_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int
     bm = MlaDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = DeepSeekMlaDecodeFwdOp(
+    op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
         batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

@@ -1,7 +1,7 @@
 """MoE operator package."""
 
 from .fused_moe import FusedMoe
-from .fused_moe_experts import MoeFusedExpertsFwdOp, MoeFusedExpertsPaddedFwdOp
+from .fused_moe_experts import FusedMoeExpertsFwdOp, FusedMoeExpertsPaddedFwdOp
 from .fused_topk import FusedTopKOp
 from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
 from .permute_align import MoePermuteAlignFwdOp
@@ -12,8 +12,8 @@ from .unpermute import MoeUnpermuteFwdOp
 
 __all__ = [
     "FusedMoe",
-    "MoeFusedExpertsFwdOp",
-    "MoeFusedExpertsPaddedFwdOp",
+    "FusedMoeExpertsFwdOp",
+    "FusedMoeExpertsPaddedFwdOp",
     "FusedTopKOp",
     "MoeGroupedGemmNopadFwdOp",
     "MoePermuteAlignFwdOp",

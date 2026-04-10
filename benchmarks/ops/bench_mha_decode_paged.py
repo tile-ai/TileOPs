@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import MhaDecodePagedFwdOp
+from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.ops.mha_decode_paged import MhaDecodePagedTest
 
 
@@ -152,7 +152,7 @@ def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
-    op = MhaDecodePagedFwdOp(
+    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
         batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

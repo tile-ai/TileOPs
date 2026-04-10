@@ -1,7 +1,7 @@
 """Local routed expert GEMM — tight (no-pad) and padded layout variants.
 
-MoeFusedExpertsFwdOp        — tight layout (T*K rows), GPU tile scheduler, fastest.
-MoeFusedExpertsPaddedFwdOp  — block_m-aligned padding, reference / comparison baseline.
+FusedMoeExpertsFwdOp        — tight layout (T*K rows), GPU tile scheduler, fastest.
+FusedMoeExpertsPaddedFwdOp  — block_m-aligned padding, reference / comparison baseline.
 
 Both classes share an identical forward signature:
 
@@ -34,12 +34,12 @@ from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
 
 from ..op import Op
 
-__all__ = ["MoeFusedExpertsFwdOp", "MoeFusedExpertsPaddedFwdOp"]
+__all__ = ["FusedMoeExpertsFwdOp", "FusedMoeExpertsPaddedFwdOp"]
 
 _BLOCK_M: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
 
 
-class MoeFusedExpertsFwdOp(Op):
+class FusedMoeExpertsFwdOp(Op):
     """Local routed expert GEMM, tight layout (T*K rows, no padding).
 
     Receives pre-computed routing (topk_weights, topk_ids) from the caller and
@@ -159,10 +159,10 @@ class MoeFusedExpertsFwdOp(Op):
         return output
 
 
-class MoeFusedExpertsPaddedFwdOp(Op):
+class FusedMoeExpertsPaddedFwdOp(Op):
     """Local routed expert GEMM, block_m-aligned padded layout.
 
-    Identical semantics to MoeFusedExpertsFwdOp but uses MoePermutePaddedFwdOp and
+    Identical semantics to FusedMoeExpertsFwdOp but uses MoePermutePaddedFwdOp and
     GroupedGemmOp instead of the no-pad variants.  Used as a comparison
     baseline to quantify the benefit of the tight (no-pad) layout.
 
@@ -199,7 +199,7 @@ class MoeFusedExpertsPaddedFwdOp(Op):
         if expert_map is not None:
             raise NotImplementedError(
                 "expert_map is not yet supported for the padded layout. "
-                "Use MoeFusedExpertsFwdOp (nopad) for EP mode."
+                "Use FusedMoeExpertsFwdOp (nopad) for EP mode."
             )
 
         numel = num_tokens * top_k
