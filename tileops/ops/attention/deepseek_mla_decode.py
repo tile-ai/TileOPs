@@ -6,7 +6,7 @@ from tileops.kernels.deepseek_mla import MlaDecodeKernel, MlaDecodeWsKernel
 from tileops.kernels.kernel import Kernel
 from tileops.utils import is_hopper
 
-from .op import Op
+from ..op import Op
 
 __all__ = ["MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"]
 

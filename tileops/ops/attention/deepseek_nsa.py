@@ -10,7 +10,7 @@ from tileops.kernels.deepseek_nsa import (
 )
 from tileops.kernels.kernel import Kernel
 
-from .op import Op
+from ..op import Op
 
 __all__ = [
     "MeanPoolingForwardOp",

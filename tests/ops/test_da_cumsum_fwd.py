@@ -1,7 +1,7 @@
 import torch
 
 from tests.test_base import TestBase
-from tileops.ops.da_cumsum_fwd import DaCumsumFwdOp
+from tileops.ops.da_cumsum import DaCumsumFwdOp
 from workloads.ops.da_cumsum_fwd import DaCumsumFwdFixture
 from workloads.ops.da_cumsum_fwd import DaCumsumFwdTest as _DaCumsumFwdTestWorkload
 

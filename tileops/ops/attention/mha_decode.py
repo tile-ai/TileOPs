@@ -3,21 +3,21 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.flash_decode import GqaDecodeKernel
+from tileops.kernels.flash_decode import MhaDecodeKernel
 from tileops.kernels.kernel import Kernel
 
-from .op import Op
+from ..op import Op
 
-__all__ = ["GroupedQueryAttentionDecodeWithKVCacheFwdOp"]
+__all__ = ["MultiHeadAttentionDecodeWithKVCacheFwdOp"]
 
 
-class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
+class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,
                  batch: int,
                  heads: int,
-                 heads_kv: int,
+                 seqlen_q: int,
                  seqlen_kv: int,
                  dim: int,
                  dtype: torch.dtype = torch.float16,
@@ -25,19 +25,19 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
                  tune: bool = False) -> None:
         self.batch = batch
         self.heads = heads
-        self.heads_kv = heads_kv
+        self.seqlen_q = seqlen_q
         self.seqlen_kv = seqlen_kv
         self.dim = dim
 
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_decode_kernel"](
-            batch, heads, heads_kv, seqlen_kv, dim, self.dtype, tune=tune)
+        self.kernel = self.kernel_map["mha_decode_kernel"](
+            batch, heads, seqlen_q, seqlen_kv, dim, False, self.dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_decode_kernel": GqaDecodeKernel}
+        return {"mha_decode_kernel": MhaDecodeKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]
@@ -46,5 +46,4 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
                 k, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode='constant', value=0)
             v = F.pad(
                 v, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode='constant', value=0)
-
         return self.kernel(q, k, v, real_seqlen_kv)

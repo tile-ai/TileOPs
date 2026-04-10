@@ -1,7 +1,7 @@
 import torch
 
 from tests.test_base import TestBase
-from tileops.ops.ssd_state_passing_fwd import SsdStatePassingFwdOp
+from tileops.ops.ssd_state_passing import SsdStatePassingFwdOp
 from workloads.ops.ssd_state_passing_fwd import SsdStatePassingFwdFixture
 from workloads.ops.ssd_state_passing_fwd import (
     SsdStatePassingFwdTest as _SsdStatePassingFwdTestWorkload,

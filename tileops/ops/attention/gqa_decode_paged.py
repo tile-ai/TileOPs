@@ -5,7 +5,7 @@ import torch
 from tileops.kernels.flash_decode.gqa_decode_paged import GqaDecodePagedKernel
 from tileops.kernels.kernel import Kernel
 
-from .op import Op
+from ..op import Op
 
 __all__ = ["GroupedQueryAttentionDecodePagedWithKVCacheFwdOp"]
 

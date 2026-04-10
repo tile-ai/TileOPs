@@ -5,7 +5,7 @@ import torch
 from tileops.kernels.deepseek_mla import SparseMlaKernel
 from tileops.kernels.kernel import Kernel
 
-from .op import Op
+from ..op import Op
 
 __all__ = ["DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"]
 
