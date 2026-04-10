@@ -1,7 +1,7 @@
 """Unified routed MoE FFN operator — FusedMoe.
 
 Corresponds to vLLM's FusedMoE layer: combines FusedTopKOp (routing) and
-MoeFusedExpertsFwdOp (permute + GEMM + SwiGLU + GEMM + unpermute) into a single
+FusedMoeExpertsFwdOp (permute + GEMM + SwiGLU + GEMM + unpermute) into a single
 forward pass.
 
 Does NOT handle shared experts (handled by an upper SharedFusedMoe layer,
@@ -20,7 +20,7 @@ EP note:
     For multi-GPU EP with local filtering, pass expert_map [E_global] int32.
     All-to-All communication is NOT performed here; use an external framework
     (vLLM / SGLang / Megatron) to handle dispatch/combine and call
-    MoeFusedExpertsFwdOp directly with pre-dispatched tokens.
+    FusedMoeExpertsFwdOp directly with pre-dispatched tokens.
 """
 
 from typing import Dict, Optional
@@ -28,7 +28,7 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.ops.moe.fused_moe_experts import MoeFusedExpertsFwdOp, MoeFusedExpertsPaddedFwdOp
+from tileops.ops.moe.fused_moe_experts import FusedMoeExpertsFwdOp, FusedMoeExpertsPaddedFwdOp
 from tileops.ops.moe.fused_topk import FusedTopKOp
 
 from ..op import Op
@@ -105,7 +105,7 @@ class FusedMoe(Op):
         if layout not in ("nopad", "padded"):
             raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
 
-        experts_cls = MoeFusedExpertsFwdOp if layout == "nopad" else MoeFusedExpertsPaddedFwdOp
+        experts_cls = FusedMoeExpertsFwdOp if layout == "nopad" else FusedMoeExpertsPaddedFwdOp
         self._experts = experts_cls(
             num_tokens=num_tokens,
             num_experts=num_experts,
