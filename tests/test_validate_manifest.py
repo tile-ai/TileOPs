@@ -38,11 +38,13 @@ def validator():
 # ---------------------------------------------------------------------------
 
 def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
-                 source_kernel="k.py", status="spec-only", **extra):
+                 source_kernel="k.py", status="spec-only", kernel_map=None,
+                 **extra):
     """Build a minimal valid manifest entry for testing, with overrides.
 
     Use ``status=None`` to explicitly omit the status field (for testing
     that the validator rejects entries without status).
+    ``kernel_map`` is placed under ``source`` per the manifest spec.
     """
     sig = {
         "inputs": inputs or {"x": {"dtype": "float16"}},
@@ -52,16 +54,19 @@ def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
         sig["params"] = params
     if dtype_combos is not None:
         sig["dtype_combos"] = dtype_combos
+    source = {
+        "kernel": source_kernel, "op": "o.py",
+        "test": "t.py", "bench": "b.py",
+    }
+    if kernel_map is not None:
+        source["kernel_map"] = kernel_map
     entry = {
         "family": "test",
         "ref_api": "none",
         "signature": sig,
         "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
         "roofline": {"flops": "2 * M", "bytes": "M * 2"},
-        "source": {
-            "kernel": source_kernel, "op": "o.py",
-            "test": "t.py", "bench": "b.py",
-        },
+        "source": source,
     }
     if status is not None:
         entry["status"] = status
@@ -82,7 +87,6 @@ class TestSchema:
             "family": "normalization",
             "ref_api": "torch.nn.functional.rms_norm",
             "status": "implemented",
-            "kernel_map": {"fwd": "RMSNormFwdKernel"},
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
                 "outputs": {"y": {"dtype": "same_as(x)"}},
@@ -93,6 +97,7 @@ class TestSchema:
             "roofline": {"flops": "2 * M * N", "bytes": "M * N * 2"},
             "source": {
                 "kernel": "tileops/kernels/norm/rms_norm.py",
+                "kernel_map": {"fwd": "RMSNormFwdKernel"},
                 "op": "tileops/ops/norm/rms_norm.py",
                 "test": "tests/ops/test_rms_norm.py",
                 "bench": "benchmarks/ops/bench_rms_norm.py",
@@ -302,8 +307,8 @@ class TestSchema:
     def test_kernel_map_missing_when_implemented_warns(self, validator):
         """status: implemented without kernel_map produces a warning, not error."""
         entry = _make_entry(status="implemented")
-        entry.pop("kernel_map", None)
-        assert "kernel_map" not in entry
+        entry["source"].pop("kernel_map", None)
+        assert "kernel_map" not in entry["source"]
         warnings = []
         errors = validator.check_l0("test_op", entry, warnings=warnings)
         assert not any("kernel_map" in e for e in errors), (

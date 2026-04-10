@@ -248,8 +248,9 @@ def check_l0(
         )
 
     # status: must be "implemented" or "spec-only"
+    # (skip if already caught by missing top-level fields check)
     status = entry.get("status")
-    if not isinstance(status, str):
+    if "status" in entry and not isinstance(status, str):
         errors.append(
             f"[schema] {op_name}: status must be a string, "
             f"got {type(status).__name__}"
@@ -260,8 +261,9 @@ def check_l0(
             f"got '{status}'"
         )
 
-    # kernel_map: validated when present; warned when missing for implemented ops
-    kernel_map = entry.get("kernel_map")
+    # kernel_map: lives under source (source.kernel_map per manifest spec)
+    source = entry.get("source", {})
+    kernel_map = source.get("kernel_map") if isinstance(source, dict) else None
     if kernel_map is not None:
         if not isinstance(kernel_map, dict):
             errors.append(
@@ -864,8 +866,7 @@ def check_l4_benchmark(
 def _is_spec_only(entry: dict) -> bool:
     """Check if the entry is spec-only.
 
-    Raises KeyError if status is missing — callers must ensure schema
-    validation (which requires ``status``) has passed before calling.
+    Returns True for missing or non-string status (safe default).
     """
     status = entry.get("status")
     if not isinstance(status, str):
