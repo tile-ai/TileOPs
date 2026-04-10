@@ -93,9 +93,11 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = workload.gen_inputs()
 
     op = ArgmaxFwdOp(dtype=dtype)
-    # FIXME: ArgreduceKernel fails on large-N shapes (e.g. [4, 102400]) with
-    # "Can't fetch the lanes of a scalable vector at a compile time".
-    # Skip until the kernel is fixed.
+    # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
+    #
+    # Broken invariant: benchmark must execute all manifest workload shapes
+    # Why: kernel crashes on N>=102400 ("Can't fetch the lanes of a scalable vector")
+    # Cleanup: remove try/skip once ArgreduceKernel handles arbitrary N
     try:
         result = bm.profile(op, *inputs)
     except Exception as exc:
@@ -124,9 +126,11 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = workload.gen_inputs()
 
     op = ArgminFwdOp(dtype=dtype)
-    # FIXME: ArgreduceKernel fails on large-N shapes (e.g. [4, 102400]) with
-    # "Can't fetch the lanes of a scalable vector at a compile time".
-    # Skip until the kernel is fixed.
+    # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
+    #
+    # Broken invariant: benchmark must execute all manifest workload shapes
+    # Why: kernel crashes on N>=102400 ("Can't fetch the lanes of a scalable vector")
+    # Cleanup: remove try/skip once ArgreduceKernel handles arbitrary N
     try:
         result = bm.profile(op, *inputs)
     except Exception as exc:
