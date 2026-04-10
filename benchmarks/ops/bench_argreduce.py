@@ -13,6 +13,7 @@ from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.reduction.argmax import ArgmaxFwdOp
 from tileops.ops.reduction.argmin import ArgminFwdOp
+from workloads.ops.argreduce import ArgmaxTest, ArgminTest
 
 _ARGMAX_OP = "ArgmaxFwdOp"
 _ARGMIN_OP = "ArgminFwdOp"
@@ -80,17 +81,6 @@ def _workloads_to_params(workloads):
     return params
 
 
-class _ArgreduceWorkload:
-    """Minimal workload object for argreduce benchmarks."""
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-
 # ===================================================================
 # Argmax benchmarks
 # ===================================================================
@@ -98,7 +88,7 @@ class _ArgreduceWorkload:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_ARGMAX_OP)))
 def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
-    workload = _ArgreduceWorkload(shape, dtype)
+    workload = ArgmaxTest(shape, dtype)
     bm = ArgmaxBenchmark(workload)
     inputs = workload.gen_inputs()
 
@@ -120,7 +110,7 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_ARGMIN_OP)))
 def test_argmin_bench(shape: tuple, dtype: torch.dtype) -> None:
-    workload = _ArgreduceWorkload(shape, dtype)
+    workload = ArgminTest(shape, dtype)
     bm = ArgminBenchmark(workload)
     inputs = workload.gen_inputs()
 
