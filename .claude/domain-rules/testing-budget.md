@@ -19,15 +19,3 @@ ______________________________________________________________________
 - Run `scripts/test_node_delta.py` before submitting PRs that modify test files. No growth on existing files: nothing to report. Growth on existing files: include script output and one-line justification in PR description. New test files only: no delta report needed.
 
 - Binary operator tests must cover broadcast semantics: bias-add `(B,S,D)+(1,1,D)`, row `(B,S,D)+(B,S,1)`, scalar `(M,N)+(1,1)`. Applies to arithmetic, comparison, logical, and bitwise binary ops.
-
-- When a PR intentionally degrades a test (xfail, skip, weakened assertion) due to a process constraint (e.g. trust model requiring separate manifest and code PRs), mark it with `FIXME(staged-rollout)` using this template:
-
-  ```python
-  # FIXME(staged-rollout): <one-line summary of what's degraded>
-  #
-  # Broken invariant: <what contract is currently violated>
-  # Why: <which process constraint requires this temporary state>
-  # Cleanup: <concrete condition that triggers removal of this marker>
-  ```
-
-  Cleanup must describe the invariant to restore, not reference a specific PR. Scan with `grep -rn 'FIXME(staged-rollout)'`.
