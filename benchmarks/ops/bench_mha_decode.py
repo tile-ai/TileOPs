@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import MhaDecodeFwdOp
+from tileops.ops import MultiHeadAttentionDecodeWithKVCacheFwdOp
 from workloads.ops.mha_decode import MhaDecodeTest
 
 
@@ -96,7 +96,7 @@ def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: to
     bm = MhaDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = MhaDecodeFwdOp(b, h, s_q, s_kv, d, dtype, tune=tune)
+    op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

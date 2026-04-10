@@ -5,7 +5,7 @@ import torch
 from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import MhaBwdOp, MhaFwdOp
+from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.ops.mha import (
     MhaBwdTest,
     MhaFwdTest,
@@ -138,7 +138,7 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     bm = MhaFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = MhaFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
+    op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -167,7 +167,7 @@ def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
     bm = MhaBwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = MhaBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
+    op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

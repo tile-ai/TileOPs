@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import DeepSeekDsaDecodeFwdOp
+from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.ops.deepseek_dsa_decode import DsaDecodeTest as _DsaDecodeTestWorkload
 
 
@@ -74,7 +74,7 @@ def test_sparse_mla_decode(batch: int, heads: int, seq_len_q: int, seq_len_kv: i
     test = DsaDecodeTest(
         batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype)
-    op = DeepSeekDsaDecodeFwdOp(
+    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
         batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)

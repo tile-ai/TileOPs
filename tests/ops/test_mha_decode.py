@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import MhaDecodeFwdOp
+from tileops.ops import MultiHeadAttentionDecodeWithKVCacheFwdOp
 from workloads.ops.mha_decode import MhaDecodeTest as _MhaDecodeTestWorkload
 
 
@@ -34,7 +34,7 @@ class MhaDecodeFixture(FixtureBase):
 def test_mha_decode(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
                     tune: bool) -> None:
     test = MhaDecodeTest(b, h, s_q, s_kv, d, dtype)
-    op = MhaDecodeFwdOp(b, h, s_q, s_kv, d, dtype, tune=tune)
+    op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=2e-3, rtol=1e-5)
 
 

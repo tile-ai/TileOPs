@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import MhaBwdOp, MhaFwdOp
+from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.ops.mha import MhaBwdTest as _MhaBwdTestWorkload
 from workloads.ops.mha import MhaFwdTest as _MhaFwdTestWorkload
 
@@ -89,7 +89,7 @@ class MhaBwdFixture(FixtureBase):
 def test_mha_fwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype,
                  tune: bool) -> None:
     test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
-    op = MhaFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
+    op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 
@@ -97,7 +97,7 @@ def test_mha_fwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, d
 def test_mha_bwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype,
                  tune: bool) -> None:
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
-    op = MhaBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
+    op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 

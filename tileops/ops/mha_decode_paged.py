@@ -7,10 +7,10 @@ from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["MhaDecodePagedFwdOp"]
+__all__ = ["MultiHeadAttentionDecodePagedWithKVCacheFwdOp"]
 
 
-class MhaDecodePagedFwdOp(Op):
+class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
     """Paged MHA decode with dynamic KV cache. Layout: Q [batch, seqlen_q, heads, dim] (BSHD);
     K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """

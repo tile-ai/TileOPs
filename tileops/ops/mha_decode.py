@@ -8,10 +8,10 @@ from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["MhaDecodeFwdOp"]
+__all__ = ["MultiHeadAttentionDecodeWithKVCacheFwdOp"]
 
 
-class MhaDecodeFwdOp(Op):
+class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

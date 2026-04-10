@@ -5,7 +5,7 @@ import torch
 from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import GqaBwdOp, GqaFwdOp
+from tileops.ops import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
 from workloads.ops.gqa import (
     GqaBwdTest,
     GqaFwdTest,
@@ -182,7 +182,7 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
     bm = GqaFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = GqaFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -220,7 +220,7 @@ def test_gqa_bwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
     bm = GqaBwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = GqaBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

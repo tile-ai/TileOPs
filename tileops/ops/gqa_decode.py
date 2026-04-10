@@ -8,10 +8,10 @@ from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["GqaDecodeFwdOp"]
+__all__ = ["GroupedQueryAttentionDecodeWithKVCacheFwdOp"]
 
 
-class GqaDecodeFwdOp(Op):
+class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
     """Layout: BSHD"""
 
     def __init__(self,

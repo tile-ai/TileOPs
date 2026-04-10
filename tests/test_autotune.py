@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tileops.ops import MhaFwdOp
+from tileops.ops import MultiHeadAttentionFwdOp
 
 
 @pytest.mark.nightly
@@ -13,7 +13,7 @@ from tileops.ops import MhaFwdOp
 )
 def test_mha_kernel_autotune(B: int, S: int, H: int, D: int, causal: bool, dtype: torch.dtype):
     # 1. test autotune at initialization
-    op = MhaFwdOp(B, H, S, D, causal, dtype, tune=True)
+    op = MultiHeadAttentionFwdOp(B, H, S, D, causal, dtype, tune=True)
 
     # 2. test op.autotune()
     op.autotune()

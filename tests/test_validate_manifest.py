@@ -1151,15 +1151,6 @@ class TestResolveOpClass:
 class TestIntegration:
     """Run the actual validator script and verify it passes."""
 
-    # FIXME(staged-rollout): validator xfail — 12 manifest keys don't match cls.__name__
-    #
-    # Broken invariant: cls.__name__ != manifest_key for 12 attention/MoE ops
-    # Why: trust model requires manifest and code renames in separate PRs
-    # Cleanup: remove when all 12 Op classes are renamed to match their manifest keys
-    @pytest.mark.xfail(
-        reason="12 manifest keys renamed; Op classes not yet renamed to match",
-        strict=True,
-    )
     def test_validator_passes_on_current_codebase(self):
         result = subprocess.run(
             [sys.executable, str(VALIDATOR_SCRIPT)],

@@ -2,7 +2,7 @@ from typing import Tuple
 
 import torch
 
-from tileops.ops import GqaFwdOp
+from tileops.ops import GroupedQueryAttentionFwdOp
 from workloads.base import WorkloadBase
 
 
@@ -48,7 +48,7 @@ class GqaBwdTest(WorkloadBase):
         grad_output = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
 
-        fwd_op = GqaFwdOp(self.batch, self.heads, self.heads_kv, self.seq_len,
+        fwd_op = GroupedQueryAttentionFwdOp(self.batch, self.heads, self.heads_kv, self.seq_len,
                                           self.dim, self.is_causal, self.dtype)
         with torch.no_grad():
             o, lse = fwd_op(q, k, v)
