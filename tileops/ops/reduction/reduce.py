@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.reduce import ReduceKernel
 
 from ..op import Op
@@ -30,12 +31,6 @@ __all__ = [
     "VarMeanFwdOp",
 ]
 
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
-
 
 # ---------------------------------------------------------------------------
 # Shared base class for all reduce ops
@@ -43,16 +38,26 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 class _ReduceOpBase(Op):
-    """Common base for all reduce ops (simple and Welford-based).
+    """Common base for all reduce ops (simple, Welford, argreduce, logical, vector_norm).
 
     Consolidates shared init params (dtype, dim, keepdim, tune), initializes
     and owns an internal kernel cache, and handles input preparation
     (validate, transpose, reshape to 2D, pad) and output reshaping.
     Subclasses override ``_pad_value``, ``_build_kernel_kwargs``, and
     ``forward``.
+
+    Hooks for subclass customization:
+
+    - ``_kernel_key``: kernel map key (default ``"reduce"``).
+    - ``_pad_value()``: identity element for alignment padding (default ``0.0``).
+    - ``_build_kernel_kwargs()``: extra kwargs for kernel constructor.
+    - ``_pre_kernel(x)``: transform 2D input before kernel call (default identity).
+      Returns ``(x, context)`` where *context* is passed to ``_post_kernel``.
+    - ``_post_kernel(y, context)``: transform kernel output (default identity).
     """
 
     _op_kind: str = ""  # overridden by subclasses
+    _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
 
     def __init__(
         self,
@@ -72,7 +77,7 @@ class _ReduceOpBase(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"reduce": ReduceKernel}
+        return {self._kernel_key: ReduceKernel}
 
     # ------------------------------------------------------------------
     # Pad value (subclasses may override)
@@ -94,6 +99,22 @@ class _ReduceOpBase(Op):
         return {}
 
     # ------------------------------------------------------------------
+    # Pre/post kernel hooks (subclasses may override)
+    # ------------------------------------------------------------------
+
+    def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
+        """Transform 2D input before kernel call.
+
+        Returns ``(x, context)`` where *context* is an opaque value
+        passed through to ``_post_kernel``.  Default: identity.
+        """
+        return x, None
+
+    def _post_kernel(self, y: torch.Tensor, context: object) -> torch.Tensor:
+        """Transform kernel output.  Default: identity."""
+        return y
+
+    # ------------------------------------------------------------------
     # Kernel cache
     # ------------------------------------------------------------------
 
@@ -101,7 +122,7 @@ class _ReduceOpBase(Op):
         """Return a cached kernel for (M, N), creating one if needed."""
         key = (M, N)
         if key not in self._kernel_cache:
-            kernel_cls = self.kernel_map["reduce"]
+            kernel_cls = self.kernel_map[self._kernel_key]
             self._kernel_cache[key] = kernel_cls(
                 M, N, self._op_kind, self.dtype,
                 tune=self._tune, **self._build_kernel_kwargs(),
@@ -138,7 +159,7 @@ class _ReduceOpBase(Op):
             M = prod(x.shape[:-1])
             x = x.reshape(M, N)
             kernel = self._get_or_create_kernel(M, N)
-            N_padded = _align_up(N, ALIGNMENT)
+            N_padded = align_up(N, DEFAULT_ALIGNMENT)
             if N_padded != N:
                 pv = self._pad_value()
                 pad = (0, N_padded - N)
@@ -163,7 +184,7 @@ class _ReduceOpBase(Op):
 
         kernel = self._get_or_create_kernel(M, N)
 
-        N_padded = _align_up(N, ALIGNMENT)
+        N_padded = align_up(N, DEFAULT_ALIGNMENT)
         if N_padded != N:
             pv = self._pad_value()
             pad = (0, N_padded - N)
