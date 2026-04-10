@@ -46,7 +46,7 @@ _TORCH_DTYPES = {
 _SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
 
 # Required top-level fields per op entry
-_REQUIRED_TOP = {"family", "signature", "workloads", "roofline", "source"}
+_REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
 _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
@@ -58,7 +58,9 @@ _VALID_LAYOUTS = {"channels_last"}
 # schema: YAML structure validation
 # ---------------------------------------------------------------------------
 
-def check_l0(op_name: str, entry: dict) -> list[str]:
+def check_l0(
+    op_name: str, entry: dict, *, warnings: list[str] | None = None,
+) -> list[str]:
     """Validate structural schema of a manifest entry. Returns error strings."""
     errors: list[str] = []
 
@@ -243,6 +245,42 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
     elif not isinstance(entry["ref_api"], str):
         errors.append(
             f"[schema] {op_name}: ref_api must be a string"
+        )
+
+    # status: must be "implemented" or "spec-only"
+    # (skip if already caught by missing top-level fields check)
+    status = entry.get("status")
+    if "status" in entry and not isinstance(status, str):
+        errors.append(
+            f"[schema] {op_name}: status must be a string, "
+            f"got {type(status).__name__}"
+        )
+    elif isinstance(status, str) and status not in ("implemented", "spec-only"):
+        errors.append(
+            f"[schema] {op_name}: status must be 'implemented' or 'spec-only', "
+            f"got '{status}'"
+        )
+
+    # kernel_map: lives under source (source.kernel_map per manifest spec)
+    source = entry.get("source", {})
+    kernel_map = source.get("kernel_map") if isinstance(source, dict) else None
+    if kernel_map is not None:
+        if not isinstance(kernel_map, dict):
+            errors.append(
+                f"[schema] {op_name}: kernel_map must be a mapping, "
+                f"got {type(kernel_map).__name__}"
+            )
+        else:
+            for k, v in kernel_map.items():
+                if not isinstance(k, str) or not isinstance(v, str):
+                    errors.append(
+                        f"[schema] {op_name}: kernel_map entries must be "
+                        f"str -> str, got {k!r}: {v!r}"
+                    )
+    elif status == "implemented" and warnings is not None:
+        warnings.append(
+            f"[schema] {op_name}: status is 'implemented' but "
+            f"kernel_map is missing (should be a mapping of str -> str)"
         )
 
     return errors
@@ -826,8 +864,16 @@ def check_l4_benchmark(
 # ---------------------------------------------------------------------------
 
 def _is_spec_only(entry: dict) -> bool:
-    """Default is spec-only when status is absent."""
-    return entry.get("status", "spec-only") == "spec-only"
+    """Check if the entry is spec-only.
+
+    Returns True for missing or non-string status (safe default).
+    """
+    status = entry.get("status")
+    if not isinstance(status, str):
+        # Missing or non-string status — treat as spec-only (safe default).
+        # Schema validation catches this; defensive here for --levels bypass.
+        return True
+    return status == "spec-only"
 
 
 def _is_bench_manifest_driven(entry: dict) -> bool:
@@ -909,7 +955,7 @@ def validate_manifest(
 
         # schema: YAML structure validation
         if "schema" in levels:
-            schema_errors = check_l0(op_name, entry)
+            schema_errors = check_l0(op_name, entry, warnings=all_warnings)
             all_errors.extend(schema_errors)
             if schema_errors:
                 continue
