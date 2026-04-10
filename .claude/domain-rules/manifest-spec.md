@@ -20,7 +20,7 @@ ______________________________________________________________________
 - `shape` present = fixed rank. Names become roofline variables. `shape` absent = arbitrary rank, use `params` + `shape_rules`.
 - Shared dimension names across tensors = sizes must match.
 - `shape_rules` are Python expressions for shape relationships. `shape` and `shape_rules` fully specify output shape derivation.
-- `status: implemented` = all validator levels apply. `status: spec-only` = L0 only. Default is `spec-only`.
+- `status` is required. `status: implemented` = all validator levels apply. `status: spec-only` = L0 only.
 - Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
 - Op signatures must match PyTorch's public API (parameter names, parameter set, semantics). Do not invent parameters.
 - No `Optional[Tensor]` in manifest. Ops with conditional inputs are split into variant entries linked by `variant_of`.

@@ -62,7 +62,7 @@ Contiguous conversion is the family base class's responsibility. Concrete ops sh
 | `ALIGNMENT`        | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm) |
 | `_op_name`         | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging    |
 
-Single-kernel ops declare `_kernel_key` and `_kernel_class`. Multi-kernel ops define `default_kernel_map` returning a dict. Dispatch is determined by the family base class.
+Single-kernel ops declare a kernel key and kernel class attribute. Multi-kernel ops define `default_kernel_map` returning a dict. See [Kernel Dispatch](#kernel-dispatch-kernel_map).
 
 Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
 
@@ -103,7 +103,7 @@ The manifest declares `kernel_map` as a registration table so that kernel-layer 
 ```python
 # Single-kernel op
 def default_kernel_map(self):
-    return {"rms_norm": RmsNormFwdKernel}
+    return {"rms_norm": RmsNormKernel}
 
 
 # Multi-kernel pipeline
@@ -115,7 +115,7 @@ def default_kernel_map(self):
     }
 ```
 
-- **Keys**: stable snake_case identifiers, decoupled from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key.
+- **Keys**: snake_case identifiers, decoupled from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key. (Convention for new ops — some existing ops use PascalCase keys.)
 - **Values**: Kernel class names (PascalCase), must match `cls.__name__`.
 - The table does not describe dispatch strategy. Strategy is a runtime concern.
 

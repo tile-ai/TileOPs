@@ -36,7 +36,7 @@ class MhaFwdFixture(FixtureBase):
 
 @MhaFwdFixture
 def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune):
-    test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
+    test = MhaFwdTestCase(batch, heads, seq_len, dim, causal, dtype)
     op = MhaFwdOp(...)
     test.check(op, *test.gen_inputs())
 

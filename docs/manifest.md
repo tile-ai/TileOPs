@@ -115,7 +115,7 @@ The validator enforces `assert cls.__name__ == manifest_key` — the manifest ke
 
 ### `family`
 
-Closed set: `elementwise`, `reduction`, `normalization`, `convolution`, `gemm`, `quantize`, `sampling`, `attention`, `moe`, `linear_attention`, `ssm`.
+Closed set: `elementwise`, `reduction`, `normalization`, `convolution`, `gemm`, `quantize`, `sampling`, `attention`, `moe`, `linear_attention`, `ssm`, `scan`.
 
 ### `ref_api`
 
@@ -238,15 +238,13 @@ Op→Kernel dispatch registration table. Declares which Kernels an Op uses so ag
 source:
   kernel: tileops/kernels/norm/rms_norm.py
   kernel_map:
-    rms_norm: RmsNormFwdKernel
+    rms_norm: RmsNormKernel
   op: tileops/ops/norm/rms_norm.py
 
 # Multi-kernel op
 source:
   kernel:
-    - tileops/kernels/flash_attn/bwd_preprocess.py
     - tileops/kernels/flash_attn/bwd.py
-    - tileops/kernels/flash_attn/bwd_postprocess.py
   kernel_map:
     mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
     mha_bwd_kernel: MhaBwdKernel
