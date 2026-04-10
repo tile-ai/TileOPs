@@ -410,6 +410,20 @@ class MaxPool2dKernel(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if self.out_h == 0 or self.out_w == 0:
+            empty_values = torch.empty(
+                (self.n, self.out_h, self.out_w, self.c_in),
+                dtype=x.dtype,
+                device=x.device,
+            )
+            if self.return_indices:
+                empty_indices = torch.empty(
+                    (self.n, self.out_h, self.out_w, self.c_in),
+                    dtype=torch.int64,
+                    device=x.device,
+                )
+                return empty_values, empty_indices
+            return empty_values
         if self.return_indices:
             return _max_pool2d_values_indices_wrapped_kernel(
                 self.n,
