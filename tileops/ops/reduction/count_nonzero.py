@@ -59,6 +59,7 @@ class CountNonzeroFwdOp(_ReduceOpBase):
 
     _op_kind = "count_nonzero"
     _kernel_key = "logical_reduce"
+    _kernel_cls = LogicalReduceKernel
 
     def __init__(
         self,
@@ -74,10 +75,6 @@ class CountNonzeroFwdOp(_ReduceOpBase):
             kernel_map=kernel_map, tune=tune,
         )
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"logical_reduce": LogicalReduceKernel}
-
     def _pad_value(self) -> float:
         """Pad with 0, neutral for sum/count."""
         return 0.0
@@ -87,11 +84,3 @@ class CountNonzeroFwdOp(_ReduceOpBase):
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_float32(x)
         return x, None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute count_nonzero along the configured dim."""
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        x, ctx = self._pre_kernel(x)
-        y = kernel(x)
-        y = self._post_kernel(y, ctx)
-        return self._reshape_output(y, orig_shape, dim_info)

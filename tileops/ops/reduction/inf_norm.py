@@ -44,6 +44,7 @@ class InfNormFwdOp(_ReduceOpBase):
 
     _op_kind = "inf"
     _kernel_key = "vector_norm"
+    _kernel_cls = VectorNormKernel
 
     def __init__(
         self,
@@ -59,10 +60,6 @@ class InfNormFwdOp(_ReduceOpBase):
             kernel_map=kernel_map, tune=tune,
         )
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"vector_norm": VectorNormKernel}
-
     def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
         """Detect NaN rows before kernel call (kernel drops NaN values)."""
         nan_mask = x.isnan().any(dim=-1)  # shape (M,)
@@ -74,11 +71,3 @@ class InfNormFwdOp(_ReduceOpBase):
         if nan_mask.any():
             y[nan_mask] = float("nan")
         return y
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute infinity norm along the configured dim."""
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        x, ctx = self._pre_kernel(x)
-        y = kernel(x)
-        y = self._post_kernel(y, ctx)
-        return self._reshape_output(y, orig_shape, dim_info)

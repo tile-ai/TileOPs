@@ -35,6 +35,7 @@ class L2NormFwdOp(_ReduceOpBase):
 
     _op_kind = "l2"
     _kernel_key = "vector_norm"
+    _kernel_cls = VectorNormKernel
 
     def __init__(
         self,
@@ -49,13 +50,3 @@ class L2NormFwdOp(_ReduceOpBase):
             dtype=dtype, dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"vector_norm": VectorNormKernel}
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute L2 norm along the configured dim."""
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        y = kernel(x)
-        return self._reshape_output(y, orig_shape, dim_info)

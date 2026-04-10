@@ -34,6 +34,7 @@ class ArgmaxFwdOp(_ReduceOpBase):
 
     _op_kind = "argmax"
     _kernel_key = "argreduce"
+    _kernel_cls = ArgreduceKernel
 
     def __init__(
         self,
@@ -57,23 +58,6 @@ class ArgmaxFwdOp(_ReduceOpBase):
                 f"got {type(self.dim).__name__}: {self.dim!r}"
             )
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"argreduce": ArgreduceKernel}
-
     def _pad_value(self) -> float:
         """Pad with -inf so padded positions never win argmax."""
         return float("-inf")
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute argmax along the configured dim.
-
-        Args:
-            x: Input CUDA tensor of the configured dtype.
-
-        Returns:
-            Int64 tensor of indices.
-        """
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        y = kernel(x)
-        return self._reshape_output(y, orig_shape, dim_info)

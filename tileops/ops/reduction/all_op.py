@@ -54,6 +54,7 @@ class AllFwdOp(_ReduceOpBase):
 
     _op_kind = "all"
     _kernel_key = "logical_reduce"
+    _kernel_cls = LogicalReduceKernel
 
     def __init__(
         self,
@@ -69,10 +70,6 @@ class AllFwdOp(_ReduceOpBase):
             kernel_map=kernel_map, tune=tune,
         )
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"logical_reduce": LogicalReduceKernel}
-
     def _pad_value(self) -> float:
         """Pad with 1 (True), neutral for AND/all."""
         return 1.0
@@ -82,11 +79,3 @@ class AllFwdOp(_ReduceOpBase):
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_float32(x)
         return x, None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute all along the configured dim."""
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        x, ctx = self._pre_kernel(x)
-        y = kernel(x)
-        y = self._post_kernel(y, ctx)
-        return self._reshape_output(y, orig_shape, dim_info)

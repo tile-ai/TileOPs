@@ -58,6 +58,7 @@ class _ReduceOpBase(Op):
 
     _op_kind: str = ""  # overridden by subclasses
     _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
+    _kernel_cls: type = ReduceKernel  # overridden by subclasses for different kernel classes
 
     def __init__(
         self,
@@ -83,14 +84,26 @@ class _ReduceOpBase(Op):
     def _validate_dim(self) -> None:
         """Validate the ``dim`` parameter.
 
-        Default implementation accepts ``int``, ``list[int]``, or ``None``.
+        Default: accept ``int``, ``list[int]``/``tuple[int]``, or ``None``.
         Subclasses that only support single-dim reduction (e.g. argreduce)
         should override to reject non-scalar values.
         """
+        dim = self.dim
+        if dim is None or isinstance(dim, int):
+            return
+        if isinstance(dim, (list, tuple)):
+            if not all(isinstance(d, int) for d in dim):
+                raise TypeError(
+                    f"All elements of dim must be int, got {dim}"
+                )
+            return
+        raise TypeError(
+            f"dim must be int, list[int], or None, got {type(dim).__name__}"
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {self._kernel_key: ReduceKernel}
+        return {self._kernel_key: self._kernel_cls}
 
     # ------------------------------------------------------------------
     # Pad value (subclasses may override)
@@ -126,6 +139,19 @@ class _ReduceOpBase(Op):
     def _post_kernel(self, y: torch.Tensor, context: object) -> torch.Tensor:
         """Transform kernel output.  Default: identity."""
         return y
+
+    # ------------------------------------------------------------------
+    # Forward (subclasses with non-standard returns, e.g. VarMeanFwdOp,
+    # must override)
+    # ------------------------------------------------------------------
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the reduce op on *x* along the configured dim."""
+        x, orig_shape, dim_info, kernel = self._prepare_input(x)
+        x, ctx = self._pre_kernel(x)
+        y = kernel(x)
+        y = self._post_kernel(y, ctx)
+        return self._reshape_output(y, orig_shape, dim_info)
 
     # ------------------------------------------------------------------
     # Kernel cache
@@ -261,12 +287,6 @@ class _SimpleReduceOp(_ReduceOpBase):
             return float("-inf")
         return 0.0
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the reduce op on *x* along the configured dim."""
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        y = kernel(x)
-        return self._reshape_output(y, orig_shape, dim_info)
-
 
 class SumFwdOp(_SimpleReduceOp):
     """Sum reduction along dim=-1."""
@@ -339,12 +359,6 @@ class _WelfordReduceOp(_ReduceOpBase):
     def _build_kernel_kwargs(self) -> dict:
         """Pass correction to the kernel constructor."""
         return {"correction": self.correction}
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run a single-output Welford reduce on *x* along the configured dim."""
-        x, orig_shape, dim_info, kernel = self._prepare_input(x)
-        y = kernel(x)
-        return self._reshape_output(y, orig_shape, dim_info)
 
 
 class StdFwdOp(_WelfordReduceOp):
