@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from workloads.ops.logical_reduce import AnyWorkload as _AnyWorkload
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -131,56 +132,16 @@ class LogicalReduceKeepdimFixture(FixtureBase):
 
 
 # ---------------------------------------------------------------------------
-# TestBase helpers
+# TestBase helpers — inherit gen_inputs() from workload classes
 # ---------------------------------------------------------------------------
 
 
-class LogicalReduceTest(TestBase):
+class LogicalReduceTest(_AnyWorkload, TestBase):
     """Parameterized test helper for logical reduce ops."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
+        super().__init__((m, n), dtype)
         self.op_kind = op_kind
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        # Mix of zeros and non-zeros for meaningful logical testing
-        if self.dtype == torch.bool:
-            x = torch.randint(0, 2, (self.m, self.n), dtype=torch.bool, device="cuda")
-            # Force some rows to be all-False for meaningful "any" tests
-            if self.m > 4:
-                x[0] = False
-            # Force some rows to be all-True for "all" tests
-            if self.m > 4:
-                x[1] = True
-        elif self.dtype in (torch.complex64, torch.complex128):
-            real = torch.randn(self.m, self.n, dtype=torch.float32, device="cuda")
-            imag = torch.randn(self.m, self.n, dtype=torch.float32, device="cuda")
-            x = torch.complex(real, imag).to(self.dtype)
-            # Force some rows to be all-zero (complex zero)
-            if self.m > 4:
-                x[0] = 0 + 0j
-            # Force some rows to have all non-zero
-            if self.m > 4:
-                x[1] = 1 + 1j
-        elif self.dtype in (torch.int32, torch.int64):
-            x = torch.randint(-5, 6, (self.m, self.n), dtype=self.dtype, device="cuda")
-            # Force some rows to be all-zero for meaningful "any" tests
-            if self.m > 4:
-                x[0] = 0
-            # Force some rows to have all non-zero for "all" tests
-            if self.m > 4:
-                x[1] = 1
-        else:
-            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-            # Force some rows to be all-zero for meaningful "any" tests
-            if self.m > 4:
-                x[0] = 0.0
-            # Force some rows to have all non-zero for "all" tests
-            if self.m > 4:
-                x[1] = 1.0
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         if self.op_kind == "any":

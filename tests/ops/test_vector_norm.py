@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare
+from workloads.ops.vector_norm import L1NormWorkload as _L1NormWorkload
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -86,26 +87,19 @@ class VectorNorm1DFixture(FixtureBase):
 
 
 # ---------------------------------------------------------------------------
-# TestBase helpers
+# TestBase helpers — inherit gen_inputs() from workload classes
 # ---------------------------------------------------------------------------
 
 
 # Map op_kind to the ord parameter for torch.linalg.vector_norm
 _ORD_MAP = {"l1": 1, "l2": 2, "inf": float("inf")}
 
-
-class VectorNormTest(TestBase):
+class VectorNormTest(_L1NormWorkload, TestBase):
     """Parameterized test helper for vector norm ops."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
+        super().__init__((m, n), dtype)
         self.op_kind = op_kind
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         # Compute in fp32 for reference, then cast back to input dtype
