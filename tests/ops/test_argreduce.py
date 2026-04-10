@@ -292,5 +292,29 @@ def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
     assert torch.equal(y, ref), f"spec dim={dim} argmin mismatch: {(y != ref).sum().item()}"
 
 
+# ---------------------------------------------------------------------------
+# Regression: multidim dim must be rejected for argreduce ops
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_cls_path, dim", [
+    ("tileops.ops.reduction.argmax.ArgmaxFwdOp", [0, 1]),
+    ("tileops.ops.reduction.argmin.ArgminFwdOp", [0, 1]),
+    ("tileops.ops.reduction.argmax.ArgmaxFwdOp", None),
+    ("tileops.ops.reduction.argmin.ArgminFwdOp", None),
+])
+def test_argreduce_rejects_multidim(op_cls_path: str, dim) -> None:
+    """Argreduce ops only support scalar dim; list/tuple/None must raise."""
+    import importlib
+
+    module_path, cls_name = op_cls_path.rsplit(".", 1)
+    mod = importlib.import_module(module_path)
+    op_cls = getattr(mod, cls_name)
+
+    with pytest.raises((TypeError, ValueError)):
+        op_cls(dtype=torch.float16, dim=dim)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

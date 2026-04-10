@@ -72,8 +72,21 @@ class _ReduceOpBase(Op):
         self.dim = dim
         self.keepdim = keepdim
         self._tune = tune
+        self._validate_dim()
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, object] = {}
+
+    # ------------------------------------------------------------------
+    # Dim validation (subclasses may override)
+    # ------------------------------------------------------------------
+
+    def _validate_dim(self) -> None:
+        """Validate the ``dim`` parameter.
+
+        Default implementation accepts ``int``, ``list[int]``, or ``None``.
+        Subclasses that only support single-dim reduction (e.g. argreduce)
+        should override to reject non-scalar values.
+        """
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

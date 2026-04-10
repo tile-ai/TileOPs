@@ -49,6 +49,14 @@ class ArgmaxFwdOp(_ReduceOpBase):
             kernel_map=kernel_map, tune=tune,
         )
 
+    def _validate_dim(self) -> None:
+        """Argmax only supports single-dim reduction."""
+        if not isinstance(self.dim, int):
+            raise ValueError(
+                f"ArgmaxFwdOp only supports scalar dim (int), "
+                f"got {type(self.dim).__name__}: {self.dim!r}"
+            )
+
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"argreduce": ArgreduceKernel}
