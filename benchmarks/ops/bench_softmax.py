@@ -25,9 +25,9 @@ from workloads.ops.softmax import (
 # Benchmark classes — use manifest roofline for FLOP/memory counts
 # ===================================================================
 
-_SOFTMAX_OP = "softmax_fwd"
-_LOG_SOFTMAX_OP = "log_softmax_fwd"
-_LOGSUMEXP_OP = "logsumexp_fwd"
+_SOFTMAX_OP = "SoftmaxFwdOp"
+_LOG_SOFTMAX_OP = "LogSoftmaxFwdOp"
+_LOGSUMEXP_OP = "LogSumExpFwdOp"
 
 
 def _roofline_vars(workload) -> dict:

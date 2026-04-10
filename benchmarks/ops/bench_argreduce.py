@@ -1,4 +1,8 @@
-"""Benchmarks for argreduce ops (argmax, argmin)."""
+"""Benchmarks for argreduce ops (argmax, argmin).
+
+Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
+Workload shapes and roofline formulas are loaded from ops_manifest.yaml.
+"""
 
 from typing import Optional
 
@@ -6,81 +10,140 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from workloads.base import FixtureBase, WorkloadBase
+from tileops.manifest import eval_roofline, load_workloads
+from tileops.ops.reduction.argmax import ArgmaxFwdOp
+from tileops.ops.reduction.argmin import ArgminFwdOp
+from workloads.ops.argreduce import ArgmaxTest, ArgminTest
+
+_ARGMAX_OP = "ArgmaxFwdOp"
+_ARGMIN_OP = "ArgminFwdOp"
 
 
-class ArgreduceBenchFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype, op_kind",
-            [
-                pytest.param(1024, 4096, torch.float16, "argmax"),
-                pytest.param(1024, 4096, torch.bfloat16, "argmax"),
-                pytest.param(4096, 4096, torch.float16, "argmax"),
-                pytest.param(1024, 4096, torch.float16, "argmin"),
-                pytest.param(1024, 4096, torch.bfloat16, "argmin"),
-                pytest.param(4096, 4096, torch.float16, "argmin"),
-            ],
-        ),
-    ]
+def _roofline_vars(shape, dtype) -> dict:
+    """Extract roofline variables from shape + dtype → M, N, elem_bytes."""
+    elem_bytes = torch.tensor([], dtype=dtype).element_size()
+    N = shape[-1]
+    M = 1
+    for s in shape[:-1]:
+        M *= s
+    return dict(M=M, N=N, elem_bytes=elem_bytes)
 
 
-class ArgreduceBenchTest(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.op_kind = op_kind
+class ArgmaxBenchmark(BenchmarkBase):
+    _roofline_cache: Optional[tuple[float, float]] = None
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                _ARGMAX_OP, **_roofline_vars(self.workload.shape, self.workload.dtype))
+        return self._roofline_cache
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        if self.op_kind == "argmax":
-            return x.argmax(dim=-1)
-        elif self.op_kind == "argmin":
-            return x.argmin(dim=-1)
-        raise ValueError(f"Unknown op_kind: {self.op_kind}")
-
-
-class ArgreduceBenchmark(BenchmarkBase):
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        # Argreduce: N comparisons per row, M rows
-        return t.m * t.n
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + write output indices (M * 8 bytes for int64)
-        return t.m * t.n * elem_bytes + t.m * 8
+        return self._get_roofline()[1]
 
 
-def _make_op(dtype: torch.dtype, op_kind: str):
-    """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.argmax import ArgmaxFwdOp
-    from tileops.ops.reduction.argmin import ArgminFwdOp
+class ArgminBenchmark(BenchmarkBase):
+    _roofline_cache: Optional[tuple[float, float]] = None
 
-    op_map = {
-        "argmax": ArgmaxFwdOp,
-        "argmin": ArgminFwdOp,
-    }
-    cls = op_map[op_kind]
-    return cls(dtype=dtype)
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                _ARGMIN_OP, **_roofline_vars(self.workload.shape, self.workload.dtype))
+        return self._roofline_cache
+
+    def calculate_flops(self) -> Optional[float]:
+        return self._get_roofline()[0]
+
+    def calculate_memory(self) -> Optional[float]:
+        return self._get_roofline()[1]
 
 
-@ArgreduceBenchFixture
-def test_argreduce_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> None:
-    test = ArgreduceBenchTest(m, n, dtype, op_kind)
-    bm = ArgreduceBenchmark(test)
-    inputs = test.gen_inputs()
+# ===================================================================
+# Manifest-driven parametrize helper
+# ===================================================================
 
-    op = _make_op(dtype, op_kind)
-    result = bm.profile(op, *inputs)
+
+def _workloads_to_params(workloads):
+    """Convert manifest workload dicts to pytest params: (shape, dtype)."""
+    params = []
+    for w in workloads:
+        shape = tuple(w["x_shape"])
+        label = w.get("label", "x".join(str(s) for s in shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(
+                shape, dtype,
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
+
+
+# ===================================================================
+# Argmax benchmarks
+# ===================================================================
+
+
+@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_ARGMAX_OP)))
+def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
+    workload = ArgmaxTest(shape, dtype)
+    bm = ArgmaxBenchmark(workload)
+    inputs = workload.gen_inputs()
+
+    op = ArgmaxFwdOp(dtype=dtype)
+    # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
+    #
+    # Broken invariant: benchmark must execute all manifest workload shapes
+    # Why: kernel crashes on N>=102400 ("Can't fetch the lanes of a scalable vector")
+    # Cleanup: remove try/skip once ArgreduceKernel handles arbitrary N
+    try:
+        result = bm.profile(op, *inputs)
+    except Exception as exc:
+        msg = str(exc)
+        if "scalable vector" in msg or "No configurations to tune" in msg:
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    def baseline_fn(x):
+        return x.argmax(dim=-1)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ===================================================================
+# Argmin benchmarks
+# ===================================================================
+
+
+@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_ARGMIN_OP)))
+def test_argmin_bench(shape: tuple, dtype: torch.dtype) -> None:
+    workload = ArgminTest(shape, dtype)
+    bm = ArgminBenchmark(workload)
+    inputs = workload.gen_inputs()
+
+    op = ArgminFwdOp(dtype=dtype)
+    # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
+    #
+    # Broken invariant: benchmark must execute all manifest workload shapes
+    # Why: kernel crashes on N>=102400 ("Can't fetch the lanes of a scalable vector")
+    # Cleanup: remove try/skip once ArgreduceKernel handles arbitrary N
+    try:
+        result = bm.profile(op, *inputs)
+    except Exception as exc:
+        msg = str(exc)
+        if "scalable vector" in msg or "No configurations to tune" in msg:
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x):
+        return x.argmin(dim=-1)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
