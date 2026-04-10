@@ -1392,6 +1392,7 @@ ops:
       op: tileops/ops/reduction/softmax.py
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
+      bench_manifest_driven: true
 
   LogSoftmaxFwdOp:
     ref_api: "torch.nn.functional.log_softmax"
@@ -1429,6 +1430,7 @@ ops:
       op: tileops/ops/reduction/log_softmax.py
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
+      bench_manifest_driven: true
 
   LogSumExpFwdOp:
     ref_api: "torch.logsumexp"
@@ -1468,6 +1470,7 @@ ops:
       op: tileops/ops/reduction/logsumexp.py
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- simple reductions (dim + keepdim)
@@ -1510,6 +1513,7 @@ ops:
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   MeanFwdOp:
     ref_api: "torch.mean"
@@ -1548,6 +1552,7 @@ ops:
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   AmaxFwdOp:
     ref_api: "torch.amax"
@@ -1586,6 +1591,7 @@ ops:
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   AminFwdOp:
     ref_api: "torch.amin"
@@ -1624,6 +1630,7 @@ ops:
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   ProdFwdOp:
     ref_api: "torch.prod"
@@ -1661,6 +1668,7 @@ ops:
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- Welford reductions (correction + dim + keepdim)
@@ -1704,6 +1712,7 @@ ops:
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   StdFwdOp:
     ref_api: "torch.std"
@@ -1743,6 +1752,7 @@ ops:
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   VarMeanFwdOp:
     ref_api: "torch.var_mean"
@@ -1785,6 +1795,7 @@ ops:
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- argmax/argmin (output dtype: int64)
@@ -1827,6 +1838,7 @@ ops:
       op: tileops/ops/reduction/argmax.py
       test: tests/ops/test_argreduce.py
       bench: benchmarks/ops/bench_argreduce.py
+      bench_manifest_driven: true
 
   ArgminFwdOp:
     ref_api: "torch.argmin"
@@ -1865,6 +1877,7 @@ ops:
       op: tileops/ops/reduction/argmin.py
       test: tests/ops/test_argreduce.py
       bench: benchmarks/ops/bench_argreduce.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- logical reductions (output dtype: bool)
@@ -1906,6 +1919,7 @@ ops:
       op: tileops/ops/reduction/all_op.py
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
+      bench_manifest_driven: true
 
   AnyFwdOp:
     ref_api: "torch.any"
@@ -1943,6 +1957,7 @@ ops:
       op: tileops/ops/reduction/any_op.py
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
+      bench_manifest_driven: true
 
   CountNonzeroFwdOp:
     ref_api: "torch.count_nonzero"
@@ -1980,6 +1995,7 @@ ops:
       op: tileops/ops/reduction/count_nonzero.py
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- vector norms (output dtype: same_as(x))
@@ -2022,6 +2038,7 @@ ops:
       op: tileops/ops/reduction/l1_norm.py
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
+      bench_manifest_driven: true
 
   L2NormFwdOp:
     ref_api: "torch.linalg.vector_norm"
@@ -2060,6 +2077,7 @@ ops:
       op: tileops/ops/reduction/l2_norm.py
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
+      bench_manifest_driven: true
 
   InfNormFwdOp:
     ref_api: "torch.linalg.vector_norm"
@@ -2098,6 +2116,7 @@ ops:
       op: tileops/ops/reduction/inf_norm.py
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # scan -- prefix scan ops (output shape == input shape, no keepdim)
