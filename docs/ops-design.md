@@ -96,11 +96,9 @@ Examples: `RMSNormFwdKernel`, `SoftmaxFwdKernel`.
 
 ### Kernel Dispatch (kernel_map)
 
-An Op dispatches to one or more Kernel implementations via `kernel_map`. This is a standard pattern in deep learning frameworks: the Op is the user-facing interface, the Kernel is the efficient implementation. A single Op may dispatch to different Kernels based on shape, dtype, or hardware architecture.
+An Op dispatches to one or more Kernels via `kernel_map` — a flat dict mapping dispatch keys to Kernel classes. A single Op may dispatch to different Kernels based on shape, dtype, or hardware architecture.
 
-**Design motivation.** The manifest declares `kernel_map` as a registration table — which Kernel classes an Op uses and their dispatch keys. This keeps kernel-layer design decisions at the spec level: the human reviewer decides what Kernels an Op needs, the agent implements them. Without this field, the agent would have to invent the dispatch structure itself — that is a design decision, not an implementation task.
-
-**Format.** `kernel_map` is a flat dict: dispatch key → Kernel class name.
+The manifest declares `kernel_map` as a registration table so that kernel-layer design decisions stay at the spec level: human reviewer decides what Kernels an Op needs, agent implements them.
 
 ```python
 # Single-kernel op
@@ -117,11 +115,9 @@ def default_kernel_map(self):
     }
 ```
 
-**Keys** are stable snake_case dispatch identifiers. They are protocol-level names, decoupled from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key.
-
-**Values** are Kernel class names (PascalCase). Must match `cls.__name__`.
-
-The registration table does not describe dispatch strategy (when to select which Kernel). Strategy is a runtime concern, implemented in Op code.
+- **Keys**: stable snake_case identifiers, decoupled from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key.
+- **Values**: Kernel class names (PascalCase), must match `cls.__name__`.
+- The table does not describe dispatch strategy. Strategy is a runtime concern.
 
 ### Builder Functions
 

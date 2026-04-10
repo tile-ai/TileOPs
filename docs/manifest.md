@@ -237,9 +237,7 @@ roofline:
 
 #### kernel_map
 
-Registration table of the Kernel classes an Op dispatches to. The manifest declares *which* Kernels exist and their dispatch keys so that agents know what to implement. Dispatch *strategy* (when to select which Kernel) is not described here — that is a runtime concern.
-
-Format: `dispatch_key: KernelClassName`. See [ops-design.md § Kernel Dispatch](ops-design.md#kernel-dispatch-kernel_map) for design rationale.
+Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design.md § Kernel Dispatch](ops-design.md#kernel-dispatch-kernel_map).
 
 ```yaml
 # Single-kernel op
