@@ -552,9 +552,7 @@ ops:
     source:
       kernel: tileops/kernels/flash_attn/fwd.py
       kernel_map:
-        mha_fwd_kernel:
-          - MhaFwdKernel
-          - MhaFwdWgmmaPipelinedKernel
+        mha_fwd_kernel: MhaFwdKernel
       op: tileops/ops/mha.py
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
@@ -604,9 +602,7 @@ ops:
       kernel: tileops/kernels/flash_attn/bwd.py
       kernel_map:
         mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-        mha_bwd_kernel:
-          - MhaBwdKernel
-          - MhaBwdWgmmaPipelinedKernel
+        mha_bwd_kernel: MhaBwdKernel
         mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
       op: tileops/ops/mha.py
       test: tests/ops/test_mha.py
@@ -647,9 +643,7 @@ ops:
     source:
       kernel: tileops/kernels/flash_attn/fwd.py
       kernel_map:
-        gqa_fwd_kernel:
-          - GqaFwdKernel
-          - GqaFwdWgmmaPipelinedKernel
+        gqa_fwd_kernel: GqaFwdKernel
       op: tileops/ops/gqa.py
       test: tests/ops/test_gqa.py
       bench: benchmarks/ops/bench_gqa.py
@@ -700,9 +694,7 @@ ops:
       kernel: tileops/kernels/flash_attn/bwd.py
       kernel_map:
         gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-        gqa_bwd_kernel:
-          - GqaBwdKernel
-          - GqaBwdWgmmaPipelinedKernel
+        gqa_bwd_kernel: GqaBwdKernel
         gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
       op: tileops/ops/gqa.py
       test: tests/ops/test_gqa.py
@@ -942,9 +934,7 @@ ops:
     source:
       kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_fwd.py
       kernel_map:
-        gqa_sliding_window_fwd:
-          - GqaSlidingWindowFwdKernel
-          - GqaSlidingWindowFwdWgmmaPipelinedKernel
+        gqa_sliding_window_fwd: GqaSlidingWindowFwdKernel
       op: tileops/ops/gqa_sliding_window_fwd.py
       test: tests/ops/test_gqa_sliding_window_fwd.py
       bench: benchmarks/ops/bench_gqa_sliding_window_fwd.py
@@ -991,9 +981,7 @@ ops:
     source:
       kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_varlen_fwd.py
       kernel_map:
-        gqa_sliding_window_varlen_fwd:
-          - GqaSlidingWindowVarlenFwdKernel
-          - GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel
+        gqa_sliding_window_varlen_fwd: GqaSlidingWindowVarlenFwdKernel
       op: tileops/ops/gqa_sliding_window_varlen_fwd.py
       test: tests/ops/test_gqa_sliding_window_varlen_fwd.py
       bench: benchmarks/ops/bench_gqa_sliding_window_varlen_fwd.py
@@ -1040,9 +1028,7 @@ ops:
     source:
       kernel: tileops/kernels/deepseek_mla/deepseek_mla_decode.py
       kernel_map:
-        mla_decode_kernel:
-          - MlaDecodeKernel
-          - MlaDecodeWsKernel
+        mla_decode_kernel: MlaDecodeKernel
       op: tileops/ops/deepseek_mla_decode.py
       test: tests/ops/test_deepseek_mla_decode.py
       bench: benchmarks/ops/bench_deepseek_mla_decode.py
