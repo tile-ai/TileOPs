@@ -125,6 +125,8 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/layer_norm.py
+      kernel_map:
+        layer_norm: LayerNormKernel
       op: tileops/ops/norm/layer_norm.py
       test: tests/ops/test_layer_norm.py
       bench: benchmarks/ops/bench_layer_norm.py
@@ -166,6 +168,8 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/ada_layer_norm/fwd.py
+      kernel_map:
+        ada_layer_norm: AdaLayerNormKernel
       op: tileops/ops/norm/ada_layer_norm.py
       test: tests/ops/test_ada_layer_norm.py
       bench: benchmarks/ops/bench_ada_layer_norm.py
@@ -209,6 +213,8 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/ada_layer_norm_zero/__init__.py
+      kernel_map:
+        ada_layer_norm: AdaLayerNormKernel
       op: tileops/ops/norm/ada_layer_norm_zero.py
       test: tests/ops/test_ada_layer_norm_zero.py
       bench: benchmarks/ops/bench_ada_layer_norm.py
@@ -255,6 +261,8 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/fused_add_norm/fwd.py
+      kernel_map:
+        fused_add_layer_norm: FusedAddLayerNormKernel
       op: tileops/ops/norm/fused_add_layer_norm.py
       test: tests/ops/test_fused_add_layer_norm.py
       bench: benchmarks/ops/bench_fused_add_layer_norm.py
@@ -302,6 +310,8 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/fused_add_norm/fwd.py
+      kernel_map:
+        fused_add_rms_norm: FusedAddRmsNormKernel
       op: tileops/ops/norm/fused_add_rmsnorm.py
       test: tests/ops/test_fused_add_rmsnorm.py
       bench: benchmarks/ops/bench_fused_add_rmsnorm.py
@@ -359,6 +369,9 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/batch_norm.py
+      kernel_map:
+        fwd_train_kernel: BatchNormFwdTrainKernel
+        fwd_infer_kernel: BatchNormFwdInferKernel
       op: tileops/ops/norm/batch_norm.py
       test: tests/ops/test_batch_norm.py
       bench: benchmarks/ops/bench_batch_norm.py
@@ -409,6 +422,8 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/batch_norm.py
+      kernel_map:
+        bwd_kernel: BatchNormBwdKernel
       op: tileops/ops/norm/batch_norm.py
       test: tests/ops/test_batch_norm.py
       bench: benchmarks/ops/bench_batch_norm.py
@@ -493,6 +508,8 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/group_norm.py
+      kernel_map:
+        group_norm: GroupNormKernel
       op: tileops/ops/norm/instance_norm.py
       test: tests/ops/test_instance_norm.py
       bench: benchmarks/ops/bench_instance_norm.py
@@ -534,6 +551,8 @@ ops:
 
     source:
       kernel: tileops/kernels/flash_attn/fwd.py
+      kernel_map:
+        mha_fwd_kernel: MhaFwdKernel
       op: tileops/ops/mha.py
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
@@ -581,6 +600,10 @@ ops:
 
     source:
       kernel: tileops/kernels/flash_attn/bwd.py
+      kernel_map:
+        mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+        mha_bwd_kernel: MhaBwdKernel
+        mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
       op: tileops/ops/mha.py
       test: tests/ops/test_mha.py
       bench: benchmarks/ops/bench_mha.py
@@ -619,6 +642,8 @@ ops:
 
     source:
       kernel: tileops/kernels/flash_attn/fwd.py
+      kernel_map:
+        gqa_fwd_kernel: GqaFwdKernel
       op: tileops/ops/gqa.py
       test: tests/ops/test_gqa.py
       bench: benchmarks/ops/bench_gqa.py
@@ -667,6 +692,10 @@ ops:
 
     source:
       kernel: tileops/kernels/flash_attn/bwd.py
+      kernel_map:
+        gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+        gqa_bwd_kernel: GqaBwdKernel
+        gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
       op: tileops/ops/gqa.py
       test: tests/ops/test_gqa.py
       bench: benchmarks/ops/bench_gqa.py
@@ -709,6 +738,8 @@ ops:
 
     source:
       kernel: tileops/kernels/flash_decode/mha_decode.py
+      kernel_map:
+        mha_decode_kernel: MhaDecodeKernel
       op: tileops/ops/mha_decode.py
       test: tests/ops/test_mha_decode.py
       bench: benchmarks/ops/bench_mha_decode.py
@@ -761,6 +792,8 @@ ops:
 
     source:
       kernel: tileops/kernels/flash_decode/mha_decode_paged.py
+      kernel_map:
+        mha_decode_paged_kernel: MhaDecodePagedKernel
       op: tileops/ops/mha_decode_paged.py
       test: tests/ops/test_mha_decode_paged.py
       bench: benchmarks/ops/bench_mha_decode_paged.py
@@ -800,6 +833,8 @@ ops:
 
     source:
       kernel: tileops/kernels/flash_decode/gqa_decode.py
+      kernel_map:
+        gqa_decode_kernel: GqaDecodeKernel
       op: tileops/ops/gqa_decode.py
       test: tests/ops/test_gqa_decode.py
       bench: benchmarks/ops/bench_gqa_decode.py
@@ -852,6 +887,8 @@ ops:
 
     source:
       kernel: tileops/kernels/flash_decode/gqa_decode_paged.py
+      kernel_map:
+        gqa_decode_paged_kernel: GqaDecodePagedKernel
       op: tileops/ops/gqa_decode_paged.py
       test: tests/ops/test_gqa_decode_paged.py
       bench: benchmarks/ops/bench_gqa_decode_paged.py
@@ -896,6 +933,8 @@ ops:
 
     source:
       kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_fwd.py
+      kernel_map:
+        gqa_sliding_window_fwd: GqaSlidingWindowFwdKernel
       op: tileops/ops/gqa_sliding_window_fwd.py
       test: tests/ops/test_gqa_sliding_window_fwd.py
       bench: benchmarks/ops/bench_gqa_sliding_window_fwd.py
@@ -941,6 +980,8 @@ ops:
 
     source:
       kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_varlen_fwd.py
+      kernel_map:
+        gqa_sliding_window_varlen_fwd: GqaSlidingWindowVarlenFwdKernel
       op: tileops/ops/gqa_sliding_window_varlen_fwd.py
       test: tests/ops/test_gqa_sliding_window_varlen_fwd.py
       bench: benchmarks/ops/bench_gqa_sliding_window_varlen_fwd.py
@@ -986,6 +1027,8 @@ ops:
 
     source:
       kernel: tileops/kernels/deepseek_mla/deepseek_mla_decode.py
+      kernel_map:
+        mla_decode_kernel: MlaDecodeKernel
       op: tileops/ops/deepseek_mla_decode.py
       test: tests/ops/test_deepseek_mla_decode.py
       bench: benchmarks/ops/bench_deepseek_mla_decode.py
@@ -1028,6 +1071,8 @@ ops:
 
     source:
       kernel: tileops/kernels/deepseek_mla/deepseek_dsa_decode.py
+      kernel_map:
+        sparse_mla_kernel: SparseMlaKernel
       op: tileops/ops/deepseek_dsa_decode.py
       test: tests/ops/test_deepseek_dsa_decode.py
       bench: benchmarks/ops/bench_deepseek_dsa_decode.py
@@ -1389,6 +1434,8 @@ ops:
 
     source:
       kernel: tileops/kernels/reduction/softmax/softmax_fwd.py
+      kernel_map:
+        softmax_fwd: SoftmaxKernel
       op: tileops/ops/reduction/softmax.py
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
@@ -1427,6 +1474,8 @@ ops:
 
     source:
       kernel: tileops/kernels/reduction/softmax/softmax_fwd.py
+      kernel_map:
+        softmax_fwd: SoftmaxKernel
       op: tileops/ops/reduction/log_softmax.py
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
@@ -1467,6 +1516,8 @@ ops:
 
     source:
       kernel: tileops/kernels/reduction/softmax/logsumexp_fwd.py
+      kernel_map:
+        logsumexp_fwd: LogSumExpKernel
       op: tileops/ops/reduction/logsumexp.py
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
@@ -1835,6 +1886,8 @@ ops:
 
     source:
       kernel: tileops/kernels/reduction/argreduce/fwd.py
+      kernel_map:
+        argreduce: ArgreduceKernel
       op: tileops/ops/reduction/argmax.py
       test: tests/ops/test_argreduce.py
       bench: benchmarks/ops/bench_argreduce.py
@@ -1873,6 +1926,8 @@ ops:
 
     source:
       kernel: tileops/kernels/reduction/argreduce/fwd.py
+      kernel_map:
+        argreduce: ArgreduceKernel
       op: tileops/ops/reduction/argmin.py
       test: tests/ops/test_argreduce.py
       bench: benchmarks/ops/bench_argreduce.py
