@@ -38,6 +38,7 @@ class SsdChunkScanFwdOp(Op):
         n_heads: int,
         d_head: int,
         d_state: int,
+        n_groups: int,
         dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -48,10 +49,11 @@ class SsdChunkScanFwdOp(Op):
         self.n_heads = n_heads
         self.d_head = d_head
         self.d_state = d_state
+        self.n_groups = n_groups
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["ssd_chunk_scan_fwd"](
-            batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune,
+            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=tune,
         )
 
     @property
@@ -70,15 +72,15 @@ class SsdChunkScanFwdOp(Op):
         """Run the fused SSD chunk scan.
 
         Args:
-            x:           (batch, num_chunks, chunk_len, n_heads, d_head)
-            cb:          (batch, num_chunks, n_heads, chunk_len, chunk_len)
-            dA_cumsum:   (batch, n_heads, num_chunks, chunk_len) float32
-            C:           (batch, num_chunks, chunk_len, n_heads, d_state)
-            prev_states: (batch, num_chunks, n_heads, d_state, d_head)
-            dt:          (batch, num_chunks, chunk_len, n_heads)
+            x:           (batch, seqlen, n_heads, d_head)                    dtype
+            cb:          (batch, num_chunks, n_groups, chunk_len, chunk_len)  dtype
+            dA_cumsum:   (batch, n_heads, num_chunks, chunk_len)              float32
+            C:           (batch, seqlen, n_groups, d_state)                   dtype
+            prev_states: (batch, num_chunks, n_heads, d_head, d_state)        dtype
+            dt:          (batch, n_heads, num_chunks, chunk_len)              dtype
 
         Returns:
-            out: (batch, num_chunks, chunk_len, n_heads, d_head) float32
+            out: (batch, seqlen, n_heads, d_head)  float32
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
