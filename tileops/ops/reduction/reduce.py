@@ -51,6 +51,8 @@ class _ReduceOpBase(Op):
     Hooks for subclass customization:
 
     - ``_kernel_key``: kernel map key (default ``"reduce"``).
+    - ``_kernel_cls``: kernel class (default ``ReduceKernel``).
+    - ``_validate_dim()``: validate ``dim`` at init (default: accept int/list/None).
     - ``_pad_value()``: identity element for alignment padding (default ``0.0``).
     - ``_build_kernel_kwargs()``: extra kwargs for kernel constructor.
     - ``_pre_kernel(x)``: transform 2D input before kernel call (default identity).
