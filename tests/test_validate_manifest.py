@@ -1151,8 +1151,20 @@ class TestResolveOpClass:
 class TestIntegration:
     """Run the actual validator script and verify it passes."""
 
+    # FIXME: Temporary xfail — remove after PR-B lands.
+    #
+    # Broken invariant: 12 manifest keys (e.g. MultiHeadAttentionFwdOp,
+    #   GroupQueryAttentionFwdOp) no longer match their Op cls.__name__
+    #   (still MhaFwdOp, GqaFwdOp etc.), so _resolve_op_class() fails
+    #   the exact-identity check for these entries.
+    # Why expected: manifest rename (#875) lands before code rename (PR-B)
+    #   per trust model — manifest and code changes in separate PRs.
+    # This is a temporary migration state, not the final contract.
+    # Cleanup: the follow-up PR-B renames the 12 Op classes to match,
+    #   at which point this xfail must be removed (strict=True ensures
+    #   CI fails if the test starts passing).
     @pytest.mark.xfail(
-        reason="Manifest keys renamed but Op classes not yet renamed (PR-B follows)",
+        reason="12 manifest keys renamed; Op classes not yet renamed (PR-B follows)",
         strict=True,
     )
     def test_validator_passes_on_current_codebase(self):
