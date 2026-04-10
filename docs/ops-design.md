@@ -96,38 +96,34 @@ Kernel classes use PascalCase with a `Kernel` suffix:
 
 Examples: `RMSNormFwdKernel`, `SoftmaxFwdKernel`.
 
-### Kernel Map Keys
+### Kernel Dispatch (kernel_map)
 
-`kernel_map` keys are **stable snake_case dispatch identifiers**. They are protocol-level names and MUST NOT be derived from `cls.__name__`. Renaming a Kernel class does not by itself require renaming the dispatch key.
+An Op dispatches to one or more Kernel implementations via `kernel_map`. This is a standard pattern in deep learning frameworks: the Op is the user-facing interface, the Kernel is the efficient implementation. A single Op may dispatch to different Kernels based on shape, dtype, or hardware architecture.
 
-**Family-based ops** declare `_kernel_key` as a bare snake_case name. The family base class builds `default_kernel_map` from it automatically (`{self._kernel_key: self._kernel_class}`):
+**Design motivation.** The manifest declares `kernel_map` as a registration table — which Kernel classes an Op uses and their dispatch keys. This keeps kernel-layer design decisions at the spec level: the human reviewer decides what Kernels an Op needs, the agent implements them. Without this field, the agent would have to invent the dispatch structure itself — that is a design decision, not an implementation task.
 
-```python
-_kernel_key = "rms_norm"  # RowNormOp family
-_kernel_key = "softmax_fwd"  # _SoftmaxBaseOp family
-
-
-def default_kernel_map(self):  # _ReduceOpBase family
-    return {"reduce": self._kernel_class}
-```
-
-**Standalone ops** (no family base) define `default_kernel_map` directly. Keys use descriptive snake_case, conventionally with a `_kernel` suffix:
+**Format.** `kernel_map` is a flat dict: dispatch key → Kernel class name.
 
 ```python
-# Single-kernel standalone op
+# Single-kernel op
 def default_kernel_map(self):
-    return {"fp8_quant_kernel": FP8QuantKernel}
-```
+    return {"rms_norm": RmsNormFwdKernel}
 
-**Multi-kernel ops** use descriptive snake_case keys:
 
-```python
+# Multi-kernel pipeline
 def default_kernel_map(self):
     return {
-        "mha_bwd_preprocess_kernel": MhaBwdPreprocessKernel,
+        "mha_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
         "mha_bwd_kernel": MhaBwdKernel,
+        "mha_bwd_postprocess_kernel": FlashAttnBwdPostprocessKernel,
     }
 ```
+
+**Keys** are stable snake_case dispatch identifiers. They are protocol-level names, decoupled from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key.
+
+**Values** are Kernel class names (PascalCase). Must match `cls.__name__`.
+
+The registration table does not describe dispatch strategy (when to select which Kernel). Strategy is a runtime concern, implemented in Op code.
 
 ### Builder Functions
 

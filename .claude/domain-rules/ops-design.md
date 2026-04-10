@@ -10,6 +10,6 @@ ______________________________________________________________________
 
 - Op class names use PascalCase: `{PascalCaseName}{Direction}Op` (e.g., `RMSNormFwdOp`). Direction suffix is mandatory. No abbreviation rules — the manifest author determines the name.
 - Kernel class names use PascalCase with `Kernel` suffix: `{PascalCaseName}{Direction}Kernel` (e.g., `RMSNormFwdKernel`). Builder functions remain snake_case.
-- `kernel_map` keys are stable snake_case dispatch identifiers (protocol-level). They MUST NOT be derived from `cls.__name__`. Renaming a Kernel class does not require renaming its dispatch key. Family-based ops use bare `_kernel_key` (e.g., `rms_norm`, `softmax_fwd`); standalone ops define `default_kernel_map` directly with descriptive snake_case keys (no mandatory suffix).
+- `kernel_map` is the Op→Kernel dispatch registration table. Keys are stable snake_case dispatch identifiers (decoupled from class names). Values are Kernel class names. The manifest declares this table; agents implement the listed Kernels. See [ops-design.md § Kernel Dispatch](../../docs/ops-design.md#kernel-dispatch-kernel_map).
 - When adding or modifying an intermediate base class, changing kernel dispatch patterns, or introducing new class variable protocols, update `docs/ops-design.md` to reflect the change.
 - When adding a new op family that inherits `Op` directly, evaluate whether it shares `forward()` flow with an existing family before creating a new base class. Document the decision in the PR.

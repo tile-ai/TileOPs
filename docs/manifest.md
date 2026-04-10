@@ -237,17 +237,17 @@ roofline:
 
 #### kernel_map
 
-Declares the static mapping between dispatch keys and Kernel classes that the Op registers in `default_kernel_map`.
+Registration table of the Kernel classes an Op dispatches to. The manifest declares *which* Kernels exist and their dispatch keys so that agents know what to implement. Dispatch *strategy* (when to select which Kernel) is not described here — that is a runtime concern.
+
+Format: `dispatch_key: KernelClassName`. See [ops-design.md § Kernel Dispatch](ops-design.md#kernel-dispatch-kernel_map) for design rationale.
 
 ```yaml
 # Single-kernel op
 source:
   kernel: tileops/kernels/norm/rms_norm.py
   kernel_map:
-    rms_norm: RmsNormKernel
+    rms_norm: RmsNormFwdKernel
   op: tileops/ops/norm/rms_norm.py
-  test: tests/ops/test_rms_norm.py
-  bench: benchmarks/ops/bench_rms_norm.py
 
 # Multi-kernel op
 source:
@@ -260,16 +260,8 @@ source:
     mha_bwd_kernel: MhaBwdKernel
     mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
   op: tileops/ops/mha.py
-  test: tests/ops/test_mha.py
-  bench: benchmarks/ops/bench_mha.py
 ```
 
-Rules:
-
-- **Keys** are stable snake_case dispatch identifiers. They MUST NOT be derived from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key.
-- **Values** are Kernel class names (PascalCase). Must match `cls.__name__`.
-- Every file listed in `source.kernel` MUST contain at least one class referenced in `kernel_map`.
-- The manifest `kernel_map` MUST match the Op's `default_kernel_map` exactly — same keys, same class names. No runtime conditionals: the manifest declares one static mapping per Op.
 - Optional when `status: spec-only`. Required when `status: implemented`.
 
 ## Entry Examples
