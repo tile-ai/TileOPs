@@ -46,7 +46,7 @@ _TORCH_DTYPES = {
 _SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
 
 # Required top-level fields per op entry
-_REQUIRED_TOP = {"family", "signature", "workloads", "roofline", "source"}
+_REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
 _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
@@ -244,6 +244,35 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
         errors.append(
             f"[schema] {op_name}: ref_api must be a string"
         )
+
+    # status: must be "implemented" or "spec-only"
+    status = entry.get("status")
+    if isinstance(status, str) and status not in ("implemented", "spec-only"):
+        errors.append(
+            f"[schema] {op_name}: status must be 'implemented' or 'spec-only', "
+            f"got '{status}'"
+        )
+
+    # kernel_map: required when status is "implemented", must be dict of str → str
+    if status == "implemented":
+        kernel_map = entry.get("kernel_map")
+        if kernel_map is None:
+            errors.append(
+                f"[schema] {op_name}: status is 'implemented' but "
+                f"kernel_map is missing (must be a mapping of str → str)"
+            )
+        elif not isinstance(kernel_map, dict):
+            errors.append(
+                f"[schema] {op_name}: kernel_map must be a mapping, "
+                f"got {type(kernel_map).__name__}"
+            )
+        else:
+            for k, v in kernel_map.items():
+                if not isinstance(k, str) or not isinstance(v, str):
+                    errors.append(
+                        f"[schema] {op_name}: kernel_map entries must be "
+                        f"str → str, got {k!r}: {v!r}"
+                    )
 
     return errors
 
@@ -826,8 +855,18 @@ def check_l4_benchmark(
 # ---------------------------------------------------------------------------
 
 def _is_spec_only(entry: dict) -> bool:
-    """Default is spec-only when status is absent."""
-    return entry.get("status", "spec-only") == "spec-only"
+    """Check if the entry is spec-only.
+
+    Raises KeyError if status is missing — callers must ensure schema
+    validation (which requires ``status``) has passed before calling.
+    """
+    status = entry.get("status")
+    if status is None:
+        raise KeyError(
+            "Entry is missing required 'status' field; "
+            "schema validation should have caught this"
+        )
+    return status == "spec-only"
 
 
 def _is_bench_manifest_driven(entry: dict) -> bool:

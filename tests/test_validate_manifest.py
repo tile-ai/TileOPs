@@ -38,8 +38,12 @@ def validator():
 # ---------------------------------------------------------------------------
 
 def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
-                 source_kernel="k.py", **extra):
-    """Build a minimal valid manifest entry for testing, with overrides."""
+                 source_kernel="k.py", status="spec-only", **extra):
+    """Build a minimal valid manifest entry for testing, with overrides.
+
+    Use ``status=None`` to explicitly omit the status field (for testing
+    that the validator rejects entries without status).
+    """
     sig = {
         "inputs": inputs or {"x": {"dtype": "float16"}},
         "outputs": outputs or {"y": {"dtype": "same_as(x)"}},
@@ -59,6 +63,8 @@ def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
             "test": "t.py", "bench": "b.py",
         },
     }
+    if status is not None:
+        entry["status"] = status
     entry.update(extra)
     return entry
 
@@ -75,6 +81,8 @@ class TestSchema:
         entry = {
             "family": "normalization",
             "ref_api": "torch.nn.functional.rms_norm",
+            "status": "implemented",
+            "kernel_map": {"fwd": "RMSNormFwdKernel"},
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
                 "outputs": {"y": {"dtype": "same_as(x)"}},
@@ -254,6 +262,70 @@ class TestSchema:
         entry = _make_entry(source_kernel=42)
         errors = validator.check_l0("test_op", entry)
         assert any("source.kernel" in e for e in errors)
+
+    def test_missing_status_fails(self, validator):
+        """Entry without status field must produce a schema error."""
+        entry = _make_entry(status=None)
+        assert "status" not in entry
+        errors = validator.check_l0("test_op", entry)
+        assert any("status" in e for e in errors), (
+            f"Expected schema error about missing status, got: {errors}"
+        )
+
+    def test_status_implemented_passes(self, validator):
+        """Entry with status: implemented and kernel_map passes schema check."""
+        entry = _make_entry(status="implemented", kernel_map={"fwd": "FwdKernel"})
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_status_spec_only_passes(self, validator):
+        """Entry with status: spec-only passes schema check."""
+        entry = _make_entry(status="spec-only")
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_kernel_map_valid_passes(self, validator):
+        """status: implemented with valid kernel_map dict passes."""
+        entry = _make_entry(status="implemented", kernel_map={"fwd": "FwdKernel"})
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_kernel_map_required_when_implemented(self, validator):
+        """status: implemented without kernel_map must produce a schema error."""
+        entry = _make_entry(status="implemented")
+        entry.pop("kernel_map", None)
+        assert "kernel_map" not in entry
+        errors = validator.check_l0("test_op", entry)
+        assert any("kernel_map" in e for e in errors), (
+            f"Expected error about missing kernel_map for implemented op, got: {errors}"
+        )
+
+    def test_kernel_map_not_required_when_spec_only(self, validator):
+        """status: spec-only without kernel_map must NOT produce a kernel_map error."""
+        entry = _make_entry(status="spec-only")
+        errors = validator.check_l0("test_op", entry)
+        kernel_map_errors = [e for e in errors if "kernel_map" in e]
+        assert kernel_map_errors == [], (
+            f"spec-only op should not need kernel_map, got: {kernel_map_errors}"
+        )
+
+    def test_kernel_map_non_dict_fails(self, validator):
+        """kernel_map that is not a dict must fail."""
+        entry = _make_entry(status="implemented", kernel_map="not_a_dict")
+        errors = validator.check_l0("test_op", entry)
+        assert any("kernel_map" in e and "mapping" in e for e in errors)
+
+    def test_kernel_map_non_string_key_fails(self, validator):
+        """kernel_map with non-string values must fail."""
+        entry = _make_entry(status="implemented", kernel_map={"fwd": 123})
+        errors = validator.check_l0("test_op", entry)
+        assert any("kernel_map" in e for e in errors)
+
+    def test_kernel_map_empty_dict_passes(self, validator):
+        """status: implemented with empty kernel_map dict passes (valid dict of str:str)."""
+        entry = _make_entry(status="implemented", kernel_map={})
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
 
 
 # ---------------------------------------------------------------------------
@@ -683,10 +755,9 @@ class TestCheckOp:
             f"Spec-only op should only have schema errors (if any), got: {non_schema}"
         )
 
-    def test_missing_status_defaults_to_spec_only(self, validator, tmp_path):
-        """Entry without status field defaults to spec-only (skips L1-L4)."""
-        entry = _make_entry()
-        entry.pop("status", None)  # remove status entirely
+    def test_missing_status_rejected_at_schema_level(self, validator, tmp_path):
+        """Entry without status field is rejected by schema validation."""
+        entry = _make_entry(status=None)
 
         manifest_file = tmp_path / "ops_manifest.yaml"
         import yaml
@@ -696,9 +767,9 @@ class TestCheckOp:
             manifest_path=manifest_file,
             repo_root=tmp_path,
         )
-        non_schema = [e for e in errors if "[schema]" not in e]
-        assert non_schema == [], (
-            f"Missing-status op should default to spec-only (L0 only), got: {non_schema}"
+        status_errors = [e for e in errors if "status" in e]
+        assert len(status_errors) > 0, (
+            f"Missing-status op should produce a schema error, got: {errors}"
         )
 
     def test_check_op_nonexistent_op_reports_error(self, validator, tmp_path):
