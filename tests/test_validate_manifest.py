@@ -284,20 +284,33 @@ class TestSchema:
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected schema errors: {errors}"
 
+    def test_status_non_string_rejected(self, validator):
+        """Non-string status (e.g. integer) must produce a schema error."""
+        entry = _make_entry(status="placeholder")
+        entry["status"] = 123
+        errors = validator.check_l0("test_op", entry)
+        assert any("status" in e and "string" in e for e in errors), (
+            f"Expected schema error about non-string status, got: {errors}"
+        )
+
     def test_kernel_map_valid_passes(self, validator):
         """status: implemented with valid kernel_map dict passes."""
         entry = _make_entry(status="implemented", kernel_map={"fwd": "FwdKernel"})
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected schema errors: {errors}"
 
-    def test_kernel_map_required_when_implemented(self, validator):
-        """status: implemented without kernel_map must produce a schema error."""
+    def test_kernel_map_missing_when_implemented_warns(self, validator):
+        """status: implemented without kernel_map produces a warning, not error."""
         entry = _make_entry(status="implemented")
         entry.pop("kernel_map", None)
         assert "kernel_map" not in entry
-        errors = validator.check_l0("test_op", entry)
-        assert any("kernel_map" in e for e in errors), (
-            f"Expected error about missing kernel_map for implemented op, got: {errors}"
+        warnings = []
+        errors = validator.check_l0("test_op", entry, warnings=warnings)
+        assert not any("kernel_map" in e for e in errors), (
+            f"Missing kernel_map should be a warning, not an error: {errors}"
+        )
+        assert any("kernel_map" in w for w in warnings), (
+            f"Expected warning about missing kernel_map, got warnings: {warnings}"
         )
 
     def test_kernel_map_not_required_when_spec_only(self, validator):
@@ -1242,4 +1255,18 @@ class TestIntegration:
             f"Validator failed with return code {result.returncode}.\n"
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
+        )
+
+    def test_schema_validation_no_errors_on_real_manifest(self, validator):
+        """Schema-level validation on the checked-in manifest produces no errors.
+
+        Warnings (e.g. missing kernel_map for implemented ops) are acceptable
+        since populating kernel_map for all ops is tracked separately.
+        """
+        errors, warnings = validator.validate_manifest(
+            levels=frozenset({"schema"}),
+        )
+        assert errors == [], (
+            f"Schema validation produced {len(errors)} error(s) on the "
+            f"checked-in manifest:\n" + "\n".join(errors)
         )

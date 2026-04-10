@@ -58,7 +58,9 @@ _VALID_LAYOUTS = {"channels_last"}
 # schema: YAML structure validation
 # ---------------------------------------------------------------------------
 
-def check_l0(op_name: str, entry: dict) -> list[str]:
+def check_l0(
+    op_name: str, entry: dict, *, warnings: list[str] | None = None,
+) -> list[str]:
     """Validate structural schema of a manifest entry. Returns error strings."""
     errors: list[str] = []
 
@@ -247,21 +249,21 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
 
     # status: must be "implemented" or "spec-only"
     status = entry.get("status")
-    if isinstance(status, str) and status not in ("implemented", "spec-only"):
+    if status is not None and not isinstance(status, str):
+        errors.append(
+            f"[schema] {op_name}: status must be a string, "
+            f"got {type(status).__name__}"
+        )
+    elif isinstance(status, str) and status not in ("implemented", "spec-only"):
         errors.append(
             f"[schema] {op_name}: status must be 'implemented' or 'spec-only', "
             f"got '{status}'"
         )
 
-    # kernel_map: required when status is "implemented", must be dict of str → str
-    if status == "implemented":
-        kernel_map = entry.get("kernel_map")
-        if kernel_map is None:
-            errors.append(
-                f"[schema] {op_name}: status is 'implemented' but "
-                f"kernel_map is missing (must be a mapping of str → str)"
-            )
-        elif not isinstance(kernel_map, dict):
+    # kernel_map: validated when present; warned when missing for implemented ops
+    kernel_map = entry.get("kernel_map")
+    if kernel_map is not None:
+        if not isinstance(kernel_map, dict):
             errors.append(
                 f"[schema] {op_name}: kernel_map must be a mapping, "
                 f"got {type(kernel_map).__name__}"
@@ -273,6 +275,11 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
                         f"[schema] {op_name}: kernel_map entries must be "
                         f"str → str, got {k!r}: {v!r}"
                     )
+    elif status == "implemented" and warnings is not None:
+        warnings.append(
+            f"[schema] {op_name}: status is 'implemented' but "
+            f"kernel_map is missing (should be a mapping of str → str)"
+        )
 
     return errors
 
@@ -948,7 +955,7 @@ def validate_manifest(
 
         # schema: YAML structure validation
         if "schema" in levels:
-            schema_errors = check_l0(op_name, entry)
+            schema_errors = check_l0(op_name, entry, warnings=all_warnings)
             all_errors.extend(schema_errors)
             if schema_errors:
                 continue
