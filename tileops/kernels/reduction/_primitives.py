@@ -117,6 +117,13 @@ def compute_tile_n(
     The tile_n is the largest multiple of *alignment* such that
     ``num_buffers * block_m * tile_n * elem_bytes <= budget``.
 
+    When a divisor of *N_padded* exists close to the maximum (>= 75% of
+    the budget-derived cap), that divisor is preferred so the kernel
+    avoids remainder handling.  Otherwise the full budget-derived cap is
+    returned and the tiled kernel handles the single remainder tile via
+    masked loads --- this is cheaper than the extra iterations caused by
+    a small divisor.
+
     If N_padded already fits (with *num_buffers* copies), returns N_padded
     (no tiling needed).
 
@@ -161,9 +168,16 @@ def compute_tile_n(
             best_dividing = candidate
             break
 
-    # If we found a divisor, use it. Otherwise fall back to max (the
-    # tiled kernel handles the remainder via masked loads).
-    return best_dividing if best_dividing > 0 else tile_n_max
+    # Use the divisor only when it utilises at least 75% of the shared
+    # memory budget.  For shapes with sparse divisors (e.g. N_padded
+    # with large prime factors), the best divisor can be far smaller
+    # than tile_n_max, causing excessive kernel passes.  In that case,
+    # prefer tile_n_max and let the tiled kernel handle the single
+    # remainder tile via masked loads, which is cheaper than the extra
+    # iterations from a small tile.
+    if best_dividing >= tile_n_max * 3 // 4:
+        return best_dividing
+    return tile_n_max
 
 
 # ---------------------------------------------------------------------------

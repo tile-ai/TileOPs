@@ -722,9 +722,9 @@ class SoftmaxKernel(Kernel):
             x,
         )
 
-        # Trim back to N_padded if needed (only when tile_n does not
-        # divide N_padded, which the divisor-aware compute_tile_n avoids
-        # for all practical cases).
+        # Trim back to N_padded if needed (when tile_n does not divide
+        # N_padded, e.g. compute_tile_n chose tile_n_max over a small
+        # divisor for better shared memory utilisation).
         if y.shape[1] > self.N_padded:
             y = y[:, : self.N_padded]
 
