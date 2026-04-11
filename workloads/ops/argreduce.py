@@ -3,7 +3,7 @@ import torch
 from workloads.base import WorkloadBase
 
 
-class _RandnWorkload(WorkloadBase):
+class _RandnTest(WorkloadBase):
     """Base for workloads that generate inputs via torch.randn."""
 
     def __init__(self, shape: tuple, dtype: torch.dtype):
@@ -15,14 +15,9 @@ class _RandnWorkload(WorkloadBase):
         return (x,)
 
 
-class ArgmaxWorkload(_RandnWorkload):
+class ArgmaxTest(_RandnTest):
     """Workload definition for ArgmaxFwdOp."""
 
 
-class ArgminWorkload(_RandnWorkload):
+class ArgminTest(_RandnTest):
     """Workload definition for ArgminFwdOp."""
-
-
-# Backward-compatible aliases for existing consumers
-ArgmaxTest = ArgmaxWorkload
-ArgminTest = ArgminWorkload

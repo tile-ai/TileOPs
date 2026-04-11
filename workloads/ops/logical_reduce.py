@@ -3,7 +3,7 @@ import torch
 from workloads.base import WorkloadBase
 
 
-class AnyWorkload(WorkloadBase):
+class AnyTest(WorkloadBase):
     """Workload definition for AnyFwdOp.
 
     Generates inputs with a mix of zeros and non-zeros for meaningful
@@ -19,10 +19,10 @@ class AnyWorkload(WorkloadBase):
         return (_make_logical_input(self.shape, self.dtype),)
 
 
-class AllWorkload(WorkloadBase):
+class AllTest(WorkloadBase):
     """Workload definition for AllFwdOp.
 
-    Same input-generation strategy as AnyWorkload (rows with all-True
+    Same input-generation strategy as AnyTest (rows with all-True
     and all-False are forced for meaningful coverage).
     """
 
@@ -34,7 +34,7 @@ class AllWorkload(WorkloadBase):
         return (_make_logical_input(self.shape, self.dtype),)
 
 
-class CountNonzeroWorkload(WorkloadBase):
+class CountNonzeroTest(WorkloadBase):
     """Workload definition for CountNonzeroFwdOp.
 
     Uses the same mixed-zero input strategy as the other logical reduce

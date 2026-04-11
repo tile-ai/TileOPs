@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from workloads.ops.logical_reduce import AnyWorkload as _AnyWorkload
+from workloads.ops.logical_reduce import AnyTest as _AnyWorkload
 
 # ---------------------------------------------------------------------------
 # Fixtures

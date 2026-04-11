@@ -3,7 +3,7 @@ import torch
 from workloads.base import WorkloadBase
 
 
-class _RandnWorkload(WorkloadBase):
+class _RandnTest(WorkloadBase):
     """Base for workloads that generate inputs via torch.randn."""
 
     def __init__(self, shape: tuple, dtype: torch.dtype):
@@ -15,23 +15,23 @@ class _RandnWorkload(WorkloadBase):
         return (x,)
 
 
-class SumWorkload(_RandnWorkload):
+class SumTest(_RandnTest):
     """Workload definition for SumFwdOp."""
 
 
-class MeanWorkload(_RandnWorkload):
+class MeanTest(_RandnTest):
     """Workload definition for MeanFwdOp."""
 
 
-class AmaxWorkload(_RandnWorkload):
+class AmaxTest(_RandnTest):
     """Workload definition for AmaxFwdOp."""
 
 
-class AminWorkload(_RandnWorkload):
+class AminTest(_RandnTest):
     """Workload definition for AminFwdOp."""
 
 
-class ProdWorkload(WorkloadBase):
+class ProdTest(WorkloadBase):
     """Workload definition for ProdFwdOp.
 
     Uses small-range values (0.99..1.0) to avoid overflow in product reduction.
@@ -46,13 +46,13 @@ class ProdWorkload(WorkloadBase):
         return (x,)
 
 
-class StdWorkload(_RandnWorkload):
+class StdTest(_RandnTest):
     """Workload definition for StdFwdOp."""
 
 
-class VarWorkload(_RandnWorkload):
+class VarTest(_RandnTest):
     """Workload definition for VarFwdOp."""
 
 
-class VarMeanWorkload(_RandnWorkload):
+class VarMeanTest(_RandnTest):
     """Workload definition for VarMeanFwdOp."""
