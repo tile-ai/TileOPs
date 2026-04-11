@@ -74,10 +74,11 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
 
                     if _needs_pad:
                         # Kernel-side boundary handling: element-wise load
-                        # with T.if_then_else masking for padding columns.
+                        # with T.if_then_else masking for padding columns
+                        # and row-tail safety (M % block_m != 0).
                         for i, j in T.Parallel(block_m, N_padded):
                             x_f32[i, j] = T.if_then_else(
-                                j < N,
+                                T.And(pid_m * block_m + i < M, j < N),
                                 T.cast(x[pid_m * block_m + i, j], "float32"),
                                 T.cast(_neg_inf, "float32"),
                             )
@@ -124,7 +125,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
                     if _needs_pad:
                         for i, j in T.Parallel(block_m, N_padded):
                             x_f32[i, j] = T.if_then_else(
-                                j < N,
+                                T.And(pid_m * block_m + i < M, j < N),
                                 T.cast(x[pid_m * block_m + i, j], "float32"),
                                 T.cast(_neg_inf, "float32"),
                             )
@@ -238,7 +239,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                 with T.Else():
                                     for i, j in T.Parallel(block_m, tile_n):
                                         tile_f32[i, j] = T.if_then_else(
-                                            t * tile_n + j < N,
+                                            T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                             T.cast(
                                                 x[pid_m * block_m + i, t * tile_n + j], "float32"
                                             ),
@@ -298,7 +299,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                 with T.Else():
                                     for i, j in T.Parallel(block_m, tile_n):
                                         p2_f32[i, j] = T.if_then_else(
-                                            t * tile_n + j < N,
+                                            T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                             T.exp(
                                                 T.cast(
                                                     x[pid_m * block_m + i, t * tile_n + j],
@@ -360,7 +361,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                 with T.Else():
                                     for i, j in T.Parallel(block_m, tile_n):
                                         tile_f32[i, j] = T.if_then_else(
-                                            t * tile_n + j < N,
+                                            T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                             T.cast(
                                                 x[pid_m * block_m + i, t * tile_n + j], "float32"
                                             ),
@@ -415,7 +416,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                 with T.Else():
                                     for i, j in T.Parallel(block_m, tile_n):
                                         p2_f32[i, j] = T.if_then_else(
-                                            t * tile_n + j < N,
+                                            T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                             T.cast(
                                                 x[pid_m * block_m + i, t * tile_n + j], "float32"
                                             )
