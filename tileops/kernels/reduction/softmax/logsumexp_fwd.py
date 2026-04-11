@@ -327,9 +327,16 @@ class LogSumExpKernel(Kernel):
         # self.config["tile_n"], and rebuilt the kernel.  Only apply
         # the post-init tile_n fixup for user-provided configs.
         if not tune:
-            new_tile_n = self._tile_n_for_block_m(self.config["block_m"])
-            if new_tile_n != self._tile_n:
-                self._tile_n = new_tile_n
+            # If the caller supplied an explicit tile_n (e.g. from a
+            # previous autotuner result), honour it.  Only fall back to
+            # the heuristic when tile_n was not provided.
+            caller_tile_n = config.get("tile_n") if config is not None else None
+            if caller_tile_n is not None:
+                target_tile_n = caller_tile_n
+            else:
+                target_tile_n = self._tile_n_for_block_m(self.config["block_m"])
+            if target_tile_n != self._tile_n:
+                self._tile_n = target_tile_n
                 self.kernel = _logsumexp_kernel(
                     self.M,
                     self.N,
