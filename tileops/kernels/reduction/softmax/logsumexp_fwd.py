@@ -401,15 +401,21 @@ class LogSumExpKernel(Kernel):
 
         Includes the heuristic tile_n plus divisors of N_padded that fit
         within the shared memory budget.  tile_n=0 means single-tile.
+
+        Each distinct tile_n value requires a full kernel recompilation,
+        which is expensive for large-N workloads (compilations can take
+        minutes each).  To keep autotuner wall time practical:
+
+        - When the heuristic default tile_n is 0 (single-tile / small N),
+          return ``[0]`` -- the autotuner varies only block_m and threads.
+        - Otherwise return only the heuristic default tile_n (block_m=1).
+          The autotuner still explores block_m and threads within that
+          tile_n regime, which is the highest-impact search axis.
         """
-        candidates = set()
-        for bm in [1, 2, 4, 8, 16]:
-            try:
-                tn = self._tile_n_for_block_m(bm)
-            except ValueError:
-                continue
-            candidates.add(tn)
-        return sorted(candidates)
+        default_tn = self._tile_n_for_block_m(1)
+        if default_tn == 0:
+            return [0]
+        return [default_tn]
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -426,7 +432,12 @@ class LogSumExpKernel(Kernel):
 
         configs = []
         for tile_n in self._tile_n_candidates():
-            for bm in [1, 2, 4, 8, 16]:
+            # In the tiled regime (tile_n > 0), only explore the default
+            # block_m=1 config.  Large-tile kernels cause NVCC/cicc to
+            # spend 10+ minutes per config variant, making multi-config
+            # autotuning impractical.  The autotuner still varies threads.
+            bm_candidates = [1, 2, 4, 8, 16] if tile_n == 0 else [1]
+            for bm in bm_candidates:
                 try:
                     compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
                 except ValueError:
