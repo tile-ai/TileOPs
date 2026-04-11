@@ -1,4 +1,8 @@
-"""Benchmarks for logical reduce ops (any, all, count_nonzero)."""
+"""Benchmarks for logical reduce ops (any, all, count_nonzero).
+
+Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
+Workload shapes and roofline formulas are loaded from ops_manifest.yaml.
+"""
 
 from typing import Optional
 
@@ -6,104 +10,187 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from workloads.base import FixtureBase, WorkloadBase
+from tileops.manifest import eval_roofline, load_workloads
+from tileops.ops.reduction.all_op import AllFwdOp
+from tileops.ops.reduction.any_op import AnyFwdOp
+from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+from workloads.ops.logical_reduce import AllTest, AnyTest, CountNonzeroTest
+
+# ===================================================================
+# Op name constants
+# ===================================================================
+
+_ANY_OP = "AnyFwdOp"
+_ALL_OP = "AllFwdOp"
+_COUNT_NONZERO_OP = "CountNonzeroFwdOp"
 
 
-class LogicalReduceBenchFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype, op_kind",
-            [
-                # --- any ---
-                pytest.param(1024, 4096, torch.float16, "any", marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, "any", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float32, "any", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.int32, "any", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "any", marks=pytest.mark.full),
-                # --- all ---
-                pytest.param(1024, 4096, torch.float16, "all", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.bfloat16, "all", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float32, "all", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.int32, "all", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "all", marks=pytest.mark.full),
-                # --- count_nonzero ---
-                pytest.param(1024, 4096, torch.float16, "count_nonzero", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.bfloat16, "count_nonzero", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float32, "count_nonzero", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.int32, "count_nonzero", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "count_nonzero", marks=pytest.mark.full),
-            ],
-        ),
-    ]
+# ===================================================================
+# Roofline helper
+# ===================================================================
 
 
-class LogicalReduceBenchTest(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.op_kind = op_kind
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self.dtype in (torch.int32, torch.int64):
-            x = torch.randint(-5, 6, (self.m, self.n), dtype=self.dtype, device="cuda")
-        elif self.dtype == torch.bool:
-            x = torch.randint(0, 2, (self.m, self.n), dtype=torch.bool, device="cuda")
-        else:
-            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        if self.op_kind == "any":
-            return x.bool().any(dim=-1)
-        elif self.op_kind == "all":
-            return x.bool().all(dim=-1)
-        elif self.op_kind == "count_nonzero":
-            return torch.count_nonzero(x, dim=-1).to(torch.int64)
-        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+def _roofline_vars(workload) -> dict:
+    """Extract roofline variables from a workload (shape + dtype -> M, N, elem_bytes)."""
+    elem_bytes = torch.tensor([], dtype=workload.dtype).element_size()
+    N = workload.shape[-1]
+    M = 1
+    for s in workload.shape[:-1]:
+        M *= s
+    return dict(M=M, N=N, elem_bytes=elem_bytes)
 
 
-class LogicalReduceBenchmark(BenchmarkBase):
+# ===================================================================
+# Benchmark classes — use manifest roofline for FLOP/memory counts
+# ===================================================================
+
+
+class AnyBenchmark(BenchmarkBase):
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                _ANY_OP, **_roofline_vars(self.workload))
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        # Logical reduce: N comparisons per row, M rows
-        return t.m * t.n
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Output bytes: bool (1 byte) for any/all, int64 (8 bytes) for count_nonzero
-        out_elem_bytes = 8 if t.op_kind == "count_nonzero" else 1
-        # Read x (M*N) + write output (M * out_elem_bytes)
-        return t.m * t.n * elem_bytes + t.m * out_elem_bytes
+        return self._get_roofline()[1]
 
 
-def _make_op(dtype: torch.dtype, op_kind: str):
-    """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.all_op import AllFwdOp
-    from tileops.ops.reduction.any_op import AnyFwdOp
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+class AllBenchmark(BenchmarkBase):
+    _roofline_cache: Optional[tuple[float, float]] = None
 
-    op_map = {
-        "any": AnyFwdOp,
-        "all": AllFwdOp,
-        "count_nonzero": CountNonzeroFwdOp,
-    }
-    cls = op_map[op_kind]
-    return cls(dtype=dtype)
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                _ALL_OP, **_roofline_vars(self.workload))
+        return self._roofline_cache
+
+    def calculate_flops(self) -> Optional[float]:
+        return self._get_roofline()[0]
+
+    def calculate_memory(self) -> Optional[float]:
+        return self._get_roofline()[1]
 
 
-@LogicalReduceBenchFixture
-def test_logical_reduce_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> None:
-    test = LogicalReduceBenchTest(m, n, dtype, op_kind)
-    bm = LogicalReduceBenchmark(test)
+class CountNonzeroBenchmark(BenchmarkBase):
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                _COUNT_NONZERO_OP, **_roofline_vars(self.workload))
+        return self._roofline_cache
+
+    def calculate_flops(self) -> Optional[float]:
+        return self._get_roofline()[0]
+
+    def calculate_memory(self) -> Optional[float]:
+        return self._get_roofline()[1]
+
+
+# ===================================================================
+# Manifest-driven parametrize helper
+# ===================================================================
+
+
+def _workloads_to_params(workloads):
+    """Convert manifest workload dicts to pytest params: (shape, dtype)."""
+    params = []
+    for w in workloads:
+        shape = tuple(w["x_shape"])
+        label = w.get("label", "x".join(str(s) for s in shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(
+                shape, dtype,
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
+
+
+# ===================================================================
+# Any benchmarks
+# ===================================================================
+
+
+@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_ANY_OP)))
+def test_any_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = AnyTest(shape, dtype)
+    bm = AnyBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = _make_op(dtype, op_kind)
-    result = bm.profile(op, *inputs)
+    op = AnyFwdOp(dtype=dtype)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    def baseline_fn(x):
+        return x.bool().any(dim=-1)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ===================================================================
+# All benchmarks
+# ===================================================================
+
+
+@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_ALL_OP)))
+def test_all_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = AllTest(shape, dtype)
+    bm = AllBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = AllFwdOp(dtype=dtype)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x):
+        return x.bool().all(dim=-1)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ===================================================================
+# CountNonzero benchmarks
+# ===================================================================
+
+
+@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_COUNT_NONZERO_OP)))
+def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = CountNonzeroTest(shape, dtype)
+    bm = CountNonzeroBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = CountNonzeroFwdOp(dtype=dtype)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x):
+        return torch.count_nonzero(x, dim=-1).to(torch.int64)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
