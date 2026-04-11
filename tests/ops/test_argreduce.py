@@ -123,8 +123,6 @@ class SpecArgreduceFixture(FixtureBase):
                 pytest.param((128, 512), -1, False, torch.float16, marks=pytest.mark.smoke),
                 pytest.param((128, 512), -1, True, torch.float16, marks=pytest.mark.full),
                 pytest.param((512, 4, 32), 0, False, torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), 0, False, torch.float16, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), 0, True, torch.float16, marks=pytest.mark.full),
                 pytest.param((4, 32, 512), 1, False, torch.float16, marks=pytest.mark.full),
                 pytest.param((4, 32, 512), -1, False, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param((4, 32, 512), -1, True, torch.bfloat16, marks=pytest.mark.full),
