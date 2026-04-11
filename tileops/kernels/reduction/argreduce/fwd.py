@@ -195,6 +195,11 @@ class ArgreduceKernel(Kernel):
         the rows are dense and the layout works at any block_m that fits in
         shared memory, so the constraint is skipped.
         """
+        if self.N_padded == 0:
+            raise ValueError(
+                "Reduction dimension is empty (N=0). "
+                "argmax/argmin over an empty dimension is undefined."
+            )
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
         max_block_m_smem = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
         if max_block_m_smem == 0:
@@ -218,6 +223,11 @@ class ArgreduceKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if self.N_padded == 0:
+            raise ValueError(
+                "Reduction dimension is empty (N=0). "
+                "argmax/argmin over an empty dimension is undefined."
+            )
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
         max_block_m_smem = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
         if max_block_m_smem == 0:
