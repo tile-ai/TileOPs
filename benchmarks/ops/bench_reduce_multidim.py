@@ -1,11 +1,11 @@
-"""Benchmarks for multi-dim reduction paths across all five reduction families.
+"""Benchmarks for multi-dim reduction paths across all six reduction families.
 
 Covers 3D tensors with multi-dim and non-last-axis dim specifications,
 both keepdim=True and keepdim=False variants, to surface performance
 regressions and optimization opportunities in multi-dim reduction code.
 
-Groups 1 (reduce), 3 (logical), and 4 (vector norm) use true multi-dim
-reduction (e.g. dim=[0, 2]).
+Groups 1 (reduce), 3 (logical), 4 (vector norm), and 6 (logsumexp) use
+true multi-dim reduction (e.g. dim=[0, 2]).
 
 Groups 2 (argreduce) and 5 (cumulative) are architecturally single-dim:
   - Argreduce (argmax/argmin): accepts only scalar dim (int). The kernel
@@ -595,6 +595,123 @@ def test_cumulative_multidim_bench(
     inputs = test.gen_inputs()
 
     op = _make_cumulative_op(test.M, test.N, dtype, op_kind)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ===================================================================
+# 6. LogSumExp — multi-dim
+#    LogSumExpFwdOp supports multi-dim via _supports_multidim = True.
+# ===================================================================
+
+
+class LogSumExpMultidimFixture(FixtureBase):
+    PARAMS = [
+        (
+            "shape, dim, keepdim, dtype",
+            [
+                # 3D: (batch=4, seq=128, hidden=4096) — LLaMA-7B inference
+                # dim=[0, 2] keepdim=False: logsumexp across batch+hidden
+                pytest.param(
+                    (4, 128, 4096), [0, 2], False, torch.float16,
+                    id="lse-7B-dim02-nokeepdim",
+                ),
+                # dim=[0, 2] keepdim=True
+                pytest.param(
+                    (4, 128, 4096), [0, 2], True, torch.float16,
+                    id="lse-7B-dim02-keepdim",
+                ),
+                # dim=[0, 1] keepdim=False: per-hidden logsumexp over batch+seq
+                pytest.param(
+                    (4, 128, 4096), [0, 1], False, torch.float16,
+                    id="lse-7B-dim01-nokeepdim",
+                ),
+                # dim=[0, 1] keepdim=True, bfloat16
+                pytest.param(
+                    (4, 128, 4096), [0, 1], True, torch.bfloat16,
+                    id="lse-7B-dim01-keepdim-bf16",
+                ),
+                # Longer context: (batch=2, seq=512, hidden=4096) — LLaMA-7B
+                pytest.param(
+                    (2, 512, 4096), [0, 2], False, torch.float16,
+                    id="lse-7B-longctx-dim02",
+                ),
+                # Longer context with keepdim=True
+                pytest.param(
+                    (2, 512, 4096), [0, 2], True, torch.bfloat16,
+                    id="lse-7B-longctx-dim02-keepdim-bf16",
+                ),
+            ],
+        ),
+    ]
+
+
+class LogSumExpMultidimTest(WorkloadBase):
+    def __init__(
+        self,
+        shape: tuple,
+        dim: list,
+        keepdim: bool,
+        dtype: torch.dtype,
+    ):
+        self.shape = shape
+        self.dim = dim
+        self.keepdim = keepdim
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.logsumexp(x.float(), dim=self.dim, keepdim=self.keepdim).to(
+            x.dtype
+        )
+
+
+class LogSumExpMultidimBenchmark(BenchmarkBase):
+    def calculate_flops(self) -> Optional[float]:
+        t = self.workload
+        total_elems = 1
+        for s in t.shape:
+            total_elems *= s
+        return total_elems
+
+    def calculate_memory(self) -> Optional[float]:
+        t = self.workload
+        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
+        total_elems = 1
+        for s in t.shape:
+            total_elems *= s
+        out_elems = 1
+        dims = set(d % len(t.shape) for d in t.dim)
+        for i, s in enumerate(t.shape):
+            if i not in dims:
+                out_elems *= s
+        return (total_elems + out_elems) * elem_bytes
+
+
+def _make_logsumexp_op(dtype, dim, keepdim):
+    from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
+
+    return LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+
+
+@LogSumExpMultidimFixture
+def test_logsumexp_multidim_bench(
+    shape: tuple,
+    dim: list,
+    keepdim: bool,
+    dtype: torch.dtype,
+) -> None:
+    test = LogSumExpMultidimTest(shape, dim, keepdim, dtype)
+    bm = LogSumExpMultidimBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = _make_logsumexp_op(dtype, dim, keepdim)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
