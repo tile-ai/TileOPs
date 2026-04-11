@@ -23,9 +23,10 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
-    SHARED_MEMORY_BUDGET_BYTES,
+    MAX_SINGLE_TILE_COLS,
     align_up,
     compute_tile_n,
+    device_smem_budget,
 )
 
 __all__ = ["SoftmaxKernel"]
@@ -199,6 +200,12 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                 row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
                             )
 
+                    # Precompute reciprocal to replace division with
+                    # multiplication in the per-element normalisation.
+                    inv_sum = T.alloc_fragment((block_m,), "float32")
+                    for i in T.Parallel(block_m):
+                        inv_sum[i] = 1.0 / row_sum[i]
+
                     # --- Pass 2: dedicated shared + register fragments ---
                     # TileLang's allocator aliases both shared buffers and
                     # register fragments across T.Serial loop boundaries.
@@ -209,21 +216,20 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                     p2_shared = T.alloc_shared((block_m, tile_n), dtype)
                     p2_local = T.alloc_fragment((block_m, tile_n), dtype)
                     p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
-                    p2_out = T.alloc_fragment((block_m, tile_n), "float32")
 
-                    # Pass 2: normalize
+                    # Pass 2: normalize (cast + compute fused, write-back
+                    # reuses p2_f32 -> p2_local to avoid an extra fragment)
                     for t in T.Serial(num_tiles):
                         T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
                         T.copy(p2_shared, p2_local)
 
                         for i, j in T.Parallel(block_m, tile_n):
-                            p2_f32[i, j] = T.cast(p2_local[i, j], "float32")
+                            p2_f32[i, j] = T.exp(
+                                T.cast(p2_local[i, j], "float32") - row_max[i]
+                            ) * inv_sum[i]
 
                         for i, j in T.Parallel(block_m, tile_n):
-                            p2_out[i, j] = T.exp(p2_f32[i, j] - row_max[i]) / row_sum[i]
-
-                        for i, j in T.Parallel(block_m, tile_n):
-                            p2_local[i, j] = p2_out[i, j]
+                            p2_local[i, j] = p2_f32[i, j]
                         T.copy(p2_local, p2_shared)
                         T.copy(p2_shared, y[pid_m * block_m, t * tile_n])
 
@@ -287,21 +293,19 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                     p2_shared = T.alloc_shared((block_m, tile_n), dtype)
                     p2_local = T.alloc_fragment((block_m, tile_n), dtype)
                     p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
-                    p2_out = T.alloc_fragment((block_m, tile_n), "float32")
 
-                    # Pass 2: log-normalize
+                    # Pass 2: log-normalize (cast + compute fused)
                     for t in T.Serial(num_tiles):
                         T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
                         T.copy(p2_shared, p2_local)
 
                         for i, j in T.Parallel(block_m, tile_n):
-                            p2_f32[i, j] = T.cast(p2_local[i, j], "float32")
+                            p2_f32[i, j] = (
+                                T.cast(p2_local[i, j], "float32") - row_max[i] - log_sum[i]
+                            )
 
                         for i, j in T.Parallel(block_m, tile_n):
-                            p2_out[i, j] = p2_f32[i, j] - row_max[i] - log_sum[i]
-
-                        for i, j in T.Parallel(block_m, tile_n):
-                            p2_local[i, j] = p2_out[i, j]
+                            p2_local[i, j] = p2_f32[i, j]
                         T.copy(p2_local, p2_shared)
                         T.copy(p2_shared, y[pid_m * block_m, t * tile_n])
 
@@ -411,6 +415,7 @@ class SoftmaxKernel(Kernel):
         self.dtype = dtype
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
+        self._smem_budget = device_smem_budget()
 
         # Build self.kernel BEFORE init_config: when tune=True, init_config
         # delegates to autotune() which requires self.kernel to exist.
@@ -455,32 +460,78 @@ class SoftmaxKernel(Kernel):
     _NUM_SHARED_BUFFERS = 2
 
     def _tile_n_for_block_m(self, block_m: int) -> int:
-        """Return tile_n for a given block_m (0 means no tiling needed)."""
-        # First check if N fits in a single buffer (no tiling → single-tile path,
-        # which only allocates 1 shared buffer).
-        single = compute_tile_n(block_m, self._elem_bytes, self.N_padded)
-        if single == self.N_padded:
-            return 0
+        """Return tile_n for a given block_m (0 means no tiling needed).
+
+        Uses the device's actual shared memory budget (not the
+        conservative 48 KiB default) so that large-N workloads can
+        use fewer, larger tiles or even the single-tile fast path.
+
+        Both paths are subject to the MAX_SINGLE_TILE_COLS column
+        cap (TileLang's vectorizer fails at the 32768 column boundary).
+        """
+        budget = self._smem_budget
+        # Single-tile path requires the full row in register fragments.
+        # Cap by column count (vectorizer limit) and smem budget.
+        if self.N_padded <= MAX_SINGLE_TILE_COLS:
+            single = compute_tile_n(
+                block_m, self._elem_bytes, self.N_padded, budget=budget,
+            )
+            if single == self.N_padded:
+                return 0
         # Tiled path: budget must accommodate num_buffers shared allocations.
+        # Cap the smem budget so tile_n stays within the column limit.
+        col_budget = MAX_SINGLE_TILE_COLS * self._NUM_SHARED_BUFFERS * block_m * self._elem_bytes
+        effective_budget = min(budget, col_budget)
         return compute_tile_n(
             block_m, self._elem_bytes, self.N_padded,
             num_buffers=self._NUM_SHARED_BUFFERS,
+            budget=effective_budget,
         )
 
     @property
     def default_config(self) -> dict:
-        """Select default block_m based on shared memory budget."""
-        smem_per_row = self.N_padded * self._elem_bytes
-        max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row if smem_per_row > 0 else 16
-        if max_block_m == 0:
-            block_m = 1
-        else:
-            block_m = 1
-            for bm in [1, 2, 4, 8, 16]:
-                if bm <= max_block_m:
-                    block_m = bm
-        tile_n = self._tile_n_for_block_m(block_m)
-        return {"block_m": block_m, "threads": 256, "tile_n": tile_n}
+        """Select default block_m based on shared memory budget.
+
+        For the single-tile path (tile_n == 0), prefer the largest
+        block_m that fits in shared memory -- row-level parallelism is
+        free when the full row is in registers.
+
+        For the tiled path, prefer the block_m that **minimises the
+        number of N-tiles** (i.e. maximises tile_n).  Fewer tiles means
+        fewer global memory passes in the 2-pass algorithm, which
+        dominates latency on bandwidth-bound workloads.  Among configs
+        with equal tile count, prefer *smaller* block_m: the tiled
+        kernel is bandwidth-bound, and smaller shared-memory footprint
+        per block improves occupancy.
+        """
+        best_bm = 1
+        best_tile_n = self._tile_n_for_block_m(1)
+
+        for bm in [2, 4, 8, 16]:
+            try:
+                tn = self._tile_n_for_block_m(bm)
+            except ValueError:
+                continue
+            if tn == 0 and best_tile_n == 0:
+                # Both single-tile: prefer larger block_m (row reuse is free)
+                best_bm = bm
+                best_tile_n = tn
+            elif tn == 0 and best_tile_n != 0:
+                # Switching from tiled to single-tile is always better
+                best_bm = bm
+                best_tile_n = tn
+            elif tn != 0 and best_tile_n == 0:
+                # Don't give up single-tile for tiled
+                pass
+            else:
+                # Both tiled: prefer strictly fewer tiles only.
+                best_num = (self.N_padded + best_tile_n - 1) // best_tile_n
+                curr_num = (self.N_padded + tn - 1) // tn
+                if curr_num < best_num:
+                    best_bm = bm
+                    best_tile_n = tn
+
+        return {"block_m": best_bm, "threads": 256, "tile_n": best_tile_n}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -492,14 +543,15 @@ class SoftmaxKernel(Kernel):
         """
         # Use the same tile_n that the kernel was built with
         tile_n = getattr(self, "_tile_n", self.default_config["tile_n"])
+        budget = self._smem_budget
         smem_per_row = self.N_padded * self._elem_bytes
-        max_block_m_no_tile = SHARED_MEMORY_BUDGET_BYTES // smem_per_row if smem_per_row > 0 else 16
+        max_block_m_no_tile = budget // smem_per_row if smem_per_row > 0 else 16
         threads_list = [128, 256]
 
         configs = []
         for bm in [1, 2, 4, 8, 16]:
             try:
-                compute_tile_n(bm, self._elem_bytes, self.N_padded)
+                compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
             except ValueError:
                 continue
             bm_tile_n = self._tile_n_for_block_m(bm)
@@ -517,16 +569,18 @@ class SoftmaxKernel(Kernel):
         return configs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the softmax/log_softmax kernel."""
+        """Run the softmax/log_softmax kernel.
+
+        Accepts an ``(M, N)`` tensor (unpadded) or ``(M, N_padded)``
+        (pre-padded).  Any alignment padding required by T.copy() is
+        handled here, keeping the Op layer free of host-side ``F.pad``.
+        """
+        # Pad to N_padded if the caller passed the raw (M, N) tensor.
+        if x.shape[-1] < self.N_padded:
+            pad_cols = self.N_padded - x.shape[-1]
+            x = torch.nn.functional.pad(x, (0, pad_cols), value=float("-inf"))
+
         tile_n = self._tile_n
-
-        # For the tiled path, the input may need extra padding beyond N_padded
-        # to make columns a multiple of tile_n.
-        total_cols = _compute_padded_cols(self.N, tile_n)
-        if x.shape[1] < total_cols:
-            import torch.nn.functional as _F
-
-            x = _F.pad(x, (0, total_cols - x.shape[1]), value=float("-inf"))
 
         y = _softmax_fwd_wrapped(
             self.M,
@@ -539,7 +593,9 @@ class SoftmaxKernel(Kernel):
             x,
         )
 
-        # Trim back to N_padded (the op layer will trim to N)
+        # Trim back to N_padded if needed (only when tile_n does not
+        # divide N_padded, which the divisor-aware compute_tile_n avoids
+        # for all practical cases).
         if y.shape[1] > self.N_padded:
             y = y[:, : self.N_padded]
 

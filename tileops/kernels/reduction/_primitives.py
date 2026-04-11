@@ -13,7 +13,9 @@ import tilelang.language as T
 __all__ = [
     "align_up",
     "compute_tile_n",
+    "device_smem_budget",
     "DEFAULT_ALIGNMENT",
+    "MAX_SINGLE_TILE_COLS",
     "SHARED_MEMORY_BUDGET_BYTES",
     "make_reduce_epilogue",
     "make_welford_update",
@@ -25,9 +27,41 @@ __all__ = [
 # shared memory instructions.  Sub-categories may override this default.
 DEFAULT_ALIGNMENT: int = 256
 
+# Maximum column count for a single fragment/shared-memory tile.
+# TileLang's vectorizer fails when the *column dimension* of a
+# fragment or shared buffer reaches 32768 (a LLVM scalable-vector
+# boundary).  Empirical testing on H200 (SM90) confirms that
+# 32512 columns compile and execute correctly, while 32768 triggers
+# the "scalable vector" error.  We use 32512 (= 32768 - 256) as the
+# safe upper bound.
+MAX_SINGLE_TILE_COLS: int = 32512
+
 # Default shared memory budget per SM (48 KiB) used to compute the maximum
 # block_m that fits within a single thread block's shared memory allocation.
 SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
+
+
+def device_smem_budget(device_index: int = 0) -> int:
+    """Return the opt-in shared memory budget for the current CUDA device.
+
+    Modern GPUs (SM80+) support shared memory well beyond the 48 KiB
+    default.  TileLang automatically configures
+    ``cudaFuncSetAttribute`` when a kernel allocates more than 48 KiB,
+    so it is safe to use the full opt-in budget.
+
+    Falls back to ``SHARED_MEMORY_BUDGET_BYTES`` (48 KiB) if the
+    device properties cannot be queried.
+    """
+    try:
+        import torch
+
+        props = torch.cuda.get_device_properties(device_index)
+        smem_optin = getattr(props, "shared_memory_per_block_optin", 0)
+        if smem_optin > 0:
+            return smem_optin
+        return getattr(props, "shared_memory_per_block", SHARED_MEMORY_BUDGET_BYTES)
+    except Exception:
+        return SHARED_MEMORY_BUDGET_BYTES
 
 
 def align_up(n: int, alignment: int) -> int:
@@ -88,14 +122,26 @@ def compute_tile_n(
 
     # Largest multiple of alignment that fits in shared memory
     max_cols = budget // (num_buffers * per_buffer)
-    tile_n = (max_cols // alignment) * alignment
-    if tile_n == 0:
+    tile_n_max = (max_cols // alignment) * alignment
+    if tile_n_max == 0:
         raise ValueError(
             f"Cannot fit even {alignment} columns in {budget} bytes "
             f"with block_m={block_m}, elem_bytes={elem_bytes}, "
             f"num_buffers={num_buffers}."
         )
-    return tile_n
+
+    # Prefer the largest tile_n that evenly divides N_padded, so that
+    # num_tiles * tile_n == N_padded and no host-side padding is needed.
+    # Search downward from tile_n_max in alignment-sized steps.
+    best_dividing = 0
+    for candidate in range(tile_n_max, 0, -alignment):
+        if N_padded % candidate == 0:
+            best_dividing = candidate
+            break
+
+    # If we found a divisor, use it. Otherwise fall back to max (caller
+    # must handle the remainder with host-side padding).
+    return best_dividing if best_dividing > 0 else tile_n_max
 
 
 # ---------------------------------------------------------------------------

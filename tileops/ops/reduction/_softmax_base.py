@@ -12,7 +12,6 @@ from math import prod
 from typing import Dict, List, Optional, Union
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
@@ -100,10 +99,9 @@ class _SoftmaxBaseOp(Op):
             M = prod(x.shape[:-1])
             x = x.reshape(M, N)
             kernel = self._get_or_create_kernel(M, N)
-            N_padded = align_up(N, DEFAULT_ALIGNMENT)
-            if N_padded != N:
-                x = F.pad(x, (0, N_padded - N), value=float("-inf"))
+            # Alignment padding is handled by the kernel's forward().
             y = kernel(x)
+            N_padded = align_up(N, DEFAULT_ALIGNMENT)
             if N_padded != N:
                 y = y[:, :N] if y.ndim == 2 else y
             return restore_multidim_shape(y, orig_shape, dims, self.keepdim)
@@ -131,14 +129,11 @@ class _SoftmaxBaseOp(Op):
         # Get or create cached kernel for this (M, N).
         kernel = self._get_or_create_kernel(M, N)
 
-        # Pad hidden dim to alignment.
-        N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        if N_padded != N:
-            x = F.pad(x, (0, N_padded - N), value=float("-inf"))
-
+        # Alignment padding is handled by the kernel's forward().
         y = kernel(x)
 
-        # Trim padding.
+        # Trim padding (kernel output may still be N_padded-wide).
+        N_padded = align_up(N, DEFAULT_ALIGNMENT)
         if N_padded != N:
             y = y[:, :N] if y.ndim == 2 else y
 

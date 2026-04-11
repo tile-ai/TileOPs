@@ -22,9 +22,10 @@ import torch
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
-    SHARED_MEMORY_BUDGET_BYTES,
+    MAX_SINGLE_TILE_COLS,
     align_up,
     compute_tile_n,
+    device_smem_budget,
 )
 
 __all__ = ["LogSumExpKernel"]
@@ -247,6 +248,7 @@ class LogSumExpKernel(Kernel):
         self.dtype = dtype
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
+        self._smem_budget = device_smem_budget()
 
         # Build self.kernel BEFORE init_config: when tune=True, init_config
         # delegates to autotune() which requires self.kernel to exist.
@@ -285,24 +287,63 @@ class LogSumExpKernel(Kernel):
         self.config["tile_n"] = self._tile_n
 
     def _tile_n_for_block_m(self, block_m: int) -> int:
-        """Return tile_n for a given block_m (0 means no tiling needed)."""
-        tile_n = compute_tile_n(block_m, self._elem_bytes, self.N_padded)
-        return 0 if tile_n == self.N_padded else tile_n
+        """Return tile_n for a given block_m (0 means no tiling needed).
+
+        Uses the device's actual shared memory budget (not the
+        conservative 48 KiB default) so that large-N workloads can
+        use fewer, larger tiles or even the single-tile fast path.
+
+        Both paths are subject to the MAX_SINGLE_TILE_COLS column
+        cap (TileLang's vectorizer fails at the 32768 column boundary).
+        """
+        budget = self._smem_budget
+        # Single-tile path: cap by column count and smem budget.
+        if self.N_padded <= MAX_SINGLE_TILE_COLS:
+            tile_n = compute_tile_n(block_m, self._elem_bytes, self.N_padded, budget=budget)
+            if tile_n == self.N_padded:
+                return 0
+        # Tiled path (logsumexp uses 1 shared buffer).
+        # Cap the smem budget so tile_n stays within the column limit.
+        col_budget = MAX_SINGLE_TILE_COLS * block_m * self._elem_bytes
+        effective_budget = min(budget, col_budget)
+        return compute_tile_n(
+            block_m, self._elem_bytes, self.N_padded, budget=effective_budget,
+        )
 
     @property
     def default_config(self) -> dict:
-        """Select default block_m based on shared memory budget."""
-        smem_per_row = self.N_padded * self._elem_bytes
-        max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row if smem_per_row > 0 else 16
-        if max_block_m == 0:
-            block_m = 1
-        else:
-            block_m = 1
-            for bm in [1, 2, 4, 8, 16]:
-                if bm <= max_block_m:
-                    block_m = bm
-        tile_n = self._tile_n_for_block_m(block_m)
-        return {"block_m": block_m, "threads": 256, "tile_n": tile_n}
+        """Select default block_m based on shared memory budget.
+
+        For the single-tile path (tile_n == 0), prefer the largest
+        block_m that fits in shared memory.
+
+        For the tiled path, prefer the block_m that minimises the
+        number of N-tiles (maximises tile_n) to reduce global memory
+        passes.  Among configs with equal tile count, prefer smaller
+        block_m for better occupancy.
+        """
+        best_bm = 1
+        best_tile_n = self._tile_n_for_block_m(1)
+
+        for bm in [2, 4, 8, 16]:
+            try:
+                tn = self._tile_n_for_block_m(bm)
+            except ValueError:
+                continue
+            if tn == 0:
+                # Single-tile is always better: prefer larger block_m
+                best_bm = bm
+                best_tile_n = tn
+            elif best_tile_n == 0:
+                pass
+            else:
+                best_num = (self.N_padded + best_tile_n - 1) // best_tile_n
+                curr_num = (self.N_padded + tn - 1) // tn
+                if curr_num < best_num:
+                    best_bm = bm
+                    best_tile_n = tn
+
+        return {"block_m": best_bm, "threads": 256, "tile_n": best_tile_n}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -312,14 +353,15 @@ class LogSumExpKernel(Kernel):
         block_m and threads to the autotuner.
         """
         tile_n = getattr(self, "_tile_n", self.default_config["tile_n"])
+        budget = self._smem_budget
         smem_per_row = self.N_padded * self._elem_bytes
-        max_block_m_no_tile = SHARED_MEMORY_BUDGET_BYTES // smem_per_row if smem_per_row > 0 else 16
+        max_block_m_no_tile = budget // smem_per_row if smem_per_row > 0 else 16
         threads_list = [128, 256]
 
         configs = []
         for bm in [1, 2, 4, 8, 16]:
             try:
-                compute_tile_n(bm, self._elem_bytes, self.N_padded)
+                compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
             except ValueError:
                 continue
             bm_tile_n = self._tile_n_for_block_m(bm)
@@ -336,16 +378,18 @@ class LogSumExpKernel(Kernel):
         return configs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the logsumexp kernel."""
+        """Run the logsumexp kernel.
+
+        Accepts an ``(M, N)`` tensor (unpadded) or ``(M, N_padded)``
+        (pre-padded).  Any alignment padding required by T.copy() is
+        handled here, keeping the Op layer free of host-side ``F.pad``.
+        """
+        # Pad to N_padded if the caller passed the raw (M, N) tensor.
+        if x.shape[-1] < self.N_padded:
+            pad_cols = self.N_padded - x.shape[-1]
+            x = torch.nn.functional.pad(x, (0, pad_cols), value=float("-inf"))
+
         tile_n = self._tile_n
-
-        # For the tiled path, the input may need extra padding beyond N_padded
-        # to make columns a multiple of tile_n.
-        total_cols = _compute_padded_cols(self.N, tile_n)
-        if x.shape[1] < total_cols:
-            import torch.nn.functional as _F
-
-            x = _F.pad(x, (0, total_cols - x.shape[1]), value=float("-inf"))
 
         return _logsumexp_fwd_wrapped(
             self.M,
