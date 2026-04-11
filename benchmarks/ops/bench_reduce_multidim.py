@@ -678,8 +678,7 @@ class LogSumExpMultidimBenchmark(BenchmarkBase):
         total_elems = 1
         for s in t.shape:
             total_elems *= s
-        # logsumexp: exp per element + sum + log ≈ 3 * total_elems
-        return 3 * total_elems
+        return total_elems
 
     def calculate_memory(self) -> Optional[float]:
         t = self.workload
