@@ -44,9 +44,10 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
     """Build a single-tile logsumexp kernel (N fits in smem).
 
     Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
-    ``DEFAULT_ALIGNMENT``, the kernel fills shared memory with ``-inf``
-    and loads only the valid ``N`` columns (kernel-side boundary handling).
-    When ``N`` is already aligned, the fast ``T.copy`` path is used.
+    ``DEFAULT_ALIGNMENT``, the kernel uses element-wise ``T.if_then_else``
+    loads that substitute ``-inf`` for out-of-bounds columns (kernel-side
+    boundary handling).  When ``N`` is already aligned, the fast ``T.copy``
+    path is used.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     _needs_pad = N_padded != N

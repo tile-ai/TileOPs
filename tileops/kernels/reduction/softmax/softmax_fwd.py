@@ -45,9 +45,10 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
     """Build a single-tile softmax/log_softmax kernel (N fits in smem).
 
     Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
-    ``DEFAULT_ALIGNMENT``, the kernel fills shared memory with ``-inf``
-    and loads only the valid ``N`` columns (kernel-side boundary handling).
-    When ``N`` is already aligned, the fast ``T.copy`` path is used.
+    ``DEFAULT_ALIGNMENT``, the kernel uses element-wise ``T.if_then_else``
+    loads that substitute ``-inf`` for out-of-bounds columns (kernel-side
+    boundary handling).  When ``N`` is already aligned, the fast ``T.copy``
+    path is used.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     _needs_pad = N_padded != N
@@ -136,13 +137,23 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
                     T.fill(row_max, -T.infinity("float32"))
                     T.reduce_max(x_f32, row_max, dim=1, clear=False)
 
+                    # Compute exp(x - max) into a separate fragment so x_f32
+                    # retains the original values for the stable log_softmax
+                    # formula: (x - max) - log(sum(exp(x - max))).
+                    exp_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                     for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
-                    T.reduce_sum(x_f32, row_sum, dim=1)
+                        exp_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
+                    T.reduce_sum(exp_f32, row_sum, dim=1)
 
+                    log_sum = T.alloc_fragment((block_m,), "float32")
+                    for i in T.Parallel(block_m):
+                        log_sum[i] = T.log(row_sum[i])
+
+                    # log_softmax = (x - max) - log(sum), avoids log(0) on
+                    # padding columns (they stay at -inf via subtraction).
                     out_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                     for i, j in T.Parallel(block_m, N_padded):
-                        out_f32[i, j] = T.log(x_f32[i, j] / row_sum[i])
+                        out_f32[i, j] = x_f32[i, j] - row_max[i] - log_sum[i]
 
                     for i, j in T.Parallel(block_m, N_padded):
                         x_local[i, j] = out_f32[i, j]
