@@ -2,9 +2,14 @@
 
 Each op reduces along the configured ``dim`` and supports arbitrary-rank input.
 The ``dim`` parameter accepts ``int`` or ``list[int]`` for multi-dim reduction.
-The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment,
-calls the kernel, trims padding, and reshapes the output back.  Kernels are
-cached by ``(M, N)`` so that the same op instance can handle varying shapes.
+The Op layer validates inputs, reshapes to 2D (M, N), and calls the kernel.
+For simple and Welford reduce ops, alignment padding is handled inside the
+kernel via masked loads with identity-element fills, eliminating host-side
+``F.pad`` from the forward path.  Other ops that inherit ``_ReduceOpBase``
+(argreduce, logical, vector_norm) continue to use host-side padding until
+their kernels are converted.
+Kernels are cached by ``(M, N)`` so that the same op instance can handle
+varying shapes.
 """
 
 from math import prod
@@ -63,6 +68,7 @@ class _ReduceOpBase(Op):
     _op_kind: str = ""  # overridden by subclasses
     _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
     _kernel_cls: type = ReduceKernel  # overridden by subclasses for different kernel classes
+    _kernel_handles_padding: bool = False  # True when kernel accepts (M, N) with masked loads
 
     def __init__(
         self,
@@ -110,11 +116,16 @@ class _ReduceOpBase(Op):
         return {self._kernel_key: self._kernel_cls}
 
     # ------------------------------------------------------------------
-    # Pad value (subclasses may override)
+    # Pad value (subclasses may override; used only when
+    # _kernel_handles_padding is False)
     # ------------------------------------------------------------------
 
     def _pad_value(self) -> float:
-        """Return the identity element used when padding to alignment."""
+        """Return the identity element used when padding to alignment.
+
+        Only used when ``_kernel_handles_padding`` is ``False`` (i.e. the
+        kernel expects pre-padded input from the Op layer).
+        """
         return 0.0
 
     # ------------------------------------------------------------------
@@ -179,11 +190,16 @@ class _ReduceOpBase(Op):
     def _prepare_input(
         self, x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Size, object, object]:
-        """Validate, derive M/N, transpose, reshape to 2D, pad.
+        """Validate, derive M/N, transpose, reshape to 2D, optionally pad.
 
-        Returns ``(x_2d_padded, orig_shape, dim_info, kernel)`` where
+        Returns ``(x_2d, orig_shape, dim_info, kernel)`` where
         *dim_info* is either an ``int`` (single-dim) or ``list[int]``
         (multi-dim).
+
+        When ``_kernel_handles_padding`` is ``True``, the raw ``(M, N)``
+        tensor is passed through -- the kernel handles alignment internally
+        via masked loads.  Otherwise, host-side ``F.pad`` is applied for
+        backward compatibility with kernels that expect ``(M, N_padded)``.
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
@@ -202,11 +218,12 @@ class _ReduceOpBase(Op):
             M = prod(x.shape[:-1])
             x = x.reshape(M, N)
             kernel = self._get_or_create_kernel(M, N)
-            N_padded = align_up(N, DEFAULT_ALIGNMENT)
-            if N_padded != N:
-                pv = self._pad_value()
-                pad = (0, N_padded - N)
-                x = F.pad(x, pad) if pv == 0.0 else F.pad(x, pad, value=pv)
+            if not self._kernel_handles_padding:
+                N_padded = align_up(N, DEFAULT_ALIGNMENT)
+                if N_padded != N:
+                    pv = self._pad_value()
+                    pad = (0, N_padded - N)
+                    x = F.pad(x, pad) if pv == 0.0 else F.pad(x, pad, value=pv)
             return x, orig_shape, dims, kernel
 
         # --- single-dim path ---
@@ -227,11 +244,12 @@ class _ReduceOpBase(Op):
 
         kernel = self._get_or_create_kernel(M, N)
 
-        N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        if N_padded != N:
-            pv = self._pad_value()
-            pad = (0, N_padded - N)
-            x = F.pad(x, pad) if pv == 0.0 else F.pad(x, pad, value=pv)
+        if not self._kernel_handles_padding:
+            N_padded = align_up(N, DEFAULT_ALIGNMENT)
+            if N_padded != N:
+                pv = self._pad_value()
+                pad = (0, N_padded - N)
+                x = F.pad(x, pad) if pv == 0.0 else F.pad(x, pad, value=pv)
 
         return x, orig_shape, dim, kernel
 
@@ -272,6 +290,9 @@ class _SimpleReduceOp(_ReduceOpBase):
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
+    Alignment padding is handled inside the kernel via masked loads with
+    identity-element fills, so no host-side ``F.pad`` is needed.
+
     Args:
         dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default -1).  Accepts ``int`` or
@@ -281,15 +302,7 @@ class _SimpleReduceOp(_ReduceOpBase):
         tune: Whether to autotune (default False).
     """
 
-    def _pad_value(self) -> float:
-        """Return the identity element used when padding to alignment."""
-        if self._op_kind == "prod":
-            return 1.0
-        if self._op_kind == "amin":
-            return float("inf")
-        if self._op_kind == "amax":
-            return float("-inf")
-        return 0.0
+    _kernel_handles_padding = True
 
 
 class SumFwdOp(_SimpleReduceOp):
@@ -334,6 +347,9 @@ class _WelfordReduceOp(_ReduceOpBase):
     M and N are derived from the input tensor at forward time, and kernels
     are cached by ``(M, N)`` to avoid rebuilds.
 
+    Alignment padding is handled inside the kernel via masked loads,
+    so no host-side ``F.pad`` is needed.
+
     Args:
         dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default -1).  Accepts ``int`` or
@@ -343,6 +359,8 @@ class _WelfordReduceOp(_ReduceOpBase):
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
+
+    _kernel_handles_padding = True
 
     def __init__(
         self,

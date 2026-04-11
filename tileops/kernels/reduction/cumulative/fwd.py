@@ -8,7 +8,12 @@ a per-row running accumulator.  The tiled approach reduces shared memory
 usage (``block_m * block_n`` instead of ``block_m * N_padded``) and
 improves memory access patterns for better GPU utilization.
 
-Both operate on 2D (M, N_padded) tensors; the Op layer handles reshape.
+Accepts raw ``(M, N)`` input tensors.  Boundary handling for non-aligned
+N is performed inside the kernel via masked loads with identity-element
+fills (0 for cumsum, 1 for cumprod), eliminating host-side ``F.pad``
+from the forward path.  Output is ``(M, N_padded)`` and the Op layer
+trims back to N columns.
+
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
 memory instructions.
 """
@@ -39,11 +44,16 @@ _DEFAULT_BLOCK_N: int = 128
 def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build a TileLang inclusive prefix scan kernel.
 
+    Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
+    ``block_n`` (which must divide ``N_padded``), the last tile uses
+    element-wise ``T.if_then_else`` loads that substitute the identity
+    element (0 for sum, 1 for prod) for out-of-bounds columns.  Preceding
+    tiles use the fast vectorized ``T.copy`` path since their columns are
+    fully in-bounds.
+
     Uses a tiled approach: the N dimension is divided into tiles of
     ``block_n`` elements. Each tile is loaded via shared memory, scanned
-    sequentially with the running accumulator, and written back.  This
-    reduces register pressure and shared memory usage compared to loading
-    the full row, enabling larger ``block_m`` values and better occupancy.
+    sequentially with the running accumulator, and written back.
 
     Args:
         M: Number of rows (product of all leading dimensions).
@@ -55,16 +65,20 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
         A TileLang JIT-compiled kernel factory accepting (block_m, block_n, threads).
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    _identity = 0.0 if op_kind == "sum" else 1.0
 
     if op_kind == "sum":
 
         @tilelang.jit(out_idx=[1])
         def _func(block_m, block_n, threads):
             n_tiles = N_padded // block_n
+            # The last tile may have out-of-bounds columns when N is not
+            # a multiple of block_n.
+            _needs_mask = (n_tiles * block_n) > N
 
             @T.prim_func
             def main(
-                x: T.Tensor[(M, N_padded), dtype],
+                x: T.Tensor[(M, N), dtype],
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -80,12 +94,31 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
 
                     # Process N dimension in tiles
                     for tile_idx in T.Serial(n_tiles):
-                        # Load tile via shared memory
-                        T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
-
-                        # Cast to fp32
-                        for i, j in T.Parallel(block_m, block_n):
-                            tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
+                        if _needs_mask:
+                            # Fast path for all tiles except the last
+                            with T.If(tile_idx < n_tiles - 1):
+                                with T.Then():
+                                    T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
+                                    for i, j in T.Parallel(block_m, block_n):
+                                        tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
+                                with T.Else():
+                                    # Last tile: masked load
+                                    for i, j in T.Parallel(block_m, block_n):
+                                        tile_f32[i, j] = T.if_then_else(
+                                            T.And(
+                                                pid_m * block_m + i < M,
+                                                tile_idx * block_n + j < N,
+                                            ),
+                                            T.cast(
+                                                x[pid_m * block_m + i, tile_idx * block_n + j],
+                                                "float32",
+                                            ),
+                                            T.cast(0.0, "float32"),
+                                        )
+                        else:
+                            T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
+                            for i, j in T.Parallel(block_m, block_n):
+                                tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
 
                         # Inclusive prefix sum within tile
                         for i in T.Parallel(block_m):
@@ -105,10 +138,11 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
         @tilelang.jit(out_idx=[1])
         def _func(block_m, block_n, threads):
             n_tiles = N_padded // block_n
+            _needs_mask = (n_tiles * block_n) > N
 
             @T.prim_func
             def main(
-                x: T.Tensor[(M, N_padded), dtype],
+                x: T.Tensor[(M, N), dtype],
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -124,12 +158,29 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
 
                     # Process N dimension in tiles
                     for tile_idx in T.Serial(n_tiles):
-                        # Load tile via shared memory
-                        T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
-
-                        # Cast to fp32
-                        for i, j in T.Parallel(block_m, block_n):
-                            tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
+                        if _needs_mask:
+                            with T.If(tile_idx < n_tiles - 1):
+                                with T.Then():
+                                    T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
+                                    for i, j in T.Parallel(block_m, block_n):
+                                        tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
+                                with T.Else():
+                                    for i, j in T.Parallel(block_m, block_n):
+                                        tile_f32[i, j] = T.if_then_else(
+                                            T.And(
+                                                pid_m * block_m + i < M,
+                                                tile_idx * block_n + j < N,
+                                            ),
+                                            T.cast(
+                                                x[pid_m * block_m + i, tile_idx * block_n + j],
+                                                "float32",
+                                            ),
+                                            T.cast(1.0, "float32"),
+                                        )
+                        else:
+                            T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
+                            for i, j in T.Parallel(block_m, block_n):
+                                tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
 
                         # Inclusive prefix product within tile
                         for i in T.Parallel(block_m):
@@ -184,6 +235,11 @@ class CumulativeKernel(Kernel):
     memory copies. Uses a tiled sequential scan loop along the last
     dimension: the N dimension is divided into tiles of ``block_n``
     elements, reducing shared memory usage and improving occupancy.
+
+    Boundary handling for non-aligned N is performed inside the kernel via
+    masked loads with identity-element fills (0 for sum, 1 for prod), so
+    no host-side ``F.pad`` is needed.  The ``forward()`` method accepts
+    raw ``(M, N)`` tensors and returns ``(M, N_padded)`` output.
 
     Args:
         M: Number of rows (product of all dims except last).
@@ -259,7 +315,8 @@ class CumulativeKernel(Kernel):
         """Run the cumulative scan kernel.
 
         Args:
-            x: Input tensor of shape (M, N_padded).
+            x: Input tensor of shape (M, N).  Alignment padding is
+                handled internally via masked loads.
 
         Returns:
             Output tensor of shape (M, N_padded).

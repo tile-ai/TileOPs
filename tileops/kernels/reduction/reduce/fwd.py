@@ -4,7 +4,12 @@ Two kernel families:
   - _simple_reduce_kernel: single-pass reduce for sum/mean/amin/amax/prod.
   - _welford_reduce_kernel: two-pass Welford for std/var/var_mean.
 
-Both operate on 2D (M, N_padded) tensors; the Op layer handles reshape.
+Both accept raw ``(M, N)`` tensors.  Boundary handling for non-aligned N
+is performed inside the kernel via masked loads with identity-element fills,
+eliminating host-side ``F.pad`` from the forward path.  When ``N`` is already
+a multiple of ``DEFAULT_ALIGNMENT``, the fast vectorized ``T.copy`` path is
+used.
+
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
 memory instructions.
 """
@@ -39,9 +44,27 @@ _WELFORD_KINDS = {"std", "var", "var_mean"}
 # ---------------------------------------------------------------------------
 
 
+def _pad_value_for_op(op_kind: str) -> float:
+    """Return the identity element for padding columns of the given op."""
+    if op_kind == "prod":
+        return 1.0
+    if op_kind == "amin":
+        return float("inf")
+    if op_kind == "amax":
+        return float("-inf")
+    # sum, mean, std, var, var_mean: zero padding
+    return 0.0
+
+
 @functools.lru_cache(maxsize=32)
 def _simple_reduce_kernel(M, N, op_kind, dtype):
     """Build a simple reduce kernel for sum/mean/amax/amin/prod.
+
+    Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
+    ``DEFAULT_ALIGNMENT``, the kernel uses element-wise ``T.if_then_else``
+    loads that substitute the identity element for out-of-bounds columns
+    (kernel-side boundary handling).  When ``N`` is already aligned, the
+    fast ``T.copy`` path is used.
 
     For prod, we compute exp(sum(log(abs(x)))) * sign, which is numerically
     more stable than direct T.reduce_prod for large N.
@@ -51,11 +74,14 @@ def _simple_reduce_kernel(M, N, op_kind, dtype):
     if op_kind == "prod":
         return _prod_reduce_kernel(M, N, dtype)
 
+    _needs_pad = N_padded != N
+    _pad_val = _pad_value_for_op(op_kind)
+
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
         @T.prim_func
         def main(
-            x: T.Tensor[(M, N_padded), dtype],
+            x: T.Tensor[(M, N), dtype],
             out: T.Tensor[(M,), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -64,12 +90,23 @@ def _simple_reduce_kernel(M, N, op_kind, dtype):
                 acc = T.alloc_fragment((block_m,), "float32")
                 out_local = T.alloc_fragment((block_m,), dtype)
 
-                # Load via shared memory
-                T.copy(x[pid_m * block_m, 0], shared_buf)
+                if _needs_pad:
+                    # Kernel-side boundary handling: element-wise load
+                    # with T.if_then_else masking for padding columns
+                    # and row-tail safety (M % block_m != 0).
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.if_then_else(
+                            T.And(pid_m * block_m + i < M, j < N),
+                            T.cast(x[pid_m * block_m + i, j], "float32"),
+                            T.cast(_pad_val, "float32"),
+                        )
+                else:
+                    # Load via shared memory (fast vectorized path)
+                    T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                # Cast to fp32
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                    # Cast to fp32
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                 # Reduce
                 if op_kind == "sum":
@@ -102,14 +139,20 @@ def _simple_reduce_kernel(M, N, op_kind, dtype):
 
 @functools.lru_cache(maxsize=32)
 def _prod_reduce_kernel(M, N, dtype):
-    """Product reduce via log-sum-exp: exp(sum(log(|x|))) * sign."""
+    """Product reduce via log-sum-exp: exp(sum(log(|x|))) * sign.
+
+    Accepts an ``(M, N)`` input tensor.  Padding columns are filled with
+    ``1.0`` (the identity for product) via ``T.if_then_else`` when ``N``
+    is not a multiple of ``DEFAULT_ALIGNMENT``.
+    """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    _needs_pad = N_padded != N
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
         @T.prim_func
         def main(
-            x: T.Tensor[(M, N_padded), dtype],
+            x: T.Tensor[(M, N), dtype],
             out: T.Tensor[(M,), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -121,14 +164,24 @@ def _prod_reduce_kernel(M, N, dtype):
                 acc_sign = T.alloc_fragment((block_m,), "float32")
                 out_local = T.alloc_fragment((block_m,), dtype)
 
-                T.copy(x[pid_m * block_m, 0], shared_buf)
+                if _needs_pad:
+                    # Kernel-side boundary handling: fill out-of-bounds
+                    # columns with 1.0 (identity for product).
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.if_then_else(
+                            T.And(pid_m * block_m + i < M, j < N),
+                            T.cast(x[pid_m * block_m + i, j], "float32"),
+                            T.cast(1.0, "float32"),
+                        )
+                else:
+                    T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                 # Compute log(|x|) and count negatives
-                # Padded positions have x=0; set log_abs to 0 (log(1)=0, so
-                # they contribute a factor of 1 to the product).
+                # Padded positions are 1.0, so log(1.0)=0 (neutral for sum)
+                # and sign_neg=0 (non-negative).
                 for i, j in T.Parallel(block_m, N_padded):
                     abs_val = T.abs(x_f32[i, j])
                     # Use a small epsilon to avoid log(0)
@@ -136,19 +189,10 @@ def _prod_reduce_kernel(M, N, dtype):
                     # 1 if negative, 0 if non-negative
                     sign_neg[i, j] = T.if_then_else(x_f32[i, j] < 0.0, 1.0, 0.0)
 
-                # Zero out padded positions for log_abs (they are 0 from input
-                # padding but log(0) is -inf, so override them)
-                # Padding positions have x=0 after F.pad in Op, so abs_val=0,
-                # log_abs=-inf. We need them to be 0 (neutral for sum).
-                # But since padded x = 0, the product is 0 anyway for non-pad-safe ops.
-                # The Op layer sets padded elements to 1.0 for prod.
-
                 T.reduce_sum(log_abs, acc_log, dim=1)
                 T.reduce_sum(sign_neg, acc_sign, dim=1)
 
                 for i in T.Parallel(block_m):
-                    # Subtract padding contribution (padding elements set to 1.0,
-                    # so log(1.0)=0 -- no correction needed if Op pads with 1.0)
                     prod_val = T.exp(acc_log[i])
                     # If odd number of negatives, negate
                     # Use fmod to check parity
@@ -170,8 +214,15 @@ def _prod_reduce_kernel(M, N, dtype):
 
 @functools.lru_cache(maxsize=32)
 def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
-    """Build a Welford-based reduce kernel for std/var/var_mean."""
+    """Build a Welford-based reduce kernel for std/var/var_mean.
+
+    Accepts an ``(M, N)`` input tensor.  Padding columns are filled with
+    ``0.0`` via masked loads when ``N`` is not aligned.  The padding
+    correction (subtracting ``pad_count * mean^2`` from the variance sum)
+    is applied analytically, so the result is exact regardless of padding.
+    """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    _needs_pad = N_padded != N
 
     out_idx = [1, 2] if op_kind == "var_mean" else [1]
 
@@ -181,7 +232,7 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
 
             @T.prim_func
             def main(
-                x: T.Tensor[(M, N_padded), dtype],
+                x: T.Tensor[(M, N), dtype],
                 out_var: T.Tensor[(M,), dtype],
                 out_mean: T.Tensor[(M,), dtype],
             ):
@@ -195,10 +246,18 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     out_v = T.alloc_fragment((block_m,), dtype)
                     out_m = T.alloc_fragment((block_m,), dtype)
 
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
+                    if _needs_pad:
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(0.0, "float32"),
+                            )
+                    else:
+                        T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                     # Mean
                     T.reduce_sum(x_f32, row_sum, dim=1)
@@ -226,7 +285,7 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
             # std or var (single output)
             @T.prim_func
             def main(
-                x: T.Tensor[(M, N_padded), dtype],
+                x: T.Tensor[(M, N), dtype],
                 out: T.Tensor[(M,), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -238,10 +297,18 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     var_sum = T.alloc_fragment((block_m,), "float32")
                     out_local = T.alloc_fragment((block_m,), dtype)
 
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
+                    if _needs_pad:
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(0.0, "float32"),
+                            )
+                    else:
+                        T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                     # Mean
                     T.reduce_sum(x_f32, row_sum, dim=1)
@@ -340,6 +407,10 @@ class ReduceKernel(Kernel):
 
     Supports SM80+ architectures. Uses 256-element alignment for shared memory
     copies. Dispatches to simple or Welford kernel based on op_kind.
+
+    Boundary handling for non-aligned N is performed inside the kernel via
+    masked loads with identity-element fills, so no host-side ``F.pad`` is
+    needed.  The ``forward()`` method accepts raw ``(M, N)`` tensors.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
