@@ -793,7 +793,23 @@ def _ast_manifest_call_usage(
     op_name: str,
     target_names: set[str],
 ) -> dict[str, bool]:
-    """Check whether target functions are imported and called with this op name."""
+    """Check whether target functions are imported and called with this op name.
+
+    Recognises two patterns:
+
+    1. **Direct** — ``from tileops.manifest import load_workloads`` /
+       ``eval_roofline`` called with the op name.
+    2. **Indirect via benchmarks.benchmark** — ``workloads_to_params``
+       (wraps ``load_workloads``) and ``ManifestBenchmark`` (wraps
+       ``eval_roofline``) imported from ``benchmarks.benchmark`` and
+       called with the op name as the first argument.
+    """
+    # Maps from the indirect helper name → the direct target it satisfies.
+    _INDIRECT_EQUIV: dict[str, str] = {
+        "workloads_to_params": "load_workloads",
+        "ManifestBenchmark": "eval_roofline",
+    }
+
     imported: set[str] = set()
     matched_calls: set[str] = set()
     bindings = _resolve_constant_str_bindings(tree)
@@ -804,12 +820,25 @@ def _ast_manifest_call_usage(
                 for alias in node.names:
                     if alias.name in target_names:
                         imported.add(alias.name)
+            # Indirect helpers live in benchmarks.benchmark.
+            if node.module == "benchmarks.benchmark" and node.names:
+                for alias in node.names:
+                    equiv = _INDIRECT_EQUIV.get(alias.name)
+                    if equiv and equiv in target_names:
+                        imported.add(equiv)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             func_name = node.func.id
+            # Direct call (load_workloads / eval_roofline).
             if func_name in target_names and _call_uses_expected_op_name(
                 node, op_name, bindings,
             ):
                 matched_calls.add(func_name)
+            # Indirect call (workloads_to_params / ManifestBenchmark).
+            equiv = _INDIRECT_EQUIV.get(func_name)
+            if equiv and equiv in target_names and _call_uses_expected_op_name(
+                node, op_name, bindings,
+            ):
+                matched_calls.add(equiv)
 
     return {name: (name in imported and name in matched_calls) for name in target_names}
 

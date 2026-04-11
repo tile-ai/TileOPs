@@ -5,9 +5,11 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Callable, Optional, Tuple
 
+import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
+from tileops.manifest import eval_roofline, load_workloads
 from workloads.base import WorkloadBase
 
 _logger = logging.getLogger("tileops.bench")
@@ -258,6 +260,86 @@ class BenchmarkBase(ABC):
         if memory is not None:
             result["bandwidth_tbs"] = memory / latency * 1e-9
         return result
+
+
+# ---------------------------------------------------------------------------
+# Manifest-driven benchmark helpers
+# ---------------------------------------------------------------------------
+
+
+def roofline_vars(workload: WorkloadBase) -> dict:
+    """Extract roofline variables from a workload (shape + dtype -> M, N, elem_bytes).
+
+    Standard extraction for reduction-family ops where the manifest roofline
+    expressions use ``M``, ``N``, and ``elem_bytes``.  Ops with non-standard
+    variable requirements should override
+    :meth:`ManifestBenchmark._roofline_vars` instead of using this directly.
+    """
+    elem_bytes = torch.tensor([], dtype=workload.dtype).element_size()
+    N = workload.shape[-1]
+    M = 1
+    for s in workload.shape[:-1]:
+        M *= s
+    return dict(M=M, N=N, elem_bytes=elem_bytes)
+
+
+def workloads_to_params(op_name: str):
+    """Convert manifest workload dicts for *op_name* to pytest params: (shape, dtype).
+
+    Returns a list of ``pytest.param(shape, dtype, id=...)`` suitable for
+    ``@pytest.mark.parametrize("shape, dtype", ...)``.
+    """
+    workloads = load_workloads(op_name)
+    params = []
+    for w in workloads:
+        shape = tuple(w["x_shape"])
+        label = w.get("label", "x".join(str(s) for s in shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(
+                shape, dtype,
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
+
+
+class ManifestBenchmark(BenchmarkBase):
+    """Generic benchmark that derives FLOP/memory counts from ops_manifest.yaml.
+
+    Accepts an op name, calls ``eval_roofline()`` with auto-extracted roofline
+    vars, and caches the result.  Subclass and override ``_roofline_vars()``
+    for ops with non-standard variable extraction.
+
+    Usage::
+
+        bm = ManifestBenchmark("SoftmaxFwdOp", workload)
+        result = bm.profile(op, *inputs)
+    """
+
+    def __init__(self, op_name: str, workload: WorkloadBase):
+        super().__init__(workload)
+        self._op_name = op_name
+        self._roofline_cache: Optional[tuple[float, float]] = None
+
+    def _roofline_vars(self) -> dict:
+        """Extract roofline variable bindings from the workload.
+
+        Override this for ops whose manifest roofline expressions require
+        variables beyond the standard ``M``, ``N``, ``elem_bytes``.
+        """
+        return roofline_vars(self.workload)
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                self._op_name, **self._roofline_vars())
+        return self._roofline_cache
+
+    def calculate_flops(self) -> Optional[float]:
+        return self._get_roofline()[0]
+
+    def calculate_memory(self) -> Optional[float]:
+        return self._get_roofline()[1]
 
 
 def _extract_op_config(op: object) -> Optional[dict]:
