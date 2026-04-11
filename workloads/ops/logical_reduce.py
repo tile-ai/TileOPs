@@ -3,11 +3,11 @@ import torch
 from workloads.base import WorkloadBase
 
 
-class AnyTest(WorkloadBase):
-    """Workload definition for AnyFwdOp.
+class _LogicalTest(WorkloadBase):
+    """Shared workload base for logical reduce ops (any, all, count_nonzero).
 
     Generates inputs with a mix of zeros and non-zeros for meaningful
-    logical reduction testing.  Boolean, integer, float, and complex
+    logical reduction testing. Boolean, integer, float, and complex
     dtypes are supported.
     """
 
@@ -19,34 +19,16 @@ class AnyTest(WorkloadBase):
         return (_make_logical_input(self.shape, self.dtype),)
 
 
-class AllTest(WorkloadBase):
-    """Workload definition for AllFwdOp.
-
-    Same input-generation strategy as AnyTest (rows with all-True
-    and all-False are forced for meaningful coverage).
-    """
-
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (_make_logical_input(self.shape, self.dtype),)
+class AnyTest(_LogicalTest):
+    """Workload definition for AnyFwdOp."""
 
 
-class CountNonzeroTest(WorkloadBase):
-    """Workload definition for CountNonzeroFwdOp.
+class AllTest(_LogicalTest):
+    """Workload definition for AllFwdOp."""
 
-    Uses the same mixed-zero input strategy as the other logical reduce
-    workloads.
-    """
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (_make_logical_input(self.shape, self.dtype),)
+class CountNonzeroTest(_LogicalTest):
+    """Workload definition for CountNonzeroFwdOp."""
 
 
 # ---------------------------------------------------------------------------
