@@ -113,7 +113,7 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                                 x[pid_m * block_m + i, tile_idx * block_n + j],
                                                 "float32",
                                             ),
-                                            T.cast(0.0, "float32"),
+                                            T.cast(_identity, "float32"),
                                         )
                         else:
                             T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
@@ -175,7 +175,7 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                                 x[pid_m * block_m + i, tile_idx * block_n + j],
                                                 "float32",
                                             ),
-                                            T.cast(1.0, "float32"),
+                                            T.cast(_identity, "float32"),
                                         )
                         else:
                             T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
