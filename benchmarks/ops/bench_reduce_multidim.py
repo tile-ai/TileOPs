@@ -170,8 +170,8 @@ class ArgreduceMultidimFixture(FixtureBase):
                     id="argmax-7B-dim0-nokeepdim",
                 ),
                 pytest.param(
-                    (4, 128, 4096), 0, True, torch.float16, "argmin",
-                    id="argmin-7B-dim0-keepdim",
+                    (4, 128, 4096), 0, True, torch.bfloat16, "argmin",
+                    id="argmin-7B-dim0-keepdim-bf16",
                 ),
                 # dim=1: reduce across seq — LLaMA-7B (batch=4, seq=128, hidden=4096)
                 pytest.param(
