@@ -94,6 +94,7 @@ class VectorNorm1DFixture(FixtureBase):
 # Map op_kind to the ord parameter for torch.linalg.vector_norm
 _ORD_MAP = {"l1": 1, "l2": 2, "inf": float("inf")}
 
+
 class VectorNormTest(_L1NormWorkload, TestBase):
     """Parameterized test helper for vector norm ops."""
 
