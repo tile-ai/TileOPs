@@ -77,12 +77,21 @@ class WelfordNonAlignedFixture(FixtureBase):
         (
             "m, n, dtype",
             [
+                # One representative smoke case (one above alignment boundary)
+                pytest.param(
+                    32, 257, torch.float16,
+                    marks=pytest.mark.smoke,
+                    id="m32_n257_fp16",
+                ),
+            ]
+            + [
                 pytest.param(
                     32, n, torch.float16,
-                    marks=pytest.mark.smoke,
+                    marks=pytest.mark.full,
                     id=f"m32_n{n}_fp16",
                 )
                 for n in _NON_ALIGNED_N
+                if n != 257
             ]
             + [
                 pytest.param(
@@ -103,12 +112,20 @@ class WelfordNonAligned3DFixture(FixtureBase):
         (
             "batch, seq, hidden, dtype",
             [
+                # One representative smoke case (one below alignment boundary)
+                pytest.param(
+                    2, 16, 255, torch.float16,
+                    marks=pytest.mark.smoke,
+                    id="b2_s16_h255_fp16",
+                ),
+            ]
+            + [
                 pytest.param(
                     2, 16, n, torch.float16,
-                    marks=pytest.mark.smoke,
+                    marks=pytest.mark.full,
                     id=f"b2_s16_h{n}_fp16",
                 )
-                for n in [7, 100, 255, 257]
+                for n in [7, 100, 257]
             ]
             + [
                 pytest.param(
@@ -129,22 +146,22 @@ class WelfordNonAlignedMultiDimFixture(FixtureBase):
         (
             "shape, dims, keepdim, dtype",
             [
-                # (4, 7, 9): reducing dims [1,2] -> flattened N = 7*9 = 63
-                pytest.param(
-                    (4, 7, 9), [1, 2], False, torch.float16,
-                    marks=pytest.mark.smoke,
-                    id="flat63_fp16",
-                ),
-                # (2, 5, 51): reducing dims [1,2] -> flattened N = 5*51 = 255
+                # One representative smoke case (flattened N = 5*51 = 255)
                 pytest.param(
                     (2, 5, 51), [1, 2], False, torch.float16,
                     marks=pytest.mark.smoke,
                     id="flat255_fp16",
                 ),
+                # (4, 7, 9): reducing dims [1,2] -> flattened N = 7*9 = 63
+                pytest.param(
+                    (4, 7, 9), [1, 2], False, torch.float16,
+                    marks=pytest.mark.full,
+                    id="flat63_fp16",
+                ),
                 # (3, 3, 86): reducing dims [1,2] -> flattened N = 3*86 = 258
                 pytest.param(
                     (3, 3, 86), [1, 2], False, torch.float16,
-                    marks=pytest.mark.smoke,
+                    marks=pytest.mark.full,
                     id="flat258_fp16",
                 ),
                 # keepdim variant
