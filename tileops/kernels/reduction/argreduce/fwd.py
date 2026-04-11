@@ -17,7 +17,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
+from tileops.kernels.reduction._primitives import (
+    DEFAULT_ALIGNMENT,
+    SHARED_MEMORY_BUDGET_BYTES,
+    align_up,
+)
 
 __all__ = ["ArgreduceKernel"]
 
@@ -192,7 +196,14 @@ class ArgreduceKernel(Kernel):
         shared memory, so the constraint is skipped.
         """
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m_smem = (48 * 1024) // smem_per_row
+        max_block_m_smem = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
+        if max_block_m_smem == 0:
+            raise ValueError(
+                f"A single row requires {smem_per_row} bytes of shared memory, "
+                f"which exceeds the {SHARED_MEMORY_BUDGET_BYTES}-byte budget "
+                f"(N_padded={self.N_padded}, dtype={self.dtype}). "
+                f"Reduce the reduction dimension or use a dtype with smaller element size."
+            )
         threads = 128
         max_block_m = max_block_m_smem
         if self.N < DEFAULT_ALIGNMENT:
@@ -208,7 +219,14 @@ class ArgreduceKernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m_smem = (48 * 1024) // smem_per_row
+        max_block_m_smem = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
+        if max_block_m_smem == 0:
+            raise ValueError(
+                f"A single row requires {smem_per_row} bytes of shared memory, "
+                f"which exceeds the {SHARED_MEMORY_BUDGET_BYTES}-byte budget "
+                f"(N_padded={self.N_padded}, dtype={self.dtype}). "
+                f"Reduce the reduction dimension or use a dtype with smaller element size."
+            )
         threads_list = [128, 256]
         configs = []
         for threads in threads_list:
