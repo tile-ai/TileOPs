@@ -10,7 +10,6 @@ Output is always int64 (index values).
 """
 
 import functools
-import itertools
 from typing import Optional
 
 import tilelang
@@ -183,23 +182,40 @@ class ArgreduceKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        """Select default block_m based on shared memory budget."""
+        """Select default block_m based on shared memory budget.
+
+        Also enforces a TileLang layout-inference constraint:
+        ``block_m * N_padded <= 2 * threads`` (each thread handles at most 2
+        elements during the shared-memory copy).  This matters when the
+        reduction dimension is small (e.g. dim=0 on a 3D tensor), causing
+        ``N_padded`` to be much larger than ``N``.
+        """
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
+        max_block_m_smem = (48 * 1024) // smem_per_row
+        threads = 128
+        # TileLang layout constraint: block_m * N_padded <= 2 * threads
+        max_block_m_layout = (2 * threads) // self.N_padded
+        max_block_m = min(max_block_m_smem, max(max_block_m_layout, 1))
         block_m = 1
         for bm in [1, 2, 4, 8]:
             if bm <= max_block_m:
                 block_m = bm
-        return {"block_m": block_m, "threads": 128}
+        return {"block_m": block_m, "threads": threads}
 
     @property
     def autotune_configs(self) -> list[dict]:
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
-        block_ms = [bm for bm in [1, 2, 4, 8] if bm <= max_block_m]
+        max_block_m_smem = (48 * 1024) // smem_per_row
         threads_list = [128, 256]
-        configs = list(itertools.product(block_ms, threads_list))
-        return [{"block_m": bm, "threads": t} for bm, t in configs]
+        configs = []
+        for threads in threads_list:
+            # TileLang layout constraint: block_m * N_padded <= 2 * threads
+            max_block_m_layout = (2 * threads) // self.N_padded
+            max_block_m = min(max_block_m_smem, max(max_block_m_layout, 1))
+            for bm in [1, 2, 4, 8]:
+                if bm <= max_block_m:
+                    configs.append({"block_m": bm, "threads": threads})
+        return configs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the argmax/argmin kernel.

@@ -60,6 +60,22 @@ class Argreduce3DFixture(FixtureBase):
     ]
 
 
+class Argreduce3DDim0Fixture(FixtureBase):
+    """dim=0 reduction on 3D tensors — small outermost dim triggers
+    the TileLang layout constraint (N << N_padded)."""
+
+    PARAMS = [
+        (
+            "batch, seq, hidden, dtype",
+            [
+                pytest.param(4, 8, 256, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(4, 8, 256, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(4, 8, 256, torch.float32, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
 class Argreduce4DFixture(FixtureBase):
     PARAMS = [
         (
@@ -196,6 +212,34 @@ def test_argmax_1d(n: int, dtype: torch.dtype) -> None:
     assert torch.equal(y.view_as(ref), ref), "1D argmax mismatch"
 
 
+@Argreduce3DDim0Fixture
+def test_argmax_3d_dim0(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    """Argmax along dim=0 on 3D tensors (outermost-dim reduction)."""
+    from tileops.ops.reduction.argmax import ArgmaxFwdOp
+
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    op = ArgmaxFwdOp(dtype=dtype, dim=0)
+    ref = x.argmax(dim=0)
+    y = op(x)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert y.dtype == torch.int64
+    assert torch.equal(y, ref), f"3D dim=0 argmax mismatch: {(y != ref).sum().item()}"
+
+
+@Argreduce3DDim0Fixture
+def test_argmax_3d_dim0_keepdim(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    """Argmax along dim=0 with keepdim=True on 3D tensors."""
+    from tileops.ops.reduction.argmax import ArgmaxFwdOp
+
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    op = ArgmaxFwdOp(dtype=dtype, dim=0, keepdim=True)
+    ref = x.argmax(dim=0, keepdim=True)
+    y = op(x)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert y.dtype == torch.int64
+    assert torch.equal(y, ref), f"3D dim=0 keepdim argmax mismatch: {(y != ref).sum().item()}"
+
+
 @SpecArgreduceFixture
 def test_argmax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
     """Spec interface: ArgmaxFwdOp with dim + keepdim."""
@@ -271,6 +315,34 @@ def test_argmin_1d(n: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.dtype == torch.int64
     assert torch.equal(y.view_as(ref), ref), "1D argmin mismatch"
+
+
+@Argreduce3DDim0Fixture
+def test_argmin_3d_dim0(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    """Argmin along dim=0 on 3D tensors (outermost-dim reduction)."""
+    from tileops.ops.reduction.argmin import ArgminFwdOp
+
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    op = ArgminFwdOp(dtype=dtype, dim=0)
+    ref = x.argmin(dim=0)
+    y = op(x)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert y.dtype == torch.int64
+    assert torch.equal(y, ref), f"3D dim=0 argmin mismatch: {(y != ref).sum().item()}"
+
+
+@Argreduce3DDim0Fixture
+def test_argmin_3d_dim0_keepdim(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    """Argmin along dim=0 with keepdim=True on 3D tensors."""
+    from tileops.ops.reduction.argmin import ArgminFwdOp
+
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    op = ArgminFwdOp(dtype=dtype, dim=0, keepdim=True)
+    ref = x.argmin(dim=0, keepdim=True)
+    y = op(x)
+    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
+    assert y.dtype == torch.int64
+    assert torch.equal(y, ref), f"3D dim=0 keepdim argmin mismatch: {(y != ref).sum().item()}"
 
 
 @SpecArgreduceFixture
