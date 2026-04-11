@@ -51,8 +51,8 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     _needs_pad = N_padded != N
-    # Reinterpret -inf as the target dtype at Python level (compile-time
-    # constant) to avoid runtime reinterpret inside the kernel.
+    # Compile-time Python constant used for padding; it is still cast to
+    # the kernel dtype where needed inside the generated kernel.
     _neg_inf = float("-inf")
 
     if op_kind == "softmax":
