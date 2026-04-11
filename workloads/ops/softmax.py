@@ -1,39 +1,13 @@
-import torch
-
-from workloads.base import WorkloadBase
+from workloads.base import RandnTest
 
 
-class SoftmaxTest(WorkloadBase):
+class SoftmaxTest(RandnTest):
     """Workload definition for SoftmaxFwdOp (spec interface: shape + dtype)."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-
-class LogSoftmaxTest(WorkloadBase):
+class LogSoftmaxTest(RandnTest):
     """Workload definition for LogSoftmaxFwdOp (spec interface: shape + dtype)."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
-
-
-class LogSumExpTest(WorkloadBase):
+class LogSumExpTest(RandnTest):
     """Workload definition for LogSumExpFwdOp (spec interface: shape + dtype)."""
-
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
