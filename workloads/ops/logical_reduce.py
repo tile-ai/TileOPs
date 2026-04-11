@@ -57,8 +57,9 @@ class CountNonzeroTest(WorkloadBase):
 def _make_logical_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     """Create a tensor with a mix of zeros and non-zeros.
 
-    For 2-D+ inputs the first row is forced to all-zero (meaningful for
-    ``any``) and the second row to all-nonzero (meaningful for ``all``).
+    When the first dimension is large enough (>4), the first row is forced
+    to all-zero (meaningful for ``any``) and the second row to all-nonzero
+    (meaningful for ``all``).
     """
     m = shape[0] if len(shape) >= 1 else 1
 
