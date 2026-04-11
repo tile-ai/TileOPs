@@ -511,6 +511,8 @@ class SoftmaxKernel(Kernel):
         dtype: Data type (float32, float16, or bfloat16).
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
+        device_index: CUDA device index for shared memory budget query.
+            When ``None``, ``torch.cuda.current_device()`` is used.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -523,6 +525,7 @@ class SoftmaxKernel(Kernel):
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: int | None = None,
     ):
         super().__init__()
         if op_kind not in ("softmax", "log_softmax"):
@@ -535,7 +538,7 @@ class SoftmaxKernel(Kernel):
         self.dtype = dtype
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
-        self._smem_budget = device_smem_budget()
+        self._smem_budget = device_smem_budget(device_index)
 
         # Build self.kernel BEFORE init_config: when tune=True, init_config
         # delegates to autotune() which requires self.kernel to exist.

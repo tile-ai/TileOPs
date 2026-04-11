@@ -52,15 +52,24 @@ def device_smem_budget(device_index: int | None = None) -> int:
     so it is safe to use the full opt-in budget.
 
     Falls back to ``SHARED_MEMORY_BUDGET_BYTES`` (48 KiB) only if
-    CUDA/device properties are unavailable.
+    CUDA/device properties are unavailable.  Invalid explicit device
+    indices are not silently masked -- only the ``None`` (auto-detect)
+    case falls back gracefully.
     """
+    explicit = device_index is not None
     try:
         import torch
     except Exception:
+        if explicit:
+            raise
         return SHARED_MEMORY_BUDGET_BYTES
 
     try:
         if not torch.cuda.is_available():
+            if explicit:
+                raise RuntimeError(
+                    f"CUDA is not available but explicit device_index={device_index} was requested"
+                )
             return SHARED_MEMORY_BUDGET_BYTES
 
         if device_index is None:
@@ -72,6 +81,8 @@ def device_smem_budget(device_index: int | None = None) -> int:
             return smem_optin
         return getattr(props, "shared_memory_per_block", SHARED_MEMORY_BUDGET_BYTES)
     except (RuntimeError, AssertionError):
+        if explicit:
+            raise
         return SHARED_MEMORY_BUDGET_BYTES
 
 

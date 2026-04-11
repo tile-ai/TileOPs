@@ -99,7 +99,7 @@ class _SoftmaxBaseOp(Op):
             N = x.shape[-1]
             M = prod(x.shape[:-1])
             x = x.reshape(M, N)
-            kernel = self._get_or_create_kernel(M, N)
+            kernel = self._get_or_create_kernel(M, N, device_index=x.device.index)
             # Alignment padding is handled by the kernel's forward().
             y = kernel(x)
             N_padded = align_up(N, DEFAULT_ALIGNMENT)
@@ -127,8 +127,8 @@ class _SoftmaxBaseOp(Op):
 
         x = x.contiguous().reshape(M, N)
 
-        # Get or create cached kernel for this (M, N).
-        kernel = self._get_or_create_kernel(M, N)
+        # Get or create cached kernel for this (M, N, device).
+        kernel = self._get_or_create_kernel(M, N, device_index=x.device.index)
 
         # Alignment padding is handled by the kernel's forward().
         y = kernel(x)
@@ -140,13 +140,14 @@ class _SoftmaxBaseOp(Op):
 
         return self._reshape_output(y, orig_shape, dim, needs_transpose)
 
-    def _get_or_create_kernel(self, M: int, N: int) -> object:
-        """Return a cached kernel for (M, N), creating one if needed."""
-        key = (M, N)
+    def _get_or_create_kernel(self, M: int, N: int, device_index: int | None = None) -> object:
+        """Return a cached kernel for (M, N, device_index), creating one if needed."""
+        key = (M, N, device_index)
         if key not in self._kernel_cache:
             kernel_cls = self.kernel_map[self._kernel_key]
             self._kernel_cache[key] = kernel_cls(
-                M, N, self._op_kind, self.dtype, tune=self._tune
+                M, N, self._op_kind, self.dtype, tune=self._tune,
+                device_index=device_index,
             )
         return self._kernel_cache[key]
 
