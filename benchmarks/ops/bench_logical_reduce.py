@@ -41,7 +41,7 @@ def _roofline_vars(workload) -> dict:
 
 
 # ===================================================================
-# Benchmark classes -- use manifest roofline for FLOP/memory counts
+# Benchmark classes — use manifest roofline for FLOP/memory counts
 # ===================================================================
 
 
