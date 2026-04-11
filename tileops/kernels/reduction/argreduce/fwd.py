@@ -184,18 +184,21 @@ class ArgreduceKernel(Kernel):
     def default_config(self) -> dict:
         """Select default block_m based on shared memory budget.
 
-        Also enforces a TileLang layout-inference constraint:
-        ``block_m * N_padded <= 2 * threads`` (each thread handles at most 2
-        elements during the shared-memory copy).  This matters when the
-        reduction dimension is small (e.g. dim=0 on a 3D tensor), causing
-        ``N_padded`` to be much larger than ``N``.
+        When the original reduction dimension *N* is smaller than the
+        alignment boundary (``DEFAULT_ALIGNMENT``), padding inflates the row
+        width and TileLang's copy-layout inference requires
+        ``block_m * N_padded <= 2 * threads``.  For large *N* (>= alignment)
+        the rows are dense and the layout works at any block_m that fits in
+        shared memory, so the constraint is skipped.
         """
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
         max_block_m_smem = (48 * 1024) // smem_per_row
         threads = 128
-        # TileLang layout constraint: block_m * N_padded <= 2 * threads
-        max_block_m_layout = (2 * threads) // self.N_padded
-        max_block_m = min(max_block_m_smem, max(max_block_m_layout, 1))
+        max_block_m = max_block_m_smem
+        if self.N < DEFAULT_ALIGNMENT:
+            # TileLang layout constraint: only needed when heavy padding
+            max_block_m_layout = (2 * threads) // self.N_padded
+            max_block_m = min(max_block_m_smem, max(max_block_m_layout, 1))
         block_m = 1
         for bm in [1, 2, 4, 8]:
             if bm <= max_block_m:
@@ -209,9 +212,11 @@ class ArgreduceKernel(Kernel):
         threads_list = [128, 256]
         configs = []
         for threads in threads_list:
-            # TileLang layout constraint: block_m * N_padded <= 2 * threads
-            max_block_m_layout = (2 * threads) // self.N_padded
-            max_block_m = min(max_block_m_smem, max(max_block_m_layout, 1))
+            max_block_m = max_block_m_smem
+            if self.N < DEFAULT_ALIGNMENT:
+                # TileLang layout constraint: only needed when heavy padding
+                max_block_m_layout = (2 * threads) // self.N_padded
+                max_block_m = min(max_block_m_smem, max(max_block_m_layout, 1))
             for bm in [1, 2, 4, 8]:
                 if bm <= max_block_m:
                     configs.append({"block_m": bm, "threads": threads})
