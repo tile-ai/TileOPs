@@ -8,8 +8,9 @@ N_padded does not fit in shared memory.  Uses the online softmax recurrence
 (track running max and rescaled running sum) across N-tiles.
 
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
-memory instructions. Padded columns are filled with -infinity so they
-contribute 0 to exp-sums and never win the max reduction.
+memory instructions.  Boundary handling for non-aligned N is performed
+inside the kernel via masked loads and -inf fills, eliminating host-side
+``F.pad`` from the forward path.
 """
 
 import functools
@@ -36,16 +37,24 @@ __all__ = ["LogSumExpKernel"]
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=64)
 def _logsumexp_kernel_single(M: int, N: int, dtype: str):
-    """Build a single-tile logsumexp kernel (N fits in smem)."""
+    """Build a single-tile logsumexp kernel (N fits in smem).
+
+    Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
+    ``DEFAULT_ALIGNMENT``, the kernel fills shared memory with ``-inf``
+    and loads only the valid ``N`` columns (kernel-side boundary handling).
+    When ``N`` is already aligned, the fast ``T.copy`` path is used.
+    """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    _needs_pad = N_padded != N
+    _neg_inf = float("-inf")
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
         @T.prim_func
         def main(
-            x: T.Tensor[(M, N_padded), dtype],
+            x: T.Tensor[(M, N), dtype],
             y: T.Tensor[(M,), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -55,11 +64,20 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
                 row_max = T.alloc_fragment((block_m,), "float32")
                 row_sum = T.alloc_fragment((block_m,), "float32")
 
-                T.copy(x[pid_m * block_m, 0], shared_buf)
-                T.copy(shared_buf, x_local)
-
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                if _needs_pad:
+                    # Kernel-side boundary handling: element-wise load
+                    # with T.if_then_else masking for padding columns.
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.if_then_else(
+                            j < N,
+                            T.cast(x[pid_m * block_m + i, j], "float32"),
+                            T.cast(_neg_inf, "float32"),
+                        )
+                else:
+                    T.copy(x[pid_m * block_m, 0], shared_buf)
+                    T.copy(shared_buf, x_local)
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                 T.fill(row_max, -T.infinity("float32"))
                 T.reduce_max(x_f32, row_max, dim=1, clear=False)
@@ -84,7 +102,7 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=64)
 def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
     """Build a multi-tile logsumexp kernel.
 
@@ -92,18 +110,20 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
       Single pass: compute running max and rescaled running sum.
       Then: logsumexp = max + log(sum).
 
-    The input tensor column count is total_cols = num_tiles * tile_n,
-    which may be larger than N_padded. Extra columns must be -inf padded.
+    The input tensor has the raw shape ``(M, N)`` (no host-side padding).
+    Boundary handling for the last tile is performed via masked loads.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
     total_cols = num_tiles * tile_n
+    _needs_mask = total_cols > N
+    _neg_inf = float("-inf")
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
         @T.prim_func
         def main(
-            x: T.Tensor[(M, total_cols), dtype],
+            x: T.Tensor[(M, N), dtype],
             y: T.Tensor[(M,), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -121,11 +141,20 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                 T.fill(row_sum, 0.0)
 
                 for t in T.Serial(num_tiles):
-                    T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                    T.copy(shared_buf, tile_local)
-
-                    for i, j in T.Parallel(block_m, tile_n):
-                        tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
+                    if _needs_mask:
+                        # Kernel-side boundary: load into fragment with
+                        # T.if_then_else masking for out-of-range columns.
+                        for i, j in T.Parallel(block_m, tile_n):
+                            tile_f32[i, j] = T.if_then_else(
+                                t * tile_n + j < N,
+                                T.cast(x[pid_m * block_m + i, t * tile_n + j], "float32"),
+                                T.cast(_neg_inf, "float32"),
+                            )
+                    else:
+                        T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
+                        T.copy(shared_buf, tile_local)
+                        for i, j in T.Parallel(block_m, tile_n):
+                            tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
 
                     T.fill(tile_max, -T.infinity("float32"))
                     T.reduce_max(tile_f32, tile_max, dim=1, clear=False)
@@ -160,7 +189,7 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=64)
 def _logsumexp_kernel(M: int, N: int, dtype: str, tile_n: int = 0):
     """Build the appropriate logsumexp kernel."""
     if tile_n == 0:
@@ -218,6 +247,10 @@ class LogSumExpKernel(Kernel):
 
     For large N that does not fit in shared memory, tiles over N using
     the online softmax recurrence (running max + rescaled sum).
+
+    Boundary handling for non-aligned N is performed inside the kernel
+    via masked loads and ``-inf`` fills, so no host-side ``F.pad`` is
+    needed.
 
     Args:
         M: Number of rows (product of all dims except last).
@@ -380,15 +413,10 @@ class LogSumExpKernel(Kernel):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the logsumexp kernel.
 
-        Accepts an ``(M, N)`` tensor (unpadded) or ``(M, N_padded)``
-        (pre-padded).  Any alignment padding required by T.copy() is
-        handled here, keeping the Op layer free of host-side ``F.pad``.
+        Accepts an ``(M, N)`` tensor.  Boundary handling for non-aligned
+        ``N`` is performed inside the GPU kernel (masked loads + ``-inf``
+        fill), so no host-side ``F.pad`` is needed.
         """
-        # Pad to N_padded if the caller passed the raw (M, N) tensor.
-        if x.shape[-1] < self.N_padded:
-            pad_cols = self.N_padded - x.shape[-1]
-            x = torch.nn.functional.pad(x, (0, pad_cols), value=float("-inf"))
-
         tile_n = self._tile_n
 
         return _logsumexp_fwd_wrapped(

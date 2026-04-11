@@ -9,8 +9,9 @@ N_padded does not fit in shared memory.  Uses the online softmax recurrence
 (track running max and rescaled running sum) across N-tiles.
 
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
-memory instructions. Padded columns are filled with -infinity so they
-contribute 0 to exp-sums and never win the max reduction.
+memory instructions.  Boundary handling for non-aligned N is performed
+inside the kernel via masked loads and -inf fills, eliminating host-side
+``F.pad`` from the forward path.
 """
 
 import functools
@@ -37,10 +38,20 @@ __all__ = ["SoftmaxKernel"]
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=64)
 def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
-    """Build a single-tile softmax/log_softmax kernel (N fits in smem)."""
+    """Build a single-tile softmax/log_softmax kernel (N fits in smem).
+
+    Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
+    ``DEFAULT_ALIGNMENT``, the kernel fills shared memory with ``-inf``
+    and loads only the valid ``N`` columns (kernel-side boundary handling).
+    When ``N`` is already aligned, the fast ``T.copy`` path is used.
+    """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    _needs_pad = N_padded != N
+    # Reinterpret -inf as the target dtype at Python level (compile-time
+    # constant) to avoid runtime reinterpret inside the kernel.
+    _neg_inf = float("-inf")
 
     if op_kind == "softmax":
 
@@ -48,7 +59,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
         def _func(block_m, threads):
             @T.prim_func
             def main(
-                x: T.Tensor[(M, N_padded), dtype],
+                x: T.Tensor[(M, N), dtype],
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -58,11 +69,20 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
                     row_max = T.alloc_fragment((block_m,), "float32")
                     row_sum = T.alloc_fragment((block_m,), "float32")
 
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, x_local)
-
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                    if _needs_pad:
+                        # Kernel-side boundary handling: element-wise load
+                        # with T.if_then_else masking for padding columns.
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                j < N,
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(_neg_inf, "float32"),
+                            )
+                    else:
+                        T.copy(x[pid_m * block_m, 0], shared_buf)
+                        T.copy(shared_buf, x_local)
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                     T.fill(row_max, -T.infinity("float32"))
                     T.reduce_max(x_f32, row_max, dim=1, clear=False)
@@ -88,7 +108,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
         def _func(block_m, threads):
             @T.prim_func
             def main(
-                x: T.Tensor[(M, N_padded), dtype],
+                x: T.Tensor[(M, N), dtype],
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -98,11 +118,18 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
                     row_max = T.alloc_fragment((block_m,), "float32")
                     row_sum = T.alloc_fragment((block_m,), "float32")
 
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, x_local)
-
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                    if _needs_pad:
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                j < N,
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(_neg_inf, "float32"),
+                            )
+                    else:
+                        T.copy(x[pid_m * block_m, 0], shared_buf)
+                        T.copy(shared_buf, x_local)
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                     T.fill(row_max, -T.infinity("float32"))
                     T.reduce_max(x_f32, row_max, dim=1, clear=False)
@@ -130,7 +157,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=64)
 def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int):
     """Build a multi-tile softmax/log_softmax kernel.
 
@@ -138,8 +165,10 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
       Pass 1 (all tiles): compute running max and rescaled running sum.
       Pass 2 (all tiles): normalize using global max and sum.
 
-    The input/output tensor column count is total_cols = num_tiles * tile_n,
-    which may be larger than N_padded. Extra columns must be -inf padded.
+    The input tensor has the raw shape ``(M, N)`` (no host-side padding).
+    Boundary handling for the last tile (where ``t * tile_n + j`` may
+    exceed ``N``) is performed inside the kernel via ``T.if_then_else``
+    masked loads.  Output columns are ``total_cols = num_tiles * tile_n``.
 
     NOTE: Pass 2 uses a dedicated shared memory buffer AND dedicated register
     fragments. TileLang's allocator may alias both shared buffers and register
@@ -151,6 +180,11 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
     total_cols = num_tiles * tile_n
+    # The last tile may extend beyond N; boundary masking is needed when
+    # total_cols > N (which is always true when N is not aligned, and also
+    # when tile_n does not evenly divide N_padded).
+    _needs_mask = total_cols > N
+    _neg_inf = float("-inf")
 
     if op_kind == "softmax":
 
@@ -158,7 +192,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
         def _func(block_m, threads):
             @T.prim_func
             def main(
-                x: T.Tensor[(M, total_cols), dtype],
+                x: T.Tensor[(M, N), dtype],
                 y: T.Tensor[(M, total_cols), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -178,11 +212,20 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 
                     # Pass 1: compute global max and sum using online recurrence
                     for t in T.Serial(num_tiles):
-                        T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                        T.copy(shared_buf, tile_local)
-
-                        for i, j in T.Parallel(block_m, tile_n):
-                            tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
+                        if _needs_mask:
+                            # Kernel-side boundary: load into fragment with
+                            # T.if_then_else masking for out-of-range columns.
+                            for i, j in T.Parallel(block_m, tile_n):
+                                tile_f32[i, j] = T.if_then_else(
+                                    t * tile_n + j < N,
+                                    T.cast(x[pid_m * block_m + i, t * tile_n + j], "float32"),
+                                    T.cast(_neg_inf, "float32"),
+                                )
+                        else:
+                            T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
+                            T.copy(shared_buf, tile_local)
+                            for i, j in T.Parallel(block_m, tile_n):
+                                tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
 
                         T.fill(tile_max, -T.infinity("float32"))
                         T.reduce_max(tile_f32, tile_max, dim=1, clear=False)
@@ -220,13 +263,23 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                     # Pass 2: normalize (cast + compute fused, write-back
                     # reuses p2_f32 -> p2_local to avoid an extra fragment)
                     for t in T.Serial(num_tiles):
-                        T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                        T.copy(p2_shared, p2_local)
-
-                        for i, j in T.Parallel(block_m, tile_n):
-                            p2_f32[i, j] = T.exp(
-                                T.cast(p2_local[i, j], "float32") - row_max[i]
-                            ) * inv_sum[i]
+                        if _needs_mask:
+                            for i, j in T.Parallel(block_m, tile_n):
+                                p2_f32[i, j] = T.if_then_else(
+                                    t * tile_n + j < N,
+                                    T.exp(
+                                        T.cast(x[pid_m * block_m + i, t * tile_n + j], "float32")
+                                        - row_max[i]
+                                    ) * inv_sum[i],
+                                    0.0,
+                                )
+                        else:
+                            T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
+                            T.copy(p2_shared, p2_local)
+                            for i, j in T.Parallel(block_m, tile_n):
+                                p2_f32[i, j] = T.exp(
+                                    T.cast(p2_local[i, j], "float32") - row_max[i]
+                                ) * inv_sum[i]
 
                         for i, j in T.Parallel(block_m, tile_n):
                             p2_local[i, j] = p2_f32[i, j]
@@ -241,7 +294,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
         def _func(block_m, threads):
             @T.prim_func
             def main(
-                x: T.Tensor[(M, total_cols), dtype],
+                x: T.Tensor[(M, N), dtype],
                 y: T.Tensor[(M, total_cols), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -261,11 +314,18 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 
                     # Pass 1: compute global max and sum
                     for t in T.Serial(num_tiles):
-                        T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                        T.copy(shared_buf, tile_local)
-
-                        for i, j in T.Parallel(block_m, tile_n):
-                            tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
+                        if _needs_mask:
+                            for i, j in T.Parallel(block_m, tile_n):
+                                tile_f32[i, j] = T.if_then_else(
+                                    t * tile_n + j < N,
+                                    T.cast(x[pid_m * block_m + i, t * tile_n + j], "float32"),
+                                    T.cast(_neg_inf, "float32"),
+                                )
+                        else:
+                            T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
+                            T.copy(shared_buf, tile_local)
+                            for i, j in T.Parallel(block_m, tile_n):
+                                tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
 
                         T.fill(tile_max, -T.infinity("float32"))
                         T.reduce_max(tile_f32, tile_max, dim=1, clear=False)
@@ -289,20 +349,28 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                         log_sum[i] = T.log(row_sum[i])
 
                     # --- Pass 2: dedicated shared + register fragments ---
-                    # (Same aliasing workaround as softmax — see note above.)
+                    # (Same aliasing workaround as softmax -- see note above.)
                     p2_shared = T.alloc_shared((block_m, tile_n), dtype)
                     p2_local = T.alloc_fragment((block_m, tile_n), dtype)
                     p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
 
                     # Pass 2: log-normalize (cast + compute fused)
                     for t in T.Serial(num_tiles):
-                        T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                        T.copy(p2_shared, p2_local)
-
-                        for i, j in T.Parallel(block_m, tile_n):
-                            p2_f32[i, j] = (
-                                T.cast(p2_local[i, j], "float32") - row_max[i] - log_sum[i]
-                            )
+                        if _needs_mask:
+                            for i, j in T.Parallel(block_m, tile_n):
+                                p2_f32[i, j] = T.if_then_else(
+                                    t * tile_n + j < N,
+                                    T.cast(x[pid_m * block_m + i, t * tile_n + j], "float32")
+                                    - row_max[i] - log_sum[i],
+                                    T.cast(_neg_inf, "float32"),
+                                )
+                        else:
+                            T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
+                            T.copy(p2_shared, p2_local)
+                            for i, j in T.Parallel(block_m, tile_n):
+                                p2_f32[i, j] = (
+                                    T.cast(p2_local[i, j], "float32") - row_max[i] - log_sum[i]
+                                )
 
                         for i, j in T.Parallel(block_m, tile_n):
                             p2_local[i, j] = p2_f32[i, j]
@@ -319,7 +387,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=64)
 def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str, tile_n: int = 0):
     """Build the appropriate softmax kernel.
 
@@ -383,6 +451,10 @@ class SoftmaxKernel(Kernel):
 
     For large N that does not fit in shared memory, tiles over N using
     the online softmax recurrence (running max + rescaled sum).
+
+    Boundary handling for non-aligned N is performed inside the kernel
+    via masked loads and ``-inf`` fills, so no host-side ``F.pad`` is
+    needed.
 
     Args:
         M: Number of rows (product of all dims except last).
@@ -456,7 +528,7 @@ class SoftmaxKernel(Kernel):
         self.config["tile_n"] = self._tile_n
 
     # Tiled softmax/log_softmax allocates 2 shared buffers (one per pass)
-    # due to TileLang allocator aliasing — see _softmax_kernel_tiled docstring.
+    # due to TileLang allocator aliasing -- see _softmax_kernel_tiled docstring.
     _NUM_SHARED_BUFFERS = 2
 
     def _tile_n_for_block_m(self, block_m: int) -> int:
@@ -571,15 +643,10 @@ class SoftmaxKernel(Kernel):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the softmax/log_softmax kernel.
 
-        Accepts an ``(M, N)`` tensor (unpadded) or ``(M, N_padded)``
-        (pre-padded).  Any alignment padding required by T.copy() is
-        handled here, keeping the Op layer free of host-side ``F.pad``.
+        Accepts an ``(M, N)`` tensor.  Boundary handling for non-aligned
+        ``N`` is performed inside the GPU kernel (masked loads + ``-inf``
+        fill), so no host-side ``F.pad`` is needed.
         """
-        # Pad to N_padded if the caller passed the raw (M, N) tensor.
-        if x.shape[-1] < self.N_padded:
-            pad_cols = self.N_padded - x.shape[-1]
-            x = torch.nn.functional.pad(x, (0, pad_cols), value=float("-inf"))
-
         tile_n = self._tile_n
 
         y = _softmax_fwd_wrapped(
