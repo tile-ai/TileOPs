@@ -407,9 +407,12 @@ class LogSumExpKernel(Kernel):
     def _tile_n_candidates(self) -> list[int]:
         """Return candidate tile_n values for autotune exploration.
 
-        Includes the heuristic tile_n plus divisors of N_padded that fit
-        within the shared memory budget.  tile_n=0 means single-tile.
-        All candidates are de-duplicated and sorted descending for
+        Includes the heuristic tile_n (from block_m=1) plus alternative
+        tile_n values derived from ``_tile_n_for_block_m(2)`` and
+        ``_tile_n_for_block_m(4)``, with a half-step fallback aligned to
+        ``DEFAULT_ALIGNMENT`` when block_m exploration yields no
+        alternatives.  tile_n=0 means single-tile (no tiling).  All
+        candidates are de-duplicated and sorted descending for
         deterministic ordering.
 
         Each distinct tile_n value requires a full kernel recompilation,
