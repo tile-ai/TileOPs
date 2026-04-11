@@ -10,7 +10,6 @@ Output is always int64 (index values).
 """
 
 import functools
-import itertools
 from typing import Optional
 
 import tilelang
@@ -18,7 +17,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
+from tileops.kernels.reduction._primitives import (
+    DEFAULT_ALIGNMENT,
+    SHARED_MEMORY_BUDGET_BYTES,
+    align_up,
+)
 
 __all__ = ["ArgreduceKernel"]
 
@@ -183,23 +186,59 @@ class ArgreduceKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        """Select default block_m based on shared memory budget."""
+        """Select default block_m based on shared memory budget.
+
+        When the original reduction dimension *N* is smaller than the
+        alignment boundary (``DEFAULT_ALIGNMENT``), padding inflates the row
+        width and TileLang's copy-layout inference requires
+        ``block_m * N_padded <= 2 * threads``.  For large *N* (>= alignment)
+        the rows are dense and the layout works at any block_m that fits in
+        shared memory, so the constraint is skipped.
+        """
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
+        max_block_m_smem = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
+        if max_block_m_smem == 0:
+            raise ValueError(
+                f"A single row requires {smem_per_row} bytes of shared memory, "
+                f"which exceeds the {SHARED_MEMORY_BUDGET_BYTES}-byte budget "
+                f"(N_padded={self.N_padded}, dtype={self.dtype}). "
+                f"Reduce the reduction dimension or use a dtype with smaller element size."
+            )
+        threads = 128
+        max_block_m = max_block_m_smem
+        if self.N < DEFAULT_ALIGNMENT:
+            # TileLang layout constraint: only needed when heavy padding
+            max_block_m_layout = (2 * threads) // self.N_padded
+            max_block_m = min(max_block_m_smem, max(max_block_m_layout, 1))
         block_m = 1
         for bm in [1, 2, 4, 8]:
             if bm <= max_block_m:
                 block_m = bm
-        return {"block_m": block_m, "threads": 128}
+        return {"block_m": block_m, "threads": threads}
 
     @property
     def autotune_configs(self) -> list[dict]:
         smem_per_row = self.N_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
-        block_ms = [bm for bm in [1, 2, 4, 8] if bm <= max_block_m]
+        max_block_m_smem = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
+        if max_block_m_smem == 0:
+            raise ValueError(
+                f"A single row requires {smem_per_row} bytes of shared memory, "
+                f"which exceeds the {SHARED_MEMORY_BUDGET_BYTES}-byte budget "
+                f"(N_padded={self.N_padded}, dtype={self.dtype}). "
+                f"Reduce the reduction dimension or use a dtype with smaller element size."
+            )
         threads_list = [128, 256]
-        configs = list(itertools.product(block_ms, threads_list))
-        return [{"block_m": bm, "threads": t} for bm, t in configs]
+        configs = []
+        for threads in threads_list:
+            max_block_m = max_block_m_smem
+            if self.N < DEFAULT_ALIGNMENT:
+                # TileLang layout constraint: only needed when heavy padding
+                max_block_m_layout = (2 * threads) // self.N_padded
+                max_block_m = min(max_block_m_smem, max(max_block_m_layout, 1))
+            for bm in [1, 2, 4, 8]:
+                if bm <= max_block_m:
+                    configs.append({"block_m": bm, "threads": threads})
+        return configs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the argmax/argmin kernel.
