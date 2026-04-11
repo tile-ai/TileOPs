@@ -114,16 +114,16 @@ def compute_tile_n(
 ) -> int:
     """Compute the tile_n (column chunk) for shared memory, preferring divisibility.
 
-    The tile_n is the largest multiple of *alignment* such that
-    ``num_buffers * block_m * tile_n * elem_bytes <= budget``.
-
-    When a divisor of *N_padded* exists that does not increase the
-    number of tiles compared to the budget-derived cap, that divisor is
-    preferred so the kernel avoids remainder handling.  This is
-    important when the cap is close to *N_padded*: e.g. for
-    N_padded=32768 with cap=32512, the cap gives 2 tiles where tile 1
-    has only 256 valid columns (99.2% waste), while divisor=16384 also
-    gives 2 tiles with zero waste.
+    The budget-derived cap (``tile_n_max``) is the largest multiple of
+    *alignment* such that
+    ``num_buffers * block_m * tile_n_max * elem_bytes <= budget``.
+    The return value may be a smaller divisor of *N_padded* when that
+    divisor does not increase the number of N-tiles, because an exact
+    division eliminates the nearly-empty remainder tile and reduces
+    wasted memory traffic.  For example, N_padded=32768 with
+    tile_n_max=32512 gives 2 tiles where tile 2 has only 256 valid
+    columns (99.2% waste), while divisor=16384 also gives 2 tiles with
+    zero waste.
 
     When every divisor requires strictly more tiles, the full
     budget-derived cap is returned and the tiled kernel handles the
