@@ -112,7 +112,7 @@ def compute_tile_n(
     budget: int = SHARED_MEMORY_BUDGET_BYTES,
     num_buffers: int = 1,
 ) -> int:
-    """Compute the largest tile_n (column chunk) that fits in shared memory.
+    """Compute the tile_n (column chunk) for shared memory, preferring divisibility.
 
     The tile_n is the largest multiple of *alignment* such that
     ``num_buffers * block_m * tile_n * elem_bytes <= budget``.
