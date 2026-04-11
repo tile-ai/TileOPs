@@ -8,10 +8,8 @@ Groups 1 (reduce), 3 (logical), 4 (vector norm), and 6 (logsumexp) use
 true multi-dim reduction (e.g. dim=[0, 2]).
 
 Groups 2 (argreduce) and 5 (cumulative) are architecturally single-dim:
-  - Argreduce (argmax/argmin): accepts only scalar dim (int). The kernel
-    currently supports dim=-1 and dim=1 on 3D tensors but NOT dim=0
-    (compilation fails with "Check failed: CanProveEqual(abs(source->scale), 1)").
-    We benchmark dim=1 and dim=2 on 3D tensors as the closest coverage.
+  - Argreduce (argmax/argmin): accepts only scalar dim (int).
+    We benchmark dim=0, dim=1, and dim=2 on 3D tensors.
   - Cumulative (cumsum/cumprod): only accepts (M, N, dtype) and always
     operates on dim=-1. We benchmark 3D-shaped inputs reshaped to 2D.
 These two groups cannot provide true multi-dim reduction cases.
@@ -157,10 +155,7 @@ def test_reduce_multidim_bench(
 # ===================================================================
 # 2. Argreduce (argmax, argmin) — non-last-axis dims on 3D tensor
 #    ArgmaxFwdOp/ArgminFwdOp only accept scalar dim (int), not a list.
-#    The kernel does not support dim=0 on 3D tensors (compilation fails
-#    with TVM "Check failed: CanProveEqual(abs(source->scale), 1)").
-#    We cover dim=1 and dim=2 on a 3D tensor to exercise non-last and
-#    last axis, which is the closest multi-dim-relevant coverage.
+#    We cover dim=0, dim=1, and dim=2 on a 3D tensor.
 # ===================================================================
 
 
@@ -169,6 +164,15 @@ class ArgreduceMultidimFixture(FixtureBase):
         (
             "shape, dim, keepdim, dtype, op_kind",
             [
+                # dim=0: reduce across batch — LLaMA-7B (batch=4, seq=128, hidden=4096)
+                pytest.param(
+                    (4, 128, 4096), 0, False, torch.float16, "argmax",
+                    id="argmax-7B-dim0-nokeepdim",
+                ),
+                pytest.param(
+                    (4, 128, 4096), 0, True, torch.float16, "argmin",
+                    id="argmin-7B-dim0-keepdim",
+                ),
                 # dim=1: reduce across seq — LLaMA-7B (batch=4, seq=128, hidden=4096)
                 pytest.param(
                     (4, 128, 4096), 1, False, torch.float16, "argmin",
