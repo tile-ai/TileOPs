@@ -9,6 +9,8 @@ Correctness-only logic (ref_program, check, tolerances) stays in tests/.
 from abc import ABC, abstractmethod
 from typing import Any
 
+import torch
+
 
 class WorkloadBase(ABC):
     """Abstract base for workload definitions (input generation + parameters).
@@ -23,6 +25,18 @@ class WorkloadBase(ABC):
     @abstractmethod
     def gen_inputs(self) -> Any:
         raise NotImplementedError
+
+
+class RandnTest(WorkloadBase):
+    """Workload base for ops whose inputs are generated via ``torch.randn``."""
+
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        return (x,)
 
 
 class FixtureMeta(type):

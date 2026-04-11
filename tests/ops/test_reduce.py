@@ -8,6 +8,15 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from workloads.ops.reduce import (
+    ProdTest as _ProdTest,
+)
+from workloads.ops.reduce import (
+    StdTest as _StdTest,
+)
+from workloads.ops.reduce import (
+    SumTest as _SumTest,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -97,29 +106,18 @@ class BesselFixture(FixtureBase):
 
 
 # ---------------------------------------------------------------------------
-# TestBase helpers
+# TestBase helpers — inherit gen_inputs() from workload classes
 # ---------------------------------------------------------------------------
 
 
-class ReduceTest(TestBase):
-    """Parameterized test helper for simple reduce ops."""
+class ReduceTest(_SumTest, TestBase):
+    """Parameterized test helper for simple reduce ops (sum/mean/amax/amin)."""
 
     def __init__(
-        self, m: int, n: int, dtype: torch.dtype, op_kind: str, use_small_range: bool = False
+        self, m: int, n: int, dtype: torch.dtype, op_kind: str,
     ):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
+        super().__init__((m, n), dtype)
         self.op_kind = op_kind
-        self.use_small_range = use_small_range
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self.use_small_range:
-            # For prod, use small values to avoid overflow
-            x = torch.rand(self.m, self.n, dtype=self.dtype, device="cuda") * 0.01 + 0.99
-        else:
-            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()
@@ -131,24 +129,26 @@ class ReduceTest(TestBase):
             return x_f32.amax(dim=-1).to(x.dtype)
         elif self.op_kind == "amin":
             return x_f32.amin(dim=-1).to(x.dtype)
-        elif self.op_kind == "prod":
-            return x_f32.prod(dim=-1).to(x.dtype)
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class WelfordTest(TestBase):
+class ProdTest(_ProdTest, TestBase):
+    """Parameterized test helper for prod op (uses small-range inputs)."""
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype):
+        super().__init__((m, n), dtype)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return x.float().prod(dim=-1).to(x.dtype)
+
+
+class WelfordTest(_StdTest, TestBase):
     """Test helper for Welford-based ops (std, var, var_mean)."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str, correction: int = 1):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
+        super().__init__((m, n), dtype)
         self.op_kind = op_kind
         self.correction = correction
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> object:
         x_f32 = x.float()
@@ -276,7 +276,7 @@ def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import ProdFwdOp
 
-    test = ReduceTest(m, n, dtype, "prod", use_small_range=True)
+    test = ProdTest(m, n, dtype)
     op = ProdFwdOp(dtype=dtype)
     # Prod is more numerically sensitive
     tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}

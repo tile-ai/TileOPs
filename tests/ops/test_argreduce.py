@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from workloads.ops.argreduce import ArgmaxTest as _ArgmaxWorkload
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -101,22 +102,16 @@ class SpecArgreduceFixture(FixtureBase):
 
 
 # ---------------------------------------------------------------------------
-# TestBase helpers
+# TestBase helpers — inherit gen_inputs() from workload classes
 # ---------------------------------------------------------------------------
 
 
-class ArgreduceTest(TestBase):
+class ArgreduceTest(_ArgmaxWorkload, TestBase):
     """Parameterized test helper for argreduce ops."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
+        super().__init__((m, n), dtype)
         self.op_kind = op_kind
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         if self.op_kind == "argmax":
