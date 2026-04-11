@@ -278,6 +278,7 @@ class LogSumExpKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    _MAX_TILE_N_CANDIDATES = 3
 
     def __init__(
         self,
@@ -401,21 +402,47 @@ class LogSumExpKernel(Kernel):
 
         Includes the heuristic tile_n plus divisors of N_padded that fit
         within the shared memory budget.  tile_n=0 means single-tile.
+        All candidates are de-duplicated and sorted descending for
+        deterministic ordering.
 
         Each distinct tile_n value requires a full kernel recompilation,
         which is expensive for large-N workloads (compilations can take
-        minutes each).  To keep autotuner wall time practical:
+        minutes each).  To keep autotuner wall time practical we cap
+        the total number of tile_n candidates at ``_MAX_TILE_N_CANDIDATES``
+        (currently 3).
 
         - When the heuristic default tile_n is 0 (single-tile / small N),
           return ``[0]`` -- the autotuner varies only block_m and threads.
-        - Otherwise return only the heuristic default tile_n (block_m=1).
-          The autotuner still explores block_m and threads within that
-          tile_n regime, which is the highest-impact search axis.
+        - Otherwise collect distinct tile_n values from block_m=1..4 and
+          return up to ``_MAX_TILE_N_CANDIDATES`` candidates (always
+          including the heuristic default).
         """
         default_tn = self._tile_n_for_block_m(1)
         if default_tn == 0:
             return [0]
-        return [default_tn]
+
+        candidates: set[int] = {default_tn}
+        # Explore tile_n values implied by small block_m values.
+        # Higher block_m → smaller tile_n (more N-tiles but better row reuse).
+        for bm in (2, 4):
+            try:
+                tn = self._tile_n_for_block_m(bm)
+            except ValueError:
+                continue
+            if tn > 0 and tn != default_tn:
+                candidates.add(tn)
+
+        # Also try half of the default tile_n (rounded to alignment) as a
+        # search point when block_m exploration didn't yield alternatives.
+        if len(candidates) < 2:
+            from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT
+            half_tn = (default_tn // 2 // DEFAULT_ALIGNMENT) * DEFAULT_ALIGNMENT
+            if half_tn > 0 and half_tn != default_tn:
+                candidates.add(half_tn)
+
+        # Cap to avoid excessive compilation time.
+        sorted_candidates = sorted(candidates, reverse=True)
+        return sorted_candidates[:self._MAX_TILE_N_CANDIDATES]
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -432,23 +459,26 @@ class LogSumExpKernel(Kernel):
 
         configs = []
         for tile_n in self._tile_n_candidates():
-            # In the tiled regime (tile_n > 0), only explore the default
-            # block_m=1 config.  Large-tile kernels cause NVCC/cicc to
-            # spend 10+ minutes per config variant, making multi-config
-            # autotuning impractical.  The autotuner still varies threads.
-            bm_candidates = [1, 2, 4, 8, 16] if tile_n == 0 else [1]
-            for bm in bm_candidates:
-                try:
-                    compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
-                except ValueError:
-                    continue
-                bm_tile_n = self._tile_n_for_block_m(bm)
-                if bm_tile_n != tile_n:
-                    continue
-                if tile_n == 0 and bm > max_block_m_no_tile:
-                    continue
+            if tile_n == 0:
+                # Single-tile regime: explore multiple block_m values.
+                for bm in [1, 2, 4, 8, 16]:
+                    try:
+                        compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
+                    except ValueError:
+                        continue
+                    bm_tile_n = self._tile_n_for_block_m(bm)
+                    if bm_tile_n != 0:
+                        continue
+                    if bm > max_block_m_no_tile:
+                        continue
+                    for t in threads_list:
+                        configs.append({"block_m": bm, "threads": t, "tile_n": 0})
+            else:
+                # Tiled regime: use block_m=1 with each tile_n candidate.
+                # Each distinct tile_n triggers a kernel recompilation, so
+                # we only vary threads within each tile_n regime.
                 for t in threads_list:
-                    configs.append({"block_m": bm, "threads": t, "tile_n": tile_n})
+                    configs.append({"block_m": 1, "threads": t, "tile_n": tile_n})
 
         if not configs:
             configs = [{"block_m": 1, "threads": 256, "tile_n": self._tile_n}]
