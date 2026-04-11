@@ -795,7 +795,7 @@ def _ast_manifest_call_usage(
 ) -> dict[str, bool]:
     """Check whether target functions are imported and called with this op name.
 
-    Recognises two patterns:
+    Recognises three patterns:
 
     1. **Direct** — ``from tileops.manifest import load_workloads`` /
        ``eval_roofline`` called with the op name.
@@ -803,6 +803,9 @@ def _ast_manifest_call_usage(
        (wraps ``load_workloads``) and ``ManifestBenchmark`` (wraps
        ``eval_roofline``) imported from ``benchmarks.benchmark`` and
        called with the op name as the first argument.
+    3. **Subclass** — a local class that inherits from an indirect
+       helper (e.g. ``class Custom(ManifestBenchmark)``) is treated as
+       equivalent to the parent for validation purposes.
     """
     # Maps from the indirect helper name → the direct target it satisfies.
     _INDIRECT_EQUIV: dict[str, str] = {
@@ -813,6 +816,16 @@ def _ast_manifest_call_usage(
     imported: set[str] = set()
     matched_calls: set[str] = set()
     bindings = _resolve_constant_str_bindings(tree)
+
+    # Collect local subclasses of indirect helpers (e.g. class Foo(ManifestBenchmark))
+    # so that calls to those subclasses count the same as the parent.
+    _local_subclass_equiv: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                base_name = base.id if isinstance(base, ast.Name) else None
+                if base_name and base_name in _INDIRECT_EQUIV:
+                    _local_subclass_equiv[node.name] = _INDIRECT_EQUIV[base_name]
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -839,6 +852,13 @@ def _ast_manifest_call_usage(
                 node, op_name, bindings,
             ):
                 matched_calls.add(equiv)
+            # Local subclass call (e.g. CustomBenchmark(op_name, workload)
+            # where CustomBenchmark inherits from ManifestBenchmark).
+            sub_equiv = _local_subclass_equiv.get(func_name)
+            if sub_equiv and sub_equiv in target_names and _call_uses_expected_op_name(
+                node, op_name, bindings,
+            ):
+                matched_calls.add(sub_equiv)
 
     return {name: (name in imported and name in matched_calls) for name in target_names}
 
