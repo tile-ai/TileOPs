@@ -117,12 +117,17 @@ def compute_tile_n(
     The tile_n is the largest multiple of *alignment* such that
     ``num_buffers * block_m * tile_n * elem_bytes <= budget``.
 
-    When a divisor of *N_padded* exists close to the maximum (>= 75% of
-    the budget-derived cap), that divisor is preferred so the kernel
-    avoids remainder handling.  Otherwise the full budget-derived cap is
-    returned and the tiled kernel handles the single remainder tile via
-    masked loads --- this is cheaper than the extra iterations caused by
-    a small divisor.
+    When a divisor of *N_padded* exists that does not increase the
+    number of tiles compared to the budget-derived cap, that divisor is
+    preferred so the kernel avoids remainder handling.  This is
+    important when the cap is close to *N_padded*: e.g. for
+    N_padded=32768 with cap=32512, the cap gives 2 tiles where tile 1
+    has only 256 valid columns (99.2% waste), while divisor=16384 also
+    gives 2 tiles with zero waste.
+
+    When every divisor requires strictly more tiles, the full
+    budget-derived cap is returned and the tiled kernel handles the
+    single remainder tile via masked loads.
 
     If N_padded already fits (with *num_buffers* copies), returns N_padded
     (no tiling needed).
@@ -168,15 +173,22 @@ def compute_tile_n(
             best_dividing = candidate
             break
 
-    # Use the divisor only when it utilises at least 75% of the shared
-    # memory budget.  For shapes with sparse divisors (e.g. N_padded
-    # with large prime factors), the best divisor can be far smaller
-    # than tile_n_max, causing excessive kernel passes.  In that case,
-    # prefer tile_n_max and let the tiled kernel handle the single
-    # remainder tile via masked loads, which is cheaper than the extra
-    # iterations from a small tile.
-    if best_dividing >= tile_n_max * 3 // 4:
-        return best_dividing
+    # Accept the divisor when it does not increase the number of
+    # N-tiles.  Each tile incurs a global-memory pass in both passes of
+    # the 2-pass softmax, so fewer tiles is always cheaper.  When the
+    # divisor gives the same tile count as tile_n_max, prefer the
+    # divisor because it eliminates the nearly-empty remainder tile
+    # (e.g. N_padded=32768, tile_n_max=32512 → 2 tiles with a 256-col
+    # remainder vs divisor=16384 → 2 even tiles with zero waste).
+    #
+    # When the divisor requires strictly more tiles (e.g. smaller
+    # divisors of N_padded), stick with tile_n_max and handle the
+    # single remainder tile via masked loads.
+    if best_dividing > 0:
+        div_tiles = N_padded // best_dividing  # exact division
+        max_tiles = (N_padded + tile_n_max - 1) // tile_n_max
+        if div_tiles <= max_tiles:
+            return best_dividing
     return tile_n_max
 
 
