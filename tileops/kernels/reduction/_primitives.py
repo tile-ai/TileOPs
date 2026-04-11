@@ -13,7 +13,9 @@ import tilelang.language as T
 __all__ = [
     "align_up",
     "compute_tile_n",
+    "device_smem_budget",
     "DEFAULT_ALIGNMENT",
+    "MAX_SINGLE_TILE_COLS",
     "SHARED_MEMORY_BUDGET_BYTES",
     "make_reduce_epilogue",
     "make_welford_update",
@@ -25,9 +27,63 @@ __all__ = [
 # shared memory instructions.  Sub-categories may override this default.
 DEFAULT_ALIGNMENT: int = 256
 
+# Maximum column count for a single fragment/shared-memory tile.
+# TileLang's vectorizer fails when the *column dimension* of a
+# fragment or shared buffer reaches 32768 (a LLVM scalable-vector
+# boundary).  Empirical testing on H200 (SM90) confirms that
+# 32512 columns compile and execute correctly, while 32768 triggers
+# the "scalable vector" error.  We use 32512 (= 32768 - 256) as the
+# safe upper bound.
+MAX_SINGLE_TILE_COLS: int = 32512
+
 # Default shared memory budget per SM (48 KiB) used to compute the maximum
 # block_m that fits within a single thread block's shared memory allocation.
 SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
+
+
+def device_smem_budget(device_index: int | None = None) -> int:
+    """Return the opt-in shared memory budget for a CUDA device.
+
+    If ``device_index`` is ``None``, the current CUDA device is used.
+
+    Modern GPUs (SM80+) support shared memory well beyond the 48 KiB
+    default.  TileLang automatically configures
+    ``cudaFuncSetAttribute`` when a kernel allocates more than 48 KiB,
+    so it is safe to use the full opt-in budget.
+
+    Falls back to ``SHARED_MEMORY_BUDGET_BYTES`` (48 KiB) only if
+    CUDA/device properties are unavailable.  Invalid explicit device
+    indices are not silently masked -- only the ``None`` (auto-detect)
+    case falls back gracefully.
+    """
+    explicit = device_index is not None
+    try:
+        import torch
+    except Exception:
+        if explicit:
+            raise
+        return SHARED_MEMORY_BUDGET_BYTES
+
+    try:
+        if not torch.cuda.is_available():
+            if explicit:
+                raise RuntimeError(
+                    f"CUDA is not available but explicit device_index={device_index} was requested"
+                )
+            return SHARED_MEMORY_BUDGET_BYTES
+
+        if device_index is None:
+            device_index = torch.cuda.current_device()
+
+        props = torch.cuda.get_device_properties(device_index)
+        smem_optin = getattr(props, "shared_memory_per_block_optin", 0)
+        if smem_optin > 0:
+            return smem_optin
+        return getattr(props, "shared_memory_per_block", SHARED_MEMORY_BUDGET_BYTES)
+    except (RuntimeError, AssertionError):
+        if explicit:
+            raise
+        return SHARED_MEMORY_BUDGET_BYTES
 
 
 def align_up(n: int, alignment: int) -> int:
@@ -56,10 +112,22 @@ def compute_tile_n(
     budget: int = SHARED_MEMORY_BUDGET_BYTES,
     num_buffers: int = 1,
 ) -> int:
-    """Compute the largest tile_n (column chunk) that fits in shared memory.
+    """Compute the tile_n (column chunk) for shared memory, preferring divisibility.
 
-    The tile_n is the largest multiple of *alignment* such that
-    ``num_buffers * block_m * tile_n * elem_bytes <= budget``.
+    The budget-derived cap (``tile_n_max``) is the largest multiple of
+    *alignment* such that
+    ``num_buffers * block_m * tile_n_max * elem_bytes <= budget``.
+    The return value may be a smaller divisor of *N_padded* when that
+    divisor does not increase the number of N-tiles, because an exact
+    division eliminates the nearly-empty remainder tile and reduces
+    wasted memory traffic.  For example, N_padded=32768 with
+    tile_n_max=32512 gives 2 tiles where tile 2 has only 256 valid
+    columns (99.2% waste), while divisor=16384 also gives 2 tiles with
+    zero waste.
+
+    When every divisor requires strictly more tiles, the full
+    budget-derived cap is returned and the tiled kernel handles the
+    single remainder tile via masked loads.
 
     If N_padded already fits (with *num_buffers* copies), returns N_padded
     (no tiling needed).
@@ -88,14 +156,40 @@ def compute_tile_n(
 
     # Largest multiple of alignment that fits in shared memory
     max_cols = budget // (num_buffers * per_buffer)
-    tile_n = (max_cols // alignment) * alignment
-    if tile_n == 0:
+    tile_n_max = (max_cols // alignment) * alignment
+    if tile_n_max == 0:
         raise ValueError(
             f"Cannot fit even {alignment} columns in {budget} bytes "
             f"with block_m={block_m}, elem_bytes={elem_bytes}, "
             f"num_buffers={num_buffers}."
         )
-    return tile_n
+
+    # Prefer the largest tile_n that evenly divides N_padded, so that
+    # num_tiles * tile_n == N_padded and no remainder tile is needed.
+    # Search downward from tile_n_max in alignment-sized steps.
+    best_dividing = 0
+    for candidate in range(tile_n_max, 0, -alignment):
+        if N_padded % candidate == 0:
+            best_dividing = candidate
+            break
+
+    # Accept the divisor when it does not increase the number of
+    # N-tiles.  Each tile incurs a global-memory pass in both passes of
+    # the 2-pass softmax, so fewer tiles is always cheaper.  When the
+    # divisor gives the same tile count as tile_n_max, prefer the
+    # divisor because it eliminates the nearly-empty remainder tile
+    # (e.g. N_padded=32768, tile_n_max=32512 → 2 tiles with a 256-col
+    # remainder vs divisor=16384 → 2 even tiles with zero waste).
+    #
+    # When the divisor requires strictly more tiles (e.g. smaller
+    # divisors of N_padded), stick with tile_n_max and handle the
+    # single remainder tile via masked loads.
+    if best_dividing > 0:
+        div_tiles = N_padded // best_dividing  # exact division
+        max_tiles = (N_padded + tile_n_max - 1) // tile_n_max
+        if div_tiles <= max_tiles:
+            return best_dividing
+    return tile_n_max
 
 
 # ---------------------------------------------------------------------------

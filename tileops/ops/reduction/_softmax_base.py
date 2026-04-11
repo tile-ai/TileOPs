@@ -1,7 +1,8 @@
 """Base class for softmax-family operators (L2 Op layer).
 
-Provides the shared validate -> reshape -> pad -> kernel -> trim -> reshape
-pattern for softmax, log_softmax, and logsumexp ops.
+Provides the shared validate -> reshape -> kernel -> trim -> reshape
+pattern for softmax, log_softmax, and logsumexp ops.  Alignment padding
+is handled inside the kernel via masked loads, not on the host.
 
 Construction: ``op(dtype=..., dim=-1)``.  M and N are derived
 from the input tensor at forward time, and kernels are cached by
@@ -12,7 +13,6 @@ from math import prod
 from typing import Dict, List, Optional, Union
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
@@ -99,11 +99,10 @@ class _SoftmaxBaseOp(Op):
             N = x.shape[-1]
             M = prod(x.shape[:-1])
             x = x.reshape(M, N)
-            kernel = self._get_or_create_kernel(M, N)
-            N_padded = align_up(N, DEFAULT_ALIGNMENT)
-            if N_padded != N:
-                x = F.pad(x, (0, N_padded - N), value=float("-inf"))
+            kernel = self._get_or_create_kernel(M, N, device_index=x.device.index)
+            # Alignment padding is handled by the kernel's forward().
             y = kernel(x)
+            N_padded = align_up(N, DEFAULT_ALIGNMENT)
             if N_padded != N:
                 y = y[:, :N] if y.ndim == 2 else y
             return restore_multidim_shape(y, orig_shape, dims, self.keepdim)
@@ -128,29 +127,27 @@ class _SoftmaxBaseOp(Op):
 
         x = x.contiguous().reshape(M, N)
 
-        # Get or create cached kernel for this (M, N).
-        kernel = self._get_or_create_kernel(M, N)
+        # Get or create cached kernel for this (M, N, device).
+        kernel = self._get_or_create_kernel(M, N, device_index=x.device.index)
 
-        # Pad hidden dim to alignment.
-        N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        if N_padded != N:
-            x = F.pad(x, (0, N_padded - N), value=float("-inf"))
-
+        # Alignment padding is handled by the kernel's forward().
         y = kernel(x)
 
-        # Trim padding.
+        # Trim padding (kernel output may still be N_padded-wide).
+        N_padded = align_up(N, DEFAULT_ALIGNMENT)
         if N_padded != N:
             y = y[:, :N] if y.ndim == 2 else y
 
         return self._reshape_output(y, orig_shape, dim, needs_transpose)
 
-    def _get_or_create_kernel(self, M: int, N: int) -> object:
-        """Return a cached kernel for (M, N), creating one if needed."""
-        key = (M, N)
+    def _get_or_create_kernel(self, M: int, N: int, device_index: int | None = None) -> object:
+        """Return a cached kernel for (M, N, device_index), creating one if needed."""
+        key = (M, N, device_index)
         if key not in self._kernel_cache:
             kernel_cls = self.kernel_map[self._kernel_key]
             self._kernel_cache[key] = kernel_cls(
-                M, N, self._op_kind, self.dtype, tune=self._tune
+                M, N, self._op_kind, self.dtype, tune=self._tune,
+                device_index=device_index,
             )
         return self._kernel_cache[key]
 
