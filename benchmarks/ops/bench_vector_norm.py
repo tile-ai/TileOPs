@@ -134,7 +134,7 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
-        return torch.linalg.vector_norm(x, ord=1, dim=-1)
+        return torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -161,7 +161,7 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
-        return torch.linalg.vector_norm(x, ord=2, dim=-1)
+        return torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -188,7 +188,7 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
-        return torch.linalg.vector_norm(x, ord=float("inf"), dim=-1)
+        return torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
