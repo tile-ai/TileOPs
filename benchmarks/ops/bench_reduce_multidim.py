@@ -79,10 +79,7 @@ class ReduceMultidimTest(WorkloadBase):
         self.op_kind = op_kind
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self.op_kind == "prod":
-            x = torch.rand(*self.shape, dtype=self.dtype, device="cuda") * 0.01 + 0.99
-        else:
-            x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> object:
