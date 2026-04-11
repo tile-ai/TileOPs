@@ -1,7 +1,8 @@
 """Base class for softmax-family operators (L2 Op layer).
 
-Provides the shared validate -> reshape -> pad -> kernel -> trim -> reshape
-pattern for softmax, log_softmax, and logsumexp ops.
+Provides the shared validate -> reshape -> kernel -> trim -> reshape
+pattern for softmax, log_softmax, and logsumexp ops.  Alignment padding
+is handled inside the kernel via masked loads, not on the host.
 
 Construction: ``op(dtype=..., dim=-1)``.  M and N are derived
 from the input tensor at forward time, and kernels are cached by
