@@ -14,7 +14,7 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.reduction.all_op import AllFwdOp
 from tileops.ops.reduction.any_op import AnyFwdOp
 from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
-from workloads.ops.logical_reduce import AllTest, AnyTest, CountNonzeroTest
+from workloads.ops.logical_reduce import AllWorkload, AnyWorkload, CountNonzeroWorkload
 
 # ===================================================================
 # Op name constants
@@ -120,7 +120,7 @@ def _workloads_to_params(workloads):
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_ANY_OP)))
 def test_any_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = AnyTest(shape, dtype)
+    test = AnyWorkload(shape, dtype)
     bm = AnyBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -147,7 +147,7 @@ def test_any_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_ALL_OP)))
 def test_all_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = AllTest(shape, dtype)
+    test = AllWorkload(shape, dtype)
     bm = AllBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -174,7 +174,7 @@ def test_all_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_COUNT_NONZERO_OP)))
 def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = CountNonzeroTest(shape, dtype)
+    test = CountNonzeroWorkload(shape, dtype)
     bm = CountNonzeroBenchmark(test)
     inputs = test.gen_inputs()
 

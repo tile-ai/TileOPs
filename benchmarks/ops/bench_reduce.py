@@ -22,14 +22,14 @@ from tileops.ops.reduction.reduce import (
     VarMeanFwdOp,
 )
 from workloads.ops.reduce import (
-    AmaxTest,
-    AminTest,
-    MeanTest,
-    ProdTest,
-    StdTest,
-    SumTest,
-    VarMeanTest,
-    VarTest,
+    AmaxWorkload,
+    AminWorkload,
+    MeanWorkload,
+    ProdWorkload,
+    StdWorkload,
+    SumWorkload,
+    VarMeanWorkload,
+    VarWorkload,
 )
 
 # ===================================================================
@@ -221,7 +221,7 @@ def _workloads_to_params(workloads):
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_SUM_OP)))
 def test_sum_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = SumTest(shape, dtype)
+    test = SumWorkload(shape, dtype)
     bm = SumBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -248,7 +248,7 @@ def test_sum_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_MEAN_OP)))
 def test_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = MeanTest(shape, dtype)
+    test = MeanWorkload(shape, dtype)
     bm = MeanBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -275,7 +275,7 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_AMAX_OP)))
 def test_amax_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = AmaxTest(shape, dtype)
+    test = AmaxWorkload(shape, dtype)
     bm = AmaxBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -302,7 +302,7 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_AMIN_OP)))
 def test_amin_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = AminTest(shape, dtype)
+    test = AminWorkload(shape, dtype)
     bm = AminBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -329,7 +329,7 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_PROD_OP)))
 def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = ProdTest(shape, dtype)
+    test = ProdWorkload(shape, dtype)
     bm = ProdBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -356,7 +356,7 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_STD_OP)))
 def test_std_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = StdTest(shape, dtype)
+    test = StdWorkload(shape, dtype)
     bm = StdBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -383,7 +383,7 @@ def test_std_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_VAR_OP)))
 def test_var_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = VarTest(shape, dtype)
+    test = VarWorkload(shape, dtype)
     bm = VarBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -410,7 +410,7 @@ def test_var_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_VAR_MEAN_OP)))
 def test_var_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = VarMeanTest(shape, dtype)
+    test = VarMeanWorkload(shape, dtype)
     bm = VarMeanBenchmark(test)
     inputs = test.gen_inputs()
 

@@ -14,7 +14,7 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.reduction.inf_norm import InfNormFwdOp
 from tileops.ops.reduction.l1_norm import L1NormFwdOp
 from tileops.ops.reduction.l2_norm import L2NormFwdOp
-from workloads.ops.vector_norm import InfNormTest, L1NormTest, L2NormTest
+from workloads.ops.vector_norm import InfNormWorkload, L1NormWorkload, L2NormWorkload
 
 # ===================================================================
 # Op name constants
@@ -120,7 +120,7 @@ def _workloads_to_params(workloads):
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_L1_NORM_OP)))
 def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = L1NormTest(shape, dtype)
+    test = L1NormWorkload(shape, dtype)
     bm = L1NormBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -147,7 +147,7 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_L2_NORM_OP)))
 def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = L2NormTest(shape, dtype)
+    test = L2NormWorkload(shape, dtype)
     bm = L2NormBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -174,7 +174,7 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_INF_NORM_OP)))
 def test_inf_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = InfNormTest(shape, dtype)
+    test = InfNormWorkload(shape, dtype)
     bm = InfNormBenchmark(test)
     inputs = test.gen_inputs()
 
