@@ -77,6 +77,28 @@ def test_sparse_mla_decode(batch: int, heads: int, seq_len_q: int, seq_len_kv: i
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
         batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
+    # FIXME(kernel-precision): tolerance relaxed from atol=3e-4 to 1e-1 (#905)
+    #
+    # Two issues in SparseMlaKernel (tileops/kernels/deepseek_mla/deepseek_dsa_decode.py):
+    #
+    # 1. Online-softmax accumulation error: tiled online-softmax diverges from
+    #    full-materialized reference when high-scoring KV entries appear late in
+    #    the random index order, amplifying fp16 rescaling error up to ~0.07.
+    #    Observed in ~1% of random inputs (100 runs on H200).
+    #
+    # 2. Non-determinism with heavy padding: when a seq position has many invalid
+    #    indices (e.g. 696/2048 padding), the producer skips kv_shared loads for
+    #    invalid entries, leaving stale data in shared memory. WGMMA still reads
+    #    it (score is -inf so result should be -inf), but stale data causes
+    #    bit-level non-determinism across runs with identical inputs (observed
+    #    max inter-run diff = 0.018).
+    #
+    # Proper fix: zero-fill kv_shared for invalid entries in the producer, and
+    # verify that online-softmax rescaling precision is acceptable for this
+    # workload's KV length (2048) and block size (64).
+    #
+    # Cleanup: restore atol=3e-4 once the kernel's padding and accumulation
+    # precision are fixed.
     test.check(op, *test.gen_inputs(), atol=1e-1, rtol=5e-2)
 
 
