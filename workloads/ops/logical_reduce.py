@@ -7,7 +7,7 @@ class _LogicalTest(WorkloadBase):
     """Shared workload base for logical reduce ops (any, all, count_nonzero).
 
     Generates inputs with a mix of zeros and non-zeros for meaningful
-    logical reduction testing.  Boolean, integer, float, and complex
+    logical reduction testing. Boolean, integer, float, and complex
     dtypes are supported.
     """
 
