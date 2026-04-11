@@ -4,6 +4,13 @@ Covers 3D tensors with multi-dim and non-last-axis dim specifications,
 both keepdim=True and keepdim=False variants, to surface performance
 regressions and optimization opportunities in multi-dim reduction code.
 
+Groups 1 (reduce), 3 (logical), and 4 (vector norm) use true multi-dim
+reduction (e.g. dim=[0, 2]).  Groups 2 (argreduce) and 5 (cumulative) have
+architectural single-dim constraints — argreduce only accepts scalar dim,
+cumulative only operates on dim=-1 — so they benchmark all three axes of a
+3D tensor (argreduce) or 3D-shaped inputs reshaped to (M, N) (cumulative)
+as the closest multi-dim-relevant coverage.
+
 Shape conventions use LLaMA-family dimensions:
   - (batch=4, seq=128, hidden=4096): 7B inference context
   - (batch=2, seq=512, hidden=4096): 7B longer-context inference
@@ -143,8 +150,10 @@ def test_reduce_multidim_bench(
 
 
 # ===================================================================
-# 2. Argreduce (argmax, argmin) — non-last-axis dim
-#    (argreduce only supports scalar dim, not multi-dim list)
+# 2. Argreduce (argmax, argmin) — all axes of 3D tensor
+#    ArgmaxFwdOp/ArgminFwdOp only accept scalar dim (int), not a list.
+#    We cover dim=0, dim=1, and dim=2 on a 3D tensor to exercise every
+#    axis, which is the closest multi-dim-relevant coverage possible.
 # ===================================================================
 
 
@@ -170,6 +179,15 @@ class ArgreduceMultidimFixture(FixtureBase):
                 pytest.param(
                     (4, 128, 4096), 1, True, torch.bfloat16, "argmin",
                     id="argmin-7B-dim1-keepdim-bf16",
+                ),
+                # dim=2: reduce across hidden (last axis)
+                pytest.param(
+                    (4, 128, 4096), 2, False, torch.float16, "argmax",
+                    id="argmax-7B-dim2-nokeepdim",
+                ),
+                pytest.param(
+                    (4, 128, 4096), 2, True, torch.float16, "argmin",
+                    id="argmin-7B-dim2-keepdim",
                 ),
             ],
         ),
@@ -499,9 +517,12 @@ def test_vector_norm_multidim_bench(
 
 
 # ===================================================================
-# 5. Cumulative (cumsum, cumprod) — 3D tensor with dim=-1
-#    (CumsumFwdOp/CumprodFwdOp take fixed M/N and operate on dim=-1;
-#     multi-dim not supported, so we benchmark a 3D input where M=batch*seq)
+# 5. Cumulative (cumsum, cumprod) — 3D tensor reshaped to (M, N)
+#    CumsumFwdOp/CumprodFwdOp accept only (M, N, dtype) and always
+#    operate on dim=-1.  Multi-dim reduction is architecturally
+#    unsupported.  We benchmark 3D-shaped inputs (reshaped to M=batch*seq,
+#    N=hidden) so the benchmark exercises realistic multi-dim-shaped data
+#    even though the kernel sees a 2D view.
 # ===================================================================
 
 
