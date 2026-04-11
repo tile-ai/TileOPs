@@ -267,7 +267,7 @@ class BenchmarkBase(ABC):
 # ---------------------------------------------------------------------------
 
 
-def roofline_vars(workload: WorkloadBase) -> dict:
+def roofline_vars(workload: WorkloadBase) -> dict[str, int | float]:
     """Extract roofline variables from a workload (shape + dtype -> M, N, elem_bytes).
 
     Standard extraction for reduction-family ops where the manifest roofline
@@ -283,7 +283,7 @@ def roofline_vars(workload: WorkloadBase) -> dict:
     return dict(M=M, N=N, elem_bytes=elem_bytes)
 
 
-def workloads_to_params(op_name: str):
+def workloads_to_params(op_name: str) -> list:
     """Convert manifest workload dicts for *op_name* to pytest params: (shape, dtype).
 
     Returns a list of ``pytest.param(shape, dtype, id=...)`` suitable for
