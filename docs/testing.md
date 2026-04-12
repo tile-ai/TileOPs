@@ -15,7 +15,7 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 ## Test/Benchmark Pattern
 
 ```python
-# workloads/ops/mha.py
+# workloads/ops/attention/mha.py
 class MhaFwdTest(WorkloadBase):
     def __init__(self, batch, heads, seq_len, dim, causal, dtype): ...
     def gen_inputs(self): ...
