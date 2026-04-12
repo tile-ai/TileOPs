@@ -40,6 +40,8 @@ class ReduceBasicFixture(FixtureBase):
                 pytest.param(129, 512, torch.float16, marks=pytest.mark.full),
                 # Large-N tiled path (N > MAX_SINGLE_TILE_COLS)
                 pytest.param(64, 32768, torch.bfloat16, marks=pytest.mark.full),
+                # Large-N non-aligned: exercises masked last-tile in tiled kernels
+                pytest.param(64, 32769, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
