@@ -1433,7 +1433,7 @@ ops:
       bytes: "2 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/softmax/softmax_fwd.py
+      kernel: tileops/kernels/reduction/softmax.py
       kernel_map:
         softmax_fwd: SoftmaxKernel
       op: tileops/ops/reduction/softmax.py
@@ -1473,7 +1473,7 @@ ops:
       bytes: "2 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/softmax/softmax_fwd.py
+      kernel: tileops/kernels/reduction/softmax.py
       kernel_map:
         softmax_fwd: SoftmaxKernel
       op: tileops/ops/reduction/log_softmax.py
@@ -1515,7 +1515,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/softmax/logsumexp_fwd.py
+      kernel: tileops/kernels/reduction/logsumexp.py
       kernel_map:
         logsumexp_fwd: LogSumExpKernel
       op: tileops/ops/reduction/logsumexp.py
@@ -1560,7 +1560,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
@@ -1599,7 +1599,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
@@ -1638,7 +1638,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
@@ -1677,7 +1677,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
@@ -1715,7 +1715,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
@@ -1759,7 +1759,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
@@ -1799,7 +1799,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
@@ -1842,7 +1842,7 @@ ops:
       bytes: "(M * N + 2 * M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
@@ -1885,7 +1885,7 @@ ops:
       bytes: "M * N * elem_bytes + M * 8"
 
     source:
-      kernel: tileops/kernels/reduction/argreduce/fwd.py
+      kernel: tileops/kernels/reduction/argreduce.py
       kernel_map:
         argreduce: ArgreduceKernel
       op: tileops/ops/reduction/argmax.py
@@ -1925,7 +1925,7 @@ ops:
       bytes: "M * N * elem_bytes + M * 8"
 
     source:
-      kernel: tileops/kernels/reduction/argreduce/fwd.py
+      kernel: tileops/kernels/reduction/argreduce.py
       kernel_map:
         argreduce: ArgreduceKernel
       op: tileops/ops/reduction/argmin.py
@@ -1968,7 +1968,7 @@ ops:
       bytes: "M * N * elem_bytes + M"
 
     source:
-      kernel: tileops/kernels/reduction/logical_reduce/fwd.py
+      kernel: tileops/kernels/reduction/logical_reduce.py
       op: tileops/ops/reduction/all_op.py
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
@@ -2006,7 +2006,7 @@ ops:
       bytes: "M * N * elem_bytes + M"
 
     source:
-      kernel: tileops/kernels/reduction/logical_reduce/fwd.py
+      kernel: tileops/kernels/reduction/logical_reduce.py
       op: tileops/ops/reduction/any_op.py
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
@@ -2044,7 +2044,7 @@ ops:
       bytes: "M * N * elem_bytes + M * 8"
 
     source:
-      kernel: tileops/kernels/reduction/logical_reduce/fwd.py
+      kernel: tileops/kernels/reduction/logical_reduce.py
       op: tileops/ops/reduction/count_nonzero.py
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
@@ -2087,7 +2087,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/vector_norm/fwd.py
+      kernel: tileops/kernels/reduction/vector_norm.py
       op: tileops/ops/reduction/l1_norm.py
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
@@ -2126,7 +2126,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/vector_norm/fwd.py
+      kernel: tileops/kernels/reduction/vector_norm.py
       op: tileops/ops/reduction/l2_norm.py
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
@@ -2165,7 +2165,7 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/vector_norm/fwd.py
+      kernel: tileops/kernels/reduction/vector_norm.py
       op: tileops/ops/reduction/inf_norm.py
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
@@ -2206,7 +2206,7 @@ ops:
       bytes: "2 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/cumulative/fwd.py
+      kernel: tileops/kernels/reduction/cumulative.py
       op: tileops/ops/reduction/cumsum.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
@@ -2242,7 +2242,7 @@ ops:
       bytes: "2 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/cumulative/fwd.py
+      kernel: tileops/kernels/reduction/cumulative.py
       op: tileops/ops/reduction/cumprod.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py

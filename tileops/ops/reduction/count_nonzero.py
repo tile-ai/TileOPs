@@ -21,9 +21,9 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
-from tileops.kernels.reduction.logical_reduce.fwd import (
+from tileops.kernels.reduction.logical_reduce import (
     _UNSUPPORTED_STORAGE_DTYPES,
+    LogicalReduceKernel,
     to_logical_float32,
 )
 
