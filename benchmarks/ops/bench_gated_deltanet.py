@@ -21,7 +21,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 from workloads.base import FixtureBase
-from workloads.ops.gated_deltanet_fwd import GatedDeltaNetFwdTest
+from workloads.ops.gated_deltanet import GatedDeltaNetFwdTest
 
 
 def _differentiable_fwd(q, k, v, g_raw, beta, chunk_size):

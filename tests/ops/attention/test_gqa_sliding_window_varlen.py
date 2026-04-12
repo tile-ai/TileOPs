@@ -6,7 +6,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GqaSlidingWindowVarlenFwdOp
-from workloads.ops.gqa_sliding_window_varlen_fwd import (
+from workloads.ops.attention.gqa_sliding_window_varlen import (
     GqaSlidingWindowVarlenFwdTest as _GqaSlidingWindowVarlenFwdTestWorkload,
 )
 

@@ -7,7 +7,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
-from workloads.ops.gqa_decode import GqaDecodeTest
+from workloads.ops.attention.gqa_decode import GqaDecodeTest
 
 
 class _GqaDecodeTestBaseline(GqaDecodeTest):

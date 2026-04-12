@@ -6,7 +6,7 @@ from einops import einsum, rearrange
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from workloads.ops.deepseek_mla_decode import MlaDecodeTest as _MlaDecodeTestWorkload
+from workloads.ops.attention.deepseek_mla_decode import MlaDecodeTest as _MlaDecodeTestWorkload
 
 
 class MlaDecodeTest(_MlaDecodeTestWorkload, TestBase):

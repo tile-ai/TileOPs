@@ -6,7 +6,7 @@ from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
-from workloads.ops.gqa import (
+from workloads.ops.attention.gqa import (
     GqaBwdTest,
     GqaFwdTest,
 )

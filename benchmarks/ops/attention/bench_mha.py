@@ -6,7 +6,7 @@ from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
-from workloads.ops.mha import (
+from workloads.ops.attention.mha import (
     MhaBwdTest,
     MhaFwdTest,
 )

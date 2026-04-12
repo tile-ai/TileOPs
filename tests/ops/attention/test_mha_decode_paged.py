@@ -9,7 +9,9 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.ops.mha_decode_paged import MhaDecodePagedTest as _MhaDecodePagedTestWorkload
+from workloads.ops.attention.mha_decode_paged import (
+    MhaDecodePagedTest as _MhaDecodePagedTestWorkload,
+)
 
 
 class MhaDecodePagedTest(_MhaDecodePagedTestWorkload, TestBase):

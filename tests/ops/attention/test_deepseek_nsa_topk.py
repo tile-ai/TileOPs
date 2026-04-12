@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSATopkVarlenOp
-from workloads.ops.deepseek_nsa_topk import NsaTopkTest as _NsaTopkTestWorkload
+from workloads.ops.attention.deepseek_nsa_topk import NsaTopkTest as _NsaTopkTestWorkload
 
 
 def _nsa_topk_torch(test, q, k_cmp, lse, block_counts, block_size, scale,

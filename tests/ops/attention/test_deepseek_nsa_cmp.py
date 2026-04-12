@@ -7,7 +7,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSACmpFwdVarlenOp
 from workloads.nsa_utils import prepare_chunk_offsets
-from workloads.ops.deepseek_nsa_cmp_fwd import NsaCmpFwdTest as _NsaCmpFwdTestWorkload
+from workloads.ops.attention.deepseek_nsa_cmp import NsaCmpFwdTest as _NsaCmpFwdTestWorkload
 
 
 def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, scale, offsets):

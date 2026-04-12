@@ -7,7 +7,7 @@ from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GqaSlidingWindowVarlenFwdOp
-from workloads.ops.gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdTest
+from workloads.ops.attention.gqa_sliding_window_varlen import GqaSlidingWindowVarlenFwdTest
 
 _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = [
     pytest.param(1, [3000], [3000], 32, 8, 128, True, -1, -1, torch.float16, False, id="single-seq-causal"),
