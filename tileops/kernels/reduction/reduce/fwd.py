@@ -30,6 +30,7 @@ from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     MAX_SINGLE_TILE_COLS,
+    SHARED_MEMORY_BUDGET_BYTES,
     align_up,
     compute_tile_n,
     device_smem_budget,
@@ -939,6 +940,13 @@ class ReduceKernel(Kernel):
         # so standard autotune via self.kernel is not applicable -- see autotune().
         self.init_config(config, tune)
 
+        # After init_config, ensure tile_n is consistent with the chosen block_m.
+        # A caller-provided config may have block_m without tile_n.
+        if self._needs_tiling and not tune:
+            bm = self.config.get("block_m", 1)
+            if "tile_n" not in self.config or self.config["tile_n"] == 0:
+                self.config["tile_n"] = self._tile_n_for_block_m(bm)
+
     def _tile_n_for_block_m(self, block_m: int) -> int:
         """Return tile_n for a given block_m (0 means no tiling needed).
 
@@ -966,7 +974,7 @@ class ReduceKernel(Kernel):
     def default_config(self) -> dict:
         if not self._needs_tiling:
             smem_per_row = self.N_padded * self._elem_bytes
-            max_block_m = (48 * 1024) // smem_per_row
+            max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
             block_m = 1
             for bm in [1, 2, 4, 8]:
                 if bm <= max_block_m:
@@ -982,12 +990,15 @@ class ReduceKernel(Kernel):
                 tn = self._tile_n_for_block_m(bm)
             except ValueError:
                 continue
-            if tn == 0 and best_tile_n == 0 or tn == 0 and best_tile_n != 0:
+            if tn == 0:
+                # No tiling needed at this block_m — always prefer
                 best_bm = bm
                 best_tile_n = tn
-            elif tn != 0 and best_tile_n == 0:
+            elif best_tile_n == 0:
+                # Current best doesn't need tiling; keep it
                 pass
             else:
+                # Both need tiling — pick fewer tiles
                 best_num = (self.N_padded + best_tile_n - 1) // best_tile_n
                 curr_num = (self.N_padded + tn - 1) // tn
                 if curr_num < best_num:
@@ -1000,7 +1011,7 @@ class ReduceKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         if not self._needs_tiling:
             smem_per_row = self.N_padded * self._elem_bytes
-            max_block_m = (48 * 1024) // smem_per_row
+            max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
             block_ms = [bm for bm in [1, 2, 4, 8] if bm <= max_block_m]
             threads_list = [128, 256]
             configs = list(itertools.product(block_ms, threads_list))

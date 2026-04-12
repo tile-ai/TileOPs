@@ -38,6 +38,8 @@ class ReduceBasicFixture(FixtureBase):
                 pytest.param(128, 300, torch.bfloat16, marks=pytest.mark.full),
                 # Tail-M: M not divisible by block_m
                 pytest.param(129, 512, torch.float16, marks=pytest.mark.full),
+                # Large-N tiled path (N > MAX_SINGLE_TILE_COLS)
+                pytest.param(64, 32768, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
