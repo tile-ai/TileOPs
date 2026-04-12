@@ -95,14 +95,14 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                     # Process N dimension in tiles
                     for tile_idx in T.Serial(n_tiles):
                         if _needs_mask:
-                            # Fast path for all tiles except the last
-                            with T.If(tile_idx < n_tiles - 1):
+                            # Fast path when current tile is fully in-bounds
+                            with T.If((tile_idx + 1) * block_n <= N):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
                                 with T.Else():
-                                    # Last tile: masked load
+                                    # Partially OOB tile: masked load
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.if_then_else(
                                             T.And(
@@ -159,12 +159,14 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                     # Process N dimension in tiles
                     for tile_idx in T.Serial(n_tiles):
                         if _needs_mask:
-                            with T.If(tile_idx < n_tiles - 1):
+                            # Fast path when current tile is fully in-bounds
+                            with T.If((tile_idx + 1) * block_n <= N):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, tile_idx * block_n], shared_in)
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
                                 with T.Else():
+                                    # Partially OOB tile: masked load
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.if_then_else(
                                             T.And(
