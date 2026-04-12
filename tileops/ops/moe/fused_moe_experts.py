@@ -23,7 +23,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.grouped_gemm.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
+from tileops.kernels.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
 from tileops.kernels.kernel import Kernel
 from tileops.ops.elementwise import SiluAndMulOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
