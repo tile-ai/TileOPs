@@ -49,4 +49,4 @@ python scripts/test_node_delta.py --base upstream/main tests/ops/test_<name>.py
 - **Growth on existing files** → include script output and one-line justification in PR body under `## Test node delta`.
 - **New test files only** (delta shows "all N nodes from new files") → no delta report needed.
 
-**SOFT GATE:** Does not block PR creation, but missing justification will be flagged during review (per `testing-budget.md`).
+**SOFT GATE:** Does not block PR creation, but missing justification will be flagged during review (per [`.claude/domain-rules/testing-budget.md`](../../.claude/domain-rules/testing-budget.md)).
