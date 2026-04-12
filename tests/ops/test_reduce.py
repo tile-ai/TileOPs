@@ -43,6 +43,23 @@ class ReduceBasicFixture(FixtureBase):
     ]
 
 
+class ReduceTiledFixture(FixtureBase):
+    """Large-N cases that exercise the tiled reduce path (N > MAX_SINGLE_TILE_COLS).
+
+    One representative op per kernel family: sum (simple), prod, var (welford).
+    """
+
+    PARAMS = [
+        (
+            "m, n, dtype",
+            [
+                pytest.param(64, 32768, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(64, 32769, torch.bfloat16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
 class ReduceNonContigFixture(FixtureBase):
     PARAMS = [
         (
@@ -185,6 +202,34 @@ def test_sum_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ReduceTest(m, n, dtype, "sum")
     op = SumFwdOp(dtype=dtype)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+@ReduceTiledFixture
+def test_sum_tiled(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    test = ReduceTest(m, n, dtype, "sum")
+    op = SumFwdOp(dtype=dtype)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+
+@ReduceTiledFixture
+def test_prod_tiled(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import ProdFwdOp
+
+    test = ProdTest(m, n, dtype)
+    op = ProdFwdOp(dtype=dtype)
+    tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
+    test.check(op, *test.gen_inputs(), **tol)
+
+
+@ReduceTiledFixture
+def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import VarFwdOp
+
+    test = WelfordTest(m, n, dtype, "var", correction=1)
+    op = VarFwdOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
