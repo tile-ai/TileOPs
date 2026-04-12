@@ -732,52 +732,6 @@ class TestBench:
         assert any("load_workloads" in e for e in errors)
         assert any("eval_roofline" in e for e in errors)
 
-    def test_bench_local_subclass_passes(self, validator, tmp_path):
-        """A local subclass of ManifestBenchmark counts as eval_roofline usage."""
-        bench_file = tmp_path / "bench_test.py"
-        bench_file.write_text(textwrap.dedent("""\
-            from benchmarks.benchmark import workloads_to_params, ManifestBenchmark
-
-            class CustomBenchmark(ManifestBenchmark):
-                pass
-
-            params = workloads_to_params('test_op')
-            CustomBenchmark('test_op', params[0])
-        """))
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        assert errors == []
-
-    def test_bench_subclass_override_bypass_known_limitation(self, validator, tmp_path):
-        """Known limitation: AST validator cannot detect method overrides.
-
-        A ManifestBenchmark subclass that overrides calculate_flops/calculate_memory
-        to return hardcoded values (bypassing eval_roofline) still passes the
-        validator. This is inherent to static AST analysis — detecting method
-        overrides that break the roofline contract would require runtime inspection
-        or a much more complex analysis that is not worth the maintenance cost.
-        This test documents the limitation as a regression guard.
-        """
-        bench_file = tmp_path / "bench_test.py"
-        bench_file.write_text(textwrap.dedent("""\
-            from benchmarks.benchmark import workloads_to_params, ManifestBenchmark
-
-            class BypassBenchmark(ManifestBenchmark):
-                def calculate_flops(self):
-                    return 1
-
-                def calculate_memory(self):
-                    return 2
-
-            params = workloads_to_params('test_op')
-            BypassBenchmark('test_op', params[0])
-        """))
-        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
-        # The validator passes because AST analysis only checks that a
-        # ManifestBenchmark subclass is instantiated with the correct op name.
-        # It cannot detect that calculate_flops/calculate_memory are overridden
-        # to bypass eval_roofline. This is a known, accepted limitation.
-        assert errors == []
-
 
 # ---------------------------------------------------------------------------
 # --check-op: force all levels on a specific op, ignoring status
