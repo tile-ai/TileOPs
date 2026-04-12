@@ -3,26 +3,64 @@ import subprocess
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Callable, Optional, Protocol, Tuple, runtime_checkable
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    Optional,
+    Protocol,
+    Tuple,
+    TypeVar,
+    runtime_checkable,
+)
 
 import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
 from tileops.manifest import eval_roofline, load_workloads
-from workloads.base import WorkloadBase
+
+# ---------------------------------------------------------------------------
+# Benchmark capability protocols
+# ---------------------------------------------------------------------------
 
 
 @runtime_checkable
-class RooflineWorkload(Protocol):
-    """Structural type for workloads passed to roofline helpers.
+class ShapeDtypeWorkload(Protocol):
+    """Structural type for workloads that carry shape and dtype metadata.
 
-    Any object with ``shape`` and ``dtype`` satisfies this protocol,
-    including ``WorkloadBase`` subclasses that set those attributes.
+    Any object with ``shape`` and ``dtype`` satisfies this protocol.
+    Used by helper functions like ``roofline_vars()`` that only need
+    tensor metadata, not input generation capability.
     """
 
     shape: tuple
     dtype: torch.dtype
+
+
+@runtime_checkable
+class InputGeneratingWorkload(Protocol):
+    """Structural type for workloads that can generate benchmark inputs."""
+
+    def gen_inputs(self) -> Any: ...
+
+
+@runtime_checkable
+class BenchmarkWorkload(ShapeDtypeWorkload, InputGeneratingWorkload, Protocol):
+    """Full benchmark workload: shape/dtype metadata + input generation.
+
+    This is the standard contract for benchmark workloads that need both
+    roofline metadata extraction and input tensor generation.
+    ``WorkloadBase`` subclasses satisfy this protocol by construction.
+    """
+
+    ...
+
+
+# Backward-compatible alias
+RooflineWorkload = ShapeDtypeWorkload
+
+W = TypeVar("W")
 
 
 _logger = logging.getLogger("tileops.bench")
@@ -223,14 +261,17 @@ def _get_env_metadata() -> list[str]:
     return lines
 
 
-class BenchmarkBase(ABC):
+class BenchmarkBase(Generic[W], ABC):
     """Abstract base class for op benchmarking.
 
-    Takes a WorkloadBase instance to share gen_inputs().
+    Generic over workload type so subclasses can declare the exact
+    capability they need.  ``WorkloadBase`` remains the typical in-repo
+    implementation, but the public contract is the type parameter.
+
     Subclass must implement calculate_flops() and calculate_memory().
     """
 
-    def __init__(self, workload: WorkloadBase):
+    def __init__(self, workload: W):
         self.workload = workload
 
     @abstractmethod
@@ -280,7 +321,7 @@ class BenchmarkBase(ABC):
 # ---------------------------------------------------------------------------
 
 
-def roofline_vars(workload: RooflineWorkload) -> dict[str, int | float]:
+def roofline_vars(workload: ShapeDtypeWorkload) -> dict[str, int | float]:
     """Extract roofline variables from a workload (shape + dtype -> M, N, elem_bytes).
 
     Standard extraction for reduction-family ops where the manifest roofline
@@ -316,12 +357,15 @@ def workloads_to_params(op_name: str) -> list:
     return params
 
 
-class ManifestBenchmark(BenchmarkBase):
+class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
     """Generic benchmark that derives FLOP/memory counts from ops_manifest.yaml.
 
-    Accepts an op name, calls ``eval_roofline()`` with auto-extracted roofline
-    vars, and caches the result.  Subclass and override ``_roofline_vars()``
-    for ops with non-standard variable extraction.
+    Accepts an op name and any workload satisfying :class:`ShapeDtypeWorkload`
+    (i.e. any object with ``shape`` and ``dtype``).  Calls ``eval_roofline()``
+    with auto-extracted roofline vars and caches the result.
+
+    Subclass and override ``_roofline_vars()`` for ops with non-standard
+    variable extraction.
 
     Usage::
 
@@ -329,7 +373,7 @@ class ManifestBenchmark(BenchmarkBase):
         result = bm.profile(op, *inputs)
     """
 
-    def __init__(self, op_name: str, workload: WorkloadBase):
+    def __init__(self, op_name: str, workload: ShapeDtypeWorkload):
         super().__init__(workload)
         self._op_name = op_name
         self._roofline_cache: Optional[tuple[float, float]] = None
@@ -340,7 +384,7 @@ class ManifestBenchmark(BenchmarkBase):
         Override this for ops whose manifest roofline expressions require
         variables beyond the standard ``M``, ``N``, ``elem_bytes``.
         """
-        return roofline_vars(self.workload)  # type: ignore[arg-type]  # concrete workloads have shape+dtype
+        return roofline_vars(self.workload)
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
