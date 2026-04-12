@@ -575,24 +575,33 @@ class SoftmaxKernel(Kernel):
 
         self.init_config(config, tune)
 
-        # If a user-provided config picked a block_m mapping to a different
-        # tile_n, rebuild the kernel for the new tile_n. _softmax_kernel is
-        # lru_cache'd, so this is cheap on the common path.
-        new_tile_n = self._tile_n_for_block_m(self.config["block_m"])
-        if new_tile_n != self._tile_n:
-            self._tile_n = new_tile_n
-            self.kernel = _softmax_kernel(
-                self.M,
-                self.N,
-                self.op_kind,
-                self.dtype_str,
-                self._tile_n,
-            )
-        self.config["tile_n"] = self._tile_n
+        # When tune=True, autotune() already set self._tile_n and
+        # self.config["tile_n"], and rebuilt the kernel.  Only apply
+        # the post-init tile_n fixup for user-provided configs.
+        if not tune:
+            # If the caller supplied an explicit tile_n (e.g. from a
+            # previous autotuner result), honour it.  Only fall back to
+            # the heuristic when tile_n was not provided.
+            caller_tile_n = config.get("tile_n") if config is not None else None
+            if caller_tile_n is not None:
+                target_tile_n = caller_tile_n
+            else:
+                target_tile_n = self._tile_n_for_block_m(self.config["block_m"])
+            if target_tile_n != self._tile_n:
+                self._tile_n = target_tile_n
+                self.kernel = _softmax_kernel(
+                    self.M,
+                    self.N,
+                    self.op_kind,
+                    self.dtype_str,
+                    self._tile_n,
+                )
+            self.config["tile_n"] = self._tile_n
 
     # Tiled softmax/log_softmax allocates 2 shared buffers (one per pass)
     # due to TileLang allocator aliasing -- see _softmax_kernel_tiled docstring.
     _NUM_SHARED_BUFFERS = 2
+    _MAX_TILE_N_CANDIDATES = 3
 
     def _tile_n_for_block_m(self, block_m: int) -> int:
         """Return tile_n for a given block_m (0 means no tiling needed).
@@ -668,40 +677,145 @@ class SoftmaxKernel(Kernel):
 
         return {"block_m": best_bm, "threads": 256, "tile_n": best_tile_n}
 
+    def _tile_n_candidates(self) -> list[int]:
+        """Return candidate tile_n values for autotune exploration.
+
+        Includes the heuristic tile_n (from block_m=1) plus alternative
+        tile_n values derived from ``_tile_n_for_block_m(2)`` and
+        ``_tile_n_for_block_m(4)``, with a half-step fallback aligned to
+        ``DEFAULT_ALIGNMENT`` when block_m exploration yields no
+        alternatives.  tile_n=0 means single-tile (no tiling).  All
+        candidates are de-duplicated and sorted descending for
+        deterministic ordering.
+
+        Each distinct tile_n value requires a full kernel recompilation,
+        which is expensive for large-N workloads (compilations can take
+        minutes each).  To keep autotuner wall time practical we cap
+        the total number of tile_n candidates at ``_MAX_TILE_N_CANDIDATES``
+        (currently 3).
+
+        - When the heuristic default tile_n is 0 (single-tile / small N),
+          return ``[0]`` -- the autotuner varies only block_m and threads.
+        - Otherwise collect distinct tile_n values from block_m=1..4 and
+          return up to ``_MAX_TILE_N_CANDIDATES`` candidates (always
+          including the heuristic default).
+        """
+        default_tn = self._tile_n_for_block_m(1)
+        if default_tn == 0:
+            return [0]
+
+        candidates: set[int] = {default_tn}
+        # Explore tile_n values implied by small block_m values.
+        # Higher block_m → smaller tile_n (more N-tiles but better row reuse).
+        for bm in (2, 4):
+            try:
+                tn = self._tile_n_for_block_m(bm)
+            except ValueError:
+                continue
+            if tn > 0 and tn != default_tn:
+                candidates.add(tn)
+
+        # Also try half of the default tile_n (rounded to alignment) as a
+        # search point when block_m exploration didn't yield alternatives.
+        if len(candidates) < 2:
+            from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT
+            half_tn = (default_tn // 2 // DEFAULT_ALIGNMENT) * DEFAULT_ALIGNMENT
+            if half_tn > 0 and half_tn != default_tn:
+                candidates.add(half_tn)
+
+        # Cap to avoid excessive compilation time.
+        sorted_candidates = sorted(candidates, reverse=True)
+        return sorted_candidates[:self._MAX_TILE_N_CANDIDATES]
+
     @property
     def autotune_configs(self) -> list[dict]:
-        """Generate autotune configs (block_m, threads only).
+        """Generate autotune configs including tile_n candidates.
 
-        tile_n is baked into the kernel at build time, so we only expose
-        block_m and threads to the autotuner. All configs must be compatible
-        with the kernel's tile_n.
+        tile_n is baked into the kernel at build time, so the autotuner
+        rebuilds the kernel for each tile_n value.  Configs include
+        ``tile_n`` alongside ``block_m`` and ``threads``.
         """
-        # Use the same tile_n that the kernel was built with
-        tile_n = getattr(self, "_tile_n", self.default_config["tile_n"])
         budget = self._smem_budget
         smem_per_row = self.N_padded * self._elem_bytes
         max_block_m_no_tile = budget // smem_per_row if smem_per_row > 0 else 16
         threads_list = [128, 256]
 
         configs = []
-        for bm in [1, 2, 4, 8, 16]:
-            try:
-                compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
-            except ValueError:
-                continue
-            bm_tile_n = self._tile_n_for_block_m(bm)
-            # Only include configs compatible with the built kernel's tile_n
-            if bm_tile_n != tile_n:
-                continue
-            if tile_n == 0 and bm > max_block_m_no_tile:
-                continue
-            for t in threads_list:
-                configs.append({"block_m": bm, "threads": t})
+        for tile_n in self._tile_n_candidates():
+            if tile_n == 0:
+                # Single-tile regime: explore multiple block_m values.
+                for bm in [1, 2, 4, 8, 16]:
+                    try:
+                        compute_tile_n(bm, self._elem_bytes, self.N_padded, budget=budget)
+                    except ValueError:
+                        continue
+                    bm_tile_n = self._tile_n_for_block_m(bm)
+                    if bm_tile_n != 0:
+                        continue
+                    if bm > max_block_m_no_tile:
+                        continue
+                    for t in threads_list:
+                        configs.append({"block_m": bm, "threads": t, "tile_n": 0})
+            else:
+                # Tiled regime: use block_m=1 with each tile_n candidate.
+                # Each distinct tile_n triggers a kernel recompilation, so
+                # we only vary threads within each tile_n regime.
+                for t in threads_list:
+                    configs.append({"block_m": 1, "threads": t, "tile_n": tile_n})
 
         if not configs:
-            configs = [{"block_m": 1, "threads": 256}]
+            configs = [{"block_m": 1, "threads": 256, "tile_n": self._tile_n}]
 
         return configs
+
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
+        """Autotune across tile_n candidates by rebuilding the kernel per regime.
+
+        Groups configs by tile_n, benchmarks each group with its own kernel,
+        and picks the overall best (block_m, threads, tile_n) config.
+        """
+        from tilelang.autotuner import autotune as tl_autotune
+
+        configs = self.autotune_configs
+        if not configs:
+            return
+
+        # Group configs by tile_n
+        by_tile_n: dict[int, list[dict]] = {}
+        for cfg in configs:
+            tn = cfg["tile_n"]
+            by_tile_n.setdefault(tn, []).append(
+                {"block_m": cfg["block_m"], "threads": cfg["threads"]}
+            )
+
+        best_time = float("inf")
+        best_config = None
+
+        for tile_n, group_cfgs in by_tile_n.items():
+            kernel = _softmax_kernel(
+                self.M, self.N, self.op_kind, self.dtype_str, tile_n,
+            )
+            autotune_kwargs: dict = dict(
+                configs=group_cfgs, warmup=warmup, rep=rep,
+            )
+            if self.autotune_supply_prog is not None:
+                autotune_kwargs["supply_prog"] = self.autotune_supply_prog
+            autotuned = tl_autotune(**autotune_kwargs)(kernel)
+            tuned = autotuned()
+            latency = tuned.latency
+            if latency < best_time:
+                best_time = latency
+                best_config = {**tuned.config, "tile_n": tile_n}
+
+        if best_config is not None:
+            self.config = best_config
+            # Rebuild kernel for the winning tile_n
+            winning_tile_n = best_config["tile_n"]
+            if winning_tile_n != self._tile_n:
+                self._tile_n = winning_tile_n
+                self.kernel = _softmax_kernel(
+                    self.M, self.N, self.op_kind, self.dtype_str, self._tile_n,
+                )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the softmax/log_softmax kernel.

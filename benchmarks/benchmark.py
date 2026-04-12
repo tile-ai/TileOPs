@@ -488,7 +488,7 @@ class BenchmarkReport:
                     row = [str(entry["params"].get(k, "")) for k in param_keys]
                     for rk in result_keys:
                         val = entry["result"].get(rk)
-                        row.append(f"{val:.2f}" if val is not None else "N/A")
+                        row.append(f"{val:.4f}" if val is not None else "N/A")
                     if has_config:
                         cfg = entry.get("config")
                         row.append(str(cfg) if cfg else "")
