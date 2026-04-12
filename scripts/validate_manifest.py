@@ -913,14 +913,11 @@ def _ast_manifest_call_usage(
                             suffix = ".".join(parts[i:])
                             mod_full = f"{mapped}.{suffix}" if suffix else mapped
                             break
-                    if mod_full is None:
-                        # No alias found — try the entire chain as-is (bare
-                        # ``import tileops.manifest`` with no alias creates
-                        # a binding for the top-level name only, but the call
-                        # uses the full dotted path).
-                        mod_full = ".".join(parts)
-                        if mod_full not in (_INDIRECT_MODULE, *_DIRECT_MODULES):
-                            mod_full = None
+                    # No fallback: if no alias matched, the module was never
+                    # imported, so mod_full stays None.  A bare
+                    # ``import tileops.manifest`` already registers
+                    # "tileops.manifest" in _module_aliases (line above),
+                    # which the progressive prefix search finds.
 
                 if mod_full == _INDIRECT_MODULE:
                     equiv = _INDIRECT_EQUIV.get(attr_name)

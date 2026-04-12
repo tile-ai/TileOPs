@@ -824,6 +824,28 @@ class TestBench:
         assert any("load_workloads" in e for e in errors)
         assert any("eval_roofline" in e for e in errors)
 
+    def test_bench_qualified_direct_call_without_import_fails(self, validator, tmp_path):
+        """tileops.manifest.load_workloads() without any import must fail L4."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            workloads = tileops.manifest.load_workloads('test_op')
+            tileops.manifest.eval_roofline('test_op')
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert any("load_workloads" in e for e in errors)
+        assert any("eval_roofline" in e for e in errors)
+
+    def test_bench_qualified_indirect_call_without_import_fails(self, validator, tmp_path):
+        """benchmarks.benchmark.workloads_to_params() without any import must fail L4."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            params = benchmarks.benchmark.workloads_to_params('test_op')
+            benchmarks.benchmark.ManifestBenchmark('test_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert any("load_workloads" in e for e in errors)
+        assert any("eval_roofline" in e for e in errors)
+
 
 # ---------------------------------------------------------------------------
 # --check-op: force all levels on a specific op, ignoring status
