@@ -1,46 +1,39 @@
-from .conv import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
-from .deepseek_mla import (
-    FP8LightingIndexerKernel,
-    FP8QuantKernel,
-    MlaDecodeKernel,
-    MlaDecodeWsKernel,
-    SparseMlaKernel,
-    TopkSelectorKernel,
-)
-from .deepseek_nsa import (
+from .attention import (
+    FlashAttnBwdPostprocessKernel,
+    FlashAttnBwdPreprocessKernel,
+    GqaBwdKernel,
+    GqaBwdWgmmaPipelinedKernel,
+    GqaDecodeKernel,
+    GqaDecodePagedKernel,
+    GqaFwdKernel,
+    GqaFwdWgmmaPipelinedKernel,
     GqaSlidingWindowFwdKernel,
     GqaSlidingWindowFwdWgmmaPipelinedKernel,
     GqaSlidingWindowVarlenFwdKernel,
     GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel,
     MeanPoolingFwdKernel,
+    MhaBwdKernel,
+    MhaBwdWgmmaPipelinedKernel,
+    MhaDecodeKernel,
+    MhaDecodePagedKernel,
+    MhaFwdKernel,
+    MhaFwdWgmmaPipelinedKernel,
+    MlaDecodeKernel,
+    MlaDecodeWsKernel,
     NSACmpFwdVarlenKernel,
     NSAFwdVarlenKernel,
     NSATopkVarlenKernel,
+    SparseMlaKernel,
 )
+from .conv import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
 from .deltanet_chunkwise import DeltaNetBwdKernel, DeltaNetFwdKernel
 from .deltanet_recurrence import DeltaNetDecodeFP32Kernel, DeltaNetDecodeKernel
 from .dropout import DropoutKernel
 from .elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
 from .engram import EngramDecodeKernel, EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from .fft import FFTC2CKernel
-from .flash_attn import (
-    FlashAttnBwdPostprocessKernel,
-    FlashAttnBwdPreprocessKernel,
-    GqaBwdKernel,
-    GqaBwdWgmmaPipelinedKernel,
-    GqaFwdKernel,
-    GqaFwdWgmmaPipelinedKernel,
-    MhaBwdKernel,
-    MhaBwdWgmmaPipelinedKernel,
-    MhaFwdKernel,
-    MhaFwdWgmmaPipelinedKernel,
-)
-from .flash_decode import (
-    GqaDecodeKernel,
-    GqaDecodePagedKernel,
-    MhaDecodeKernel,
-    MhaDecodePagedKernel,
-)
+from .fp8_lighting_indexer import FP8LightingIndexerKernel
+from .fp8_quant import FP8QuantKernel
 from .gated_deltanet_chunkwise import GatedDeltaNetBwdKernel, GatedDeltaNetFwdKernel
 from .gated_deltanet_recurrence import GatedDeltaNetDecodeFP32Kernel, GatedDeltaNetDecodeKernel
 from .gemm import GemmKernel, GemvKernel
@@ -66,6 +59,7 @@ from .rope import (
     RopeNonNeoxKernel,
     RopeYarnKernel,
 )
+from .topk_selector import TopkSelectorKernel
 
 __all__ = [
     "BinaryKernel",

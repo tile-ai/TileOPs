@@ -3,7 +3,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.flash_decode import GqaDecodeKernel
+from tileops.kernels.attention import GqaDecodeKernel
 from tileops.kernels.kernel import Kernel
 
 from ..op import Op

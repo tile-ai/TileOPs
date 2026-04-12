@@ -3,7 +3,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.deepseek_nsa import (
+from tileops.kernels.attention import (
     GqaSlidingWindowFwdKernel,
     GqaSlidingWindowFwdWgmmaPipelinedKernel,
 )

@@ -550,7 +550,7 @@ ops:
       func: "tileops.perf.formulas.mha_fwd_roofline"
 
     source:
-      kernel: tileops/kernels/flash_attn/fwd.py
+      kernel: tileops/kernels/attention/gqa_fwd.py
       kernel_map:
         mha_fwd_kernel: MhaFwdKernel
       op: tileops/ops/attention/mha.py
@@ -599,7 +599,7 @@ ops:
       func: "tileops.perf.formulas.mha_bwd_roofline"
 
     source:
-      kernel: tileops/kernels/flash_attn/bwd.py
+      kernel: tileops/kernels/attention/gqa_bwd.py
       kernel_map:
         mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
         mha_bwd_kernel: MhaBwdKernel
@@ -641,7 +641,7 @@ ops:
       func: "tileops.perf.formulas.gqa_fwd_roofline"
 
     source:
-      kernel: tileops/kernels/flash_attn/fwd.py
+      kernel: tileops/kernels/attention/gqa_fwd.py
       kernel_map:
         gqa_fwd_kernel: GqaFwdKernel
       op: tileops/ops/attention/gqa.py
@@ -691,7 +691,7 @@ ops:
       func: "tileops.perf.formulas.gqa_bwd_roofline"
 
     source:
-      kernel: tileops/kernels/flash_attn/bwd.py
+      kernel: tileops/kernels/attention/gqa_bwd.py
       kernel_map:
         gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
         gqa_bwd_kernel: GqaBwdKernel
@@ -737,7 +737,7 @@ ops:
       func: "tileops.perf.formulas.mha_decode_roofline"
 
     source:
-      kernel: tileops/kernels/flash_decode/mha_decode.py
+      kernel: tileops/kernels/attention/mha_decode.py
       kernel_map:
         mha_decode_kernel: MhaDecodeKernel
       op: tileops/ops/attention/mha_decode.py
@@ -791,7 +791,7 @@ ops:
       func: "tileops.perf.formulas.mha_decode_paged_roofline"
 
     source:
-      kernel: tileops/kernels/flash_decode/mha_decode_paged.py
+      kernel: tileops/kernels/attention/mha_decode_paged.py
       kernel_map:
         mha_decode_paged_kernel: MhaDecodePagedKernel
       op: tileops/ops/attention/mha_decode_paged.py
@@ -832,7 +832,7 @@ ops:
       func: "tileops.perf.formulas.gqa_decode_roofline"
 
     source:
-      kernel: tileops/kernels/flash_decode/gqa_decode.py
+      kernel: tileops/kernels/attention/gqa_decode.py
       kernel_map:
         gqa_decode_kernel: GqaDecodeKernel
       op: tileops/ops/attention/gqa_decode.py
@@ -886,7 +886,7 @@ ops:
       func: "tileops.perf.formulas.gqa_decode_paged_roofline"
 
     source:
-      kernel: tileops/kernels/flash_decode/gqa_decode_paged.py
+      kernel: tileops/kernels/attention/gqa_decode_paged.py
       kernel_map:
         gqa_decode_paged_kernel: GqaDecodePagedKernel
       op: tileops/ops/attention/gqa_decode_paged.py
@@ -932,7 +932,7 @@ ops:
       func: "tileops.perf.formulas.gqa_sliding_window_fwd_roofline"
 
     source:
-      kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_fwd.py
+      kernel: tileops/kernels/attention/gqa_sliding_window_fwd.py
       kernel_map:
         gqa_sliding_window_fwd: GqaSlidingWindowFwdKernel
       op: tileops/ops/attention/gqa_sliding_window.py
@@ -979,7 +979,7 @@ ops:
       func: "tileops.perf.formulas.gqa_sliding_window_varlen_fwd_roofline"
 
     source:
-      kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_varlen_fwd.py
+      kernel: tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
       kernel_map:
         gqa_sliding_window_varlen_fwd: GqaSlidingWindowVarlenFwdKernel
       op: tileops/ops/attention/gqa_sliding_window_varlen.py
@@ -1026,7 +1026,7 @@ ops:
       func: "tileops.perf.formulas.deepseek_mla_decode_roofline"
 
     source:
-      kernel: tileops/kernels/deepseek_mla/deepseek_mla_decode.py
+      kernel: tileops/kernels/attention/deepseek_mla_decode.py
       kernel_map:
         mla_decode_kernel: MlaDecodeKernel
       op: tileops/ops/attention/deepseek_mla_decode.py
@@ -1070,7 +1070,7 @@ ops:
       func: "tileops.perf.formulas.deepseek_dsa_decode_roofline"
 
     source:
-      kernel: tileops/kernels/deepseek_mla/deepseek_dsa_decode.py
+      kernel: tileops/kernels/attention/deepseek_dsa_decode.py
       kernel_map:
         sparse_mla_kernel: SparseMlaKernel
       op: tileops/ops/attention/deepseek_dsa_decode.py

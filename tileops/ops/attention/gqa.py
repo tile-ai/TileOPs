@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.flash_attn import (
+from tileops.kernels.attention import (
     FlashAttnBwdPostprocessKernel,
     FlashAttnBwdPreprocessKernel,
     GqaBwdKernel,
