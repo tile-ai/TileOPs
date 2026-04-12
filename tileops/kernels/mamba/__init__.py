@@ -1,8 +1,8 @@
-from .da_cumsum_fwd import DaCumsumFwdKernel
-from .ssd_chunk_scan_fwd import SsdChunkScanFwdKernel
-from .ssd_chunk_state_fwd import SsdChunkStateFwdKernel
+from .da_cumsum import DaCumsumFwdKernel
+from .ssd_chunk_scan import SsdChunkScanFwdKernel
+from .ssd_chunk_state import SsdChunkStateFwdKernel
 from .ssd_decode import SsdDecodeKernel
-from .ssd_state_passing_fwd import SsdStatePassingFwdKernel
+from .ssd_state_passing import SsdStatePassingFwdKernel
 
 __all__ = [
     "DaCumsumFwdKernel",
