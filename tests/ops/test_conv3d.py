@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.conv import Conv3dKernel
+from tileops.kernels.convolution import Conv3dKernel
 from tileops.ops import Conv3dOp
 
 

@@ -2305,7 +2305,7 @@ ops:
       bytes: "(N * C_in * L_in + C_out * C_in_g * kW + N * C_out * L_out) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/conv/conv1d.py
+      kernel: tileops/kernels/convolution/conv1d.py
       op: tileops/ops/convolution.py
       test: tests/ops/test_conv1d.py
       bench: benchmarks/ops/bench_conv1d.py
@@ -2354,7 +2354,7 @@ ops:
       bytes: "(N * C_in * L_in + C_out * C_in_g * kW + C_out + N * C_out * L_out) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/conv/conv1d.py
+      kernel: tileops/kernels/convolution/conv1d.py
       op: tileops/ops/convolution.py
       test: tests/ops/test_conv1d.py
       bench: benchmarks/ops/bench_conv1d.py

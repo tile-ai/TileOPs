@@ -6,7 +6,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.conv.common import conv_shared_memory_bytes, get_shared_memory_limit_bytes
+from tileops.kernels.convolution.common import (
+    conv_shared_memory_bytes,
+    get_shared_memory_limit_bytes,
+)
 from tileops.kernels.kernel import Kernel
 from tileops.utils import get_sm_version
 

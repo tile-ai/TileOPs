@@ -25,7 +25,7 @@ from .attention import (
     NSATopkVarlenKernel,
     SparseMlaKernel,
 )
-from .conv import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
+from .convolution import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
 from .deltanet_chunkwise import DeltaNetBwdKernel, DeltaNetFwdKernel
 from .deltanet_recurrence import DeltaNetDecodeFP32Kernel, DeltaNetDecodeKernel
 from .dropout import DropoutKernel
