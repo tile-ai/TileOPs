@@ -329,8 +329,8 @@ class ManifestBenchmark(BenchmarkBase):
         result = bm.profile(op, *inputs)
     """
 
-    def __init__(self, op_name: str, workload: RooflineWorkload):
-        super().__init__(workload)  # type: ignore[arg-type]  # callers pass WorkloadBase subclasses
+    def __init__(self, op_name: str, workload: WorkloadBase):
+        super().__init__(workload)
         self._op_name = op_name
         self._roofline_cache: Optional[tuple[float, float]] = None
 
@@ -340,7 +340,7 @@ class ManifestBenchmark(BenchmarkBase):
         Override this for ops whose manifest roofline expressions require
         variables beyond the standard ``M``, ``N``, ``elem_bytes``.
         """
-        return roofline_vars(self.workload)
+        return roofline_vars(self.workload)  # type: ignore[arg-type]  # concrete workloads have shape+dtype
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
