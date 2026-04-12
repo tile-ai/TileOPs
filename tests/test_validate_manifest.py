@@ -709,6 +709,29 @@ class TestBench:
         errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
         assert any("syntax error" in e for e in errors)
 
+    def test_bench_indirect_helpers_pass(self, validator, tmp_path):
+        """Importing workloads_to_params/ManifestBenchmark from benchmarks.benchmark passes."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            from benchmarks.benchmark import workloads_to_params, ManifestBenchmark
+            params = workloads_to_params('test_op')
+            ManifestBenchmark('test_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+
+    def test_bench_indirect_wrong_op_fails(self, validator, tmp_path):
+        """Indirect helpers called with wrong op name must still fail."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            from benchmarks.benchmark import workloads_to_params, ManifestBenchmark
+            params = workloads_to_params('wrong_op')
+            ManifestBenchmark('wrong_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert any("load_workloads" in e for e in errors)
+        assert any("eval_roofline" in e for e in errors)
+
 
 # ---------------------------------------------------------------------------
 # --check-op: force all levels on a specific op, ignoring status

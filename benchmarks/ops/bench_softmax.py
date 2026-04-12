@@ -4,14 +4,11 @@ Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
 Workload shapes and roofline formulas are loaded from ops_manifest.yaml.
 """
 
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.manifest import eval_roofline, load_workloads
+from benchmarks.benchmark import BenchmarkReport, ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.log_softmax import LogSoftmaxFwdOp
 from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
 from tileops.ops.reduction.softmax import SoftmaxFwdOp
@@ -22,7 +19,7 @@ from workloads.ops.softmax import (
 )
 
 # ===================================================================
-# Benchmark classes — use manifest roofline for FLOP/memory counts
+# Op name constants
 # ===================================================================
 
 _SOFTMAX_OP = "SoftmaxFwdOp"
@@ -30,93 +27,15 @@ _LOG_SOFTMAX_OP = "LogSoftmaxFwdOp"
 _LOGSUMEXP_OP = "LogSumExpFwdOp"
 
 
-def _roofline_vars(workload) -> dict:
-    """Extract roofline variables from a workload (shape + dtype → M, N, elem_bytes)."""
-    elem_bytes = torch.tensor([], dtype=workload.dtype).element_size()
-    N = workload.shape[-1]
-    M = 1
-    for s in workload.shape[:-1]:
-        M *= s
-    return dict(M=M, N=N, elem_bytes=elem_bytes)
-
-
-class SoftmaxBenchmark(BenchmarkBase):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = eval_roofline(
-                _SOFTMAX_OP, **_roofline_vars(self.workload))
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
-class LogSoftmaxBenchmark(BenchmarkBase):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = eval_roofline(
-                _LOG_SOFTMAX_OP, **_roofline_vars(self.workload))
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
-class LogSumExpBenchmark(BenchmarkBase):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = eval_roofline(
-                _LOGSUMEXP_OP, **_roofline_vars(self.workload))
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
-# ===================================================================
-# Manifest-driven parametrize helper
-# ===================================================================
-
-
-def _workloads_to_params(workloads):
-    """Convert manifest workload dicts to pytest params: (shape, dtype)."""
-    params = []
-    for w in workloads:
-        shape = tuple(w["x_shape"])
-        label = w.get("label", "x".join(str(s) for s in shape))
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(
-                shape, dtype,
-                id=f"{label}-{dtype_str}",
-            ))
-    return params
-
-
 # ===================================================================
 # Softmax benchmarks
 # ===================================================================
 
 
-@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_SOFTMAX_OP)))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SOFTMAX_OP))
 def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = SoftmaxTest(shape, dtype)
-    bm = SoftmaxBenchmark(test)
+    bm = ManifestBenchmark(_SOFTMAX_OP, test)
     inputs = test.gen_inputs()
 
     op = SoftmaxFwdOp(dtype=dtype, dim=-1, tune=True)
@@ -140,10 +59,10 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 # ===================================================================
 
 
-@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_LOG_SOFTMAX_OP)))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOG_SOFTMAX_OP))
 def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = LogSoftmaxTest(shape, dtype)
-    bm = LogSoftmaxBenchmark(test)
+    bm = ManifestBenchmark(_LOG_SOFTMAX_OP, test)
     inputs = test.gen_inputs()
 
     op = LogSoftmaxFwdOp(dtype=dtype, dim=-1, tune=True)
@@ -167,10 +86,10 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 # ===================================================================
 
 
-@pytest.mark.parametrize("shape, dtype", _workloads_to_params(load_workloads(_LOGSUMEXP_OP)))
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOGSUMEXP_OP))
 def test_logsumexp_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = LogSumExpTest(shape, dtype)
-    bm = LogSumExpBenchmark(test)
+    bm = ManifestBenchmark(_LOGSUMEXP_OP, test)
     inputs = test.gen_inputs()
 
     op = LogSumExpFwdOp(dtype=dtype, dim=-1, tune=True)
