@@ -3,7 +3,7 @@ import subprocess
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Protocol, Tuple, runtime_checkable
 
 import pytest
 import torch
@@ -11,6 +11,19 @@ from torch.autograd.profiler import DeviceType
 
 from tileops.manifest import eval_roofline, load_workloads
 from workloads.base import WorkloadBase
+
+
+@runtime_checkable
+class RooflineWorkload(Protocol):
+    """Structural type for workloads passed to roofline helpers.
+
+    Any object with ``shape`` and ``dtype`` satisfies this protocol,
+    including ``WorkloadBase`` subclasses that set those attributes.
+    """
+
+    shape: tuple
+    dtype: torch.dtype
+
 
 _logger = logging.getLogger("tileops.bench")
 
@@ -267,7 +280,7 @@ class BenchmarkBase(ABC):
 # ---------------------------------------------------------------------------
 
 
-def roofline_vars(workload: WorkloadBase) -> dict[str, int | float]:
+def roofline_vars(workload: RooflineWorkload) -> dict[str, int | float]:
     """Extract roofline variables from a workload (shape + dtype -> M, N, elem_bytes).
 
     Standard extraction for reduction-family ops where the manifest roofline
@@ -316,8 +329,8 @@ class ManifestBenchmark(BenchmarkBase):
         result = bm.profile(op, *inputs)
     """
 
-    def __init__(self, op_name: str, workload: WorkloadBase):
-        super().__init__(workload)
+    def __init__(self, op_name: str, workload: RooflineWorkload):
+        super().__init__(workload)  # type: ignore[arg-type]  # callers pass WorkloadBase subclasses
         self._op_name = op_name
         self._roofline_cache: Optional[tuple[float, float]] = None
 
