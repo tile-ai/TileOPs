@@ -61,12 +61,12 @@ Shared input-definition layer — not a development stage. Test stage OWNS it (Q
 ```
 WorkloadBase (workloads/base.py)        # gen_inputs() only — default implementation
   ├── TestBase (tests/test_base.py)     # adds ref_program(), check()
-  └── satisfies BenchmarkWorkload protocol
+  └── concrete subclasses typically define shape + dtype
 
 # Public benchmark interface (capability protocols)
 ShapeDtypeWorkload                      # shape + dtype metadata
 InputGeneratingWorkload                 # gen_inputs()
-BenchmarkWorkload                       # both (WorkloadBase satisfies this)
+BenchmarkWorkload                       # both (when a workload defines shape, dtype, gen_inputs)
 BenchmarkBase[W] (benchmarks/)          # generic over workload type
 ```
 

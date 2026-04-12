@@ -34,7 +34,7 @@ class ShapeDtypeWorkload(Protocol):
     tensor metadata, not input generation capability.
     """
 
-    shape: tuple
+    shape: tuple[int, ...]
     dtype: torch.dtype
 
 
@@ -51,7 +51,8 @@ class BenchmarkWorkload(ShapeDtypeWorkload, InputGeneratingWorkload, Protocol):
 
     This is the standard contract for benchmark workloads that need both
     roofline metadata extraction and input tensor generation.
-    ``WorkloadBase`` subclasses satisfy this protocol by construction.
+    Workloads satisfy this protocol when they define ``shape`` and ``dtype``
+    metadata in addition to implementing ``gen_inputs()``.
     """
 
     ...

@@ -25,7 +25,7 @@ from benchmarks.benchmark import (
 class _DuckShapeDtype:
     """Object with shape and dtype but NOT a WorkloadBase subclass."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
+    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
         self.shape = shape
         self.dtype = dtype
 
@@ -40,7 +40,7 @@ class _DuckInputGen:
 class _DuckFull:
     """Object satisfying the full BenchmarkWorkload protocol."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
+    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
         self.shape = shape
         self.dtype = dtype
 
@@ -51,7 +51,7 @@ class _DuckFull:
 class _MissingDtype:
     """Object with shape only -- should NOT satisfy ShapeDtypeWorkload."""
 
-    def __init__(self, shape: tuple):
+    def __init__(self, shape: tuple[int, ...]):
         self.shape = shape
 
 
