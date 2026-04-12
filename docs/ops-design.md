@@ -56,11 +56,12 @@ Contiguous conversion is the family base class's responsibility. Concrete ops sh
 
 ## Principle 5: Class Variable Protocol
 
-| Variable           | Required?  | Defined At              | Purpose                                            |
-| ------------------ | ---------- | ----------------------- | -------------------------------------------------- |
-| `SUPPORTED_DTYPES` | Yes        | Every concrete Op       | Runtime dtype check + manifest validation          |
-| `ALIGNMENT`        | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm) |
-| `_op_name`         | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging    |
+| Variable                  | Required?  | Defined At              | Purpose                                                                                                   |
+| ------------------------- | ---------- | ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| `SUPPORTED_DTYPES`        | Yes        | Every concrete Op       | Runtime dtype check + manifest validation                                                                 |
+| `ALIGNMENT`               | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm)                                                        |
+| `_op_name`                | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging                                                           |
+| `_kernel_handles_padding` | Per-family | Intermediate base class | When `True`, kernel accepts raw `(M, N)` with masked loads — host-side pad/trim is skipped in `forward()` |
 
 Single-kernel ops declare a kernel key and kernel class attribute. Multi-kernel ops define `default_kernel_map` returning a dict. See [Kernel Dispatch](#kernel-dispatch-kernel_map).
 
