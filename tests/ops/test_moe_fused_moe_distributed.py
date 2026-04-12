@@ -14,6 +14,8 @@ Verifies:
   - TileOPs vs vLLM multi-GPU EP correctness
 """
 
+import os
+
 import pytest
 import torch
 import torch.distributed as dist
@@ -21,11 +23,17 @@ import torch.distributed as dist
 from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedMoe, SharedFusedMoE
 
-# Skip all tests in this module if not enough GPUs
-pytestmark = pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Distributed tests require at least 2 GPUs"
-)
+# Skip all tests in this module if not launched via torchrun or not enough GPUs
+pytestmark = [
+    pytest.mark.skipif(
+        torch.cuda.device_count() < 2,
+        reason="Distributed tests require at least 2 GPUs",
+    ),
+    pytest.mark.skipif(
+        "RANK" not in os.environ,
+        reason="Distributed tests require torchrun (RANK env var not set)",
+    ),
+]
 
 # vLLM optional import
 try:

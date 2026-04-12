@@ -156,7 +156,7 @@ def test_engram_gate_conv_bwd(M, seq_len, d, dtype, tune):
     test.check(op, *inputs, atol=atol, rtol=rtol)
 
 
-def _rmsnorm(x, w, eps=1e-6):
+def _rmsnorm_decode(x, w, eps=1e-6):
     x_f = x.float()
     rrms = (x_f ** 2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
     return (x_f * rrms * w.float()), rrms
@@ -174,8 +174,8 @@ def engram_decode_step_torch(
     k = e_t.float() @ W_K.float()
     v = e_t.float() @ W_V.float()
 
-    h_norm, _ = _rmsnorm(h_t.unsqueeze(1), rms_w_h)
-    k_norm, _ = _rmsnorm(k.unsqueeze(1).to(h_t.dtype), rms_w_h)
+    h_norm, _ = _rmsnorm_decode(h_t.unsqueeze(1), rms_w_h)
+    k_norm, _ = _rmsnorm_decode(k.unsqueeze(1).to(h_t.dtype), rms_w_h)
     h_norm = h_norm.squeeze(1)
     k_norm = k_norm.squeeze(1)
 
@@ -183,7 +183,7 @@ def engram_decode_step_torch(
     alpha = torch.sigmoid(dot / (d ** 0.5))
     v_hat = alpha * v
 
-    v_hat_norm, _ = _rmsnorm(v_hat.unsqueeze(1).to(h_t.dtype), rms_w_v)
+    v_hat_norm, _ = _rmsnorm_decode(v_hat.unsqueeze(1).to(h_t.dtype), rms_w_v)
     v_hat_norm = v_hat_norm.squeeze(1)
 
     if max_conv_len > L:
