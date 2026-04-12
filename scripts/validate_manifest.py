@@ -855,6 +855,14 @@ def _ast_manifest_call_usage(
                         local = alias.asname or alias.name
                         _module_aliases[local] = full_module
 
+        elif isinstance(node, ast.Import):
+            # ``import benchmarks.benchmark as bb`` or
+            # ``import tileops.manifest as tm`` — bare import statements.
+            for alias in node.names:
+                if alias.name in (_INDIRECT_MODULE, *_DIRECT_MODULES):
+                    local = alias.asname or alias.name
+                    _module_aliases[local] = alias.name
+
         elif isinstance(node, ast.Call):
             resolved_target: str | None = None
 
@@ -873,20 +881,56 @@ def _ast_manifest_call_usage(
                         resolved_target = equiv
 
             elif isinstance(node.func, ast.Attribute):
-                # e.g. benchmark.workloads_to_params(...)
+                # e.g. benchmark.workloads_to_params(...) or
+                # tileops.manifest.load_workloads(...)
                 attr_name = node.func.attr
-                if isinstance(node.func.value, ast.Name):
-                    mod_local = node.func.value.id
-                    mod_full = _module_aliases.get(mod_local)
-                    if mod_full == _INDIRECT_MODULE:
-                        equiv = _INDIRECT_EQUIV.get(attr_name)
-                        if equiv and equiv in target_names:
-                            imported.add(equiv)
-                            resolved_target = equiv
-                    elif mod_full in _DIRECT_MODULES:
-                        if attr_name in target_names:
-                            imported.add(attr_name)
-                            resolved_target = attr_name
+
+                # Resolve the dotted chain preceding the final attribute.
+                # For ``bb.func()`` this yields ``("bb",)``; for
+                # ``tileops.manifest.func()`` it yields ``("tileops", "manifest")``.
+                parts: list[str] = []
+                cursor: ast.expr = node.func.value
+                while isinstance(cursor, ast.Attribute):
+                    parts.append(cursor.attr)
+                    cursor = cursor.value
+                if isinstance(cursor, ast.Name):
+                    parts.append(cursor.id)
+                parts.reverse()  # now left-to-right
+
+                mod_full: str | None = None
+                if len(parts) == 1:
+                    mod_full = _module_aliases.get(parts[0])
+                elif len(parts) >= 2:
+                    # Try progressively longer prefixes against the alias map.
+                    # e.g. for ``tileops.manifest.func()``, try "tileops"
+                    # first (might map to "tileops.manifest" if aliased), then
+                    # "tileops.manifest" as a literal key.
+                    for i in range(1, len(parts) + 1):
+                        prefix = ".".join(parts[:i])
+                        mapped = _module_aliases.get(prefix)
+                        if mapped:
+                            # Append remaining parts that weren't consumed.
+                            suffix = ".".join(parts[i:])
+                            mod_full = f"{mapped}.{suffix}" if suffix else mapped
+                            break
+                    if mod_full is None:
+                        # No alias found — try the entire chain as-is (bare
+                        # ``import tileops.manifest`` with no alias creates
+                        # a binding for the top-level name only, but the call
+                        # uses the full dotted path).
+                        mod_full = ".".join(parts)
+                        if mod_full not in (_INDIRECT_MODULE, *_DIRECT_MODULES):
+                            mod_full = None
+
+                if mod_full == _INDIRECT_MODULE:
+                    equiv = _INDIRECT_EQUIV.get(attr_name)
+                    if equiv and equiv in target_names:
+                        imported.add(equiv)
+                        resolved_target = equiv
+                elif mod_full in _DIRECT_MODULES:
+                    if attr_name in target_names:
+                        imported.add(attr_name)
+                        resolved_target = attr_name
 
             if resolved_target and _call_uses_expected_op_name(
                 node, op_name, bindings,

@@ -766,6 +766,51 @@ class TestBench:
         errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
         assert errors == []
 
+    def test_bench_ast_import_indirect_module_alias_passes(self, validator, tmp_path):
+        """ast.Import with alias: 'import benchmarks.benchmark as bb' passes L4."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            import benchmarks.benchmark as bb
+            params = bb.workloads_to_params('test_op')
+            bb.ManifestBenchmark('test_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+
+    def test_bench_ast_import_direct_module_alias_passes(self, validator, tmp_path):
+        """ast.Import with alias: 'import tileops.manifest as tm' passes L4."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            import tileops.manifest as tm
+            workloads = tm.load_workloads('test_op')
+            tm.eval_roofline('test_op')
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+
+    def test_bench_ast_import_no_alias_qualified_passes(self, validator, tmp_path):
+        """ast.Import without alias: 'import tileops.manifest' uses full chain."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            import tileops.manifest
+            workloads = tileops.manifest.load_workloads('test_op')
+            tileops.manifest.eval_roofline('test_op')
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+
+    def test_bench_ast_import_wrong_op_name_fails(self, validator, tmp_path):
+        """ast.Import with alias but wrong op name must still fail."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            import benchmarks.benchmark as bb
+            params = bb.workloads_to_params('wrong_op')
+            bb.ManifestBenchmark('wrong_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert any("load_workloads" in e for e in errors)
+        assert any("eval_roofline" in e for e in errors)
+
     def test_bench_wrong_alias_fails(self, validator, tmp_path):
         """Aliased imports called with wrong op name must still fail."""
         bench_file = tmp_path / "bench_test.py"
