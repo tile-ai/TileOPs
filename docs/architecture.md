@@ -149,12 +149,14 @@ TileOPs/
 │   ├── base.py                       # WorkloadBase, FixtureMeta, FixtureBase
 │   └── ops/                          # Per-op workload subclasses
 ├── benchmarks/
+│   ├── benchmark.py                  # BenchmarkBase[W], capability protocols, ManifestBenchmark
 │   ├── hardware/                     # Microbench (GPU characterization)
 │   │   ├── memory/
 │   │   ├── compute/
 │   │   └── system/
 │   ├── ops/                          # Op-level benchmarks
-│   └── kernels/                      # Kernel-level benchmarks
+│   ├── kernels/                      # Kernel-level benchmarks
+│   └── tests/                        # Benchmark contract tests
 ├── tests/                            # Correctness tests
 ├── docs/
 └── scripts/
