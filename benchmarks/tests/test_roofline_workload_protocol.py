@@ -2,7 +2,7 @@
 
 These tests verify that ``roofline_vars`` accepts any object with ``shape``
 and ``dtype`` (duck-typed via ``typing.Protocol``), not just ``WorkloadBase``
-subclasses.  This is the contract introduced by issue #918.
+subclasses.
 """
 
 import pytest
