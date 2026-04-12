@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.flash_decode.gqa_decode_paged import GqaDecodePagedKernel
+from tileops.kernels.attention.gqa_decode_paged import GqaDecodePagedKernel
 from tileops.kernels.kernel import Kernel
 
 from ..op import Op

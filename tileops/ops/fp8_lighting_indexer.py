@@ -2,7 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.deepseek_mla import FP8LightingIndexerKernel
+from tileops.kernels.fp8_lighting_indexer import FP8LightingIndexerKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op

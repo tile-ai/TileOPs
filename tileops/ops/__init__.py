@@ -20,17 +20,17 @@ from .attention import (
 )
 from .convolution import Conv1dBiasFwdOp, Conv1dFwdOp, Conv2dOp, Conv3dOp
 from .da_cumsum import DaCumsumFwdOp
-from .deltanet_chunkwise import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
+from .deltanet import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
 from .deltanet_recurrence import DeltaNetDecodeOp
 from .dropout import DropoutOp
 from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2COp
 from .fp8_lighting_indexer import FP8LightingIndexerOp
 from .fp8_quant import FP8QuantOp
-from .gated_deltanet_chunkwise import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
+from .gated_deltanet import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 from .gated_deltanet_recurrence import GatedDeltaNetDecodeOp
 from .gemm import GemmOp
-from .gla_chunkwise import GLABwdOp, GLAFwdOp
+from .gla import GLABwdOp, GLAFwdOp
 from .gla_recurrence import GLADecodeOp
 from .grouped_gemm import GroupedGemmOp
 from .moe import MoePermuteAlignFwdOp

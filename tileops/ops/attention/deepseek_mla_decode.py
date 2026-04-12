@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.deepseek_mla import MlaDecodeKernel, MlaDecodeWsKernel
+from tileops.kernels.attention import MlaDecodeKernel, MlaDecodeWsKernel
 from tileops.kernels.kernel import Kernel
 from tileops.utils import is_hopper
 

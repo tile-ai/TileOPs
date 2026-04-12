@@ -2,7 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.deepseek_nsa import (
+from tileops.kernels.attention import (
     MeanPoolingFwdKernel,
     NSACmpFwdVarlenKernel,
     NSAFwdVarlenKernel,

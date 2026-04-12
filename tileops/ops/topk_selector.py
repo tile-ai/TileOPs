@@ -2,8 +2,8 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.deepseek_mla import TopkSelectorKernel
 from tileops.kernels.kernel import Kernel
+from tileops.kernels.topk_selector import TopkSelectorKernel
 
 from .op import Op
 
