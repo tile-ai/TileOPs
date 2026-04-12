@@ -816,7 +816,6 @@ class SoftmaxKernel(Kernel):
                 self.kernel = _softmax_kernel(
                     self.M, self.N, self.op_kind, self.dtype_str, self._tile_n,
                 )
-        print(f'Best config: {self.config}')
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the softmax/log_softmax kernel.

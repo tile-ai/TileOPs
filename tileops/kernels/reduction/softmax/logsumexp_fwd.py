@@ -543,7 +543,6 @@ class LogSumExpKernel(Kernel):
                 self.kernel = _logsumexp_kernel(
                     self.M, self.N, self.dtype_str, self._tile_n,
                 )
-        print(f'Best config: {self.config}')
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the logsumexp kernel.
