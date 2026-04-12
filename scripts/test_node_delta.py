@@ -40,8 +40,17 @@ def _collect_node_count(test_file: str, *, ref: str | None = None) -> int | None
             return None  # file does not exist at ref
         content = result.stdout
 
-        suffix = Path(test_file).suffix
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        # Write temp file in the same directory as the original so that
+        # conftest.py, relative imports, and PYTHONPATH all resolve correctly.
+        # Prefix must NOT start with '.' — pytest treats dotted names as
+        # package paths and fails with ModuleNotFoundError.
+        original = Path(test_file)
+        suffix = original.suffix
+        parent = original.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            suffix=suffix, prefix=f"_delta_{original.stem}_", dir=parent, delete=False
+        ) as tmp:
             tmp.write(content)
             tmp.flush()
             target = tmp.name

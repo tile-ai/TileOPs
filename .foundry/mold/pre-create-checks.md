@@ -25,3 +25,28 @@ If PR introduces or modifies a kernel/op:
 1. Verify every item → `PASS`, `FAIL (reason)`, or `SKIP (reason)`.
 
 **HARD GATE:** Any `[REQUIRED]` FAIL blocks the PR. `[RECOMMENDED]` may be skipped with reason. In `## Structural Readiness`, list only FAILs and SKIPs. All pass → "All checks passed."
+
+## 3. Test node delta
+
+**Skip entirely** if PR does not modify files under `tests/`.
+
+If PR adds or modifies test files:
+
+```bash
+git fetch upstream main --quiet
+python scripts/test_node_delta.py --base upstream/main
+```
+
+The script auto-detects changed test files via `git diff`. If auto-detect fails (e.g. in a worktree), pass files explicitly:
+
+```bash
+python scripts/test_node_delta.py --base upstream/main tests/ops/test_<name>.py
+```
+
+**Interpreting output:**
+
+- **No growth on existing files** → nothing to report.
+- **Growth on existing files** → include script output and one-line justification in PR body under `## Test node delta`.
+- **New test files only** (delta shows "all N nodes from new files") → no delta report needed.
+
+**SOFT GATE:** Does not block PR creation, but missing justification will be flagged during review (per [`.claude/domain-rules/testing-budget.md`](../../.claude/domain-rules/testing-budget.md)).
