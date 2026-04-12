@@ -167,7 +167,7 @@ ops:
       bytes: "4 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/ada_layer_norm/fwd.py
+      kernel: tileops/kernels/norm/ada_layer_norm.py
       kernel_map:
         ada_layer_norm: AdaLayerNormKernel
       op: tileops/ops/norm/ada_layer_norm.py
@@ -212,7 +212,7 @@ ops:
       bytes: "5 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/ada_layer_norm_zero/__init__.py
+      kernel: tileops/kernels/norm/ada_layer_norm_zero.py
       kernel_map:
         ada_layer_norm: AdaLayerNormKernel
       op: tileops/ops/norm/ada_layer_norm_zero.py
@@ -260,7 +260,7 @@ ops:
       bytes: "(4 * M * N + 2 * N) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/fused_add_norm/fwd.py
+      kernel: tileops/kernels/norm/fused_add_norm.py
       kernel_map:
         fused_add_layer_norm: FusedAddLayerNormKernel
       op: tileops/ops/norm/fused_add_layer_norm.py
@@ -309,7 +309,7 @@ ops:
       bytes: "(4 * M * N + N) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/fused_add_norm/fwd.py
+      kernel: tileops/kernels/norm/fused_add_norm.py
       kernel_map:
         fused_add_rms_norm: FusedAddRmsNormKernel
       op: tileops/ops/norm/fused_add_rmsnorm.py
