@@ -26,7 +26,7 @@ from .attention import (
     SparseMlaKernel,
 )
 from .convolution import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
-from .deltanet_chunkwise import DeltaNetBwdKernel, DeltaNetFwdKernel
+from .deltanet import DeltaNetBwdKernel, DeltaNetFwdKernel
 from .deltanet_recurrence import DeltaNetDecodeFP32Kernel, DeltaNetDecodeKernel
 from .dropout import DropoutKernel
 from .elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
@@ -34,10 +34,10 @@ from .engram import EngramDecodeKernel, EngramGateConvBwdKernel, EngramGateConvF
 from .fft import FFTC2CKernel
 from .fp8_lighting_indexer import FP8LightingIndexerKernel
 from .fp8_quant import FP8QuantKernel
-from .gated_deltanet_chunkwise import GatedDeltaNetBwdKernel, GatedDeltaNetFwdKernel
+from .gated_deltanet import GatedDeltaNetBwdKernel, GatedDeltaNetFwdKernel
 from .gated_deltanet_recurrence import GatedDeltaNetDecodeFP32Kernel, GatedDeltaNetDecodeKernel
 from .gemm import GemmKernel, GemvKernel
-from .gla_chunkwise import GLABwdKernel, GLAFwdKernel
+from .gla import GLABwdKernel, GLAFwdKernel
 from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 from .grouped_gemm import GroupedGemmKernel
 from .kernel import Kernel

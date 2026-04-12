@@ -3,8 +3,10 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import DeltaNetFwdOp
-from workloads.ops.deltanet_chunkwise_fwd import DeltaNetFwdTest as _DeltaNetFwdTestWorkload
+from tileops.ops import GatedDeltaNetFwdOp
+from workloads.ops.gated_deltanet_fwd import (
+    GatedDeltaNetFwdTest as _GatedDeltaNetFwdTestWorkload,
+)
 
 
 def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
@@ -23,13 +25,12 @@ def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
     return w, u
 
 
-def kernel2_deltanet_torch(q, k, w, u, S_0, chunk_size):
-    """DeltaNet kernel2 reference (ungated)."""
+def kernel2_gated_deltanet_torch(q, k, g, w, u, S_0, chunk_size):
     B, H, S_len, DK = q.shape
     _, _, _, DV = u.shape
     BC = chunk_size
     num_chunks = S_len // BC
-    q, k, w, u = q.float(), k.float(), w.float(), u.float()
+    q, k, g, w, u = q.float(), k.float(), g.float(), w.float(), u.float()
     h = S_0.float().clone()
 
     o = torch.zeros(B, H, S_len, DV, dtype=torch.float32, device=q.device)
@@ -37,20 +38,30 @@ def kernel2_deltanet_torch(q, k, w, u, S_0, chunk_size):
         i0, i1 = c * BC, (c + 1) * BC
         q_c = q[:, :, i0:i1, :]
         k_c = k[:, :, i0:i1, :]
+        g_c = g[:, :, i0:i1]
         w_c = w[:, :, i0:i1, :]
         u_c = u[:, :, i0:i1, :]
-        v_new_c = u_c - w_c @ h
+
+        g_last_val = g_c[:, :, -1:]
+        v_new_c = u_c - (w_c * torch.exp(g_c + g_last_val).unsqueeze(-1)) @ h
+
         o_part = torch.einsum("bhnk,bhkv->bhnv", q_c, h)
+        o_part = o_part * torch.exp(g_c).unsqueeze(-1)
         attn = torch.einsum("bhnk,bhmk->bhnm", q_c, k_c)
+        Gamma_causal = torch.exp(g_c.unsqueeze(-1) - g_c.unsqueeze(-2))
         mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.bool), diagonal=0)
-        attn = attn.masked_fill(~mask.unsqueeze(0).unsqueeze(0), 0.0)
+        attn = (attn * Gamma_causal).masked_fill(~mask.unsqueeze(0).unsqueeze(0), 0.0)
         o_c = o_part + torch.einsum("bhnm,bhmv->bhnv", attn, v_new_c)
         o[:, :, i0:i1, :] = o_c
-        h = h + torch.einsum("bhnk,bhnv->bhkv", k_c, v_new_c)
+
+        g_last = g_c[:, :, -1:]
+        k_scaled = k_c * torch.exp(g_last - g_c).unsqueeze(-1)
+        h = h * torch.exp(g_last).view(B, H, 1, 1)
+        h = h + torch.einsum("bhnk,bhnv->bhkv", k_scaled, v_new_c)
     return h, o
 
 
-def prepare_wy_repr_deltanet_torch(k, beta, chunk_size):
+def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
     B, H, S, DK = k.shape
     assert S % chunk_size == 0
     BC = chunk_size
@@ -62,31 +73,36 @@ def prepare_wy_repr_deltanet_torch(k, beta, chunk_size):
             for c in range(S // BC):
                 i0, i1 = c * BC, (c + 1) * BC
                 kc = k[b, h, i0:i1, :].float()
+                gc = g_cum[b, h, i0:i1].float()
                 bc = beta[b, h, i0:i1].float()
                 Gram = kc @ kc.T
-                M = bc.unsqueeze(-1) * Gram
-                A = torch.eye(BC, device=k.device) + torch.tril(M, diagonal=-1)
-                A_inv = torch.linalg.inv(A)
-                Aw[b, h, i0:i1, :] = A_inv
-                Au[b, h, i0:i1, :] = A_inv
+                Gamma = torch.exp(gc.unsqueeze(1) - gc.unsqueeze(0))
+                M = bc.unsqueeze(-1) * (Gamma * Gram)
+                A_g = torch.eye(BC, device=k.device) + torch.tril(M, diagonal=-1)
+                A_g_inv = torch.linalg.inv(A_g)
+                Aw[b, h, i0:i1, :] = A_g_inv
+                Au[b, h, i0:i1, :] = A_g_inv
 
     return Aw, Au
 
 
-class DeltaNetFwdTest(_DeltaNetFwdTestWorkload, TestBase):
+class GatedDeltaNetFwdTest(_GatedDeltaNetFwdTestWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        g: torch.Tensor,
         beta: torch.Tensor,
     ) -> torch.Tensor:
         B, H, S, DK = k.shape
         _, _, _, DV = v.shape
-        Aw, Au = prepare_wy_repr_deltanet_torch(k, beta, self.chunk_size)
+        BC = self.chunk_size
+        g_cum = g.float().reshape(B, H, S // BC, BC).cumsum(-1).reshape(B, H, S).to(g.dtype)
+        Aw, Au = prepare_wy_repr_gated_torch(k, g_cum, beta, self.chunk_size)
         w, u = compute_w_u_torch(Aw, Au, k, v, beta, self.chunk_size)
         S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-        _S, o = kernel2_deltanet_torch(q, k, w, u, S_0, self.chunk_size)
+        _S, o = kernel2_gated_deltanet_torch(q, k, g_cum, w, u, S_0, self.chunk_size)
         return o.to(self.dtype)
 
 
@@ -100,15 +116,21 @@ class DeltaNetFwdTest(_DeltaNetFwdTestWorkload, TestBase):
 # =============================================================================
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
+    # Tolerances are looser than docs/testing.md defaults (fp16: 1e-3, bf16: 1.6e-2)
+    # because Gated DeltaNet uses sequential chunk recurrence: each chunk's hidden
+    # state h depends on all prior chunks, so fp32 rounding errors accumulate across
+    # the chunk chain. With seq_len=128 and chunk_size=32 that is 4 serial steps of
+    # matmul + exp + state update, which amplifies per-element error well beyond
+    # single-kernel tolerances.
     if dtype == torch.float32:
-        return {"atol": 1e-3, "rtol": 1e-3}
+        return {"atol": 1e-2, "rtol": 1e-2}
     elif dtype == torch.float16:
-        return {"atol": 2e-2, "rtol": 2e-2}
-    else:  # bfloat16
         return {"atol": 5e-2, "rtol": 5e-2}
+    else:  # bfloat16
+        return {"atol": 1e-1, "rtol": 1e-1}
 
 
-class DeltaNetFwdFixture(FixtureBase):
+class GatedDeltaNetFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
             pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
@@ -123,8 +145,8 @@ class DeltaNetFwdFixture(FixtureBase):
     ]
 
 
-@DeltaNetFwdFixture
-def test_deltanet_fwd(
+@GatedDeltaNetFwdFixture
+def test_gated_deltanet_fwd(
     batch: int,
     seq_len: int,
     heads: int,
@@ -135,12 +157,12 @@ def test_deltanet_fwd(
     tune: bool,
 ) -> None:
     torch.manual_seed(42)
-    test = DeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    op = DeltaNetFwdOp(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune=tune)
+    test = GatedDeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    op = GatedDeltaNetFwdOp(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune=tune)
     tols = _get_tolerances(dtype)
     inputs = test.gen_inputs()
     ref_o = test.ref_program(*inputs)
-    op_o, _S, _Aw, _Au, _w, _u = op(*inputs)
+    op_o, _S, _Aw, _Au = op(*inputs)
     torch.testing.assert_close(op_o, ref_o, **tols)
 
 

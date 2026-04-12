@@ -2,7 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.gated_deltanet_chunkwise import (
+from tileops.kernels.gated_deltanet import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
 )
