@@ -554,8 +554,8 @@ ops:
       kernel_map:
         mha_fwd_kernel: MhaFwdKernel
       op: tileops/ops/attention/mha.py
-      test: tests/ops/test_mha.py
-      bench: benchmarks/ops/bench_mha.py
+      test: tests/ops/attention/test_mha.py
+      bench: benchmarks/ops/attention/bench_mha.py
 
   MultiHeadAttentionBwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
@@ -605,8 +605,8 @@ ops:
         mha_bwd_kernel: MhaBwdKernel
         mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
       op: tileops/ops/attention/mha.py
-      test: tests/ops/test_mha.py
-      bench: benchmarks/ops/bench_mha.py
+      test: tests/ops/attention/test_mha.py
+      bench: benchmarks/ops/attention/bench_mha.py
 
   GroupedQueryAttentionFwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
@@ -645,8 +645,8 @@ ops:
       kernel_map:
         gqa_fwd_kernel: GqaFwdKernel
       op: tileops/ops/attention/gqa.py
-      test: tests/ops/test_gqa.py
-      bench: benchmarks/ops/bench_gqa.py
+      test: tests/ops/attention/test_gqa.py
+      bench: benchmarks/ops/attention/bench_gqa.py
 
   GroupedQueryAttentionBwdOp:
     ref_api: "torch.nn.functional.scaled_dot_product_attention"
@@ -697,8 +697,8 @@ ops:
         gqa_bwd_kernel: GqaBwdKernel
         gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
       op: tileops/ops/attention/gqa.py
-      test: tests/ops/test_gqa.py
-      bench: benchmarks/ops/bench_gqa.py
+      test: tests/ops/attention/test_gqa.py
+      bench: benchmarks/ops/attention/bench_gqa.py
 
   # ---------------------------------------------------------------------------
   # attention — decode (single-query against KV cache)
@@ -741,8 +741,8 @@ ops:
       kernel_map:
         mha_decode_kernel: MhaDecodeKernel
       op: tileops/ops/attention/mha_decode.py
-      test: tests/ops/test_mha_decode.py
-      bench: benchmarks/ops/bench_mha_decode.py
+      test: tests/ops/attention/test_mha_decode.py
+      bench: benchmarks/ops/attention/bench_mha_decode.py
 
   MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
     ref_api: "none"
@@ -795,8 +795,8 @@ ops:
       kernel_map:
         mha_decode_paged_kernel: MhaDecodePagedKernel
       op: tileops/ops/attention/mha_decode_paged.py
-      test: tests/ops/test_mha_decode_paged.py
-      bench: benchmarks/ops/bench_mha_decode_paged.py
+      test: tests/ops/attention/test_mha_decode_paged.py
+      bench: benchmarks/ops/attention/bench_mha_decode_paged.py
 
   GroupedQueryAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
@@ -836,8 +836,8 @@ ops:
       kernel_map:
         gqa_decode_kernel: GqaDecodeKernel
       op: tileops/ops/attention/gqa_decode.py
-      test: tests/ops/test_gqa_decode.py
-      bench: benchmarks/ops/bench_gqa_decode.py
+      test: tests/ops/attention/test_gqa_decode.py
+      bench: benchmarks/ops/attention/bench_gqa_decode.py
 
   GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     ref_api: "none"
@@ -890,8 +890,8 @@ ops:
       kernel_map:
         gqa_decode_paged_kernel: GqaDecodePagedKernel
       op: tileops/ops/attention/gqa_decode_paged.py
-      test: tests/ops/test_gqa_decode_paged.py
-      bench: benchmarks/ops/bench_gqa_decode_paged.py
+      test: tests/ops/attention/test_gqa_decode_paged.py
+      bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
 
   # ---------------------------------------------------------------------------
   # attention — sliding window
@@ -936,8 +936,8 @@ ops:
       kernel_map:
         gqa_sliding_window_fwd: GqaSlidingWindowFwdKernel
       op: tileops/ops/attention/gqa_sliding_window.py
-      test: tests/ops/test_gqa_sliding_window_fwd.py
-      bench: benchmarks/ops/bench_gqa_sliding_window_fwd.py
+      test: tests/ops/attention/test_gqa_sliding_window.py
+      bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
 
   GqaSlidingWindowVarlenFwdOp:
     ref_api: "none"
@@ -983,8 +983,8 @@ ops:
       kernel_map:
         gqa_sliding_window_varlen_fwd: GqaSlidingWindowVarlenFwdKernel
       op: tileops/ops/attention/gqa_sliding_window_varlen.py
-      test: tests/ops/test_gqa_sliding_window_varlen_fwd.py
-      bench: benchmarks/ops/bench_gqa_sliding_window_varlen_fwd.py
+      test: tests/ops/attention/test_gqa_sliding_window_varlen.py
+      bench: benchmarks/ops/attention/bench_gqa_sliding_window_varlen.py
 
   # ---------------------------------------------------------------------------
   # attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
@@ -1030,8 +1030,8 @@ ops:
       kernel_map:
         mla_decode_kernel: MlaDecodeKernel
       op: tileops/ops/attention/deepseek_mla_decode.py
-      test: tests/ops/test_deepseek_mla_decode.py
-      bench: benchmarks/ops/bench_deepseek_mla_decode.py
+      test: tests/ops/attention/test_deepseek_mla_decode.py
+      bench: benchmarks/ops/attention/bench_deepseek_mla_decode.py
 
   DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
     ref_api: "none"
@@ -1074,8 +1074,8 @@ ops:
       kernel_map:
         sparse_mla_kernel: SparseMlaKernel
       op: tileops/ops/attention/deepseek_dsa_decode.py
-      test: tests/ops/test_deepseek_dsa_decode.py
-      bench: benchmarks/ops/bench_deepseek_dsa_decode.py
+      test: tests/ops/attention/test_deepseek_dsa_decode.py
+      bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py
   # moe — Mixture-of-Experts ops
   # ---------------------------------------------------------------------------
 
@@ -2307,8 +2307,8 @@ ops:
     source:
       kernel: tileops/kernels/convolution/conv1d.py
       op: tileops/ops/convolution.py
-      test: tests/ops/test_conv1d.py
-      bench: benchmarks/ops/bench_conv1d.py
+      test: tests/ops/test_convolution.py
+      bench: benchmarks/ops/bench_convolution.py
       bench_manifest_driven: false
 
   Conv1dBiasFwdOp:
@@ -2356,6 +2356,6 @@ ops:
     source:
       kernel: tileops/kernels/convolution/conv1d.py
       op: tileops/ops/convolution.py
-      test: tests/ops/test_conv1d.py
-      bench: benchmarks/ops/bench_conv1d.py
+      test: tests/ops/test_convolution.py
+      bench: benchmarks/ops/bench_convolution.py
       bench_manifest_driven: false
