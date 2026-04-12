@@ -814,31 +814,85 @@ def _ast_manifest_call_usage(
     matched_calls: set[str] = set()
     bindings = _resolve_constant_str_bindings(tree)
 
+    # Maps local_name (as used in code) → canonical target name.
+    # e.g. "lw" → "load_workloads", "MB" → "eval_roofline" (via indirect).
+    _alias_to_target: dict[str, str] = {}
+
+    # Modules that provide indirect helpers, mapped via ``from X import Y``.
+    # e.g. ``from benchmarks import benchmark`` → module_aliases["benchmark"]
+    # = "benchmarks.benchmark".
+    _module_aliases: dict[str, str] = {}
+
+    _DIRECT_MODULES = {"tileops.manifest"}
+    _INDIRECT_MODULE = "benchmarks.benchmark"
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            if node.module == "tileops.manifest" and node.names:
+            if node.module in _DIRECT_MODULES and node.names:
                 for alias in node.names:
                     if alias.name in target_names:
                         imported.add(alias.name)
+                        local = alias.asname or alias.name
+                        _alias_to_target[local] = alias.name
             # Indirect helpers live in benchmarks.benchmark.
-            if node.module == "benchmarks.benchmark" and node.names:
+            if node.module == _INDIRECT_MODULE and node.names:
                 for alias in node.names:
                     equiv = _INDIRECT_EQUIV.get(alias.name)
                     if equiv and equiv in target_names:
                         imported.add(equiv)
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            func_name = node.func.id
-            # Direct call (load_workloads / eval_roofline).
-            if func_name in target_names and _call_uses_expected_op_name(
+                        local = alias.asname or alias.name
+                        _alias_to_target[local] = equiv
+            # ``from benchmarks import benchmark`` — module import.
+            if (
+                node.module
+                and node.names
+                and not any(alias.name in target_names for alias in node.names)
+                and not any(alias.name in _INDIRECT_EQUIV for alias in node.names)
+            ):
+                for alias in node.names:
+                    full_module = f"{node.module}.{alias.name}"
+                    if full_module in (_INDIRECT_MODULE, *_DIRECT_MODULES):
+                        local = alias.asname or alias.name
+                        _module_aliases[local] = full_module
+
+        elif isinstance(node, ast.Call):
+            resolved_target: str | None = None
+
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+                # Check alias mapping first.
+                if func_name in _alias_to_target:
+                    resolved_target = _alias_to_target[func_name]
+                # Direct call (load_workloads / eval_roofline).
+                elif func_name in target_names:
+                    resolved_target = func_name
+                else:
+                    # Indirect call (workloads_to_params / ManifestBenchmark).
+                    equiv = _INDIRECT_EQUIV.get(func_name)
+                    if equiv and equiv in target_names:
+                        resolved_target = equiv
+
+            elif isinstance(node.func, ast.Attribute):
+                # e.g. benchmark.workloads_to_params(...)
+                attr_name = node.func.attr
+                if isinstance(node.func.value, ast.Name):
+                    mod_local = node.func.value.id
+                    mod_full = _module_aliases.get(mod_local)
+                    if mod_full == _INDIRECT_MODULE:
+                        equiv = _INDIRECT_EQUIV.get(attr_name)
+                        if equiv and equiv in target_names:
+                            imported.add(equiv)
+                            resolved_target = equiv
+                    elif mod_full in _DIRECT_MODULES:
+                        if attr_name in target_names:
+                            imported.add(attr_name)
+                            resolved_target = attr_name
+
+            if resolved_target and _call_uses_expected_op_name(
                 node, op_name, bindings,
             ):
-                matched_calls.add(func_name)
-            # Indirect call (workloads_to_params / ManifestBenchmark).
-            equiv = _INDIRECT_EQUIV.get(func_name)
-            if equiv and equiv in target_names and _call_uses_expected_op_name(
-                node, op_name, bindings,
-            ):
-                matched_calls.add(equiv)
+                matched_calls.add(resolved_target)
+
     return {name: (name in imported and name in matched_calls) for name in target_names}
 
 

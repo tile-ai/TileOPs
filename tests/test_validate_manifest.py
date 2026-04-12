@@ -732,6 +732,53 @@ class TestBench:
         assert any("load_workloads" in e for e in errors)
         assert any("eval_roofline" in e for e in errors)
 
+    def test_bench_aliased_indirect_import_passes(self, validator, tmp_path):
+        """Aliased imports like 'import ManifestBenchmark as MB' pass L4."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            from benchmarks.benchmark import ManifestBenchmark as MB
+            from benchmarks.benchmark import workloads_to_params as wtp
+            params = wtp('test_op')
+            MB('test_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+
+    def test_bench_aliased_direct_import_passes(self, validator, tmp_path):
+        """Aliased direct imports like 'import load_workloads as lw' pass L4."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            from tileops.manifest import load_workloads as lw, eval_roofline as er
+            workloads = lw('test_op')
+            er('test_op')
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+
+    def test_bench_module_qualified_call_passes(self, validator, tmp_path):
+        """Module-qualified calls like benchmark.workloads_to_params pass L4."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            from benchmarks import benchmark
+            params = benchmark.workloads_to_params('test_op')
+            benchmark.ManifestBenchmark('test_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+
+    def test_bench_wrong_alias_fails(self, validator, tmp_path):
+        """Aliased imports called with wrong op name must still fail."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            from benchmarks.benchmark import ManifestBenchmark as MB
+            from benchmarks.benchmark import workloads_to_params as wtp
+            params = wtp('wrong_op')
+            MB('wrong_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert any("load_workloads" in e for e in errors)
+        assert any("eval_roofline" in e for e in errors)
+
 
 # ---------------------------------------------------------------------------
 # --check-op: force all levels on a specific op, ignoring status
