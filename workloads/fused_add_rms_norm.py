@@ -3,7 +3,7 @@ import torch
 from workloads.base import WorkloadBase
 
 
-class FusedAddRmsNormTest(WorkloadBase):
+class FusedAddRMSNormTest(WorkloadBase):
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
         self.m = m

@@ -3,7 +3,7 @@ Mamba-2 dA_cumsum forward kernel.
 
 Inputs:
   dt:       (batch, seq_len, n_heads)                  -- per-position discretization factor (float32)
-  A:        (n_heads,)                                  -- SSM decay parameter (float32)
+  A:        (n_heads,)                                  -- State Space Model (SSM) decay parameter (float32)
 
 Output:
   dA_cumsum: (batch, n_heads, num_chunks, chunk_len)   -- float32

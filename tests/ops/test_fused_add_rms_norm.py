@@ -2,11 +2,11 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.fused_add_rmsnorm import FusedAddRMSNormFwdOp
-from workloads.fused_add_rmsnorm import FusedAddRmsNormTest as _FusedAddRmsNormTestWorkload
+from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
+from workloads.fused_add_rms_norm import FusedAddRMSNormTest as _FusedAddRMSNormTestWorkload
 
 
-class FusedAddRmsNormTest(_FusedAddRmsNormTestWorkload, TestBase):
+class FusedAddRMSNormTest(_FusedAddRMSNormTestWorkload, TestBase):
     def ref_program(
         self,
         x: torch.Tensor,
@@ -20,7 +20,7 @@ class FusedAddRmsNormTest(_FusedAddRmsNormTestWorkload, TestBase):
         return y, add_result
 
 
-class FusedAddRmsNormFixture(FixtureBase):
+class FusedAddRMSNormFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype, tune", [
             # Standard aligned shapes -- fp16
@@ -48,15 +48,15 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
         return 1.6e-2, 1.6e-2
 
 
-@FusedAddRmsNormFixture
-def test_fused_add_rmsnorm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = FusedAddRmsNormTest(m, n, dtype)
+@FusedAddRMSNormFixture
+def test_fused_add_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
+    test = FusedAddRMSNormTest(m, n, dtype)
     op = FusedAddRMSNormFwdOp(M=m, N=n, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-class FusedAddRmsNormNonContigFixture(FixtureBase):
+class FusedAddRMSNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
             pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
@@ -65,8 +65,8 @@ class FusedAddRmsNormNonContigFixture(FixtureBase):
     ]
 
 
-@FusedAddRmsNormNonContigFixture
-def test_fused_add_rmsnorm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
+@FusedAddRMSNormNonContigFixture
+def test_fused_add_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     r_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
@@ -77,7 +77,7 @@ def test_fused_add_rmsnorm_non_contiguous(m: int, n: int, dtype: torch.dtype) ->
     op = FusedAddRMSNormFwdOp(M=m, N=n, dtype=dtype)
 
     # Reference on contiguous copies
-    test = FusedAddRmsNormTest(m, n, dtype)
+    test = FusedAddRMSNormTest(m, n, dtype)
     y_ref, add_ref = test.ref_program(x.contiguous(), residual.contiguous(), weight)
 
     y, residual_out = op(x, residual, weight)
@@ -88,7 +88,7 @@ def test_fused_add_rmsnorm_non_contiguous(m: int, n: int, dtype: torch.dtype) ->
         f"Non-contiguous residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
 
 
-class FusedAddRmsNorm3DFixture(FixtureBase):
+class FusedAddRMSNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
             pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
@@ -97,8 +97,8 @@ class FusedAddRmsNorm3DFixture(FixtureBase):
     ]
 
 
-@FusedAddRmsNorm3DFixture
-def test_fused_add_rmsnorm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+@FusedAddRMSNorm3DFixture
+def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
     residual = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
@@ -107,7 +107,7 @@ def test_fused_add_rmsnorm_3d(batch: int, seq: int, hidden: int, dtype: torch.dt
     M = batch * seq
     op = FusedAddRMSNormFwdOp(M=M, N=hidden, dtype=dtype)
 
-    test = FusedAddRmsNormTest(M, hidden, dtype)
+    test = FusedAddRMSNormTest(M, hidden, dtype)
     y_ref, add_ref = test.ref_program(x, residual, weight)
 
     y, residual_out = op(x, residual, weight)

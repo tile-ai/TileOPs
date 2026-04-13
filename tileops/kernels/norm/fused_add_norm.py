@@ -1,7 +1,7 @@
 """Fused Add + Norm forward kernels using TileLang.
 
 FusedAddLayerNorm: y = LayerNorm(x + residual), also outputs (x + residual)
-FusedAddRmsNorm:   y = RmsNorm(x + residual),   also outputs (x + residual)
+FusedAddRMSNorm:   y = RMSNorm(x + residual),   also outputs (x + residual)
 
 Fusing the residual add into the normalization kernel eliminates one global
 memory round-trip compared to separate add + norm.  Both kernels return dual
@@ -22,7 +22,7 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["FusedAddLayerNormKernel", "FusedAddRmsNormKernel"]
+__all__ = ["FusedAddLayerNormKernel", "FusedAddRMSNormKernel"]
 
 ALIGNMENT = 256
 
@@ -223,7 +223,7 @@ class FusedAddLayerNormKernel(Kernel):
 
 
 # ---------------------------------------------------------------------------
-# Fused Add + RmsNorm kernel
+# Fused Add + RMSNorm kernel
 # ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
@@ -324,10 +324,10 @@ def _(M, N, eps, dtype_str, block_m, threads, x, residual, weight):
     return [y, residual_out]
 
 
-class FusedAddRmsNormKernel(Kernel):
-    """Fused Add + RmsNorm forward kernel.
+class FusedAddRMSNormKernel(Kernel):
+    """Fused Add + RMSNorm forward kernel.
 
-    Computes ``y = RmsNorm(x + residual)`` and returns both ``y`` and
+    Computes ``y = RMSNorm(x + residual)`` and returns both ``y`` and
     ``x + residual``.  The residual add is fused into the first load pass
     to save one global memory round-trip.
 

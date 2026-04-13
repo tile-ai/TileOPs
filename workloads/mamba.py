@@ -38,7 +38,7 @@ class DaCumsumFwdTest(WorkloadBase):
         return dt, A
 
 
-class SsdChunkScanFwdFixture(FixtureBase):
+class SSDChunkScanFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
@@ -51,7 +51,7 @@ class SsdChunkScanFwdFixture(FixtureBase):
             ]),
         ]
 
-class SsdChunkScanFwdTest(WorkloadBase):
+class SSDChunkScanFwdTest(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -85,7 +85,7 @@ class SsdChunkScanFwdTest(WorkloadBase):
         dt = torch.rand(b, c, L, h, dtype=self.dtype, device="cuda") * 0.1 + 0.01
         return x, cb, dA_cumsum, C, prev_states, dt
 
-class SsdChunkStateFwdFixture(FixtureBase):
+class SSDChunkStateFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
@@ -109,7 +109,7 @@ class SsdChunkStateFwdFixture(FixtureBase):
             ]),
         ]
 
-class SsdChunkStateFwdTest(WorkloadBase):
+class SSDChunkStateFwdTest(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -150,7 +150,7 @@ class SsdChunkStateFwdTest(WorkloadBase):
             seq_idx[:, seq_len // 2:] = 1
         return x, Bmat, dt, dA_cumsum, seq_idx
 
-class SsdDecodeFixture(FixtureBase):
+class SSDDecodeFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
@@ -171,7 +171,7 @@ class SsdDecodeFixture(FixtureBase):
             ]),
         ]
 
-class SsdDecodeTest(WorkloadBase):
+class SSDDecodeTest(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -201,7 +201,7 @@ class SsdDecodeTest(WorkloadBase):
         state = torch.randn(b, h, p, n, dtype=torch.float32, device="cuda") * 0.1
         return A, dt, x, B_in, C_in, state
 
-class SsdStatePassingFwdFixture(FixtureBase):
+class SSDStatePassingFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
@@ -214,7 +214,7 @@ class SsdStatePassingFwdFixture(FixtureBase):
             ]),
         ]
 
-class SsdStatePassingFwdTest(WorkloadBase):
+class SSDStatePassingFwdTest(WorkloadBase):
     def __init__(
         self,
         batch: int,

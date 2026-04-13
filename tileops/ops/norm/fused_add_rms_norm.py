@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.norm import FusedAddRmsNormKernel
+from tileops.kernels.norm import FusedAddRMSNormKernel
 
 from ..op import Op
 
@@ -71,7 +71,7 @@ class FusedAddRMSNormFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fused_add_rms_norm": FusedAddRmsNormKernel}
+        return {"fused_add_rms_norm": FusedAddRMSNormKernel}
 
     def forward(
         self,

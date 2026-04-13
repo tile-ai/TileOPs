@@ -5,13 +5,13 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.norm.fused_add_rmsnorm import FusedAddRMSNormFwdOp
-from workloads.fused_add_rmsnorm import FusedAddRmsNormTest
+from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
+from workloads.fused_add_rms_norm import FusedAddRMSNormTest
 
 _OP_NAME = "FusedAddRMSNormFwdOp"
 
 
-class FusedAddRmsNormBenchmark(BenchmarkBase):
+class FusedAddRMSNormBenchmark(BenchmarkBase):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
@@ -51,9 +51,9 @@ def _manifest_params():
 
 
 @pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
-def test_fused_add_rmsnorm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = FusedAddRmsNormTest(m, n, dtype)
-    bm = FusedAddRmsNormBenchmark(test)
+def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
+    test = FusedAddRMSNormTest(m, n, dtype)
+    bm = FusedAddRMSNormBenchmark(test)
     inputs = test.gen_inputs()
 
     op = FusedAddRMSNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)

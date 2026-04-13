@@ -1,11 +1,11 @@
 """
-Mamba-2 SSD chunk state forward kernel.
+Mamba-2 State-Space Dual (SSD) chunk state forward kernel.
 
 Inputs (pre-reshaped to chunked view):
   x:          (batch, seq_len, n_heads, d_head)
               -- input features, seq_len = num_chunks * chunk_len
   Bmat:       (batch, seq_len, n_groups, d_state)
-              -- SSM B matrix, grouped over heads
+              -- State Space Model (SSM) B matrix, grouped over heads
   dt:         (batch, n_heads, num_chunks, chunk_len)
               -- per-position discretization factor (float32)
   dA_cumsum:  (batch, n_heads, num_chunks, chunk_len)
@@ -56,7 +56,7 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["SsdChunkStateFwdKernel"]
+__all__ = ["SSDChunkStateFwdKernel"]
 
 
 def _ssd_chunk_state_fwd_kernel(
@@ -280,7 +280,7 @@ def _(
     return x.new_empty((batch, num_chunks, n_heads, d_head, d_state), dtype=torch.float32)
 
 
-class SsdChunkStateFwdKernel(Kernel):
+class SSDChunkStateFwdKernel(Kernel):
     """Mamba-2 SSD chunk state forward kernel.
 
     Computes the chunk-end SSM state for each chunk:

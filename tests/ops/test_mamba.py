@@ -3,23 +3,23 @@ import torch
 
 from tests.test_base import TestBase, allclose_compare
 from tileops.ops.da_cumsum import DaCumsumFwdOp
-from tileops.ops.ssd_chunk_scan import SsdChunkScanFwdOp
-from tileops.ops.ssd_chunk_state import SsdChunkStateFwdOp
-from tileops.ops.ssd_decode import SsdDecodeOp
-from tileops.ops.ssd_state_passing import SsdStatePassingFwdOp
+from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
+from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
+from tileops.ops.ssd_decode import SSDDecodeOp
+from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
     DaCumsumFwdFixture,
-    SsdChunkScanFwdFixture,
-    SsdChunkStateFwdFixture,
-    SsdDecodeFixture,
-    SsdStatePassingFwdFixture,
+    SSDChunkScanFwdFixture,
+    SSDChunkStateFwdFixture,
+    SSDDecodeFixture,
+    SSDStatePassingFwdFixture,
 )
 from workloads.mamba import DaCumsumFwdTest as _DaCumsumFwdTestWorkload
-from workloads.mamba import SsdChunkScanFwdTest as _SsdChunkScanFwdTestWorkload
-from workloads.mamba import SsdChunkStateFwdTest as _SsdChunkStateFwdTestWorkload
-from workloads.mamba import SsdDecodeTest as _SsdDecodeTestWorkload
+from workloads.mamba import SSDChunkScanFwdTest as _SSDChunkScanFwdTestWorkload
+from workloads.mamba import SSDChunkStateFwdTest as _SSDChunkStateFwdTestWorkload
+from workloads.mamba import SSDDecodeTest as _SSDDecodeTestWorkload
 from workloads.mamba import (
-    SsdStatePassingFwdTest as _SsdStatePassingFwdTestWorkload,
+    SSDStatePassingFwdTest as _SSDStatePassingFwdTestWorkload,
 )
 
 
@@ -77,15 +77,15 @@ def ssd_chunk_scan_fwd_torch(x, cb, dA_cumsum, C, prev_states, dt):
     return y_off + y_diag
 
 
-class SsdChunkScanFwdTest(_SsdChunkScanFwdTestWorkload, TestBase):
+class SSDChunkScanFwdTest(_SSDChunkScanFwdTestWorkload, TestBase):
     def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
         return ssd_chunk_scan_fwd_torch(x, cb, dA_cumsum, C, prev_states, dt)
 
 
-@SsdChunkScanFwdFixture
+@SSDChunkScanFwdFixture
 def test_ssd_chunk_scan_fwd(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune):
-    test = SsdChunkScanFwdTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)
-    op = SsdChunkScanFwdOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
+    test = SSDChunkScanFwdTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)
+    op = SSDChunkScanFwdOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
     inputs = test.gen_inputs()
     atol = 1e-3 if dtype == torch.float16 else 2e-3
     rtol = 1e-5
@@ -129,19 +129,19 @@ def ssd_chunk_state_fwd_ref(
     return out.permute(0, 1, 2, 4, 3)
 
 
-class SsdChunkStateFwdTest(_SsdChunkStateFwdTestWorkload, TestBase):
+class SSDChunkStateFwdTest(_SSDChunkStateFwdTestWorkload, TestBase):
     def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
         return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.n_groups, seq_idx=seq_idx)
 
 
-@SsdChunkStateFwdFixture
+@SSDChunkStateFwdFixture
 def test_ssd_chunk_state_fwd(
     batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx,
 ):
-    test = SsdChunkStateFwdTest(
+    test = SSDChunkStateFwdTest(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
     )
-    op = SsdChunkStateFwdOp(
+    op = SSDChunkStateFwdOp(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
         has_seq_idx=has_seq_idx, tune=tune,
     )
@@ -170,15 +170,15 @@ def ssd_state_passing_fwd_ref(
     return torch.stack(out, dim=1), s
 
 
-class SsdStatePassingFwdTest(_SsdStatePassingFwdTestWorkload, TestBase):
+class SSDStatePassingFwdTest(_SSDStatePassingFwdTestWorkload, TestBase):
     def ref_program(self, states, dA_chunk_cumsum, initial_states):
         return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
 
 
-@SsdStatePassingFwdFixture
+@SSDStatePassingFwdFixture
 def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune):
-    test = SsdStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
-    op = SsdStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
+    test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
+    op = SSDStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
     inputs = test.gen_inputs()
     atol = 1e-3 if dtype == torch.float16 else 1.6e-2
     rtol = 1e-3
@@ -217,15 +217,15 @@ def ssd_decode_ref(
     return y_out
 
 
-class SsdDecodeTest(_SsdDecodeTestWorkload, TestBase):
+class SSDDecodeTest(_SSDDecodeTestWorkload, TestBase):
     def ref_program(self, A, dt, x, B_in, C_in, state):
         return ssd_decode_ref(A, dt, x, B_in, C_in, state)
 
 
-@SsdDecodeFixture
+@SSDDecodeFixture
 def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
-    test = SsdDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
-    op = SsdDecodeOp(batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
+    test = SSDDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
+    op = SSDDecodeOp(batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
 
     # Run reference on a clone of state so the two runs start from the same point.
