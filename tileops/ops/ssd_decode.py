@@ -3,17 +3,17 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.mamba import SsdDecodeKernel
+from tileops.kernels.mamba import SSDDecodeKernel
 
 from .op import Op
 
-__all__ = ["SsdDecodeOp"]
+__all__ = ["SSDDecodeOp"]
 
 
-class SsdDecodeOp(Op):
-    """Mamba-2 SSD recurrent decode (step) operator.
+class SSDDecodeOp(Op):
+    """Mamba-2 State-Space Dual (SSD) recurrent decode (step) operator.
 
-    Performs a single decode step of the Mamba-2 SSM core: updates the
+    Performs a single decode step of the Mamba-2 State Space Model (SSM) core: updates the
     recurrent state in-place and returns the output y for the current token:
 
       dA[b, h]         = exp(dt[b, h] * A[h])
@@ -63,7 +63,7 @@ class SsdDecodeOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_decode": SsdDecodeKernel}
+        return {"ssd_decode": SSDDecodeKernel}
 
     def forward(
         self,

@@ -3,17 +3,17 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.mamba import SsdChunkStateFwdKernel
+from tileops.kernels.mamba import SSDChunkStateFwdKernel
 
 from .op import Op
 
-__all__ = ["SsdChunkStateFwdOp"]
+__all__ = ["SSDChunkStateFwdOp"]
 
 
-class SsdChunkStateFwdOp(Op):
-    """Mamba-2 SSD chunk state forward operator.
+class SSDChunkStateFwdOp(Op):
+    """Mamba-2 State-Space Dual (SSD) chunk state forward operator.
 
-    Computes the chunk-end SSM state for each chunk:
+    Computes the chunk-end State Space Model (SSM) state for each chunk:
 
       out[b, c, h, p, n] =
           sum_{l=0}^{Q-1}
@@ -67,7 +67,7 @@ class SsdChunkStateFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_chunk_state_fwd": SsdChunkStateFwdKernel}
+        return {"ssd_chunk_state_fwd": SSDChunkStateFwdKernel}
 
     def forward(
         self,

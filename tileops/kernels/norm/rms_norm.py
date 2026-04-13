@@ -17,7 +17,7 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["RmsNormKernel"]
+__all__ = ["RMSNormKernel"]
 
 ALIGNMENT = 256
 
@@ -98,7 +98,7 @@ def _(M, N, eps, dtype_str, block_m, threads, x, weight):
     return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
 
 
-class RmsNormKernel(Kernel):
+class RMSNormKernel(Kernel):
     """RMS Norm kernel.
 
     Supports SM80+ architectures. Uses 256-element alignment (512 bytes for

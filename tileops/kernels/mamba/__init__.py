@@ -1,15 +1,15 @@
 from .da_cumsum import DaCumsumFwdKernel
-from .ssd_chunk_scan import SsdChunkScanFwdKernel
+from .ssd_chunk_scan import SSDChunkScanFwdKernel
 from .ssd_chunk_scan_bwd_ddAcs_stable import SsdChunkScanBwdDdAcsStableKernel
-from .ssd_chunk_state import SsdChunkStateFwdKernel
-from .ssd_decode import SsdDecodeKernel
-from .ssd_state_passing import SsdStatePassingFwdKernel
+from .ssd_chunk_state import SSDChunkStateFwdKernel
+from .ssd_decode import SSDDecodeKernel
+from .ssd_state_passing import SSDStatePassingFwdKernel
 
 __all__ = [
     "DaCumsumFwdKernel",
-    "SsdChunkScanFwdKernel",
+    "SSDChunkScanFwdKernel",
     "SsdChunkScanBwdDdAcsStableKernel",
-    "SsdChunkStateFwdKernel",
-    "SsdDecodeKernel",
-    "SsdStatePassingFwdKernel",
+    "SSDChunkStateFwdKernel",
+    "SSDDecodeKernel",
+    "SSDStatePassingFwdKernel",
 ]

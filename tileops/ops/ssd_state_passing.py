@@ -3,15 +3,15 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel import Kernel
-from tileops.kernels.mamba import SsdStatePassingFwdKernel
+from tileops.kernels.mamba import SSDStatePassingFwdKernel
 
 from .op import Op
 
-__all__ = ["SsdStatePassingFwdOp"]
+__all__ = ["SSDStatePassingFwdOp"]
 
 
-class SsdStatePassingFwdOp(Op):
-    """Mamba-2 SSD state passing forward operator.
+class SSDStatePassingFwdOp(Op):
+    """Mamba-2 State-Space Dual (SSD) state passing forward operator.
 
     Performs the inter-chunk recurrent scan:
 
@@ -23,7 +23,7 @@ class SsdStatePassingFwdOp(Op):
         batch:              Batch size.
         num_chunks:         Number of chunks (seq_len / chunk_len).
         n_heads:            Number of heads.
-        d_state:            SSM state dimension.
+        d_state:            State Space Model (SSM) state dimension.
         has_initial_states: Whether to use initial_states as s_{-1}.
         dtype:              Data type for inputs (float16 or bfloat16).
         tune:               Whether to autotune tile config on construction.
@@ -54,7 +54,7 @@ class SsdStatePassingFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_state_passing_fwd": SsdStatePassingFwdKernel}
+        return {"ssd_state_passing_fwd": SSDStatePassingFwdKernel}
 
     def forward(
         self,

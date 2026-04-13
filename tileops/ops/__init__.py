@@ -82,10 +82,10 @@ from .rope import (
     RopeNonNeoxOp,
     RopeYarnOp,
 )
-from .ssd_chunk_scan import SsdChunkScanFwdOp
-from .ssd_chunk_state import SsdChunkStateFwdOp
-from .ssd_decode import SsdDecodeOp
-from .ssd_state_passing import SsdStatePassingFwdOp
+from .ssd_chunk_scan import SSDChunkScanFwdOp
+from .ssd_chunk_state import SSDChunkStateFwdOp
+from .ssd_decode import SSDDecodeOp
+from .ssd_state_passing import SSDStatePassingFwdOp
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
@@ -146,10 +146,10 @@ __all__ = [
     "Op",
     "MoePermuteAlignFwdOp",
     "RMSNormFwdOp",
-    "SsdChunkScanFwdOp",
-    "SsdChunkStateFwdOp",
-    "SsdDecodeOp",
-    "SsdStatePassingFwdOp",
+    "SSDChunkScanFwdOp",
+    "SSDChunkStateFwdOp",
+    "SSDDecodeOp",
+    "SSDStatePassingFwdOp",
     "RopeLlama31Op",
     "RopeLongRopeOp",
     "RopeNeoxOp",
