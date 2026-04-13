@@ -18,7 +18,7 @@ Source of truth for op interfaces. Human-reviewed, separate PR.
 - **MUST NOT**: contain kernel internals, dispatch strategy, or test logic
 - **MAY READ**: PyTorch public API (to match signatures)
 
-→ Rules: [manifest-spec.md](../.claude/domain-rules/manifest-spec.md) | Guide: [testing.md §Tests](testing.md#tests)
+→ Rules: [manifest-spec.md](../.claude/domain-rules/manifest-spec.md) | Guide: [manifest.md](manifest.md)
 
 ## Test
 
