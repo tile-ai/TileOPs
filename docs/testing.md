@@ -26,7 +26,7 @@ Rules:
 - **Dependency direction**: benchmark imports workload, never test
 - **ref_program locality**: correctness oracle is defined in the test file, not in workload
 
-## Writing a Test
+## Tests
 
 → Trust boundary: [trust-model.md §Test](trust-model.md#test) | Rules: [testing-budget.md](../.claude/domain-rules/testing-budget.md)
 
@@ -109,7 +109,7 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 - If a PR touches shared test infrastructure, run a broader `pytest -m smoke` pass before merge.
 - Run full targeted test files for the affected op family on a real GPU before claiming readiness.
 
-## Writing a Benchmark
+## Benchmarks
 
 → Trust boundary: [trust-model.md §Benchmark](trust-model.md#benchmark) | Rules: [benchmark.md](../.claude/domain-rules/benchmark.md)
 
