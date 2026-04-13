@@ -22,7 +22,7 @@ COMMIT_MSG_PATTERN="^\[(${COMMIT_PR_TYPES})\](\[[a-zA-Z0-9_-]+\])? .+"
 # Branch naming
 # ---------------------------------------------------------------------------
 
-BRANCH_PREFIXES="bench|chore|design|doc|feat|fix|maintain|perf|refactor|test"
+BRANCH_PREFIXES="bench|chore|design|doc|feat|fix|maintain|perf|refactor|style|test"
 BRANCH_NAME_PATTERN="^(${BRANCH_PREFIXES})/[a-z0-9._-]+/[a-z0-9._-]+$"
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ ALL_TYPE_LABELS="bench bug chore ci design docs enhancement feature fix maintain
 # Issue types (ALL CAPS, used in issue titles)
 # ---------------------------------------------------------------------------
 
-ISSUE_TYPES="BENCHMARK|BUG|DESIGN|DOCS|FEAT|MAINTAIN|META|PERF|REFACTOR|TEST"
+ISSUE_TYPES="BENCHMARK|BUG|DESIGN|DOCS|FEAT|MAINTAIN|META|PERF|REFACTOR|STYLE|TEST"
 
 # Issue type → GitHub label (for auto-label workflow)
 declare -A ISSUE_TYPE_TO_LABEL=(
@@ -66,6 +66,7 @@ declare -A ISSUE_TYPE_TO_LABEL=(
   [META]=chore
   [PERF]=perf
   [REFACTOR]=refactor
+  [STYLE]=style
   [TEST]=test
 )
 
@@ -80,6 +81,7 @@ declare -A ISSUE_TO_COMMIT_TYPE=(
   [META]=Chore
   [PERF]=Enhancement
   [REFACTOR]=Refactor
+  [STYLE]=Style
   [TEST]=Test
 )
 
@@ -94,6 +96,7 @@ declare -A ISSUE_TO_BRANCH_PREFIX=(
   [META]=chore
   [PERF]=perf
   [REFACTOR]=refactor
+  [STYLE]=style
   [TEST]=test
 )
 
