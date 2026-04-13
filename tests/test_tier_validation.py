@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
 from tests.conftest import pytest_collection_modifyitems
 
@@ -30,6 +31,7 @@ def _make_item(
     originalname: str = "test_op",
     path: str = "tests/ops/test_foo.py",
     markers: list[str] | None = None,
+    dtype: object | None = None,
     tune: bool | None = None,
 ) -> MagicMock:
     """Build a lightweight mock pytest.Item for tier validation tests."""
@@ -51,6 +53,8 @@ def _make_item(
     item.get_closest_marker = _get_closest_marker
 
     params: dict[str, object] = {}
+    if dtype is not None:
+        params["dtype"] = dtype
     if tune is not None:
         params["tune"] = tune
 
@@ -282,4 +286,112 @@ class TestNonRuntimeOpsFileExemption:
             ),
         ]
 
+# ===================================================================
+# AC-6: Every dtype needs smoke coverage
+# ===================================================================
+
+
+@pytest.mark.smoke
+class TestPerDtypeSmokeCoverage:
+    """Every dtype present in parametrized ops tests must have a smoke case."""
+
+    def test_each_dtype_has_smoke_case(self):
+        items = [
+            _make_item(
+                name="test_op[fp16]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[bf16]",
+                markers=["smoke"],
+                dtype=torch.bfloat16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[fp32]",
+                markers=["smoke"],
+                dtype=torch.float32,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[fp16-full]",
+                markers=["full"],
+                dtype=torch.float16,
+                tune=True,
+            ),
+        ]
+        pytest_collection_modifyitems(items)
+
+    def test_missing_dtype_smoke_raises(self):
+        items = [
+            _make_item(
+                name="test_op[fp16]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[bf16]",
+                markers=["full"],
+                dtype=torch.bfloat16,
+                tune=False,
+            ),
+        ]
+        with pytest.raises(pytest.UsageError, match="each dtype must have at least one smoke"):
+            pytest_collection_modifyitems(items)
+
+
+# ===================================================================
+# AC-7: full must not only differ from smoke by dtype
+# ===================================================================
+
+
+@pytest.mark.smoke
+class TestFullNotDtypeOnly:
+    """A full case cannot duplicate a smoke case except for dtype."""
+
+    def test_full_with_same_signature_except_dtype_raises(self):
+        items = [
+            _make_item(
+                name="test_op[fp16]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[bf16]",
+                markers=["full"],
+                dtype=torch.bfloat16,
+                tune=False,
+            ),
+        ]
+        with pytest.raises(
+            pytest.UsageError,
+            match="must not differ from a smoke case only by dtype",
+        ):
+            pytest_collection_modifyitems(items)
+
+    def test_full_with_distinct_non_dtype_params_passes(self):
+        items = [
+            _make_item(
+                name="test_op[fp16-typical]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[bf16-typical]",
+                markers=["smoke"],
+                dtype=torch.bfloat16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[fp16-tuned]",
+                markers=["full"],
+                dtype=torch.float16,
+                tune=True,
+            ),
+        ]
         pytest_collection_modifyitems(items)
