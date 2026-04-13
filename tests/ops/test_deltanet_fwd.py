@@ -112,10 +112,10 @@ class DeltaNetFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
             pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
+            pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
             pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),

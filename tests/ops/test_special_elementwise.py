@@ -16,8 +16,8 @@ class SpecialFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -130,8 +130,8 @@ class IndependentFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -235,7 +235,7 @@ class AlibiFixture(FixtureBase):
     PARAMS = [
         ("seq_len, num_heads, dtype", [
             pytest.param(128, 8, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(128, 8, torch.float32, marks=pytest.mark.full),
+            pytest.param(128, 8, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -267,7 +267,7 @@ class SinusoidalFixture(FixtureBase):
     PARAMS = [
         ("seq_len, d_model, dtype", [
             pytest.param(512, 256, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(512, 256, torch.float32, marks=pytest.mark.full),
+            pytest.param(512, 256, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -306,8 +306,8 @@ class ClampDtypeSizeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(4096, torch.float16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4096, torch.float16, marks=pytest.mark.smoke),
             pytest.param(16_777_216, torch.float16, marks=pytest.mark.full),
         ]),
     ]

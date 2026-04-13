@@ -29,8 +29,8 @@ class ReduceBasicFixture(FixtureBase):
             "m, n, dtype",
             [
                 pytest.param(128, 512, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
-                pytest.param(128, 512, torch.float32, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-aligned N
@@ -66,7 +66,7 @@ class ReduceNonContigFixture(FixtureBase):
             "m, n, dtype",
             [
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -78,7 +78,7 @@ class Reduce3DFixture(FixtureBase):
             "batch, seq, hidden, dtype",
             [
                 pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -90,7 +90,7 @@ class Reduce4DFixture(FixtureBase):
             "b0, b1, b2, n, dtype",
             [
                 pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -102,8 +102,8 @@ class Reduce1DFixture(FixtureBase):
             "n, dtype",
             [
                 pytest.param(512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(512, torch.float32, marks=pytest.mark.full),
-                pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(512, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(512, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -115,6 +115,7 @@ class BesselFixture(FixtureBase):
             "m, n, dtype, correction",
             [
                 pytest.param(128, 512, torch.float16, 0, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.bfloat16, 0, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.float16, 1, marks=pytest.mark.full),
                 pytest.param(128, 512, torch.bfloat16, 1, marks=pytest.mark.full),
             ],
@@ -501,10 +502,10 @@ class SpecReduceFixture(FixtureBase):
             "shape, dim, keepdim, dtype",
             [
                 pytest.param((128, 512), -1, False, torch.float16, marks=pytest.mark.smoke),
+                pytest.param((4, 32, 512), -1, False, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param((128, 512), -1, True, torch.float16, marks=pytest.mark.full),
                 pytest.param((4, 32, 512), 0, False, torch.float16, marks=pytest.mark.full),
                 pytest.param((4, 32, 512), 1, False, torch.float16, marks=pytest.mark.full),
-                pytest.param((4, 32, 512), -1, False, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param((4, 32, 512), -1, True, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),

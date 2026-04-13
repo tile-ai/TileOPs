@@ -83,6 +83,11 @@ class WelfordNonAlignedFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="m32_n257_fp16",
                 ),
+                pytest.param(
+                    32, 257, torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="m32_n257_bf16",
+                ),
             ]
             + [
                 pytest.param(
@@ -100,6 +105,7 @@ class WelfordNonAlignedFixture(FixtureBase):
                     id=f"m32_n{n}_bf16",
                 )
                 for n in _NON_ALIGNED_N
+                if n != 257
             ],
         ),
     ]
@@ -118,6 +124,11 @@ class WelfordNonAligned3DFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="b2_s16_h255_fp16",
                 ),
+                pytest.param(
+                    2, 16, 255, torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="b2_s16_h255_bf16",
+                ),
             ]
             + [
                 pytest.param(
@@ -133,7 +144,7 @@ class WelfordNonAligned3DFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id=f"b2_s16_h{n}_bf16",
                 )
-                for n in [7, 255, 257]
+                for n in [7, 257]
             ],
         ),
     ]
@@ -152,10 +163,14 @@ class WelfordNonAlignedMultiDimFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="flat255_fp16",
                 ),
-                # (4, 7, 9): reducing dims [1,2] -> flattened N = 7*9 = 63
+                pytest.param(
+                    (4, 7, 9), [1, 2], False, torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="flat63_bf16",
+                ),
                 pytest.param(
                     (4, 7, 9), [1, 2], False, torch.float16,
-                    marks=pytest.mark.full,
+                    marks=pytest.mark.smoke,
                     id="flat63_fp16",
                 ),
                 # (3, 3, 86): reducing dims [1,2] -> flattened N = 3*86 = 258
@@ -169,12 +184,6 @@ class WelfordNonAlignedMultiDimFixture(FixtureBase):
                     (2, 5, 51), [1, 2], True, torch.float16,
                     marks=pytest.mark.full,
                     id="flat255_keepdim_fp16",
-                ),
-                # bfloat16 variant
-                pytest.param(
-                    (4, 7, 9), [1, 2], False, torch.bfloat16,
-                    marks=pytest.mark.full,
-                    id="flat63_bf16",
                 ),
             ],
         ),

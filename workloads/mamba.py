@@ -45,6 +45,7 @@ class SSDChunkScanFwdFixture(FixtureBase):
         return [
             ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune", [
                 pytest.param(1, 2, 64, 4, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 2, 64, 4, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param(2, 4, 64, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 2, 128, 4, 128, 32, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(2, 2, 64, 4, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
@@ -93,6 +94,9 @@ class SSDChunkStateFwdFixture(FixtureBase):
             ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx", [
                 pytest.param(
                     1, 2, 64, 4, 64, 32, 1, torch.float16, False, False, marks=pytest.mark.smoke,
+                ),
+                pytest.param(
+                    1, 2, 64, 4, 64, 32, 1, torch.bfloat16, False, False, marks=pytest.mark.smoke,
                 ),
                 pytest.param(
                     2, 4, 64, 8, 64, 64, 2, torch.float16, False, False, marks=pytest.mark.full,
@@ -160,10 +164,10 @@ class SSDDecodeFixture(FixtureBase):
                     1, 4, 64, 16, 1, torch.float16, False, marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    2, 8, 64, 32, 2, torch.float16, False, marks=pytest.mark.full,
+                    1, 4, 64, 16, 1, torch.bfloat16, False, marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    1, 4, 64, 16, 1, torch.bfloat16, False, marks=pytest.mark.full,
+                    2, 8, 64, 32, 2, torch.float16, False, marks=pytest.mark.full,
                 ),
                 pytest.param(
                     2, 8, 128, 64, 4, torch.bfloat16, False, marks=pytest.mark.full,
@@ -208,8 +212,8 @@ class SSDStatePassingFwdFixture(FixtureBase):
         return [
             ("batch, num_chunks, n_heads, d_state, dtype, tune", [
                 pytest.param(1, 2,  4,  32, torch.float16,  False, marks=pytest.mark.smoke),
+                pytest.param(1, 2,  4,  32, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param(2, 4,  8,  64, torch.float16,  False, marks=pytest.mark.full),
-                pytest.param(1, 2,  4,  32, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(2, 4,  8,  64, torch.bfloat16, False, marks=pytest.mark.full),
             ]),
         ]

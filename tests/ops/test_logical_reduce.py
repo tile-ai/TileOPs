@@ -23,13 +23,13 @@ class LogicalReduceBasicFixture(FixtureBase):
             "m, n, dtype",
             [
                 pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.bool, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.int32, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.int64, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.complex64, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.complex128, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.bool, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.int32, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.int64, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.complex64, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.complex128, marks=pytest.mark.smoke),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-pow2 last dim
@@ -50,8 +50,8 @@ class LogicalReduceNonContigFixture(FixtureBase):
             "m, n, dtype",
             [
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.bool, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.bool, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -63,7 +63,7 @@ class LogicalReduce3DFixture(FixtureBase):
             "batch, seq, hidden, dtype",
             [
                 pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -75,7 +75,7 @@ class LogicalReduce4DFixture(FixtureBase):
             "b0, b1, b2, n, dtype",
             [
                 pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -87,9 +87,9 @@ class LogicalReduce1DFixture(FixtureBase):
             "n, dtype",
             [
                 pytest.param(512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(512, torch.float32, marks=pytest.mark.full),
-                pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(512, torch.bool, marks=pytest.mark.full),
+                pytest.param(512, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(512, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(512, torch.bool, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -104,7 +104,7 @@ class LogicalReduceDimFixture(FixtureBase):
             [
                 # dim=0 reduction on 2D
                 pytest.param((64, 512), 0, torch.float16, marks=pytest.mark.smoke),
-                pytest.param((64, 512), 0, torch.float32, marks=pytest.mark.full),
+                pytest.param((64, 512), 0, torch.float32, marks=pytest.mark.smoke),
                 # dim=1 reduction on 3D (reduces middle dim)
                 pytest.param((4, 64, 512), 1, torch.float16, marks=pytest.mark.full),
                 # dim=0 reduction on 3D

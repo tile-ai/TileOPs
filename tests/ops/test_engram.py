@@ -145,8 +145,8 @@ class EngramGateConvBwdFixture(FixtureBase):
     PARAMS = [
         ("M, seq_len, d, dtype, tune", [
             pytest.param(1, 32, 256, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1, 32, 256, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(2, 64, 512, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 128, 256, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(2, 16, 256, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
@@ -233,8 +233,8 @@ class EngramDecodeFixture(FixtureBase):
         # (batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune)
         ("batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune", [
             pytest.param(1, 512, 256, 12, 4, 3, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1, 512, 256, 12, 4, 3, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(4, 1024, 512, 20, 4, 5, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 256, 256, 9, 4, 3, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(8, 512, 256, 18, 4, 3, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
