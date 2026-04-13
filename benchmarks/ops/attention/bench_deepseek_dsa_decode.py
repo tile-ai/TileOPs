@@ -57,7 +57,7 @@ class _DsaDecodeTestBaseline(DsaDecodeTest):
         return o.to(torch.float16)
 
 
-class DsaDecodeBenchmark(BenchmarkBase[_DsaDecodeTestBaseline]):
+class DsaDecodeBenchmark(BenchmarkBase[DsaDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
