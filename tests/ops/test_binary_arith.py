@@ -98,8 +98,8 @@ class AddSameShapeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
             pytest.param(16_384, torch.float16, marks=pytest.mark.full),
         ]),
     ]
@@ -306,8 +306,8 @@ class SubFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -330,8 +330,8 @@ class MulFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -354,8 +354,8 @@ class DivFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -378,8 +378,8 @@ class RemainderFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -420,8 +420,8 @@ class PowFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -460,8 +460,8 @@ class FloorDivideFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -502,8 +502,8 @@ class LerpFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -551,8 +551,8 @@ class MaximumFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -575,8 +575,8 @@ class MinimumFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -598,8 +598,9 @@ def test_minimum_op(n_total: int, dtype: torch.dtype) -> None:
 class MaxMinNanFixture(FixtureBase):
     PARAMS = [
         ("dtype", [
+            pytest.param(torch.float16, marks=pytest.mark.smoke),
+            pytest.param(torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(torch.float32, marks=pytest.mark.smoke),
-            pytest.param(torch.float16, marks=pytest.mark.full),
         ]),
     ]
 
@@ -657,8 +658,8 @@ class SignedZeroFixture(FixtureBase):
     PARAMS = [
         ("dtype", [
             pytest.param(torch.float16, marks=pytest.mark.smoke),
-            pytest.param(torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(torch.float32, marks=pytest.mark.full),
+            pytest.param(torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 

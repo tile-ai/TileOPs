@@ -20,11 +20,11 @@ class ReluTest(_ReluTestWorkload, TestBase):
 class ReluFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            # Smoke: fp16, 1M elements
+            # Smoke: one typical shape per supported dtype
             pytest.param(1_000_000, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
-            # Full: other dtypes and sizes
-            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.float32, marks=pytest.mark.smoke),
+            # Full: larger follow-up coverage
             pytest.param(4_000_000, torch.float16, marks=pytest.mark.full),
             pytest.param(4_000_000, torch.bfloat16, marks=pytest.mark.full),
         ]),
@@ -77,8 +77,8 @@ class ActivationFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -266,8 +266,8 @@ class PreluFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
