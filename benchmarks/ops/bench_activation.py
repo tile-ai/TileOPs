@@ -13,12 +13,12 @@ compares against PyTorch baseline to determine optimal DEFAULT_STRATEGY.
 """
 
 from math import prod
-from typing import Optional
+from typing import Optional, Protocol, runtime_checkable
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, InputGeneratingWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.kernels.elementwise import (
     ErfKernel,
     MishKernel,
@@ -53,6 +53,16 @@ _UNARY_STRATEGIES = ("direct", "explicit_parallel", "register_copy")
 # ---------------------------------------------------------------------------
 
 
+@runtime_checkable
+class _UnaryWorkload(Protocol):
+    """Structural type for unary benchmark workloads."""
+
+    n_total: int
+    dtype: torch.dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]: ...
+
+
 class UnaryBenchCase:
     """Minimal test harness for unary benchmarks."""
 
@@ -65,7 +75,7 @@ class UnaryBenchCase:
         return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
 
 
-class UnaryBenchmark(BenchmarkBase[InputGeneratingWorkload]):
+class UnaryBenchmark(BenchmarkBase[_UnaryWorkload]):
     """Bandwidth-oriented benchmark for unary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:
