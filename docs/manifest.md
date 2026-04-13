@@ -244,7 +244,7 @@ source:
 # Multi-kernel op
 source:
   kernel:
-    - tileops/kernels/flash_attn/bwd.py
+    - tileops/kernels/attention/gqa_bwd.py
   kernel_map:
     mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
     mha_bwd_kernel: MhaBwdKernel
