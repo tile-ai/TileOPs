@@ -14,7 +14,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, InputGeneratingWorkload
 from tileops.ops.elementwise import AddOp
 from workloads.workload_base import FixtureBase
 
@@ -50,7 +50,7 @@ class BinaryStrategyBenchCase:
         return a, b
 
 
-class BinaryStrategyBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class BinaryStrategyBenchmark(BenchmarkBase[InputGeneratingWorkload]):
     """Bandwidth-oriented benchmark for binary elementwise strategy comparison."""
 
     def calculate_flops(self) -> Optional[float]:

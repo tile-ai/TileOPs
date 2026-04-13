@@ -18,7 +18,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, InputGeneratingWorkload
 from tileops.kernels.elementwise import (
     ErfKernel,
     MishKernel,
@@ -65,7 +65,7 @@ class UnaryBenchCase:
         return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
 
 
-class UnaryBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class UnaryBenchmark(BenchmarkBase[InputGeneratingWorkload]):
     """Bandwidth-oriented benchmark for unary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:
