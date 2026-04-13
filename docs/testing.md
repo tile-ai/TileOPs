@@ -15,7 +15,7 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 ## Test/Benchmark Pattern
 
 ```python
-# workloads/ops/attention/mha.py
+# workloads/attention/mha.py
 class MhaFwdTest(WorkloadBase):
     def __init__(self, batch, heads, seq_len, dim, causal, dtype): ...
     def gen_inputs(self): ...
@@ -151,7 +151,7 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 
 ### File checklist
 
-1. **Workload class** in `workloads/ops/` — subclass `WorkloadBase`, implement `gen_inputs()`.
+1. **Workload class** in `workloads/` — subclass `WorkloadBase`, implement `gen_inputs()`.
 1. **Fixture class** — subclass `FixtureBase`, define `PARAMS` with `smoke`/`full` marks.
 1. **Test class** in `tests/ops/test_<op>.py` — inherit `(MyWorkload, TestBase)`, implement `ref_program()` locally.
 1. **Test function** — `@YourFixture` decorated, call `test.check(op, *test.gen_inputs())`.
@@ -177,7 +177,7 @@ TestBase (tests/test_base.py, inherits WorkloadBase)
 
 ### File checklist
 
-1. **Workload class** in `workloads/ops/` — reuse the `WorkloadBase` subclass from the test.
+1. **Workload class** in `workloads/` — reuse the `WorkloadBase` subclass from the test.
 1. **Fixture class** — reuse the `FixtureBase` subclass from the test.
 1. **Benchmark class** in `benchmarks/ops/bench_<op>.py` — subclass `BenchmarkBase`, implement `calculate_flops()` and `calculate_memory()` (return `None` if not applicable).
 1. **Benchmark function** — `@YourFixture` decorated, construct workload + benchmark, call `inputs = workload.gen_inputs()`, then `bm.profile(op, *inputs)` and `BenchmarkReport.record(op, locals(), result, tag="tileops")`.

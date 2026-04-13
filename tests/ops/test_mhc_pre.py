@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MHCPreOp
-from workloads.ops.mhc_pre import MHCPreTest as _MHCPreTestWorkload
+from workloads.mhc_pre import MHCPreTest as _MHCPreTestWorkload
 
 
 class MHCPreTest(_MHCPreTestWorkload, TestBase):

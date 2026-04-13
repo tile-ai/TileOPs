@@ -7,7 +7,7 @@ from torch.nn import functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GqaSlidingWindowFwdOp
-from workloads.ops.attention.gqa_sliding_window import GqaSlidingWindowFwdTest
+from workloads.attention.gqa_sliding_window import GqaSlidingWindowFwdTest
 
 
 class GqaSlidingWindowFwdBenchmark(BenchmarkBase):

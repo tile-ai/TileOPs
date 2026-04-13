@@ -7,7 +7,7 @@ from einops import einsum, rearrange
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from workloads.ops.attention.deepseek_mla_decode import MlaDecodeTest
+from workloads.attention.deepseek_mla_decode import MlaDecodeTest
 
 
 class _MlaDecodeTestBaseline(MlaDecodeTest):

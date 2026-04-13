@@ -9,11 +9,11 @@ from tileops.ops.ssd_chunk_scan import SsdChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SsdChunkStateFwdOp
 from tileops.ops.ssd_decode import SsdDecodeOp
 from tileops.ops.ssd_state_passing import SsdStatePassingFwdOp
-from workloads.ops.da_cumsum import DaCumsumFwdFixture, DaCumsumFwdTest
-from workloads.ops.ssd_chunk_scan import SsdChunkScanFwdFixture, SsdChunkScanFwdTest
-from workloads.ops.ssd_chunk_state import SsdChunkStateFwdFixture, SsdChunkStateFwdTest
-from workloads.ops.ssd_decode import SsdDecodeFixture, SsdDecodeTest
-from workloads.ops.ssd_state_passing import SsdStatePassingFwdFixture, SsdStatePassingFwdTest
+from workloads.da_cumsum import DaCumsumFwdFixture, DaCumsumFwdTest
+from workloads.ssd_chunk_scan import SsdChunkScanFwdFixture, SsdChunkScanFwdTest
+from workloads.ssd_chunk_state import SsdChunkStateFwdFixture, SsdChunkStateFwdTest
+from workloads.ssd_decode import SsdDecodeFixture, SsdDecodeTest
+from workloads.ssd_state_passing import SsdStatePassingFwdFixture, SsdStatePassingFwdTest
 
 
 def da_cumsum_fwd_ref(

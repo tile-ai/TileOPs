@@ -8,8 +8,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
-from workloads.ops.attention.mha import MhaBwdTest as _MhaBwdTestWorkload
-from workloads.ops.attention.mha import MhaFwdTest as _MhaFwdTestWorkload
+from workloads.attention.mha import MhaBwdTest as _MhaBwdTestWorkload
+from workloads.attention.mha import MhaFwdTest as _MhaFwdTestWorkload
 
 
 class MhaBwdTest(_MhaBwdTestWorkload, TestBase):

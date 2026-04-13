@@ -5,8 +5,8 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MeanPoolingForwardOp
+from workloads.attention.mean_pooling import MeanPoolingTest as _MeanPoolingTestWorkload
 from workloads.nsa_utils import prepare_chunk_indices
-from workloads.ops.attention.mean_pooling import MeanPoolingTest as _MeanPoolingTestWorkload
 
 
 class MeanPoolingTest(_MeanPoolingTestWorkload, TestBase):

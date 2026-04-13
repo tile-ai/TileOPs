@@ -22,7 +22,7 @@ from tileops.ops.elementwise import (
     SubOp,
     coalesce_broadcast_dims,
 )
-from workloads.ops.binary_arith import AddSameShapeTest as _AddSameShapeTestWorkload
+from workloads.binary_arith import AddSameShapeTest as _AddSameShapeTestWorkload
 
 
 class AddSameShapeTest(_AddSameShapeTestWorkload, TestBase):

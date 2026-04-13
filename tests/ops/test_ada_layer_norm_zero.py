@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
-from workloads.ops.ada_layer_norm_zero import AdaLayerNormZeroTest as _AdaLayerNormZeroTestWorkload
+from workloads.ada_layer_norm_zero import AdaLayerNormZeroTest as _AdaLayerNormZeroTestWorkload
 
 
 class AdaLayerNormZeroTest(_AdaLayerNormZeroTestWorkload, TestBase):

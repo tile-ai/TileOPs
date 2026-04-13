@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedGemmOp
-from workloads.ops.grouped_gemm import (
+from workloads.grouped_gemm import (
     GroupedGemmCompleteTest,
     GroupedGemmTest,
 )

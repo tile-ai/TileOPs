@@ -21,9 +21,9 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.ops.reduction.log_softmax import LogSoftmaxFwdOp
 from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
 from tileops.ops.reduction.softmax import SoftmaxFwdOp
-from workloads.ops.softmax import LogSoftmaxTest as _LogSoftmaxTestWorkload
-from workloads.ops.softmax import LogSumExpTest as _LogSumExpTestWorkload
-from workloads.ops.softmax import SoftmaxTest as _SoftmaxTestWorkload
+from workloads.softmax import LogSoftmaxTest as _LogSoftmaxTestWorkload
+from workloads.softmax import LogSumExpTest as _LogSumExpTestWorkload
+from workloads.softmax import SoftmaxTest as _SoftmaxTestWorkload
 
 # ---------------------------------------------------------------------------
 # Tolerances (from docs/testing.md)

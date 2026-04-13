@@ -6,7 +6,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GatedDeltaNetDecodeOp
-from workloads.ops.gated_deltanet_recurrence import (
+from workloads.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeTest as _GatedDeltaNetDecodeTestWorkload,
 )
 

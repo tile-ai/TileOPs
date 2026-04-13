@@ -8,8 +8,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
-from workloads.ops.attention.gqa import GqaBwdTest as _GqaBwdTestWorkload
-from workloads.ops.attention.gqa import GqaFwdTest as _GqaFwdTestWorkload
+from workloads.attention.gqa import GqaBwdTest as _GqaBwdTestWorkload
+from workloads.attention.gqa import GqaFwdTest as _GqaFwdTestWorkload
 
 
 class GqaBwdTest(_GqaBwdTestWorkload, TestBase):

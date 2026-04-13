@@ -18,7 +18,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoeUnpermuteFwdOp
-from workloads.ops.moe_unpermute import MoeUnpermuteTest as _MoeUnpermuteTestWorkload
+from workloads.moe_unpermute import MoeUnpermuteTest as _MoeUnpermuteTestWorkload
 
 
 def _ref_moe_unpermute(

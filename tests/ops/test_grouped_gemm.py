@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.grouped_gemm import GroupedGemmOp
-from workloads.ops.grouped_gemm import (
+from workloads.grouped_gemm import (
     GroupedGemmTest as _GroupedGemmTestWorkload,
 )
 

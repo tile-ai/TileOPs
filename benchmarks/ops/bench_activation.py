@@ -26,8 +26,8 @@ from tileops.kernels.elementwise import (
     _make_unary_explicit,
 )
 from tileops.ops.elementwise import ErfOp, GeluOp, MishOp, ReluOp
+from workloads.activation import ReluTest
 from workloads.base import FixtureBase
-from workloads.ops.activation import ReluTest
 
 # ---------------------------------------------------------------------------
 # LLM-realistic shapes (LLaMA-family defaults)

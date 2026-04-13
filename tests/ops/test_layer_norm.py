@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
-from workloads.ops.layer_norm import LayerNormTest as _LayerNormTestWorkload
+from workloads.layer_norm import LayerNormTest as _LayerNormTestWorkload
 
 
 class LayerNormTest(_LayerNormTestWorkload, TestBase):

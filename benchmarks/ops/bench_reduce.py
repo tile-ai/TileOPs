@@ -18,7 +18,7 @@ from tileops.ops.reduction.reduce import (
     VarFwdOp,
     VarMeanFwdOp,
 )
-from workloads.ops.reduce import (
+from workloads.reduce import (
     AmaxTest,
     AminTest,
     MeanTest,

@@ -28,7 +28,7 @@ except ImportError:
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoePermuteAlignFwdOp
-from workloads.ops.moe_permute_align import MoePermuteAlignTest
+from workloads.moe_permute_align import MoePermuteAlignTest
 
 _OP_NAME = "MoePermuteAlignFwdOp"
 

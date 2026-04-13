@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from workloads.ops.attention.deepseek_dsa_decode import DsaDecodeTest
+from workloads.attention.deepseek_dsa_decode import DsaDecodeTest
 
 
 class _DsaDecodeTestBaseline(DsaDecodeTest):

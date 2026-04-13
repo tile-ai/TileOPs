@@ -10,7 +10,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from workloads.ops.attention.gqa_decode_paged import (
+from workloads.attention.gqa_decode_paged import (
     GqaDecodePagedTest as _GqaDecodePagedTestWorkload,
 )
 

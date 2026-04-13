@@ -6,7 +6,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetDecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.gated_deltanet_recurrence import GatedDeltaNetDecodeTest
+from workloads.gated_deltanet_recurrence import GatedDeltaNetDecodeTest
 
 
 def gated_deltanet_decode_torch(

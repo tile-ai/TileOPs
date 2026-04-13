@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
-from workloads.ops.instance_norm import InstanceNormTest
+from workloads.instance_norm import InstanceNormTest
 
 _OP_NAME = "InstanceNormFwdOp"
 

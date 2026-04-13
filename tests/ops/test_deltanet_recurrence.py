@@ -6,7 +6,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import DeltaNetDecodeOp
-from workloads.ops.deltanet_recurrence import DeltaNetDecodeTest as _DeltaNetDecodeTestWorkload
+from workloads.deltanet_recurrence import DeltaNetDecodeTest as _DeltaNetDecodeTestWorkload
 
 
 def deltanet_decode_torch(

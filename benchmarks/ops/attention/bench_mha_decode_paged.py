@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.ops.attention.mha_decode_paged import MhaDecodePagedTest
+from workloads.attention.mha_decode_paged import MhaDecodePagedTest
 
 
 class _MhaDecodePagedTestBaseline(MhaDecodePagedTest):

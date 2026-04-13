@@ -11,7 +11,7 @@ from benchmarks.benchmark import BenchmarkReport, ManifestBenchmark, workloads_t
 from tileops.ops.reduction.inf_norm import InfNormFwdOp
 from tileops.ops.reduction.l1_norm import L1NormFwdOp
 from tileops.ops.reduction.l2_norm import L2NormFwdOp
-from workloads.ops.vector_norm import InfNormTest, L1NormTest, L2NormTest
+from workloads.vector_norm import InfNormTest, L1NormTest, L2NormTest
 
 # ===================================================================
 # Op name constants

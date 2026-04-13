@@ -15,7 +15,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
-from workloads.ops.batch_norm import BatchNormBwdTest, BatchNormFwdTest
+from workloads.batch_norm import BatchNormBwdTest, BatchNormFwdTest
 
 _FWD_OP_NAME = "BatchNormFwdOp"
 _BWD_OP_NAME = "BatchNormBwdOp"

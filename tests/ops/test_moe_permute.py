@@ -16,7 +16,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoePermutePaddedFwdOp
-from workloads.ops.moe_permute import MoePermuteTest as _MoePermuteTestWorkload
+from workloads.moe_permute import MoePermuteTest as _MoePermuteTestWorkload
 
 
 def _ref_moe_permute(

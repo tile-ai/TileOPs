@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import FP8QuantOp
-from workloads.ops.fp8_quant import FP8QuantTest
+from workloads.fp8_quant import FP8QuantTest
 
 
 class _FP8QuantTestBaseline(FP8QuantTest):

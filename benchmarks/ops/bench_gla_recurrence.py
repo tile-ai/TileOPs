@@ -13,7 +13,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GLADecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.gla_recurrence import GLADecodeTest
+from workloads.gla_recurrence import GLADecodeTest
 
 
 def gla_decode_torch(

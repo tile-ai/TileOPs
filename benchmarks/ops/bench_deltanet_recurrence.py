@@ -6,7 +6,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeltaNetDecodeOp
 from workloads.base import FixtureBase
-from workloads.ops.deltanet_recurrence import DeltaNetDecodeTest
+from workloads.deltanet_recurrence import DeltaNetDecodeTest
 
 
 def deltanet_decode_torch(
