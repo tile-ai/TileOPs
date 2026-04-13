@@ -32,7 +32,7 @@ def _reset_records():
 
 
 class _FakeKernel:
-    """Stand-in for ``tileops.kernels.kernel.Kernel`` with just a config dict."""
+    """Stand-in for ``tileops.kernels.kernel_base.Kernel`` with just a config dict."""
 
     def __init__(self, config: dict):
         self.config = config

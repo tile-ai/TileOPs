@@ -144,7 +144,7 @@ def test_avg_pool1d_rejects_bool_pool_params(kwargs: dict[str, object], match: s
 
 @pytest.mark.smoke
 def test_avg_pool1d_forward_warns_on_ambiguous_nlc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool1dOp(
         n=1,
         c_in=8,
@@ -365,7 +365,7 @@ def test_avg_pool2d_negative_divisor_override_matches_torch() -> None:
 
 @pytest.mark.smoke
 def test_avg_pool2d_forward_rejects_nchw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool2dOp(
         n=1,
         c_in=4,
@@ -382,7 +382,7 @@ def test_avg_pool2d_forward_rejects_nchw_shape(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.smoke
 def test_avg_pool2d_forward_warns_on_ambiguous_nhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool2dOp(
         n=1,
         c_in=8,
@@ -606,7 +606,7 @@ def test_avg_pool3d_negative_divisor_override_matches_torch() -> None:
 
 @pytest.mark.smoke
 def test_avg_pool3d_forward_rejects_ncdhw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool3dOp(
         n=1,
         c_in=3,
@@ -624,7 +624,7 @@ def test_avg_pool3d_forward_rejects_ncdhw_shape(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.smoke
 def test_avg_pool3d_forward_warns_on_ambiguous_ndhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool3dOp(
         n=1,
         c_in=4,

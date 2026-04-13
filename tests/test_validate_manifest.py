@@ -710,7 +710,7 @@ class TestBench:
         assert any("syntax error" in e for e in errors)
 
     def test_bench_indirect_helpers_pass(self, validator, tmp_path):
-        """Importing workloads_to_params/ManifestBenchmark from benchmarks.benchmark passes."""
+        """Importing workloads_to_params/ManifestBenchmark from benchmarks.benchmark_base passes."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
             from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
