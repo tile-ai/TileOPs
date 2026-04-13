@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.attention.mha import (
     MhaBwdTest,

@@ -3,7 +3,7 @@ from typing import Tuple
 import torch
 
 from tileops.ops import GroupedQueryAttentionFwdOp
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 
 class GqaBwdTest(WorkloadBase):

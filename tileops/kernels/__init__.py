@@ -40,7 +40,7 @@ from .gemm import GemmKernel, GemvKernel
 from .gla import GLABwdKernel, GLAFwdKernel
 from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 from .grouped_gemm import GroupedGemmKernel
-from .kernel import Kernel
+from .kernel_base import Kernel
 from .mhc import MHCPostKernel, MHCPreKernel
 from .moe import MoePermuteAlignKernel
 from .norm import (

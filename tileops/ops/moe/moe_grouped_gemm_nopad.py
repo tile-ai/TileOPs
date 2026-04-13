@@ -4,7 +4,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 
 from ..op import Op

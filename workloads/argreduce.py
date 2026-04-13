@@ -1,4 +1,4 @@
-from workloads.base import RandnTest
+from workloads.workload_base import RandnTest
 
 
 class ArgmaxTest(RandnTest):

@@ -17,7 +17,7 @@ spec-conformant reduction op.
 
 import pytest
 
-from benchmarks.benchmark import BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport
 
 
 @pytest.fixture(autouse=True)

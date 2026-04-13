@@ -5,7 +5,7 @@ import tilelang
 import torch
 from tilelang import language as T
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E, make_online_softmax, make_rescale
 
 

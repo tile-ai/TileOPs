@@ -1,6 +1,6 @@
 import torch
 
-from workloads.base import RandnTest, WorkloadBase
+from workloads.workload_base import RandnTest, WorkloadBase
 
 
 class SumTest(RandnTest):

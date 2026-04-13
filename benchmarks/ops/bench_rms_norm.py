@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.rms_norm import RMSNormTest

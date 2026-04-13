@@ -23,7 +23,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     MAX_SINGLE_TILE_COLS,

@@ -12,7 +12,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.batch_norm import BatchNormBwdTest, BatchNormFwdTest

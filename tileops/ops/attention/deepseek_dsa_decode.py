@@ -3,7 +3,7 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.attention import SparseMlaKernel
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 from ..op import Op
 

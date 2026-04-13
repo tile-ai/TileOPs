@@ -1,6 +1,6 @@
 import torch
 
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 CONV_KERNEL_SIZE = 4
 

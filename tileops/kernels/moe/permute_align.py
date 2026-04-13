@@ -30,7 +30,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 # Path to the CUDA helper header for the scatter kernel.
 # Provides tl_atomic_add_offset() — a workaround for TileLang's codegen

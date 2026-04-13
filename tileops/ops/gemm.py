@@ -3,10 +3,10 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.gemm import GemmKernel, GemvKernel
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
-from .op import Op
+from .op_base import Op
 
 __all__ = ["GemmOp"]
 

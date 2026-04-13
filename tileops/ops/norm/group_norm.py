@@ -17,7 +17,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import GroupNormKernel
 
 from ..op import Op

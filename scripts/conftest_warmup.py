@@ -40,8 +40,8 @@ def pytest_configure(config):
         return
 
     # --- Shared: skip baseline profiling ---
-    from benchmarks.benchmark import BenchmarkBase
-    from tileops.ops.op import Op
+    from benchmarks.benchmark_base import BenchmarkBase
+    from tileops.ops.op_base import Op
 
     _orig_profile = BenchmarkBase.profile
 
@@ -97,7 +97,7 @@ def pytest_unconfigure(config):
     """Cleanup all patches."""
     orig_profile = getattr(config, "_warmup_orig_profile", None)
     if orig_profile is not None:
-        from benchmarks.benchmark import BenchmarkBase
+        from benchmarks.benchmark_base import BenchmarkBase
         BenchmarkBase.profile = orig_profile
 
     orig_pool = getattr(config, "_warmup_orig_pool", None)

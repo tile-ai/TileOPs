@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import AvgPool1dKernel, AvgPool2dKernel, AvgPool3dKernel
 from tileops.ops import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
 

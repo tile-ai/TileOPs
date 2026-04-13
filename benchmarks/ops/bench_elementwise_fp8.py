@@ -11,9 +11,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import AddOp, ExpOp, ReluOp, SiluAndMulOp
-from workloads.base import FixtureBase
+from workloads.workload_base import FixtureBase
 
 # Shapes modeled on real LLM workloads: batch × seq_len × hidden_dim
 # Small:  1 × 2048 × 4096  =  8,388,608  (single-batch inference, LLaMA-7B hidden)

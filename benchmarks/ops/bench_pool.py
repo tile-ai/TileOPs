@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.kernels.pool.common import pool_output_dim
 from tileops.ops import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
 

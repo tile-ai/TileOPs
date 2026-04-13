@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import FP8LightingIndexerOp
 from workloads.fp8_lighting_indexer import FP8LightingIndexerTest
 

@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import Conv1dFwdOp, Conv2dOp, Conv3dOp
 
 

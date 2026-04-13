@@ -7,8 +7,8 @@ from tileops.kernels.attention import (
     GqaSlidingWindowVarlenFwdKernel,
     GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
-from tileops.kernels.kernel import Kernel
-from tileops.ops.op import Op
+from tileops.kernels.kernel_base import Kernel
+from tileops.ops.op_base import Op
 from tileops.utils import is_hopper
 
 

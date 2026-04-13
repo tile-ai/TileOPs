@@ -4,13 +4,13 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 ## Core Abstractions
 
-| Class              | Location                                                | Role                                                                                                                                                                                |
-| ------------------ | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkloadBase`     | [`workloads/base.py`](../workloads/base.py)             | ABC defining `gen_inputs()`. Shared base for input generation used by both tests and benchmarks.                                                                                    |
-| `FixtureBase`      | [`workloads/base.py`](../workloads/base.py)             | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.                                                     |
-| `TestBase`         | [`tests/test_base.py`](../tests/test_base.py)           | Inherits `WorkloadBase`. Adds `ref_program()` and `check()`. Each op subclasses this for correctness testing.                                                                       |
-| `BenchmarkBase[W]` | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | Generic ABC parameterized by workload type `W` (a capability protocol, not `WorkloadBase`). Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
-| `BenchmarkReport`  | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                                                                          |
+| Class              | Location                                                          | Role                                                                                                                                                                                |
+| ------------------ | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkloadBase`     | [`workloads/workload_base.py`](../workloads/workload_base.py)     | ABC defining `gen_inputs()`. Shared base for input generation used by both tests and benchmarks.                                                                                    |
+| `FixtureBase`      | [`workloads/workload_base.py`](../workloads/workload_base.py)     | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.                                                     |
+| `TestBase`         | [`tests/test_base.py`](../tests/test_base.py)                     | Inherits `WorkloadBase`. Adds `ref_program()` and `check()`. Each op subclasses this for correctness testing.                                                                       |
+| `BenchmarkBase[W]` | [`benchmarks/benchmark_base.py`](../benchmarks/benchmark_base.py) | Generic ABC parameterized by workload type `W` (a capability protocol, not `WorkloadBase`). Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
+| `BenchmarkReport`  | [`benchmarks/benchmark_base.py`](../benchmarks/benchmark_base.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                                                                          |
 
 ## Wiring
 
@@ -119,7 +119,7 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 
 ### Workload protocols
 
-`BenchmarkBase[W]` is generic over workload type — different benchmarks depend on different workload capabilities, so the type parameter `W` is a capability protocol, not `WorkloadBase`. `WorkloadBase` remains the default in-repo implementation; the public benchmark API is defined by these protocols in `benchmarks/benchmark.py`:
+`BenchmarkBase[W]` is generic over workload type — different benchmarks depend on different workload capabilities, so the type parameter `W` is a capability protocol, not `WorkloadBase`. `WorkloadBase` remains the default in-repo implementation; the public benchmark API is defined by these protocols in `benchmarks/benchmark_base.py`:
 
 | Protocol                  | Requires          | Use when                                            |
 | ------------------------- | ----------------- | --------------------------------------------------- |

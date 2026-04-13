@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from einops import einsum, rearrange
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek_mla_decode import MlaDecodeTest
 

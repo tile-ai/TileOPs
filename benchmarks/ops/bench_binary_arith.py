@@ -17,10 +17,10 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import AddOp, WhereOp
-from workloads.base import FixtureBase
 from workloads.binary_arith import AddSameShapeTest
+from workloads.workload_base import FixtureBase
 
 # ---------------------------------------------------------------------------
 # LLM-realistic shapes (LLaMA-family defaults)

@@ -3,7 +3,7 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import FusedAddRMSNormKernel
 
 from ..op import Op

@@ -6,7 +6,7 @@ from typing import Any, Tuple
 
 import torch
 
-from workloads.base import FixtureBase, FixtureMeta, WorkloadBase
+from workloads.workload_base import FixtureBase, FixtureMeta, WorkloadBase
 
 _logger = logging.getLogger("tileops.ops")
 

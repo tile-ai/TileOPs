@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import NSACmpFwdVarlenOp
 from workloads.attention.deepseek_nsa_cmp import NsaCmpFwdTest
 from workloads.nsa_utils import prepare_chunk_offsets
