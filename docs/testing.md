@@ -16,11 +16,11 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 Workload is defined once; test and benchmark each reference it but do not depend on each other:
 
-```
-workloads/<family>/<op>.py    ← WorkloadBase subclass, defines gen_inputs()
-  ├── tests/ops/test_<op>.py  ← inherits (Workload, TestBase), adds ref_program() locally
-  └── benchmarks/ops/bench_<op>.py  ← composes workload via BenchmarkBase(workload)
-```
+- **Workload** (`workloads/`) — `WorkloadBase` subclass, defines `gen_inputs()`
+- **Test** (`tests/ops/`) — inherits `(Workload, TestBase)`, adds `ref_program()` locally
+- **Benchmark** (`benchmarks/ops/`) — composes workload via `BenchmarkBase(workload)`
+
+Rules:
 
 - **Shared fixture**: `FixtureBase` subclass defines `PARAMS` once; both test and benchmark use the same `@Fixture` decorator
 - **Dependency direction**: benchmark imports workload, never test
