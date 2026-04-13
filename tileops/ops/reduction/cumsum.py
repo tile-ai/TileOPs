@@ -1,16 +1,16 @@
 """Cumulative sum operator (L2 Op layer).
 
 Provides:
-  - CumsumOp: y = cumsum(x, dim=-1)
+  - CumsumFwdOp: y = cumsum(x, dim=-1)
 
-Follows the validate -> reshape -> pad -> kernel -> trim -> reshape pattern
+Follows the validate -> reshape -> kernel -> trim -> reshape pattern
 and supports 1D-4D input with dim=-1. Output has the same shape as input.
+Alignment padding is handled inside the kernel via masked loads.
 """
 
 from typing import Dict, Optional
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
@@ -18,10 +18,10 @@ from tileops.kernels.reduction.cumulative import CumulativeKernel
 
 from ..op import Op
 
-__all__ = ["CumsumOp"]
+__all__ = ["CumsumFwdOp"]
 
 
-class CumsumOp(Op):
+class CumsumFwdOp(Op):
     """Cumulative sum operator: y = cumsum(x, dim=-1).
 
     Output has the same shape and dtype as input.
@@ -34,7 +34,7 @@ class CumsumOp(Op):
         tune: Whether to autotune (default False).
 
     Example:
-        >>> op = CumsumOp(M=1024, N=4096, dtype=torch.float16)
+        >>> op = CumsumFwdOp(M=1024, N=4096, dtype=torch.float16)
         >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
         >>> y = op(x)  # shape: (1024, 4096)
     """
@@ -90,13 +90,10 @@ class CumsumOp(Op):
         if M_actual != self.M:
             raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
 
-        # Pad hidden dim to alignment
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N))
-
+        # Alignment padding is handled inside the kernel via masked loads.
         y = self.kernel(x)
 
-        # Trim padding and restore original shape
+        # Trim padding (kernel output is N_padded-wide) and restore shape
         if self.N_padded != self.N:
             y = y[:, : self.N]
         return y.reshape(orig_shape)

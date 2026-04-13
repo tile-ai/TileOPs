@@ -5,11 +5,11 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import ManifoldConstrainedHyperConnectionPreOp
-from workloads.ops.mhc_pre import MhcPreTest
+from tileops.ops import MHCPreOp
+from workloads.ops.mhc_pre import MHCPreTest
 
 
-class _MhcPreTestBaseline(MhcPreTest):
+class _MHCPreTestBaseline(MHCPreTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor,
@@ -64,7 +64,7 @@ class _MhcPreTestBaseline(MhcPreTest):
         return x_res_ref, x_layer_ref
 
 
-class MhcPreBenchmark(BenchmarkBase):
+class MHCPreBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -89,11 +89,11 @@ _MHC_PRE_BENCH_PARAMS = [
 @pytest.mark.parametrize("batch, n_expand, c_x, dtype, tune", _MHC_PRE_BENCH_PARAMS)
 def test_mhc_pre_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                        tune: bool) -> None:
-    test = _MhcPreTestBaseline(batch, n_expand, c_x, dtype)
-    bm = MhcPreBenchmark(test)
+    test = _MHCPreTestBaseline(batch, n_expand, c_x, dtype)
+    bm = MHCPreBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = ManifoldConstrainedHyperConnectionPreOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
+    op = MHCPreOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

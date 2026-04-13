@@ -25,6 +25,7 @@ import importlib
 import inspect
 import re
 import sys
+import warnings as _warnings
 from pathlib import Path
 
 import yaml
@@ -45,7 +46,7 @@ _TORCH_DTYPES = {
 _SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
 
 # Required top-level fields per op entry
-_REQUIRED_TOP = {"family", "signature", "workloads", "roofline", "source"}
+_REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
 _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
@@ -57,7 +58,9 @@ _VALID_LAYOUTS = {"channels_last"}
 # schema: YAML structure validation
 # ---------------------------------------------------------------------------
 
-def check_l0(op_name: str, entry: dict) -> list[str]:
+def check_l0(
+    op_name: str, entry: dict, *, warnings: list[str] | None = None,
+) -> list[str]:
     """Validate structural schema of a manifest entry. Returns error strings."""
     errors: list[str] = []
 
@@ -234,6 +237,52 @@ def check_l0(op_name: str, entry: dict) -> list[str]:
             f"[schema] {op_name}: variant_of must be a string"
         )
 
+    # ref_api: required string — fully qualified PyTorch API equivalent or "none"
+    if "ref_api" not in entry:
+        errors.append(
+            f"[schema] {op_name}: missing required field 'ref_api'"
+        )
+    elif not isinstance(entry["ref_api"], str):
+        errors.append(
+            f"[schema] {op_name}: ref_api must be a string"
+        )
+
+    # status: must be "implemented" or "spec-only"
+    # (skip if already caught by missing top-level fields check)
+    status = entry.get("status")
+    if "status" in entry and not isinstance(status, str):
+        errors.append(
+            f"[schema] {op_name}: status must be a string, "
+            f"got {type(status).__name__}"
+        )
+    elif isinstance(status, str) and status not in ("implemented", "spec-only"):
+        errors.append(
+            f"[schema] {op_name}: status must be 'implemented' or 'spec-only', "
+            f"got '{status}'"
+        )
+
+    # kernel_map: lives under source (source.kernel_map per manifest spec)
+    source = entry.get("source", {})
+    kernel_map = source.get("kernel_map") if isinstance(source, dict) else None
+    if kernel_map is not None:
+        if not isinstance(kernel_map, dict):
+            errors.append(
+                f"[schema] {op_name}: kernel_map must be a mapping, "
+                f"got {type(kernel_map).__name__}"
+            )
+        else:
+            for k, v in kernel_map.items():
+                if not isinstance(k, str) or not isinstance(v, str):
+                    errors.append(
+                        f"[schema] {op_name}: kernel_map entries must be "
+                        f"str -> str, got {k!r}: {v!r}"
+                    )
+    elif status == "implemented" and warnings is not None:
+        warnings.append(
+            f"[schema] {op_name}: status is 'implemented' but "
+            f"kernel_map is missing (should be a mapping of str -> str)"
+        )
+
     return errors
 
 
@@ -368,11 +417,12 @@ def check_l1_signature(
 class _ResolveResult:
     """Result of attempting to resolve an Op class from a module path."""
 
-    __slots__ = ("cls", "import_error")
+    __slots__ = ("cls", "import_error", "warning")
 
-    def __init__(self, cls=None, import_error: bool = False):
+    def __init__(self, cls=None, import_error: bool = False, warning: str = ""):
         self.cls = cls
         self.import_error = import_error
+        self.warning = warning
 
 
 def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
@@ -395,51 +445,45 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
 
     # Find Op subclass in the module. We look for classes defined in this module
     # that have a forward() method.
+    seen_ids: set[int] = set()
     candidates = []
     for _name, obj in inspect.getmembers(mod, inspect.isclass):
         if obj.__module__ != mod.__name__:
             continue
+        if id(obj) in seen_ids:
+            continue
         if hasattr(obj, "forward") and callable(obj.forward):
+            seen_ids.add(id(obj))
             candidates.append(obj)
 
     if not candidates:
         return _ResolveResult()
 
-    # If the op_name gives a hint (e.g., "batchnorm_fwd" -> "Fwd", "batchnorm_bwd" -> "Bwd")
-    # try to match more precisely
-    if len(candidates) == 1:
-        return _ResolveResult(cls=candidates[0])
+    # Require exact class-name identity: cls.__name__ == manifest key.
+    # No single-candidate bypass, no heuristic fallback.
+    direct = [c for c in candidates if c.__name__ == op_name]
+    if len(direct) == 1:
+        return _ResolveResult(cls=direct[0])
 
-    # Multiple candidates — try exact PascalCase match first (most reliable).
-    # Strip _fwd/_bwd suffix, convert remainder to PascalCase + "Op".
-    # e.g., "sum_fwd" -> "SumOp", "var_mean_fwd" -> "VarMeanOp"
-    base_name = op_name
-    for suffix in ("_fwd", "_bwd"):
-        if base_name.endswith(suffix):
-            base_name = base_name[: -len(suffix)]
-            break
-    pascal = "".join(part.capitalize() for part in base_name.split("_")) + "Op"
-    for cls in candidates:
-        if cls.__name__ == pascal:
-            return _ResolveResult(cls=cls)
+    if len(direct) > 1:
+        match_names = [c.__name__ for c in direct]
+        ambiguity_msg = (
+            f"Ambiguous op class resolution for '{op_name}': "
+            f"multiple classes named '{op_name}' in '{op_file}': {match_names}. "
+            f"Returning unresolved (cls=None)."
+        )
+        _warnings.warn(ambiguity_msg, UserWarning, stacklevel=2)
+        return _ResolveResult(warning=ambiguity_msg)
 
-    # Fallback: full op_name as PascalCase (e.g., "sum_fwd" -> "SumFwdOp")
-    full_pascal = "".join(part.capitalize() for part in op_name.split("_")) + "Op"
-    for cls in candidates:
-        if cls.__name__ == full_pascal:
-            return _ResolveResult(cls=cls)
-
-    # Fallback: suffix matching for fwd/bwd
-    if op_name.endswith("_fwd"):
-        for cls in candidates:
-            if "fwd" in cls.__name__.lower():
-                return _ResolveResult(cls=cls)
-    if op_name.endswith("_bwd"):
-        for cls in candidates:
-            if "bwd" in cls.__name__.lower():
-                return _ResolveResult(cls=cls)
-
-    return _ResolveResult(cls=candidates[0]) if candidates else _ResolveResult()
+    # No exact match found among multiple candidates.
+    candidate_names = [c.__name__ for c in candidates]
+    ambiguity_msg = (
+        f"No class named '{op_name}' found in '{op_file}'. "
+        f"Candidates: {candidate_names}. "
+        f"Manifest key must exactly match cls.__name__."
+    )
+    _warnings.warn(ambiguity_msg, UserWarning, stacklevel=2)
+    return _ResolveResult(warning=ambiguity_msg)
 
 
 _EXPLICIT_KINDS = {
@@ -524,6 +568,9 @@ def check_l1(
 
     result = _resolve_op_class(op_file, op_name)
 
+    if result.warning and warnings is not None:
+        warnings.append(f"[signature] {op_name}: {result.warning}")
+
     if result.import_error:
         errors.append(
             f"[signature] {op_name}: could not import {op_file} "
@@ -602,10 +649,59 @@ def _validate_dtype_token(
     return None
 
 
+def _build_same_as_map(all_tensors: dict) -> dict[str, str]:
+    """Build a mapping from tensor name to its same_as reference target.
+
+    For each tensor whose dtype is ``same_as(ref)``, maps tensor → ref.
+    Only pure same_as dtypes are tracked (not ``float16 | same_as(x)``).
+    """
+    same_as_map: dict[str, str] = {}
+    for tname, attrs in all_tensors.items():
+        dtype_str = attrs.get("dtype", "")
+        tokens = _parse_dtype_expr(dtype_str)
+        if len(tokens) == 1:
+            m = _SAME_AS_RE.match(tokens[0])
+            if m:
+                same_as_map[tname] = m.group(1)
+    return same_as_map
+
+
+def _check_dtype_combos_same_as_identity(
+    op_name: str, dtype_combos: list, same_as_map: dict[str, str],
+) -> list[str]:
+    """Enforce same_as identity constraint in dtype_combos entries.
+
+    For each dtype_combos entry, every tensor bound by same_as(ref) must
+    have the exact same dtype as its reference tensor (R3 identity constraint).
+    """
+    errors: list[str] = []
+    for i, combo in enumerate(dtype_combos):
+        if not isinstance(combo, dict):
+            continue
+        for tensor, ref in same_as_map.items():
+            t_in = tensor in combo
+            r_in = ref in combo
+            if t_in and r_in and combo[tensor] != combo[ref]:
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}] violates "
+                    f"same_as identity constraint — {tensor} "
+                    f"({combo[tensor]}) must match {ref} "
+                    f"({combo[ref]}) per R3"
+                )
+            elif t_in and not r_in:
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}] has "
+                    f"same_as-bound tensor '{tensor}' without its "
+                    f"reference '{ref}' — cannot verify identity"
+                )
+    return errors
+
+
 def check_l3(op_name: str, entry: dict) -> list[str]:
     """Validate dtype strings are recognized torch types or same_as references.
 
     Checks both signature tensor dtypes and workload dtype entries.
+    Also enforces same_as identity constraint in dtype_combos (R3).
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
@@ -623,6 +719,14 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
             err = _validate_dtype_token(op_name, tname, token, tensor_names)
             if err:
                 errors.append(err)
+
+    # Validate same_as identity constraint in dtype_combos (R3)
+    dtype_combos = sig.get("dtype_combos", [])
+    if isinstance(dtype_combos, list) and dtype_combos:
+        same_as_map = _build_same_as_map(all_tensors)
+        errors.extend(
+            _check_dtype_combos_same_as_identity(op_name, dtype_combos, same_as_map)
+        )
 
     # Validate workload dtypes
     workloads = entry.get("workloads", [])
@@ -689,7 +793,23 @@ def _ast_manifest_call_usage(
     op_name: str,
     target_names: set[str],
 ) -> dict[str, bool]:
-    """Check whether target functions are imported and called with this op name."""
+    """Check whether target functions are imported and called with this op name.
+
+    Recognises three patterns:
+
+    1. **Direct** — ``from tileops.manifest import load_workloads`` /
+       ``eval_roofline`` called with the op name.
+    2. **Indirect via benchmarks.benchmark** — ``workloads_to_params``
+       (wraps ``load_workloads``) and ``ManifestBenchmark`` (wraps
+       ``eval_roofline``) imported from ``benchmarks.benchmark`` and
+       called with the op name as the first argument.
+    """
+    # Maps from the indirect helper name → the direct target it satisfies.
+    _INDIRECT_EQUIV: dict[str, str] = {
+        "workloads_to_params": "load_workloads",
+        "ManifestBenchmark": "eval_roofline",
+    }
+
     imported: set[str] = set()
     matched_calls: set[str] = set()
     bindings = _resolve_constant_str_bindings(tree)
@@ -700,13 +820,25 @@ def _ast_manifest_call_usage(
                 for alias in node.names:
                     if alias.name in target_names:
                         imported.add(alias.name)
+            # Indirect helpers live in benchmarks.benchmark.
+            if node.module == "benchmarks.benchmark" and node.names:
+                for alias in node.names:
+                    equiv = _INDIRECT_EQUIV.get(alias.name)
+                    if equiv and equiv in target_names:
+                        imported.add(equiv)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             func_name = node.func.id
+            # Direct call (load_workloads / eval_roofline).
             if func_name in target_names and _call_uses_expected_op_name(
                 node, op_name, bindings,
             ):
                 matched_calls.add(func_name)
-
+            # Indirect call (workloads_to_params / ManifestBenchmark).
+            equiv = _INDIRECT_EQUIV.get(func_name)
+            if equiv and equiv in target_names and _call_uses_expected_op_name(
+                node, op_name, bindings,
+            ):
+                matched_calls.add(equiv)
     return {name: (name in imported and name in matched_calls) for name in target_names}
 
 
@@ -760,8 +892,16 @@ def check_l4_benchmark(
 # ---------------------------------------------------------------------------
 
 def _is_spec_only(entry: dict) -> bool:
-    """Spec-only behavior must be explicit in the manifest status."""
-    return entry.get("status") == "spec-only"
+    """Check if the entry is spec-only.
+
+    Returns True for missing or non-string status (safe default).
+    """
+    status = entry.get("status")
+    if not isinstance(status, str):
+        # Missing or non-string status — treat as spec-only (safe default).
+        # Schema validation catches this; defensive here for --levels bypass.
+        return True
+    return status == "spec-only"
 
 
 def _is_bench_manifest_driven(entry: dict) -> bool:
@@ -843,7 +983,7 @@ def validate_manifest(
 
         # schema: YAML structure validation
         if "schema" in levels:
-            schema_errors = check_l0(op_name, entry)
+            schema_errors = check_l0(op_name, entry, warnings=all_warnings)
             all_errors.extend(schema_errors)
             if schema_errors:
                 continue

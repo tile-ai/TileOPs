@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.instance_norm import InstanceNormOp
+from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.ops.instance_norm import InstanceNormTest as _InstanceNormTestWorkload
 
 
@@ -51,7 +51,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 def test_instance_norm_op(n: int, c: int, spatial: tuple,
                           dtype: torch.dtype, tune: bool) -> None:
     test = InstanceNormTest(n, c, spatial, dtype)
-    op = InstanceNormOp(N=n, C=c, spatial=spatial, dtype=dtype)
+    op = InstanceNormFwdOp(N=n, C=c, spatial=spatial, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -75,7 +75,7 @@ def test_instance_norm_non_contiguous(n: int, c: int, spatial: tuple,
     weight = torch.randn(c, dtype=dtype, device="cuda")
     bias = torch.randn(c, dtype=dtype, device="cuda")
 
-    op = InstanceNormOp(N=n, C=c, spatial=spatial, dtype=dtype)
+    op = InstanceNormFwdOp(N=n, C=c, spatial=spatial, dtype=dtype)
 
     y_ref = F.instance_norm(
         x.contiguous().float(),

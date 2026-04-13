@@ -8,7 +8,7 @@ from tileops.kernels.norm import FusedAddLayerNormKernel
 
 from ..op import Op
 
-__all__ = ["FusedAddLayerNormOp"]
+__all__ = ["FusedAddLayerNormFwdOp"]
 
 ALIGNMENT = 256
 
@@ -17,7 +17,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
-class FusedAddLayerNormOp(Op):
+class FusedAddLayerNormFwdOp(Op):
     """Fused residual addition and Layer Normalization operator.
 
     Computes the residual sum followed by layer normalization in a single

@@ -8,7 +8,7 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["mhc_post_kernel"]
+__all__ = ["MHCPostKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -90,7 +90,7 @@ def _(
     return torch.empty_like(input[0], dtype=input[0].dtype, device=input[0].device)
 
 
-class mhc_post_kernel(Kernel):
+class MHCPostKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,

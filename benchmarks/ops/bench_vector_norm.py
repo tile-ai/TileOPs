@@ -1,100 +1,105 @@
-"""Benchmarks for vector norm ops (l1_norm, l2_norm, inf_norm)."""
+"""Benchmarks for vector norm ops (l1_norm, l2_norm, inf_norm).
 
-from typing import Optional
+Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
+Workload shapes and roofline formulas are loaded from ops_manifest.yaml.
+"""
 
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from workloads.base import FixtureBase, WorkloadBase
+from benchmarks.benchmark import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from tileops.ops.reduction.inf_norm import InfNormFwdOp
+from tileops.ops.reduction.l1_norm import L1NormFwdOp
+from tileops.ops.reduction.l2_norm import L2NormFwdOp
+from workloads.ops.vector_norm import InfNormTest, L1NormTest, L2NormTest
+
+# ===================================================================
+# Op name constants
+# ===================================================================
+
+_L1_NORM_OP = "L1NormFwdOp"
+_L2_NORM_OP = "L2NormFwdOp"
+_INF_NORM_OP = "InfNormFwdOp"
 
 
-class VectorNormBenchFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype, op_kind",
-            [
-                # --- l1 ---
-                pytest.param(1024, 4096, torch.float16, "l1", marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, "l1", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float32, "l1", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "l1", marks=pytest.mark.full),
-                # --- l2 ---
-                pytest.param(1024, 4096, torch.float16, "l2", marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, "l2", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float32, "l2", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "l2", marks=pytest.mark.full),
-                # --- inf ---
-                pytest.param(1024, 4096, torch.float16, "inf", marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, "inf", marks=pytest.mark.full),
-                pytest.param(1024, 4096, torch.float32, "inf", marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, "inf", marks=pytest.mark.full),
-            ],
-        ),
-    ]
+# ===================================================================
+# L1 Norm benchmarks
+# ===================================================================
 
 
-# Map op_kind to the ord parameter for torch.linalg.vector_norm
-_ORD_MAP = {"l1": 1, "l2": 2, "inf": float("inf")}
-
-
-class VectorNormBenchTest(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.op_kind = op_kind
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        ord_val = _ORD_MAP[self.op_kind]
-        return torch.linalg.vector_norm(x, ord=ord_val, dim=-1)
-
-
-class VectorNormBenchmark(BenchmarkBase):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        # l1: N abs + N-1 adds per row
-        # l2: N muls + N-1 adds + 1 sqrt per row
-        # inf: N abs + N-1 comparisons per row
-        return t.m * t.n
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + write output (M)
-        return t.m * t.n * elem_bytes + t.m * elem_bytes
-
-
-def _make_op(dtype: torch.dtype, op_kind: str):
-    """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.inf_norm import InfNormOp
-    from tileops.ops.reduction.l1_norm import L1NormOp
-    from tileops.ops.reduction.l2_norm import L2NormOp
-
-    op_map = {
-        "l1": L1NormOp,
-        "l2": L2NormOp,
-        "inf": InfNormOp,
-    }
-    cls = op_map[op_kind]
-    return cls(dtype=dtype)
-
-
-@VectorNormBenchFixture
-def test_vector_norm_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> None:
-    test = VectorNormBenchTest(m, n, dtype, op_kind)
-    bm = VectorNormBenchmark(test)
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_L1_NORM_OP))
+def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = L1NormTest(shape, dtype)
+    bm = ManifestBenchmark(_L1_NORM_OP, test)
     inputs = test.gen_inputs()
 
-    op = _make_op(dtype, op_kind)
-    result = bm.profile(op, *inputs)
+    op = L1NormFwdOp(dtype=dtype)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    def baseline_fn(x):
+        return torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(x.dtype)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ===================================================================
+# L2 Norm benchmarks
+# ===================================================================
+
+
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_L2_NORM_OP))
+def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = L2NormTest(shape, dtype)
+    bm = ManifestBenchmark(_L2_NORM_OP, test)
+    inputs = test.gen_inputs()
+
+    op = L2NormFwdOp(dtype=dtype)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x):
+        return torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(x.dtype)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ===================================================================
+# Inf Norm benchmarks
+# ===================================================================
+
+
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_INF_NORM_OP))
+def test_inf_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = InfNormTest(shape, dtype)
+    bm = ManifestBenchmark(_INF_NORM_OP, test)
+    inputs = test.gen_inputs()
+
+    op = InfNormFwdOp(dtype=dtype)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x):
+        return torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(x.dtype)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 

@@ -7,10 +7,10 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.norm.group_norm import GroupNormOp
+from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.ops.group_norm import GroupNormTest
 
-_OP_NAME = "groupnorm_fwd"
+_OP_NAME = "GroupNormFwdOp"
 
 
 class GroupNormBenchmark(BenchmarkBase):
@@ -55,7 +55,7 @@ def test_group_norm_bench(n: int, c: int, spatial: tuple, g: int,
     bm = GroupNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = GroupNormOp(N=n, C=c, spatial=spatial, G=g, dtype=dtype, tune=tune)
+    op = GroupNormFwdOp(N=n, C=c, spatial=spatial, G=g, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

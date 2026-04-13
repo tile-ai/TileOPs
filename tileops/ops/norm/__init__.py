@@ -1,24 +1,24 @@
-from .ada_layer_norm import AdaLayerNormOp
-from .ada_layer_norm_zero import AdaLayerNormZeroOp
+from .ada_layer_norm import AdaLayerNormFwdOp
+from .ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from .base import RowNormOp
 from .batch_norm import BatchNormBwdOp, BatchNormFwdOp
-from .fused_add_layer_norm import FusedAddLayerNormOp
-from .fused_add_rmsnorm import FusedAddRmsNormOp
-from .group_norm import GroupNormOp
-from .instance_norm import InstanceNormOp
-from .layer_norm import LayerNormOp
-from .rms_norm import RmsNormOp
+from .fused_add_layer_norm import FusedAddLayerNormFwdOp
+from .fused_add_rmsnorm import FusedAddRMSNormFwdOp
+from .group_norm import GroupNormFwdOp
+from .instance_norm import InstanceNormFwdOp
+from .layer_norm import LayerNormFwdOp
+from .rms_norm import RMSNormFwdOp
 
 __all__: list[str] = [
-    "AdaLayerNormOp",
-    "AdaLayerNormZeroOp",
+    "AdaLayerNormFwdOp",
+    "AdaLayerNormZeroFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
-    "FusedAddLayerNormOp",
-    "FusedAddRmsNormOp",
-    "GroupNormOp",
-    "InstanceNormOp",
-    "LayerNormOp",
-    "RmsNormOp",
+    "FusedAddLayerNormFwdOp",
+    "FusedAddRMSNormFwdOp",
+    "GroupNormFwdOp",
+    "InstanceNormFwdOp",
+    "LayerNormFwdOp",
+    "RMSNormFwdOp",
     "RowNormOp",
 ]

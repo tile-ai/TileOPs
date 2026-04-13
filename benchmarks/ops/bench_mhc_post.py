@@ -4,11 +4,11 @@ import pytest
 import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import ManifoldConstrainedHyperConnectionPostOp
-from workloads.ops.mhc_post import MhcPostTest
+from tileops.ops import MHCPostOp
+from workloads.ops.mhc_post import MHCPostTest
 
 
-class _MhcPostTestBaseline(MhcPostTest):
+class _MHCPostTestBaseline(MHCPostTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
@@ -23,7 +23,7 @@ class _MhcPostTestBaseline(MhcPostTest):
         return x_out_ref
 
 
-class MhcPostBenchmark(BenchmarkBase):
+class MHCPostBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -46,12 +46,11 @@ _MHC_POST_BENCH_PARAMS = [
 @pytest.mark.parametrize("batch, n_expand, c_x, dtype, tune", _MHC_POST_BENCH_PARAMS)
 def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                          tune: bool) -> None:
-    test = _MhcPostTestBaseline(batch, n_expand, c_x, dtype)
-    bm = MhcPostBenchmark(test)
+    test = _MHCPostTestBaseline(batch, n_expand, c_x, dtype)
+    bm = MHCPostBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = ManifoldConstrainedHyperConnectionPostOp(
-        batch, n_expand, c_x, dtype=str(dtype).split('.')[-1], tune=tune)
+    op = MHCPostOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

@@ -1,10 +1,10 @@
 """Softmax operator (L2 Op layer).
 
 Provides:
-  - SoftmaxOp: y = softmax(x, dim)
+  - SoftmaxFwdOp: y = softmax(x, dim)
 
 Example:
-    >>> op = SoftmaxOp(dtype=torch.float16, dim=-1)
+    >>> op = SoftmaxFwdOp(dtype=torch.float16, dim=-1)
     >>> x = torch.randn(2, 32, 4096, dtype=torch.float16, device="cuda")
     >>> y = op(x)  # shape: (2, 32, 4096)
 """
@@ -13,10 +13,10 @@ from tileops.kernels.reduction.softmax import SoftmaxKernel
 
 from ._softmax_base import _SoftmaxBaseOp
 
-__all__ = ["SoftmaxOp"]
+__all__ = ["SoftmaxFwdOp"]
 
 
-class SoftmaxOp(_SoftmaxBaseOp):
+class SoftmaxFwdOp(_SoftmaxBaseOp):
     """Softmax operator: y = softmax(x, dim).
 
     Output has the same shape and dtype as input.

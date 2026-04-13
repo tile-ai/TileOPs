@@ -5,7 +5,7 @@ from benchmarks.benchmark import BenchmarkReport, _bench_results
 
 # Skip NSA benchmarks until op failures are resolved (see #696).
 collect_ignore_glob = [
-    "ops/bench_deepseek_nsa_*.py",
+    "ops/attention/bench_deepseek_nsa*.py",
 ]
 
 

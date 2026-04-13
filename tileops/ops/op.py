@@ -17,7 +17,7 @@ class Op(ABC):
     - Autotuning interface
 
     Examples:
-        >>> from tileops.ops import MultiHeadAttentionFwdOp #MultiHeadAttentionFwdOp is a subclass of Op
+        >>> from tileops.ops import MultiHeadAttentionFwdOp
         >>> op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
         >>> Q, K, V = op.gen_inputs()
         >>> output = op(Q, K, V)

@@ -4,12 +4,12 @@
 
 ```
 Op (base)
-  └── FamilyBase (e.g., RowNormOp → NormBase, ReductionBase, ...)
+  └── FamilyBase (e.g., RowNormOp, _ReduceOpBase, ...)
         └── ConcreteOp (declaration only)
 ```
 
 - **Op** — abstract base. Defines the `forward()` contract.
-- **FamilyBase** — per-family intermediate base. Owns shared `forward()` flow: validation, reshape, padding, kernel dispatch, trim. One per op family. Current: `RowNormOp` serves norm ops.
+- **FamilyBase** — per-family intermediate base. Owns shared `forward()` flow: validation, reshape, padding, kernel dispatch, trim. One per op family. Current families: `RowNormOp` (norm ops), `_ReduceOpBase` (reduce ops).
 - **ConcreteOp** — leaf class. Pure declaration: kernel class, supported dtypes, input wiring. No logic override.
 
 For trust boundaries (what implementation OWNS, MUST NOT do, and MAY READ), see [trust-model.md -- Implementation](trust-model.md#implementation).
@@ -56,15 +56,77 @@ Contiguous conversion is the family base class's responsibility. Concrete ops sh
 
 ## Principle 5: Class Variable Protocol
 
-| Variable           | Required?  | Defined At              | Purpose                                            |
-| ------------------ | ---------- | ----------------------- | -------------------------------------------------- |
-| `SUPPORTED_DTYPES` | Yes        | Every concrete Op       | Runtime dtype check + manifest validation          |
-| `ALIGNMENT`        | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm) |
-| `_op_name`         | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging    |
+| Variable                  | Required?  | Defined At              | Purpose                                                                                                   |
+| ------------------------- | ---------- | ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| `SUPPORTED_DTYPES`        | Yes        | Every concrete Op       | Runtime dtype check + manifest validation                                                                 |
+| `ALIGNMENT`               | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm)                                                        |
+| `_op_name`                | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging                                                           |
+| `_kernel_handles_padding` | Per-family | Intermediate base class | When `True`, kernel accepts raw `(M, N)` with masked loads — host-side pad/trim is skipped in `forward()` |
 
-Single-kernel ops declare `_kernel_key` and `_kernel_cls`. Multi-kernel ops define `default_kernel_map` returning a dict. Dispatch is determined by the family base class.
+Single-kernel ops declare a kernel key and kernel class attribute. Multi-kernel ops define `default_kernel_map` returning a dict. See [Kernel Dispatch](#kernel-dispatch-kernel_map).
 
 Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
+
+## Naming Conventions
+
+### Op Classes
+
+Op class names use PascalCase with a mandatory direction suffix and `Op` suffix:
+
+```
+{PascalCaseName}{Direction}Op
+```
+
+- **PascalCaseName** — descriptive name (e.g., `RMSNorm`, `BatchNorm`, `Softmax`). No mechanical abbreviation rules are enforced — the manifest author determines the name.
+- **Direction** — mandatory suffix: `Fwd` or `Bwd`.
+- **Op** — literal suffix.
+
+Examples: `RMSNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`, `BatchNormFwdOp`.
+
+The manifest key must exactly equal `cls.__name__`. The validator enforces this via direct equality check — there is no heuristic snake_case-to-PascalCase resolution.
+
+### Kernel Classes
+
+Kernel classes use PascalCase with a `Kernel` suffix:
+
+```
+{PascalCaseName}{Direction}Kernel
+```
+
+Examples: `RMSNormFwdKernel`, `SoftmaxFwdKernel`.
+
+### Kernel Dispatch (kernel_map)
+
+An Op dispatches to one or more Kernels via `kernel_map` — a flat dict mapping dispatch keys to Kernel classes. A single Op may dispatch to different Kernels based on shape, dtype, or hardware architecture.
+
+The manifest declares `kernel_map` as a registration table so that kernel-layer design decisions stay at the spec level: human reviewer decides what Kernels an Op needs, agent implements them.
+
+```python
+# Single-kernel op
+def default_kernel_map(self):
+    return {"rms_norm": RmsNormKernel}
+
+
+# Multi-kernel pipeline
+def default_kernel_map(self):
+    return {
+        "mha_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
+        "mha_bwd_kernel": MhaBwdKernel,
+        "mha_bwd_postprocess_kernel": FlashAttnBwdPostprocessKernel,
+    }
+```
+
+- **Keys**: snake_case identifiers, decoupled from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key. (Convention for new ops — some existing ops use PascalCase keys.)
+- **Values**: Kernel class names (PascalCase), must match `cls.__name__`.
+- The table does not describe dispatch strategy. Strategy is a runtime concern.
+
+### Builder Functions
+
+Kernel builder functions (that construct TileLang programs) remain `snake_case`:
+
+```python
+def rms_norm_fwd(M, N, dtype, ...): ...
+```
 
 ## Adding a New Intermediate Base Class
 

@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.grouped_gemm import grouped_gemm_kernel
+from tileops.kernels.grouped_gemm import GroupedGemmKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
@@ -51,7 +51,7 @@ class GroupedGemmOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict:
-        return {"grouped_gemm_kernel": grouped_gemm_kernel}
+        return {"grouped_gemm_kernel": GroupedGemmKernel}
 
     def forward(self, a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor,
                 batch_offsets: torch.Tensor, batch_padded_offsets: torch.Tensor) -> torch.Tensor:

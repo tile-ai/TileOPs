@@ -4,10 +4,10 @@ from tileops.kernels.norm import RmsNormKernel
 
 from .base import RowNormOp
 
-__all__ = ["RmsNormOp"]
+__all__ = ["RMSNormFwdOp"]
 
 
-class RmsNormOp(RowNormOp):
+class RMSNormFwdOp(RowNormOp):
     """Standalone RMS Norm operator.
 
     y = x * rsqrt(mean(x^2, dim=-1) + eps) * weight

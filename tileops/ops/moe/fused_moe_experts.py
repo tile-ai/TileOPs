@@ -1,7 +1,7 @@
 """Local routed expert GEMM — tight (no-pad) and padded layout variants.
 
-FusedMoeExperts        — tight layout (T*K rows), GPU tile scheduler, fastest.
-FusedMoeExpertsPadded  — block_m-aligned padding, reference / comparison baseline.
+FusedMoeExpertsFwdOp        — tight layout (T*K rows), GPU tile scheduler, fastest.
+FusedMoeExpertsPaddedFwdOp  — block_m-aligned padding, reference / comparison baseline.
 
 Both classes share an identical forward signature:
 
@@ -23,23 +23,23 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.grouped_gemm.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
+from tileops.kernels.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
 from tileops.kernels.kernel import Kernel
 from tileops.ops.elementwise import SiluAndMulOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
-from tileops.ops.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadOp
-from tileops.ops.moe.permute_nopad import MoePermuteNopadOp
-from tileops.ops.moe.permute_padded import MoePermutePaddedOp
-from tileops.ops.moe.unpermute import MoeUnpermuteOp
+from tileops.ops.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
+from tileops.ops.moe.permute_nopad import MoePermuteNopadFwdOp
+from tileops.ops.moe.permute_padded import MoePermutePaddedFwdOp
+from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
 
 from ..op import Op
 
-__all__ = ["FusedMoeExperts", "FusedMoeExpertsPadded"]
+__all__ = ["FusedMoeExpertsFwdOp", "FusedMoeExpertsPaddedFwdOp"]
 
 _BLOCK_M: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
 
 
-class FusedMoeExperts(Op):
+class FusedMoeExpertsFwdOp(Op):
     """Local routed expert GEMM, tight layout (T*K rows, no padding).
 
     Receives pre-computed routing (topk_weights, topk_ids) from the caller and
@@ -86,7 +86,7 @@ class FusedMoeExperts(Op):
             int((expert_map >= 0).sum().item()) if expert_map is not None else num_experts
         )
 
-        self._permute = MoePermuteNopadOp(
+        self._permute = MoePermuteNopadFwdOp(
             num_tokens=num_tokens,
             top_k=top_k,
             num_experts=num_experts,
@@ -94,7 +94,7 @@ class FusedMoeExperts(Op):
             dtype=dtype,
             expert_map=expert_map,
         )
-        self._gemm_gate_up = MoeGroupedGemmNopadOp(
+        self._gemm_gate_up = MoeGroupedGemmNopadFwdOp(
             numel=numel,
             num_experts=num_experts_local,
             n=ffn_size * 2,
@@ -106,14 +106,14 @@ class FusedMoeExperts(Op):
             N=ffn_size,
             dtype=dtype,
         )
-        self._gemm_down = MoeGroupedGemmNopadOp(
+        self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel,
             num_experts=num_experts_local,
             n=hidden_size,
             k=ffn_size,
             dtype=dtype,
         )
-        self._unpermute = MoeUnpermuteOp(
+        self._unpermute = MoeUnpermuteFwdOp(
             num_tokens=num_tokens,
             top_k=top_k,
             hidden_size=hidden_size,
@@ -159,10 +159,10 @@ class FusedMoeExperts(Op):
         return output
 
 
-class FusedMoeExpertsPadded(Op):
+class FusedMoeExpertsPaddedFwdOp(Op):
     """Local routed expert GEMM, block_m-aligned padded layout.
 
-    Identical semantics to FusedMoeExperts but uses MoePermutePaddedOp and
+    Identical semantics to FusedMoeExpertsFwdOp but uses MoePermutePaddedFwdOp and
     GroupedGemmOp instead of the no-pad variants.  Used as a comparison
     baseline to quantify the benefit of the tight (no-pad) layout.
 
@@ -199,13 +199,13 @@ class FusedMoeExpertsPadded(Op):
         if expert_map is not None:
             raise NotImplementedError(
                 "expert_map is not yet supported for the padded layout. "
-                "Use FusedMoeExperts (nopad) for EP mode."
+                "Use FusedMoeExpertsFwdOp (nopad) for EP mode."
             )
 
         numel = num_tokens * top_k
         _padded_batch_sum = numel + (num_experts * (_BLOCK_M - 1))
 
-        self._permute = MoePermutePaddedOp(
+        self._permute = MoePermutePaddedFwdOp(
             num_tokens=num_tokens,
             top_k=top_k,
             num_experts=num_experts,
@@ -232,7 +232,7 @@ class FusedMoeExpertsPadded(Op):
             k=ffn_size,
             dtype=dtype,
         )
-        self._unpermute = MoeUnpermuteOp(
+        self._unpermute = MoeUnpermuteFwdOp(
             num_tokens=num_tokens,
             top_k=top_k,
             hidden_size=hidden_size,

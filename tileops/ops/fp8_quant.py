@@ -2,15 +2,15 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.deepseek_mla import Fp8QuantKernel
+from tileops.kernels.fp8_quant import FP8QuantKernel
 from tileops.kernels.kernel import Kernel
 
 from .op import Op
 
-__all__ = ["Fp8QuantOp"]
+__all__ = ["FP8QuantOp"]
 
 
-class Fp8QuantOp(Op):
+class FP8QuantOp(Op):
 
     def __init__(self,
                  batch,
@@ -31,7 +31,7 @@ class Fp8QuantOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fp8_quant_kernel": Fp8QuantKernel}
+        return {"fp8_quant_kernel": FP8QuantKernel}
 
     def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.kernel(input_tensor)

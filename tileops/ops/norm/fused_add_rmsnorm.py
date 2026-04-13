@@ -8,7 +8,7 @@ from tileops.kernels.norm import FusedAddRmsNormKernel
 
 from ..op import Op
 
-__all__ = ["FusedAddRmsNormOp"]
+__all__ = ["FusedAddRMSNormFwdOp"]
 
 ALIGNMENT = 256
 
@@ -17,7 +17,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
-class FusedAddRmsNormOp(Op):
+class FusedAddRMSNormFwdOp(Op):
     """Fused residual addition and RMS Normalization operator.
 
     Computes the residual sum followed by RMS normalization in a single

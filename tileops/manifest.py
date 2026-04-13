@@ -116,7 +116,10 @@ def _load_manifest() -> dict[str, Any]:
 def load_workloads(op_name: str) -> list[dict[str, Any]]:
     """Return the workloads list for *op_name*.
 
-    >>> workloads = load_workloads("rmsnorm_fwd")
+    *op_name* must be the canonical PascalCase manifest key
+    (e.g. ``RMSNormFwdOp``).
+
+    >>> workloads = load_workloads("RMSNormFwdOp")
     >>> workloads[0]
     {'x_shape': [2048, 4096], 'dtypes': ['float16', 'bfloat16'], 'label': 'llama-3.1-8b-prefill'}
     """
@@ -131,7 +134,7 @@ def eval_roofline(op_name: str, **variables: float) -> tuple[float, float]:
 
     Returns (flops, bytes).
 
-    >>> flops, mem_bytes = eval_roofline("rmsnorm_fwd", M=2048, N=4096, elem_bytes=2)
+    >>> flops, mem_bytes = eval_roofline("RMSNormFwdOp", M=2048, N=4096, elem_bytes=2)
     """
     ops = _load_manifest()
     if op_name not in ops:

@@ -1,81 +1,79 @@
-from .avg_pool1d import AvgPool1dOp
-from .avg_pool2d import AvgPool2dOp
-from .avg_pool3d import AvgPool3dOp
-from .conv1d import Conv1dOp
-from .conv2d import Conv2dOp
-from .conv3d import Conv3dOp
-from .da_cumsum_fwd import DaCumsumFwdOp
-from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheOp
-from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheOp
-from .deepseek_nsa import (
+from .attention import (
+    DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
+    GqaSlidingWindowFwdOp,
+    GqaSlidingWindowVarlenFwdOp,
+    GroupedQueryAttentionBwdOp,
+    GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
+    GroupedQueryAttentionDecodeWithKVCacheFwdOp,
+    GroupedQueryAttentionFwdOp,
     MeanPoolingForwardOp,
+    MHCPostOp,
+    MHCPreOp,
+    MultiHeadAttentionBwdOp,
+    MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
+    MultiHeadAttentionDecodeWithKVCacheFwdOp,
+    MultiHeadAttentionFwdOp,
+    MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
     NSACmpFwdVarlenOp,
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .deltanet_chunkwise import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
+from .convolution import Conv1dBiasFwdOp, Conv1dFwdOp, Conv2dOp, Conv3dOp
+from .da_cumsum import DaCumsumFwdOp
+from .deltanet import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
 from .deltanet_recurrence import DeltaNetDecodeOp
 from .dropout import DropoutOp
 from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2COp
-from .fp8_lighting_indexer import Fp8LightingIndexerOp
-from .fp8_quant import Fp8QuantOp
-from .gated_deltanet_chunkwise import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
+from .fp8_lighting_indexer import FP8LightingIndexerOp
+from .fp8_quant import FP8QuantOp
+from .gated_deltanet import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
 from .gated_deltanet_recurrence import GatedDeltaNetDecodeOp
 from .gemm import GemmOp
-from .gla_chunkwise import GLABwdOp, GLAFwdOp
+from .gla import GLABwdOp, GLAFwdOp
 from .gla_recurrence import GLADecodeOp
-from .gqa import GroupQueryAttentionBwdOp, GroupQueryAttentionFwdOp
-from .gqa_decode import GroupQueryAttentionDecodeWithKVCacheOp
-from .gqa_decode_paged import GroupQueryAttentionDecodePagedWithKVCacheOp
-from .gqa_sliding_window_fwd import GqaSlidingWindowFwdOp
-from .gqa_sliding_window_varlen_fwd import GqaSlidingWindowVarlenFwdOp
 from .grouped_gemm import GroupedGemmOp
-from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
-from .mha_decode import MultiHeadAttentionDecodeWithKVCacheOp
-from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheOp
-from .mhc_post import ManifoldConstrainedHyperConnectionPostOp
-from .mhc_pre import ManifoldConstrainedHyperConnectionPreOp
-from .moe import MoePermuteAlignOp
+from .moe import MoePermuteAlignFwdOp
 from .norm import (
-    AdaLayerNormOp,
-    AdaLayerNormZeroOp,
+    AdaLayerNormFwdOp,
+    AdaLayerNormZeroFwdOp,
     BatchNormBwdOp,
     BatchNormFwdOp,
-    FusedAddLayerNormOp,
-    FusedAddRmsNormOp,
-    GroupNormOp,
-    InstanceNormOp,
-    LayerNormOp,
-    RmsNormOp,
+    FusedAddLayerNormFwdOp,
+    FusedAddRMSNormFwdOp,
+    GroupNormFwdOp,
+    InstanceNormFwdOp,
+    LayerNormFwdOp,
+    RMSNormFwdOp,
 )
 from .op import Op
+from .pool import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
 from .reduction import (
-    AllOp,
-    AmaxOp,  # ReduceMaxOp
-    AminOp,  # ReduceMinOp
-    AnyOp,
-    ArgmaxOp,
-    ArgminOp,
-    CountNonzeroOp,
+    AllFwdOp,
+    AmaxFwdOp,  # ReduceMaxOp
+    AminFwdOp,  # ReduceMinOp
+    AnyFwdOp,
+    ArgmaxFwdOp,
+    ArgminFwdOp,
+    CountNonzeroFwdOp,
     # CummaxOp,
     # CumminOp,
-    CumprodOp,
-    CumsumOp,
-    InfNormOp,
-    L1NormOp,
-    L2NormOp,
-    LogSoftmaxOp,
-    LogSumExpOp,
-    MeanOp,  # ReduceMeanOp
-    ProdOp,  # ReduceProdOp
-    SoftmaxOp,
-    StdOp,
-    SumOp,  # ReduceSumOp
-    VarMeanOp,
-    VarOp,
+    CumprodFwdOp,
+    CumsumFwdOp,
+    InfNormFwdOp,
+    L1NormFwdOp,
+    L2NormFwdOp,
+    LogSoftmaxFwdOp,
+    LogSumExpFwdOp,
+    MeanFwdOp,  # ReduceMeanOp
+    ProdFwdOp,  # ReduceProdOp
+    SoftmaxFwdOp,
+    StdFwdOp,
+    SumFwdOp,  # ReduceSumOp
+    VarFwdOp,
+    VarMeanFwdOp,
 )
 from .rope import (
     RopeLlama31Op,
@@ -84,10 +82,10 @@ from .rope import (
     RopeNonNeoxOp,
     RopeYarnOp,
 )
-from .ssd_chunk_scan_fwd import SsdChunkScanFwdOp
-from .ssd_chunk_state_fwd import SsdChunkStateFwdOp
+from .ssd_chunk_scan import SsdChunkScanFwdOp
+from .ssd_chunk_state import SsdChunkStateFwdOp
 from .ssd_decode import SsdDecodeOp
-from .ssd_state_passing_fwd import SsdStatePassingFwdOp
+from .ssd_state_passing import SsdStatePassingFwdOp
 from .topk_selector import TopkSelectorOp
 
 __all__ = [
@@ -95,21 +93,22 @@ __all__ = [
     "AvgPool1dOp",
     "AvgPool2dOp",
     "AvgPool3dOp",
-    "AdaLayerNormOp",
-    "AdaLayerNormZeroOp",
+    "AdaLayerNormFwdOp",
+    "AdaLayerNormZeroFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
-    "Conv1dOp",
+    "Conv1dBiasFwdOp",
+    "Conv1dFwdOp",
     "Conv2dOp",
     "Conv3dOp",
     "DaCumsumFwdOp",
-    "DeepSeekSparseAttentionDecodeWithKVCacheOp",
+    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "DropoutOp",
     "FFTC2COp",
-    "Fp8LightingIndexerOp",
-    "Fp8QuantOp",
-    "FusedAddLayerNormOp",
-    "FusedAddRmsNormOp",
+    "FP8LightingIndexerOp",
+    "FP8QuantOp",
+    "FusedAddLayerNormFwdOp",
+    "FusedAddRMSNormFwdOp",
     "FusedGatedOp",
     "DeltaNetBwdOp",
     "DeltaNetDecodeOp",
@@ -125,28 +124,28 @@ __all__ = [
     "GemmOp",
     "GqaSlidingWindowFwdOp",
     "GqaSlidingWindowVarlenFwdOp",
-    "GroupQueryAttentionBwdOp",
-    "GroupQueryAttentionDecodePagedWithKVCacheOp",
-    "GroupQueryAttentionDecodeWithKVCacheOp",
-    "GroupQueryAttentionFwdOp",
-    "GroupNormOp",
+    "GroupedQueryAttentionBwdOp",
+    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
+    "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
+    "GroupedQueryAttentionFwdOp",
+    "GroupNormFwdOp",
     "GroupedGemmOp",
-    "InstanceNormOp",
-    "LayerNormOp",
-    "ManifoldConstrainedHyperConnectionPostOp",
-    "ManifoldConstrainedHyperConnectionPreOp",
+    "InstanceNormFwdOp",
+    "LayerNormFwdOp",
+    "MHCPostOp",
+    "MHCPreOp",
     "MeanPoolingForwardOp",
     "MultiHeadAttentionBwdOp",
-    "MultiHeadAttentionDecodePagedWithKVCacheOp",
-    "MultiHeadAttentionDecodeWithKVCacheOp",
+    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
+    "MultiHeadAttentionDecodeWithKVCacheFwdOp",
     "MultiHeadAttentionFwdOp",
-    "MultiHeadLatentAttentionDecodeWithKVCacheOp",
+    "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
     "NSACmpFwdVarlenOp",
     "NSAFwdVarlenOp",
     "NSATopkVarlenOp",
     "Op",
-    "MoePermuteAlignOp",
-    "RmsNormOp",
+    "MoePermuteAlignFwdOp",
+    "RMSNormFwdOp",
     "SsdChunkScanFwdOp",
     "SsdChunkStateFwdOp",
     "SsdDecodeOp",
@@ -159,32 +158,32 @@ __all__ = [
     "UnaryOp",
     "TopkSelectorOp",
     # --- Reduction ops (uncomment as sub-category PRs land) ---
-    "AllOp",
-    "AmaxOp",
-    "AminOp",
-    "AnyOp",
-    "ArgmaxOp",
-    "ArgminOp",
-    "CountNonzeroOp",
+    "AllFwdOp",
+    "AmaxFwdOp",
+    "AminFwdOp",
+    "AnyFwdOp",
+    "ArgmaxFwdOp",
+    "ArgminFwdOp",
+    "CountNonzeroFwdOp",
     # "CummaxOp",
     # "CumminOp",
-    "CumprodOp",
-    "CumsumOp",
-    "InfNormOp",
-    "L1NormOp",
-    "L2NormOp",
-    "LogSoftmaxOp",
-    "LogSumExpOp",
-    "MeanOp",
-    "ProdOp",
+    "CumprodFwdOp",
+    "CumsumFwdOp",
+    "InfNormFwdOp",
+    "L1NormFwdOp",
+    "L2NormFwdOp",
+    "LogSoftmaxFwdOp",
+    "LogSumExpFwdOp",
+    "MeanFwdOp",
+    "ProdFwdOp",
     # "ReduceMaxOp",
     # "ReduceMeanOp",
     # "ReduceMinOp",
     # "ReduceProdOp",
     # "ReduceSumOp",
-    "SoftmaxOp",
-    "StdOp",
-    "SumOp",
-    "VarMeanOp",
-    "VarOp",
+    "SoftmaxFwdOp",
+    "StdFwdOp",
+    "SumFwdOp",
+    "VarMeanFwdOp",
+    "VarFwdOp",
 ]

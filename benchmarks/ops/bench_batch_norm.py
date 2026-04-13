@@ -17,8 +17,8 @@ from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.ops.batch_norm import BatchNormBwdTest, BatchNormFwdTest
 
-_FWD_OP_NAME = "batchnorm_fwd"
-_BWD_OP_NAME = "batchnorm_bwd"
+_FWD_OP_NAME = "BatchNormFwdOp"
+_BWD_OP_NAME = "BatchNormBwdOp"
 
 # ---------------------------------------------------------------------------
 # Benchmark classes

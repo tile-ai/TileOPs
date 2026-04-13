@@ -1,4 +1,4 @@
-"""Benchmark for MoePermutePaddedOp.
+"""Benchmark for MoePermutePaddedFwdOp.
 
 Baselines:
   - PyTorch reference: vectorized counting sort + gather.
@@ -31,10 +31,10 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.moe import MoePermutePaddedOp
+from tileops.ops.moe import MoePermutePaddedFwdOp
 from workloads.ops.moe_permute import MoePermuteTest
 
-_OP_NAME = "moe_permute_padded"
+_OP_NAME = "MoePermutePaddedFwdOp"
 
 # ---------------------------------------------------------------------------
 # Benchmark class
@@ -102,7 +102,7 @@ def test_moe_permute_bench(
     hidden_states, topk_ids = test.gen_inputs()
 
     # TileOPs
-    op = MoePermutePaddedOp(total_tokens, top_k, num_experts, hidden_size, dtype)
+    op = MoePermutePaddedFwdOp(total_tokens, top_k, num_experts, hidden_size, dtype)
     op(hidden_states, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()
 

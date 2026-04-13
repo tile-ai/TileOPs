@@ -14,8 +14,8 @@ Each stage declares **OWNS** / **MUST NOT** / **MAY READ** in its [domain rule f
 
 Source of truth for op interfaces. Human-reviewed, separate PR.
 
-- **OWNS**: op signatures, dtypes, workload shapes, roofline formulas, status
-- **MUST NOT**: contain implementation details or test logic
+- **OWNS**: op signatures, dtypes, workload shapes, roofline formulas, status, kernel_map (dispatch registration table)
+- **MUST NOT**: contain kernel internals, dispatch strategy, or test logic
 - **MAY READ**: PyTorch public API (to match signatures)
 
 → Rules: [manifest-spec.md](../.claude/domain-rules/manifest-spec.md) | Guide: [testing.md §Writing a Test](testing.md#writing-a-test)
@@ -59,9 +59,15 @@ Shared input-definition layer — not a development stage. Test stage OWNS it (Q
 **Must not contain**: ref_program, check/tolerance logic, calculate_flops/memory, benchmark baselines. Reason: prevents shared oracle surface between test correctness and benchmark baselines.
 
 ```
-WorkloadBase (workloads/base.py)        # gen_inputs() only
+WorkloadBase (workloads/base.py)        # gen_inputs() only — default implementation
   ├── TestBase (tests/test_base.py)     # adds ref_program(), check()
-  └── BenchmarkBase (benchmarks/)       # composes WorkloadBase, adds profiling
+  └── concrete subclasses typically define shape + dtype
+
+# Public benchmark interface (capability protocols)
+ShapeDtypeWorkload                      # shape + dtype metadata
+InputGeneratingWorkload                 # gen_inputs()
+BenchmarkWorkload                       # both (when a workload defines shape, dtype, gen_inputs)
+BenchmarkBase[W] (benchmarks/)          # generic over workload type
 ```
 
 → Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)

@@ -1,4 +1,4 @@
-"""Op-level tests for MoeUnpermuteOp (cutlass path).
+"""Op-level tests for MoeUnpermuteFwdOp (cutlass path).
 
 Verifies:
   - output: correct weighted scatter-add using fwd_idx mapping
@@ -7,7 +7,7 @@ Verifies:
   - skewed distribution (all tokens to expert 0)
 
 Interface note:
-  MoeUnpermuteOp now accepts mm2_pad [padded_batch_sum, H] and
+  MoeUnpermuteFwdOp now accepts mm2_pad [padded_batch_sum, H] and
   fwd_idx [T*K] (forward mapping: flat_idx → padded slot).
   Tests use padded_batch_sum = T*K (no actual padding) for simplicity.
 """
@@ -17,7 +17,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.moe import MoeUnpermuteOp
+from tileops.ops.moe import MoeUnpermuteFwdOp
 from workloads.ops.moe_unpermute import MoeUnpermuteTest as _MoeUnpermuteTestWorkload
 
 
@@ -85,7 +85,7 @@ class MoeUnpermuteFixture(FixtureBase):
 @MoeUnpermuteFixture
 def test_moe_unpermute_op(total_tokens, top_k, hidden_size, dtype):
     test = MoeUnpermuteTest(total_tokens, top_k, hidden_size, dtype)
-    op = MoeUnpermuteOp(total_tokens, top_k, hidden_size, dtype,
+    op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden_size, dtype,
                         padded_batch_sum=test.padded_batch_sum)
     mm2_pad, fwd_idx, topk_weights = test.gen_inputs()
 
@@ -108,7 +108,7 @@ def test_moe_unpermute_skewed():
     fwd_idx = torch.arange(numel, dtype=torch.int32, device="cuda") % K
     topk_weights = torch.rand(T, K, dtype=torch.float32, device="cuda")
 
-    op = MoeUnpermuteOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
     output = op(mm2_pad, fwd_idx, topk_weights)
     output_ref = _ref_moe_unpermute(mm2_pad, fwd_idx, topk_weights)
 

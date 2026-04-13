@@ -3,6 +3,7 @@ from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from .permute_align import MoePermuteAlignKernel
 from .permute_nopad import MoePermuteNopadKernel
 from .permute_padded import MoePermutePaddedKernel
+from .shared_expert_mlp import SharedExpertMLPKernel
 from .unpermute import MoeUnpermuteKernel
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "MoePermuteAlignKernel",
     "MoePermutePaddedKernel",
     "MoePermuteNopadKernel",
+    "SharedExpertMLPKernel",
     "MoeUnpermuteKernel",
 ]

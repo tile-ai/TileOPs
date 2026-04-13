@@ -3,12 +3,66 @@ import subprocess
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Callable, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    Optional,
+    Protocol,
+    Tuple,
+    TypeVar,
+    runtime_checkable,
+)
 
+import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
-from workloads.base import WorkloadBase
+from tileops.manifest import eval_roofline, load_workloads
+
+# ---------------------------------------------------------------------------
+# Benchmark capability protocols
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class ShapeDtypeWorkload(Protocol):
+    """Structural type for workloads that carry shape and dtype metadata.
+
+    Any object with ``shape`` and ``dtype`` satisfies this protocol.
+    Used by helper functions like ``roofline_vars()`` that only need
+    tensor metadata, not input generation capability.
+    """
+
+    shape: tuple[int, ...]
+    dtype: torch.dtype
+
+
+@runtime_checkable
+class InputGeneratingWorkload(Protocol):
+    """Structural type for workloads that can generate benchmark inputs."""
+
+    def gen_inputs(self) -> Any: ...
+
+
+@runtime_checkable
+class BenchmarkWorkload(ShapeDtypeWorkload, InputGeneratingWorkload, Protocol):
+    """Full benchmark workload: shape/dtype metadata + input generation.
+
+    This is the standard contract for benchmark workloads that need both
+    roofline metadata extraction and input tensor generation.
+    Workloads satisfy this protocol when they define ``shape`` and ``dtype``
+    metadata in addition to implementing ``gen_inputs()``.
+    """
+
+    ...
+
+
+# Backward-compatible alias
+RooflineWorkload = ShapeDtypeWorkload
+
+W = TypeVar("W")
+
 
 _logger = logging.getLogger("tileops.bench")
 
@@ -208,14 +262,17 @@ def _get_env_metadata() -> list[str]:
     return lines
 
 
-class BenchmarkBase(ABC):
+class BenchmarkBase(Generic[W], ABC):
     """Abstract base class for op benchmarking.
 
-    Takes a WorkloadBase instance to share gen_inputs().
+    Generic over workload type so subclasses can declare the exact
+    capability they need.  ``WorkloadBase`` remains the typical in-repo
+    implementation, but the public contract is the type parameter.
+
     Subclass must implement calculate_flops() and calculate_memory().
     """
 
-    def __init__(self, workload: WorkloadBase):
+    def __init__(self, workload: W):
         self.workload = workload
 
     @abstractmethod
@@ -260,6 +317,131 @@ class BenchmarkBase(ABC):
         return result
 
 
+# ---------------------------------------------------------------------------
+# Manifest-driven benchmark helpers
+# ---------------------------------------------------------------------------
+
+
+def roofline_vars(workload: ShapeDtypeWorkload) -> dict[str, int | float]:
+    """Extract roofline variables from a workload (shape + dtype -> M, N, elem_bytes).
+
+    Standard extraction for reduction-family ops where the manifest roofline
+    expressions use ``M``, ``N``, and ``elem_bytes``.  Ops with non-standard
+    variable requirements should override
+    :meth:`ManifestBenchmark._roofline_vars` instead of using this directly.
+    """
+    elem_bytes = torch.tensor([], dtype=workload.dtype).element_size()
+    N = workload.shape[-1]
+    M = 1
+    for s in workload.shape[:-1]:
+        M *= s
+    return dict(M=M, N=N, elem_bytes=elem_bytes)
+
+
+def workloads_to_params(op_name: str) -> list:
+    """Convert manifest workload dicts for *op_name* to pytest params: (shape, dtype).
+
+    Returns a list of ``pytest.param(shape, dtype, id=...)`` suitable for
+    ``@pytest.mark.parametrize("shape, dtype", ...)``.
+    """
+    workloads = load_workloads(op_name)
+    params = []
+    for w in workloads:
+        shape = tuple(w["x_shape"])
+        label = w.get("label", "x".join(str(s) for s in shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(
+                shape, dtype,
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
+
+
+class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
+    """Generic benchmark that derives FLOP/memory counts from ops_manifest.yaml.
+
+    Accepts an op name and any workload satisfying :class:`ShapeDtypeWorkload`
+    (i.e. any object with ``shape`` and ``dtype``).  Calls ``eval_roofline()``
+    with auto-extracted roofline vars and caches the result.
+
+    Subclass and override ``_roofline_vars()`` for ops with non-standard
+    variable extraction.
+
+    Usage::
+
+        bm = ManifestBenchmark("SoftmaxFwdOp", workload)
+        result = bm.profile(op, *inputs)
+    """
+
+    def __init__(self, op_name: str, workload: ShapeDtypeWorkload):
+        super().__init__(workload)
+        self._op_name = op_name
+        self._roofline_cache: Optional[tuple[float, float]] = None
+
+    def _roofline_vars(self) -> dict:
+        """Extract roofline variable bindings from the workload.
+
+        Override this for ops whose manifest roofline expressions require
+        variables beyond the standard ``M``, ``N``, ``elem_bytes``.
+        """
+        return roofline_vars(self.workload)
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = eval_roofline(
+                self._op_name, **self._roofline_vars())
+        return self._roofline_cache
+
+    def calculate_flops(self) -> Optional[float]:
+        return self._get_roofline()[0]
+
+    def calculate_memory(self) -> Optional[float]:
+        return self._get_roofline()[1]
+
+
+def _extract_op_config(op: object) -> Optional[dict]:
+    """Return the kernel config for an Op instance, or None if unavailable.
+
+    Handles the three Op patterns currently used in tileops:
+
+      1. **Eager-init** (e.g. ``GemmOp``): ``op.kernel`` is a Kernel
+         instance set in ``__init__``.
+      2. **Lazy with dummy kernel** (e.g. ``FFTC2COp``): ``op.kernel`` is a
+         default Kernel and ``op._kernel_cache`` may hold others.
+      3. **Pure lazy cache** (e.g. ``_SoftmaxBaseOp`` and the spec-conformant
+         reduction ops): ``op._kernel_cache`` is the only source; ``op.kernel``
+         is unset.
+
+    A direct ``op.config`` attribute (legacy / explicit override) takes
+    precedence over kernel introspection.
+    """
+    op_config = getattr(op, "config", None)
+    if op_config:
+        return op_config
+
+    kernel = getattr(op, "kernel", None)
+    op_config = getattr(kernel, "config", None) if kernel is not None else None
+    if op_config:
+        return op_config
+
+    # Pure lazy-cache pattern: pick any cached kernel's config. All cached
+    # kernels for a given op share dtype/op_kind, so taking the first is
+    # sufficient for the benchmark report (which records one entry per call).
+    cache = getattr(op, "_kernel_cache", None)
+    if cache:
+        try:
+            first_kernel = next(iter(cache.values()))
+        except StopIteration:
+            first_kernel = None
+        if first_kernel is not None:
+            op_config = getattr(first_kernel, "config", None)
+            if op_config:
+                return op_config
+
+    return None
+
+
 class BenchmarkReport:
     """Collects benchmark results and dumps a markdown report.
 
@@ -286,7 +468,7 @@ class BenchmarkReport:
         else:
             name = op_or_name.__class__.__name__
             op_module = op_or_name.__class__.__module__
-            op_config = getattr(op_or_name, "config", None)
+            op_config = _extract_op_config(op_or_name)
 
         # Filter params to only include serializable benchmark parameters
         filtered_params = {
@@ -364,7 +546,7 @@ class BenchmarkReport:
                     row = [str(entry["params"].get(k, "")) for k in param_keys]
                     for rk in result_keys:
                         val = entry["result"].get(rk)
-                        row.append(f"{val:.2f}" if val is not None else "N/A")
+                        row.append(f"{val:.4f}" if val is not None else "N/A")
                     if has_config:
                         cfg = entry.get("config")
                         row.append(str(cfg) if cfg else "")

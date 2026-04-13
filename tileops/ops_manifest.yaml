@@ -3,7 +3,8 @@
 # Schema
 # ------
 # ops:
-#   <op_name>:                       # Unique op identifier (e.g. rmsnorm_fwd)
+#   <OpName>:                        # PascalCase class name (e.g. RMSNormFwdOp)
+#     ref_api: <str>                 # Required: fully qualified PyTorch API equivalent, or "none"
 #     family: <str>                  # Op family for grouping (e.g. norm, attention)
 #     status: <str>                  # Implementation status: "implemented" or "spec-only"
 #     signature:
@@ -26,8 +27,10 @@
 #       bench:  <path>                       # Path to benchmark file
 #
 # Notes:
+# - Op keys are PascalCase class names in {Name}{Direction}Op format.
+# - ref_api is required: fully qualified PyTorch API equivalent, or "none" if none exists.
 # - Signature uses dict (name as key), not list. See docs/manifest.md.
-# - Backward ops are registered as independent entries (e.g. batchnorm_bwd).
+# - Backward ops are registered as independent entries (e.g. BatchNormBwdOp).
 # - shape_rules use Python expression syntax and are optional.
 # - roofline supports two modes: inline expressions (flops/bytes) or func.
 # - Tensor shape is intentionally unconstrained; shape relationships go in shape_rules.
@@ -38,8 +41,9 @@ ops:
   # norm — row-norm ops (operate along last dim, shape: [*leading, N])
   # ---------------------------------------------------------------------------
 
-  rmsnorm_fwd:
-    family: norm
+  RMSNormFwdOp:
+    ref_api: "torch.nn.functional.rms_norm"
+    family: normalization
     status: spec-only  # impl lacks dim param; fix in follow-up PR
 
     signature:
@@ -80,8 +84,9 @@ ops:
       test: tests/ops/test_rms_norm.py
       bench: benchmarks/ops/bench_rms_norm.py
 
-  layernorm_fwd:
-    family: norm
+  LayerNormFwdOp:
+    ref_api: "torch.nn.functional.layer_norm"
+    family: normalization
     status: implemented
 
     signature:
@@ -120,12 +125,15 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/layer_norm.py
+      kernel_map:
+        layer_norm: LayerNormKernel
       op: tileops/ops/norm/layer_norm.py
       test: tests/ops/test_layer_norm.py
       bench: benchmarks/ops/bench_layer_norm.py
 
-  ada_layernorm_fwd:
-    family: norm
+  AdaLayerNormFwdOp:
+    ref_api: "none"
+    family: normalization
     status: implemented
 
     signature:
@@ -159,13 +167,16 @@ ops:
       bytes: "4 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/ada_layer_norm/fwd.py
+      kernel: tileops/kernels/norm/ada_layer_norm.py
+      kernel_map:
+        ada_layer_norm: AdaLayerNormKernel
       op: tileops/ops/norm/ada_layer_norm.py
       test: tests/ops/test_ada_layer_norm.py
       bench: benchmarks/ops/bench_ada_layer_norm.py
 
-  ada_layernorm_zero_fwd:
-    family: norm
+  AdaLayerNormZeroFwdOp:
+    ref_api: "none"
+    family: normalization
     status: implemented
 
     signature:
@@ -201,13 +212,16 @@ ops:
       bytes: "5 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/ada_layer_norm_zero/__init__.py
+      kernel: tileops/kernels/norm/ada_layer_norm_zero.py
+      kernel_map:
+        ada_layer_norm: AdaLayerNormKernel
       op: tileops/ops/norm/ada_layer_norm_zero.py
       test: tests/ops/test_ada_layer_norm_zero.py
       bench: benchmarks/ops/bench_ada_layer_norm.py
 
-  fused_add_layernorm_fwd:
-    family: norm
+  FusedAddLayerNormFwdOp:
+    ref_api: "none"
+    family: normalization
     status: implemented
 
     signature:
@@ -246,13 +260,16 @@ ops:
       bytes: "(4 * M * N + 2 * N) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/fused_add_norm/fwd.py
+      kernel: tileops/kernels/norm/fused_add_norm.py
+      kernel_map:
+        fused_add_layer_norm: FusedAddLayerNormKernel
       op: tileops/ops/norm/fused_add_layer_norm.py
       test: tests/ops/test_fused_add_layer_norm.py
       bench: benchmarks/ops/bench_fused_add_layer_norm.py
 
-  fused_add_rmsnorm_fwd:
-    family: norm
+  FusedAddRMSNormFwdOp:
+    ref_api: "none"
+    family: normalization
     status: implemented
 
     signature:
@@ -292,7 +309,9 @@ ops:
       bytes: "(4 * M * N + N) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/norm/fused_add_norm/fwd.py
+      kernel: tileops/kernels/norm/fused_add_norm.py
+      kernel_map:
+        fused_add_rms_norm: FusedAddRmsNormKernel
       op: tileops/ops/norm/fused_add_rmsnorm.py
       test: tests/ops/test_fused_add_rmsnorm.py
       bench: benchmarks/ops/bench_fused_add_rmsnorm.py
@@ -301,8 +320,9 @@ ops:
   # norm — spatial-norm ops (operate over spatial/channel dims, shape: [N, C, *spatial])
   # ---------------------------------------------------------------------------
 
-  batchnorm_fwd:
-    family: norm
+  BatchNormFwdOp:
+    ref_api: "torch.nn.functional.batch_norm"
+    family: normalization
     status: implemented
 
     signature:
@@ -349,12 +369,16 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/batch_norm.py
+      kernel_map:
+        fwd_train_kernel: BatchNormFwdTrainKernel
+        fwd_infer_kernel: BatchNormFwdInferKernel
       op: tileops/ops/norm/batch_norm.py
       test: tests/ops/test_batch_norm.py
       bench: benchmarks/ops/bench_batch_norm.py
 
-  batchnorm_bwd:
-    family: norm
+  BatchNormBwdOp:
+    ref_api: "torch.nn.functional.batch_norm"
+    family: normalization
     status: implemented
 
     signature:
@@ -398,12 +422,15 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/batch_norm.py
+      kernel_map:
+        bwd_kernel: BatchNormBwdKernel
       op: tileops/ops/norm/batch_norm.py
       test: tests/ops/test_batch_norm.py
       bench: benchmarks/ops/bench_batch_norm.py
 
-  groupnorm_fwd:
-    family: norm
+  GroupNormFwdOp:
+    ref_api: "torch.nn.functional.group_norm"
+    family: normalization
     status: spec-only  # impl uses G instead of groups; fix in follow-up PR
 
     signature:
@@ -444,8 +471,9 @@ ops:
       test: tests/ops/test_group_norm.py
       bench: benchmarks/ops/bench_group_norm.py
 
-  instancenorm_fwd:
-    family: norm
+  InstanceNormFwdOp:
+    ref_api: "torch.nn.functional.instance_norm"
+    family: normalization
     status: implemented
 
     signature:
@@ -480,6 +508,8 @@ ops:
 
     source:
       kernel: tileops/kernels/norm/group_norm.py
+      kernel_map:
+        group_norm: GroupNormKernel
       op: tileops/ops/norm/instance_norm.py
       test: tests/ops/test_instance_norm.py
       bench: benchmarks/ops/bench_instance_norm.py
@@ -488,7 +518,8 @@ ops:
   # attention — multi-head / grouped-query attention (prefill, decode, paged)
   # ---------------------------------------------------------------------------
 
-  mha_fwd:
+  MultiHeadAttentionFwdOp:
+    ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
 
@@ -519,12 +550,15 @@ ops:
       func: "tileops.perf.formulas.mha_fwd_roofline"
 
     source:
-      kernel: tileops/kernels/flash_attn/fwd.py
-      op: tileops/ops/mha.py
-      test: tests/ops/test_mha.py
-      bench: benchmarks/ops/bench_mha.py
+      kernel: tileops/kernels/attention/gqa_fwd.py
+      kernel_map:
+        mha_fwd_kernel: MhaFwdKernel
+      op: tileops/ops/attention/mha.py
+      test: tests/ops/attention/test_mha.py
+      bench: benchmarks/ops/attention/bench_mha.py
 
-  mha_bwd:
+  MultiHeadAttentionBwdOp:
+    ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
 
@@ -565,12 +599,17 @@ ops:
       func: "tileops.perf.formulas.mha_bwd_roofline"
 
     source:
-      kernel: tileops/kernels/flash_attn/bwd.py
-      op: tileops/ops/mha.py
-      test: tests/ops/test_mha.py
-      bench: benchmarks/ops/bench_mha.py
+      kernel: tileops/kernels/attention/gqa_bwd.py
+      kernel_map:
+        mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+        mha_bwd_kernel: MhaBwdKernel
+        mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
+      op: tileops/ops/attention/mha.py
+      test: tests/ops/attention/test_mha.py
+      bench: benchmarks/ops/attention/bench_mha.py
 
-  gqa_fwd:
+  GroupedQueryAttentionFwdOp:
+    ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
 
@@ -602,12 +641,15 @@ ops:
       func: "tileops.perf.formulas.gqa_fwd_roofline"
 
     source:
-      kernel: tileops/kernels/flash_attn/fwd.py
-      op: tileops/ops/gqa.py
-      test: tests/ops/test_gqa.py
-      bench: benchmarks/ops/bench_gqa.py
+      kernel: tileops/kernels/attention/gqa_fwd.py
+      kernel_map:
+        gqa_fwd_kernel: GqaFwdKernel
+      op: tileops/ops/attention/gqa.py
+      test: tests/ops/attention/test_gqa.py
+      bench: benchmarks/ops/attention/bench_gqa.py
 
-  gqa_bwd:
+  GroupedQueryAttentionBwdOp:
+    ref_api: "torch.nn.functional.scaled_dot_product_attention"
     family: attention
     status: implemented
 
@@ -649,16 +691,21 @@ ops:
       func: "tileops.perf.formulas.gqa_bwd_roofline"
 
     source:
-      kernel: tileops/kernels/flash_attn/bwd.py
-      op: tileops/ops/gqa.py
-      test: tests/ops/test_gqa.py
-      bench: benchmarks/ops/bench_gqa.py
+      kernel: tileops/kernels/attention/gqa_bwd.py
+      kernel_map:
+        gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+        gqa_bwd_kernel: GqaBwdKernel
+        gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
+      op: tileops/ops/attention/gqa.py
+      test: tests/ops/attention/test_gqa.py
+      bench: benchmarks/ops/attention/bench_gqa.py
 
   # ---------------------------------------------------------------------------
   # attention — decode (single-query against KV cache)
   # ---------------------------------------------------------------------------
 
-  mha_decode:
+  MultiHeadAttentionDecodeWithKVCacheFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -690,12 +737,15 @@ ops:
       func: "tileops.perf.formulas.mha_decode_roofline"
 
     source:
-      kernel: tileops/kernels/flash_decode/mha_decode.py
-      op: tileops/ops/mha_decode.py
-      test: tests/ops/test_mha_decode.py
-      bench: benchmarks/ops/bench_mha_decode.py
+      kernel: tileops/kernels/attention/mha_decode.py
+      kernel_map:
+        mha_decode_kernel: MhaDecodeKernel
+      op: tileops/ops/attention/mha_decode.py
+      test: tests/ops/attention/test_mha_decode.py
+      bench: benchmarks/ops/attention/bench_mha_decode.py
 
-  mha_decode_paged:
+  MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -741,12 +791,15 @@ ops:
       func: "tileops.perf.formulas.mha_decode_paged_roofline"
 
     source:
-      kernel: tileops/kernels/flash_decode/mha_decode_paged.py
-      op: tileops/ops/mha_decode_paged.py
-      test: tests/ops/test_mha_decode_paged.py
-      bench: benchmarks/ops/bench_mha_decode_paged.py
+      kernel: tileops/kernels/attention/mha_decode_paged.py
+      kernel_map:
+        mha_decode_paged_kernel: MhaDecodePagedKernel
+      op: tileops/ops/attention/mha_decode_paged.py
+      test: tests/ops/attention/test_mha_decode_paged.py
+      bench: benchmarks/ops/attention/bench_mha_decode_paged.py
 
-  gqa_decode:
+  GroupedQueryAttentionDecodeWithKVCacheFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -779,12 +832,15 @@ ops:
       func: "tileops.perf.formulas.gqa_decode_roofline"
 
     source:
-      kernel: tileops/kernels/flash_decode/gqa_decode.py
-      op: tileops/ops/gqa_decode.py
-      test: tests/ops/test_gqa_decode.py
-      bench: benchmarks/ops/bench_gqa_decode.py
+      kernel: tileops/kernels/attention/gqa_decode.py
+      kernel_map:
+        gqa_decode_kernel: GqaDecodeKernel
+      op: tileops/ops/attention/gqa_decode.py
+      test: tests/ops/attention/test_gqa_decode.py
+      bench: benchmarks/ops/attention/bench_gqa_decode.py
 
-  gqa_decode_paged:
+  GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -830,16 +886,19 @@ ops:
       func: "tileops.perf.formulas.gqa_decode_paged_roofline"
 
     source:
-      kernel: tileops/kernels/flash_decode/gqa_decode_paged.py
-      op: tileops/ops/gqa_decode_paged.py
-      test: tests/ops/test_gqa_decode_paged.py
-      bench: benchmarks/ops/bench_gqa_decode_paged.py
+      kernel: tileops/kernels/attention/gqa_decode_paged.py
+      kernel_map:
+        gqa_decode_paged_kernel: GqaDecodePagedKernel
+      op: tileops/ops/attention/gqa_decode_paged.py
+      test: tests/ops/attention/test_gqa_decode_paged.py
+      bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
 
   # ---------------------------------------------------------------------------
   # attention — sliding window
   # ---------------------------------------------------------------------------
 
-  gqa_sliding_window_fwd:
+  GqaSlidingWindowFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -873,12 +932,15 @@ ops:
       func: "tileops.perf.formulas.gqa_sliding_window_fwd_roofline"
 
     source:
-      kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_fwd.py
-      op: tileops/ops/gqa_sliding_window_fwd.py
-      test: tests/ops/test_gqa_sliding_window_fwd.py
-      bench: benchmarks/ops/bench_gqa_sliding_window_fwd.py
+      kernel: tileops/kernels/attention/gqa_sliding_window_fwd.py
+      kernel_map:
+        gqa_sliding_window_fwd: GqaSlidingWindowFwdKernel
+      op: tileops/ops/attention/gqa_sliding_window.py
+      test: tests/ops/attention/test_gqa_sliding_window.py
+      bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
 
-  gqa_sliding_window_varlen_fwd:
+  GqaSlidingWindowVarlenFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -917,16 +979,19 @@ ops:
       func: "tileops.perf.formulas.gqa_sliding_window_varlen_fwd_roofline"
 
     source:
-      kernel: tileops/kernels/deepseek_nsa/gqa_sliding_window_varlen_fwd.py
-      op: tileops/ops/gqa_sliding_window_varlen_fwd.py
-      test: tests/ops/test_gqa_sliding_window_varlen_fwd.py
-      bench: benchmarks/ops/bench_gqa_sliding_window_varlen_fwd.py
+      kernel: tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
+      kernel_map:
+        gqa_sliding_window_varlen_fwd: GqaSlidingWindowVarlenFwdKernel
+      op: tileops/ops/attention/gqa_sliding_window_varlen.py
+      test: tests/ops/attention/test_gqa_sliding_window_varlen.py
+      bench: benchmarks/ops/attention/bench_gqa_sliding_window_varlen.py
 
   # ---------------------------------------------------------------------------
-  # attention — DeepSeek MLA / DSA decode
+  # attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
   # ---------------------------------------------------------------------------
 
-  deepseek_mla_decode:
+  MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -961,12 +1026,15 @@ ops:
       func: "tileops.perf.formulas.deepseek_mla_decode_roofline"
 
     source:
-      kernel: tileops/kernels/deepseek_mla/deepseek_mla_decode.py
-      op: tileops/ops/deepseek_mla_decode.py
-      test: tests/ops/test_deepseek_mla_decode.py
-      bench: benchmarks/ops/bench_deepseek_mla_decode.py
+      kernel: tileops/kernels/attention/deepseek_mla_decode.py
+      kernel_map:
+        mla_decode_kernel: MlaDecodeKernel
+      op: tileops/ops/attention/deepseek_mla_decode.py
+      test: tests/ops/attention/test_deepseek_mla_decode.py
+      bench: benchmarks/ops/attention/bench_deepseek_mla_decode.py
 
-  deepseek_dsa_decode:
+  DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
+    ref_api: "none"
     family: attention
     status: implemented
 
@@ -1002,14 +1070,17 @@ ops:
       func: "tileops.perf.formulas.deepseek_dsa_decode_roofline"
 
     source:
-      kernel: tileops/kernels/deepseek_mla/deepseek_dsa_decode.py
-      op: tileops/ops/deepseek_dsa_decode.py
-      test: tests/ops/test_deepseek_dsa_decode.py
-      bench: benchmarks/ops/bench_deepseek_dsa_decode.py
+      kernel: tileops/kernels/attention/deepseek_dsa_decode.py
+      kernel_map:
+        sparse_mla_kernel: SparseMlaKernel
+      op: tileops/ops/attention/deepseek_dsa_decode.py
+      test: tests/ops/attention/test_deepseek_dsa_decode.py
+      bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py
   # moe — Mixture-of-Experts ops
   # ---------------------------------------------------------------------------
 
-  moe_permute_padded:
+  MoePermutePaddedFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
 
@@ -1066,7 +1137,8 @@ ops:
       bench: benchmarks/ops/bench_moe_permute.py
       bench_manifest_driven: true
 
-  moe_permute_align:
+  MoePermuteAlignFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only  # impl uses numel instead of total_tokens/top_k; fix in follow-up PR
 
@@ -1115,7 +1187,8 @@ ops:
       bench: benchmarks/ops/bench_moe_permute_align.py
       bench_manifest_driven: true
 
-  moe_permute_nopad:
+  MoePermuteNopadFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
 
@@ -1172,7 +1245,8 @@ ops:
       bench: benchmarks/ops/bench_moe_permute_nopad.py
       bench_manifest_driven: true
 
-  moe_unpermute:
+  MoeUnpermuteFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
 
@@ -1215,7 +1289,8 @@ ops:
       bench: benchmarks/ops/bench_moe_unpermute.py
       bench_manifest_driven: true
 
-  moe_fused_experts:
+  FusedMoeExpertsFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only
 
@@ -1251,7 +1326,8 @@ ops:
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
 
-  moe_fused_experts_padded:
+  FusedMoeExpertsPaddedFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only
 
@@ -1287,7 +1363,8 @@ ops:
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
 
-  moe_grouped_gemm_nopad:
+  MoeGroupedGemmNopadFwdOp:
+    ref_api: "none"
     family: moe
     status: spec-only
 
@@ -1324,7 +1401,8 @@ ops:
   # reduction -- softmax family (output shape == input shape, no keepdim)
   # ---------------------------------------------------------------------------
 
-  softmax_fwd:
+  SoftmaxFwdOp:
+    ref_api: "torch.nn.functional.softmax"
     family: reduction
     status: implemented
 
@@ -1355,12 +1433,16 @@ ops:
       bytes: "2 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/softmax/softmax_fwd.py
+      kernel: tileops/kernels/reduction/softmax.py
+      kernel_map:
+        softmax_fwd: SoftmaxKernel
       op: tileops/ops/reduction/softmax.py
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
+      bench_manifest_driven: true
 
-  log_softmax_fwd:
+  LogSoftmaxFwdOp:
+    ref_api: "torch.nn.functional.log_softmax"
     family: reduction
     status: implemented
 
@@ -1391,14 +1473,18 @@ ops:
       bytes: "2 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/softmax/softmax_fwd.py
+      kernel: tileops/kernels/reduction/softmax.py
+      kernel_map:
+        softmax_fwd: SoftmaxKernel
       op: tileops/ops/reduction/log_softmax.py
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
+      bench_manifest_driven: true
 
-  logsumexp_fwd:
+  LogSumExpFwdOp:
+    ref_api: "torch.logsumexp"
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1429,18 +1515,22 @@ ops:
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/softmax/logsumexp_fwd.py
+      kernel: tileops/kernels/reduction/logsumexp.py
+      kernel_map:
+        logsumexp_fwd: LogSumExpKernel
       op: tileops/ops/reduction/logsumexp.py
       test: tests/ops/test_softmax.py
       bench: benchmarks/ops/bench_softmax.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- simple reductions (dim + keepdim)
   # ---------------------------------------------------------------------------
 
-  sum_fwd:
+  SumFwdOp:
+    ref_api: "torch.sum"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1448,11 +1538,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1462,22 +1552,24 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # N-1 additions per output element
       flops: "M * N"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
-  mean_fwd:
+  MeanFwdOp:
+    ref_api: "torch.mean"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1485,11 +1577,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1499,22 +1591,24 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # N additions + 1 division per output element
       flops: "M * (N + 1)"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
-  amax_fwd:
+  AmaxFwdOp:
+    ref_api: "torch.amax"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1522,11 +1616,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1536,22 +1630,24 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
-  amin_fwd:
+  AminFwdOp:
+    ref_api: "torch.amin"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1559,11 +1655,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1573,34 +1669,35 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
-  prod_fwd:
+  ProdFwdOp:
+    ref_api: "torch.prod"
     family: reduction
-    status: spec-only
-
+    status: spec-only  # dim=None not yet implemented; update when impl lands
     signature:
       inputs:
         x: {dtype: "float16 | bfloat16 | float32"}
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: int, default: -1}
+        dim: {type: "int | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - 1"
-        - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else 1)"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else [dim % x.ndim]) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1610,26 +1707,28 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-        N: "x.shape[dim % x.ndim]"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else [dim % x.ndim])))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else [dim % x.ndim]))"
       # N-1 multiplications per output element
       flops: "M * N"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- Welford reductions (correction + dim + keepdim)
   # ---------------------------------------------------------------------------
 
-  var_fwd:
+  VarFwdOp:
+    ref_api: "torch.var"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1637,12 +1736,12 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state variance (Llama-3.1-8B)
@@ -1652,22 +1751,24 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # Welford: mean update (2 ops) + variance update (3 ops) per element = 5N
       flops: "5 * M * N"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
-  std_fwd:
+  StdFwdOp:
+    ref_api: "torch.std"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1675,12 +1776,12 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state std (Llama-3.1-8B)
@@ -1690,22 +1791,24 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # Welford (5N) + sqrt per output element
       flops: "5 * M * N + M"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
-  var_mean_fwd:
+  VarMeanFwdOp:
+    ref_api: "torch.var_mean"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1714,12 +1817,12 @@ ops:
         var: {dtype: "same_as(x)"}
         mean: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "var.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "var.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "var.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "var.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
         - "mean.ndim == var.ndim"
         - "mean.shape == var.shape"
 
@@ -1731,26 +1834,28 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # Welford: single pass computes both mean and variance
       flops: "5 * M * N"
       # Read x + write var + write mean
       bytes: "(M * N + 2 * M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/reduce/fwd.py
+      kernel: tileops/kernels/reduction/reduce.py
       op: tileops/ops/reduction/reduce.py
       test: tests/ops/test_reduce.py
       bench: benchmarks/ops/bench_reduce.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- argmax/argmin (output dtype: int64)
   # ---------------------------------------------------------------------------
 
-  argmax_fwd:
+  ArgmaxFwdOp:
+    ref_api: "torch.argmax"
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1780,14 +1885,17 @@ ops:
       bytes: "M * N * elem_bytes + M * 8"
 
     source:
-      kernel: tileops/kernels/reduction/argreduce/fwd.py
+      kernel: tileops/kernels/reduction/argreduce.py
+      kernel_map:
+        argreduce: ArgreduceKernel
       op: tileops/ops/reduction/argmax.py
       test: tests/ops/test_argreduce.py
       bench: benchmarks/ops/bench_argreduce.py
 
-  argmin_fwd:
+  ArgminFwdOp:
+    ref_api: "torch.argmin"
     family: reduction
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -1817,7 +1925,9 @@ ops:
       bytes: "M * N * elem_bytes + M * 8"
 
     source:
-      kernel: tileops/kernels/reduction/argreduce/fwd.py
+      kernel: tileops/kernels/reduction/argreduce.py
+      kernel_map:
+        argreduce: ArgreduceKernel
       op: tileops/ops/reduction/argmin.py
       test: tests/ops/test_argreduce.py
       bench: benchmarks/ops/bench_argreduce.py
@@ -1826,9 +1936,10 @@ ops:
   # reduction -- logical reductions (output dtype: bool)
   # ---------------------------------------------------------------------------
 
-  all_fwd:
+  AllFwdOp:
+    ref_api: "torch.all"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1836,11 +1947,11 @@ ops:
       outputs:
         y: {dtype: "bool"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Mask validation (batch, seq_len)
@@ -1849,22 +1960,24 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # N-1 logical AND per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (1 byte for bool)
       bytes: "M * N * elem_bytes + M"
 
     source:
-      kernel: tileops/kernels/reduction/logical_reduce/fwd.py
+      kernel: tileops/kernels/reduction/logical_reduce.py
       op: tileops/ops/reduction/all_op.py
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
+      bench_manifest_driven: true
 
-  any_fwd:
+  AnyFwdOp:
+    ref_api: "torch.any"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1872,11 +1985,11 @@ ops:
       outputs:
         y: {dtype: "bool"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Mask validation (batch, seq_len)
@@ -1885,22 +1998,24 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # N-1 logical OR per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (1 byte for bool)
       bytes: "M * N * elem_bytes + M"
 
     source:
-      kernel: tileops/kernels/reduction/logical_reduce/fwd.py
+      kernel: tileops/kernels/reduction/logical_reduce.py
       op: tileops/ops/reduction/any_op.py
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
+      bench_manifest_driven: true
 
-  count_nonzero_fwd:
+  CountNonzeroFwdOp:
+    ref_api: "torch.count_nonzero"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1908,10 +2023,10 @@ ops:
       outputs:
         y: {dtype: "int64"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
       shape_rules:
-        - "y.ndim == x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])))"
 
     workloads:
       # Sparsity analysis (batch, hidden_dim)
@@ -1921,26 +2036,28 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # Compare + conditional add per element
       flops: "2 * M * N"
       # Read x (elem_bytes) + write y (8 bytes for int64)
       bytes: "M * N * elem_bytes + M * 8"
 
     source:
-      kernel: tileops/kernels/reduction/logical_reduce/fwd.py
+      kernel: tileops/kernels/reduction/logical_reduce.py
       op: tileops/ops/reduction/count_nonzero.py
       test: tests/ops/test_logical_reduce.py
       bench: benchmarks/ops/bench_logical_reduce.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- vector norms (output dtype: same_as(x))
   # ---------------------------------------------------------------------------
 
-  l1_norm_fwd:
+  L1NormFwdOp:
+    ref_api: "torch.linalg.vector_norm"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1948,11 +2065,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state L1 norm (Llama-3.1-8B)
@@ -1962,22 +2079,24 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # abs + add per element
       flops: "2 * M * N"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/vector_norm/fwd.py
+      kernel: tileops/kernels/reduction/vector_norm.py
       op: tileops/ops/reduction/l1_norm.py
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
+      bench_manifest_driven: true
 
-  l2_norm_fwd:
+  L2NormFwdOp:
+    ref_api: "torch.linalg.vector_norm"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -1985,11 +2104,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state L2 norm (Llama-3.1-8B)
@@ -1999,22 +2118,24 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # square + add per element, then sqrt
       flops: "2 * M * N + M"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/vector_norm/fwd.py
+      kernel: tileops/kernels/reduction/vector_norm.py
       op: tileops/ops/reduction/l2_norm.py
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
+      bench_manifest_driven: true
 
-  inf_norm_fwd:
+  InfNormFwdOp:
+    ref_api: "torch.linalg.vector_norm"
     family: reduction
-    status: spec-only
+    status: spec-only  # dim=None not yet implemented; update when impl lands
 
     signature:
       inputs:
@@ -2022,11 +2143,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
+        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
 
     workloads:
       # Hidden state inf norm (Llama-3.1-8B)
@@ -2036,24 +2157,26 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in dim if isinstance(dim, list) else i != dim))"
-        N: "product(x.shape[i] for i in (dim if isinstance(dim, list) else [dim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
       # abs + max per element
       flops: "2 * M * N"
       # Read x + write y
       bytes: "(M * N + M) * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/vector_norm/fwd.py
+      kernel: tileops/kernels/reduction/vector_norm.py
       op: tileops/ops/reduction/inf_norm.py
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # scan -- prefix scan ops (output shape == input shape, no keepdim)
   # ---------------------------------------------------------------------------
 
-  cumsum_fwd:
+  CumsumFwdOp:
+    ref_api: "torch.cumsum"
     family: scan
     status: spec-only
 
@@ -2083,12 +2206,13 @@ ops:
       bytes: "2 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/cumulative/fwd.py
+      kernel: tileops/kernels/reduction/cumulative.py
       op: tileops/ops/reduction/cumsum.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
 
-  cumprod_fwd:
+  CumprodFwdOp:
+    ref_api: "torch.cumprod"
     family: scan
     status: spec-only
 
@@ -2118,7 +2242,120 @@ ops:
       bytes: "2 * M * N * elem_bytes"
 
     source:
-      kernel: tileops/kernels/reduction/cumulative/fwd.py
+      kernel: tileops/kernels/reduction/cumulative.py
       op: tileops/ops/reduction/cumprod.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
+
+  # ---------------------------------------------------------------------------
+  # conv — convolution ops (1D/2D/3D forward)
+  # ---------------------------------------------------------------------------
+
+  Conv1dFwdOp:
+    ref_api: "torch.nn.functional.conv1d"
+    # Equivalent to torch.nn.functional.conv1d (bias=None)
+    family: convolution
+    status: spec-only  # TODO: impl lacks dilation, groups, string padding
+
+    signature:
+      inputs:
+        input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+        weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
+      outputs:
+        output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
+      params:
+        stride: {type: "int | tuple[int]", default: 1}
+        padding: {type: "int | tuple[int] | str", default: 0}
+        dilation: {type: "int | tuple[int]", default: 1}
+        groups: {type: int, default: 1}
+      shape_rules:
+        - "C_in % groups == 0"
+        - "C_out % groups == 0"
+        - "C_in_g == C_in // groups"
+        # Normalize tuple params to scalar (conv1d tuples are always 1-element)
+        - "_s == (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+        - "_p == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+        - "_d == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+        # String padding validation
+        - "not isinstance(_p, str) or _p in ('valid', 'same')"
+        - "_p != 'same' or _s == 1"
+        - "L_out == L_in if _p == 'same' else (L_in + 2 * (0 if _p == 'valid' else _p) - _d * (kW - 1) - 1) // _s + 1"
+
+    # Workloads selected from three dominant Conv1d model families:
+    #   Whisper (OpenAI ASR)  — https://huggingface.co/openai/whisper-large-v3
+    #     src: transformers/models/whisper/modeling_whisper.py WhisperEncoder (nn.Conv1d)
+    #   Wav2Vec2 (Meta ASR)   — https://huggingface.co/facebook/wav2vec2-base
+    #     src: transformers/models/wav2vec2/modeling_wav2vec2.py Wav2Vec2NoLayerNormConvLayer (nn.Conv1d)
+    #   EnCodec (Meta codec)  — https://huggingface.co/facebook/encodec_24khz
+    #     src: transformers/models/encodec/modeling_encodec.py EncodecEncoder (EncodecConv1d → nn.Conv1d)
+    # Selection criteria: cover small/large kernel, narrow/wide channels,
+    #   short/long sequences, and different pipeline stages (entry vs deep layer).
+    workloads:
+      # Whisper-large encoder conv1: mel spectrogram → hidden (most common ASR entry point)
+      - {input_shape: [1, 80, 3000], C_out: 1280, kW: 3, dtypes: [float16, bfloat16], label: "whisper-large-conv1"}
+      # Wav2Vec2 feature extractor layer1: raw 1s waveform, large kernel + stride downsampling
+      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, stride: 5, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
+      # EnCodec SEANet encoder init: raw 1s audio @24kHz, narrow channels
+      - {input_shape: [1, 1, 24000], C_out: 32, kW: 7, dtypes: [float16, bfloat16], label: "encodec-init"}
+      # EnCodec SEANet deep block: short sequence, wide channels, large kernel
+      - {input_shape: [1, 128, 600], C_out: 256, kW: 10, dtypes: [float16, bfloat16], label: "encodec-deep"}
+
+    roofline:
+      flops: "2 * N * C_out * L_out * C_in_g * kW"
+      bytes: "(N * C_in * L_in + C_out * C_in_g * kW + N * C_out * L_out) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/convolution.py
+      op: tileops/ops/convolution.py
+      test: tests/ops/test_convolution.py
+      bench: benchmarks/ops/bench_convolution.py
+      bench_manifest_driven: false
+
+  Conv1dBiasFwdOp:
+    ref_api: "torch.nn.functional.conv1d"
+    # Equivalent to torch.nn.functional.conv1d (bias≠None)
+    family: convolution
+    status: spec-only  # TODO: impl lacks dilation, groups, string padding
+    variant_of: Conv1dFwdOp
+
+    signature:
+      inputs:
+        input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+        weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
+        bias: {dtype: "same_as(input)", shape: "[C_out]"}
+      outputs:
+        output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
+      params:
+        stride: {type: "int | tuple[int]", default: 1}
+        padding: {type: "int | tuple[int] | str", default: 0}
+        dilation: {type: "int | tuple[int]", default: 1}
+        groups: {type: int, default: 1}
+      shape_rules:
+        - "C_in % groups == 0"
+        - "C_out % groups == 0"
+        - "C_in_g == C_in // groups"
+        - "_s == (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+        - "_p == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+        - "_d == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+        - "not isinstance(_p, str) or _p in ('valid', 'same')"
+        - "_p != 'same' or _s == 1"
+        - "L_out == L_in if _p == 'same' else (L_in + 2 * (0 if _p == 'valid' else _p) - _d * (kW - 1) - 1) // _s + 1"
+
+    # Same shapes as conv1d_fwd; bias adds negligible memory traffic
+    workloads:
+      - {input_shape: [1, 80, 3000], C_out: 1280, kW: 3, dtypes: [float16, bfloat16], label: "whisper-large-conv1"}
+      - {input_shape: [1, 1, 16000], C_out: 512, kW: 10, stride: 5, dtypes: [float16, bfloat16], label: "wav2vec2-layer1"}
+      - {input_shape: [1, 1, 24000], C_out: 32, kW: 7, dtypes: [float16, bfloat16], label: "encodec-init"}
+      - {input_shape: [1, 128, 600], C_out: 256, kW: 10, dtypes: [float16, bfloat16], label: "encodec-deep"}
+
+    roofline:
+      # bias adds one addition per output element
+      flops: "2 * N * C_out * L_out * C_in_g * kW + N * C_out * L_out"
+      bytes: "(N * C_in * L_in + C_out * C_in_g * kW + C_out + N * C_out * L_out) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/convolution.py
+      op: tileops/ops/convolution.py
+      test: tests/ops/test_convolution.py
+      bench: benchmarks/ops/bench_convolution.py
+      bench_manifest_driven: false

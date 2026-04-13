@@ -50,7 +50,7 @@ class TestManifestStructure:
 class TestOpSchema:
     """Every op entry has the required fields and valid sub-structure."""
 
-    REQUIRED_TOP_FIELDS = {"family", "signature", "workloads", "roofline", "source"}
+    REQUIRED_TOP_FIELDS = {"family", "ref_api", "signature", "workloads", "roofline", "source"}
 
     def test_every_op_has_required_fields(self, all_ops):
         for op_name, entry in all_ops.items():
@@ -218,7 +218,7 @@ class TestManifestAPI:
     def test_load_workloads_returns_list(self):
         from tileops.manifest import load_workloads
 
-        workloads = load_workloads("rmsnorm_fwd")
+        workloads = load_workloads("RMSNormFwdOp")
         assert isinstance(workloads, list)
         assert len(workloads) >= 1
         assert "x_shape" in workloads[0]
@@ -226,13 +226,13 @@ class TestManifestAPI:
     def test_load_workloads_unknown_op_raises(self):
         from tileops.manifest import load_workloads
 
-        with pytest.raises(KeyError, match="nonexistent_op"):
-            load_workloads("nonexistent_op")
+        with pytest.raises(KeyError, match="NonexistentOp"):
+            load_workloads("NonexistentOp")
 
     def test_eval_roofline_returns_tuple(self):
         from tileops.manifest import eval_roofline
 
-        flops, mem_bytes = eval_roofline("rmsnorm_fwd", M=2048, N=4096, elem_bytes=2)
+        flops, mem_bytes = eval_roofline("RMSNormFwdOp", M=2048, N=4096, elem_bytes=2)
         assert isinstance(flops, float)
         assert isinstance(mem_bytes, float)
         assert flops > 0
@@ -267,7 +267,7 @@ class TestManifestAPI:
 
         # Stubs raise NotImplementedError — dispatch succeeds if it reaches them
         with pytest.raises(NotImplementedError):
-            eval_roofline("mha_fwd")
+            eval_roofline("MultiHeadAttentionFwdOp")
 
     def test_eval_roofline_func_mode_bad_module_raises(self):
         """Verify func-mode raises ValueError for non-importable module."""
@@ -275,10 +275,36 @@ class TestManifestAPI:
         from tileops.manifest import _load_manifest, eval_roofline
 
         ops = _load_manifest()
-        original = ops["mha_fwd"]["roofline"]["func"]
+        original = ops["MultiHeadAttentionFwdOp"]["roofline"]["func"]
         try:
-            ops["mha_fwd"]["roofline"]["func"] = "nonexistent.module.fn"
+            ops["MultiHeadAttentionFwdOp"]["roofline"]["func"] = "nonexistent.module.fn"
             with pytest.raises(ValueError, match="Failed to import"):
-                eval_roofline("mha_fwd")
+                eval_roofline("MultiHeadAttentionFwdOp")
         finally:
-            ops["mha_fwd"]["roofline"]["func"] = original
+            ops["MultiHeadAttentionFwdOp"]["roofline"]["func"] = original
+
+
+class TestCanonicalKeyResolution:
+    """Manifest API accepts only canonical PascalCase keys."""
+
+    def test_load_workloads_pascal_case(self):
+        """Canonical PascalCase names work."""
+        from tileops.manifest import load_workloads
+
+        workloads = load_workloads("RMSNormFwdOp")
+        assert isinstance(workloads, list)
+        assert len(workloads) >= 1
+
+    def test_unknown_op_raises(self):
+        """Unknown names raise KeyError."""
+        from tileops.manifest import load_workloads
+
+        with pytest.raises(KeyError, match="totally_fake_op"):
+            load_workloads("totally_fake_op")
+
+    def test_snake_case_raises(self):
+        """Legacy snake_case names are no longer resolved."""
+        from tileops.manifest import load_workloads
+
+        with pytest.raises(KeyError, match="rmsnorm_fwd"):
+            load_workloads("rmsnorm_fwd")

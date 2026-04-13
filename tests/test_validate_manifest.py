@@ -38,8 +38,14 @@ def validator():
 # ---------------------------------------------------------------------------
 
 def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
-                 source_kernel="k.py", **extra):
-    """Build a minimal valid manifest entry for testing, with overrides."""
+                 source_kernel="k.py", status="spec-only", kernel_map=None,
+                 **extra):
+    """Build a minimal valid manifest entry for testing, with overrides.
+
+    Use ``status=None`` to explicitly omit the status field (for testing
+    that the validator rejects entries without status).
+    ``kernel_map`` is placed under ``source`` per the manifest spec.
+    """
     sig = {
         "inputs": inputs or {"x": {"dtype": "float16"}},
         "outputs": outputs or {"y": {"dtype": "same_as(x)"}},
@@ -48,16 +54,22 @@ def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
         sig["params"] = params
     if dtype_combos is not None:
         sig["dtype_combos"] = dtype_combos
+    source = {
+        "kernel": source_kernel, "op": "o.py",
+        "test": "t.py", "bench": "b.py",
+    }
+    if kernel_map is not None:
+        source["kernel_map"] = kernel_map
     entry = {
         "family": "test",
+        "ref_api": "none",
         "signature": sig,
         "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
         "roofline": {"flops": "2 * M", "bytes": "M * 2"},
-        "source": {
-            "kernel": source_kernel, "op": "o.py",
-            "test": "t.py", "bench": "b.py",
-        },
+        "source": source,
     }
+    if status is not None:
+        entry["status"] = status
     entry.update(extra)
     return entry
 
@@ -72,7 +84,9 @@ class TestSchema:
 
     def test_valid_entry_passes(self, validator):
         entry = {
-            "family": "norm",
+            "family": "normalization",
+            "ref_api": "torch.nn.functional.rms_norm",
+            "status": "implemented",
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
                 "outputs": {"y": {"dtype": "same_as(x)"}},
@@ -83,6 +97,7 @@ class TestSchema:
             "roofline": {"flops": "2 * M * N", "bytes": "M * N * 2"},
             "source": {
                 "kernel": "tileops/kernels/norm/rms_norm.py",
+                "kernel_map": {"fwd": "RMSNormFwdKernel"},
                 "op": "tileops/ops/norm/rms_norm.py",
                 "test": "tests/ops/test_rms_norm.py",
                 "bench": "benchmarks/ops/bench_rms_norm.py",
@@ -90,6 +105,17 @@ class TestSchema:
         }
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_missing_ref_api_fails(self, validator):
+        entry = _make_entry()
+        del entry["ref_api"]
+        errors = validator.check_l0("test_op", entry)
+        assert any("ref_api" in e for e in errors)
+
+    def test_ref_api_non_string_fails(self, validator):
+        entry = _make_entry(ref_api=123)
+        errors = validator.check_l0("test_op", entry)
+        assert any("ref_api" in e and "string" in e for e in errors)
 
     def test_missing_family_fails(self, validator):
         entry = {
@@ -110,7 +136,7 @@ class TestSchema:
 
     def test_missing_signature_fields_fails(self, validator):
         entry = {
-            "family": "norm",
+            "family": "normalization",
             "signature": {"inputs": {"x": {"dtype": "float16"}}},
             "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
             "roofline": {"flops": "2 * M", "bytes": "M * 2"},
@@ -124,7 +150,7 @@ class TestSchema:
 
     def test_roofline_needs_flops_and_bytes_or_func(self, validator):
         entry = {
-            "family": "norm",
+            "family": "normalization",
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
                 "outputs": {"y": {"dtype": "float16"}},
@@ -143,7 +169,7 @@ class TestSchema:
     def test_params_as_list_fails(self, validator):
         """signature.params as a YAML list must produce schema error, not crash."""
         entry = {
-            "family": "norm",
+            "family": "normalization",
             "signature": {
                 "inputs": {"x": {"dtype": "float16"}},
                 "outputs": {"y": {"dtype": "same_as(x)"}},
@@ -164,7 +190,7 @@ class TestSchema:
 
     def test_tensor_missing_dtype_fails(self, validator):
         entry = {
-            "family": "norm",
+            "family": "normalization",
             "signature": {
                 "inputs": {"x": {}},  # no dtype
                 "outputs": {"y": {"dtype": "float16"}},
@@ -241,6 +267,83 @@ class TestSchema:
         entry = _make_entry(source_kernel=42)
         errors = validator.check_l0("test_op", entry)
         assert any("source.kernel" in e for e in errors)
+
+    def test_missing_status_fails(self, validator):
+        """Entry without status field must produce a schema error."""
+        entry = _make_entry(status=None)
+        assert "status" not in entry
+        errors = validator.check_l0("test_op", entry)
+        assert any("status" in e for e in errors), (
+            f"Expected schema error about missing status, got: {errors}"
+        )
+
+    def test_status_implemented_passes(self, validator):
+        """Entry with status: implemented and kernel_map passes schema check."""
+        entry = _make_entry(status="implemented", kernel_map={"fwd": "FwdKernel"})
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_status_spec_only_passes(self, validator):
+        """Entry with status: spec-only passes schema check."""
+        entry = _make_entry(status="spec-only")
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_status_non_string_rejected(self, validator):
+        """Non-string status (e.g. integer) must produce a schema error."""
+        entry = _make_entry(status="placeholder")
+        entry["status"] = 123
+        errors = validator.check_l0("test_op", entry)
+        assert any("status" in e and "string" in e for e in errors), (
+            f"Expected schema error about non-string status, got: {errors}"
+        )
+
+    def test_kernel_map_valid_passes(self, validator):
+        """status: implemented with valid kernel_map dict passes."""
+        entry = _make_entry(status="implemented", kernel_map={"fwd": "FwdKernel"})
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_kernel_map_missing_when_implemented_warns(self, validator):
+        """status: implemented without kernel_map produces a warning, not error."""
+        entry = _make_entry(status="implemented")
+        entry["source"].pop("kernel_map", None)
+        assert "kernel_map" not in entry["source"]
+        warnings = []
+        errors = validator.check_l0("test_op", entry, warnings=warnings)
+        assert not any("kernel_map" in e for e in errors), (
+            f"Missing kernel_map should be a warning, not an error: {errors}"
+        )
+        assert any("kernel_map" in w for w in warnings), (
+            f"Expected warning about missing kernel_map, got warnings: {warnings}"
+        )
+
+    def test_kernel_map_not_required_when_spec_only(self, validator):
+        """status: spec-only without kernel_map must NOT produce a kernel_map error."""
+        entry = _make_entry(status="spec-only")
+        errors = validator.check_l0("test_op", entry)
+        kernel_map_errors = [e for e in errors if "kernel_map" in e]
+        assert kernel_map_errors == [], (
+            f"spec-only op should not need kernel_map, got: {kernel_map_errors}"
+        )
+
+    def test_kernel_map_non_dict_fails(self, validator):
+        """kernel_map that is not a dict must fail."""
+        entry = _make_entry(status="implemented", kernel_map="not_a_dict")
+        errors = validator.check_l0("test_op", entry)
+        assert any("kernel_map" in e and "mapping" in e for e in errors)
+
+    def test_kernel_map_non_string_key_fails(self, validator):
+        """kernel_map with non-string values must fail."""
+        entry = _make_entry(status="implemented", kernel_map={"fwd": 123})
+        errors = validator.check_l0("test_op", entry)
+        assert any("kernel_map" in e for e in errors)
+
+    def test_kernel_map_empty_dict_passes(self, validator):
+        """status: implemented with empty kernel_map dict passes (valid dict of str:str)."""
+        entry = _make_entry(status="implemented", kernel_map={})
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +571,86 @@ class TestDtype:
         errors = validator.check_l3("test_op", entry)
         assert errors == []
 
+    def test_dtype_combos_same_as_identity_pass(self, validator):
+        """dtype_combos with matching dtypes for same_as-bound tensors pass."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert errors == []
+
+    def test_dtype_combos_same_as_mismatch_fails(self, validator):
+        """dtype_combos with different dtypes for same_as-bound tensors must fail."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "bfloat16"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any("same_as" in e and "identity" in e for e in errors), (
+            f"Expected identity constraint error, got: {errors}"
+        )
+
+    def test_dtype_combos_same_as_multi_binding_mismatch_fails(self, validator):
+        """dtype_combos with multiple same_as(q) bindings where one mismatches must fail."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "q": {"dtype": "float16 | bfloat16"},
+                    "k": {"dtype": "same_as(q)"},
+                    "v": {"dtype": "same_as(q)"},
+                },
+                "outputs": {"o": {"dtype": "same_as(q)"}},
+                "dtype_combos": [
+                    {"q": "float16", "k": "float16", "v": "bfloat16"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any("same_as" in e and "identity" in e for e in errors), (
+            f"Expected identity constraint error, got: {errors}"
+        )
+
+    def test_dtype_combos_same_as_partial_combo_fails(self, validator):
+        """dtype_combos with same_as-bound tensor but missing reference must fail."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"w": "float16"},  # x missing — cannot verify identity
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any("without its reference" in e for e in errors), (
+            f"Expected partial-combo error, got: {errors}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # bench: benchmark uses manifest workloads
@@ -525,6 +708,29 @@ class TestBench:
         bench_file.write_text("def broken(\n")
         errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
         assert any("syntax error" in e for e in errors)
+
+    def test_bench_indirect_helpers_pass(self, validator, tmp_path):
+        """Importing workloads_to_params/ManifestBenchmark from benchmarks.benchmark passes."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            from benchmarks.benchmark import workloads_to_params, ManifestBenchmark
+            params = workloads_to_params('test_op')
+            ManifestBenchmark('test_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert errors == []
+
+    def test_bench_indirect_wrong_op_fails(self, validator, tmp_path):
+        """Indirect helpers called with wrong op name must still fail."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            from benchmarks.benchmark import workloads_to_params, ManifestBenchmark
+            params = workloads_to_params('wrong_op')
+            ManifestBenchmark('wrong_op', params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert any("load_workloads" in e for e in errors)
+        assert any("eval_roofline" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +794,23 @@ class TestCheckOp:
         non_schema = [e for e in errors if "[schema]" not in e]
         assert non_schema == [], (
             f"Spec-only op should only have schema errors (if any), got: {non_schema}"
+        )
+
+    def test_missing_status_rejected_at_schema_level(self, validator, tmp_path):
+        """Entry without status field is rejected by schema validation."""
+        entry = _make_entry(status=None)
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        import yaml
+        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+
+        errors, warnings = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+        )
+        status_errors = [e for e in errors if "status" in e]
+        assert len(status_errors) > 0, (
+            f"Missing-status op should produce a schema error, got: {errors}"
         )
 
     def test_check_op_nonexistent_op_reports_error(self, validator, tmp_path):
@@ -771,8 +994,8 @@ class TestCheckOp:
 
     def test_check_op_cli_parsing(self, validator):
         """_parse_check_op extracts the op name from argv."""
-        assert validator._parse_check_op(["--check-op", "softmax_fwd"]) == "softmax_fwd"
-        assert validator._parse_check_op(["--check-op=softmax_fwd"]) == "softmax_fwd"
+        assert validator._parse_check_op(["--check-op", "SoftmaxFwdOp"]) == "SoftmaxFwdOp"
+        assert validator._parse_check_op(["--check-op=SoftmaxFwdOp"]) == "SoftmaxFwdOp"
         assert validator._parse_check_op(["--verbose"]) is None
         assert validator._parse_check_op([]) is None
 
@@ -799,64 +1022,44 @@ class TestCheckOp:
 class TestResolveOpClass:
     """_resolve_op_class correctly resolves op names to classes in multi-class files."""
 
-    def test_single_class_file_resolves(self, validator):
-        """Single-class files resolve without ambiguity."""
+    def test_single_class_file_exact_match(self, validator):
+        """Single-class files resolve only when manifest key matches class name."""
         result = validator._resolve_op_class(
-            "tileops/ops/reduction/softmax.py", "softmax_fwd",
+            "tileops/ops/reduction/softmax.py", "SoftmaxFwdOp",
         )
         assert result.cls is not None
-        assert result.cls.__name__ == "SoftmaxOp"
+        assert result.cls.__name__ == "SoftmaxFwdOp"
+
+    def test_single_class_file_rejects_mismatched_name(self, validator):
+        """Single-class files reject mismatched manifest keys — no bypass."""
+        result = validator._resolve_op_class(
+            "tileops/ops/reduction/softmax.py", "SoftmaxBwdOp",
+        )
+        assert result.cls is None
+        assert result.warning is not None
+
+    def test_exact_match_required_multi_class(self, validator):
+        """Multi-class files require exact cls.__name__ == manifest key."""
+        result = validator._resolve_op_class(
+            "tileops/ops/reduction/reduce.py", "SumFwdOp",
+        )
+        assert result.cls is not None
+        assert result.cls.__name__ == "SumFwdOp"
 
     @pytest.mark.parametrize(
-        "op_name,expected_class",
+        "op_name",
         [
-            ("sum_fwd", "SumOp"),
-            ("mean_fwd", "MeanOp"),
-            ("amax_fwd", "AmaxOp"),
-            ("amin_fwd", "AminOp"),
-            ("prod_fwd", "ProdOp"),
-            ("var_fwd", "VarOp"),
-            ("std_fwd", "StdOp"),
-            ("var_mean_fwd", "VarMeanOp"),
+            "SumFwdOp", "MeanFwdOp", "AmaxFwdOp", "AminFwdOp",
+            "ProdFwdOp", "VarFwdOp", "StdFwdOp", "VarMeanFwdOp",
         ],
     )
-    def test_reduce_multi_class_resolution(self, validator, op_name, expected_class):
-        """All 8 reduce ops in reduce.py resolve to the correct class."""
+    def test_reduce_ops_resolve_by_exact_name(self, validator, op_name):
+        """Reduce Op classes resolve correctly by exact cls.__name__ match."""
         result = validator._resolve_op_class(
             "tileops/ops/reduction/reduce.py", op_name,
         )
-        assert result.cls is not None, (
-            f"{op_name}: expected {expected_class}, got None"
-        )
-        assert result.cls.__name__ == expected_class, (
-            f"{op_name}: expected {expected_class}, got {result.cls.__name__}"
-        )
-
-    @pytest.mark.parametrize(
-        "op_file,op_name,expected_class",
-        [
-            ("tileops/ops/reduction/argmax.py", "argmax_fwd", "ArgmaxOp"),
-            ("tileops/ops/reduction/argmin.py", "argmin_fwd", "ArgminOp"),
-            ("tileops/ops/reduction/all_op.py", "all_fwd", "AllOp"),
-            ("tileops/ops/reduction/any_op.py", "any_fwd", "AnyOp"),
-            ("tileops/ops/reduction/count_nonzero.py", "count_nonzero_fwd", "CountNonzeroOp"),
-            ("tileops/ops/reduction/l1_norm.py", "l1_norm_fwd", "L1NormOp"),
-            ("tileops/ops/reduction/l2_norm.py", "l2_norm_fwd", "L2NormOp"),
-            ("tileops/ops/reduction/inf_norm.py", "inf_norm_fwd", "InfNormOp"),
-            ("tileops/ops/reduction/softmax.py", "softmax_fwd", "SoftmaxOp"),
-            ("tileops/ops/reduction/log_softmax.py", "log_softmax_fwd", "LogSoftmaxOp"),
-            ("tileops/ops/reduction/logsumexp.py", "logsumexp_fwd", "LogSumExpOp"),
-        ],
-    )
-    def test_single_file_reduction_ops(self, validator, op_file, op_name, expected_class):
-        """All single-file reduction ops resolve correctly via their source.op path."""
-        result = validator._resolve_op_class(op_file, op_name)
-        assert result.cls is not None, (
-            f"{op_name}: expected {expected_class}, got None"
-        )
-        assert result.cls.__name__ == expected_class, (
-            f"{op_name}: expected {expected_class}, got {result.cls.__name__}"
-        )
+        assert result.cls is not None
+        assert result.cls.__name__ == op_name
 
     def test_nonexistent_module_returns_import_error(self, validator):
         """Module that cannot be imported returns import_error=True."""
@@ -871,6 +1074,186 @@ class TestResolveOpClass:
             "tileops/__init__.py", "some_op",
         )
         assert result.cls is None
+
+    def test_ambiguous_fallback_returns_none_with_warning(self, validator):
+        """When multiple candidates exist but no heuristic matches, return cls=None."""
+        import importlib
+        import types
+
+        # Create a fake module with two candidate classes whose names don't
+        # match any heuristic for the given op_name.
+        fake_mod = types.ModuleType("tileops.ops.fake_ambiguous")
+        fake_mod.__name__ = "tileops.ops.fake_ambiguous"
+
+        class AlphaKernel:
+            @staticmethod
+            def forward():
+                pass
+
+        class BetaKernel:
+            @staticmethod
+            def forward():
+                pass
+
+        AlphaKernel.__module__ = fake_mod.__name__
+        BetaKernel.__module__ = fake_mod.__name__
+        fake_mod.AlphaKernel = AlphaKernel
+        fake_mod.BetaKernel = BetaKernel
+
+        # Patch importlib.import_module to return the fake module
+        original_import = importlib.import_module
+
+        def patched_import(name):
+            if name == "tileops.ops.fake_ambiguous":
+                return fake_mod
+            return original_import(name)
+
+        import unittest.mock as mock
+
+        with (
+            mock.patch.object(importlib, "import_module", side_effect=patched_import),
+            pytest.warns(UserWarning, match="No class named"),
+        ):
+            result = validator._resolve_op_class(
+                "tileops/ops/fake_ambiguous.py", "mystery_fwd",
+            )
+        # Should return empty result (no cls) since no exact match
+        assert result.cls is None
+        assert not result.import_error
+        assert "No class named" in result.warning
+
+    def test_ambiguous_warning_plumbed_through_check_l1(self, validator):
+        """Ambiguity warning surfaces in check_l1's structured warnings list."""
+        import importlib
+        import types
+        import unittest.mock as mock
+
+        fake_mod = types.ModuleType("tileops.ops.fake_ambiguous")
+        fake_mod.__name__ = "tileops.ops.fake_ambiguous"
+
+        class AlphaKernel:
+            @staticmethod
+            def forward():
+                pass
+
+        class BetaKernel:
+            @staticmethod
+            def forward():
+                pass
+
+        AlphaKernel.__module__ = fake_mod.__name__
+        BetaKernel.__module__ = fake_mod.__name__
+        fake_mod.AlphaKernel = AlphaKernel
+        fake_mod.BetaKernel = BetaKernel
+
+        original_import = importlib.import_module
+
+        def patched_import(name):
+            if name == "tileops.ops.fake_ambiguous":
+                return fake_mod
+            return original_import(name)
+
+        entry = {
+            "source": {"op": "tileops/ops/fake_ambiguous.py"},
+            "signature": {"inputs": {}, "params": {}},
+        }
+        warn_list: list[str] = []
+
+        with (
+            mock.patch.object(importlib, "import_module", side_effect=patched_import),
+            pytest.warns(UserWarning, match="No class named"),
+        ):
+            errors = validator.check_l1("mystery_fwd", entry, warnings=warn_list)
+
+        assert any("No class named" in w for w in warn_list)
+        assert any("could not resolve" in e for e in errors)
+
+    def test_suffix_match_ambiguity_emits_warning(self, validator):
+        """When no class matches the manifest key exactly, emit warning."""
+        import importlib
+        import types
+        import unittest.mock as mock
+
+        fake_mod = types.ModuleType("tileops.ops.fake_no_match")
+        fake_mod.__name__ = "tileops.ops.fake_no_match"
+
+        class AlphaFwdOp:
+            @staticmethod
+            def forward():
+                pass
+
+        class BetaFwdOp:
+            @staticmethod
+            def forward():
+                pass
+
+        AlphaFwdOp.__module__ = fake_mod.__name__
+        BetaFwdOp.__module__ = fake_mod.__name__
+        fake_mod.AlphaFwdOp = AlphaFwdOp
+        fake_mod.BetaFwdOp = BetaFwdOp
+
+        original_import = importlib.import_module
+
+        def patched_import(name):
+            if name == "tileops.ops.fake_no_match":
+                return fake_mod
+            return original_import(name)
+
+        with (
+            mock.patch.object(importlib, "import_module", side_effect=patched_import),
+            pytest.warns(UserWarning, match="No class named"),
+        ):
+            result = validator._resolve_op_class(
+                "tileops/ops/fake_no_match.py", "GammaFwdOp",
+            )
+        # No exact match: cls should be None and warning emitted
+        assert result.cls is None
+        assert not result.import_error
+        assert "No class named" in result.warning
+
+    def test_direct_match_resolves_exact_class_name(self, validator):
+        """Direct match resolves when cls.__name__ == manifest key.
+
+        For op_name='SumFwdOp' with both _SumHelper and SumFwdOp in the module,
+        the exact match finds SumFwdOp. No heuristic fallback.
+        """
+        import importlib
+        import types
+        import unittest.mock as mock
+
+        fake_mod = types.ModuleType("tileops.ops.fake_priority")
+        fake_mod.__name__ = "tileops.ops.fake_priority"
+
+        class _SumHelper:
+            @staticmethod
+            def forward():
+                pass
+
+        class SumFwdOp:
+            @staticmethod
+            def forward():
+                pass
+
+        _SumHelper.__module__ = fake_mod.__name__
+        SumFwdOp.__module__ = fake_mod.__name__
+        fake_mod._SumHelper = _SumHelper
+        fake_mod.SumFwdOp = SumFwdOp
+
+        original_import = importlib.import_module
+
+        def patched_import(name):
+            if name == "tileops.ops.fake_priority":
+                return fake_mod
+            return original_import(name)
+
+        with mock.patch.object(importlib, "import_module", side_effect=patched_import):
+            result = validator._resolve_op_class(
+                "tileops/ops/fake_priority.py", "SumFwdOp",
+            )
+        # Direct match finds SumFwdOp when the class name IS the manifest key
+        assert result.cls is SumFwdOp, (
+            f"Expected SumFwdOp (direct match) but got {result.cls.__name__}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -891,4 +1274,18 @@ class TestIntegration:
             f"Validator failed with return code {result.returncode}.\n"
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
+        )
+
+    def test_schema_validation_no_errors_on_real_manifest(self, validator):
+        """Schema-level validation on the checked-in manifest produces no errors.
+
+        Warnings (e.g. missing kernel_map for implemented ops) are acceptable
+        since populating kernel_map for all ops is tracked separately.
+        """
+        errors, warnings = validator.validate_manifest(
+            levels=frozenset({"schema"}),
+        )
+        assert errors == [], (
+            f"Schema validation produced {len(errors)} error(s) on the "
+            f"checked-in manifest:\n" + "\n".join(errors)
         )

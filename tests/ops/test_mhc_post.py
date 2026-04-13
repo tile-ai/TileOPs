@@ -6,11 +6,11 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import ManifoldConstrainedHyperConnectionPostOp
-from workloads.ops.mhc_post import MhcPostTest as _MhcPostTestWorkload
+from tileops.ops import MHCPostOp
+from workloads.ops.mhc_post import MHCPostTest as _MHCPostTestWorkload
 
 
-class MhcPostTest(_MhcPostTestWorkload, TestBase):
+class MHCPostTest(_MHCPostTestWorkload, TestBase):
     def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
                     x_res: torch.Tensor) -> torch.Tensor:
         batch = self.batch
@@ -23,7 +23,7 @@ class MhcPostTest(_MhcPostTestWorkload, TestBase):
         return x_out_ref
 
 
-class MhcPostFixture(FixtureBase):
+class MHCPostFixture(FixtureBase):
     PARAMS = [
         ("batch, n_expand, c_x, dtype, tune", [
             pytest.param(1, 4, 1280, torch.bfloat16, False, marks=pytest.mark.smoke),
@@ -40,12 +40,11 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
         f"cosine similarity too low: {cos_sim.min().item()}"
 
 
-@MhcPostFixture
+@MHCPostFixture
 def test_mhc_post_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                      tune: bool) -> None:
-    test = MhcPostTest(batch, n_expand, c_x, dtype)
-    op = ManifoldConstrainedHyperConnectionPostOp(
-        batch, n_expand, c_x, dtype=str(dtype).split('.')[-1])
+    test = MHCPostTest(batch, n_expand, c_x, dtype)
+    op = MHCPostOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 

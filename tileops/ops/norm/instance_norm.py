@@ -5,7 +5,7 @@ is its own group). This operator delegates to GroupNormKernel with G=C.
 
 User-facing API mirrors torch.nn.functional.instance_norm:
 
-    op = InstanceNormOp(N=batch, C=channels, spatial=(H, W), dtype=dtype)
+    op = InstanceNormFwdOp(N=batch, C=channels, spatial=(H, W), dtype=dtype)
     y = op(x, weight, bias)
 
 Input tensors accept shape (N, C, *spatial).
@@ -22,7 +22,7 @@ from tileops.kernels.norm import GroupNormKernel
 
 from ..op import Op
 
-__all__ = ["InstanceNormOp"]
+__all__ = ["InstanceNormFwdOp"]
 
 ALIGNMENT = 256
 
@@ -31,7 +31,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
-class InstanceNormOp(Op):
+class InstanceNormFwdOp(Op):
     """Instance Normalization forward operator.
 
     Computes instance normalization over spatial dimensions for each

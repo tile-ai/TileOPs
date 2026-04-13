@@ -8,9 +8,9 @@ Smoke tests (1 per function, first param) use small data for quick CI.
 Full tests use small data for config breadth + large data for stress.
 
 All operators use the spec-conformant interface:
-  SoftmaxOp(dtype=dtype, dim=dim)
-  LogSoftmaxOp(dtype=dtype, dim=dim)
-  LogSumExpOp(dtype=dtype, dim=dim, keepdim=keepdim)
+  SoftmaxFwdOp(dtype=dtype, dim=dim)
+  LogSoftmaxFwdOp(dtype=dtype, dim=dim)
+  LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
 """
 
 import pytest
@@ -18,9 +18,9 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.reduction.log_softmax import LogSoftmaxOp
-from tileops.ops.reduction.logsumexp import LogSumExpOp
-from tileops.ops.reduction.softmax import SoftmaxOp
+from tileops.ops.reduction.log_softmax import LogSoftmaxFwdOp
+from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
+from tileops.ops.reduction.softmax import SoftmaxFwdOp
 from workloads.ops.softmax import LogSoftmaxTest as _LogSoftmaxTestWorkload
 from workloads.ops.softmax import LogSumExpTest as _LogSumExpTestWorkload
 from workloads.ops.softmax import SoftmaxTest as _SoftmaxTestWorkload
@@ -51,6 +51,8 @@ class SoftmaxFixture(FixtureBase):
             [
                 # Smoke: 2D, dim=-1, fp32, pow2
                 pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                # tune=True regression: kernel must be built before autotune runs
+                pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
@@ -72,6 +74,12 @@ class SoftmaxFixture(FixtureBase):
                 # dim=-1, large-N (triggers N-tiling path)
                 pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=-1, M×N both non-aligned (single-tile path)
+                pytest.param((33, 300), -1, torch.float32, False, marks=pytest.mark.full),
+                # dim=-1, M×N both non-aligned (multi-tile, masked loads)
+                pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
+                # dim=-1, non-aligned M + large-N tiled path
+                pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 # dim=0 (reduce along first dim — different M/N split)
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
@@ -97,7 +105,7 @@ class SoftmaxTest(_SoftmaxTestWorkload, TestBase):
 @SoftmaxFixture
 def test_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = SoftmaxTest(shape, dtype, dim=dim)
-    op = SoftmaxOp(dtype=dtype, dim=dim, tune=tune)
+    op = SoftmaxFwdOp(dtype=dtype, dim=dim, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -130,7 +138,7 @@ def test_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]  # non-contiguous slice
 
-    op = SoftmaxOp(dtype=dtype, dim=-1)
+    op = SoftmaxFwdOp(dtype=dtype, dim=-1)
 
     y_ref = F.softmax(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
@@ -165,7 +173,7 @@ class Softmax1DFixture(FixtureBase):
 def test_softmax_1d(n: int, dtype: torch.dtype) -> None:
     """Test softmax with 1D input (single row)."""
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = SoftmaxOp(dtype=dtype, dim=-1)
+    op = SoftmaxFwdOp(dtype=dtype, dim=-1)
 
     y_ref = F.softmax(x.float(), dim=-1).to(dtype)
     y = op(x)
@@ -187,6 +195,8 @@ class LogSoftmaxFixture(FixtureBase):
             [
                 # Smoke: 2D, dim=-1, fp32, pow2
                 pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                # tune=True regression: kernel must be built before autotune runs
+                pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
@@ -208,6 +218,12 @@ class LogSoftmaxFixture(FixtureBase):
                 # dim=-1, large-N (triggers N-tiling path)
                 pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=-1, M×N both non-aligned (single-tile path)
+                pytest.param((33, 300), -1, torch.float32, False, marks=pytest.mark.full),
+                # dim=-1, M×N both non-aligned (multi-tile, masked loads)
+                pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
+                # dim=-1, non-aligned M + large-N tiled path
+                pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 # dim=0 (reduce along first dim)
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
@@ -233,7 +249,7 @@ class LogSoftmaxTest(_LogSoftmaxTestWorkload, TestBase):
 @LogSoftmaxFixture
 def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSoftmaxTest(shape, dtype, dim=dim)
-    op = LogSoftmaxOp(dtype=dtype, dim=dim, tune=tune)
+    op = LogSoftmaxFwdOp(dtype=dtype, dim=dim, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -250,6 +266,8 @@ class LogSumExpFixture(FixtureBase):
             [
                 # Smoke: 2D, dim=-1, fp32, pow2
                 pytest.param((32, 256), -1, torch.float32, False, marks=[pytest.mark.smoke, pytest.mark.packaging]),
+                # tune=True regression: kernel must be built before autotune runs
+                pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1: dtypes x pow2/non-pow2
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
@@ -271,6 +289,12 @@ class LogSumExpFixture(FixtureBase):
                 # dim=-1, large-N (triggers N-tiling path)
                 pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
+                # dim=-1, M×N both non-aligned (single-tile path)
+                pytest.param((33, 300), -1, torch.float32, False, marks=pytest.mark.full),
+                # dim=-1, M×N both non-aligned (multi-tile, masked loads)
+                pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
+                # dim=-1, non-aligned M + large-N tiled path
+                pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 # dim=0
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
@@ -296,7 +320,7 @@ class LogSumExpTest(_LogSumExpTestWorkload, TestBase):
 @LogSumExpFixture
 def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSumExpTest(shape, dtype, dim=dim)
-    op = LogSumExpOp(dtype=dtype, dim=dim, tune=tune)
+    op = LogSumExpFwdOp(dtype=dtype, dim=dim, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -329,7 +353,7 @@ class LogSumExpKeepdimFixture(FixtureBase):
 def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     """Test logsumexp with keepdim=True — output retains reduced dim as size 1."""
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = LogSumExpOp(dtype=dtype, dim=dim, keepdim=True)
+    op = LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=True)
 
     y_ref = torch.logsumexp(x.float(), dim=dim, keepdim=True).to(dtype)
     y = op(x)
@@ -368,7 +392,7 @@ def test_log_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
 
-    op = LogSoftmaxOp(dtype=dtype, dim=-1)
+    op = LogSoftmaxFwdOp(dtype=dtype, dim=-1)
 
     y_ref = F.log_softmax(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
@@ -401,7 +425,7 @@ def test_logsumexp_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
 
-    op = LogSumExpOp(dtype=dtype, dim=-1)
+    op = LogSumExpFwdOp(dtype=dtype, dim=-1)
 
     y_ref = torch.logsumexp(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
@@ -436,7 +460,7 @@ class LogSoftmax1DFixture(FixtureBase):
 def test_log_softmax_1d(n: int, dtype: torch.dtype) -> None:
     """Test log_softmax with 1D input."""
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = LogSoftmaxOp(dtype=dtype, dim=-1)
+    op = LogSoftmaxFwdOp(dtype=dtype, dim=-1)
 
     y_ref = F.log_softmax(x.float(), dim=-1).to(dtype)
     y = op(x)
@@ -466,7 +490,7 @@ class LogSumExp1DFixture(FixtureBase):
 def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
     """Test logsumexp with 1D input -- output should be a scalar."""
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = LogSumExpOp(dtype=dtype, dim=-1)
+    op = LogSumExpFwdOp(dtype=dtype, dim=-1)
 
     y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
     y = op(x)
@@ -478,16 +502,16 @@ def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
 
 
 # ===================================================================
-# Multi-dim guard tests: SoftmaxOp and LogSoftmaxOp must reject
+# Multi-dim guard tests: SoftmaxFwdOp and LogSoftmaxFwdOp must reject
 # list/tuple dims eagerly (before kernel build/execute).
 # ===================================================================
 
 
 @pytest.mark.smoke
 def test_softmax_rejects_multidim_before_kernel() -> None:
-    """SoftmaxOp must raise ValueError for list dim before touching the kernel."""
+    """SoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
     x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
-    op = SoftmaxOp(dtype=torch.float32, dim=[-1, 0])
+    op = SoftmaxFwdOp(dtype=torch.float32, dim=[-1, 0])
     with pytest.raises(ValueError, match="does not support multi-dim"):
         op(x)
     # Verify no kernel was built (cache must remain empty).
@@ -496,9 +520,9 @@ def test_softmax_rejects_multidim_before_kernel() -> None:
 
 @pytest.mark.smoke
 def test_log_softmax_rejects_multidim_before_kernel() -> None:
-    """LogSoftmaxOp must raise ValueError for list dim before touching the kernel."""
+    """LogSoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
     x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
-    op = LogSoftmaxOp(dtype=torch.float32, dim=[-1, 0])
+    op = LogSoftmaxFwdOp(dtype=torch.float32, dim=[-1, 0])
     with pytest.raises(ValueError, match="does not support multi-dim"):
         op(x)
     assert len(op._kernel_cache) == 0
@@ -506,9 +530,9 @@ def test_log_softmax_rejects_multidim_before_kernel() -> None:
 
 @pytest.mark.smoke
 def test_logsumexp_accepts_multidim() -> None:
-    """LogSumExpOp must accept list dim without error (multi-dim is supported)."""
+    """LogSumExpFwdOp must accept list dim without error (multi-dim is supported)."""
     x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
-    op = LogSumExpOp(dtype=torch.float32, dim=[0, 1])
+    op = LogSumExpFwdOp(dtype=torch.float32, dim=[0, 1])
     y = op(x)
     y_ref = torch.logsumexp(x.float(), dim=[0, 1])
     assert torch.allclose(y, y_ref, atol=1e-5, rtol=1e-5)

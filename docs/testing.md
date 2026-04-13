@@ -4,28 +4,29 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 ## Core Abstractions
 
-| Class             | Location                                                | Role                                                                                                                             |
-| ----------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkloadBase`    | [`workloads/base.py`](../workloads/base.py)             | ABC defining `gen_inputs()`. Shared base for input generation used by both tests and benchmarks.                                 |
-| `FixtureBase`     | [`workloads/base.py`](../workloads/base.py)             | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.  |
-| `TestBase`        | [`tests/test_base.py`](../tests/test_base.py)           | Inherits `WorkloadBase`. Adds `ref_program()` and `check()`. Each op subclasses this for correctness testing.                    |
-| `BenchmarkBase`   | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | ABC composing a `WorkloadBase` instance. Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
-| `BenchmarkReport` | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                       |
+| Class             | Location                                                | Role                                                                                                                            |
+| ----------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkloadBase`    | [`workloads/base.py`](../workloads/base.py)             | ABC defining `gen_inputs()`. Shared base for input generation used by both tests and benchmarks.                                |
+| `FixtureBase`     | [`workloads/base.py`](../workloads/base.py)             | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod. |
+| `TestBase`        | [`tests/test_base.py`](../tests/test_base.py)           | Inherits `WorkloadBase`. Adds `ref_program()` and `check()`. Each op subclasses this for correctness testing.                   |
+| `BenchmarkBase`   | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | Generic ABC over workload type. Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`.         |
+| `BenchmarkReport` | [`benchmarks/benchmark.py`](../benchmarks/benchmark.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                      |
 
 ## Test/Benchmark Pattern
 
 ```python
 # workloads/ops/mha.py
-class MhaFwdWorkload(WorkloadBase):
+class MhaFwdTest(WorkloadBase):
     def __init__(self, batch, heads, seq_len, dim, causal, dtype): ...
     def gen_inputs(self): ...
 
 
 # tests/ops/test_mha.py
-from workloads.ops.mha import MhaFwdWorkload
+from tileops.ops import MhaFwdOp
+from workloads.ops.mha import MhaFwdTest
 
 
-class MhaFwdTest(MhaFwdWorkload, TestBase):
+class MhaFwdTestCase(MhaFwdTest, TestBase):
     def ref_program(self, q, k, v): ...  # correctness oracle, local to test
 
 
@@ -35,13 +36,14 @@ class MhaFwdFixture(FixtureBase):
 
 @MhaFwdFixture
 def test_mha_fwd(batch, seq_len, heads, dim, causal, dtype, tune):
-    test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
-    op = MultiHeadAttentionFwdOp(...)
+    test = MhaFwdTestCase(batch, heads, seq_len, dim, causal, dtype)
+    op = MhaFwdOp(...)
     test.check(op, *test.gen_inputs())
 
 
 # benchmarks/ops/bench_mha.py
-from workloads.ops.mha import MhaFwdWorkload  # import workload, NOT test
+from tileops.ops import MhaFwdOp
+from workloads.ops.mha import MhaFwdTest  # import workload, NOT test
 
 
 class MhaFwdBenchmark(BenchmarkBase):
@@ -51,10 +53,10 @@ class MhaFwdBenchmark(BenchmarkBase):
 
 @MhaFwdFixture  # reuses the same parametrize decorator
 def test_mha_fwd_bench(batch, seq_len, heads, dim, causal, dtype, tune):
-    workload = MhaFwdWorkload(batch, heads, seq_len, dim, causal, dtype)
+    workload = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
     bm = MhaFwdBenchmark(workload)
     inputs = workload.gen_inputs()
-    op = MultiHeadAttentionFwdOp(...)
+    op = MhaFwdOp(...)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 ```
@@ -184,12 +186,24 @@ TestBase (tests/test_base.py, inherits WorkloadBase)
 ### Class hierarchy
 
 ```
-BenchmarkBase (benchmarks/benchmark.py, composes WorkloadBase)
-  __init__(workload: WorkloadBase)
+# Capability protocols (benchmarks/benchmark.py)
+ShapeDtypeWorkload          # Protocol: shape + dtype
+InputGeneratingWorkload     # Protocol: gen_inputs()
+BenchmarkWorkload           # Protocol: shape + dtype + gen_inputs()
+
+# Base class (generic over workload type)
+BenchmarkBase[W] (benchmarks/benchmark.py)
+  __init__(workload: W)
   calculate_flops() -> Optional[float]
   calculate_memory() -> Optional[float]
   profile(op, *inputs) -> dict
+
+ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload])
+  # Derives FLOP/memory from ops_manifest.yaml roofline expressions
 ```
+
+`WorkloadBase` remains the default in-repo implementation; the public
+benchmark interface is defined by capability protocols.
 
 See [Reporting Rules](#reporting-rules) below for `record()` and tag conventions.
 

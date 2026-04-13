@@ -1,4 +1,4 @@
-"""Benchmark for MoePermuteAlignOp vs Triton and sgl-kernel baselines.
+"""Benchmark for MoePermuteAlignFwdOp vs Triton and sgl-kernel baselines.
 
 Baselines:
   - Triton: adapted from SGLang's moe_align_block_size (4-stage fallback)
@@ -27,10 +27,10 @@ except ImportError:
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
-from tileops.ops.moe import MoePermuteAlignOp
+from tileops.ops.moe import MoePermuteAlignFwdOp
 from workloads.ops.moe_permute_align import MoePermuteAlignTest
 
-_OP_NAME = "moe_permute_align"
+_OP_NAME = "MoePermuteAlignFwdOp"
 
 # ---------------------------------------------------------------------------
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
@@ -204,7 +204,7 @@ def test_permute_align_bench(
     inputs = test.gen_inputs()
 
     # TileOPs
-    op = MoePermuteAlignOp(numel, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(numel, num_experts, block_size)
 
     # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)

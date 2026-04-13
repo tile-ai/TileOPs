@@ -1,0 +1,351 @@
+import functools
+import itertools
+from typing import Callable, Optional
+
+import tilelang
+import tilelang.language as T
+import torch
+
+from tileops.kernels.kernel import Kernel
+from tileops.utils import get_sm_version, str2dtype
+
+__all__ = [
+    'GemmKernel',
+    'GemvKernel',
+]
+
+
+@functools.lru_cache(maxsize=32)
+def _gemm_kernel(m: int,
+                 n: int,
+                 k: int,
+                 trans_a: bool,
+                 trans_b: bool,
+                 dtype: str = 'float16') -> Callable:
+    accum_dtype = "float"
+
+    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _gemm_func(block_m: int, block_n: int, block_k: int, threads: int, num_stages: int,
+                   enable_rasterization: bool) -> Callable:
+
+        a_shape = (k, m) if trans_a else (m, k)
+        b_shape = (n, k) if trans_b else (k, n)
+        a_shared_shape = (block_k, block_m) if trans_a else (block_m, block_k)
+        b_shared_shape = (block_n, block_k) if trans_b else (block_k, block_n)
+
+        @T.prim_func
+        def _gemm_main(
+                a: T.Tensor(a_shape, dtype),  # type: ignore
+                b: T.Tensor(b_shape, dtype),  # type: ignore
+                c: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(
+                    T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (bx, by):
+                a_shared = T.alloc_shared(a_shared_shape, dtype)
+                b_shared = T.alloc_shared(b_shared_shape, dtype)
+                c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                c_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                T.annotate_layout({
+                    c_shared: tilelang.layout.make_swizzled_layout(c_shared),
+                })
+                T.use_swizzle(10, enable=enable_rasterization)
+
+                T.clear(c_local)
+
+                for _k in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                    if not trans_a:
+                        # a: (m, k)
+                        T.copy(a[by * block_m, _k * block_k], a_shared)  # [block_m, block_k]
+                    else:
+                        # a: (k, m)
+                        T.copy(a[_k * block_k, by * block_m], a_shared)  # [block_k, block_m]
+
+                    if not trans_b:
+                        # b: (k, n)
+                        T.copy(b[_k * block_k, bx * block_n], b_shared)  # [block_k, block_n]
+                    else:
+                        # b: (n, k)
+                        T.copy(b[bx * block_n, _k * block_k], b_shared)  # [block_n, block_k]
+                    T.gemm(a_shared, b_shared, c_local, trans_a, trans_b)
+
+                T.copy(c_local, c_shared)
+                T.copy(c_shared, c[by * block_m, bx * block_n])
+
+        return _gemm_main
+
+    return _gemm_func
+
+
+@torch.library.custom_op("top::gemm_wrapped_kernel", mutates_args=())
+def _gemm_wrapped_kernel(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasterization: bool,
+    a: torch.Tensor,
+    b: torch.Tensor,
+) -> torch.Tensor:
+    return _gemm_kernel(m, n, k, trans_a, trans_b, dtype)(block_m, block_n, block_k, threads,
+                                                          num_stages, enable_rasterization)(a, b)
+
+
+@_gemm_wrapped_kernel.register_fake
+def _(m: int, n: int, k: int,
+      trans_a: bool, trans_b: bool,
+      dtype: str, block_m: int, block_n: int, block_k: int,
+      num_stages: int, threads: int, enable_rasterization: bool,
+      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
+    return torch.empty((m, n), dtype=inputs[0].dtype, device=inputs[0].device)
+
+
+class GemmKernel(Kernel):
+    supported_archs: list[int] = [80, 89, 90]
+
+    def __init__(self,
+                 m: int,
+                 n: int,
+                 k: int,
+                 dtype: torch.dtype,
+                 config: Optional[dict] = None,
+                 tune: bool = False,
+                 trans_a: bool = False,
+                 trans_b: bool = False) -> None:
+        super().__init__()
+        self.m = m
+        self.n = n
+        self.k = k
+        self.dtype = dtype
+        self.trans_a = trans_a
+        self.trans_b = trans_b
+
+        self.kernel = _gemm_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
+
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        # From tilelang/examples/gemm/example_gemm_autotune.py
+        sm_version = get_sm_version()
+
+        if sm_version in {80}:
+            return {
+                "block_m": 128,
+                "block_n": 256,
+                "block_k": 32,
+                "num_stages": 2,
+                "threads": 128,
+                "enable_rasterization": True
+            }
+        if sm_version in {90}:
+            return {
+                "block_m": 128,
+                "block_n": 256,
+                "block_k": 64,
+                "num_stages": 3,
+                "threads": 256,
+                "enable_rasterization": True
+            }
+
+        return {
+            "block_m": 128,
+            "block_n": 256,
+            "block_k": 32,
+            "num_stages": 0,
+            "threads": 128,
+            "enable_rasterization": True
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # From tilelang/examples/gemm/example_gemm_autotune.py
+        block_m = [64, 128, 256]
+        block_n = [64, 128, 256]
+        block_k = [32, 64]
+        num_stages = [0, 1, 2, 3]
+        threads = [128, 256]
+        enable_rasterization = [True, False]
+        _configs = list(
+            itertools.product(block_m, block_n, block_k, num_stages, threads, enable_rasterization))
+
+        return [{
+            'block_m': c[0],
+            'block_n': c[1],
+            'block_k': c[2],
+            'num_stages': c[3],
+            'threads': c[4],
+            'enable_rasterization': c[5]
+        } for c in _configs]
+
+    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return _gemm_wrapped_kernel(self.m, self.n, self.k, self.trans_a, self.trans_b,
+                                    self.dtype_str, self.config["block_m"], self.config["block_n"],
+                                    self.config["block_k"], self.config["num_stages"],
+                                    self.config["threads"], self.config["enable_rasterization"], a, b)
+
+
+# TODO: add persistent, split-k, steam-k...
+
+
+@functools.lru_cache(maxsize=32)
+def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
+    accum_dtype = "float"
+
+    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _gemv_func(
+        block_n: int,
+        reduce_threads: int,
+        num_stages: int,
+    ) -> Callable:
+
+        max_transaction_size_in_bits = 128
+        tile_k = max_transaction_size_in_bits // (str2dtype[dtype].itemsize * 8)
+        block_k = reduce_threads * tile_k
+
+        @T.prim_func
+        def _gemv_main(
+                a: T.Tensor((k,), dtype),
+                b: T.Tensor((n, k), dtype),
+                c: T.Tensor((n,), dtype),
+        ):
+            # threads=(reduce_threads, block_n): tk=threadIdx.x is the fast-varying
+            # dimension so consecutive warp threads access consecutive columns of B
+            # (same row, stride-1) → coalesced 128-bit loads.
+            with T.Kernel(T.ceildiv(n, block_n), threads=(reduce_threads, block_n)) as bn:
+                tk = T.get_thread_binding(0)  # threadIdx.x — varies within a warp
+                tn = T.get_thread_binding(1)  # threadIdx.y — one row per warp (when reduce_threads=32)
+                c_accum = T.alloc_local((1,), accum_dtype)
+
+                T.clear(c_accum)
+
+                # O3: pipeline B loads through shared memory using T.Pipelined.
+                # T.copy issues cp.async for the next tile while the current tile is
+                # being consumed, hiding HBM3e latency.
+                # num_stages=1 → sequential (no overlap), num_stages>=2 → actual pipeline.
+                b_shared = T.alloc_shared((block_n, block_k), dtype)
+                a_local = T.alloc_local((tile_k,), dtype)
+
+                for bk in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                    # disable_tma=True: use cp.async instead of TMA to avoid
+                    # mbarrier requirements that TileLang cannot infer for
+                    # manually-indexed b_shared in a non-wgmma kernel.
+                    T.copy(b[bn * block_n, bk * block_k], b_shared, disable_tma=True)
+                    # a is tiny (fits in L1), load directly to registers
+                    for _k in T.vectorized(tile_k):
+                        a_local[_k] = a[bk * block_k + tk * tile_k + _k]
+                    # FMA
+                    for _k in T.serial(tile_k):
+                        c_accum[0] += a_local[_k].astype(accum_dtype) * b_shared[
+                            tn, tk * tile_k + _k].astype(accum_dtype)
+
+                c_reduced = T.alloc_local((1,), accum_dtype)
+                with T.attr(
+                        T.comm_reducer(lambda x, y: x + y, [T.Cast(accum_dtype, 0)]),
+                        "reduce_scope",
+                        T.reinterpret(T.uint64(0), dtype="handle"),
+                ):
+                    T.evaluate(
+                        T.tvm_thread_allreduce(
+                            T.uint32(1),
+                            c_accum[0],
+                            True,
+                            c_reduced[0],
+                            tk,
+                            dtype="handle",
+                        ))
+
+                c[bn * block_n + tn] = c_reduced[0]
+
+        return _gemv_main
+
+    return _gemv_func
+
+
+@torch.library.custom_op("top::gemv_wrapped_kernel", mutates_args=())
+def _gemv_wrapped_kernel(
+    n: int,
+    k: int,
+    dtype: str,
+    block_n: int,
+    reduce_threads: int,
+    num_stages: int,
+    a: torch.Tensor,
+    b: torch.Tensor,
+) -> torch.Tensor:
+    return _gemv_kernel(n, k, dtype)(block_n, reduce_threads, num_stages)(a, b)
+
+
+@_gemv_wrapped_kernel.register_fake
+def _(n: int, k: int,
+      dtype: str, block_n: int, reduce_threads: int, num_stages: int,
+      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
+    return torch.empty((n,), dtype=inputs[0].dtype, device=inputs[0].device)
+
+
+class GemvKernel(Kernel):
+    supported_archs: list[int] = [90]
+
+    def __init__(self,
+                 n: int,
+                 k: int,
+                 dtype: torch.dtype,
+                 config: Optional[dict] = None,
+                 tune: bool = False) -> None:
+        super().__init__()
+        self.n = n
+        self.k = k
+        self.dtype = dtype
+
+        self.kernel = _gemv_kernel(n, k, self.dtype_str)
+
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        sm_version = get_sm_version()
+
+        if sm_version in {90}:
+            # reduce_threads=32: full warp per row → coalesced B access + warp shuffle reduce
+            # block_n=8: 256 threads/block, 448 blocks for n=7168 → ~3.4 blocks/SM on H200
+            # num_stages=2: double-buffer B tile to hide HBM3e latency
+            return {
+                "block_n": 8,
+                "reduce_threads": 32,
+                "num_stages": 2,
+            }
+
+        return {
+            "block_n": 32,
+            "reduce_threads": 32,
+            "num_stages": 1,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # num_stages=1: sequential shared-memory path (no overlap, baseline for comparison)
+        # num_stages>=2: actual pipeline with cp.async prefetch to hide HBM latency
+        return [
+            {'block_n': bn, 'reduce_threads': rt, 'num_stages': ns}
+            for bn in [1, 2, 4, 8, 16]
+            for rt in [32]
+            for ns in [1, 2, 3]
+        ]
+
+    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        a = a.flatten().contiguous()
+        # Call the JIT-compiled kernel directly to avoid Python overhead from
+        # closure recreation + JIT cache lookup in _gemv_wrapped_kernel on every
+        # forward pass. _gemv_wrapped_kernel is kept for torch.compile compatibility.
+        return self.kernel(
+            self.config["block_n"],
+            self.config["reduce_threads"],
+            self.config["num_stages"],
+        )(a, b)

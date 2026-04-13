@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormOp
+from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from workloads.ops.fused_add_layer_norm import (
     FusedAddLayerNormTest as _FusedAddLayerNormTestWorkload,
 )
@@ -63,7 +63,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @FusedAddLayerNormFixture
 def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddLayerNormTest(m, n, dtype)
-    op = FusedAddLayerNormOp(M=m, N=n, dtype=dtype)
+    op = FusedAddLayerNormFwdOp(M=m, N=n, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -88,7 +88,7 @@ def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype)
     weight = torch.randn(n, dtype=dtype, device="cuda")
     bias = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = FusedAddLayerNormOp(M=m, N=n, dtype=dtype)
+    op = FusedAddLayerNormFwdOp(M=m, N=n, dtype=dtype)
 
     # Reference on contiguous copies
     test = FusedAddLayerNormTest(m, n, dtype)
@@ -121,7 +121,7 @@ def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch
     bias = torch.randn(hidden, dtype=dtype, device="cuda")
 
     M = batch * seq
-    op = FusedAddLayerNormOp(M=M, N=hidden, dtype=dtype)
+    op = FusedAddLayerNormFwdOp(M=M, N=hidden, dtype=dtype)
 
     test = FusedAddLayerNormTest(M, hidden, dtype)
     y_ref, add_ref = test.ref_program(x, residual, weight, bias)
