@@ -11,7 +11,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import (
     BitwiseAndOp,
     BitwiseOrOp,
@@ -63,7 +63,7 @@ class BinaryBenchCase:
         return self._gen_inputs(self.shape, self.dtype)
 
 
-class BinaryBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class BinaryBenchmark(BenchmarkBase[BinaryBenchCase]):
     """Bandwidth-oriented benchmark for binary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:
@@ -90,7 +90,7 @@ class FusedGatedBenchCase:
         return (torch.randn(self.M, 2 * self.N, device="cuda", dtype=self.dtype),)
 
 
-class FusedGatedBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
     """Bandwidth-oriented benchmark for fused gated ops."""
 
     def calculate_flops(self) -> Optional[float]:
@@ -461,7 +461,7 @@ class BroadcastBenchCase:
         return self._gen_inputs(self.a_shape, self.b_shape, self.dtype)
 
 
-class BroadcastBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class BroadcastBenchmark(BenchmarkBase[BroadcastBenchCase]):
     """Bandwidth-oriented benchmark for broadcast binary ops."""
 
     def calculate_flops(self) -> Optional[float]:

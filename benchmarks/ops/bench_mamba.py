@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
@@ -39,7 +39,7 @@ def da_cumsum_fwd_ref(
     return dA_cumsum.permute(0, 3, 1, 2).contiguous()
 
 
-class DaCumsumFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class DaCumsumFwdBenchmark(BenchmarkBase[DaCumsumFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -97,7 +97,7 @@ def ssd_chunk_scan_fwd_torch(x, cb, dA_cumsum, C, prev_states, dt):
     return y_off + y_diag
 
 
-class SSDChunkScanFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class SSDChunkScanFwdBenchmark(BenchmarkBase[SSDChunkScanFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -188,7 +188,7 @@ def ssd_chunk_state_fwd_ref(
     return out.permute(0, 1, 2, 4, 3)
 
 
-class SSDChunkStateFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class SSDChunkStateFwdBenchmark(BenchmarkBase[SSDChunkStateFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -264,7 +264,7 @@ def ssd_state_passing_fwd_ref(
     return torch.stack(out, dim=1), s
 
 
-class SSDStatePassingFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class SSDStatePassingFwdBenchmark(BenchmarkBase[SSDStatePassingFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -335,7 +335,7 @@ def ssd_decode_ref(
     return y_out
 
 
-class SSDDecodeBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class SSDDecodeBenchmark(BenchmarkBase[SSDDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

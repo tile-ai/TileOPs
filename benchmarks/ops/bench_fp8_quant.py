@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import FP8QuantOp
 from workloads.fp8_quant import FP8QuantTest
 
@@ -20,7 +20,7 @@ class _FP8QuantTestBaseline(FP8QuantTest):
         return scale_tensor.squeeze(dim=-1), output_tensor
 
 
-class FP8QuantBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class FP8QuantBenchmark(BenchmarkBase[FP8QuantTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

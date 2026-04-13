@@ -17,7 +17,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import AddOp, WhereOp
 from workloads.binary_arith import AddSameShapeTest
 from workloads.workload_base import FixtureBase
@@ -85,7 +85,7 @@ class BinaryBenchCase:
         return a, b
 
 
-class BinaryBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class BinaryBenchmark(BenchmarkBase[BinaryBenchCase]):
     """Bandwidth-oriented benchmark for binary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:
@@ -114,7 +114,7 @@ class WhereBenchCase:
         return cond, x, y
 
 
-class WhereBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class WhereBenchmark(BenchmarkBase[WhereBenchCase]):
     """Benchmark for where op."""
 
     def calculate_flops(self) -> Optional[float]:

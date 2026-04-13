@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import TopkSelectorOp
 from workloads.topk_selector import TopkSelectorTest
 
@@ -19,7 +19,7 @@ class _TopkSelectorTestBaseline(TopkSelectorTest):
         return indexes_ref.permute(0, 1, 3, 2)
 
 
-class TopkSelectorBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class TopkSelectorBenchmark(BenchmarkBase[TopkSelectorTest]):
 
     def calculate_flops(self) -> Optional[float]:
         return None

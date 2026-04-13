@@ -11,7 +11,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.dropout import DropoutOp
 from workloads.workload_base import FixtureBase
 
@@ -30,7 +30,7 @@ class DropoutBenchCase:
         return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
 
 
-class DropoutBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class DropoutBenchmark(BenchmarkBase[DropoutBenchCase]):
     def calculate_flops(self) -> Optional[float]:
         # RNG + compare + scale — not compute-bound, return element count
         return self.workload.n_total

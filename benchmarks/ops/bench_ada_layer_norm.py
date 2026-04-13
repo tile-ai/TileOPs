@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
@@ -15,7 +15,7 @@ _ADA_OP_NAME = "AdaLayerNormFwdOp"
 _ADA_ZERO_OP_NAME = "AdaLayerNormZeroFwdOp"
 
 
-class AdaLayerNormBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class AdaLayerNormBenchmark(BenchmarkBase[AdaLayerNormTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
@@ -34,7 +34,7 @@ class AdaLayerNormBenchmark(BenchmarkBase[BenchmarkWorkload]):
         return self._get_roofline()[1]
 
 
-class AdaLayerNormZeroBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class AdaLayerNormZeroBenchmark(BenchmarkBase[AdaLayerNormZeroTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

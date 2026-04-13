@@ -10,7 +10,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import (
     BitwiseNotOp,
     ExpOp,
@@ -42,7 +42,7 @@ class UnaryElementwiseBenchCase:
         return self._gen_inputs(self.n_total, self.dtype)
 
 
-class UnaryElementwiseBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class UnaryElementwiseBenchmark(BenchmarkBase[UnaryElementwiseBenchCase]):
     """Bandwidth-oriented benchmark for unary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:

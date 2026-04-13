@@ -24,7 +24,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from workloads.workload_base import FixtureBase, WorkloadBase
 
 # ===================================================================
@@ -102,7 +102,7 @@ class ReduceMultidimTest(WorkloadBase):
         return ops[self.op_kind](x_f32).to(x.dtype)
 
 
-class ReduceMultidimBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class ReduceMultidimBenchmark(BenchmarkBase[ReduceMultidimTest]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         total_elems = 1
@@ -221,7 +221,7 @@ class ArgreduceMultidimTest(WorkloadBase):
         return x.argmin(dim=self.dim, keepdim=self.keepdim)
 
 
-class ArgreduceMultidimBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class ArgreduceMultidimBenchmark(BenchmarkBase[ArgreduceMultidimTest]):
     def calculate_flops(self) -> Optional[float]:
         total_elems = 1
         for s in self.workload.shape:
@@ -336,7 +336,7 @@ class LogicalReduceMultidimTest(WorkloadBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class LogicalReduceMultidimBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class LogicalReduceMultidimBenchmark(BenchmarkBase[LogicalReduceMultidimTest]):
     def calculate_flops(self) -> Optional[float]:
         total_elems = 1
         for s in self.workload.shape:
@@ -455,7 +455,7 @@ class VectorNormMultidimTest(WorkloadBase):
         )
 
 
-class VectorNormMultidimBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class VectorNormMultidimBenchmark(BenchmarkBase[VectorNormMultidimTest]):
     def calculate_flops(self) -> Optional[float]:
         total_elems = 1
         for s in self.workload.shape:
@@ -567,7 +567,7 @@ class CumulativeMultidimTest(WorkloadBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class CumulativeMultidimBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class CumulativeMultidimBenchmark(BenchmarkBase[CumulativeMultidimTest]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         return t.M * t.N
@@ -676,7 +676,7 @@ class LogSumExpMultidimTest(WorkloadBase):
         )
 
 
-class LogSumExpMultidimBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class LogSumExpMultidimBenchmark(BenchmarkBase[LogSumExpMultidimTest]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         total_elems = 1

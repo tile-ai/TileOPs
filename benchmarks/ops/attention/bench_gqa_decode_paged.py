@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.gqa_decode_paged import GqaDecodePagedTest
 
@@ -47,7 +47,7 @@ class _GqaDecodePagedTestBaseline(GqaDecodePagedTest):
         return torch.cat(out_list, dim=0)
 
 
-class GqaDecodePagedBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class GqaDecodePagedBenchmark(BenchmarkBase[GqaDecodePagedTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

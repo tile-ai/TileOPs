@@ -21,7 +21,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import ReluOp
 from workloads.workload_base import FixtureBase
 
@@ -55,7 +55,7 @@ class UnaryStrategyBenchCase:
         return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
 
 
-class UnaryStrategyBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class UnaryStrategyBenchmark(BenchmarkBase[UnaryStrategyBenchCase]):
     """Bandwidth-oriented benchmark for unary elementwise strategy comparison."""
 
     def calculate_flops(self) -> Optional[float]:

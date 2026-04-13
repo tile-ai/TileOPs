@@ -12,7 +12,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.batch_norm import BatchNormBwdTest, BatchNormFwdTest
@@ -24,7 +24,7 @@ _BWD_OP_NAME = "BatchNormBwdOp"
 # Benchmark classes
 # ---------------------------------------------------------------------------
 
-class BatchNormFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class BatchNormFwdBenchmark(BenchmarkBase[BatchNormFwdTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
@@ -49,7 +49,7 @@ class BatchNormFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
         return self._get_roofline()[1]
 
 
-class BatchNormBwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class BatchNormBwdBenchmark(BenchmarkBase[BatchNormBwdTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

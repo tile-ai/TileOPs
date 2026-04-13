@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetDecodeOp
 from workloads.gated_deltanet import GatedDeltaNetDecodeTest
 from workloads.workload_base import FixtureBase
@@ -60,7 +60,7 @@ except ImportError:
     fused_recurrent_gated_delta_rule = None
 
 
-class GatedDeltaNetDecodeBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class GatedDeltaNetDecodeBenchmark(BenchmarkBase[GatedDeltaNetDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

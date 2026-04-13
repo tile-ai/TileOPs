@@ -4,7 +4,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import FFTC2COp
 from workloads.fft import FFTTest
 from workloads.workload_base import FixtureBase
@@ -35,7 +35,7 @@ class FFTBenchmarkFixture(FixtureBase):
     ]
 
 
-class FFTBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class FFTBenchmark(BenchmarkBase[FFTTest]):
 
     def calculate_flops(self) -> Optional[float]:
         n = self.workload.n

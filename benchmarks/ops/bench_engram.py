@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.engram_decode import EngramDecodeOp
 from workloads.engram import (
@@ -54,7 +54,7 @@ def engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
     )
 
 
-class EngramGateConvFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class EngramGateConvFwdBenchmark(BenchmarkBase[EngramGateConvFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -154,7 +154,7 @@ class _EngramGateConvBwdTestBaseline(EngramGateConvBwdTest):
         )
 
 
-class EngramGateConvBwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class EngramGateConvBwdBenchmark(BenchmarkBase[EngramGateConvBwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -254,7 +254,7 @@ def engram_decode_step_torch(
     return y_t.to(h_t.dtype), new_conv_state
 
 
-class EngramDecodeBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class EngramDecodeBenchmark(BenchmarkBase[EngramDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

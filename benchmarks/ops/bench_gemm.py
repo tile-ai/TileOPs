@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GemmOp
 from workloads.gemm import GemmTest
 
@@ -19,7 +19,7 @@ class _GemmTestBaseline(GemmTest):
         return torch.matmul(a, b)
 
 
-class GemmBenchmark(BenchmarkBase[BenchmarkWorkload]):
+class GemmBenchmark(BenchmarkBase[GemmTest]):
 
     def calculate_flops(self) -> Optional[float]:
         return 2.0 * self.workload.m * self.workload.n * self.workload.k
