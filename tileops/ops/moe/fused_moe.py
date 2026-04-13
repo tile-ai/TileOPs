@@ -31,7 +31,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.ops.moe.fused_moe_experts import FusedMoeExpertsFwdOp, FusedMoeExpertsPaddedFwdOp
 from tileops.ops.moe.fused_topk import FusedTopKOp
 
-from ..op import Op
+from ..op_base import Op
 
 __all__ = ["FusedMoe"]
 

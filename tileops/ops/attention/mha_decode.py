@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from tileops.kernels.attention import MhaDecodeKernel
 from tileops.kernels.kernel_base import Kernel
 
-from ..op import Op
+from ..op_base import Op
 
 __all__ = ["MultiHeadAttentionDecodeWithKVCacheFwdOp"]
 

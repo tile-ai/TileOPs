@@ -32,7 +32,7 @@ from tileops.ops.moe.permute_nopad import MoePermuteNopadFwdOp
 from tileops.ops.moe.permute_padded import MoePermutePaddedFwdOp
 from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
 
-from ..op import Op
+from ..op_base import Op
 
 __all__ = ["FusedMoeExpertsFwdOp", "FusedMoeExpertsPaddedFwdOp"]
 

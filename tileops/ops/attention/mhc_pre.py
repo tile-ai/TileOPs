@@ -5,7 +5,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mhc import MHCPreKernel
 
-from ..op import Op
+from ..op_base import Op
 
 __all__ = ["MHCPreOp"]
 

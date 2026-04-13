@@ -7,7 +7,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import MoePermutePaddedKernel
 
-from ..op import Op
+from ..op_base import Op
 
 __all__ = ["MoePermutePaddedFwdOp"]
 

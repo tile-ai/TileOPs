@@ -31,7 +31,7 @@ from tileops.kernels.norm.batch_norm import (
     BatchNormFwdTrainKernel,
 )
 
-from ..op import Op
+from ..op_base import Op
 
 __all__ = ["BatchNormFwdOp", "BatchNormBwdOp"]
 

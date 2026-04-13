@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import GroupNormKernel
 
-from ..op import Op
+from ..op_base import Op
 
 __all__ = ["InstanceNormFwdOp"]
 
