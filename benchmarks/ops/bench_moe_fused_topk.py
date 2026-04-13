@@ -29,7 +29,7 @@ except ImportError:
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.moe import FusedTopKOp
 from workloads.base import FixtureBase
-from workloads.moe_fused_topk import FusedTopKTest
+from workloads.moe import FusedTopKTest
 
 
 def fused_topk_torch(
