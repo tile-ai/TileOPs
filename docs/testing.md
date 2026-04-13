@@ -186,12 +186,6 @@ TestBase (tests/test_base.py, inherits WorkloadBase)
 ### Class hierarchy
 
 ```
-# Capability protocols (benchmarks/benchmark.py)
-ShapeDtypeWorkload          # Protocol: shape + dtype
-InputGeneratingWorkload     # Protocol: gen_inputs()
-BenchmarkWorkload           # Protocol: shape + dtype + gen_inputs()
-
-# Base class (generic over workload type)
 BenchmarkBase[W] (benchmarks/benchmark.py)
   __init__(workload: W)
   calculate_flops() -> Optional[float]
@@ -202,8 +196,17 @@ ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload])
   # Derives FLOP/memory from ops_manifest.yaml roofline expressions
 ```
 
-`WorkloadBase` remains the default in-repo implementation; the public
-benchmark interface is defined by capability protocols.
+### Workload protocols
+
+The benchmark interface uses capability protocols (structural subtyping) instead of requiring `WorkloadBase` inheritance. `WorkloadBase` remains the default in-repo implementation; the public benchmark API is defined by these protocols in `benchmarks/benchmark.py`:
+
+| Protocol                  | Requires          | Use when                                            |
+| ------------------------- | ----------------- | --------------------------------------------------- |
+| `ShapeDtypeWorkload`      | `shape`, `dtype`  | Helper only reads metadata (e.g. `roofline_vars()`) |
+| `InputGeneratingWorkload` | `gen_inputs()`    | Code only needs input generation                    |
+| `BenchmarkWorkload`       | Both of the above | Code needs metadata and input generation            |
+
+For benchmark-specific metadata (e.g. `m/n/k` for GEMM), define a dedicated protocol for that benchmark family.
 
 See [Reporting Rules](#reporting-rules) below for `record()` and tag conventions.
 
