@@ -2,7 +2,7 @@ import torch
 
 from tileops.kernels.norm import RMSNormKernel
 
-from .base import RowNormOp
+from .norm_base import RowNormOp
 
 __all__ = ["RMSNormFwdOp"]
 
