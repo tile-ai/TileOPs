@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
-from workloads.ops.ada_layer_norm import AdaLayerNormTest as _AdaLayerNormTestWorkload
+from workloads.ada_layer_norm import AdaLayerNormTest as _AdaLayerNormTestWorkload
 
 
 class AdaLayerNormTest(_AdaLayerNormTestWorkload, TestBase):

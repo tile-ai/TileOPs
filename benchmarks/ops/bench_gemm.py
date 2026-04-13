@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GemmOp
-from workloads.ops.gemm import GemmTest
+from workloads.gemm import GemmTest
 
 
 class _GemmTestBaseline(GemmTest):

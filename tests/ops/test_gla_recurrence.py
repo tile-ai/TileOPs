@@ -6,7 +6,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GLADecodeOp
-from workloads.ops.gla_recurrence import GLADecodeTest as _GLADecodeTestWorkload
+from workloads.gla import GLADecodeTest as _GLADecodeTestWorkload
 
 
 def gla_decode_torch(

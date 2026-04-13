@@ -7,7 +7,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import FFTC2COp
 from workloads.base import FixtureBase
-from workloads.ops.fft import FFTTest
+from workloads.fft import FFTTest
 
 
 class _FFTTestBaseline(FFTTest):

@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import FP8LightingIndexerOp
-from workloads.ops.fp8_lighting_indexer import FP8LightingIndexerTest
+from workloads.fp8_lighting_indexer import FP8LightingIndexerTest
 
 
 class _FP8LightingIndexerTestBaseline(FP8LightingIndexerTest):

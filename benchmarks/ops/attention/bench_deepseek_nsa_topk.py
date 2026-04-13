@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import NSATopkVarlenOp
-from workloads.ops.deepseek_nsa_topk import NsaTopkTest
+from workloads.attention.deepseek_nsa_topk import NsaTopkTest
 
 
 def _nsa_topk_torch(test, q, k_cmp, lse, block_counts, block_size, scale,

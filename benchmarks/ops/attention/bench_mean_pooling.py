@@ -5,8 +5,8 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import MeanPoolingForwardOp
+from workloads.attention.mean_pooling import MeanPoolingTest
 from workloads.nsa_utils import prepare_chunk_indices
-from workloads.ops.mean_pooling_ops import MeanPoolingTest
 
 
 class _MeanPoolingTestBaseline(MeanPoolingTest):

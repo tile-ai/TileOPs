@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
-from workloads.ops.fused_add_layer_norm import (
+from workloads.fused_add_layer_norm import (
     FusedAddLayerNormTest as _FusedAddLayerNormTestWorkload,
 )
 

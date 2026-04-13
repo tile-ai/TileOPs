@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import MHCPostOp
-from workloads.ops.mhc_post import MHCPostTest
+from workloads.mhc import MHCPostTest
 
 
 class _MHCPostTestBaseline(MHCPostTest):

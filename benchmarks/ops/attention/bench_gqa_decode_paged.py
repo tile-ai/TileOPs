@@ -8,7 +8,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from workloads.ops.gqa_decode_paged import GqaDecodePagedTest
+from workloads.attention.gqa_decode_paged import GqaDecodePagedTest
 
 
 class _GqaDecodePagedTestBaseline(GqaDecodePagedTest):

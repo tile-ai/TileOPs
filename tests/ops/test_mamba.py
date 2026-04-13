@@ -7,16 +7,18 @@ from tileops.ops.ssd_chunk_scan import SsdChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SsdChunkStateFwdOp
 from tileops.ops.ssd_decode import SsdDecodeOp
 from tileops.ops.ssd_state_passing import SsdStatePassingFwdOp
-from workloads.ops.da_cumsum_fwd import DaCumsumFwdFixture
-from workloads.ops.da_cumsum_fwd import DaCumsumFwdTest as _DaCumsumFwdTestWorkload
-from workloads.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdFixture
-from workloads.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdTest as _SsdChunkScanFwdTestWorkload
-from workloads.ops.ssd_chunk_state_fwd import SsdChunkStateFwdFixture
-from workloads.ops.ssd_chunk_state_fwd import SsdChunkStateFwdTest as _SsdChunkStateFwdTestWorkload
-from workloads.ops.ssd_decode import SsdDecodeFixture
-from workloads.ops.ssd_decode import SsdDecodeTest as _SsdDecodeTestWorkload
-from workloads.ops.ssd_state_passing_fwd import SsdStatePassingFwdFixture
-from workloads.ops.ssd_state_passing_fwd import (
+from workloads.mamba import (
+    DaCumsumFwdFixture,
+    SsdChunkScanFwdFixture,
+    SsdChunkStateFwdFixture,
+    SsdDecodeFixture,
+    SsdStatePassingFwdFixture,
+)
+from workloads.mamba import DaCumsumFwdTest as _DaCumsumFwdTestWorkload
+from workloads.mamba import SsdChunkScanFwdTest as _SsdChunkScanFwdTestWorkload
+from workloads.mamba import SsdChunkStateFwdTest as _SsdChunkStateFwdTestWorkload
+from workloads.mamba import SsdDecodeTest as _SsdDecodeTestWorkload
+from workloads.mamba import (
     SsdStatePassingFwdTest as _SsdStatePassingFwdTestWorkload,
 )
 

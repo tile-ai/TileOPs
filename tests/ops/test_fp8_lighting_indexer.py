@@ -5,7 +5,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import FP8LightingIndexerOp
-from workloads.ops.fp8_lighting_indexer import (
+from workloads.fp8_lighting_indexer import (
     FP8LightingIndexerTest as _FP8LightingIndexerTestWorkload,
 )
 

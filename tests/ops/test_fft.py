@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import FFTC2COp
-from workloads.ops.fft import FFTTest as _FFTTestWorkload
+from workloads.fft import FFTTest as _FFTTestWorkload
 
 
 class FFTTest(_FFTTestWorkload, TestBase):

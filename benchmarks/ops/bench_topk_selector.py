@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import TopkSelectorOp
-from workloads.ops.topk_selector import TopkSelectorTest
+from workloads.topk_selector import TopkSelectorTest
 
 
 class _TopkSelectorTestBaseline(TopkSelectorTest):

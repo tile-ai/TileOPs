@@ -12,7 +12,7 @@ from benchmarks.benchmark import BenchmarkReport, ManifestBenchmark, workloads_t
 from tileops.ops.reduction.log_softmax import LogSoftmaxFwdOp
 from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
 from tileops.ops.reduction.softmax import SoftmaxFwdOp
-from workloads.ops.softmax import (
+from workloads.softmax import (
     LogSoftmaxTest,
     LogSumExpTest,
     SoftmaxTest,

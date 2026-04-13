@@ -6,7 +6,7 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import MHCPreOp
-from workloads.ops.mhc_pre import MHCPreTest
+from workloads.mhc import MHCPreTest
 
 
 class _MHCPreTestBaseline(MHCPreTest):

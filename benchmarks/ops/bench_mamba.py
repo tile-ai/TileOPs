@@ -9,11 +9,18 @@ from tileops.ops.ssd_chunk_scan import SsdChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SsdChunkStateFwdOp
 from tileops.ops.ssd_decode import SsdDecodeOp
 from tileops.ops.ssd_state_passing import SsdStatePassingFwdOp
-from workloads.ops.da_cumsum_fwd import DaCumsumFwdFixture, DaCumsumFwdTest
-from workloads.ops.ssd_chunk_scan_fwd import SsdChunkScanFwdFixture, SsdChunkScanFwdTest
-from workloads.ops.ssd_chunk_state_fwd import SsdChunkStateFwdFixture, SsdChunkStateFwdTest
-from workloads.ops.ssd_decode import SsdDecodeFixture, SsdDecodeTest
-from workloads.ops.ssd_state_passing_fwd import SsdStatePassingFwdFixture, SsdStatePassingFwdTest
+from workloads.mamba import (
+    DaCumsumFwdFixture,
+    DaCumsumFwdTest,
+    SsdChunkScanFwdFixture,
+    SsdChunkScanFwdTest,
+    SsdChunkStateFwdFixture,
+    SsdChunkStateFwdTest,
+    SsdDecodeFixture,
+    SsdDecodeTest,
+    SsdStatePassingFwdFixture,
+    SsdStatePassingFwdTest,
+)
 
 # ---------------------------------------------------------------------------
 # Optional mamba_ssm Triton baselines

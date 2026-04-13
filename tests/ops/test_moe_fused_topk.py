@@ -16,7 +16,7 @@ import torch
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import FusedTopKOp
-from workloads.ops.moe_fused_topk import FusedTopKTest
+from workloads.moe import FusedTopKTest
 
 
 def fused_topk_torch(
