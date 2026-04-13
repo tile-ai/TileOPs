@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.layer_norm import LayerNormTest
@@ -12,7 +12,7 @@ from workloads.layer_norm import LayerNormTest
 _OP_NAME = "LayerNormFwdOp"
 
 
-class LayerNormBenchmark(BenchmarkBase):
+class LayerNormBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

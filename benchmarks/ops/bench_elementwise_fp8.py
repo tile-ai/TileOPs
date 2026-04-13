@@ -11,7 +11,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops.elementwise import AddOp, ExpOp, ReluOp, SiluAndMulOp
 from workloads.workload_base import FixtureBase
 
@@ -38,7 +38,7 @@ class Fp8UnaryBenchCase:
         return (x.to(self.dtype),)
 
 
-class Fp8UnaryBenchmark(BenchmarkBase):
+class Fp8UnaryBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -58,7 +58,7 @@ class Fp8BinaryBenchCase:
         return a, b
 
 
-class Fp8BinaryBenchmark(BenchmarkBase):
+class Fp8BinaryBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -78,7 +78,7 @@ class Fp8FusedGatedBenchCase:
         return (x.to(self.dtype),)
 
 
-class Fp8FusedGatedBenchmark(BenchmarkBase):
+class Fp8FusedGatedBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         # FIXME(ying): hardcoded for silu (4 FLOPs/elem + 1 mul with value = 5).
         # Must update when benchmarking other activations (e.g. gelu).

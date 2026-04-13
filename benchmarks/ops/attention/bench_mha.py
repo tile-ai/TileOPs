@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.attention.mha import (
     MhaBwdTest,
@@ -12,7 +12,7 @@ from workloads.attention.mha import (
 )
 
 
-class MhaFwdBenchmark(BenchmarkBase):
+class MhaFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -25,7 +25,7 @@ class MhaFwdBenchmark(BenchmarkBase):
         return 4 * t.batch * t.heads * t.seq_len * t.dim * t.dtype.itemsize
 
 
-class MhaBwdBenchmark(BenchmarkBase):
+class MhaBwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops import Conv1dFwdOp, Conv2dOp, Conv3dOp
 
 
@@ -56,7 +56,7 @@ class Conv1dBenchCase:
         )
 
 
-class Conv1dBenchmark(BenchmarkBase):
+class Conv1dBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -189,7 +189,7 @@ class Conv2dBenchCase:
         )
 
 
-class Conv2dBenchmark(BenchmarkBase):
+class Conv2dBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -327,7 +327,7 @@ class Conv3dBenchCase:
         )
 
 
-class Conv3dBenchmark(BenchmarkBase):
+class Conv3dBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

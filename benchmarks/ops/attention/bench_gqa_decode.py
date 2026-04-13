@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.gqa_decode import GqaDecodeTest
 
@@ -23,7 +23,7 @@ class _GqaDecodeTestBaseline(GqaDecodeTest):
         return output
 
 
-class GqaDecodeBenchmark(BenchmarkBase):
+class GqaDecodeBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

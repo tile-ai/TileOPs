@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from einops import einsum, rearrange
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek_mla_decode import MlaDecodeTest
 
@@ -57,7 +57,7 @@ class _MlaDecodeTestBaseline(MlaDecodeTest):
         return out
 
 
-class MlaDecodeBenchmark(BenchmarkBase):
+class MlaDecodeBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

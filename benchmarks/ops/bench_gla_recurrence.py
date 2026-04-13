@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops import GLADecodeOp
 from workloads.gla import GLADecodeTest
 from workloads.workload_base import FixtureBase
@@ -60,7 +60,7 @@ except ImportError:
     fused_recurrent_gla = None
 
 
-class GLADecodeBenchmark(BenchmarkBase):
+class GLADecodeBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

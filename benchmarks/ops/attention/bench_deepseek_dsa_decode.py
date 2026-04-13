@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek_dsa_decode import DsaDecodeTest
 
@@ -57,7 +57,7 @@ class _DsaDecodeTestBaseline(DsaDecodeTest):
         return o.to(torch.float16)
 
 
-class DsaDecodeBenchmark(BenchmarkBase):
+class DsaDecodeBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

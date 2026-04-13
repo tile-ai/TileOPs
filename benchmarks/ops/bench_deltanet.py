@@ -18,7 +18,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
 from workloads.deltanet import DeltaNetFwdTest
 from workloads.workload_base import FixtureBase
@@ -172,7 +172,7 @@ def _to_fla_layout(q, k, v, beta):
 # Forward benchmark
 # =============================================================================
 
-class DeltaNetFwdBenchmark(BenchmarkBase):
+class DeltaNetFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -246,7 +246,7 @@ def test_deltanet_vs_fla_fwd(
 # Backward benchmark
 # =============================================================================
 
-class DeltaNetBwdBenchmark(BenchmarkBase):
+class DeltaNetBwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -339,7 +339,7 @@ def test_deltanet_vs_fla_bwd(
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
 # =============================================================================
 
-class DeltaNetFwdBwdBenchmark(BenchmarkBase):
+class DeltaNetFwdBwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

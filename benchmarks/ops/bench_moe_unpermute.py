@@ -30,7 +30,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoeUnpermuteFwdOp
 from workloads.moe import MoeUnpermuteTest
@@ -42,7 +42,7 @@ _OP_NAME = "MoeUnpermuteFwdOp"
 # ---------------------------------------------------------------------------
 
 
-class MoeUnpermuteBenchmark(BenchmarkBase):
+class MoeUnpermuteBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

@@ -5,12 +5,12 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops import GqaSlidingWindowFwdOp
 from workloads.attention.gqa_sliding_window import GqaSlidingWindowFwdTest
 
 
-class GqaSlidingWindowFwdBenchmark(BenchmarkBase):
+class GqaSlidingWindowFwdBenchmark(BenchmarkBase[BenchmarkWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         """Approximate FLOPs for QK^T and PV GEMMs."""

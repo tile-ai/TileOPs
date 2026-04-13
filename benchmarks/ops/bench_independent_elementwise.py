@@ -11,7 +11,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, BenchmarkWorkload
 from tileops.ops.elementwise import (
     AlibiOp,
     ClampOp,
@@ -47,7 +47,7 @@ class UnaryBenchCase:
         return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
 
 
-class UnaryBenchmark(BenchmarkBase):
+class UnaryBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -119,7 +119,7 @@ class PreluBenchCase:
         return x, weight
 
 
-class PreluBenchmark(BenchmarkBase):
+class PreluBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -175,7 +175,7 @@ class WhereBenchCase:
         return cond, x, y
 
 
-class WhereBenchmark(BenchmarkBase):
+class WhereBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -228,7 +228,7 @@ class MaskedFillBenchCase:
         return x, mask
 
 
-class MaskedFillBenchmark(BenchmarkBase):
+class MaskedFillBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -274,7 +274,7 @@ class GenerativeBenchCase:
         return ()
 
 
-class GenerativeBenchmark(BenchmarkBase):
+class GenerativeBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -364,7 +364,7 @@ class Fp8UnaryBenchCase:
         return (x.to(self.dtype),)
 
 
-class Fp8UnaryBenchmark(BenchmarkBase):
+class Fp8UnaryBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -442,7 +442,7 @@ class Fp8WhereBenchCase:
         return cond, x, y
 
 
-class Fp8WhereBenchmark(BenchmarkBase):
+class Fp8WhereBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
@@ -465,7 +465,7 @@ class Fp8MaskedFillBenchCase:
         return x, mask
 
 
-class Fp8MaskedFillBenchmark(BenchmarkBase):
+class Fp8MaskedFillBenchmark(BenchmarkBase[BenchmarkWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 
