@@ -5,10 +5,16 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.engram_decode import EngramDecodeOp
-from workloads.ops.engram_bwd import EngramGateConvBwdTest as _EngramGateConvBwdTestWorkload
-from workloads.ops.engram_decode import EngramDecodeTest as _EngramDecodeTestWorkload
-from workloads.ops.engram_fwd import CONV_KERNEL_SIZE
-from workloads.ops.engram_fwd import (
+from workloads.engram import (
+    CONV_KERNEL_SIZE,
+)
+from workloads.engram import (
+    EngramDecodeTest as _EngramDecodeTestWorkload,
+)
+from workloads.engram import (
+    EngramGateConvBwdTest as _EngramGateConvBwdTestWorkload,
+)
+from workloads.engram import (
     EngramGateConvFwdTest as _EngramGateConvFwdTestWorkload,
 )
 

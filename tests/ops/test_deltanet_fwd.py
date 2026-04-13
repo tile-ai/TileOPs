@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import DeltaNetFwdOp
-from workloads.ops.deltanet_fwd import DeltaNetFwdTest as _DeltaNetFwdTestWorkload
+from workloads.deltanet import DeltaNetFwdTest as _DeltaNetFwdTestWorkload
 
 
 def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):

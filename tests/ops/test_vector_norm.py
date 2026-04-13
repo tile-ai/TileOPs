@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare
-from workloads.ops.vector_norm import L1NormTest as _L1NormWorkload
+from workloads.vector_norm import L1NormTest as _L1NormWorkload
 
 # ---------------------------------------------------------------------------
 # Fixtures

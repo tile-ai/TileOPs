@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MHCPostOp
-from workloads.ops.mhc_post import MHCPostTest as _MHCPostTestWorkload
+from workloads.mhc import MHCPostTest as _MHCPostTestWorkload
 
 
 class MHCPostTest(_MHCPostTestWorkload, TestBase):

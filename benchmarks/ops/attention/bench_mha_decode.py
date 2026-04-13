@@ -7,7 +7,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops import MultiHeadAttentionDecodeWithKVCacheFwdOp
-from workloads.ops.mha_decode import MhaDecodeTest
+from workloads.attention.mha_decode import MhaDecodeTest
 
 
 class _MhaDecodeTestBaseline(MhaDecodeTest):

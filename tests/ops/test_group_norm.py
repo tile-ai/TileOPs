@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.group_norm import GroupNormFwdOp
-from workloads.ops.group_norm import GroupNormTest as _GroupNormTestWorkload
+from workloads.group_norm import GroupNormTest as _GroupNormTestWorkload
 
 
 class GroupNormTest(_GroupNormTestWorkload, TestBase):

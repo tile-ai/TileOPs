@@ -6,7 +6,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from workloads.ops.rms_norm import RmsNormTest
+from workloads.rms_norm import RmsNormTest
 
 
 class _RmsNormTestBaseline(RmsNormTest):

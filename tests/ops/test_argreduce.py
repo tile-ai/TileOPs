@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from workloads.ops.argreduce import ArgmaxTest as _ArgmaxWorkload
+from workloads.argreduce import ArgmaxTest as _ArgmaxWorkload
 
 # ---------------------------------------------------------------------------
 # Fixtures

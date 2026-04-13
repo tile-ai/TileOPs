@@ -5,7 +5,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import TopkSelectorOp
 from tileops.utils import str2dtype
-from workloads.ops.topk_selector import TopkSelectorTest as _TopkSelectorTestWorkload
+from workloads.topk_selector import TopkSelectorTest as _TopkSelectorTestWorkload
 
 
 class TopkSelectorTest(_TopkSelectorTestWorkload, TestBase):

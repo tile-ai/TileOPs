@@ -33,7 +33,7 @@ except ImportError:
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoeUnpermuteFwdOp
-from workloads.ops.moe_unpermute import MoeUnpermuteTest
+from workloads.moe import MoeUnpermuteTest
 
 _OP_NAME = "MoeUnpermuteFwdOp"
 

@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.group_norm import GroupNormFwdOp
-from workloads.ops.group_norm import GroupNormTest
+from workloads.group_norm import GroupNormTest
 
 _OP_NAME = "GroupNormFwdOp"
 

@@ -20,7 +20,7 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import AddOp, WhereOp
 from workloads.base import FixtureBase
-from workloads.ops.binary_arith import AddSameShapeTest
+from workloads.binary_arith import AddSameShapeTest
 
 # ---------------------------------------------------------------------------
 # LLM-realistic shapes (LLaMA-family defaults)

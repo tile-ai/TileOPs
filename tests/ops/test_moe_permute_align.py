@@ -15,7 +15,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoePermuteAlignFwdOp
-from workloads.ops.moe_permute_align import MoePermuteAlignTest as _MoePermuteAlignTestWorkload
+from workloads.moe import MoePermuteAlignTest as _MoePermuteAlignTestWorkload
 
 
 def _ref_permute_align(

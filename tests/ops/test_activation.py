@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import ReluOp
-from workloads.ops.activation import ReluTest as _ReluTestWorkload
+from workloads.activation import ReluTest as _ReluTestWorkload
 
 
 class ReluTest(_ReluTestWorkload, TestBase):

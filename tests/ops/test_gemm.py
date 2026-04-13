@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GemmOp
-from workloads.ops.gemm import GemmTest as _GemmTestWorkload
+from workloads.gemm import GemmTest as _GemmTestWorkload
 
 
 class GemmTest(_GemmTestWorkload, TestBase):

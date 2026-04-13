@@ -7,9 +7,12 @@ import torch.nn.functional as F
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.engram_decode import EngramDecodeOp
-from workloads.ops.engram_bwd import EngramGateConvBwdTest
-from workloads.ops.engram_decode import EngramDecodeTest
-from workloads.ops.engram_fwd import CONV_KERNEL_SIZE, EngramGateConvFwdTest
+from workloads.engram import (
+    CONV_KERNEL_SIZE,
+    EngramDecodeTest,
+    EngramGateConvBwdTest,
+    EngramGateConvFwdTest,
+)
 
 
 def _rmsnorm(x, w, eps=1e-6):

@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import FP8QuantOp
-from workloads.ops.fp8_quant import FP8QuantTest as _FP8QuantTestWorkload
+from workloads.fp8_quant import FP8QuantTest as _FP8QuantTestWorkload
 
 
 class FP8QuantTest(_FP8QuantTestWorkload, TestBase):
