@@ -25,7 +25,7 @@ from tileops.kernels.elementwise import (
     SoftplusKernel,
     WhereKernel,
 )
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 _PARAMETRIC_KERNELS = [
     LeakyReluKernel,

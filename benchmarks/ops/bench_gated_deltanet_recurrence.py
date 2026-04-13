@@ -3,10 +3,10 @@ from typing import Optional, Tuple
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetDecodeOp
-from workloads.base import FixtureBase
 from workloads.gated_deltanet import GatedDeltaNetDecodeTest
+from workloads.workload_base import FixtureBase
 
 
 def gated_deltanet_decode_torch(

@@ -6,9 +6,9 @@ from tileops.kernels.gated_deltanet import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
 )
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
-from .op import Op
+from .op_base import Op
 
 __all__ = ["GatedDeltaNetFwdOp", "GatedDeltaNetBwdOp", "GatedDeltaNetOp"]
 

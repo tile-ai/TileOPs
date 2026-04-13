@@ -3,8 +3,8 @@ from typing import Optional, Tuple, Union
 import torch
 from einops import rearrange, repeat
 
-from workloads.base import WorkloadBase
 from workloads.nsa_utils import prepare_token_indices
+from workloads.workload_base import WorkloadBase
 
 
 class NsaFwdTest(WorkloadBase):

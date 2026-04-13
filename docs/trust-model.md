@@ -59,7 +59,7 @@ Shared input-definition layer — not a development stage. Test stage OWNS it (Q
 **Must not contain**: ref_program, check/tolerance logic, calculate_flops/memory, benchmark baselines. Reason: prevents shared oracle surface between test correctness and benchmark baselines.
 
 ```
-WorkloadBase (workloads/base.py)        # gen_inputs() only — default implementation
+WorkloadBase (workloads/workload_base.py)  # gen_inputs() only — default implementation
   ├── TestBase (tests/test_base.py)     # adds ref_program(), check()
   └── concrete subclasses typically define shape + dtype
 

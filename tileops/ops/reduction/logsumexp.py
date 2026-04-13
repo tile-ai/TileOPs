@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Union
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.logsumexp import LogSumExpKernel
 
 from ._softmax_base import _SoftmaxBaseOp

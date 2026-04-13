@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
 __all__ = ["Conv1dKernel", "Conv2d1x1Kernel", "Conv2dKernel", "Conv3dKernel"]

@@ -18,7 +18,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.kernels.elementwise import (
     ErfKernel,
     MishKernel,
@@ -27,7 +27,7 @@ from tileops.kernels.elementwise import (
 )
 from tileops.ops.elementwise import ErfOp, GeluOp, MishOp, ReluOp
 from workloads.activation import ReluTest
-from workloads.base import FixtureBase
+from workloads.workload_base import FixtureBase
 
 # ---------------------------------------------------------------------------
 # LLM-realistic shapes (LLaMA-family defaults)

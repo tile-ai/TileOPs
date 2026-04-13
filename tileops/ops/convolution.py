@@ -3,9 +3,9 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from tileops.kernels.convolution import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
-from .op import Op
+from .op_base import Op
 
 __all__ = ["Conv1dFwdOp", "Conv1dBiasFwdOp", "Conv2dOp", "Conv3dOp"]
 

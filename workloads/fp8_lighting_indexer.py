@@ -2,7 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 
 class FP8LightingIndexerTest(WorkloadBase):

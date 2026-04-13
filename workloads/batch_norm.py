@@ -1,6 +1,6 @@
 import torch
 
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 
 def _make_tensors(N, C, spatial, dtype, device="cuda"):

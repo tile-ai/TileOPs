@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkReport, _bench_results
+from benchmarks.benchmark_base import BenchmarkReport, _bench_results
 
 # Skip NSA benchmarks until op failures are resolved (see #696).
 collect_ignore_glob = [

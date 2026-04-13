@@ -46,7 +46,7 @@ from .norm import (
     LayerNormFwdOp,
     RMSNormFwdOp,
 )
-from .op import Op
+from .op_base import Op
 from .pool import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---

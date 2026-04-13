@@ -4,10 +4,10 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import FFTC2COp
-from workloads.base import FixtureBase
 from workloads.fft import FFTTest
+from workloads.workload_base import FixtureBase
 
 
 class _FFTTestBaseline(FFTTest):

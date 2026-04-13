@@ -18,10 +18,10 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
-from workloads.base import FixtureBase
 from workloads.deltanet import DeltaNetFwdTest
+from workloads.workload_base import FixtureBase
 
 
 def _differentiable_fwd(q, k, v, beta, chunk_size):

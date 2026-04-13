@@ -710,10 +710,10 @@ class TestBench:
         assert any("syntax error" in e for e in errors)
 
     def test_bench_indirect_helpers_pass(self, validator, tmp_path):
-        """Importing workloads_to_params/ManifestBenchmark from benchmarks.benchmark passes."""
+        """Importing workloads_to_params/ManifestBenchmark from benchmarks.benchmark_base passes."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
-            from benchmarks.benchmark import workloads_to_params, ManifestBenchmark
+            from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
             params = workloads_to_params('test_op')
             ManifestBenchmark('test_op', params[0])
         """))
@@ -724,7 +724,7 @@ class TestBench:
         """Indirect helpers called with wrong op name must still fail."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
-            from benchmarks.benchmark import workloads_to_params, ManifestBenchmark
+            from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
             params = workloads_to_params('wrong_op')
             ManifestBenchmark('wrong_op', params[0])
         """))

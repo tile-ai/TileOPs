@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 
 from .reduce import _ReduceOpBase

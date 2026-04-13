@@ -26,10 +26,10 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.moe import FusedTopKOp
-from workloads.base import FixtureBase
 from workloads.moe import FusedTopKTest
+from workloads.workload_base import FixtureBase
 
 
 def fused_topk_torch(

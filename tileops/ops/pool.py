@@ -2,7 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import AvgPool1dKernel, AvgPool2dKernel, AvgPool3dKernel
 from tileops.kernels.pool.common import (
     _normalize_pool_dims,
@@ -10,7 +10,7 @@ from tileops.kernels.pool.common import (
     validate_pool_params,
 )
 
-from .op import Op
+from .op_base import Op
 
 __all__ = ["AvgPool1dOp", "AvgPool2dOp", "AvgPool3dOp"]
 

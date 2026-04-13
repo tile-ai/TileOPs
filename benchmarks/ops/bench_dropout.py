@@ -11,9 +11,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.dropout import DropoutOp
-from workloads.base import FixtureBase
+from workloads.workload_base import FixtureBase
 
 _SHAPES = [(1024, 4096), (1024, 10240), (1024, 20480)]
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)

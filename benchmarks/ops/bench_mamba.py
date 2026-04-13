@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp

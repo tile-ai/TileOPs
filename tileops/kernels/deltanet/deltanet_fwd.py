@@ -19,7 +19,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 

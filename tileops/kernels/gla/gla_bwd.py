@@ -19,7 +19,7 @@ import torch
 from tilelang import language as T
 from tilelang.profiler import do_bench
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 from .gla_fwd import _gla_precompute_g_kernel
 

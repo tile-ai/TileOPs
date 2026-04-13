@@ -10,10 +10,10 @@ from tileops.kernels.attention import (
     GqaFwdKernel,
     GqaFwdWgmmaPipelinedKernel,
 )
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.utils import is_hopper
 
-from ..op import Op
+from ..op_base import Op
 
 __all__ = ["GroupedQueryAttentionFwdOp", "GroupedQueryAttentionBwdOp"]
 

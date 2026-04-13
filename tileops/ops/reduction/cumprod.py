@@ -12,11 +12,11 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.cumulative import CumulativeKernel
 
-from ..op import Op
+from ..op_base import Op
 
 __all__ = ["CumprodFwdOp"]
 

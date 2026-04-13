@@ -11,7 +11,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import (
     BitwiseAndOp,
     BitwiseOrOp,
@@ -32,7 +32,7 @@ from tileops.ops.elementwise import (
     SiluAndMulOp,
     SubOp,
 )
-from workloads.base import FixtureBase
+from workloads.workload_base import FixtureBase
 
 # DNN-realistic shapes: (tokens, hidden_dim)
 _SHAPES = ((1024, 4096), (1024, 10240), (1024, 20480))

@@ -3,9 +3,9 @@
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.kernels.moe import SharedExpertMLPKernel
-from workloads.base import FixtureBase, WorkloadBase
+from workloads.workload_base import FixtureBase, WorkloadBase
 
 
 class SharedMLPBenchTest(WorkloadBase):

@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.logical_reduce import (
     _UNSUPPORTED_STORAGE_DTYPES,
     LogicalReduceKernel,

@@ -3,9 +3,9 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from tileops.kernels.gla import GLABwdKernel, GLAFwdKernel
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
-from .op import Op
+from .op_base import Op
 
 __all__ = ["GLAFwdOp", "GLABwdOp"]
 

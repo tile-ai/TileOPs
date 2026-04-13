@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.engram_decode import EngramDecodeOp
 from workloads.engram import (
