@@ -22,7 +22,7 @@ Workload is defined once; test and benchmark each reference it but do not depend
 
 Rules:
 
-- **Shared fixture**: `FixtureBase` subclass defines `PARAMS` once; both test and benchmark use the same `@Fixture` decorator
+- **Fixture usage**: both tests and benchmarks can use `FixtureBase`, but params are usually defined per layer unless intentionally factored into a shared module
 - **Dependency direction**: benchmark imports workload, never test
 - **ref_program locality**: correctness oracle is defined in the test file, not in workload
 
@@ -132,7 +132,7 @@ For benchmark-specific metadata (e.g. `m/n/k` for GEMM), define a dedicated prot
 ### File checklist
 
 1. **Workload class** in `workloads/` — reuse the `WorkloadBase` subclass from the test.
-1. **Fixture class** — reuse the `FixtureBase` subclass from the test.
+1. **Fixture class** — use `FixtureBase` with benchmark-specific `PARAMS`, or `pytest.mark.parametrize` directly.
 1. **Benchmark class** in `benchmarks/ops/bench_<op>.py` — subclass `BenchmarkBase`, implement `calculate_flops()` and `calculate_memory()` (return `None` if not applicable).
 1. **Benchmark function** — `@YourFixture` decorated, construct workload + benchmark, call `inputs = workload.gen_inputs()`, then `bm.profile(op, *inputs)` and `BenchmarkReport.record(op, locals(), result, tag="tileops")`.
 1. **Independent baseline** — record at least one non-`"tileops"` baseline (e.g., `"torch"`, `"fa3"`). If benchmark needs a ref function, define it locally — never import from `tests/` or `workloads/`.
