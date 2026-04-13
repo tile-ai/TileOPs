@@ -5,21 +5,21 @@ import torch
 
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.ops.da_cumsum import DaCumsumFwdOp
-from tileops.ops.ssd_chunk_scan import SsdChunkScanFwdOp
-from tileops.ops.ssd_chunk_state import SsdChunkStateFwdOp
-from tileops.ops.ssd_decode import SsdDecodeOp
-from tileops.ops.ssd_state_passing import SsdStatePassingFwdOp
+from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
+from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
+from tileops.ops.ssd_decode import SSDDecodeOp
+from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
     DaCumsumFwdFixture,
     DaCumsumFwdTest,
-    SsdChunkScanFwdFixture,
-    SsdChunkScanFwdTest,
-    SsdChunkStateFwdFixture,
-    SsdChunkStateFwdTest,
-    SsdDecodeFixture,
-    SsdDecodeTest,
-    SsdStatePassingFwdFixture,
-    SsdStatePassingFwdTest,
+    SSDChunkScanFwdFixture,
+    SSDChunkScanFwdTest,
+    SSDChunkStateFwdFixture,
+    SSDChunkStateFwdTest,
+    SSDDecodeFixture,
+    SSDDecodeTest,
+    SSDStatePassingFwdFixture,
+    SSDStatePassingFwdTest,
 )
 
 
@@ -97,7 +97,7 @@ def ssd_chunk_scan_fwd_torch(x, cb, dA_cumsum, C, prev_states, dt):
     return y_off + y_diag
 
 
-class SsdChunkScanFwdBenchmark(BenchmarkBase):
+class SSDChunkScanFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -135,13 +135,13 @@ class SsdChunkScanFwdBenchmark(BenchmarkBase):
         return float(reads + writes)
 
 
-@SsdChunkScanFwdFixture
+@SSDChunkScanFwdFixture
 def test_ssd_chunk_scan_fwd_bench(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune):
-    test = SsdChunkScanFwdTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)
-    bm = SsdChunkScanFwdBenchmark(test)
+    test = SSDChunkScanFwdTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)
+    bm = SSDChunkScanFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SsdChunkScanFwdOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
+    op = SSDChunkScanFwdOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -188,7 +188,7 @@ def ssd_chunk_state_fwd_ref(
     return out.permute(0, 1, 2, 4, 3)
 
 
-class SsdChunkStateFwdBenchmark(BenchmarkBase):
+class SSDChunkStateFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -222,17 +222,17 @@ class SsdChunkStateFwdBenchmark(BenchmarkBase):
         return float(reads + writes)
 
 
-@SsdChunkStateFwdFixture
+@SSDChunkStateFwdFixture
 def test_ssd_chunk_state_fwd_bench(
     batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx,
 ):
-    test = SsdChunkStateFwdTest(
+    test = SSDChunkStateFwdTest(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
     )
-    bm = SsdChunkStateFwdBenchmark(test)
+    bm = SSDChunkStateFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SsdChunkStateFwdOp(
+    op = SSDChunkStateFwdOp(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
         has_seq_idx=has_seq_idx, tune=tune,
     )
@@ -264,7 +264,7 @@ def ssd_state_passing_fwd_ref(
     return torch.stack(out, dim=1), s
 
 
-class SsdStatePassingFwdBenchmark(BenchmarkBase):
+class SSDStatePassingFwdBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -287,13 +287,13 @@ class SsdStatePassingFwdBenchmark(BenchmarkBase):
         return float(reads + writes)
 
 
-@SsdStatePassingFwdFixture
+@SSDStatePassingFwdFixture
 def test_ssd_state_passing_fwd_bench(batch, num_chunks, n_heads, d_state, dtype, tune):
-    test = SsdStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
-    bm = SsdStatePassingFwdBenchmark(test)
+    test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
+    bm = SSDStatePassingFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SsdStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
+    op = SSDStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -335,7 +335,7 @@ def ssd_decode_ref(
     return y_out
 
 
-class SsdDecodeBenchmark(BenchmarkBase):
+class SSDDecodeBenchmark(BenchmarkBase):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -363,10 +363,10 @@ class SsdDecodeBenchmark(BenchmarkBase):
         return float(reads + writes)
 
 
-@SsdDecodeFixture
+@SSDDecodeFixture
 def test_ssd_decode_bench(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
-    test = SsdDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
-    bm = SsdDecodeBenchmark(test)
+    test = SSDDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
+    bm = SSDDecodeBenchmark(test)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
 
     # Clone state before each profile run so both start from identical initial
@@ -374,7 +374,7 @@ def test_ssd_decode_bench(batch, n_heads, d_head, d_state, n_groups, dtype, tune
     state_for_op = state.clone()
     state_bl = state.clone()
 
-    op = SsdDecodeOp(batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
+    op = SSDDecodeOp(batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
     result = bm.profile(op, A, dt, x, B_in, C_in, state_for_op)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

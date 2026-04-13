@@ -49,7 +49,7 @@ from .norm import (
     BatchNormFwdTrainKernel,
     GroupNormKernel,
     LayerNormKernel,
-    RmsNormKernel,
+    RMSNormKernel,
 )
 from .pool import AvgPool1dKernel, AvgPool2dKernel, AvgPool3dKernel
 from .rope import (
@@ -116,7 +116,7 @@ __all__ = [
     "NSACmpFwdVarlenKernel",
     "NSAFwdVarlenKernel",
     "NSATopkVarlenKernel",
-    "RmsNormKernel",
+    "RMSNormKernel",
     "RopeLlama31Kernel",
     "RopeLongRopeKernel",
     "RopeNeoxKernel",

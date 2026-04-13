@@ -1,6 +1,6 @@
 import torch
 
-from tileops.kernels.norm import RmsNormKernel
+from tileops.kernels.norm import RMSNormKernel
 
 from .base import RowNormOp
 
@@ -14,7 +14,7 @@ class RMSNormFwdOp(RowNormOp):
     """
 
     _kernel_key = "rms_norm"
-    _kernel_cls = RmsNormKernel
+    _kernel_cls = RMSNormKernel
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         self._validate_cuda_dtype("x", x)

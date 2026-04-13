@@ -3,17 +3,17 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from workloads.rms_norm import RmsNormTest as _RmsNormTestWorkload
+from workloads.rms_norm import RMSNormTest as _RMSNormTestWorkload
 
 
-class RmsNormTest(_RmsNormTestWorkload, TestBase):
+class RMSNormTest(_RMSNormTestWorkload, TestBase):
     def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()
         rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return ((x_f32 / rms) * weight.float()).to(x.dtype)
 
 
-class RmsNormFixture(FixtureBase):
+class RMSNormFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype, tune", [
             # Standard aligned shapes (AC required)
@@ -35,16 +35,16 @@ class RmsNormFixture(FixtureBase):
     ]
 
 
-@RmsNormFixture
+@RMSNormFixture
 def test_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = RmsNormTest(m, n, dtype)
+    test = RMSNormTest(m, n, dtype)
     op = RMSNormFwdOp(M=m, N=n, dtype=dtype)
     atol = 1e-2 if dtype == torch.float16 else 1.6e-2
     rtol = atol
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-class RmsNormNonContigFixture(FixtureBase):
+class RMSNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
             pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
@@ -53,7 +53,7 @@ class RmsNormNonContigFixture(FixtureBase):
     ]
 
 
-@RmsNormNonContigFixture
+@RMSNormNonContigFixture
 def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
@@ -75,7 +75,7 @@ def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
         f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
 
 
-class RmsNorm3DFixture(FixtureBase):
+class RMSNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
             pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
@@ -84,7 +84,7 @@ class RmsNorm3DFixture(FixtureBase):
     ]
 
 
-@RmsNorm3DFixture
+@RMSNorm3DFixture
 def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")

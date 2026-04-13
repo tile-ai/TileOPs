@@ -6,10 +6,10 @@ import torch
 from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from workloads.rms_norm import RmsNormTest
+from workloads.rms_norm import RMSNormTest
 
 
-class _RmsNormTestBaseline(RmsNormTest):
+class _RMSNormTestBaseline(RMSNormTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -21,7 +21,7 @@ class _RmsNormTestBaseline(RmsNormTest):
 _OP_NAME = "RMSNormFwdOp"
 
 
-class RmsNormBenchmark(BenchmarkBase):
+class RMSNormBenchmark(BenchmarkBase):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
@@ -55,8 +55,8 @@ def _manifest_params():
 
 @pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
 def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = _RmsNormTestBaseline(m, n, dtype)
-    bm = RmsNormBenchmark(test)
+    test = _RMSNormTestBaseline(m, n, dtype)
+    bm = RMSNormBenchmark(test)
     inputs = test.gen_inputs()
 
     op = RMSNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)

@@ -1,9 +1,9 @@
 """
-Mamba-2 SSD state passing forward kernel.
+Mamba-2 State-Space Dual (SSD) state passing forward kernel.
 
 Inputs:
   states:            (batch, num_chunks, n_heads, d_state)
-                     -- chunk-local SSM states u_c
+                     -- chunk-local State Space Model (SSM) states u_c
   dA_chunk_cumsum:   (batch, n_heads, num_chunks)
                      -- per-chunk cumulative decay scalar (float32)
   initial_states:    (batch, n_heads, d_state)
@@ -43,7 +43,7 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["SsdStatePassingFwdKernel"]
+__all__ = ["SSDStatePassingFwdKernel"]
 
 
 def _ssd_state_passing_fwd_kernel(
@@ -189,7 +189,7 @@ def _(
     return out, final
 
 
-class SsdStatePassingFwdKernel(Kernel):
+class SSDStatePassingFwdKernel(Kernel):
     """Mamba-2 SSD state passing forward kernel.
 
     Performs the inter-chunk recurrent scan:

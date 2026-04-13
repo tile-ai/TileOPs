@@ -1,5 +1,5 @@
 """
-Mamba-2 SSD fused chunk output forward kernel (history + intra-chunk paths).
+Mamba-2 State-Space Dual (SSD) fused chunk output forward kernel (history + intra-chunk paths).
 
 Inputs (pre-reshaped to chunked view):
   x:            (batch, num_chunks, chunk_len, n_heads, d_head)
@@ -58,7 +58,7 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["SsdChunkScanFwdKernel"]
+__all__ = ["SSDChunkScanFwdKernel"]
 
 
 def _ssd_chunk_scan_fwd_kernel(
@@ -309,7 +309,7 @@ def _(
     return x.new_empty((batch, num_chunks, chunk_len, n_heads, d_head), dtype=torch.float32)
 
 
-class SsdChunkScanFwdKernel(Kernel):
+class SSDChunkScanFwdKernel(Kernel):
     """Mamba-2 SSD fused chunk output forward kernel.
 
     Fuses the history (prev_states) contribution and intra-chunk causal decay

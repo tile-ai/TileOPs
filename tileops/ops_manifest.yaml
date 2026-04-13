@@ -311,10 +311,10 @@ ops:
     source:
       kernel: tileops/kernels/norm/fused_add_norm.py
       kernel_map:
-        fused_add_rms_norm: FusedAddRmsNormKernel
-      op: tileops/ops/norm/fused_add_rmsnorm.py
-      test: tests/ops/test_fused_add_rmsnorm.py
-      bench: benchmarks/ops/bench_fused_add_rmsnorm.py
+        fused_add_rms_norm: FusedAddRMSNormKernel
+      op: tileops/ops/norm/fused_add_rms_norm.py
+      test: tests/ops/test_fused_add_rms_norm.py
+      bench: benchmarks/ops/bench_fused_add_rms_norm.py
 
   # ---------------------------------------------------------------------------
   # norm — spatial-norm ops (operate over spatial/channel dims, shape: [N, C, *spatial])

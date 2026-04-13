@@ -1,7 +1,7 @@
 """
-Mamba-2 SSD recurrent decode (step) kernel.
+Mamba-2 State-Space Dual (SSD) recurrent decode (step) kernel.
 
-Performs a single decode step of the Mamba-2 SSM core, updating the
+Performs a single decode step of the Mamba-2 State Space Model (SSM) core, updating the
 persistent state in-place and computing the output y for the current token.
 
 This corresponds to the step() path in the official Mamba-2 implementation:
@@ -46,7 +46,7 @@ import torch
 
 from tileops.kernels.kernel import Kernel
 
-__all__ = ["SsdDecodeKernel"]
+__all__ = ["SSDDecodeKernel"]
 
 # =============================================================================
 # Differences vs. the official Mamba-2 step() in mamba_ssm/modules/mamba2.py
@@ -277,7 +277,7 @@ def _(
     return dt.new_empty((batch, n_heads, d_head), dtype=torch.float32)
 
 
-class SsdDecodeKernel(Kernel):
+class SSDDecodeKernel(Kernel):
     """Mamba-2 SSD recurrent decode (step) kernel.
 
     Performs a single decode step: updates the SSM state in-place and
