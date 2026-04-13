@@ -131,7 +131,7 @@ For benchmark-specific metadata (e.g. `m/n/k` for GEMM), define a dedicated prot
 
 ### File checklist
 
-1. **Workload class** in `workloads/` — reuse the `WorkloadBase` subclass from the test.
+1. **Workload** — any object satisfying the required protocol (e.g. `ShapeDtypeWorkload`). Often a `WorkloadBase` subclass from `workloads/`, but not required.
 1. **Fixture class** — use `FixtureBase` with benchmark-specific `PARAMS`, or `pytest.mark.parametrize` directly.
 1. **Benchmark class** in `benchmarks/ops/bench_<op>.py` — subclass `BenchmarkBase`, implement `calculate_flops()` and `calculate_memory()` (return `None` if not applicable).
 1. **Benchmark function** — `@YourFixture` decorated, construct workload + benchmark, call `inputs = workload.gen_inputs()`, then `bm.profile(op, *inputs)` and `BenchmarkReport.record(op, locals(), result, tag="tileops")`.

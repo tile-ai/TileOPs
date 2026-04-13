@@ -18,7 +18,7 @@ Source of truth for op interfaces. Human-reviewed, separate PR.
 - **MUST NOT**: contain kernel internals, dispatch strategy, or test logic
 - **MAY READ**: PyTorch public API (to match signatures)
 
-→ Rules: [manifest-spec.md](../.claude/domain-rules/manifest-spec.md) | Guide: [testing.md §Writing a Test](testing.md#tests)
+→ Rules: [manifest-spec.md](../.claude/domain-rules/manifest-spec.md) | Guide: [testing.md §Tests](testing.md#tests)
 
 ## Test
 
@@ -28,7 +28,7 @@ PR-level correctness verification. QA writes tests against manifest spec.
 - **MUST NOT**: contain kernel code, benchmark logic, or performance measurements
 - **MAY READ**: manifest (to verify interface), `workloads/` (via WorkloadBase inheritance)
 
-→ Rules: [testing-budget.md](../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Writing a Test](testing.md#tests)
+→ Rules: [testing-budget.md](../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
 
 ## Implementation
 
@@ -48,7 +48,7 @@ Nightly performance guard. Independent baselines — cannot modify op/tests/work
 - **MUST NOT**: contain correctness assertions, kernel code, or import oracle/ref functions from `tests/` or `workloads/` (benchmark-local baseline functions are allowed)
 - **MAY READ**: `workloads/` (composition), `tileops/ops/` (to profile)
 
-→ Rules: [benchmark.md](../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Writing a Benchmark](testing.md#benchmarks)
+→ Rules: [benchmark.md](../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 
 ## Workloads Layer
 
