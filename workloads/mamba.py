@@ -132,7 +132,7 @@ class SSDChunkStateFwdTest(WorkloadBase):
         self.dtype = dtype
         self.has_seq_idx = has_seq_idx
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         b, c, Q, h, p, n, g = (
             self.batch, self.num_chunks, self.chunk_len,
             self.n_heads, self.d_head, self.d_state, self.n_groups,
