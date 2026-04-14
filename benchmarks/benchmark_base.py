@@ -41,7 +41,7 @@ class ShapeDtypeWorkload(Protocol):
 class InputGeneratingWorkload(Protocol):
     """Structural type for workloads that can generate benchmark inputs."""
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]: ...
+    def gen_inputs(self) -> tuple[Any, ...]: ...
 
 
 @runtime_checkable
@@ -110,7 +110,7 @@ def _get_l2_flush_cache() -> torch.Tensor:
 
 def bench_kernel(
     fn: Callable,
-    args: tuple[torch.Tensor, ...] = (),
+    args: tuple[Any, ...] = (),
     n_warmup: int = 10,
     n_repeat: int = 50,
     n_trials: int = 3,
@@ -284,7 +284,7 @@ class BenchmarkBase(Generic[W], ABC):
 
     def profile(self,
                 functor: Any,
-                *inputs: torch.Tensor) -> dict:
+                *inputs: Any) -> dict:
         """Profile a callable and return structured results.
 
         Uses the NVIDIA SOL-ExecBench protocol: CUPTI kernel timing,
