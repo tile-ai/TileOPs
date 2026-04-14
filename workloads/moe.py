@@ -12,9 +12,9 @@ class FusedTopKTest(WorkloadBase):
         self.renormalize = renormalize
         self.dtype = dtype
 
-    def gen_inputs(self) -> torch.Tensor:
+    def gen_inputs(self) -> tuple[torch.Tensor]:
         torch.manual_seed(42)
-        return torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda")
+        return (torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda"),)
 
 
 class MoePermuteTest(WorkloadBase):
