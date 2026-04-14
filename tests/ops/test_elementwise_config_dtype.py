@@ -40,6 +40,7 @@ INDEPENDENT_KERNELS_SIMPLE = [LeakyReluKernel, EluKernel, HardtanhKernel]
         (torch.float16, 8),
         (torch.bfloat16, 8),
         (torch.float8_e4m3fn, 16),
+        (torch.float8_e5m2, 16),
     ],
 )
 @pytest.mark.parametrize("kernel_cls", INDEPENDENT_KERNELS_SIMPLE)
@@ -58,6 +59,7 @@ def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expecte
         (torch.float16, 8),
         (torch.bfloat16, 8),
         (torch.float8_e4m3fn, 16),
+        (torch.float8_e5m2, 16),
     ],
 )
 def test_prelu_preserves_dtype_driven_default_npt(dtype, expected_npt):
