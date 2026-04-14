@@ -25,8 +25,8 @@ from tileops.kernels.online_softmax import (
 )
 
 __all__ = [
-    'GqaSlidingWindowVarlenFwdKernel',
-    'GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel',
+    'GQASlidingWindowVarlenFwdKernel',
+    'GQASlidingWindowVarlenFwdWgmmaPipelinedKernel',
 ]
 
 
@@ -282,7 +282,7 @@ def _(batch, heads, heads_kv, total_q, total_k, dim, is_causal,
     return fake_o, fake_lse
 
 
-class _GqaSlidingWindowVarlenFwdKernelBase(Kernel):
+class _GQASlidingWindowVarlenFwdKernelBase(Kernel):
     """Shared base for variable-length GQA sliding window forward kernels."""
 
     def __init__(
@@ -331,7 +331,7 @@ class _GqaSlidingWindowVarlenFwdKernelBase(Kernel):
             q, k, v, cu_seqlens_q, cu_seqlens_k)
 
 
-class GqaSlidingWindowVarlenFwdKernel(_GqaSlidingWindowVarlenFwdKernelBase):
+class GQASlidingWindowVarlenFwdKernel(_GQASlidingWindowVarlenFwdKernelBase):
     """Variable-length GQA sliding window forward kernel (sm80/89/90)."""
     supported_archs: list[int] = [80, 89, 90]
 
@@ -570,7 +570,7 @@ def _(batch, heads, heads_kv, total_q, total_k, dim, is_causal,
     return fake_o, fake_lse
 
 
-class GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel(_GqaSlidingWindowVarlenFwdKernelBase):
+class GQASlidingWindowVarlenFwdWgmmaPipelinedKernel(_GQASlidingWindowVarlenFwdKernelBase):
     """Variable-length GQA sliding window forward kernel, WGMMA pipelined (sm90)."""
     supported_archs: list[int] = [90]
 

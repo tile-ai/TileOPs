@@ -6,12 +6,12 @@ import torch.nn.functional as F
 from tileops.kernels.attention import (
     FlashAttnBwdPostprocessKernel,
     FlashAttnBwdPreprocessKernel,
-    MhaBwdKernel,
-    MhaBwdWgmmaPipelinedKernel,
-    MhaDecodeKernel,
-    MhaDecodePagedKernel,
-    MhaFwdKernel,
-    MhaFwdWgmmaPipelinedKernel,
+    MHABwdKernel,
+    MHABwdWgmmaPipelinedKernel,
+    MHADecodeKernel,
+    MHADecodePagedKernel,
+    MHAFwdKernel,
+    MHAFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import is_hopper
@@ -52,7 +52,7 @@ class MultiHeadAttentionFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mha_fwd_kernel": MhaFwdWgmmaPipelinedKernel if is_hopper() else MhaFwdKernel}
+        return {"mha_fwd_kernel": MHAFwdWgmmaPipelinedKernel if is_hopper() else MHAFwdKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return self.kernel(q, k, v)
@@ -93,7 +93,7 @@ class MultiHeadAttentionBwdOp(Op):
             "mha_bwd_preprocess_kernel":
                 FlashAttnBwdPreprocessKernel,
             "mha_bwd_kernel":
-                MhaBwdWgmmaPipelinedKernel if is_hopper() else MhaBwdKernel,
+                MHABwdWgmmaPipelinedKernel if is_hopper() else MHABwdKernel,
             "mha_bwd_postprocess_kernel":
                 FlashAttnBwdPostprocessKernel if not is_hopper() else None,
         }
@@ -135,7 +135,7 @@ class MultiHeadAttentionDecodeWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mha_decode_kernel": MhaDecodeKernel}
+        return {"mha_decode_kernel": MHADecodeKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]
@@ -178,7 +178,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mha_decode_paged_kernel": MhaDecodePagedKernel}
+        return {"mha_decode_paged_kernel": MHADecodePagedKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:

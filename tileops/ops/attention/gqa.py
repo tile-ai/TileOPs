@@ -6,16 +6,16 @@ import torch.nn.functional as F
 from tileops.kernels.attention import (
     FlashAttnBwdPostprocessKernel,
     FlashAttnBwdPreprocessKernel,
-    GqaBwdKernel,
-    GqaBwdWgmmaPipelinedKernel,
-    GqaDecodeKernel,
-    GqaDecodePagedKernel,
-    GqaFwdKernel,
-    GqaFwdWgmmaPipelinedKernel,
-    GqaSlidingWindowFwdKernel,
-    GqaSlidingWindowFwdWgmmaPipelinedKernel,
-    GqaSlidingWindowVarlenFwdKernel,
-    GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel,
+    GQABwdKernel,
+    GQABwdWgmmaPipelinedKernel,
+    GQADecodeKernel,
+    GQADecodePagedKernel,
+    GQAFwdKernel,
+    GQAFwdWgmmaPipelinedKernel,
+    GQASlidingWindowFwdKernel,
+    GQASlidingWindowFwdWgmmaPipelinedKernel,
+    GQASlidingWindowVarlenFwdKernel,
+    GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import is_hopper
@@ -60,7 +60,7 @@ class GroupedQueryAttentionFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_fwd_kernel": GqaFwdWgmmaPipelinedKernel if is_hopper() else GqaFwdKernel}
+        return {"gqa_fwd_kernel": GQAFwdWgmmaPipelinedKernel if is_hopper() else GQAFwdKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return self.kernel(q, k, v)
@@ -103,7 +103,7 @@ class GroupedQueryAttentionBwdOp(Op):
             "gqa_bwd_preprocess_kernel":
                 FlashAttnBwdPreprocessKernel,
             "gqa_bwd_kernel":
-                GqaBwdWgmmaPipelinedKernel if is_hopper() else GqaBwdKernel,
+                GQABwdWgmmaPipelinedKernel if is_hopper() else GQABwdKernel,
             "gqa_bwd_postprocess_kernel":
                 FlashAttnBwdPostprocessKernel if not is_hopper() else None,
         }
@@ -148,7 +148,7 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_decode_kernel": GqaDecodeKernel}
+        return {"gqa_decode_kernel": GQADecodeKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]
@@ -190,7 +190,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_decode_paged_kernel": GqaDecodePagedKernel}
+        return {"gqa_decode_paged_kernel": GQADecodePagedKernel}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
@@ -269,7 +269,7 @@ class GqaSlidingWindowFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel = GqaSlidingWindowFwdWgmmaPipelinedKernel if is_hopper() else GqaSlidingWindowFwdKernel
+        kernel = GQASlidingWindowFwdWgmmaPipelinedKernel if is_hopper() else GQASlidingWindowFwdKernel
         return {"gqa_sliding_window_fwd": kernel}
 
     def forward(
@@ -413,8 +413,8 @@ class GqaSlidingWindowVarlenFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel = (GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel
-                  if is_hopper() else GqaSlidingWindowVarlenFwdKernel)
+        kernel = (GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
+                  if is_hopper() else GQASlidingWindowVarlenFwdKernel)
         return {"gqa_sliding_window_varlen_fwd": kernel}
 
     def forward(

@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.attention import MlaDecodeKernel, MlaDecodeWsKernel
+from tileops.kernels.attention import MLADecodeKernel, MLADecodeWsKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import is_hopper
 
@@ -39,7 +39,7 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mla_decode_kernel": MlaDecodeWsKernel if is_hopper() else MlaDecodeKernel}
+        return {"mla_decode_kernel": MLADecodeWsKernel if is_hopper() else MLADecodeKernel}
 
     def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
                 k_pe: torch.Tensor) -> torch.Tensor:

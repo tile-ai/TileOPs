@@ -552,7 +552,7 @@ ops:
     source:
       kernel: tileops/kernels/attention/gqa_fwd.py
       kernel_map:
-        mha_fwd_kernel: MhaFwdKernel
+        mha_fwd_kernel: MHAFwdKernel
       op: tileops/ops/attention/mha.py
       test: tests/ops/attention/test_mha.py
       bench: benchmarks/ops/attention/bench_mha.py
@@ -602,7 +602,7 @@ ops:
       kernel: tileops/kernels/attention/gqa_bwd.py
       kernel_map:
         mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-        mha_bwd_kernel: MhaBwdKernel
+        mha_bwd_kernel: MHABwdKernel
         mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
       op: tileops/ops/attention/mha.py
       test: tests/ops/attention/test_mha.py
@@ -643,7 +643,7 @@ ops:
     source:
       kernel: tileops/kernels/attention/gqa_fwd.py
       kernel_map:
-        gqa_fwd_kernel: GqaFwdKernel
+        gqa_fwd_kernel: GQAFwdKernel
       op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa.py
       bench: benchmarks/ops/attention/bench_gqa.py
@@ -694,7 +694,7 @@ ops:
       kernel: tileops/kernels/attention/gqa_bwd.py
       kernel_map:
         gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-        gqa_bwd_kernel: GqaBwdKernel
+        gqa_bwd_kernel: GQABwdKernel
         gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
       op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa.py
@@ -739,7 +739,7 @@ ops:
     source:
       kernel: tileops/kernels/attention/mha_decode.py
       kernel_map:
-        mha_decode_kernel: MhaDecodeKernel
+        mha_decode_kernel: MHADecodeKernel
       op: tileops/ops/attention/mha.py
       test: tests/ops/attention/test_mha_decode.py
       bench: benchmarks/ops/attention/bench_mha_decode.py
@@ -793,7 +793,7 @@ ops:
     source:
       kernel: tileops/kernels/attention/mha_decode_paged.py
       kernel_map:
-        mha_decode_paged_kernel: MhaDecodePagedKernel
+        mha_decode_paged_kernel: MHADecodePagedKernel
       op: tileops/ops/attention/mha.py
       test: tests/ops/attention/test_mha_decode_paged.py
       bench: benchmarks/ops/attention/bench_mha_decode_paged.py
@@ -834,7 +834,7 @@ ops:
     source:
       kernel: tileops/kernels/attention/gqa_decode.py
       kernel_map:
-        gqa_decode_kernel: GqaDecodeKernel
+        gqa_decode_kernel: GQADecodeKernel
       op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa_decode.py
       bench: benchmarks/ops/attention/bench_gqa_decode.py
@@ -888,7 +888,7 @@ ops:
     source:
       kernel: tileops/kernels/attention/gqa_decode_paged.py
       kernel_map:
-        gqa_decode_paged_kernel: GqaDecodePagedKernel
+        gqa_decode_paged_kernel: GQADecodePagedKernel
       op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa_decode_paged.py
       bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
@@ -934,7 +934,7 @@ ops:
     source:
       kernel: tileops/kernels/attention/gqa_sliding_window_fwd.py
       kernel_map:
-        gqa_sliding_window_fwd: GqaSlidingWindowFwdKernel
+        gqa_sliding_window_fwd: GQASlidingWindowFwdKernel
       op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa_sliding_window.py
       bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
@@ -981,7 +981,7 @@ ops:
     source:
       kernel: tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
       kernel_map:
-        gqa_sliding_window_varlen_fwd: GqaSlidingWindowVarlenFwdKernel
+        gqa_sliding_window_varlen_fwd: GQASlidingWindowVarlenFwdKernel
       op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa_sliding_window_varlen.py
       bench: benchmarks/ops/attention/bench_gqa_sliding_window_varlen.py
@@ -1028,7 +1028,7 @@ ops:
     source:
       kernel: tileops/kernels/attention/deepseek_mla_decode.py
       kernel_map:
-        mla_decode_kernel: MlaDecodeKernel
+        mla_decode_kernel: MLADecodeKernel
       op: tileops/ops/attention/deepseek_mla.py
       test: tests/ops/attention/test_deepseek_mla_decode.py
       bench: benchmarks/ops/attention/bench_deepseek_mla_decode.py
