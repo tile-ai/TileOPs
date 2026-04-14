@@ -1,5 +1,4 @@
 """Tests for GroupedQueryAttentionSlidingWindowVarlenFwdOp against a pure-PyTorch reference."""
-from typing import List
 
 import pytest
 import torch
@@ -110,8 +109,8 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
 @GroupedQueryAttentionSlidingWindowVarlenFwdFixture
 def test_gqa_sliding_window_varlen_fwd_op(
     batch: int,
-    seqlens_q: List[int],
-    seqlens_k: List[int],
+    seqlens_q: list[int],
+    seqlens_k: list[int],
     heads: int,
     heads_kv: int,
     dim: int,

@@ -1,5 +1,4 @@
 
-from typing import Tuple
 
 import pytest
 import torch
@@ -15,7 +14,7 @@ def deltanet_decode_torch(
     v: torch.Tensor,
     beta: torch.Tensor,
     state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Pure-PyTorch reference for single-step delta rule (ungated)."""
     q, k, v = q.float(), k.float(), v.float()
     beta = beta.float()
@@ -43,7 +42,7 @@ class DeltaNetDecodeTest(_DeltaNetDecodeTestWorkload, TestBase):
         v: torch.Tensor,
         beta: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         o, new_state = deltanet_decode_torch(q, k, v, beta, state)
         return o.to(self.dtype), new_state.to(self.dtype)
 

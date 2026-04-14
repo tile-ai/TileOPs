@@ -5,7 +5,7 @@ Compares single-step decode latency across batch sizes, dimensions, and dtypes.
 When FLA is not installed, benchmarks still run using a pure-torch reference
 implementation as baseline, so CI is never blocked by a missing optional dependency.
 """
-from typing import Optional, Tuple
+from typing import Optional
 
 import pytest
 import torch
@@ -23,7 +23,7 @@ def gla_decode_torch(
     gk: torch.Tensor,
     state: torch.Tensor,
     scale: float = -1.0,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Pure-PyTorch reference for single-step GLA recurrence."""
     DK = q.shape[-1]
     if scale <= 0:
@@ -50,7 +50,7 @@ class _GLADecodeTestBaseline(GLADecodeTest):
         v: torch.Tensor,
         gk: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         o, new_state = gla_decode_torch(q, k, v, gk, state, self.scale)
         return o.to(self.dtype), new_state.to(self.dtype)
 

@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import pytest
 import torch
@@ -207,9 +207,9 @@ class AvgPool2dTest(TestBase):
 
     def __init__(
         self,
-        kernel_size: Tuple[int, int],
-        stride: Optional[Tuple[int, int]],
-        padding: Tuple[int, int],
+        kernel_size: tuple[int, int],
+        stride: Optional[tuple[int, int]],
+        padding: tuple[int, int],
         ceil_mode: bool,
         count_include_pad: bool,
         divisor_override: Optional[int],
@@ -246,9 +246,9 @@ def test_avg_pool2d(
     c_in: int,
     h_in: int,
     w_in: int,
-    kernel_size: Tuple[int, int],
-    stride: Optional[Tuple[int, int]],
-    padding: Tuple[int, int],
+    kernel_size: tuple[int, int],
+    stride: Optional[tuple[int, int]],
+    padding: tuple[int, int],
     ceil_mode: bool,
     count_include_pad: bool,
     divisor_override: Optional[int],
@@ -451,9 +451,9 @@ class AvgPool3dTest(TestBase):
 
     def __init__(
         self,
-        kernel_size: Tuple[int, int, int],
-        stride: Optional[Tuple[int, int, int]],
-        padding: Tuple[int, int, int],
+        kernel_size: tuple[int, int, int],
+        stride: Optional[tuple[int, int, int]],
+        padding: tuple[int, int, int],
         ceil_mode: bool,
         count_include_pad: bool,
         divisor_override: Optional[int],
@@ -491,9 +491,9 @@ def test_avg_pool3d(
     d_in: int,
     h_in: int,
     w_in: int,
-    kernel_size: Tuple[int, int, int],
-    stride: Optional[Tuple[int, int, int]],
-    padding: Tuple[int, int, int],
+    kernel_size: tuple[int, int, int],
+    stride: Optional[tuple[int, int, int]],
+    padding: tuple[int, int, int],
     ceil_mode: bool,
     count_include_pad: bool,
     divisor_override: Optional[int],

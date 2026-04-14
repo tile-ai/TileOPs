@@ -1,5 +1,5 @@
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import pytest
 import torch
@@ -19,7 +19,7 @@ from workloads.attention.gqa import (
 class GroupedQueryAttentionBwdTest(_GroupedQueryAttentionBwdTestWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
                     grad_output: torch.Tensor,
-                    lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                    lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
@@ -34,7 +34,7 @@ class GroupedQueryAttentionBwdTest(_GroupedQueryAttentionBwdTestWorkload, TestBa
 
 class GroupedQueryAttentionFwdTest(_GroupedQueryAttentionFwdTestWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor,
-                    v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+                    v: torch.Tensor) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
