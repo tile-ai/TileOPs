@@ -142,6 +142,12 @@ def bench_kernel(
     Returns:
         Kernel latency in **milliseconds**.
     """
+    if not isinstance(args, tuple):
+        raise TypeError(
+            f"bench_kernel expects a tuple of args, got {type(args).__name__}. "
+            "Check that gen_inputs() returns a tuple."
+        )
+
     from tilelang.profiler.bench import suppress_stdout_stderr
 
     cache = _get_l2_flush_cache()
