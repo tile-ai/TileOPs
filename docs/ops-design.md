@@ -1,22 +1,57 @@
 # Op Interface Design
 
-## Class Hierarchy
+This document records **technical decisions** for the Op/Kernel interface. Implementation MUST conform to these decisions. Where existing code diverges, the code is what needs to change.
+
+For trust boundaries (what implementation OWNS, MUST NOT do, and MAY READ), see [trust-model.md](trust-model.md). For the manifest specification, see [manifest.md](manifest.md).
+
+## D1. Three-Layer Class Hierarchy
 
 ```
-Op (base)
-  └── FamilyBase (e.g., RowNormOp, _ReduceOpBase, ...)
-        └── ConcreteOp (declaration only)
+Op                          ← L1: thin base, shared by all ops
+  └── FamilyBase            ← L2: family-specific forward() flow
+        └── ConcreteOp      ← L3: pure declaration, no logic override
 ```
 
-- **Op** — abstract base. Defines the `forward()` contract.
-- **FamilyBase** — per-family intermediate base. Owns shared `forward()` flow: validation, reshape, padding, kernel dispatch, trim. One per op family. Current families: `RowNormOp` (norm ops), `_ReduceOpBase` (reduce ops).
-- **ConcreteOp** — leaf class. Pure declaration: kernel class, supported dtypes, input wiring. No logic override.
+- **Op (L1)** — abstract base class. Defines the contract: `default_kernel_map`, `forward()`, kernel dispatch, manifest-driven validation and shape inference. Thin by design — only infrastructure that ALL ops share.
+- **FamilyBase (L2)** — intermediate base per op family. Owns the shared `forward()` pipeline: validation, reshape, padding, kernel call, output assembly. One per family.
+- **ConcreteOp (L3)** — leaf class. Pure declaration: kernel class, op kind, dimension wiring. No logic override.
 
-For trust boundaries (what implementation OWNS, MUST NOT do, and MAY READ), see [trust-model.md -- Implementation](trust-model.md#implementation).
+This three-layer structure is a design decision. Without L2 family bases, shared forward() logic gets duplicated across every concrete op, creating maintenance problems at scale.
 
-## Principle 1: Two-Layer Boundary
+### Development Path
 
-Every operator splits into Op (L2) and Kernel (L1):
+Agent-driven development follows a pragmatic sequence:
+
+1. **New op inherits L1 directly.** When a family has only 1-2 ops, the op owns its full `forward()`. This is a transitional state, not a target architecture.
+1. **Family accumulates ops.** When 2-3 ops in a family share identical `forward()` flow, extract an L2 family base via refactoring.
+1. **L1-direct and L1→L2→L3 coexist.** This is a natural consequence of incremental development. L1-direct ops are candidates for future L2 extraction, not an alternative design.
+
+### When to Create an L2 Family Base
+
+Create one when **multiple ops share the same `forward()` control flow**, the shared boilerplate is substantial, and per-op differences fit into class variables or hooks.
+
+Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
+
+**Abstraction follows implementation, never the reverse.**
+
+### Current Family Bases
+
+| Family Base           | Domain      | Shared Flow                                                | Concrete Ops                                                                    |
+| --------------------- | ----------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `RowNormOp`           | norm        | validate → flatten → pad → kernel → trim → reshape         | `LayerNormFwdOp`, `RMSNormFwdOp`                                                |
+| `_ReduceOpBase`       | reduction   | validate → transpose → reshape 2D → pad → kernel → reshape | base for `_SimpleReduceOp`, `_WelfordReduceOp`, argreduce, logical, vector norm |
+| `_SimpleReduceOp`     | reduction   | `_ReduceOpBase` + kernel-side masked padding               | `SumFwdOp`, `MeanFwdOp`, `AminFwdOp`, `AmaxFwdOp`, `ProdFwdOp`                  |
+| `_WelfordReduceOp`    | reduction   | `_ReduceOpBase` + Bessel's correction                      | `StdFwdOp`, `VarFwdOp`, `VarMeanFwdOp`                                          |
+| `_SoftmaxBaseOp`      | reduction   | row-wise softmax variant pipeline                          | `SoftmaxFwdOp`, `LogSoftmaxFwdOp`, `LogSumExpFwdOp`                             |
+| `UnaryOp`             | elementwise | flatten → kernel → reshape                                 | 30+ unary ops                                                                   |
+| `BinaryOp`            | elementwise | broadcast coalesce → kernel → reshape                      | 13+ binary ops                                                                  |
+| `_BoolOutputBinaryOp` | elementwise | `BinaryOp` + bool output cast                              | comparison and logical ops                                                      |
+| `FusedGatedOp`        | elementwise | (M, 2N) split → kernel → reshape                           | `SiluAndMulOp`, `GeluAndMulOp`, `GeluTanhAndMulOp`                              |
+| `_RopeOpBase`         | rope        | frequency table → kernel dispatch                          | 5 RoPE variants                                                                 |
+
+## D2. Two-Layer Op/Kernel Boundary
+
+Every operator splits into Op and Kernel:
 
 | Concern                   | Owner  | Examples                                    |
 | ------------------------- | ------ | ------------------------------------------- |
@@ -31,84 +66,286 @@ Every operator splits into Op (L2) and Kernel (L1):
 
 Either layer can be modified independently.
 
-## Principle 2: Base Classes Follow Forward Flow, Not Math
+## D3. Manifest-Driven Op Interface
 
-Create an intermediate base class when **multiple ops share the same `forward()` control flow**, the shared boilerplate is substantial, and per-op differences fit into class variables or hooks.
+The manifest (`ops_manifest.yaml`) is the **sole source of truth** for op interfaces. Op-layer runtime behavior — dtype validation, shape inference, roofline evaluation — MUST be derived from the manifest, not independently maintained.
 
-Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
+Agent reads the manifest and generates code (codegen). Validator (CI) checks consistency between generated code and manifest. This prevents drift between spec and implementation.
 
-## Principle 3: Concrete Ops Are Declarations
+### D3.1. Keyword-Only `__init__` with Manifest Dimension Names
 
-A concrete Op should be short and declarative: which kernel, which dtypes, how to wire inputs. Shared mechanics (validation, reshape, padding, trimming) are inherited from the base class.
+Op `__init__` parameters use **keyword-only arguments** named after the manifest's dimension names and param names.
 
-## Principle 4: Conventions in Code, Not Documentation
+**Fixed-rank op** (manifest declares `shape`):
 
-| Convention                             | Enforced By                                           |
-| -------------------------------------- | ----------------------------------------------------- |
-| Non-contiguous → `.contiguous()`       | Per-family base `forward()` or family-specific helper |
-| 256-element alignment padding          | Per-family base `forward()` or family-specific helper |
-| CUDA device check                      | Per-family base `forward()` or per-op implementation  |
-| dtype validation                       | Per-family base `forward()` via `SUPPORTED_DTYPES`    |
-| `torch.library.custom_op` registration | Per-op module or shared registration utility          |
-| Docstring format (Google style)        | Linter / CI check                                     |
+```yaml
+# manifest
+inputs:
+  a: {dtype: "float16 | bfloat16", shape: "[M, K]"}
+  b: {dtype: "same_as(a)", shape: "[K, N]"}
+params:
+  # (none for GEMM)
+```
 
-Contiguous conversion is the family base class's responsibility. Concrete ops should not handle stride or memory layout unless explicitly documented.
+```python
+# generated Op __init__
+class GemmFwdOp(Op):
+    def __init__(self, *, M: int, K: int, N: int, dtype: torch.dtype, ...):
+        self.M = M
+        self.K = K
+        self.N = N
+        self.dtype = dtype
+```
 
-## Principle 5: Class Variable Protocol
+**Arbitrary-rank op** (manifest uses `roofline.vars` to derive dimensions):
 
-| Variable                  | Required?  | Defined At              | Purpose                                                                                                   |
-| ------------------------- | ---------- | ----------------------- | --------------------------------------------------------------------------------------------------------- |
-| `SUPPORTED_DTYPES`        | Yes        | Every concrete Op       | Runtime dtype check + manifest validation                                                                 |
-| `ALIGNMENT`               | Per-family | Intermediate base class | Padding alignment (256 for row-reduction/row-norm)                                                        |
-| `_op_name`                | Yes        | Every concrete Op       | `torch.library.custom_op` registration, logging                                                           |
-| `_kernel_handles_padding` | Per-family | Intermediate base class | When `True`, kernel accepts raw `(M, N)` with masked loads — host-side pad/trim is skipped in `forward()` |
+```yaml
+# manifest
+inputs:
+  x: {dtype: "float16 | bfloat16"}
+  weight: {dtype: "same_as(x)"}
+params:
+  dim: {type: int, default: -1}
+  eps: {type: float, default: 1e-6}
+roofline:
+  vars:
+    M: "product(x.shape[:dim])"
+    N: "x.shape[dim]"
+```
 
-Single-kernel ops declare a kernel key and kernel class attribute. Multi-kernel ops define `default_kernel_map` returning a dict. See [Kernel Dispatch](#kernel-dispatch-kernel_map).
+```python
+# generated Op __init__
+class RMSNormFwdOp(RowNormOp):
+    def __init__(self, *, N: int, dtype: torch.dtype,
+                 M: int = None, dim: int = -1, eps: float = 1e-6, ...):
+        self.N = N      # kernel-relevant, required
+        self.M = M      # batch-relevant, optional (dynamic when None)
+        self.dim = dim
+        self.eps = eps
+```
+
+**Naming rule:** keyword names are taken directly from the manifest — `shape` dimension names (`M`, `K`, `N`), `roofline.vars` keys, and `params` keys. No additional mapping.
+
+### D3.2. Static and Dynamic Dimensions
+
+Static `__init__` is the **default path**. All shape dimensions provided at construction time enables shape inference, kernel construction, and roofline evaluation to complete once at init. This aligns with TileLang's JIT compilation model where kernels are shape-specialized.
+
+Dynamic dimensions are supported as a controlled extension for cases where shapes vary across calls (e.g., variable batch size in serving).
+
+**Convention:** provided value = static, `None` = dynamic.
+
+| Phase        | All static                                   | Has dynamic dimensions                                                                                 |
+| ------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `__init__`   | Shape inference complete, kernel constructed | Static dimensions resolved, dynamic deferred                                                           |
+| `forward()`  | Validate input shapes → call kernel          | Resolve dynamic dims from input tensors → complete shape inference → kernel cache lookup → call kernel |
+| Kernel cache | Single kernel instance                       | Cached by dynamic dimension values                                                                     |
+
+```python
+# Fully static (default, recommended) — everything resolved at init
+op = GemmFwdOp(M=2048, K=4096, N=1024, dtype=torch.float16)
+
+# Dynamic M — resolved at forward time, kernel cached by M
+op = RMSNormFwdOp(N=4096, dtype=torch.float16)
+```
+
+### D3.3. Shape Inference (Codegen)
+
+Agent generates an `_infer_output_shapes()` instance method on each Op from the manifest's `shape_rules`. The method accepts shape tuples and params, returns output name → shape mapping.
+
+```yaml
+# manifest shape_rules
+shape_rules:
+  - "y.shape == x.shape"
+  - "weight.shape == (x.shape[dim],)"
+```
+
+```python
+# generated method
+def _infer_output_shapes(
+    self, x_shape: tuple, weight_shape: tuple, dim: int = -1
+) -> Dict[str, tuple]:
+    return {"y": x_shape}
+```
+
+**Calling convention:**
+
+- **Fully static op:** called once in `__init__`, result stored in `self._output_shapes`.
+- **Op with dynamic dims:** called in `forward()` when dynamic dims are resolved. Result cached by dynamic dimension values.
+- **Non-runtime consumers** (validator, graph compiler): can call with concrete shapes without constructing tensors.
+
+**Inheritance in family-base hierarchies:**
+
+| Scenario                                             | `_infer_output_shapes` defined at | Concrete op action    |
+| ---------------------------------------------------- | --------------------------------- | --------------------- |
+| Family shares shape logic                            | L2 family base                    | Inherits, no override |
+| Family member has variant logic (e.g., multi-output) | L3 concrete op                    | Overrides             |
+| Op inherits L1 directly                              | L3 concrete op                    | Agent generates       |
+
+### D3.4. Dtype Validation (Codegen)
+
+Agent generates a `_validate_dtypes()` instance method from the manifest's `dtype` fields and `dtype_combos`.
+
+```yaml
+# manifest
+inputs:
+  x: {dtype: "float16 | bfloat16"}
+  weight: {dtype: "same_as(x)"}
+```
+
+```python
+# generated method
+def _validate_dtypes(self, x: torch.Tensor, weight: torch.Tensor) -> None:
+    if x.dtype not in {torch.float16, torch.bfloat16}:
+        raise ValueError(f"x.dtype must be float16 or bfloat16, got {x.dtype}")
+    if weight.dtype != x.dtype:
+        raise ValueError(f"weight.dtype must match x.dtype, got {weight.dtype}")
+```
+
+`SUPPORTED_DTYPES` as a standalone class variable is superseded by this approach. Dtype constraints live in the manifest; Op code is generated from them.
+
+### D3.5. Roofline Evaluation (Codegen)
+
+Agent generates roofline metadata as class-level declarations from the manifest's `roofline` section. Evaluation uses the same `self.*` attributes populated by `__init__`.
+
+```yaml
+# manifest
+roofline:
+  vars:
+    M: "product(x.shape[:dim])"
+    N: "x.shape[dim]"
+  flops: "4 * M * N"
+  bytes: "(2 * M * N + N) * elem_bytes"
+```
+
+```python
+# generated class-level declarations
+_roofline_vars = ["M", "N"]
+_flops_expr = "4 * M * N"
+_bytes_expr = "(2 * M * N + N) * elem_bytes"
+```
+
+```python
+# base class provides eval_roofline()
+def eval_roofline(self) -> Tuple[int, int]:
+    ctx = {name: getattr(self, name) for name in self._roofline_vars}
+    ctx["elem_bytes"] = torch.finfo(self.dtype).bits // 8
+    return eval(self._flops_expr, ctx), eval(self._bytes_expr, ctx)
+```
+
+Roofline variable names, `__init__` keyword names, and `shape` dimension names all share the same namespace — defined once in the manifest, consumed uniformly.
+
+### D3.6. Consistency Enforcement
+
+| Check                                                     | Mechanism                             | When     |
+| --------------------------------------------------------- | ------------------------------------- | -------- |
+| Generated code matches manifest                           | Validator (CI), extended L1/L2 checks | Every PR |
+| `__init__` keywords match manifest dims + params          | Validator signature check             | Every PR |
+| `_infer_output_shapes` consistent with `shape_rules`      | Validator shape check                 | Every PR |
+| `_validate_dtypes` consistent with `dtype`/`dtype_combos` | Validator dtype check                 | Every PR |
+
+## D4. Concrete Ops Are Declarations
+
+In L1→L2→L3 hierarchies, a concrete Op (L3) is a pure declaration:
+
+- Which kernel (`_kernel_cls`, `_kernel_key`)
+- Which op kind (`_op_kind`)
+- Dimension wiring (keyword params → kernel constructor)
+
+Shared mechanics — validation, reshape, padding, shape inference, dtype validation, kernel dispatch, trimming — are inherited from L2.
+
+Ops that still inherit L1 directly own their full `forward()`. As their family matures, shared logic migrates to an L2 base, and concrete ops converge toward declarations.
+
+## D5. Op/Kernel Base Class Protocol
+
+### Op base class (`tileops/ops/op_base.py`)
+
+| Attribute        | Type                          | Purpose                                               |
+| ---------------- | ----------------------------- | ----------------------------------------------------- |
+| `kernel`         | `Kernel`                      | Kernel instance used by `forward()`                   |
+| `kernel_map`     | `Optional[Dict[str, Kernel]]` | Dispatched kernels keyed by name                      |
+| `dtype`          | `Optional[torch.dtype]`       | Computation dtype                                     |
+| `device`         | `Optional[str]`               | Device (default `'cuda'`)                             |
+| `_output_shapes` | `Optional[Dict[str, tuple]]`  | Inferred output shapes (populated at init or forward) |
+
+Abstract interface: `default_kernel_map` (property), `forward()`.
+
+Manifest-driven methods (generated by agent):
+
+- `_infer_output_shapes(...)` → output name → shape
+- `_validate_dtypes(...)` → raise on invalid dtypes
+- `eval_roofline()` → (flops, bytes)
+
+### Kernel base class (`tileops/kernels/kernel_base.py`)
+
+| Attribute          | Type                    | Purpose                                        |
+| ------------------ | ----------------------- | ---------------------------------------------- |
+| `dtype`            | `Optional[torch.dtype]` | Data type                                      |
+| `config`           | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.) |
+| `autotune_configs` | `Optional[list[dict]]`  | Search space for autotuning                    |
+| `supported_archs`  | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)     |
+| `kernel`           | `Callable`              | Compiled TileLang kernel function              |
+
+Abstract interface: `forward()`.
+Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
+
+### Family-base protocol variables
+
+| Variable                  | Family          | Purpose                                                   |
+| ------------------------- | --------------- | --------------------------------------------------------- |
+| `_kernel_key`             | norm, reduction | Kernel-map lookup key                                     |
+| `_kernel_cls`             | norm, reduction | Kernel class reference                                    |
+| `_op_kind`                | reduction       | Reduction kind string (`"sum"`, `"mean"`, `"std"`, etc.)  |
+| `_kernel_handles_padding` | reduction       | `True` → kernel uses masked loads, skip host-side padding |
+| `_op_name`                | elementwise     | `torch.library.custom_op` registration key                |
+| `kernel_cls`              | elementwise     | Kernel class reference                                    |
 
 Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
 
-## Naming Conventions
+## D6. Conventions in Code, Not Documentation
+
+| Convention                             | Enforced By                                          |
+| -------------------------------------- | ---------------------------------------------------- |
+| Non-contiguous → `.contiguous()`       | Per-family base `forward()` or per-op implementation |
+| Alignment padding                      | Per-family base `forward()` or kernel masked loads   |
+| CUDA device check                      | Per-family base `forward()` or per-op implementation |
+| `torch.library.custom_op` registration | Per-op module or shared registration utility         |
+| Docstring format (Google style)        | Linter / CI check                                    |
+
+## D7. Naming Conventions
 
 ### Op Classes
-
-Op class names use PascalCase with a mandatory direction suffix and `Op` suffix:
 
 ```
 {PascalCaseName}{Direction}Op
 ```
 
-- **PascalCaseName** — descriptive name (e.g., `RMSNorm`, `BatchNorm`, `Softmax`). No mechanical abbreviation rules are enforced — the manifest author determines the name.
-- **Direction** — mandatory suffix: `Fwd` or `Bwd`.
-- **Op** — literal suffix.
+- **Direction** — mandatory: `Fwd` or `Bwd`.
+- Exception: elementwise ops omit the direction suffix (`ReluOp`, `AddOp`).
 
-Examples: `RMSNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`, `BatchNormFwdOp`.
-
-The manifest key must exactly equal `cls.__name__`. The validator enforces this via direct equality check — there is no heuristic snake_case-to-PascalCase resolution.
+The manifest key must exactly equal `cls.__name__`.
 
 ### Kernel Classes
-
-Kernel classes use PascalCase with a `Kernel` suffix:
 
 ```
 {PascalCaseName}{Direction}Kernel
 ```
 
-Examples: `RMSNormFwdKernel`, `SoftmaxFwdKernel`.
+- Exception: elementwise kernels omit the direction suffix (`ReluKernel`, `AddKernel`).
 
 ### Kernel Dispatch (kernel_map)
 
-An Op dispatches to one or more Kernels via `kernel_map` — a flat dict mapping dispatch keys to Kernel classes. A single Op may dispatch to different Kernels based on shape, dtype, or hardware architecture.
-
-The manifest declares `kernel_map` as a registration table so that kernel-layer design decisions stay at the spec level: human reviewer decides what Kernels an Op needs, agent implements them.
+A flat dict mapping dispatch keys to Kernel classes. The manifest declares this table; agents implement the listed Kernels.
 
 ```python
-# Single-kernel op
-def default_kernel_map(self):
-    return {"rms_norm": RmsNormKernel}
+# Single-kernel op (family-base pattern)
+@property
+def default_kernel_map(self) -> Dict[str, Kernel]:
+    return {self._kernel_key: self._kernel_cls}
 
 
-# Multi-kernel pipeline
-def default_kernel_map(self):
+# Multi-kernel pipeline (direct-inheritance pattern)
+@property
+def default_kernel_map(self) -> Dict[str, Kernel]:
     return {
         "mha_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
         "mha_bwd_kernel": MHABwdKernel,
@@ -116,24 +353,22 @@ def default_kernel_map(self):
     }
 ```
 
-- **Keys**: snake_case identifiers, decoupled from Kernel class names. Renaming a Kernel class does not require renaming its dispatch key. (Convention for new ops — some existing ops use PascalCase keys.)
-- **Values**: Kernel class names (PascalCase), must match `cls.__name__`.
+- **Keys**: snake_case identifiers, decoupled from Kernel class names.
+- **Values**: Kernel class names, must match `cls.__name__`.
 - The table does not describe dispatch strategy. Strategy is a runtime concern.
 
 ### Builder Functions
 
-Kernel builder functions (that construct TileLang programs) remain `snake_case`:
+Kernel builder functions remain `snake_case`:
 
 ```python
 def rms_norm_fwd(M, N, dtype, ...): ...
 ```
 
-## Adding a New Intermediate Base Class
+## D8. Adding a New Family Base
 
-1. **Implement 2-3 concrete ops inheriting `Op` directly** — understand the pattern before abstracting
-1. **Identify shared steps** — which parts of forward() are identical?
+1. **Implement 2-3 concrete ops inheriting Op directly** — understand the pattern before abstracting
+1. **Identify shared steps** — which parts of `forward()` are identical?
 1. **Extract the base class** — shared steps into base, per-op differences as hooks
 1. **Migrate existing ops** — verify tests pass unchanged
-1. **Register the pattern** — update this hierarchy
-
-**Abstraction follows implementation, never the reverse.**
+1. **Register the pattern** — update D1 hierarchy table
