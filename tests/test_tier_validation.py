@@ -50,9 +50,12 @@ def _make_item(
 
     item.get_closest_marker = _get_closest_marker
 
-    # callspec with optional tune param
+    params: dict[str, object] = {}
     if tune is not None:
-        item.callspec = SimpleNamespace(params={"tune": tune})
+        params["tune"] = tune
+
+    if params:
+        item.callspec = SimpleNamespace(params=params)
     else:
         item.callspec = None
 
@@ -64,7 +67,7 @@ def _make_item(
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestZeroSmokeFails:
     """At least one smoke param is required per ops test function."""
 
@@ -82,7 +85,7 @@ class TestZeroSmokeFails:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestMultiSmokePasses:
     """Tests with >1 smoke params must pass tier validation."""
 
@@ -111,7 +114,7 @@ class TestMultiSmokePasses:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestSmokeOrdering:
     """Smoke cases must be contiguous at the front of non-xfail items."""
 
@@ -160,7 +163,7 @@ class TestSmokeOrdering:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestSingleSmokeBackwardCompat:
     """Existing single-smoke test fixtures must pass unchanged."""
 
@@ -179,7 +182,7 @@ class TestSingleSmokeBackwardCompat:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestSmokeConstraints:
     """Every smoke case must have tune=False and must not be xfail."""
 
