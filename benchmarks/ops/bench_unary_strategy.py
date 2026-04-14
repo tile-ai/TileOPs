@@ -55,7 +55,7 @@ class UnaryStrategyBenchCase:
         return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
 
 
-class UnaryStrategyBenchmark(BenchmarkBase):
+class UnaryStrategyBenchmark(BenchmarkBase[UnaryStrategyBenchCase]):
     """Bandwidth-oriented benchmark for unary elementwise strategy comparison."""
 
     def calculate_flops(self) -> Optional[float]:

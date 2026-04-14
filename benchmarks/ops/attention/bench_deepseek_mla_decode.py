@@ -57,7 +57,7 @@ class _MlaDecodeTestBaseline(MlaDecodeTest):
         return out
 
 
-class MlaDecodeBenchmark(BenchmarkBase):
+class MlaDecodeBenchmark(BenchmarkBase[MlaDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

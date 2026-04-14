@@ -172,7 +172,7 @@ def _to_fla_layout(q, k, v, beta):
 # Forward benchmark
 # =============================================================================
 
-class DeltaNetFwdBenchmark(BenchmarkBase):
+class DeltaNetFwdBenchmark(BenchmarkBase[DeltaNetFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -246,7 +246,7 @@ def test_deltanet_vs_fla_fwd(
 # Backward benchmark
 # =============================================================================
 
-class DeltaNetBwdBenchmark(BenchmarkBase):
+class DeltaNetBwdBenchmark(BenchmarkBase[DeltaNetFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -339,7 +339,7 @@ def test_deltanet_vs_fla_bwd(
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
 # =============================================================================
 
-class DeltaNetFwdBwdBenchmark(BenchmarkBase):
+class DeltaNetFwdBwdBenchmark(BenchmarkBase[DeltaNetFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

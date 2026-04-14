@@ -24,7 +24,7 @@ _BWD_OP_NAME = "BatchNormBwdOp"
 # Benchmark classes
 # ---------------------------------------------------------------------------
 
-class BatchNormFwdBenchmark(BenchmarkBase):
+class BatchNormFwdBenchmark(BenchmarkBase[BatchNormFwdTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
@@ -49,7 +49,7 @@ class BatchNormFwdBenchmark(BenchmarkBase):
         return self._get_roofline()[1]
 
 
-class BatchNormBwdBenchmark(BenchmarkBase):
+class BatchNormBwdBenchmark(BenchmarkBase[BatchNormBwdTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

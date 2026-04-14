@@ -50,7 +50,7 @@ class _DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
-class DeltaNetDecodeBenchmark(BenchmarkBase):
+class DeltaNetDecodeBenchmark(BenchmarkBase[DeltaNetDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

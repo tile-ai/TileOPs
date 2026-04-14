@@ -18,7 +18,7 @@ _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = [
 ]
 
 
-class GqaSlidingWindowVarlenFwdBenchmark(BenchmarkBase):
+class GqaSlidingWindowVarlenFwdBenchmark(BenchmarkBase[GqaSlidingWindowVarlenFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         """Approximate FLOPs for QK^T and PV GEMMs, summed over all samples."""

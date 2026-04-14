@@ -117,7 +117,7 @@ class GLATest(WorkloadBase):
 # Forward benchmark
 # =============================================================================
 
-class GLAFwdBenchmark(BenchmarkBase):
+class GLAFwdBenchmark(BenchmarkBase[GLATest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -187,7 +187,7 @@ def test_gla_fwd_bench(
 # Backward benchmark
 # =============================================================================
 
-class GLABwdBenchmark(BenchmarkBase):
+class GLABwdBenchmark(BenchmarkBase[GLATest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -280,7 +280,7 @@ def test_gla_bwd_bench(
 # Combined fwd+bwd benchmark
 # =============================================================================
 
-class GLAFwdBwdBenchmark(BenchmarkBase):
+class GLAFwdBwdBenchmark(BenchmarkBase[GLATest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

@@ -105,7 +105,7 @@ class FusedMoeBenchTest(WorkloadBase):
 # ---------------------------------------------------------------------------
 
 
-class FusedMoeBenchmark(BenchmarkBase):
+class FusedMoeBenchmark(BenchmarkBase[FusedMoeBenchTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

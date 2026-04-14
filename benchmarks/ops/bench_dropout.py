@@ -30,7 +30,7 @@ class DropoutBenchCase:
         return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
 
 
-class DropoutBenchmark(BenchmarkBase):
+class DropoutBenchmark(BenchmarkBase[DropoutBenchCase]):
     def calculate_flops(self) -> Optional[float]:
         # RNG + compare + scale — not compute-bound, return element count
         return self.workload.n_total

@@ -72,7 +72,7 @@ class _NsaCmpFwdTestBaseline(NsaCmpFwdTest):
                                                       offsets)
 
 
-class NsaCmpFwdBenchmark(BenchmarkBase):
+class NsaCmpFwdBenchmark(BenchmarkBase[NsaCmpFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

@@ -19,7 +19,7 @@ class _GemmTestBaseline(GemmTest):
         return torch.matmul(a, b)
 
 
-class GemmBenchmark(BenchmarkBase):
+class GemmBenchmark(BenchmarkBase[GemmTest]):
 
     def calculate_flops(self) -> Optional[float]:
         return 2.0 * self.workload.m * self.workload.n * self.workload.k

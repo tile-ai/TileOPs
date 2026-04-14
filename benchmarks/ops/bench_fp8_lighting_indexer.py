@@ -39,7 +39,7 @@ class _FP8LightingIndexerTestBaseline(FP8LightingIndexerTest):
         return (logits,)
 
 
-class FP8LightingIndexerBenchmark(BenchmarkBase):
+class FP8LightingIndexerBenchmark(BenchmarkBase[FP8LightingIndexerTest]):
 
     def calculate_flops(self) -> Optional[float]:
         # Flops depend on the actual mask cost which varies per input

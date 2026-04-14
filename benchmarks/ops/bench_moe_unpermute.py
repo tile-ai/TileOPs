@@ -42,7 +42,7 @@ _OP_NAME = "MoeUnpermuteFwdOp"
 # ---------------------------------------------------------------------------
 
 
-class MoeUnpermuteBenchmark(BenchmarkBase):
+class MoeUnpermuteBenchmark(BenchmarkBase[MoeUnpermuteTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

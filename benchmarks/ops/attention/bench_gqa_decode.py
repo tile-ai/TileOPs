@@ -23,7 +23,7 @@ class _GqaDecodeTestBaseline(GqaDecodeTest):
         return output
 
 
-class GqaDecodeBenchmark(BenchmarkBase):
+class GqaDecodeBenchmark(BenchmarkBase[GqaDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

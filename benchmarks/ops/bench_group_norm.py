@@ -13,7 +13,7 @@ from workloads.group_norm import GroupNormTest
 _OP_NAME = "GroupNormFwdOp"
 
 
-class GroupNormBenchmark(BenchmarkBase):
+class GroupNormBenchmark(BenchmarkBase[GroupNormTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

@@ -54,7 +54,7 @@ def engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
     )
 
 
-class EngramGateConvFwdBenchmark(BenchmarkBase):
+class EngramGateConvFwdBenchmark(BenchmarkBase[EngramGateConvFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -154,7 +154,7 @@ class _EngramGateConvBwdTestBaseline(EngramGateConvBwdTest):
         )
 
 
-class EngramGateConvBwdBenchmark(BenchmarkBase):
+class EngramGateConvBwdBenchmark(BenchmarkBase[EngramGateConvBwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -254,7 +254,7 @@ def engram_decode_step_torch(
     return y_t.to(h_t.dtype), new_conv_state
 
 
-class EngramDecodeBenchmark(BenchmarkBase):
+class EngramDecodeBenchmark(BenchmarkBase[EngramDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

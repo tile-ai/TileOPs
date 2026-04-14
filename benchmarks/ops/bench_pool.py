@@ -48,7 +48,7 @@ class AvgPool1dBenchCase:
         )
 
 
-class AvgPool1dBenchmark(BenchmarkBase):
+class AvgPool1dBenchmark(BenchmarkBase[AvgPool1dBenchCase]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -153,7 +153,7 @@ class AvgPool2dBenchCase:
         )
 
 
-class AvgPool2dBenchmark(BenchmarkBase):
+class AvgPool2dBenchmark(BenchmarkBase[AvgPool2dBenchCase]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -280,7 +280,7 @@ class AvgPool3dBenchCase:
         )
 
 
-class AvgPool3dBenchmark(BenchmarkBase):
+class AvgPool3dBenchmark(BenchmarkBase[AvgPool3dBenchCase]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

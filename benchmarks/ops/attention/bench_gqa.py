@@ -12,7 +12,7 @@ from workloads.attention.gqa import (
 )
 
 
-class GqaFwdBenchmark(BenchmarkBase):
+class GqaFwdBenchmark(BenchmarkBase[GqaFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -27,7 +27,7 @@ class GqaFwdBenchmark(BenchmarkBase):
         return 2 * (query_size + kv_size) * t.dtype.itemsize
 
 
-class GqaBwdBenchmark(BenchmarkBase):
+class GqaBwdBenchmark(BenchmarkBase[GqaBwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

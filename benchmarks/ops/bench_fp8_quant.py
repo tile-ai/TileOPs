@@ -20,7 +20,7 @@ class _FP8QuantTestBaseline(FP8QuantTest):
         return scale_tensor.squeeze(dim=-1), output_tensor
 
 
-class FP8QuantBenchmark(BenchmarkBase):
+class FP8QuantBenchmark(BenchmarkBase[FP8QuantTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

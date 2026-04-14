@@ -145,7 +145,7 @@ def _triton_permute_align(
 # ---------------------------------------------------------------------------
 
 
-class MoePermuteAlignBenchmark(BenchmarkBase):
+class MoePermuteAlignBenchmark(BenchmarkBase[MoePermuteAlignTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

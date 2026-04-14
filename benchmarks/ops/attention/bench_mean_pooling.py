@@ -44,7 +44,7 @@ class _MeanPoolingTestBaseline(MeanPoolingTest):
         return output
 
 
-class MeanPoolingBenchmark(BenchmarkBase):
+class MeanPoolingBenchmark(BenchmarkBase[MeanPoolingTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

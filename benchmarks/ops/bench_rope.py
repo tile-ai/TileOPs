@@ -29,7 +29,7 @@ class RopeBenchCase:
         return (torch.randn(self.seq_len, self.head_dim, device="cuda", dtype=self.dtype),)
 
 
-class RopeBenchmark(BenchmarkBase):
+class RopeBenchmark(BenchmarkBase[RopeBenchCase]):
     def calculate_flops(self) -> Optional[float]:
         # 4 ops per element: 2 muls + 1 add + 1 negate/select
         return self.workload.n_total * 4

@@ -140,7 +140,7 @@ class SharedFusedMoEBenchFixture(FixtureBase):
 # ---------------------------------------------------------------------------
 
 
-class SharedFusedMoEBenchmark(BenchmarkBase):
+class SharedFusedMoEBenchmark(BenchmarkBase[SharedFusedMoEBenchTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

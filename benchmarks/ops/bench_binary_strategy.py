@@ -50,7 +50,7 @@ class BinaryStrategyBenchCase:
         return a, b
 
 
-class BinaryStrategyBenchmark(BenchmarkBase):
+class BinaryStrategyBenchmark(BenchmarkBase[BinaryStrategyBenchCase]):
     """Bandwidth-oriented benchmark for binary elementwise strategy comparison."""
 
     def calculate_flops(self) -> Optional[float]:

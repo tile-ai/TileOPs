@@ -13,7 +13,7 @@ from workloads.instance_norm import InstanceNormTest
 _OP_NAME = "InstanceNormFwdOp"
 
 
-class InstanceNormBenchmark(BenchmarkBase):
+class InstanceNormBenchmark(BenchmarkBase[InstanceNormTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

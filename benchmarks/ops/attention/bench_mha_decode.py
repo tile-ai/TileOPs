@@ -23,7 +23,7 @@ class _MhaDecodeTestBaseline(MhaDecodeTest):
         return output
 
 
-class MhaDecodeBenchmark(BenchmarkBase):
+class MhaDecodeBenchmark(BenchmarkBase[MhaDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

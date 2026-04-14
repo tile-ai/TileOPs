@@ -64,7 +64,7 @@ class _MHCPreTestBaseline(MHCPreTest):
         return x_res_ref, x_layer_ref
 
 
-class MHCPreBenchmark(BenchmarkBase):
+class MHCPreBenchmark(BenchmarkBase[MHCPreTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

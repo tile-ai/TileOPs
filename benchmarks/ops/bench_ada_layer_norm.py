@@ -15,7 +15,7 @@ _ADA_OP_NAME = "AdaLayerNormFwdOp"
 _ADA_ZERO_OP_NAME = "AdaLayerNormZeroFwdOp"
 
 
-class AdaLayerNormBenchmark(BenchmarkBase):
+class AdaLayerNormBenchmark(BenchmarkBase[AdaLayerNormTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
@@ -34,7 +34,7 @@ class AdaLayerNormBenchmark(BenchmarkBase):
         return self._get_roofline()[1]
 
 
-class AdaLayerNormZeroBenchmark(BenchmarkBase):
+class AdaLayerNormZeroBenchmark(BenchmarkBase[AdaLayerNormZeroTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

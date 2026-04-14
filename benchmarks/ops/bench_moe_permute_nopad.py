@@ -63,7 +63,7 @@ class MoePermuteNopadTest(WorkloadBase):
 # ---------------------------------------------------------------------------
 
 
-class MoePermuteNopadBenchmark(BenchmarkBase):
+class MoePermuteNopadBenchmark(BenchmarkBase[MoePermuteNopadTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

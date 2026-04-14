@@ -42,7 +42,7 @@ class UnaryElementwiseBenchCase:
         return self._gen_inputs(self.n_total, self.dtype)
 
 
-class UnaryElementwiseBenchmark(BenchmarkBase):
+class UnaryElementwiseBenchmark(BenchmarkBase[UnaryElementwiseBenchCase]):
     """Bandwidth-oriented benchmark for unary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:

@@ -60,7 +60,7 @@ except ImportError:
     fused_recurrent_gla = None
 
 
-class GLADecodeBenchmark(BenchmarkBase):
+class GLADecodeBenchmark(BenchmarkBase[GLADecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

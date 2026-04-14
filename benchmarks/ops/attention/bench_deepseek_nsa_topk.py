@@ -145,7 +145,7 @@ class _NsaTopkTestBaseline(NsaTopkTest):
                                 offsets, token_indices, chunk_offsets)
 
 
-class NsaTopkBenchmark(BenchmarkBase):
+class NsaTopkBenchmark(BenchmarkBase[NsaTopkTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

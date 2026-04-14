@@ -12,7 +12,7 @@ against PyTorch baseline.
 """
 
 from math import prod
-from typing import Optional
+from typing import Any, Optional, Protocol
 
 import pytest
 import torch
@@ -68,6 +68,20 @@ _BROADCAST_PATTERNS = {
 # ---------------------------------------------------------------------------
 
 
+class BinaryWorkload(Protocol):
+    """Structural type for binary benchmark workloads.
+
+    Requires ``n_total``, ``dtype``, and ``gen_inputs``.  Attributes
+    ``a_shape`` / ``b_shape`` are optional — ``BinaryBenchmark`` falls
+    back to ``n_total`` when they are absent.
+    """
+
+    n_total: int
+    dtype: torch.dtype
+
+    def gen_inputs(self) -> Any: ...
+
+
 class BinaryBenchCase:
     """Minimal test harness for binary benchmarks."""
 
@@ -85,7 +99,7 @@ class BinaryBenchCase:
         return a, b
 
 
-class BinaryBenchmark(BenchmarkBase):
+class BinaryBenchmark(BenchmarkBase[BinaryWorkload]):
     """Bandwidth-oriented benchmark for binary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:
@@ -95,8 +109,8 @@ class BinaryBenchmark(BenchmarkBase):
         t = self.workload
         elem_bytes = t.dtype.itemsize
         # Read a + read b + write output
-        a_elems = prod(t.a_shape) if hasattr(t, "a_shape") else t.n_total
-        b_elems = prod(t.b_shape) if hasattr(t, "b_shape") else t.n_total
+        a_elems = prod(getattr(t, "a_shape", (t.n_total,)))
+        b_elems = prod(getattr(t, "b_shape", (t.n_total,)))
         return (a_elems + b_elems + t.n_total) * elem_bytes
 
 
@@ -114,7 +128,7 @@ class WhereBenchCase:
         return cond, x, y
 
 
-class WhereBenchmark(BenchmarkBase):
+class WhereBenchmark(BenchmarkBase[WhereBenchCase]):
     """Benchmark for where op."""
 
     def calculate_flops(self) -> Optional[float]:

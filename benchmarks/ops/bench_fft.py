@@ -35,7 +35,7 @@ class FFTBenchmarkFixture(FixtureBase):
     ]
 
 
-class FFTBenchmark(BenchmarkBase):
+class FFTBenchmark(BenchmarkBase[FFTTest]):
 
     def calculate_flops(self) -> Optional[float]:
         n = self.workload.n

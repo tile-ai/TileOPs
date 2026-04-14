@@ -56,7 +56,7 @@ class Conv1dBenchCase:
         )
 
 
-class Conv1dBenchmark(BenchmarkBase):
+class Conv1dBenchmark(BenchmarkBase[Conv1dBenchCase]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -189,7 +189,7 @@ class Conv2dBenchCase:
         )
 
 
-class Conv2dBenchmark(BenchmarkBase):
+class Conv2dBenchmark(BenchmarkBase[Conv2dBenchCase]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -327,7 +327,7 @@ class Conv3dBenchCase:
         )
 
 
-class Conv3dBenchmark(BenchmarkBase):
+class Conv3dBenchmark(BenchmarkBase[Conv3dBenchCase]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

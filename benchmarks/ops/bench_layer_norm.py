@@ -12,7 +12,7 @@ from workloads.layer_norm import LayerNormTest
 _OP_NAME = "LayerNormFwdOp"
 
 
-class LayerNormBenchmark(BenchmarkBase):
+class LayerNormBenchmark(BenchmarkBase[LayerNormTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

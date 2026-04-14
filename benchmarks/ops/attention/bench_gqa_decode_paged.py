@@ -47,7 +47,7 @@ class _GqaDecodePagedTestBaseline(GqaDecodePagedTest):
         return torch.cat(out_list, dim=0)
 
 
-class GqaDecodePagedBenchmark(BenchmarkBase):
+class GqaDecodePagedBenchmark(BenchmarkBase[GqaDecodePagedTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

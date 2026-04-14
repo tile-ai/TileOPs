@@ -21,7 +21,7 @@ class _RMSNormTestBaseline(RMSNormTest):
 _OP_NAME = "RMSNormFwdOp"
 
 
-class RMSNormBenchmark(BenchmarkBase):
+class RMSNormBenchmark(BenchmarkBase[RMSNormTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

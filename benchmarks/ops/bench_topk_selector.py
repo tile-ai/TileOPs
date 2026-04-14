@@ -19,7 +19,7 @@ class _TopkSelectorTestBaseline(TopkSelectorTest):
         return indexes_ref.permute(0, 1, 3, 2)
 
 
-class TopkSelectorBenchmark(BenchmarkBase):
+class TopkSelectorBenchmark(BenchmarkBase[TopkSelectorTest]):
 
     def calculate_flops(self) -> Optional[float]:
         return None

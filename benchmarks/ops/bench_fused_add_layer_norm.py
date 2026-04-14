@@ -12,7 +12,7 @@ from workloads.fused_add_layer_norm import FusedAddLayerNormTest
 _OP_NAME = "FusedAddLayerNormFwdOp"
 
 
-class FusedAddLayerNormBenchmark(BenchmarkBase):
+class FusedAddLayerNormBenchmark(BenchmarkBase[FusedAddLayerNormTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

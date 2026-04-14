@@ -10,7 +10,7 @@ from tileops.ops import GqaSlidingWindowFwdOp
 from workloads.attention.gqa_sliding_window import GqaSlidingWindowFwdTest
 
 
-class GqaSlidingWindowFwdBenchmark(BenchmarkBase):
+class GqaSlidingWindowFwdBenchmark(BenchmarkBase[GqaSlidingWindowFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         """Approximate FLOPs for QK^T and PV GEMMs."""

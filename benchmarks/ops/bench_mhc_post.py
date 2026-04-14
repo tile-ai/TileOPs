@@ -23,7 +23,7 @@ class _MHCPostTestBaseline(MHCPostTest):
         return x_out_ref
 
 
-class MHCPostBenchmark(BenchmarkBase):
+class MHCPostBenchmark(BenchmarkBase[MHCPostTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

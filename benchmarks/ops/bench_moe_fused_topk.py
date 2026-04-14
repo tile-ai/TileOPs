@@ -56,7 +56,7 @@ def fused_topk_torch(
 # ---------------------------------------------------------------------------
 
 
-class FusedTopKBenchmark(BenchmarkBase):
+class FusedTopKBenchmark(BenchmarkBase[FusedTopKTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

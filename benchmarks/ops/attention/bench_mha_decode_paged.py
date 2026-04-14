@@ -45,7 +45,7 @@ class _MhaDecodePagedTestBaseline(MhaDecodePagedTest):
         return torch.cat(out_list, dim=0)
 
 
-class MhaDecodePagedBenchmark(BenchmarkBase):
+class MhaDecodePagedBenchmark(BenchmarkBase[MhaDecodePagedTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

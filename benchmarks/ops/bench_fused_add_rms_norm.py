@@ -11,7 +11,7 @@ from workloads.fused_add_rms_norm import FusedAddRMSNormTest
 _OP_NAME = "FusedAddRMSNormFwdOp"
 
 
-class FusedAddRMSNormBenchmark(BenchmarkBase):
+class FusedAddRMSNormBenchmark(BenchmarkBase[FusedAddRMSNormTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

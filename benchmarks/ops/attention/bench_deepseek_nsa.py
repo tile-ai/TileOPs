@@ -36,7 +36,7 @@ class _NsaFwdTestBaseline(NsaFwdTest):
         )
 
 
-class NsaFwdBenchmark(BenchmarkBase):
+class NsaFwdBenchmark(BenchmarkBase[NsaFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

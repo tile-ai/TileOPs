@@ -41,7 +41,7 @@ _OP_NAME = "MoePermutePaddedFwdOp"
 # ---------------------------------------------------------------------------
 
 
-class MoePermuteBenchmark(BenchmarkBase):
+class MoePermuteBenchmark(BenchmarkBase[MoePermuteTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

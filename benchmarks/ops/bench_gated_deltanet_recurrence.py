@@ -60,7 +60,7 @@ except ImportError:
     fused_recurrent_gated_delta_rule = None
 
 
-class GatedDeltaNetDecodeBenchmark(BenchmarkBase):
+class GatedDeltaNetDecodeBenchmark(BenchmarkBase[GatedDeltaNetDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

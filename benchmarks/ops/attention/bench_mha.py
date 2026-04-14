@@ -12,7 +12,7 @@ from workloads.attention.mha import (
 )
 
 
-class MhaFwdBenchmark(BenchmarkBase):
+class MhaFwdBenchmark(BenchmarkBase[MhaFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -25,7 +25,7 @@ class MhaFwdBenchmark(BenchmarkBase):
         return 4 * t.batch * t.heads * t.seq_len * t.dim * t.dtype.itemsize
 
 
-class MhaBwdBenchmark(BenchmarkBase):
+class MhaBwdBenchmark(BenchmarkBase[MhaBwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

@@ -13,7 +13,7 @@ compares against PyTorch baseline to determine optimal DEFAULT_STRATEGY.
 """
 
 from math import prod
-from typing import Optional
+from typing import Optional, Protocol
 
 import pytest
 import torch
@@ -53,6 +53,15 @@ _UNARY_STRATEGIES = ("direct", "explicit_parallel", "register_copy")
 # ---------------------------------------------------------------------------
 
 
+class _UnaryWorkload(Protocol):
+    """Structural type for unary benchmark workloads."""
+
+    n_total: int
+    dtype: torch.dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]: ...
+
+
 class UnaryBenchCase:
     """Minimal test harness for unary benchmarks."""
 
@@ -65,7 +74,7 @@ class UnaryBenchCase:
         return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
 
 
-class UnaryBenchmark(BenchmarkBase):
+class UnaryBenchmark(BenchmarkBase[_UnaryWorkload]):
     """Bandwidth-oriented benchmark for unary elementwise ops."""
 
     def calculate_flops(self) -> Optional[float]:

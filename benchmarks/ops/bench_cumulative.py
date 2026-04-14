@@ -48,7 +48,7 @@ class CumulativeBenchTest(WorkloadBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class CumulativeBenchmark(BenchmarkBase):
+class CumulativeBenchmark(BenchmarkBase[CumulativeBenchTest]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         # Approximate: inclusive scan performs N-1 ops per row, rounded up to M*N
