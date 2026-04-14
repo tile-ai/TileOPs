@@ -18,8 +18,9 @@ from tileops.kernels.attention import (
     GqaSlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.ops.op_base import Op
 from tileops.utils import is_hopper
+
+from ..op_base import Op
 
 __all__ = [
     "GroupedQueryAttentionFwdOp",
