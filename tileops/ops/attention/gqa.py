@@ -23,10 +23,10 @@ from tileops.utils import is_hopper
 from ..op_base import Op
 
 __all__ = [
-    "GroupedQueryAttentionFwdOp",
     "GroupedQueryAttentionBwdOp",
-    "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
+    "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
+    "GroupedQueryAttentionFwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
 ]

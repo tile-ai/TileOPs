@@ -89,6 +89,8 @@ select = [
     # "D",
     # pep8-naming (naming conventions)
     "N",
+    # ruff-specific: sort __all__
+    "RUF022",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage
     # "ANN",
 ]
@@ -118,6 +120,11 @@ known-first-party = ["tileops"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "bench_*.py" = ["F401"]
+# __all__ intentionally grouped by category, not alphabetical
+"tileops/kernels/elementwise.py" = ["RUF022"]
+"tileops/ops/__init__.py" = ["RUF022"]
+"tileops/ops/elementwise.py" = ["RUF022"]
+"tileops/ops/reduction/__init__.py" = ["RUF022"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

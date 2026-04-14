@@ -10,8 +10,8 @@ __all__ = [
     "FusedTopKKernel",
     "MoeGroupedGemmNopadKernel",
     "MoePermuteAlignKernel",
-    "MoePermutePaddedKernel",
     "MoePermuteNopadKernel",
-    "SharedExpertMLPKernel",
+    "MoePermutePaddedKernel",
     "MoeUnpermuteKernel",
+    "SharedExpertMLPKernel",
 ]

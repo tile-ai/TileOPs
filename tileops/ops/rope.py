@@ -72,11 +72,11 @@ def _register_rope_custom_op(op_cls):
 
 
 __all__ = [
+    "RopeLlama31Op",
+    "RopeLongRopeOp",
     "RopeNeoxOp",
     "RopeNonNeoxOp",
-    "RopeLlama31Op",
     "RopeYarnOp",
-    "RopeLongRopeOp",
 ]
 
 

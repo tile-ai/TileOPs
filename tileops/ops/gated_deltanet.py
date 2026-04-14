@@ -14,7 +14,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["GatedDeltaNetFwdOp", "GatedDeltaNetBwdOp", "GatedDeltaNetOp", "GatedDeltaNetDecodeOp"]
+__all__ = ["GatedDeltaNetBwdOp", "GatedDeltaNetDecodeOp", "GatedDeltaNetFwdOp", "GatedDeltaNetOp"]
 
 
 class GatedDeltaNetFwdOp(Op):

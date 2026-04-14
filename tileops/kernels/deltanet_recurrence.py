@@ -23,7 +23,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["DeltaNetDecodeKernel", "DeltaNetDecodeFP32Kernel"]
+__all__ = ["DeltaNetDecodeFP32Kernel", "DeltaNetDecodeKernel"]
 
 _DEFAULT_K_TILE = 16
 # T.gemm requires M divisible by 16; we use rows 0 (k) and 1 (q)

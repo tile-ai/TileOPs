@@ -25,7 +25,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["GatedDeltaNetDecodeKernel", "GatedDeltaNetDecodeFP32Kernel"]
+__all__ = ["GatedDeltaNetDecodeFP32Kernel", "GatedDeltaNetDecodeKernel"]
 
 _LOG2E = 1.4426950408889634
 _DEFAULT_K_TILE = 16

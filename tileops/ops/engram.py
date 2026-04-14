@@ -8,7 +8,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["EngramGateConvFwdOp", "EngramGateConvBwdOp"]
+__all__ = ["EngramGateConvBwdOp", "EngramGateConvFwdOp"]
 
 ALIGNMENT = 256
 CONV_KERNEL_SIZE = 4

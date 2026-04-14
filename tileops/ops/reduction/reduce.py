@@ -26,12 +26,12 @@ from ..op_base import Op
 from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = [
-    "SumFwdOp",
-    "MeanFwdOp",
-    "AminFwdOp",
     "AmaxFwdOp",
+    "AminFwdOp",
+    "MeanFwdOp",
     "ProdFwdOp",
     "StdFwdOp",
+    "SumFwdOp",
     "VarFwdOp",
     "VarMeanFwdOp",
 ]

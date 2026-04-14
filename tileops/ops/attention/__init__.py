@@ -23,12 +23,12 @@ from .mha import (
 
 __all__ = [
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
-    "GroupedQueryAttentionSlidingWindowFwdOp",
-    "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionFwdOp",
+    "GroupedQueryAttentionSlidingWindowFwdOp",
+    "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "MeanPoolingForwardOp",
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",

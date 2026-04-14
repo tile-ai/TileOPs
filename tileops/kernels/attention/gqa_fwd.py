@@ -10,7 +10,10 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
 __all__ = [
-    'MHAFwdKernel', 'MHAFwdWgmmaPipelinedKernel', 'GQAFwdKernel', 'GQAFwdWgmmaPipelinedKernel'
+    'GQAFwdKernel',
+    'GQAFwdWgmmaPipelinedKernel',
+    'MHAFwdKernel',
+    'MHAFwdWgmmaPipelinedKernel'
 ]
 
 # MHA
