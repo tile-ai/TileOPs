@@ -7,6 +7,10 @@ authors = [{ name="Tile-AI"}]
 dependencies = [
     "torch>=2.1.0,<2.11.0",
     "tilelang==0.1.8",
+    # FIXME(apache-tvm-ffi-pin): Remove once tilelang>0.1.8 carries its own
+    # apache-tvm-ffi<0.1.10 pin (already on tilelang main, not yet released).
+    # Tracking: https://github.com/tile-ai/TileOPs/issues/969
+    "apache-tvm-ffi>=0.1.2,<0.1.10",
     "einops",
     "pyyaml>=6.0",
 ]
