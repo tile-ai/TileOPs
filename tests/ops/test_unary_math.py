@@ -35,8 +35,8 @@ class MathFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 

@@ -52,7 +52,7 @@ class LogicalAndFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -74,7 +74,7 @@ class LogicalOrFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -140,14 +140,14 @@ class LogicalFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.bool, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.uint8, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.int8, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.int16, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.int32, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.int64, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.bool, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.uint8, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.int8, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.int16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.int64, marks=pytest.mark.smoke),
         ]),
     ]
 

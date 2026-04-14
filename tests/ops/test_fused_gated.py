@@ -23,8 +23,8 @@ class SiluAndMulFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
             pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.full),
+            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
             pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
             pytest.param(2048, 2048, torch.bfloat16, marks=pytest.mark.full),
         ]),
@@ -75,8 +75,8 @@ class GeluAndMulFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
             pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.full),
+            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
             pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
         ]),
     ]
@@ -117,8 +117,8 @@ class GeluTanhAndMulFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
             pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.full),
+            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
             pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
         ]),
     ]
@@ -192,8 +192,8 @@ class FusedGatedDirectStrategyFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
             pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.full),
+            pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 

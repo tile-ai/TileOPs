@@ -26,6 +26,16 @@ class AvgPool1dFixture(FixtureBase):
                 id="smoke-k3-default-stride-fp16",
             ),
             pytest.param(
+                2, 64, 512, 3, None, 1, False, True, torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-k3-default-stride-bf16",
+            ),
+            pytest.param(
+                2, 64, 512, 3, None, 1, False, True, torch.float32, False,
+                marks=pytest.mark.smoke,
+                id="smoke-k3-default-stride-fp32",
+            ),
+            pytest.param(
                 2, 32, 257, 5, 2, 2, False, False, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-k5-s2-no-pad-count-fp16",
@@ -173,6 +183,11 @@ class AvgPool2dFixture(FixtureBase):
                 2, 64, 56, 56, (3, 3), None, (1, 1), False, True, None, torch.float16, False,
                 marks=[pytest.mark.smoke, pytest.mark.packaging],
                 id="smoke-3x3-default-stride-fp16",
+            ),
+            pytest.param(
+                2, 64, 56, 56, (3, 3), None, (1, 1), False, True, None, torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-3x3-default-stride-bf16",
             ),
             pytest.param(
                 1, 128, 55, 57, (3, 5), (2, 2), (1, 2), True, False, None, torch.float16, False,
@@ -412,6 +427,11 @@ class AvgPool3dFixture(FixtureBase):
                 1, 32, 16, 28, 28, (2, 2, 2), None, (0, 0, 0), False, True, None, torch.float16, False,
                 marks=[pytest.mark.smoke, pytest.mark.packaging],
                 id="smoke-2x2x2-default-stride-fp16",
+            ),
+            pytest.param(
+                1, 32, 16, 28, 28, (2, 2, 2), None, (0, 0, 0), False, True, None, torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-2x2x2-default-stride-bf16",
             ),
             pytest.param(
                 1, 48, 15, 25, 27, (2, 3, 3), (2, 2, 2), (1, 1, 1), True, False, None, torch.float16, False,

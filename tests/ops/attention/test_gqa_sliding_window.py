@@ -54,12 +54,12 @@ class GqaSlidingWindowFwdFixture(FixtureBase):
         ("batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune", [
             # ── Basic correctness ─────────────────────────────────────────────
             pytest.param(2, 512,  8, 2,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(2, 512,  8, 2,  64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(2, 512,  8, 2,  64, True,  128, -1, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 512,  8, 2,  64, False, -1,  -1, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 512,  8, 2,  64, False, 64,  64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 128,  8, 1, 128, True,   1,  -1, torch.float16, False, marks=pytest.mark.full),
             # ── dtype ─────────────────────────────────────────────────────────
-            pytest.param(2, 512,  8, 2,  64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(2, 512,  8, 2,  64, False, 64,  64, torch.bfloat16, False, marks=pytest.mark.full),
             # ── GQA ratio ─────────────────────────────────────────────────────
             pytest.param(2, 512,  8, 8,  64, True,  -1,  -1, torch.float16, False, marks=pytest.mark.full),

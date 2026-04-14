@@ -22,8 +22,8 @@ class VectorNormBasicFixture(FixtureBase):
             "m, n, dtype",
             [
                 pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-pow2 last dim
@@ -42,8 +42,8 @@ class VectorNormNonContigFixture(FixtureBase):
             "m, n, dtype",
             [
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.float32, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -55,7 +55,7 @@ class VectorNorm3DFixture(FixtureBase):
             "batch, seq, hidden, dtype",
             [
                 pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -67,7 +67,7 @@ class VectorNorm4DFixture(FixtureBase):
             "b0, b1, b2, n, dtype",
             [
                 pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -79,8 +79,8 @@ class VectorNorm1DFixture(FixtureBase):
             "n, dtype",
             [
                 pytest.param(512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(512, torch.float32, marks=pytest.mark.full),
-                pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(512, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(512, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -320,8 +320,8 @@ class VectorNormNaNFixture(FixtureBase):
             "m, n, dtype",
             [
                 pytest.param(4, 512, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(4, 512, torch.float16, marks=pytest.mark.full),
-                pytest.param(4, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(4, 512, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(4, 512, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(4, 300, torch.float32, marks=pytest.mark.full),
             ],
         ),
@@ -363,9 +363,9 @@ class VectorNormSpecFixture(FixtureBase):
                 pytest.param("l1", torch.float16, marks=pytest.mark.smoke),
                 pytest.param("l2", torch.float16, marks=pytest.mark.smoke),
                 pytest.param("inf", torch.float16, marks=pytest.mark.smoke),
-                pytest.param("l1", torch.float32, marks=pytest.mark.full),
-                pytest.param("l2", torch.float32, marks=pytest.mark.full),
-                pytest.param("inf", torch.float32, marks=pytest.mark.full),
+                pytest.param("l1", torch.float32, marks=pytest.mark.smoke),
+                pytest.param("l2", torch.float32, marks=pytest.mark.smoke),
+                pytest.param("inf", torch.float32, marks=pytest.mark.smoke),
             ],
         ),
     ]

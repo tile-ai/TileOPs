@@ -29,6 +29,10 @@ class MultiDimFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
+                    (4, 32, 256), [0, 1], False, torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                ),
+                pytest.param(
                     (4, 32, 256), [0, 1], True, torch.float16,
                     marks=pytest.mark.full,
                 ),
@@ -40,11 +44,6 @@ class MultiDimFixture(FixtureBase):
                 # 4D: reduce first and last
                 pytest.param(
                     (2, 4, 8, 256), [0, 3], False, torch.float16,
-                    marks=pytest.mark.full,
-                ),
-                # bfloat16
-                pytest.param(
-                    (4, 32, 256), [0, 1], False, torch.bfloat16,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -237,17 +236,15 @@ class MultiDimLogicalFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 32, 256), [0, 1], True, torch.float32,
-                    marks=pytest.mark.full,
-                ),
-                # bool: exercises storage-dtype conversion (bool -> float32)
-                pytest.param(
                     (4, 32, 256), [0, 1], False, torch.bool,
-                    marks=pytest.mark.full,
+                    marks=pytest.mark.smoke,
                 ),
-                # complex64: distinct truthiness (nonzero if real or imag != 0)
                 pytest.param(
                     (4, 32, 256), [0, 1], False, torch.complex64,
+                    marks=pytest.mark.smoke,
+                ),
+                pytest.param(
+                    (4, 32, 256), [0, 1], True, torch.float32,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -303,15 +300,13 @@ class MultiDimCountFixture(FixtureBase):
                     (4, 32, 256), [0, 1], torch.float32,
                     marks=pytest.mark.smoke,
                 ),
-                # bool: exercises storage-dtype conversion (bool -> float32)
                 pytest.param(
                     (4, 32, 256), [0, 1], torch.bool,
-                    marks=pytest.mark.full,
+                    marks=pytest.mark.smoke,
                 ),
-                # complex64: distinct truthiness (nonzero if real or imag != 0)
                 pytest.param(
                     (4, 32, 256), [0, 1], torch.complex64,
-                    marks=pytest.mark.full,
+                    marks=pytest.mark.smoke,
                 ),
             ],
         ),

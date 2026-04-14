@@ -159,11 +159,11 @@ class BitwiseFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_048_576, torch.bool, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.uint8, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.int8, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.int16, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.int32, marks=pytest.mark.full),
-            pytest.param(1_048_576, torch.int64, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.uint8, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.int8, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.int16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.int64, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -197,8 +197,8 @@ def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("dtype", [
     pytest.param(torch.float16, marks=pytest.mark.smoke),
-    pytest.param(torch.bfloat16, marks=pytest.mark.full),
-    pytest.param(torch.float32, marks=pytest.mark.full),
+    pytest.param(torch.bfloat16, marks=pytest.mark.smoke),
+    pytest.param(torch.float32, marks=pytest.mark.smoke),
 ])
 def test_bitwise_not_rejects_float_dtype(dtype: torch.dtype) -> None:
     from tileops.kernels.elementwise import BitwiseNotKernel
@@ -216,10 +216,10 @@ class BitwiseBinaryRejectFixture(FixtureBase):
     PARAMS = [
         ("op_cls, dtype", [
             pytest.param(BitwiseAndOp, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(BitwiseAndOp, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(BitwiseAndOp, torch.float32, marks=pytest.mark.smoke),
             pytest.param(BitwiseOrOp, torch.float16, marks=pytest.mark.full),
             pytest.param(BitwiseXorOp, torch.float16, marks=pytest.mark.full),
-            pytest.param(BitwiseAndOp, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(BitwiseAndOp, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
