@@ -740,7 +740,7 @@ ops:
       kernel: tileops/kernels/attention/mha_decode.py
       kernel_map:
         mha_decode_kernel: MhaDecodeKernel
-      op: tileops/ops/attention/mha_decode.py
+      op: tileops/ops/attention/mha.py
       test: tests/ops/attention/test_mha_decode.py
       bench: benchmarks/ops/attention/bench_mha_decode.py
 
@@ -794,7 +794,7 @@ ops:
       kernel: tileops/kernels/attention/mha_decode_paged.py
       kernel_map:
         mha_decode_paged_kernel: MhaDecodePagedKernel
-      op: tileops/ops/attention/mha_decode_paged.py
+      op: tileops/ops/attention/mha.py
       test: tests/ops/attention/test_mha_decode_paged.py
       bench: benchmarks/ops/attention/bench_mha_decode_paged.py
 
@@ -835,7 +835,7 @@ ops:
       kernel: tileops/kernels/attention/gqa_decode.py
       kernel_map:
         gqa_decode_kernel: GqaDecodeKernel
-      op: tileops/ops/attention/gqa_decode.py
+      op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa_decode.py
       bench: benchmarks/ops/attention/bench_gqa_decode.py
 
@@ -889,7 +889,7 @@ ops:
       kernel: tileops/kernels/attention/gqa_decode_paged.py
       kernel_map:
         gqa_decode_paged_kernel: GqaDecodePagedKernel
-      op: tileops/ops/attention/gqa_decode_paged.py
+      op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa_decode_paged.py
       bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
 
@@ -935,7 +935,7 @@ ops:
       kernel: tileops/kernels/attention/gqa_sliding_window_fwd.py
       kernel_map:
         gqa_sliding_window_fwd: GqaSlidingWindowFwdKernel
-      op: tileops/ops/attention/gqa_sliding_window.py
+      op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa_sliding_window.py
       bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
 
@@ -982,7 +982,7 @@ ops:
       kernel: tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
       kernel_map:
         gqa_sliding_window_varlen_fwd: GqaSlidingWindowVarlenFwdKernel
-      op: tileops/ops/attention/gqa_sliding_window_varlen.py
+      op: tileops/ops/attention/gqa.py
       test: tests/ops/attention/test_gqa_sliding_window_varlen.py
       bench: benchmarks/ops/attention/bench_gqa_sliding_window_varlen.py
 
@@ -1029,7 +1029,7 @@ ops:
       kernel: tileops/kernels/attention/deepseek_mla_decode.py
       kernel_map:
         mla_decode_kernel: MlaDecodeKernel
-      op: tileops/ops/attention/deepseek_mla_decode.py
+      op: tileops/ops/attention/deepseek_mla.py
       test: tests/ops/attention/test_deepseek_mla_decode.py
       bench: benchmarks/ops/attention/bench_deepseek_mla_decode.py
 
@@ -1073,7 +1073,7 @@ ops:
       kernel: tileops/kernels/attention/deepseek_dsa_decode.py
       kernel_map:
         sparse_mla_kernel: SparseMlaKernel
-      op: tileops/ops/attention/deepseek_dsa_decode.py
+      op: tileops/ops/attention/deepseek_dsa.py
       test: tests/ops/attention/test_deepseek_dsa_decode.py
       bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py
   # moe — Mixture-of-Experts ops
