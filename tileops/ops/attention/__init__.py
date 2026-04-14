@@ -1,4 +1,3 @@
-from ..mhc import MHCPostOp, MHCPreOp
 from .deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from .deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from .deepseek_nsa import (
@@ -23,8 +22,6 @@ from .mha import (
 )
 
 __all__ = [
-    "MHCPostOp",
-    "MHCPreOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
