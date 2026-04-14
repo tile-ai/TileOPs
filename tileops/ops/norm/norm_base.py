@@ -16,7 +16,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
 
-__all__ = ["RowNormOp", "ALIGNMENT"]
+__all__ = ["ALIGNMENT", "RowNormOp"]
 
 ALIGNMENT = 256
 

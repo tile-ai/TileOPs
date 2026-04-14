@@ -32,11 +32,11 @@ from tileops.kernels.kernel_base import Kernel
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 __all__ = [
+    "RopeLlama31Kernel",
+    "RopeLongRopeKernel",
     "RopeNeoxKernel",
     "RopeNonNeoxKernel",
-    "RopeLlama31Kernel",
     "RopeYarnKernel",
-    "RopeLongRopeKernel",
 ]
 
 

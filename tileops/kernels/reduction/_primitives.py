@@ -11,16 +11,16 @@ infrastructure is available from the start.
 import tilelang.language as T
 
 __all__ = [
-    "align_up",
-    "compute_tile_n",
-    "device_smem_budget",
     "DEFAULT_ALIGNMENT",
     "MAX_SINGLE_TILE_COLS",
     "SHARED_MEMORY_BUDGET_BYTES",
-    "make_reduce_epilogue",
-    "make_welford_update",
-    "make_softmax_epilogue",
+    "align_up",
+    "compute_tile_n",
+    "device_smem_budget",
     "make_cumulative_scan",
+    "make_reduce_epilogue",
+    "make_softmax_epilogue",
+    "make_welford_update",
 ]
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()

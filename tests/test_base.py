@@ -15,8 +15,8 @@ _check_result = threading.local()
 
 # Re-export for backward compatibility with tests that import from here.
 __all__ = [
-    "FixtureMeta",
     "FixtureBase",
+    "FixtureMeta",
     "TestBase",
     "allclose_compare",
     "exact_compare",

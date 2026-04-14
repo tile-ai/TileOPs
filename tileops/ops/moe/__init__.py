@@ -17,8 +17,8 @@ __all__ = [
     "FusedTopKOp",
     "MoeGroupedGemmNopadFwdOp",
     "MoePermuteAlignFwdOp",
-    "MoePermutePaddedFwdOp",
     "MoePermuteNopadFwdOp",
+    "MoePermutePaddedFwdOp",
     "MoeUnpermuteFwdOp",
     "SharedFusedMoE",
 ]

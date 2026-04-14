@@ -15,18 +15,18 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
-    "mha_fwd_roofline",
-    "mha_bwd_roofline",
-    "gqa_fwd_roofline",
+    "deepseek_dsa_decode_roofline",
+    "deepseek_mla_decode_roofline",
     "gqa_bwd_roofline",
-    "mha_decode_roofline",
-    "mha_decode_paged_roofline",
-    "gqa_decode_roofline",
     "gqa_decode_paged_roofline",
+    "gqa_decode_roofline",
+    "gqa_fwd_roofline",
     "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
-    "deepseek_mla_decode_roofline",
-    "deepseek_dsa_decode_roofline",
+    "mha_bwd_roofline",
+    "mha_decode_paged_roofline",
+    "mha_decode_roofline",
+    "mha_fwd_roofline",
 ]
 
 

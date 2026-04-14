@@ -897,7 +897,7 @@ ops:
   # attention — sliding window
   # ---------------------------------------------------------------------------
 
-  GqaSlidingWindowFwdOp:
+  GroupedQueryAttentionSlidingWindowFwdOp:
     ref_api: "none"
     family: attention
     status: implemented
@@ -939,7 +939,7 @@ ops:
       test: tests/ops/attention/test_gqa_sliding_window.py
       bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
 
-  GqaSlidingWindowVarlenFwdOp:
+  GroupedQueryAttentionSlidingWindowVarlenFwdOp:
     ref_api: "none"
     family: attention
     status: implemented

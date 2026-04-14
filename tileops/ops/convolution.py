@@ -7,7 +7,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["Conv1dFwdOp", "Conv1dBiasFwdOp", "Conv2dOp", "Conv3dOp"]
+__all__ = ["Conv1dBiasFwdOp", "Conv1dFwdOp", "Conv2dOp", "Conv3dOp"]
 
 
 class Conv1dFwdOp(Op):

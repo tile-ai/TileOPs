@@ -26,18 +26,18 @@ from .softmax import SoftmaxKernel
 from .vector_norm import VectorNormKernel
 
 __all__: list[str] = [
-    "align_up",
     "DEFAULT_ALIGNMENT",
     "SHARED_MEMORY_BUDGET_BYTES",
-    "make_reduce_epilogue",
-    "make_welford_update",
-    "make_softmax_epilogue",
-    "make_cumulative_scan",
     "ArgreduceKernel",
     "CumulativeKernel",
+    "LogSumExpKernel",
     "LogicalReduceKernel",
     "ReduceKernel",
-    "LogSumExpKernel",
     "SoftmaxKernel",
     "VectorNormKernel",
+    "align_up",
+    "make_cumulative_scan",
+    "make_reduce_epilogue",
+    "make_softmax_epilogue",
+    "make_welford_update",
 ]
