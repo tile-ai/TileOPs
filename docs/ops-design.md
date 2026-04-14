@@ -1,10 +1,6 @@
 # Op Interface Design
 
-This document records **technical decisions** for the Op/Kernel interface. Implementation MUST conform to these decisions. Where existing code diverges, the code is what needs to change.
-
-For trust boundaries (what implementation OWNS, MUST NOT do, and MAY READ), see [trust-model.md](trust-model.md). For the manifest specification, see [manifest.md](manifest.md).
-
-## D1. Three-Layer Class Hierarchy
+## Three-Layer Class Hierarchy
 
 ```
 Op                          ← L1: thin base, shared by all ops
@@ -32,7 +28,7 @@ Create one when **multiple ops share the same `forward()` control flow**, the sh
 
 Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
 
-## D2. Two-Layer Op/Kernel Boundary
+## Two-Layer Op/Kernel Boundary
 
 Every operator splits into Op and Kernel:
 
@@ -49,13 +45,13 @@ Every operator splits into Op and Kernel:
 
 Either layer can be modified independently.
 
-## D3. Manifest-Driven Op Interface
+## Manifest-Driven Op Interface
 
 The manifest (`ops_manifest.yaml`) is the **sole source of truth** for op interfaces. Op-layer runtime behavior — dtype validation, shape inference, roofline evaluation — MUST be derived from the manifest, not independently maintained.
 
 Agent reads the manifest and generates code (codegen). Validator (CI) checks consistency between generated code and manifest. This prevents drift between spec and implementation.
 
-### D3.1. Keyword-Only `__init__` with Manifest Dimension Names
+### Keyword-Only `__init__` with Manifest Dimension Names
 
 Op `__init__` parameters use **keyword-only arguments** named after the manifest's dimension names and param names.
 
@@ -109,7 +105,7 @@ class RMSNormFwdOp(RowNormOp):
 
 **Naming rule:** keyword names are taken directly from the manifest — `shape` dimension names (`M`, `K`, `N`), `roofline.vars` keys, and `params` keys. No additional mapping.
 
-### D3.2. Static and Dynamic Dimensions
+### Static and Dynamic Dimensions
 
 Static `__init__` is the **default path**. All shape dimensions provided at construction time enables shape inference, kernel construction, and roofline evaluation to complete once at init. This aligns with TileLang's JIT compilation model where kernels are shape-specialized.
 
@@ -131,7 +127,7 @@ op = GemmFwdOp(M=2048, K=4096, N=1024, dtype=torch.float16)
 op = RMSNormFwdOp(N=4096, dtype=torch.float16)
 ```
 
-### D3.3. Shape Inference (Codegen)
+### Shape Inference (Codegen)
 
 Agent generates an `_infer_output_shapes()` instance method on each Op from the manifest's `shape_rules`. The method accepts shape tuples and params, returns output name → shape mapping.
 
@@ -164,7 +160,7 @@ def _infer_output_shapes(
 | Family member has variant logic (e.g., multi-output) | L3 concrete op                    | Overrides             |
 | Op inherits L1 directly                              | L3 concrete op                    | Agent generates       |
 
-### D3.4. Dtype Validation (Codegen)
+### Dtype Validation (Codegen)
 
 Agent generates a `_validate_dtypes()` instance method from the manifest's `dtype` fields and `dtype_combos`.
 
@@ -186,7 +182,7 @@ def _validate_dtypes(self, x: torch.Tensor, weight: torch.Tensor) -> None:
 
 `SUPPORTED_DTYPES` as a standalone class variable is superseded by this approach. Dtype constraints live in the manifest; Op code is generated from them.
 
-### D3.5. Roofline Evaluation (Codegen)
+### Roofline Evaluation (Codegen)
 
 Agent generates roofline metadata as class-level declarations from the manifest's `roofline` section. Evaluation uses the same `self.*` attributes populated by `__init__`.
 
@@ -217,7 +213,7 @@ def eval_roofline(self) -> Tuple[int, int]:
 
 Roofline variable names, `__init__` keyword names, and `shape` dimension names all share the same namespace — defined once in the manifest, consumed uniformly.
 
-### D3.6. Consistency Enforcement
+### Consistency Enforcement
 
 | Check                                                     | Mechanism                             | When     |
 | --------------------------------------------------------- | ------------------------------------- | -------- |
@@ -226,7 +222,7 @@ Roofline variable names, `__init__` keyword names, and `shape` dimension names a
 | `_infer_output_shapes` consistent with `shape_rules`      | Validator shape check                 | Every PR |
 | `_validate_dtypes` consistent with `dtype`/`dtype_combos` | Validator dtype check                 | Every PR |
 
-## D4. Concrete Ops Are Declarations
+## Concrete Ops Are Declarations
 
 In L1→L2→L3 hierarchies, a concrete Op (L3) is a pure declaration:
 
@@ -238,7 +234,7 @@ Shared mechanics — validation, reshape, padding, shape inference, dtype valida
 
 Ops that still inherit L1 directly own their full `forward()`. As their family matures, shared logic migrates to an L2 base, and concrete ops converge toward declarations.
 
-## D5. Op/Kernel Base Class Protocol
+## Op/Kernel Base Class Protocol
 
 ### Op base class (`tileops/ops/op_base.py`)
 
@@ -284,7 +280,7 @@ Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
 
 Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
 
-## D6. Conventions in Code, Not Documentation
+## Conventions in Code, Not Documentation
 
 | Convention                             | Enforced By                                          |
 | -------------------------------------- | ---------------------------------------------------- |
@@ -294,7 +290,7 @@ Adding a new protocol variable requires updating: (1) the base class, (2) all co
 | `torch.library.custom_op` registration | Per-op module or shared registration utility         |
 | Docstring format (Google style)        | Linter / CI check                                    |
 
-## D7. Naming Conventions
+## Naming Conventions
 
 ### Op Classes
 
@@ -348,10 +344,10 @@ Kernel builder functions remain `snake_case`:
 def rms_norm_fwd(M, N, dtype, ...): ...
 ```
 
-## D8. Adding a New Family Base
+## Adding a New Family Base
 
 1. **Implement 2-3 concrete ops inheriting Op directly** — understand the pattern before abstracting
 1. **Identify shared steps** — which parts of `forward()` are identical?
 1. **Extract the base class** — shared steps into base, per-op differences as hooks
 1. **Migrate existing ops** — verify tests pass unchanged
-1. **Register the pattern** — update D1 hierarchy table
+1. **Register the pattern** — update the hierarchy section of this document
