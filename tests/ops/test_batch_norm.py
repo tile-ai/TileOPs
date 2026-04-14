@@ -62,6 +62,7 @@ class BatchNormFwdFixture(FixtureBase):
         ("N, C, spatial, dtype, training", [
             # BatchNorm1d – (N, C)
             pytest.param(32, 64, (), torch.float16, True, marks=pytest.mark.smoke),
+            pytest.param(32, 64, (), torch.bfloat16, True, marks=pytest.mark.smoke),
             pytest.param(32, 64, (), torch.float16, False, marks=pytest.mark.full),
             pytest.param(32, 256, (), torch.bfloat16, True, marks=pytest.mark.full),
             # BatchNorm1d – (N, C, L)
@@ -84,6 +85,7 @@ class BatchNormBwdFixture(FixtureBase):
     PARAMS = [
         ("N, C, spatial, dtype", [
             pytest.param(32, 64, (), torch.float16, marks=pytest.mark.smoke),
+            pytest.param(32, 64, (), torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(8, 64, (32, 32), torch.float16, marks=pytest.mark.full),
             pytest.param(4, 128, (32, 32), torch.bfloat16, marks=pytest.mark.full),
             # Non-persistent backward path (L=16384 > 8192).

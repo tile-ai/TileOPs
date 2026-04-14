@@ -6,12 +6,12 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.gqa_decode_paged import GqaDecodePagedTest
+from workloads.attention.gqa_decode_paged import GroupedQueryAttentionDecodePagedTest
 
 
-class _GqaDecodePagedTestBaseline(GqaDecodePagedTest):
+class _GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -47,7 +47,7 @@ class _GqaDecodePagedTestBaseline(GqaDecodePagedTest):
         return torch.cat(out_list, dim=0)
 
 
-class GqaDecodePagedBenchmark(BenchmarkBase):
+class GroupedQueryAttentionDecodePagedBenchmark(BenchmarkBase[GroupedQueryAttentionDecodePagedTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -187,8 +187,8 @@ _GQA_DECODE_PAGED_BENCH_PARAMS = [
 )
 def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
                                 page_size: int, dtype: torch.dtype, tune: bool) -> None:
-    test = _GqaDecodePagedTestBaseline(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
-    bm = GqaDecodePagedBenchmark(test)
+    test = _GroupedQueryAttentionDecodePagedTestBaseline(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
+    bm = GroupedQueryAttentionDecodePagedBenchmark(test)
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 

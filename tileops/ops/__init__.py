@@ -7,8 +7,6 @@ from .attention import (
     GroupedQueryAttentionDecodeWithKVCacheFwdOp,
     GroupedQueryAttentionFwdOp,
     MeanPoolingForwardOp,
-    MHCPostOp,
-    MHCPreOp,
     MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadAttentionDecodeWithKVCacheFwdOp,
@@ -27,12 +25,17 @@ from .elementwise import BinaryOp, FusedGatedOp, UnaryOp
 from .fft import FFTC2COp
 from .fp8_lighting_indexer import FP8LightingIndexerOp
 from .fp8_quant import FP8QuantOp
-from .gated_deltanet import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
-from .gated_deltanet_recurrence import GatedDeltaNetDecodeOp
+from .gated_deltanet import (
+    GatedDeltaNetBwdOp,
+    GatedDeltaNetDecodeOp,
+    GatedDeltaNetFwdOp,
+    GatedDeltaNetOp,
+)
+from .gated_linear_attn import GLADecodeOp
 from .gemm import GemmOp
 from .gla import GLABwdOp, GLAFwdOp
-from .gla_recurrence import GLADecodeOp
 from .grouped_gemm import GroupedGemmOp
+from .mhc import MHCPostOp, MHCPreOp
 from .moe import MoePermuteAlignFwdOp
 from .norm import (
     AdaLayerNormFwdOp,
@@ -46,7 +49,7 @@ from .norm import (
     LayerNormFwdOp,
     RMSNormFwdOp,
 )
-from .op import Op
+from .op_base import Op
 from .pool import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---

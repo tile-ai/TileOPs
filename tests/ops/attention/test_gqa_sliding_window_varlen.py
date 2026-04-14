@@ -1,17 +1,17 @@
-"""Tests for GqaSlidingWindowVarlenFwdOp against a pure-PyTorch reference."""
+"""Tests for GroupedQueryAttentionSlidingWindowVarlenFwdOp against a pure-PyTorch reference."""
 from typing import List
 
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GqaSlidingWindowVarlenFwdOp
+from tileops.ops import GroupedQueryAttentionSlidingWindowVarlenFwdOp
 from workloads.attention.gqa_sliding_window_varlen import (
-    GqaSlidingWindowVarlenFwdTest as _GqaSlidingWindowVarlenFwdTestWorkload,
+    GroupedQueryAttentionSlidingWindowVarlenFwdTest as _GroupedQueryAttentionSlidingWindowVarlenFwdTestWorkload,
 )
 
 
-class GqaSlidingWindowVarlenFwdTest(_GqaSlidingWindowVarlenFwdTestWorkload, TestBase):
+class GroupedQueryAttentionSlidingWindowVarlenFwdTest(_GroupedQueryAttentionSlidingWindowVarlenFwdTestWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,
@@ -76,7 +76,7 @@ class GqaSlidingWindowVarlenFwdTest(_GqaSlidingWindowVarlenFwdTestWorkload, Test
         return torch.cat(outputs, dim=0)  # [total_q, H, D]
 
 
-class GqaSlidingWindowVarlenFwdFixture(FixtureBase):
+class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
     # Parameters: (batch, seqlens_q, seqlens_k, heads, heads_kv, dim,
     #              is_causal, wl, wr, dtype, tune)
     PARAMS = [
@@ -84,6 +84,7 @@ class GqaSlidingWindowVarlenFwdFixture(FixtureBase):
          " is_causal, wl, wr, dtype, tune", [
              # ── Prefill: seqlen_q == seqlen_k (offset=0) ─────────────────────
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.smoke),   # causal
+             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.smoke),   # causal bf16
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True, 128,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal + wl
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # bidirectional
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, 64,  64, torch.float16,  False, marks=pytest.mark.full),    # window
@@ -92,7 +93,6 @@ class GqaSlidingWindowVarlenFwdFixture(FixtureBase):
              pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, True, 128,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal+wl kvcache
              pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, False, 64,  64, torch.float16,  False, marks=pytest.mark.full),    # window kvcache
              # ── bfloat16 ─────────────────────────────────────────────────────
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.full),    # causal bf16
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, 64,  64, torch.bfloat16, False, marks=pytest.mark.full),    # window bf16
              # ── GQA ratios ───────────────────────────────────────────────────
              pytest.param(2, [256, 512], [256, 512], 8, 8, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # MHA 1:1
@@ -107,7 +107,7 @@ class GqaSlidingWindowVarlenFwdFixture(FixtureBase):
     ]
 
 
-@GqaSlidingWindowVarlenFwdFixture
+@GroupedQueryAttentionSlidingWindowVarlenFwdFixture
 def test_gqa_sliding_window_varlen_fwd_op(
     batch: int,
     seqlens_q: List[int],
@@ -121,10 +121,10 @@ def test_gqa_sliding_window_varlen_fwd_op(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GqaSlidingWindowVarlenFwdTest(
+    test = GroupedQueryAttentionSlidingWindowVarlenFwdTest(
         batch, seqlens_q, seqlens_k, heads, heads_kv, dim,
         is_causal, wl, wr, dtype)
-    op = GqaSlidingWindowVarlenFwdOp(
+    op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
         batch=batch, heads=heads, heads_kv=heads_kv, dim=dim,
         is_causal=is_causal, window_size_left=wl, window_size_right=wr,
         dtype=dtype, tune=tune)

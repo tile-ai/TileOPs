@@ -3,10 +3,10 @@ from typing import Optional, Tuple
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeltaNetDecodeOp
-from workloads.base import FixtureBase
 from workloads.deltanet import DeltaNetDecodeTest
+from workloads.workload_base import FixtureBase
 
 
 def deltanet_decode_torch(
@@ -50,7 +50,7 @@ class _DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
-class DeltaNetDecodeBenchmark(BenchmarkBase):
+class DeltaNetDecodeBenchmark(BenchmarkBase[DeltaNetDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

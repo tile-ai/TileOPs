@@ -8,7 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.gemm import GemmKernel
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["SharedExpertMLPKernel"]
 

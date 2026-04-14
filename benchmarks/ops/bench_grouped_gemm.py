@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedGemmOp
 from workloads.grouped_gemm import (
     GroupedGemmCompleteTest,
@@ -74,7 +74,7 @@ class _GroupedGemmTestBaseline(GroupedGemmTest):
         return output
 
 
-class GroupedGemmBenchmark(BenchmarkBase):
+class GroupedGemmBenchmark(BenchmarkBase[GroupedGemmTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -104,7 +104,7 @@ class GroupedGemmBenchmark(BenchmarkBase):
 # Complete (GroupedGemmFunc) benchmark
 # ---------------------------------------------------------------------------
 
-class GroupedGemmCompleteBenchmark(BenchmarkBase):
+class GroupedGemmCompleteBenchmark(BenchmarkBase[GroupedGemmCompleteTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

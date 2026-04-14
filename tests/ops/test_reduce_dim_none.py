@@ -23,29 +23,27 @@ class DimNoneFixture(FixtureBase):
         (
             "shape, keepdim, dtype",
             [
-                # 2D: basic case
-                pytest.param(
-                    (4, 256), False, torch.float16,
-                    marks=pytest.mark.smoke,
-                ),
                 # 3D: keepdim=False (keep total elements moderate for kernel)
                 pytest.param(
                     (4, 8, 256), False, torch.float16,
                     marks=pytest.mark.smoke,
                 ),
+                pytest.param(
+                    (4, 8, 256), False, torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                ),
+                pytest.param(
+                    (4, 8, 256), False, torch.float32,
+                    marks=pytest.mark.smoke,
+                ),
+                # 2D: basic case
+                pytest.param(
+                    (4, 256), False, torch.float16,
+                    marks=pytest.mark.full,
+                ),
                 # 3D: keepdim=True
                 pytest.param(
                     (4, 8, 256), True, torch.float16,
-                    marks=pytest.mark.full,
-                ),
-                # bfloat16
-                pytest.param(
-                    (4, 8, 256), False, torch.bfloat16,
-                    marks=pytest.mark.full,
-                ),
-                # float32
-                pytest.param(
-                    (4, 8, 256), False, torch.float32,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -248,22 +246,19 @@ class DimNoneLogicalFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
-                    (4, 8, 256), True, torch.float32,
-                    marks=pytest.mark.full,
-                ),
-                # bool: canonical dtype for all/any
-                pytest.param(
                     (4, 8, 256), False, torch.bool,
-                    marks=pytest.mark.full,
+                    marks=pytest.mark.smoke,
                 ),
-                # fp16: supported dtype for count_nonzero
                 pytest.param(
                     (4, 8, 256), False, torch.float16,
-                    marks=pytest.mark.full,
+                    marks=pytest.mark.smoke,
                 ),
-                # bf16: supported dtype for count_nonzero
                 pytest.param(
                     (4, 8, 256), False, torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                ),
+                pytest.param(
+                    (4, 8, 256), True, torch.float32,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -325,7 +320,7 @@ def test_count_nonzero_dim_none() -> None:
 
 @pytest.mark.parametrize("dtype", [
     pytest.param(torch.float16, marks=pytest.mark.smoke),
-    pytest.param(torch.bfloat16, marks=pytest.mark.full),
+    pytest.param(torch.bfloat16, marks=pytest.mark.smoke),
 ])
 def test_count_nonzero_dim_none_dtypes(dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp

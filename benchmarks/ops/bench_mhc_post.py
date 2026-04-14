@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import MHCPostOp
 from workloads.mhc import MHCPostTest
 
@@ -23,7 +23,7 @@ class _MHCPostTestBaseline(MHCPostTest):
         return x_out_ref
 
 
-class MHCPostBenchmark(BenchmarkBase):
+class MHCPostBenchmark(BenchmarkBase[MHCPostTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

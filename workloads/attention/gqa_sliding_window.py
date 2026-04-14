@@ -2,10 +2,10 @@ from typing import Tuple
 
 import torch
 
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 
-class GqaSlidingWindowFwdTest(WorkloadBase):
+class GroupedQueryAttentionSlidingWindowFwdTest(WorkloadBase):
 
     def __init__(
         self,

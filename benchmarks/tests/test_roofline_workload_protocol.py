@@ -9,7 +9,7 @@ protocol contracts rather than nominal ``WorkloadBase`` inheritance.
 import pytest
 import torch
 
-from benchmarks.benchmark import (
+from benchmarks.benchmark_base import (
     BenchmarkWorkload,
     InputGeneratingWorkload,
     ManifestBenchmark,
@@ -157,7 +157,7 @@ def test_manifest_benchmark_accepts_protocol_workload():
 @pytest.mark.smoke
 def test_workload_base_satisfies_benchmark_workload():
     """Existing WorkloadBase subclasses should satisfy BenchmarkWorkload."""
-    from workloads.base import WorkloadBase
+    from workloads.workload_base import WorkloadBase
 
     class _ConcreteWorkload(WorkloadBase):
         def __init__(self):

@@ -50,6 +50,11 @@ class MhaFwdFixture(FixtureBase):
                 id="smoke-fwd-fp16",
             ),
             pytest.param(
+                1, 1024, 8, 64, False, torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-fwd-bf16",
+            ),
+            pytest.param(
                 16, 2048, 16, 128, False, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-fwd-fp16",
@@ -70,6 +75,11 @@ class MhaBwdFixture(FixtureBase):
                 1, 1024, 8, 64, False, torch.float16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-bwd-fp16",
+            ),
+            pytest.param(
+                1, 1024, 8, 64, False, torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-bwd-bf16",
             ),
             pytest.param(
                 16, 2048, 16, 128, False, torch.float16, False,

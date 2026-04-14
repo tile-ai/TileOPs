@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import MHCPreOp
 from workloads.mhc import MHCPreTest
 
@@ -64,7 +64,7 @@ class _MHCPreTestBaseline(MHCPreTest):
         return x_res_ref, x_layer_ref
 
 
-class MHCPreBenchmark(BenchmarkBase):
+class MHCPreBenchmark(BenchmarkBase[MHCPreTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

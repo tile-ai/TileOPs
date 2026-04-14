@@ -15,9 +15,9 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GLABwdOp, GLAFwdOp
-from workloads.base import FixtureBase, WorkloadBase
+from workloads.workload_base import FixtureBase, WorkloadBase
 
 
 def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
@@ -117,7 +117,7 @@ class GLATest(WorkloadBase):
 # Forward benchmark
 # =============================================================================
 
-class GLAFwdBenchmark(BenchmarkBase):
+class GLAFwdBenchmark(BenchmarkBase[GLATest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -187,7 +187,7 @@ def test_gla_fwd_bench(
 # Backward benchmark
 # =============================================================================
 
-class GLABwdBenchmark(BenchmarkBase):
+class GLABwdBenchmark(BenchmarkBase[GLATest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -280,7 +280,7 @@ def test_gla_bwd_bench(
 # Combined fwd+bwd benchmark
 # =============================================================================
 
-class GLAFwdBwdBenchmark(BenchmarkBase):
+class GLAFwdBwdBenchmark(BenchmarkBase[GLATest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

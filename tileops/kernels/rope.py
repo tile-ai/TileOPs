@@ -27,7 +27,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 

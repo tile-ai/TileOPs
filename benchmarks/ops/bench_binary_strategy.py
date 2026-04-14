@@ -14,9 +14,9 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import AddOp
-from workloads.base import FixtureBase
+from workloads.workload_base import FixtureBase
 
 # DNN-realistic 2D shapes — same-shape (no broadcast) for clean strategy comparison
 _SHAPES_2D = [
@@ -50,7 +50,7 @@ class BinaryStrategyBenchCase:
         return a, b
 
 
-class BinaryStrategyBenchmark(BenchmarkBase):
+class BinaryStrategyBenchmark(BenchmarkBase[BinaryStrategyBenchCase]):
     """Bandwidth-oriented benchmark for binary elementwise strategy comparison."""
 
     def calculate_flops(self) -> Optional[float]:

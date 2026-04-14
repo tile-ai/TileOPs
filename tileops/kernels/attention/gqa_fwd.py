@@ -6,11 +6,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
 __all__ = [
-    'MhaFwdKernel', 'MhaFwdWgmmaPipelinedKernel', 'GqaFwdKernel', 'GqaFwdWgmmaPipelinedKernel'
+    'MHAFwdKernel', 'MHAFwdWgmmaPipelinedKernel', 'GQAFwdKernel', 'GQAFwdWgmmaPipelinedKernel'
 ]
 
 # MHA
@@ -130,7 +130,7 @@ def _(batch: int, heads: int, seq_len:
     return fake_o, fake_lse
 
 
-class MhaFwdKernel(Kernel):
+class MHAFwdKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
@@ -322,7 +322,7 @@ def _(batch: int, heads: int, seq_len: int,
     return fake_o, fake_lse
 
 
-class MhaFwdWgmmaPipelinedKernel(Kernel):
+class MHAFwdWgmmaPipelinedKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,
@@ -499,7 +499,7 @@ def _(batch: int, heads: int,
     return fake_o, fake_lse
 
 
-class GqaFwdKernel(Kernel):
+class GQAFwdKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
@@ -711,7 +711,7 @@ def _(batch: int, heads: int, heads_kv: int,
     return fake_o, fake_lse
 
 
-class GqaFwdWgmmaPipelinedKernel(Kernel):
+class GQAFwdWgmmaPipelinedKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,

@@ -6,12 +6,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale
 
 __all__ = [
-    'GqaSlidingWindowFwdKernel',
-    'GqaSlidingWindowFwdWgmmaPipelinedKernel',
+    'GQASlidingWindowFwdKernel',
+    'GQASlidingWindowFwdWgmmaPipelinedKernel',
 ]
 
 
@@ -188,7 +188,7 @@ def _(batch, heads, heads_kv, seq_len, dim, is_causal, window_size_left,
     return fake_o, fake_lse
 
 
-class GqaSlidingWindowFwdKernel(Kernel):
+class GQASlidingWindowFwdKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(
@@ -448,7 +448,7 @@ def _(batch, heads, heads_kv, seq_len, dim, is_causal, window_size_left,
     return fake_o, fake_lse
 
 
-class GqaSlidingWindowFwdWgmmaPipelinedKernel(Kernel):
+class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(

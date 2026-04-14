@@ -4,7 +4,7 @@
 - **MUST NOT modify**: `tileops/ops/`, `tileops/kernels/`, `benchmarks/`, `tileops/ops_manifest.yaml`
 - **MAY READ**: `workloads/`, `tileops/ops_manifest.yaml`
 
-→ [trust-model.md §Test](../../docs/trust-model.md#test) | [testing.md §Writing a Test](../../docs/testing.md#writing-a-test)
+→ [trust-model.md §Test](../../docs/trust-model.md#test) | [testing.md §Tests](../../docs/testing.md#tests)
 
 ______________________________________________________________________
 

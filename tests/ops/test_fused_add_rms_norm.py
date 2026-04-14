@@ -25,9 +25,9 @@ class FusedAddRMSNormFixture(FixtureBase):
         ("m, n, dtype, tune", [
             # Standard aligned shapes -- fp16
             pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
             # Standard aligned shapes -- bf16
-            pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
             pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
             # Non-aligned N
             pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
@@ -60,7 +60,7 @@ class FusedAddRMSNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
             pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -92,7 +92,7 @@ class FusedAddRMSNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
             pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
         ]),
     ]
 

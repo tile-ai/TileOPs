@@ -3,10 +3,10 @@ from typing import Tuple
 import torch
 
 from tileops.ops import GroupedQueryAttentionFwdOp
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 
-class GqaBwdTest(WorkloadBase):
+class GroupedQueryAttentionBwdTest(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len: int, dim: int,
                  is_causal: bool, dtype: torch.dtype) -> None:
@@ -55,7 +55,7 @@ class GqaBwdTest(WorkloadBase):
 
         return q, k, v, o, grad_output, lse
 
-class GqaFwdTest(WorkloadBase):
+class GroupedQueryAttentionFwdTest(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len: int, dim: int,
                  is_causal: bool, dtype: torch.dtype) -> None:

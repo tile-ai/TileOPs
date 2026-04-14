@@ -7,7 +7,7 @@ import tilelang.language as T
 import torch
 from tilelang.autotuner import autotune
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
 __all__ = ["SparseMlaKernel"]

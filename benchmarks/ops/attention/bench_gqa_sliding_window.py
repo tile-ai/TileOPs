@@ -1,16 +1,16 @@
-"""Benchmark for GqaSlidingWindowFwdOp vs FA3 baseline."""
+"""Benchmark for GroupedQueryAttentionSlidingWindowFwdOp vs FA3 baseline."""
 from typing import Optional
 
 import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tileops.ops import GqaSlidingWindowFwdOp
-from workloads.attention.gqa_sliding_window import GqaSlidingWindowFwdTest
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tileops.ops import GroupedQueryAttentionSlidingWindowFwdOp
+from workloads.attention.gqa_sliding_window import GroupedQueryAttentionSlidingWindowFwdTest
 
 
-class GqaSlidingWindowFwdBenchmark(BenchmarkBase):
+class GroupedQueryAttentionSlidingWindowFwdBenchmark(BenchmarkBase[GroupedQueryAttentionSlidingWindowFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         """Approximate FLOPs for QK^T and PV GEMMs."""
@@ -126,11 +126,11 @@ def test_gqa_sliding_window_fwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GqaSlidingWindowFwdTest(batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype)
-    bm = GqaSlidingWindowFwdBenchmark(test)
+    test = GroupedQueryAttentionSlidingWindowFwdTest(batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype)
+    bm = GroupedQueryAttentionSlidingWindowFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = GqaSlidingWindowFwdOp(
+    op = GroupedQueryAttentionSlidingWindowFwdOp(
         batch=batch, heads=heads, heads_kv=heads_kv, seq_len=seq, dim=dim,
         is_causal=is_causal, window_size_left=wl, window_size_right=wr,
         dtype=dtype, tune=tune)

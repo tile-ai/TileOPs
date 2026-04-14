@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from .kernel import Kernel
+from .kernel_base import Kernel
 
 # Sufficient precision for twiddle angles
 _PI = 3.14159265358979323846

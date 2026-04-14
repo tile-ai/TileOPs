@@ -1,6 +1,6 @@
 import torch
 
-from workloads.base import FixtureBase, WorkloadBase
+from workloads.workload_base import FixtureBase, WorkloadBase
 
 
 class DaCumsumFwdFixture(FixtureBase):

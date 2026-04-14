@@ -5,8 +5,8 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from workloads.base import FixtureBase, WorkloadBase
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from workloads.workload_base import FixtureBase, WorkloadBase
 
 
 class CumulativeBenchFixture(FixtureBase):
@@ -48,7 +48,7 @@ class CumulativeBenchTest(WorkloadBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class CumulativeBenchmark(BenchmarkBase):
+class CumulativeBenchmark(BenchmarkBase[CumulativeBenchTest]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         # Approximate: inclusive scan performs N-1 ops per row, rounded up to M*N

@@ -7,7 +7,7 @@ import torch
 from tilelang import language as T
 from tilelang.autotuner import autotune
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["FP8LightingIndexerKernel"]
 

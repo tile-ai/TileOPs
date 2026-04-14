@@ -247,9 +247,9 @@ source:
     - tileops/kernels/attention/gqa_bwd.py
   kernel_map:
     mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-    mha_bwd_kernel: MhaBwdKernel
+    mha_bwd_kernel: MHABwdKernel
     mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
-  op: tileops/ops/mha.py
+  op: tileops/ops/attention/mha.py
 ```
 
 - Optional when `status: spec-only`. Required when `status: implemented`.

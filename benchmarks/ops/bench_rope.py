@@ -9,9 +9,9 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.rope import RopeNeoxOp
-from workloads.base import FixtureBase
+from workloads.workload_base import FixtureBase
 
 # DNN-realistic: (seq_len, head_dim) — typical attention head sizes
 _SHAPES = [(2048, 64), (2048, 128), (4096, 128)]
@@ -29,7 +29,7 @@ class RopeBenchCase:
         return (torch.randn(self.seq_len, self.head_dim, device="cuda", dtype=self.dtype),)
 
 
-class RopeBenchmark(BenchmarkBase):
+class RopeBenchmark(BenchmarkBase[RopeBenchCase]):
     def calculate_flops(self) -> Optional[float]:
         # 4 ops per element: 2 muls + 1 add + 1 negate/select
         return self.workload.n_total * 4

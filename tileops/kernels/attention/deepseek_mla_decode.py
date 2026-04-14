@@ -6,10 +6,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E, make_online_softmax, make_rescale
 
-__all__ = ["MlaDecodeKernel", "MlaDecodeWsKernel"]
+__all__ = ["MLADecodeKernel", "MLADecodeWsKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -273,7 +273,7 @@ def _(
     return torch.empty((batch, heads, dim), dtype=Q.dtype, device=Q.device)
 
 
-class MlaDecodeKernel(Kernel):
+class MLADecodeKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
@@ -928,7 +928,7 @@ def _(
     return torch.empty((batch, heads, dim), dtype=Q.dtype, device=Q.device)
 
 
-class MlaDecodeWsKernel(Kernel):
+class MLADecodeWsKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,

@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import AvgPool1dKernel, AvgPool2dKernel, AvgPool3dKernel
 from tileops.ops import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
 
@@ -24,6 +24,16 @@ class AvgPool1dFixture(FixtureBase):
                 2, 64, 512, 3, None, 1, False, True, torch.float16, False,
                 marks=[pytest.mark.smoke, pytest.mark.packaging],
                 id="smoke-k3-default-stride-fp16",
+            ),
+            pytest.param(
+                2, 64, 512, 3, None, 1, False, True, torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-k3-default-stride-bf16",
+            ),
+            pytest.param(
+                2, 64, 512, 3, None, 1, False, True, torch.float32, False,
+                marks=pytest.mark.smoke,
+                id="smoke-k3-default-stride-fp32",
             ),
             pytest.param(
                 2, 32, 257, 5, 2, 2, False, False, torch.float16, False,
@@ -144,7 +154,7 @@ def test_avg_pool1d_rejects_bool_pool_params(kwargs: dict[str, object], match: s
 
 @pytest.mark.smoke
 def test_avg_pool1d_forward_warns_on_ambiguous_nlc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool1dOp(
         n=1,
         c_in=8,
@@ -173,6 +183,11 @@ class AvgPool2dFixture(FixtureBase):
                 2, 64, 56, 56, (3, 3), None, (1, 1), False, True, None, torch.float16, False,
                 marks=[pytest.mark.smoke, pytest.mark.packaging],
                 id="smoke-3x3-default-stride-fp16",
+            ),
+            pytest.param(
+                2, 64, 56, 56, (3, 3), None, (1, 1), False, True, None, torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-3x3-default-stride-bf16",
             ),
             pytest.param(
                 1, 128, 55, 57, (3, 5), (2, 2), (1, 2), True, False, None, torch.float16, False,
@@ -365,7 +380,7 @@ def test_avg_pool2d_negative_divisor_override_matches_torch() -> None:
 
 @pytest.mark.smoke
 def test_avg_pool2d_forward_rejects_nchw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool2dOp(
         n=1,
         c_in=4,
@@ -382,7 +397,7 @@ def test_avg_pool2d_forward_rejects_nchw_shape(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.smoke
 def test_avg_pool2d_forward_warns_on_ambiguous_nhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool2dOp(
         n=1,
         c_in=8,
@@ -412,6 +427,11 @@ class AvgPool3dFixture(FixtureBase):
                 1, 32, 16, 28, 28, (2, 2, 2), None, (0, 0, 0), False, True, None, torch.float16, False,
                 marks=[pytest.mark.smoke, pytest.mark.packaging],
                 id="smoke-2x2x2-default-stride-fp16",
+            ),
+            pytest.param(
+                1, 32, 16, 28, 28, (2, 2, 2), None, (0, 0, 0), False, True, None, torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-2x2x2-default-stride-bf16",
             ),
             pytest.param(
                 1, 48, 15, 25, 27, (2, 3, 3), (2, 2, 2), (1, 1, 1), True, False, None, torch.float16, False,
@@ -606,7 +626,7 @@ def test_avg_pool3d_negative_divisor_override_matches_torch() -> None:
 
 @pytest.mark.smoke
 def test_avg_pool3d_forward_rejects_ncdhw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool3dOp(
         n=1,
         c_in=3,
@@ -624,7 +644,7 @@ def test_avg_pool3d_forward_rejects_ncdhw_shape(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.smoke
 def test_avg_pool3d_forward_warns_on_ambiguous_ndhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tileops.ops.op.get_sm_version", lambda: 80)
+    monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool3dOp(
         n=1,
         c_in=4,

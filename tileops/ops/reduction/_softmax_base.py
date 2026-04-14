@@ -14,10 +14,10 @@ from typing import Dict, List, Optional, Union
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 
-from ..op import Op
+from ..op_base import Op
 from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = ["_SoftmaxBaseOp"]

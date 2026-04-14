@@ -30,7 +30,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 _ATOMIC_HELPER_H = os.path.join(os.path.dirname(__file__), "_atomic_helper.h")
 

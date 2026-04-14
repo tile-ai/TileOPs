@@ -18,10 +18,10 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
-from workloads.base import FixtureBase
 from workloads.gated_deltanet import GatedDeltaNetFwdTest
+from workloads.workload_base import FixtureBase
 
 
 def _differentiable_fwd(q, k, v, g_raw, beta, chunk_size):
@@ -194,7 +194,7 @@ def _to_fla_layout(q, k, v, g, beta):
 # Forward benchmark
 # =============================================================================
 
-class GatedDeltaNetFwdBenchmark(BenchmarkBase):
+class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -279,7 +279,7 @@ def test_gated_deltanet_vs_fla_fwd(
 # Backward benchmark
 # =============================================================================
 
-class GatedDeltaNetBwdBenchmark(BenchmarkBase):
+class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -385,7 +385,7 @@ def test_gated_deltanet_vs_fla_bwd(
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
 # =============================================================================
 
-class GatedDeltaNetFwdBwdBenchmark(BenchmarkBase):
+class GatedDeltaNetFwdBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

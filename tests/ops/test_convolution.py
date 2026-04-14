@@ -18,6 +18,11 @@ class Conv1dFixture(FixtureBase):
                 id="smoke-tcn-k3-s1-fp16",
             ),
             pytest.param(
+                2, 64, 512, 128, 3, 1, 1, torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-tcn-k3-s1-bf16",
+            ),
+            pytest.param(
                 4, 256, 32000, 512, 1, 1, 0, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-convtasnet-pointwise-k1-s1-fp16",
@@ -169,6 +174,11 @@ class Conv2dFixture(FixtureBase):
                 id="smoke-fp16-3x3",
             ),
             pytest.param(
+                2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-bf16-3x3",
+            ),
+            pytest.param(
                 1, 3, 112, 112, 64, (3, 3), (2, 2), (1, 1), torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-stem-3x3-s2-fp16",
@@ -204,9 +214,9 @@ class Conv2dFixture(FixtureBase):
                 id="full-fp16-stride2",
             ),
             pytest.param(
-                2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), torch.bfloat16, False,
+                1, 64, 56, 56, 128, (3, 3), (2, 2), (1, 1), torch.bfloat16, False,
                 marks=pytest.mark.full,
-                id="full-bf16-3x3",
+                id="full-bf16-3x3-s2",
             ),
             pytest.param(
                 1, 64, 28, 28, 64, (1, 1), (1, 1), (0, 0), torch.bfloat16, False,
@@ -386,6 +396,11 @@ class Conv3dFixture(FixtureBase):
                 1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.float16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-3d-unet-k3-s1-fp16",
+            ),
+            pytest.param(
+                1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-3d-unet-k3-s1-bf16",
             ),
             pytest.param(
                 1, 3, 16, 112, 112, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.float16, False,

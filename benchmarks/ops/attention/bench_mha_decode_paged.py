@@ -5,7 +5,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.mha_decode_paged import MhaDecodePagedTest
 
@@ -45,7 +45,7 @@ class _MhaDecodePagedTestBaseline(MhaDecodePagedTest):
         return torch.cat(out_list, dim=0)
 
 
-class MhaDecodePagedBenchmark(BenchmarkBase):
+class MhaDecodePagedBenchmark(BenchmarkBase[MhaDecodePagedTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

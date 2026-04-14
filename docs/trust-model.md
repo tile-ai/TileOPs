@@ -18,7 +18,7 @@ Source of truth for op interfaces. Human-reviewed, separate PR.
 - **MUST NOT**: contain kernel internals, dispatch strategy, or test logic
 - **MAY READ**: PyTorch public API (to match signatures)
 
-→ Rules: [manifest-spec.md](../.claude/domain-rules/manifest-spec.md) | Guide: [testing.md §Writing a Test](testing.md#writing-a-test)
+→ Rules: [manifest-spec.md](../.claude/domain-rules/manifest-spec.md) | Guide: [manifest.md](manifest.md)
 
 ## Test
 
@@ -28,7 +28,7 @@ PR-level correctness verification. QA writes tests against manifest spec.
 - **MUST NOT**: contain kernel code, benchmark logic, or performance measurements
 - **MAY READ**: manifest (to verify interface), `workloads/` (via WorkloadBase inheritance)
 
-→ Rules: [testing-budget.md](../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Writing a Test](testing.md#writing-a-test)
+→ Rules: [testing-budget.md](../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
 
 ## Implementation
 
@@ -38,7 +38,7 @@ Kernel (L1) + Op (L2). Developer reads manifest + ref_program for behavior; high
 - **MUST NOT**: define workload shapes, own correctness assertions, modify manifest
 - **MAY READ**: manifest (interface), `tests/` (behavior understanding — not to reverse-engineer passing)
 
-→ Rules: [ops-design.md](../.claude/domain-rules/ops-design.md) | Guide: [ops-design.md](ops-design.md), [testing.md §Writing an Op](testing.md#writing-an-op-implementation)
+→ Rules: [ops-design.md](../.claude/domain-rules/ops-design.md) | Guide: [ops-design.md](ops-design.md)
 
 ## Benchmark
 
@@ -48,7 +48,7 @@ Nightly performance guard. Independent baselines — cannot modify op/tests/work
 - **MUST NOT**: contain correctness assertions, kernel code, or import oracle/ref functions from `tests/` or `workloads/` (benchmark-local baseline functions are allowed)
 - **MAY READ**: `workloads/` (composition), `tileops/ops/` (to profile)
 
-→ Rules: [benchmark.md](../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Writing a Benchmark](testing.md#writing-a-benchmark)
+→ Rules: [benchmark.md](../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 
 ## Workloads Layer
 
@@ -59,7 +59,7 @@ Shared input-definition layer — not a development stage. Test stage OWNS it (Q
 **Must not contain**: ref_program, check/tolerance logic, calculate_flops/memory, benchmark baselines. Reason: prevents shared oracle surface between test correctness and benchmark baselines.
 
 ```
-WorkloadBase (workloads/base.py)        # gen_inputs() only — default implementation
+WorkloadBase (workloads/workload_base.py)  # gen_inputs() only — default implementation
   ├── TestBase (tests/test_base.py)     # adds ref_program(), check()
   └── concrete subclasses typically define shape + dtype
 

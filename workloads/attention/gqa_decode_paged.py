@@ -3,10 +3,10 @@ from typing import Tuple
 
 import torch
 
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 
-class GqaDecodePagedTest(WorkloadBase):
+class GroupedQueryAttentionDecodePagedTest(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
                  page_size: int, dtype: torch.dtype) -> None:

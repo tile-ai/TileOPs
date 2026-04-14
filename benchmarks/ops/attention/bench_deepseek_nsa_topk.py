@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import NSATopkVarlenOp
 from workloads.attention.deepseek_nsa_topk import NsaTopkTest
 
@@ -145,7 +145,7 @@ class _NsaTopkTestBaseline(NsaTopkTest):
                                 offsets, token_indices, chunk_offsets)
 
 
-class NsaTopkBenchmark(BenchmarkBase):
+class NsaTopkBenchmark(BenchmarkBase[NsaTopkTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

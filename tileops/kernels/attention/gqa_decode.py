@@ -6,10 +6,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
-__all__ = ["GqaDecodeKernel"]
+__all__ = ["GQADecodeKernel"]
 
 # ---------------------------------------------------------------------------
 # JIT kernel: no-split variant
@@ -312,7 +312,7 @@ def _(batch: int, heads: int, groups: int, seqlen_kv: int, real_seqlen_kv: int, 
 # ---------------------------------------------------------------------------
 
 
-class GqaDecodeKernel(Kernel):
+class GQADecodeKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,

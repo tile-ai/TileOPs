@@ -1,32 +1,34 @@
-from .deepseek_dsa_decode import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from .deepseek_mla_decode import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
+from .deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
+from .deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from .deepseek_nsa import (
     MeanPoolingForwardOp,
     NSACmpFwdVarlenOp,
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
-from .gqa_decode import GroupedQueryAttentionDecodeWithKVCacheFwdOp
-from .gqa_decode_paged import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from .gqa_sliding_window import GqaSlidingWindowFwdOp
-from .gqa_sliding_window_varlen import GqaSlidingWindowVarlenFwdOp
-from .mha import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
-from .mha_decode import MultiHeadAttentionDecodeWithKVCacheFwdOp
-from .mha_decode_paged import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from .mhc_post import MHCPostOp
-from .mhc_pre import MHCPreOp
+from .gqa import (
+    GroupedQueryAttentionBwdOp,
+    GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
+    GroupedQueryAttentionDecodeWithKVCacheFwdOp,
+    GroupedQueryAttentionFwdOp,
+    GroupedQueryAttentionSlidingWindowFwdOp,
+    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
+)
+from .mha import (
+    MultiHeadAttentionBwdOp,
+    MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
+    MultiHeadAttentionDecodeWithKVCacheFwdOp,
+    MultiHeadAttentionFwdOp,
+)
 
 __all__ = [
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
-    "GqaSlidingWindowFwdOp",
-    "GqaSlidingWindowVarlenFwdOp",
+    "GroupedQueryAttentionSlidingWindowFwdOp",
+    "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionFwdOp",
-    "MHCPostOp",
-    "MHCPreOp",
     "MeanPoolingForwardOp",
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",

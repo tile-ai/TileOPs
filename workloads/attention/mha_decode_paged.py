@@ -3,7 +3,7 @@ from typing import Tuple
 
 import torch
 
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 
 class MhaDecodePagedTest(WorkloadBase):

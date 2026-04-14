@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import MeanPoolingForwardOp
 from workloads.attention.mean_pooling import MeanPoolingTest
 from workloads.nsa_utils import prepare_chunk_indices
@@ -44,7 +44,7 @@ class _MeanPoolingTestBaseline(MeanPoolingTest):
         return output
 
 
-class MeanPoolingBenchmark(BenchmarkBase):
+class MeanPoolingBenchmark(BenchmarkBase[MeanPoolingTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

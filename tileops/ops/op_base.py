@@ -3,7 +3,7 @@ from typing import Dict, Optional, Tuple, Union
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
 

@@ -28,7 +28,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.rope import (
     RopeLlama31Kernel,
     RopeLongRopeKernel,
@@ -37,7 +37,7 @@ from tileops.kernels.rope import (
     RopeYarnKernel,
 )
 
-from .op import Op
+from .op_base import Op
 
 # ---------------------------------------------------------------------------
 # torch.compile registration factory

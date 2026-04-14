@@ -2,8 +2,8 @@ from typing import Tuple
 
 import torch
 
-from workloads.base import WorkloadBase
 from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
+from workloads.workload_base import WorkloadBase
 
 
 class NsaCmpFwdTest(WorkloadBase):

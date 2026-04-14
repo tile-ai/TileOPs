@@ -799,9 +799,9 @@ def _ast_manifest_call_usage(
 
     1. **Direct** — ``from tileops.manifest import load_workloads`` /
        ``eval_roofline`` called with the op name.
-    2. **Indirect via benchmarks.benchmark** — ``workloads_to_params``
+    2. **Indirect via benchmarks.benchmark_base** — ``workloads_to_params``
        (wraps ``load_workloads``) and ``ManifestBenchmark`` (wraps
-       ``eval_roofline``) imported from ``benchmarks.benchmark`` and
+       ``eval_roofline``) imported from ``benchmarks.benchmark_base`` and
        called with the op name as the first argument.
     """
     # Maps from the indirect helper name → the direct target it satisfies.
@@ -820,8 +820,8 @@ def _ast_manifest_call_usage(
                 for alias in node.names:
                     if alias.name in target_names:
                         imported.add(alias.name)
-            # Indirect helpers live in benchmarks.benchmark.
-            if node.module == "benchmarks.benchmark" and node.names:
+            # Indirect helpers live in benchmarks.benchmark_base.
+            if node.module == "benchmarks.benchmark_base" and node.names:
                 for alias in node.names:
                     equiv = _INDIRECT_EQUIV.get(alias.name)
                     if equiv and equiv in target_names:

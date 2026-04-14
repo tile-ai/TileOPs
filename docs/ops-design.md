@@ -111,7 +111,7 @@ def default_kernel_map(self):
 def default_kernel_map(self):
     return {
         "mha_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
-        "mha_bwd_kernel": MhaBwdKernel,
+        "mha_bwd_kernel": MHABwdKernel,
         "mha_bwd_postprocess_kernel": FlashAttnBwdPostprocessKernel,
     }
 ```

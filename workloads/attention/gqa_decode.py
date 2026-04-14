@@ -2,10 +2,10 @@ from typing import Tuple
 
 import torch
 
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 
-class GqaDecodeTest(WorkloadBase):
+class GroupedQueryAttentionDecodeTest(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                  dtype: torch.dtype) -> None:

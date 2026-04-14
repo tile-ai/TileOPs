@@ -25,7 +25,7 @@ try:
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoePermuteAlignFwdOp
 from workloads.moe import MoePermuteAlignTest
@@ -145,7 +145,7 @@ def _triton_permute_align(
 # ---------------------------------------------------------------------------
 
 
-class MoePermuteAlignBenchmark(BenchmarkBase):
+class MoePermuteAlignBenchmark(BenchmarkBase[MoePermuteAlignTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

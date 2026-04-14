@@ -27,10 +27,10 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import eval_roofline, load_workloads
 from tileops.ops.moe import MoePermuteNopadFwdOp
-from workloads.base import WorkloadBase
+from workloads.workload_base import WorkloadBase
 
 _OP_NAME = "MoePermuteNopadFwdOp"
 
@@ -63,7 +63,7 @@ class MoePermuteNopadTest(WorkloadBase):
 # ---------------------------------------------------------------------------
 
 
-class MoePermuteNopadBenchmark(BenchmarkBase):
+class MoePermuteNopadBenchmark(BenchmarkBase[MoePermuteNopadTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 

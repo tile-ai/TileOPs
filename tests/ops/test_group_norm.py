@@ -24,12 +24,12 @@ class GroupNormFixture(FixtureBase):
         ("n, c, spatial, g, dtype, tune", [
             # Small CI-friendly shapes -- fp32
             pytest.param(2, 32, (8, 8), 8, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(4, 16, (4, 4), 4, torch.float32, False, marks=pytest.mark.full),
             # Small CI-friendly shapes -- fp16
-            pytest.param(2, 32, (8, 8), 8, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(4, 16, (4, 4), 4, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 32, (8, 8), 8, torch.float16, False, marks=pytest.mark.smoke),
             # Small CI-friendly shapes -- bf16
-            pytest.param(2, 32, (8, 8), 8, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(2, 32, (8, 8), 8, torch.bfloat16, False, marks=pytest.mark.smoke),
+            pytest.param(4, 16, (4, 4), 4, torch.float32, False, marks=pytest.mark.full),
+            pytest.param(4, 16, (4, 4), 4, torch.float16, False, marks=pytest.mark.full),
             pytest.param(4, 16, (4, 4), 4, torch.bfloat16, False, marks=pytest.mark.full),
             # Different group counts
             pytest.param(2, 32, (4, 4), 1, torch.float16, False, marks=pytest.mark.full),
@@ -70,7 +70,7 @@ class GroupNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("n, c, spatial, g, dtype", [
             pytest.param(2, 32, (8, 8), 8, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 32, (8, 8), 8, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(2, 32, (8, 8), 8, torch.bfloat16, marks=pytest.mark.smoke),
         ]),
     ]
 

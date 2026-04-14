@@ -39,9 +39,9 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.moe import FusedMoe, FusedTopKOp
-from workloads.base import FixtureBase, WorkloadBase
+from workloads.workload_base import FixtureBase, WorkloadBase
 
 # ---------------------------------------------------------------------------
 # Test / fixture types
@@ -105,7 +105,7 @@ class FusedMoeBenchTest(WorkloadBase):
 # ---------------------------------------------------------------------------
 
 
-class FusedMoeBenchmark(BenchmarkBase):
+class FusedMoeBenchmark(BenchmarkBase[FusedMoeBenchTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
