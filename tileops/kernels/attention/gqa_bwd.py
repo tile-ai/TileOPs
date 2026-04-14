@@ -10,8 +10,8 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
 __all__ = [
-    'FlashAttnBwdPreprocessKernel', 'FlashAttnBwdPostprocessKernel', 'MhaBwdKernel',
-    'MhaBwdWgmmaPipelinedKernel', 'GqaBwdKernel', 'GqaBwdWgmmaPipelinedKernel'
+    'FlashAttnBwdPreprocessKernel', 'FlashAttnBwdPostprocessKernel', 'MHABwdKernel',
+    'MHABwdWgmmaPipelinedKernel', 'GQABwdKernel', 'GQABwdWgmmaPipelinedKernel'
 ]
 
 # pre/post process for mha/gqa bwd
@@ -228,7 +228,7 @@ def _mha_bwd_kernel(batch: int,
     return _mha_bwd_func
 
 
-class MhaBwdKernel(Kernel):
+class MHABwdKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
@@ -411,7 +411,7 @@ def _mha_bwd_wgmma_pipelined_kernel(batch: int,
     return _mha_bwd_wgmma_pipelined_func
 
 
-class MhaBwdWgmmaPipelinedKernel(Kernel):
+class MHABwdWgmmaPipelinedKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,
@@ -576,7 +576,7 @@ def _gqa_bwd_kernel(batch: int,
     return _gqa_bwd_func
 
 
-class GqaBwdKernel(Kernel):
+class GQABwdKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
@@ -757,7 +757,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch: int,
     return _gqa_bwd_wgmma_pipelined_func
 
 
-class GqaBwdWgmmaPipelinedKernel(Kernel):
+class GQABwdWgmmaPipelinedKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,

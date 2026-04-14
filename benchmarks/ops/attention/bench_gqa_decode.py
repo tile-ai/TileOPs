@@ -7,10 +7,10 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.gqa_decode import GqaDecodeTest
+from workloads.attention.gqa_decode import GroupedQueryAttentionDecodeTest
 
 
-class _GqaDecodeTestBaseline(GqaDecodeTest):
+class _GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -23,7 +23,7 @@ class _GqaDecodeTestBaseline(GqaDecodeTest):
         return output
 
 
-class GqaDecodeBenchmark(BenchmarkBase[GqaDecodeTest]):
+class GroupedQueryAttentionDecodeBenchmark(BenchmarkBase[GroupedQueryAttentionDecodeTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -130,8 +130,8 @@ _GQA_DECODE_BENCH_PARAMS = [
 @pytest.mark.parametrize("batch, heads, heads_kv, seq_len_kv, dim, dtype, tune", _GQA_DECODE_BENCH_PARAMS)
 def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                           dtype: torch.dtype, tune: bool) -> None:
-    test = _GqaDecodeTestBaseline(batch, heads, heads_kv, seq_len_kv, dim, dtype)
-    bm = GqaDecodeBenchmark(test)
+    test = _GroupedQueryAttentionDecodeTestBaseline(batch, heads, heads_kv, seq_len_kv, dim, dtype)
+    bm = GroupedQueryAttentionDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)

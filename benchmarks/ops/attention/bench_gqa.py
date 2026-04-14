@@ -7,12 +7,12 @@ from torch.nn import functional as F
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
 from workloads.attention.gqa import (
-    GqaBwdTest,
-    GqaFwdTest,
+    GroupedQueryAttentionBwdTest,
+    GroupedQueryAttentionFwdTest,
 )
 
 
-class GqaFwdBenchmark(BenchmarkBase[GqaFwdTest]):
+class GroupedQueryAttentionFwdBenchmark(BenchmarkBase[GroupedQueryAttentionFwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -27,7 +27,7 @@ class GqaFwdBenchmark(BenchmarkBase[GqaFwdTest]):
         return 2 * (query_size + kv_size) * t.dtype.itemsize
 
 
-class GqaBwdBenchmark(BenchmarkBase[GqaBwdTest]):
+class GroupedQueryAttentionBwdBenchmark(BenchmarkBase[GroupedQueryAttentionBwdTest]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -41,7 +41,7 @@ class GqaBwdBenchmark(BenchmarkBase[GqaBwdTest]):
         return t.batch * total_heads * t.seq_len * t.dim * t.dtype.itemsize
 
 
-def _fa3_gqa_fwd(test: GqaFwdTest):
+def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdTest):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
         from flash_attn_interface import flash_attn_func  # noqa: PLC0415
@@ -55,7 +55,7 @@ def _fa3_gqa_fwd(test: GqaFwdTest):
     return baseline_fn
 
 
-def _fa3_gqa_bwd(test: GqaBwdTest):
+def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdTest):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
         from flash_attn_interface import flash_attn_func  # noqa: PLC0415
@@ -75,7 +75,7 @@ def _fa3_gqa_bwd(test: GqaBwdTest):
     return baseline_fn
 
 
-def _flashinfer_gqa_fwd(test: GqaFwdTest, q, k, v):
+def _flashinfer_gqa_fwd(test: GroupedQueryAttentionFwdTest, q, k, v):
     """Set up FlashInfer batched prefill wrapper. Returns callable or None."""
     try:
         from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
@@ -178,8 +178,8 @@ _GQA_FWD_BENCH_PARAMS = [
 )
 def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int,
                        causal: bool, dtype: torch.dtype, tune: bool) -> None:
-    test = GqaFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    bm = GqaFwdBenchmark(test)
+    test = GroupedQueryAttentionFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
+    bm = GroupedQueryAttentionFwdBenchmark(test)
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
@@ -216,8 +216,8 @@ _GQA_BWD_BENCH_PARAMS = [
 )
 def test_gqa_bwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int,
                        causal: bool, dtype: torch.dtype, tune: bool) -> None:
-    test = GqaBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    bm = GqaBwdBenchmark(test)
+    test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
+    bm = GroupedQueryAttentionBwdBenchmark(test)
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)

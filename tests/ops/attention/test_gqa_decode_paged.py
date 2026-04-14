@@ -11,11 +11,11 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.gqa_decode_paged import (
-    GqaDecodePagedTest as _GqaDecodePagedTestWorkload,
+    GroupedQueryAttentionDecodePagedTest as _GroupedQueryAttentionDecodePagedTestWorkload,
 )
 
 
-class GqaDecodePagedTest(_GqaDecodePagedTestWorkload, TestBase):
+class GroupedQueryAttentionDecodePagedTest(_GroupedQueryAttentionDecodePagedTestWorkload, TestBase):
 
     def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor, atol: float = 0.001) -> None:
         """Compare using max-diff and cosine similarity."""
@@ -61,7 +61,7 @@ class GqaDecodePagedTest(_GqaDecodePagedTestWorkload, TestBase):
         return torch.cat(out_list, dim=0)
 
 
-class GqaDecodePagedFixture(FixtureBase):
+class GroupedQueryAttentionDecodePagedFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune", [
             pytest.param(1, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.smoke),
@@ -75,7 +75,7 @@ class GqaDecodePagedFixture(FixtureBase):
     ]
 
 
-@GqaDecodePagedFixture
+@GroupedQueryAttentionDecodePagedFixture
 def test_gqa_decode_paged_op(
     batch: int,
     heads: int,
@@ -86,7 +86,7 @@ def test_gqa_decode_paged_op(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GqaDecodePagedTest(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
+    test = GroupedQueryAttentionDecodePagedTest(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
         batch=batch,
         heads=heads,

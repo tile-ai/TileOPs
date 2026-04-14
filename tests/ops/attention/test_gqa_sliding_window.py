@@ -1,16 +1,16 @@
-"""Tests for GqaSlidingWindowFwdOp against a pure-PyTorch reference."""
+"""Tests for GroupedQueryAttentionSlidingWindowFwdOp against a pure-PyTorch reference."""
 
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GqaSlidingWindowFwdOp
+from tileops.ops import GroupedQueryAttentionSlidingWindowFwdOp
 from workloads.attention.gqa_sliding_window import (
-    GqaSlidingWindowFwdTest as _GqaSlidingWindowFwdTestWorkload,
+    GroupedQueryAttentionSlidingWindowFwdTest as _GroupedQueryAttentionSlidingWindowFwdTestWorkload,
 )
 
 
-class GqaSlidingWindowFwdTest(_GqaSlidingWindowFwdTestWorkload, TestBase):
+class GroupedQueryAttentionSlidingWindowFwdTest(_GroupedQueryAttentionSlidingWindowFwdTestWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,
@@ -49,7 +49,7 @@ class GqaSlidingWindowFwdTest(_GqaSlidingWindowFwdTestWorkload, TestBase):
         return output.transpose(1, 2).to(q.dtype)            # [B, S, H, D]
 
 
-class GqaSlidingWindowFwdFixture(FixtureBase):
+class GroupedQueryAttentionSlidingWindowFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune", [
             # ── Basic correctness ─────────────────────────────────────────────
@@ -77,7 +77,7 @@ class GqaSlidingWindowFwdFixture(FixtureBase):
     ]
 
 
-@GqaSlidingWindowFwdFixture
+@GroupedQueryAttentionSlidingWindowFwdFixture
 def test_gqa_sliding_window_fwd_op(
     batch: int,
     seq: int,
@@ -90,22 +90,22 @@ def test_gqa_sliding_window_fwd_op(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GqaSlidingWindowFwdTest(batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype)
-    op = GqaSlidingWindowFwdOp(
+    test = GroupedQueryAttentionSlidingWindowFwdTest(batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype)
+    op = GroupedQueryAttentionSlidingWindowFwdOp(
         batch=batch, heads=heads, heads_kv=heads_kv, seq_len=seq, dim=dim,
         is_causal=is_causal, window_size_left=wl, window_size_right=wr,
         dtype=dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 
-class TestGqaSlidingWindowFwdOpMetrics:
+class TestGroupedQueryAttentionSlidingWindowFwdOpMetrics:
     """Unit tests for total_flops and total_memory correctness."""
 
     @pytest.mark.smoke
     def test_total_flops_causal_wl0(self):
         """is_causal=True, wl=0: every query attends only to itself (eff_kv=1)."""
         B, S, H, Hkv, D = 2, 256, 8, 2, 64
-        op = GqaSlidingWindowFwdOp(
+        op = GroupedQueryAttentionSlidingWindowFwdOp(
             batch=B, heads=H, heads_kv=Hkv, seq_len=S, dim=D,
             is_causal=True, window_size_left=0)
         expected = 4 * B * H * S * 1 * D   # total_attended = S * 1
@@ -116,7 +116,7 @@ class TestGqaSlidingWindowFwdOpMetrics:
         """is_causal=True, wl=128, S=512: window limits left context, not S//2."""
         B, S, H, Hkv, D = 1, 512, 8, 2, 64
         wl = 128
-        op = GqaSlidingWindowFwdOp(
+        op = GroupedQueryAttentionSlidingWindowFwdOp(
             batch=B, heads=H, heads_kv=Hkv, seq_len=S, dim=D,
             is_causal=True, window_size_left=wl)
         total_attended = sum(min(wl + 1, q + 1) for q in range(S))
@@ -127,7 +127,7 @@ class TestGqaSlidingWindowFwdOpMetrics:
     def test_total_memory_gqa(self):
         """For GQA (heads > heads_kv), Q and O must use heads, not heads_kv."""
         B, S, H, Hkv, D = 2, 512, 8, 2, 64
-        op = GqaSlidingWindowFwdOp(
+        op = GroupedQueryAttentionSlidingWindowFwdOp(
             batch=B, heads=H, heads_kv=Hkv, seq_len=S, dim=D,
             is_causal=True)
         elem = torch.tensor([], dtype=torch.float16).element_size()
@@ -136,7 +136,7 @@ class TestGqaSlidingWindowFwdOpMetrics:
         assert op.total_memory == expected, f"got {op.total_memory}, expected {expected}"
 
 
-class TestGqaSlidingWindowFwdOpValidation:
+class TestGroupedQueryAttentionSlidingWindowFwdOpValidation:
     """Early-error validation: __init__ and forward guard-clauses."""
 
     # ── window_size validation (caught in __init__, no GPU kernel needed) ─────
@@ -144,14 +144,14 @@ class TestGqaSlidingWindowFwdOpValidation:
     @pytest.mark.smoke
     def test_invalid_window_size_left_raises(self):
         with pytest.raises(ValueError, match="window_size_left"):
-            GqaSlidingWindowFwdOp(
+            GroupedQueryAttentionSlidingWindowFwdOp(
                 batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
                 is_causal=True, window_size_left=-2)
 
     @pytest.mark.smoke
     def test_invalid_window_size_right_raises(self):
         with pytest.raises(ValueError, match="window_size_right"):
-            GqaSlidingWindowFwdOp(
+            GroupedQueryAttentionSlidingWindowFwdOp(
                 batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
                 is_causal=True, window_size_right=-3)
 
@@ -159,7 +159,7 @@ class TestGqaSlidingWindowFwdOpValidation:
 
     @pytest.fixture(scope="class")
     def float16_op(self):
-        return GqaSlidingWindowFwdOp(
+        return GroupedQueryAttentionSlidingWindowFwdOp(
             batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
             is_causal=True, dtype=torch.float16)
 

@@ -5,7 +5,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class GqaSlidingWindowFwdTest(WorkloadBase):
+class GroupedQueryAttentionSlidingWindowFwdTest(WorkloadBase):
 
     def __init__(
         self,

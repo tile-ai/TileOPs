@@ -8,11 +8,15 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
-from workloads.attention.gqa import GqaBwdTest as _GqaBwdTestWorkload
-from workloads.attention.gqa import GqaFwdTest as _GqaFwdTestWorkload
+from workloads.attention.gqa import (
+    GroupedQueryAttentionBwdTest as _GroupedQueryAttentionBwdTestWorkload,
+)
+from workloads.attention.gqa import (
+    GroupedQueryAttentionFwdTest as _GroupedQueryAttentionFwdTestWorkload,
+)
 
 
-class GqaBwdTest(_GqaBwdTestWorkload, TestBase):
+class GroupedQueryAttentionBwdTest(_GroupedQueryAttentionBwdTestWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
                     grad_output: torch.Tensor,
                     lse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -28,7 +32,7 @@ class GqaBwdTest(_GqaBwdTestWorkload, TestBase):
         return q.grad, k.grad, v.grad
 
 
-class GqaFwdTest(_GqaFwdTestWorkload, TestBase):
+class GroupedQueryAttentionFwdTest(_GroupedQueryAttentionFwdTestWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor,
                     v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
@@ -41,7 +45,7 @@ class GqaFwdTest(_GqaFwdTestWorkload, TestBase):
         return output, None  # do not check lse
 
 
-class GqaFwdFixture(FixtureBase):
+class GroupedQueryAttentionFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
             pytest.param(1, 1024, 8, 4, 64, False, torch.float16, False, marks=pytest.mark.smoke),
@@ -52,7 +56,7 @@ class GqaFwdFixture(FixtureBase):
     ]
 
 
-class GqaBwdFixture(FixtureBase):
+class GroupedQueryAttentionBwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
             pytest.param(1, 1024, 8, 4, 64, False, torch.float16, False, marks=pytest.mark.smoke),
@@ -63,18 +67,18 @@ class GqaBwdFixture(FixtureBase):
     ]
 
 
-@GqaFwdFixture
+@GroupedQueryAttentionFwdFixture
 def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
-    test = GqaFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
+    test = GroupedQueryAttentionFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 
-@GqaBwdFixture
+@GroupedQueryAttentionBwdFixture
 def test_gqa_bwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
-    test = GqaBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
+    test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 

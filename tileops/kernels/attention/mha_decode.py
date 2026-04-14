@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
-__all__ = ["MhaDecodeKernel"]
+__all__ = ["MHADecodeKernel"]
 
 # ---------------------------------------------------------------------------
 # JIT kernel: no-split variant
@@ -372,7 +372,7 @@ def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, real_seqlen_kv: int
 # ---------------------------------------------------------------------------
 
 
-class MhaDecodeKernel(Kernel):
+class MHADecodeKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,
