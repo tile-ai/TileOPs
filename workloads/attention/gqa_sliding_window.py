@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -29,7 +27,7 @@ class GroupedQueryAttentionSlidingWindowFwdTest(WorkloadBase):
         self.wr = wr
         self.dtype = dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(self.batch, self.seq, self.heads,    self.dim,
                         dtype=self.dtype, device="cuda") * 0.1
         k = torch.randn(self.batch, self.seq, self.heads_kv, self.dim,

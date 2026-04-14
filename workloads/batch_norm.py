@@ -20,7 +20,7 @@ class BatchNormBwdTest(WorkloadBase):
         self.spatial = spatial
         self.dtype = dtype
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         x, weight, bias, running_mean, running_var = _make_tensors(
             self.N, self.C, self.spatial, self.dtype)
         grad_out = torch.randn_like(x)
@@ -44,5 +44,5 @@ class BatchNormFwdTest(WorkloadBase):
         self.dtype = dtype
         self.training = training
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         return _make_tensors(self.N, self.C, self.spatial, self.dtype)

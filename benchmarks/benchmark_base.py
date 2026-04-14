@@ -9,7 +9,6 @@ from typing import (
     Generic,
     Optional,
     Protocol,
-    Tuple,
     TypeVar,
     runtime_checkable,
 )
@@ -42,7 +41,7 @@ class ShapeDtypeWorkload(Protocol):
 class InputGeneratingWorkload(Protocol):
     """Structural type for workloads that can generate benchmark inputs."""
 
-    def gen_inputs(self) -> Any: ...
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]: ...
 
 
 @runtime_checkable
@@ -111,7 +110,7 @@ def _get_l2_flush_cache() -> torch.Tensor:
 
 def bench_kernel(
     fn: Callable,
-    args: Tuple[torch.Tensor, ...] = (),
+    args: tuple[torch.Tensor, ...] = (),
     n_warmup: int = 10,
     n_repeat: int = 50,
     n_trials: int = 3,
@@ -285,7 +284,7 @@ class BenchmarkBase(Generic[W], ABC):
 
     def profile(self,
                 functor: Any,
-                *inputs: Tuple[torch.Tensor]) -> dict:
+                *inputs: torch.Tensor) -> dict:
         """Profile a callable and return structured results.
 
         Uses the NVIDIA SOL-ExecBench protocol: CUPTI kernel timing,

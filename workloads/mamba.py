@@ -29,7 +29,7 @@ class DaCumsumFwdTest(WorkloadBase):
         self.chunk_len = chunk_len
         self.n_heads = n_heads
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         b, C, Q, h = self.batch, self.num_chunks, self.chunk_len, self.n_heads
         seq_len = C * Q
         # dt > 0 (softplus output in Mamba-2), A <= 0 (negative decay)
@@ -70,7 +70,7 @@ class SSDChunkScanFwdTest(WorkloadBase):
         self.d_state = d_state
         self.dtype = dtype
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         b, c, L, h, p, n = (
             self.batch, self.num_chunks, self.chunk_len,
             self.n_heads, self.d_head, self.d_state,
@@ -132,7 +132,7 @@ class SSDChunkStateFwdTest(WorkloadBase):
         self.dtype = dtype
         self.has_seq_idx = has_seq_idx
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         b, c, Q, h, p, n, g = (
             self.batch, self.num_chunks, self.chunk_len,
             self.n_heads, self.d_head, self.d_state, self.n_groups,
@@ -188,7 +188,7 @@ class SSDDecodeTest(WorkloadBase):
         self.n_groups = n_groups
         self.dtype = dtype
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         b, h, p, n, g = (
             self.batch, self.n_heads, self.d_head, self.d_state, self.n_groups,
         )
@@ -229,7 +229,7 @@ class SSDStatePassingFwdTest(WorkloadBase):
         self.d_state = d_state
         self.dtype = dtype
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         b, c, h, d = self.batch, self.num_chunks, self.n_heads, self.d_state
         states = torch.randn(b, c, h, d, dtype=self.dtype, device="cuda") * 0.1
         dA_chunk_cumsum = -torch.rand(b, h, c, dtype=torch.float32, device="cuda").cumsum(-1)

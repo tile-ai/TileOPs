@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -17,7 +15,7 @@ class TopkSelectorTest(WorkloadBase):
         self.in_dtype = in_dtype
         self.out_dtype = out_dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         index_score = torch.randn(
             self.batch,
             self.seq_len,

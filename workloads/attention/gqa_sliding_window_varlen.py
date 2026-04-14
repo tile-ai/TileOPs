@@ -1,5 +1,3 @@
-from typing import List, Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -10,8 +8,8 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdTest(WorkloadBase):
     def __init__(
         self,
         batch: int,
-        seqlens_q: List[int],
-        seqlens_k: List[int],
+        seqlens_q: list[int],
+        seqlens_k: list[int],
         heads: int,
         heads_kv: int,
         dim: int,
@@ -33,7 +31,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdTest(WorkloadBase):
 
     def gen_inputs(
         self,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,
                torch.Tensor, torch.Tensor, int]:
         total_q = sum(self.seqlens_q)
         total_k = sum(self.seqlens_k)

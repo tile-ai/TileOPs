@@ -7,7 +7,6 @@ Correctness-only logic (ref_program, check, tolerances) stays in tests/.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any
 
 import torch
 
@@ -23,7 +22,7 @@ class WorkloadBase(ABC):
     """
 
     @abstractmethod
-    def gen_inputs(self) -> Any:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         raise NotImplementedError
 
 

@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
@@ -29,7 +27,7 @@ class NsaCmpFwdTest(WorkloadBase):
         # chunk_num is computed during gen_inputs and stored for later use
         self.chunk_num = None
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         valid_range = self.c_seq_len - self.bs
         rand_indices = torch.randperm(valid_range)[:self.seq_num - 1]
         offsets = torch.cat([

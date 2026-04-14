@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -15,7 +13,7 @@ class FP8QuantTest(WorkloadBase):
         self.index_dim = index_dim
         self.in_dtype = in_dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor]:
         input_tensor = torch.randn(
             self.batch,
             self.seq_len_kv,

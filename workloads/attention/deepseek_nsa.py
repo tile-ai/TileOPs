@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 import torch
 from einops import rearrange, repeat
@@ -26,7 +26,7 @@ class NsaFwdTest(WorkloadBase):
 
         self.head_kv = self.heads // self.groups
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         possible_split_points = torch.arange(16, self.c_seq_len)
         num_splits = self.batch - 1
         offsets = (
