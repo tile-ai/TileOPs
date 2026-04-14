@@ -13,7 +13,7 @@ compares against PyTorch baseline to determine optimal DEFAULT_STRATEGY.
 """
 
 from math import prod
-from typing import Optional, Protocol, runtime_checkable
+from typing import Optional, Protocol
 
 import pytest
 import torch
@@ -53,7 +53,6 @@ _UNARY_STRATEGIES = ("direct", "explicit_parallel", "register_copy")
 # ---------------------------------------------------------------------------
 
 
-@runtime_checkable
 class _UnaryWorkload(Protocol):
     """Structural type for unary benchmark workloads."""
 
