@@ -1,5 +1,4 @@
-from tileops.ops.mhc import MHCPostOp, MHCPreOp
-
+from ..mhc import MHCPostOp, MHCPreOp
 from .deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from .deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from .deepseek_nsa import (
@@ -9,12 +8,12 @@ from .deepseek_nsa import (
     NSATopkVarlenOp,
 )
 from .gqa import (
-    GqaSlidingWindowFwdOp,
-    GqaSlidingWindowVarlenFwdOp,
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDecodeWithKVCacheFwdOp,
     GroupedQueryAttentionFwdOp,
+    GroupedQueryAttentionSlidingWindowFwdOp,
+    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
 )
 from .mha import (
     MultiHeadAttentionBwdOp,
@@ -27,8 +26,8 @@ __all__ = [
     "MHCPostOp",
     "MHCPreOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
-    "GqaSlidingWindowFwdOp",
-    "GqaSlidingWindowVarlenFwdOp",
+    "GroupedQueryAttentionSlidingWindowFwdOp",
+    "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
