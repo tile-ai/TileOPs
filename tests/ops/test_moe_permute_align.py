@@ -8,7 +8,6 @@ Reference: SGLang moe_align_block_size
 """
 
 import math
-from typing import Tuple
 
 import pytest
 import torch
@@ -20,7 +19,7 @@ from workloads.moe import MoePermuteAlignTest as _MoePermuteAlignTestWorkload
 
 def _ref_permute_align(
     topk_ids: torch.Tensor, block_size: int, num_experts: int
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Pure-Python reference for permute_align."""
     numel = topk_ids.numel()
     flat = topk_ids.flatten().tolist()
@@ -70,7 +69,7 @@ def _ref_permute_align(
 class MoePermuteAlignTest(_MoePermuteAlignTestWorkload, TestBase):
     def ref_program(
         self, topk_ids: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return _ref_permute_align(topk_ids, self.block_size, self.num_experts)
 
 
@@ -117,8 +116,8 @@ class MoePermuteAlignFixture(FixtureBase):
 
 
 def _permute_align_compare(
-    outputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    outputs_ref: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    outputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    outputs_ref: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     block_size: int,
     num_experts: int,
     numel: int,

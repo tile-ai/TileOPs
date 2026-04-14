@@ -1,5 +1,4 @@
 
-from typing import Tuple
 
 import pytest
 import torch
@@ -18,7 +17,7 @@ def gated_deltanet_decode_torch(
     g: torch.Tensor,
     beta: torch.Tensor,
     state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Pure-PyTorch reference for single-step gated delta rule."""
     q, k, v = q.float(), k.float(), v.float()
     g, beta = g.float(), beta.float()
@@ -50,7 +49,7 @@ class GatedDeltaNetDecodeTest(_GatedDeltaNetDecodeTestWorkload, TestBase):
         g: torch.Tensor,
         beta: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         o, new_state = gated_deltanet_decode_torch(q, k, v, g, beta, state)
         return o.to(self.dtype), new_state.to(self.dtype)
 

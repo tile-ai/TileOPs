@@ -23,7 +23,7 @@ class WorkloadBase(ABC):
     """
 
     @abstractmethod
-    def gen_inputs(self) -> Any:
+    def gen_inputs(self) -> tuple[Any, ...]:
         raise NotImplementedError
 
 

@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -25,7 +23,7 @@ class DeltaNetFwdTest(WorkloadBase):
         self.chunk_size = chunk_size
         self.dtype = dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         B, H, S, DK, DV = self.batch, self.heads, self.seq_len, self.dim_k, self.dim_v
         q = torch.randn(B, H, S, DK, device="cuda", dtype=self.dtype) * 0.1
         k = torch.randn(B, H, S, DK, device="cuda", dtype=self.dtype) * 0.1
@@ -50,7 +48,7 @@ class DeltaNetDecodeTest(WorkloadBase):
         self.dim_v = dim_v
         self.dtype = dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         B, H, DK, DV = self.batch, self.heads, self.dim_k, self.dim_v
         q = torch.randn(B, H, DK, device="cuda", dtype=self.dtype) * 0.1
         k = torch.randn(B, H, DK, device="cuda", dtype=self.dtype) * 0.1

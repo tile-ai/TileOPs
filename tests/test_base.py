@@ -2,7 +2,7 @@ import logging
 import threading
 from abc import abstractmethod
 from functools import partial
-from typing import Any, Tuple
+from typing import Any
 
 import torch
 
@@ -72,7 +72,7 @@ class TestBase(WorkloadBase):
 
     def check(self,
               op,
-              *inputs: Tuple[torch.Tensor],
+              *inputs: tuple[torch.Tensor],
               compare=None,
               atol: float = 1e-08,
               rtol: float = 1e-05) -> None:

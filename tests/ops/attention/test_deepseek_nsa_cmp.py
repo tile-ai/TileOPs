@@ -1,5 +1,4 @@
 
-from typing import Tuple
 
 import pytest
 import torch
@@ -65,7 +64,7 @@ class NsaCmpFwdTest(_NsaCmpFwdTestWorkload, TestBase):
         offsets: torch.LongTensor,
         chunk_offsets: torch.LongTensor,
         token_indices: torch.LongTensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         _ = chunk_offsets, token_indices
         return _parallel_nsa_compression_fwd_pytorch(self, q, k_cmp, v_cmp, self.bs, self.scale,
                                                       offsets)

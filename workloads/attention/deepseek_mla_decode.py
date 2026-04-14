@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -17,7 +15,7 @@ class MlaDecodeTest(WorkloadBase):
         self.dim_pe = dim_pe
         self.dtype = dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
         Q_pe = torch.randn(self.batch, self.heads, self.dim_pe, device='cuda', dtype=self.dtype)
         K = torch.randn(

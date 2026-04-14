@@ -12,7 +12,7 @@ against PyTorch baseline.
 """
 
 from math import prod
-from typing import Any, Optional, Protocol
+from typing import Optional, Protocol
 
 import pytest
 import torch
@@ -79,7 +79,7 @@ class BinaryWorkload(Protocol):
     n_total: int
     dtype: torch.dtype
 
-    def gen_inputs(self) -> Any: ...
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]: ...
 
 
 class BinaryBenchCase:

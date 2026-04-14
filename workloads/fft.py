@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -12,6 +10,6 @@ class FFTTest(WorkloadBase):
         self.dtype = dtype
         self.batch_shape = batch_shape
 
-    def gen_inputs(self) -> Tuple[torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(*self.batch_shape, self.n, device='cuda', dtype=self.dtype)
         return (x,)

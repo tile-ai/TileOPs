@@ -1,4 +1,3 @@
-from typing import Tuple
 
 import pytest
 import torch
@@ -85,7 +84,7 @@ def _fla_autograd_bwd(
     v: torch.Tensor,
     g: torch.Tensor,
     scale: float,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute GLA backward gradients via FLA's chunk_gla + autograd.
 
     FLA uses the same BTHD layout and g shape [B, T, H, K] as TileOPs.

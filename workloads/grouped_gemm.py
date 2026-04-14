@@ -1,5 +1,4 @@
 import math
-from typing import Tuple
 
 import torch
 
@@ -55,7 +54,7 @@ class GroupedGemmTest(WorkloadBase):
         self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
         self.padding_M = 128
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         batch_sizes_list = self.batch_sizes_list
         N, K = self.N, self.K
         device = 'cuda'

@@ -2,7 +2,6 @@
 
 
 import math
-from typing import Tuple
 
 import pytest
 import torch
@@ -16,7 +15,7 @@ from workloads.mhc import MHCPreTest as _MHCPreTestWorkload
 class MHCPreTest(_MHCPreTestWorkload, TestBase):
     def ref_program(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor,
                     alpha_pre, alpha_post, alpha_res,
-                    sinkhorn_repeat: int, eps: float) -> Tuple[torch.Tensor, torch.Tensor]:
+                    sinkhorn_repeat: int, eps: float) -> tuple[torch.Tensor, torch.Tensor]:
         batch = self.batch
         n_expand = self.n_expand
         c_x = self.c_x

@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -25,7 +23,7 @@ class DsaDecodeTest(WorkloadBase):
         self.dtype = dtype
         self.q_start_index_s = q_start_index_s
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
             self.batch,
             self.seq_len,

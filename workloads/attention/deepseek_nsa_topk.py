@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
@@ -28,7 +26,7 @@ class NsaTopkTest(WorkloadBase):
         # chunk_num is computed during gen_inputs and stored for later use
         self.chunk_num = None
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, ...]:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         possible_split_points = torch.arange(16, self.c_seq_len)
         num_splits = self.seq_num - 1
         offsets = (
