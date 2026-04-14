@@ -13,7 +13,7 @@ Op                          ← L1: thin base, shared by all ops
 ```
 
 - **Op (L1)** — abstract base class. Defines the contract: `default_kernel_map`, `forward()`, kernel dispatch, manifest-driven validation and shape inference. Thin by design — only infrastructure that ALL ops share.
-- **FamilyBase (L2)** — intermediate base per op family. Owns the shared `forward()` pipeline: validation, reshape, padding, kernel call, output assembly. One per family.
+- **FamilyBase (L2)** — intermediate base per op family. Owns the shared `forward()` pipeline. One per family.
 - **ConcreteOp (L3)** — leaf class. Pure declaration: kernel class, op kind, dimension wiring. No logic override.
 
 This three-layer structure is a design decision. Without L2 family bases, shared forward() logic gets duplicated across every concrete op, creating maintenance problems at scale.
@@ -31,23 +31,6 @@ Agent-driven development follows a pragmatic sequence:
 Create one when **multiple ops share the same `forward()` control flow**, the shared boilerplate is substantial, and per-op differences fit into class variables or hooks.
 
 Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
-
-**Abstraction follows implementation, never the reverse.**
-
-### Current Family Bases
-
-| Family Base           | Domain      | Shared Flow                                                | Concrete Ops                                                                    |
-| --------------------- | ----------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `RowNormOp`           | norm        | validate → flatten → pad → kernel → trim → reshape         | `LayerNormFwdOp`, `RMSNormFwdOp`                                                |
-| `_ReduceOpBase`       | reduction   | validate → transpose → reshape 2D → pad → kernel → reshape | base for `_SimpleReduceOp`, `_WelfordReduceOp`, argreduce, logical, vector norm |
-| `_SimpleReduceOp`     | reduction   | `_ReduceOpBase` + kernel-side masked padding               | `SumFwdOp`, `MeanFwdOp`, `AminFwdOp`, `AmaxFwdOp`, `ProdFwdOp`                  |
-| `_WelfordReduceOp`    | reduction   | `_ReduceOpBase` + Bessel's correction                      | `StdFwdOp`, `VarFwdOp`, `VarMeanFwdOp`                                          |
-| `_SoftmaxBaseOp`      | reduction   | row-wise softmax variant pipeline                          | `SoftmaxFwdOp`, `LogSoftmaxFwdOp`, `LogSumExpFwdOp`                             |
-| `UnaryOp`             | elementwise | flatten → kernel → reshape                                 | 30+ unary ops                                                                   |
-| `BinaryOp`            | elementwise | broadcast coalesce → kernel → reshape                      | 13+ binary ops                                                                  |
-| `_BoolOutputBinaryOp` | elementwise | `BinaryOp` + bool output cast                              | comparison and logical ops                                                      |
-| `FusedGatedOp`        | elementwise | (M, 2N) split → kernel → reshape                           | `SiluAndMulOp`, `GeluAndMulOp`, `GeluTanhAndMulOp`                              |
-| `_RopeOpBase`         | rope        | frequency table → kernel dispatch                          | 5 RoPE variants                                                                 |
 
 ## D2. Two-Layer Op/Kernel Boundary
 
