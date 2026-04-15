@@ -42,6 +42,11 @@ class MyFwdOp(Op):
         return self.kernel(x)
 ```
 
+> [!NOTE]
+> `def __init__(self, *, ...)` — the `*` forces all parameters to be keyword-only. Callers must write `MyFwdOp(M=2048, N=4096, dtype=torch.float16)`; positional arguments are rejected. This is deliberate: parameter names come from manifest dimension names (single letters like `M`, `K`, `N`), keyword-only eliminates ordering ambiguity.
+>
+> **TODO:** When implementation catches up, add a corresponding rule to `.claude/rules/code-style.md`.
+
 **Kernel** — device-side computation. Owns the TileLang program, tile configuration, and JIT compilation.
 
 | Interface             | Required | Description                                               |
