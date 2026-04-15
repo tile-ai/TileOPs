@@ -1,34 +1,8 @@
 # Op Interface Design
 
-## Three-Layer Class Hierarchy
+## Architecture
 
-```
-Op                          ← L1: thin base, shared by all ops
-  └── FamilyBase            ← L2: family-specific forward() flow
-        └── ConcreteOp      ← L3: pure declaration, no logic override
-```
-
-- **Op (L1)** — abstract base class. Defines the contract: `default_kernel_map`, `forward()`, kernel dispatch, manifest-driven validation and shape inference. Thin by design — only infrastructure that ALL ops share.
-- **FamilyBase (L2)** — intermediate base per op family. Owns the shared `forward()` pipeline. One per family.
-- **ConcreteOp (L3)** — leaf class. Pure declaration: kernel class, op kind, dimension wiring. No logic override.
-
-This three-layer structure is a design decision. Without L2 family bases, shared forward() logic gets duplicated across every concrete op, creating maintenance problems at scale.
-
-### Development Path
-
-Agent-driven development follows a pragmatic sequence:
-
-1. **New op inherits L1 directly.** When a family has only 1-2 ops, the op owns its full `forward()`. This is a transitional state, not a target architecture.
-1. **Family accumulates ops.** When 2-3 ops in a family share identical `forward()` flow, extract an L2 family base via refactoring.
-1. **L1-direct and L1→L2→L3 coexist.** This is a natural consequence of incremental development. L1-direct ops are candidates for future L2 extraction, not an alternative design.
-
-### When to Create an L2 Family Base
-
-Create one when **multiple ops share the same `forward()` control flow**, the shared boilerplate is substantial, and per-op differences fit into class variables or hooks.
-
-Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
-
-## Two-Layer Op/Kernel Boundary
+### Op/Kernel Boundary
 
 Every operator splits into Op and Kernel:
 
@@ -44,6 +18,42 @@ Every operator splits into Op and Kernel:
 | JIT compilation + caching | Kernel | `@functools.lru_cache`                      |
 
 Either layer can be modified independently.
+
+### Class Hierarchy
+
+```
+Op                          ← L1: thin base, shared by all ops
+  └── FamilyBase            ← L2: family-specific forward() flow
+        └── ConcreteOp      ← L3: pure declaration, no logic override
+```
+
+- **Op (L1)** — abstract base class. Defines the contract: `default_kernel_map`, `forward()`, kernel dispatch, manifest-driven validation and shape inference. Thin by design — only infrastructure that ALL ops share.
+- **FamilyBase (L2)** — intermediate base per op family. Owns the shared `forward()` pipeline. One per family.
+- **ConcreteOp (L3)** — leaf class. Pure declaration: kernel class, op kind, dimension wiring. No logic override.
+
+This three-layer structure is a design decision. Without L2 family bases, shared forward() logic gets duplicated across every concrete op, creating maintenance problems at scale.
+
+In L1→L2→L3 hierarchies, a concrete Op (L3) is a pure declaration:
+
+- Which kernel (`_kernel_cls`, `_kernel_key`)
+- Which op kind (`_op_kind`)
+- Dimension wiring (keyword params → kernel constructor)
+
+Shared mechanics — validation, reshape, padding, shape inference, dtype validation, kernel dispatch, trimming — are inherited from L2.
+
+Ops that still inherit L1 directly own their full `forward()`. As their family matures, shared logic migrates to an L2 base, and concrete ops converge toward declarations.
+
+### Development Path
+
+Agent-driven development follows a pragmatic sequence:
+
+1. **New op inherits L1 directly.** When a family has only 1-2 ops, the op owns its full `forward()`. This is a transitional state, not a target architecture.
+1. **Family accumulates ops.** When 2-3 ops in a family share identical `forward()` flow, extract an L2 family base via refactoring.
+1. **L1-direct and L1→L2→L3 coexist.** This is a natural consequence of incremental development. L1-direct ops are candidates for future L2 extraction, not an alternative design.
+
+Create an L2 family base when **multiple ops share the same `forward()` control flow**, the shared boilerplate is substantial, and per-op differences fit into class variables or hooks.
+
+Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
 
 ## Manifest-Driven Op Interface
 
@@ -222,77 +232,11 @@ Roofline variable names, `__init__` keyword names, and `shape` dimension names a
 | `_infer_output_shapes` consistent with `shape_rules`      | Validator shape check                 | Every PR |
 | `_validate_dtypes` consistent with `dtype`/`dtype_combos` | Validator dtype check                 | Every PR |
 
-## Concrete Ops Are Declarations
+## Reference
 
-In L1→L2→L3 hierarchies, a concrete Op (L3) is a pure declaration:
+### Naming Conventions
 
-- Which kernel (`_kernel_cls`, `_kernel_key`)
-- Which op kind (`_op_kind`)
-- Dimension wiring (keyword params → kernel constructor)
-
-Shared mechanics — validation, reshape, padding, shape inference, dtype validation, kernel dispatch, trimming — are inherited from L2.
-
-Ops that still inherit L1 directly own their full `forward()`. As their family matures, shared logic migrates to an L2 base, and concrete ops converge toward declarations.
-
-## Op/Kernel Base Class Protocol
-
-### Op base class (`tileops/ops/op_base.py`)
-
-| Attribute        | Type                          | Purpose                                               |
-| ---------------- | ----------------------------- | ----------------------------------------------------- |
-| `kernel`         | `Kernel`                      | Kernel instance used by `forward()`                   |
-| `kernel_map`     | `Optional[Dict[str, Kernel]]` | Dispatched kernels keyed by name                      |
-| `dtype`          | `Optional[torch.dtype]`       | Computation dtype                                     |
-| `device`         | `Optional[str]`               | Device (default `'cuda'`)                             |
-| `_output_shapes` | `Optional[Dict[str, tuple]]`  | Inferred output shapes (populated at init or forward) |
-
-Abstract interface: `default_kernel_map` (property), `forward()`.
-
-Manifest-driven methods (generated by agent):
-
-- `_infer_output_shapes(...)` → output name → shape
-- `_validate_dtypes(...)` → raise on invalid dtypes
-- `eval_roofline()` → (flops, bytes)
-
-### Kernel base class (`tileops/kernels/kernel_base.py`)
-
-| Attribute          | Type                    | Purpose                                        |
-| ------------------ | ----------------------- | ---------------------------------------------- |
-| `dtype`            | `Optional[torch.dtype]` | Data type                                      |
-| `config`           | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.) |
-| `autotune_configs` | `Optional[list[dict]]`  | Search space for autotuning                    |
-| `supported_archs`  | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)     |
-| `kernel`           | `Callable`              | Compiled TileLang kernel function              |
-
-Abstract interface: `forward()`.
-Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
-
-### Family-base protocol variables
-
-| Variable                  | Family          | Purpose                                                   |
-| ------------------------- | --------------- | --------------------------------------------------------- |
-| `_kernel_key`             | norm, reduction | Kernel-map lookup key                                     |
-| `_kernel_cls`             | norm, reduction | Kernel class reference                                    |
-| `_op_kind`                | reduction       | Reduction kind string (`"sum"`, `"mean"`, `"std"`, etc.)  |
-| `_kernel_handles_padding` | reduction       | `True` → kernel uses masked loads, skip host-side padding |
-| `_op_name`                | elementwise     | `torch.library.custom_op` registration key                |
-| `kernel_cls`              | elementwise     | Kernel class reference                                    |
-
-Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
-
-## Conventions in Code, Not Documentation
-
-| Convention                             | Enforced By                                          |
-| -------------------------------------- | ---------------------------------------------------- |
-| Non-contiguous → `.contiguous()`       | Per-family base `forward()` or per-op implementation |
-| Alignment padding                      | Per-family base `forward()` or kernel masked loads   |
-| CUDA device check                      | Per-family base `forward()` or per-op implementation |
-| `torch.library.custom_op` registration | Per-op module or shared registration utility         |
-| Docstring format (Google style)        | Linter / CI check                                    |
-
-## Naming Conventions
-
-### Op Classes
+#### Op Classes
 
 ```
 {PascalCaseName}{Direction}Op
@@ -303,7 +247,7 @@ Adding a new protocol variable requires updating: (1) the base class, (2) all co
 
 The manifest key must exactly equal `cls.__name__`.
 
-### Kernel Classes
+#### Kernel Classes
 
 ```
 {PascalCaseName}{Direction}Kernel
@@ -311,7 +255,7 @@ The manifest key must exactly equal `cls.__name__`.
 
 - Exception: elementwise kernels omit the direction suffix (`ReluKernel`, `AddKernel`).
 
-### Kernel Dispatch (kernel_map)
+#### Kernel Dispatch (kernel_map)
 
 A flat dict mapping dispatch keys to Kernel classes. The manifest declares this table; agents implement the listed Kernels.
 
@@ -336,13 +280,69 @@ def default_kernel_map(self) -> Dict[str, Kernel]:
 - **Values**: Kernel class names, must match `cls.__name__`.
 - The table does not describe dispatch strategy. Strategy is a runtime concern.
 
-### Builder Functions
+#### Builder Functions
 
 Kernel builder functions remain `snake_case`:
 
 ```python
 def rms_norm_fwd(M, N, dtype, ...): ...
 ```
+
+### Base Class Protocol
+
+#### Op base class (`tileops/ops/op_base.py`)
+
+| Attribute        | Type                          | Purpose                                               |
+| ---------------- | ----------------------------- | ----------------------------------------------------- |
+| `kernel`         | `Kernel`                      | Kernel instance used by `forward()`                   |
+| `kernel_map`     | `Optional[Dict[str, Kernel]]` | Dispatched kernels keyed by name                      |
+| `dtype`          | `Optional[torch.dtype]`       | Computation dtype                                     |
+| `device`         | `Optional[str]`               | Device (default `'cuda'`)                             |
+| `_output_shapes` | `Optional[Dict[str, tuple]]`  | Inferred output shapes (populated at init or forward) |
+
+Abstract interface: `default_kernel_map` (property), `forward()`.
+
+Manifest-driven methods (generated by agent):
+
+- `_infer_output_shapes(...)` → output name → shape
+- `_validate_dtypes(...)` → raise on invalid dtypes
+- `eval_roofline()` → (flops, bytes)
+
+#### Kernel base class (`tileops/kernels/kernel_base.py`)
+
+| Attribute          | Type                    | Purpose                                        |
+| ------------------ | ----------------------- | ---------------------------------------------- |
+| `dtype`            | `Optional[torch.dtype]` | Data type                                      |
+| `config`           | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.) |
+| `autotune_configs` | `Optional[list[dict]]`  | Search space for autotuning                    |
+| `supported_archs`  | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)     |
+| `kernel`           | `Callable`              | Compiled TileLang kernel function              |
+
+Abstract interface: `forward()`.
+Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
+
+#### Family-base protocol variables
+
+| Variable                  | Family          | Purpose                                                   |
+| ------------------------- | --------------- | --------------------------------------------------------- |
+| `_kernel_key`             | norm, reduction | Kernel-map lookup key                                     |
+| `_kernel_cls`             | norm, reduction | Kernel class reference                                    |
+| `_op_kind`                | reduction       | Reduction kind string (`"sum"`, `"mean"`, `"std"`, etc.)  |
+| `_kernel_handles_padding` | reduction       | `True` → kernel uses masked loads, skip host-side padding |
+| `_op_name`                | elementwise     | `torch.library.custom_op` registration key                |
+| `kernel_cls`              | elementwise     | Kernel class reference                                    |
+
+Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
+
+### Conventions in Code, Not Documentation
+
+| Convention                             | Enforced By                                          |
+| -------------------------------------- | ---------------------------------------------------- |
+| Non-contiguous → `.contiguous()`       | Per-family base `forward()` or per-op implementation |
+| Alignment padding                      | Per-family base `forward()` or kernel masked loads   |
+| CUDA device check                      | Per-family base `forward()` or per-op implementation |
+| `torch.library.custom_op` registration | Per-op module or shared registration utility         |
+| Docstring format (Google style)        | Linter / CI check                                    |
 
 ## Adding a New Family Base
 
