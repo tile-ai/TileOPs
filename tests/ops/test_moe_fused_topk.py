@@ -81,7 +81,7 @@ class FusedTopKFixture(FixtureBase):
 
 
 def _check(test: FusedTopKTest) -> None:
-    gating = test.gen_inputs()
+    (gating,) = test.gen_inputs()
     op = FusedTopKOp(
         num_tokens=test.num_tokens,
         num_experts=test.num_experts,
