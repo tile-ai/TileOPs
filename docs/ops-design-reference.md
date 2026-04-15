@@ -69,7 +69,7 @@ Agent reads the manifest and generates code (codegen). [Validator](../scripts/va
 - **Fully static op:** `_infer_output_shapes` and `eval_roofline` called once in `__init__`, results stored as instance attributes.
 - **Op with dynamic dims:** called in `forward()` when dynamic dims are resolved. Kernel construction caches by `M`; `_infer_output_shapes` depends on full input shape; `eval_roofline` uses `self.*` attributes set during forward.
 - **`_validate_dtypes`:** runs on every `forward()` call — dtype validity depends on the actual tensors passed, not cached.
-- **Non-runtime consumers** (validator, graph compiler): can call `_infer_output_shapes` and `_validate_dtypes` with concrete shapes without constructing tensors. `eval_roofline` for dynamic-rank ops requires `self.*` attributes set during forward — non-runtime evaluation should use `tileops.manifest.eval_roofline()` directly.
+- **Non-runtime consumers** (validator, graph compiler): can call `_infer_output_shapes` with concrete shapes without constructing tensors. `_validate_dtypes` requires actual dtypes (not shapes). `eval_roofline` for dynamic-rank ops requires `self.*` attributes set during forward — non-runtime evaluation should use `tileops.manifest.eval_roofline()` directly.
 
 ### Inheritance in Family-Base Hierarchies
 
