@@ -55,7 +55,7 @@ dtype_combos:
 
 **R6. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). Names become roofline variables. No ellipsis or wildcards.
 
-**R7. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`.
+**R7. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `init_dims` declares dimensions known at Op construction time (R20).
 
 **R8. No shape aliasing.** Each tensor declares its own shape. Use shared dimension names (R9) or `shape_rules` (R11) to express shape relationships.
 
@@ -80,6 +80,14 @@ dtype_combos:
 > **R18.** Variants share `source.kernel` and `source.op`. Each has its own `signature`, `workloads`, `roofline`.
 
 **R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order.
+
+**R20. `init_dims`.** For arbitrary-rank ops (no `shape` declaration), `init_dims` declares derived dimensions that users must provide at Op construction time. Each entry maps a dimension name to a `from` expression that defines its semantics and serves as a forward-time validation rule.
+
+- Dimensions in `init_dims` are required `__init__` parameters. Not optional.
+- Dimensions not in `init_dims` are derived from tensors at forward time.
+- `from` expressions use tensor shapes and params (e.g., `"x.shape[dim]"`). At forward time, the user-provided value must match the evaluated expression.
+- `init_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).
+- Key order in `init_dims` determines `__init__` parameter order, consistent with R1.
 
 ```yaml
 x: {dtype: "float16", shape: "[N, H, W, C]", layout: "channels_last"}
@@ -135,6 +143,7 @@ signature:
   inputs:       # tensor name → {dtype, shape?, constraints?}
   outputs:      # tensor name → {dtype, shape?, constraints?}
   params:       # param name → {type, default?}
+  init_dims:    # dim name → {from: expr} — arbitrary-rank only (R20)
   shape_rules:  # Python expressions for shape inference
   dtype_combos: # valid cross-tensor dtype combinations
 ```
@@ -158,7 +167,9 @@ Fixed rank, expressible with dimension names?
 │   Relationships beyond shared names?
 │   └─ YES → add shape_rules                              [R11]
 └─ NO (arbitrary rank)
-   └─ write shape_rules                                   [R11]
+   ├─ write shape_rules                                   [R11]
+   └─ Dimensions known at Op construction time?
+      └─ YES → add init_dims                              [R20]
 ```
 
 #### Optional Inputs
@@ -231,7 +242,7 @@ roofline:
 
 #### kernel_map
 
-Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design.md § Kernel Dispatch](ops-design.md#kernel-dispatch-kernel_map).
+Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design-reference.md § Kernel Dispatch](ops-design-reference.md#kernel-dispatch-kernel_map).
 
 ```yaml
 # Single-kernel op
@@ -275,7 +286,7 @@ outputs:
   y: {dtype: "same_as(x)", shape: "[M, N]"}
 ```
 
-**Arbitrary rank — RMSNorm** \[R7, R11\]:
+**Arbitrary rank — RMSNorm** \[R7, R11, R20\]:
 
 ```yaml
 inputs:
@@ -286,6 +297,8 @@ outputs:
 params:
   dim: {type: int, default: -1}
   eps: {type: float, default: 1e-6}
+init_dims:
+  N: {from: "x.shape[dim]"}
 shape_rules:
   - "y.shape == x.shape"
   - "weight.shape == (x.shape[dim],)"
@@ -326,6 +339,8 @@ ops:
       params:
         dim: {type: int, default: -1}
         eps: {type: float, default: 1e-6}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.shape == x.shape"
         - "weight.shape == (x.shape[dim],)"
