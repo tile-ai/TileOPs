@@ -34,7 +34,7 @@ Kernel construction, shape inference, and roofline evaluation follow one princip
 | Fixed-rank     | `__init__` (all dimensions provided)                                   | Everything runs once at init.                                                                                                    |
 | Arbitrary-rank | `init` for `init_dims` dimensions; `forward` for undeclared dimensions | `init_dims` dimensions resolve at init. Undeclared dimensions trigger kernel/shape/roofline on first encounter, cached by value. |
 
-This applies uniformly to kernel construction, `_infer_output_shapes`, and `eval_roofline`.
+This applies uniformly to kernel construction, `_infer_output_shapes`, and `eval_roofline`. Cache key granularity may differ: kernels depend on 2D `(M, N)`, while shape inference and roofline may need the full input shape to produce correct output shapes.
 
 **Exception:** `_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes.
 
@@ -125,6 +125,7 @@ class RMSNormFwdOp(RowNormOp):
 ```python
 def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     self._validate_dtypes(x, weight)
+    orig_shape = x.shape
     # normalize dim, validate init_dims, derive M
     dim = self.dim % x.ndim
     if x.shape[dim] != self.N:
@@ -132,15 +133,16 @@ def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
             f"init_dims mismatch: expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}"
         )
     M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
-    # kernel cached by dynamic dimension (M)
+    # kernel cached by M (kernel only depends on 2D shape)
     if M not in self._kernel_cache:
         self._kernel_cache[M] = self.kernel_map["rms_norm"](
             M, self.N, self.dtype, eps=self.eps
         )
     kernel = self._kernel_cache[M]
-    # move target dim to last, then reshape to 2D
+    # move target dim to last, reshape to 2D, compute, restore shape
     x = x.movedim(dim, -1).contiguous().reshape(M, self.N)
-    return kernel(x, weight)
+    y = kernel(x, weight)
+    return y.reshape(orig_shape)
 ```
 
 ### `_infer_output_shapes` (codegen)
