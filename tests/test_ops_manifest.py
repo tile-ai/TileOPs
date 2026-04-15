@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-pytestmark = pytest.mark.full
+pytestmark = pytest.mark.smoke
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = REPO_ROOT / "tileops" / "ops_manifest.yaml"

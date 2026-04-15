@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.full
+pytestmark = pytest.mark.smoke
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR_SCRIPT = REPO_ROOT / "scripts" / "validate_manifest.py"
