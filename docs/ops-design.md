@@ -27,14 +27,16 @@ See [Development Path](ops-design-reference.md#development-path) for when to cre
 
 ## Execution Timing
 
-Kernel construction, shape inference, dtype validation, and roofline evaluation all follow one principle: **do it at the first moment all required information is known, do it once, cache the result. Same inputs never trigger recomputation.**
+Kernel construction, shape inference, and roofline evaluation follow one principle: **do it at the first moment all required information is known, do it once, cache the result. Same inputs never trigger recomputation.**
 
 | Op category    | When all info is known                             | Behavior                                                                                                         |
 | -------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | Fixed-rank     | `__init__` (all dimensions provided)               | Everything runs once at init.                                                                                    |
 | Arbitrary-rank | `forward` (dynamic dimensions derived from tensor) | Runs on first encounter of each unique dynamic dimension combination. Result cached by dynamic dimension values. |
 
-This applies uniformly to kernel construction, `_infer_output_shapes`, `_validate_dtypes`, and `eval_roofline` — no per-feature timing logic.
+This applies uniformly to kernel construction, `_infer_output_shapes`, and `eval_roofline`.
+
+**Exception:** `_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes.
 
 ## Implementing an Op
 
@@ -107,7 +109,8 @@ class RMSNormFwdOp(RowNormOp):
     def __init__(self, *, N: int, dtype: torch.dtype, dim: int = -1, eps: float = 1e-6):
         self.N, self.dtype, self.dim, self.eps = N, dtype, dim, eps
         self.dispatch_kernel()
-        self.kernel = self.kernel_map["rms_norm"](N, dtype, eps=eps)
+        # kernel construction deferred to forward — M unknown at init
+        self._kernel_cache = {}
 ```
 
 > [!NOTE]
@@ -122,11 +125,12 @@ class RMSNormFwdOp(RowNormOp):
 ```python
 def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     self._validate_dtypes(x, weight)
-    # M not in init_dims — derived here
-    M = math.prod(x.shape[: self.dim])
+    # normalize dim, then derive M (not in init_dims)
+    dim = self.dim % x.ndim
+    M = math.prod(x.shape[:dim])
     assert (
-        x.shape[self.dim] == self.N
-    ), f"init_dims mismatch: expected x.shape[{self.dim}] == {self.N}, got {x.shape[self.dim]}"
+        x.shape[dim] == self.N
+    ), f"init_dims mismatch: expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}"
     x = x.contiguous().reshape(M, self.N)
     return self.kernel(x, weight)
 ```
