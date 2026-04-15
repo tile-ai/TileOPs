@@ -1,101 +1,8 @@
 # Op Interface Design — Reference
 
-Detail sections referenced by [ops-design.md](ops-design.md).
-
-## Architecture
-
-### Op/Kernel Interface
-
-**Op** — host-side orchestration. Receives user-facing tensors, validates inputs, prepares data layout, dispatches to Kernel, and assembles output.
-
-| Interface                | Required | Description                                                                        |
-| ------------------------ | -------- | ---------------------------------------------------------------------------------- |
-| `__init__(self, *, ...)` | yes      | Keyword-only params from manifest. Dispatches kernel, runs shape inference.        |
-| `forward(self, ...)`     | yes      | Validate → reshape → call kernel → reshape output. User-facing entry point.        |
-| `default_kernel_map`     | yes      | Property. Returns `{dispatch_key: KernelClass}`.                                   |
-| `_infer_output_shapes()` | yes      | Codegen from manifest `shape_rules`. See [Shape Inference](#shape-inference).      |
-| `_validate_dtypes()`     | yes      | Codegen from manifest `dtype`. See [Dtype Validation](#dtype-validation).          |
-| `eval_roofline()`        | yes      | Codegen from manifest `roofline`. See [Roofline Evaluation](#roofline-evaluation). |
-
-L1 base class ([`Op`](../tileops/ops/op_base.py)) provides these to all subclasses — no need to reimplement:
-
-| Method / Attribute  | Description                                                                              |
-| ------------------- | ---------------------------------------------------------------------------------------- |
-| `__call__(*args)`   | Delegates to `forward()`. Enables `op(x)` syntax.                                        |
-| `dispatch_kernel()` | Populates `self.kernel_map` from `default_kernel_map`, validates GPU arch compatibility. |
-| `autotune()`        | Autotunes all `Kernel` instances on the op.                                              |
-
-**Kernel** — device-side computation. Owns the TileLang program, tile configuration, and JIT compilation.
-
-| Interface             | Required | Description                                               |
-| --------------------- | -------- | --------------------------------------------------------- |
-| `__init__(self, ...)` | yes      | Receives shape params and dtype. Builds TileLang program. |
-| `forward(self, ...)`  | yes      | Launches the compiled kernel. Called by Op's `forward()`. |
-| `kernel`              | yes      | Attribute. The TileLang program builder (JIT-compiled).   |
-| `default_config`      | no       | Property. Default tile configuration dict.                |
-| `autotune_configs`    | no       | Class variable. Search space for autotuning.              |
-| `supported_archs`     | no       | Class variable. List of supported GPU SM versions.        |
-
-### Op Class Hierarchy
-
-```
-Op                          ← L1: thin base, shared by all ops
-  └── FamilyBase            ← L2: family-specific forward() flow
-        └── ConcreteOp      ← L3: pure declaration, no logic override
-```
-
-- **Op (L1)** — abstract base class. Defines the contract: `default_kernel_map`, `forward()`, kernel dispatch, manifest-driven validation and shape inference. Thin by design — only infrastructure that ALL ops share.
-- **FamilyBase (L2)** — intermediate base per op family. Owns the shared `forward()` pipeline. One per family.
-- **ConcreteOp (L3)** — leaf class. Pure declaration: kernel class, op kind, dimension wiring. No logic override.
-
-This three-layer structure is a design decision. Without L2 family bases, shared forward() logic gets duplicated across every concrete op, creating maintenance problems at scale.
-
-In L1→L2→L3 hierarchies, a concrete Op (L3) is a pure declaration:
-
-- Which kernel (`_kernel_cls`, `_kernel_key`)
-- Which op kind (`_op_kind`)
-- Dimension wiring (keyword params → kernel constructor)
-
-Shared mechanics — validation, reshape, padding, shape inference, dtype validation, kernel dispatch, trimming — are inherited from L2.
-
-Ops that still inherit L1 directly own their full `forward()`. As their family matures, shared logic migrates to an L2 base, and concrete ops converge toward declarations.
-
-### Development Path
-
-Agent-driven development follows a pragmatic sequence:
-
-1. **New op inherits L1 directly.** When a family has only 1-2 ops, the op owns its full `forward()`. This is a transitional state, not a target architecture.
-1. **Family accumulates ops.** When 2-3 ops in a family share identical `forward()` flow, extract an L2 family base via refactoring.
-1. **L1-direct and L1→L2→L3 coexist.** This is a natural consequence of incremental development. L1-direct ops are candidates for future L2 extraction, not an alternative design.
-
-Create an L2 family base when **multiple ops share the same `forward()` control flow**, the shared boilerplate is substantial, and per-op differences fit into class variables or hooks.
-
-Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
+Detail sections referenced by [ops-design.md](ops-design.md). This file contains design rationale, rules, and protocol details that go beyond the execution guide.
 
 ## Parameter Design
-
-### Fixed-Rank Ops
-
-Manifest declares `shape` with dimension names → dimension names become `__init__` keyword arguments.
-
-```yaml
-# manifest
-inputs:
-  a: {dtype: "float16 | bfloat16", shape: "[M, K]"}
-  b: {dtype: "same_as(a)", shape: "[K, N]"}
-```
-
-```python
-# generated Op __init__ — M, K, N from shape declaration
-class GemmFwdOp(Op):
-    def __init__(self, *, M: int, K: int, N: int, dtype: torch.dtype, ...):
-        self.M = M
-        self.K = K
-        self.N = N
-        self.dtype = dtype
-```
-
-All shape dimensions known at init → kernel construction and shape inference complete at init.
 
 ### Arbitrary-Rank Ops and `init_dims`
 
@@ -130,23 +37,6 @@ RMSNormFwdOp:
 - The `from` expression defines the dimension's semantics. At forward time, it serves as a validation rule: the user-provided value must match the actual tensor shape.
 - `init_dims` is only for arbitrary-rank ops (ops without `shape` declaration). Fixed-rank op dimensions come directly from `shape`.
 
-```python
-# generated Op __init__ — N from init_dims, dim/eps from params
-class RMSNormFwdOp(RowNormOp):
-    def __init__(self, *, N: int, dtype: torch.dtype,
-                 dim: int = -1, eps: float = 1e-6, ...):
-        self.N = N      # from init_dims, required
-        self.dim = dim
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        # M not in init_dims — derived here
-        M = product(x.shape[:self.dim])
-        # validate init_dims: N must match actual tensor
-        assert x.shape[self.dim] == self.N
-        ...
-```
-
 ### Static vs Dynamic Comparison
 
 |                          | Fixed-rank op            | Arbitrary-rank op                                             |
@@ -156,13 +46,17 @@ class RMSNormFwdOp(RowNormOp):
 | Undeclared dimensions    | none (all dims declared) | derived from tensor at forward time                           |
 | Kernel construction time | init (all dims known)    | init (`init_dims` known) or forward (first encounter, cached) |
 
-```python
-# Fixed-rank: all dimensions at init
-op = GemmFwdOp(M=2048, K=4096, N=1024, dtype=torch.float16)
+## Development Path
 
-# Arbitrary-rank: init_dims (N) at init, rest (M) at forward
-op = RMSNormFwdOp(N=4096, dtype=torch.float16)
-```
+Agent-driven development follows a pragmatic sequence:
+
+1. **New op inherits L1 directly.** When a family has only 1-2 ops, the op owns its full `forward()`. This is a transitional state, not a target architecture.
+1. **Family accumulates ops.** When 2-3 ops in a family share identical `forward()` flow, extract an L2 family base via refactoring.
+1. **L1-direct and L1→L2→L3 coexist.** This is a natural consequence of incremental development. L1-direct ops are candidates for future L2 extraction, not an alternative design.
+
+Create an L2 family base when **multiple ops share the same `forward()` control flow**, the shared boilerplate is substantial, and per-op differences fit into class variables or hooks.
+
+Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
 
 ## Codegen
 
@@ -170,91 +64,19 @@ The manifest ([`ops_manifest.yaml`](../tileops/ops_manifest.yaml)) is the **sole
 
 Agent reads the manifest and generates code (codegen). [Validator](../scripts/validate_manifest.py) (CI) checks consistency between generated code and manifest.
 
-### Shape Inference
+### Calling Conventions
 
-Agent generates an `_infer_output_shapes()` instance method on each Op from the manifest's `shape_rules`. The method accepts shape tuples and params, returns output name → shape mapping.
+- **Fully static op:** codegen methods called once in `__init__`, results stored as instance attributes.
+- **Op with dynamic dims:** codegen methods called in `forward()` when dynamic dims are resolved. Results cached by dynamic dimension values.
+- **Non-runtime consumers** (validator, graph compiler): can call codegen methods with concrete shapes without constructing tensors.
 
-```yaml
-# manifest shape_rules
-shape_rules:
-  - "y.shape == x.shape"
-  - "weight.shape == (x.shape[dim],)"
-```
+### Inheritance in Family-Base Hierarchies
 
-```python
-# generated method
-def _infer_output_shapes(
-    self, x_shape: tuple, weight_shape: tuple, dim: int = -1
-) -> Dict[str, tuple]:
-    return {"y": x_shape}
-```
-
-**Calling convention:**
-
-- **Fully static op:** called once in `__init__`, result stored in `self._output_shapes`.
-- **Op with dynamic dims:** called in `forward()` when dynamic dims are resolved. Result cached by dynamic dimension values.
-- **Non-runtime consumers** (validator, graph compiler): can call with concrete shapes without constructing tensors.
-
-**Inheritance in family-base hierarchies:**
-
-| Scenario                                             | `_infer_output_shapes` defined at | Concrete op action    |
-| ---------------------------------------------------- | --------------------------------- | --------------------- |
-| Family shares shape logic                            | L2 family base                    | Inherits, no override |
-| Family member has variant logic (e.g., multi-output) | L3 concrete op                    | Overrides             |
-| Op inherits L1 directly                              | L3 concrete op                    | Agent generates       |
-
-### Dtype Validation
-
-Agent generates a `_validate_dtypes()` instance method from the manifest's `dtype` fields and `dtype_combos`.
-
-```yaml
-# manifest
-inputs:
-  x: {dtype: "float16 | bfloat16"}
-  weight: {dtype: "same_as(x)"}
-```
-
-```python
-# generated method
-def _validate_dtypes(self, x: torch.Tensor, weight: torch.Tensor) -> None:
-    if x.dtype not in {torch.float16, torch.bfloat16}:
-        raise ValueError(f"x.dtype must be float16 or bfloat16, got {x.dtype}")
-    if weight.dtype != x.dtype:
-        raise ValueError(f"weight.dtype must match x.dtype, got {weight.dtype}")
-```
-
-`SUPPORTED_DTYPES` as a standalone class variable is superseded by this approach. Dtype constraints live in the manifest; Op code is generated from them.
-
-### Roofline Evaluation
-
-Agent generates roofline metadata as class-level declarations from the manifest's `roofline` section. Evaluation uses the same `self.*` attributes populated by `__init__`.
-
-```yaml
-# manifest
-roofline:
-  vars:
-    M: "product(x.shape[:dim])"
-    N: "x.shape[dim]"
-  flops: "4 * M * N"
-  bytes: "(2 * M * N + N) * elem_bytes"
-```
-
-```python
-# generated class-level declarations
-_roofline_vars = ["M", "N"]
-_flops_expr = "4 * M * N"
-_bytes_expr = "(2 * M * N + N) * elem_bytes"
-```
-
-```python
-# base class provides eval_roofline() using AST-based safe evaluator
-def eval_roofline(self) -> Tuple[int, int]:
-    ctx = {name: getattr(self, name) for name in self._roofline_vars}
-    ctx["elem_bytes"] = torch.tensor([], dtype=self.dtype).element_size()
-    return _safe_eval(self._flops_expr, ctx), _safe_eval(self._bytes_expr, ctx)
-```
-
-Roofline variable names, `__init__` keyword names, and `shape` dimension names all share the same namespace — defined once in the manifest, consumed uniformly.
+| Scenario                                             | Codegen method defined at | Concrete op action    |
+| ---------------------------------------------------- | ------------------------- | --------------------- |
+| Family shares logic                                  | L2 family base            | Inherits, no override |
+| Family member has variant logic (e.g., multi-output) | L3 concrete op            | Overrides             |
+| Op inherits L1 directly                              | L3 concrete op            | Agent generates       |
 
 ### Consistency Enforcement
 
@@ -267,9 +89,7 @@ Roofline variable names, `__init__` keyword names, and `shape` dimension names a
 | `_infer_output_shapes` consistent with `shape_rules`      | Validator codegen parity check     | Planned     |
 | `_validate_dtypes` consistent with `dtype`/`dtype_combos` | Validator codegen parity check     | Planned     |
 
-## Conventions
-
-### Naming Conventions
+## Naming Conventions
 
 #### Op Classes
 
@@ -306,96 +126,7 @@ Kernel builder functions remain `snake_case`:
 def rms_norm_fwd(M, N, dtype, ...): ...
 ```
 
-### Conventions in Code
-
-| Convention                             | Enforced By                                          |
-| -------------------------------------- | ---------------------------------------------------- |
-| Non-contiguous → `.contiguous()`       | Per-family base `forward()` or per-op implementation |
-| Alignment padding                      | Per-family base `forward()` or kernel masked loads   |
-| CUDA device check                      | Per-family base `forward()` or per-op implementation |
-| `torch.library.custom_op` registration | Per-op module or shared registration utility         |
-| Docstring format (Google style)        | Linter / CI check                                    |
-
-## Appendix
-
-### Skeleton Code Examples
-
-**Op skeleton:**
-
-```python
-class MyFwdOp(Op):
-    def __init__(self, *, M: int, N: int, dtype: torch.dtype, ...):
-        self.M, self.N, self.dtype = M, N, dtype
-        self.dispatch_kernel()
-        self.kernel = self.kernel_map["my_kernel"](M, N, dtype)
-        self._output_shapes = self._infer_output_shapes(x_shape=(M, N))
-
-    @property
-    def default_kernel_map(self):
-        return {"my_kernel": MyFwdKernel}
-
-    def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
-        return {"y": x_shape}
-
-    def _validate_dtypes(self, x: torch.Tensor) -> None:
-        if x.dtype not in {torch.float16, torch.bfloat16}:
-            raise ValueError(...)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._validate_dtypes(x)
-        x = x.contiguous().reshape(self.M, self.N)
-        return self.kernel(x)
-```
-
-> [!NOTE]
-> `def __init__(self, *, ...)` — the `*` forces all parameters to be keyword-only. Callers must write `MyFwdOp(M=2048, N=4096, dtype=torch.float16)`; positional arguments are rejected. This is deliberate: parameter names come from manifest dimension names (single letters like `M`, `K`, `N`), keyword-only eliminates ordering ambiguity.
->
-> **TODO:** When implementation catches up, add a corresponding rule to [`.claude/rules/code-style.md`](../.claude/rules/code-style.md).
-
-**Kernel skeleton:**
-
-```python
-class MyFwdKernel(Kernel):
-    supported_archs = [80, 86, 89, 90]
-
-    def __init__(self, M, N, dtype, *, config=None, tune=False):
-        super().__init__()
-        self.M, self.N, self.dtype = M, N, dtype
-        self.kernel = self._build_program(M, N, dtype)
-        self.init_config(config, tune)
-
-    def _build_program(self, M, N, dtype):
-        # Returns a TileLang program (JIT-compiled)
-        ...
-
-    @property
-    def default_config(self):
-        return {"block_M": 128, "block_N": 128, "num_stages": 2}
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.kernel(x, **self.config)
-```
-
-**kernel_map examples:**
-
-```python
-# Single-kernel op (family-base pattern)
-@property
-def default_kernel_map(self) -> Dict[str, Kernel]:
-    return {self._kernel_key: self._kernel_cls}
-
-
-# Multi-kernel pipeline (direct-inheritance pattern)
-@property
-def default_kernel_map(self) -> Dict[str, Kernel]:
-    return {
-        "mha_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
-        "mha_bwd_kernel": MHABwdKernel,
-        "mha_bwd_postprocess_kernel": FlashAttnBwdPostprocessKernel,
-    }
-```
-
-### Base Class Protocol
+## Base Class Protocol
 
 #### Op base class ([`tileops/ops/op_base.py`](../tileops/ops/op_base.py))
 
@@ -428,7 +159,7 @@ Manifest-driven methods (generated by agent):
 Abstract interface: `forward()`.
 Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
 
-### Family-Base Protocol Variables
+#### Family-base protocol variables
 
 | Variable                  | Family          | Purpose                                                   |
 | ------------------------- | --------------- | --------------------------------------------------------- |
@@ -441,7 +172,17 @@ Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
 
 Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
 
-### Adding a New Family Base
+## Conventions in Code
+
+| Convention                             | Enforced By                                          |
+| -------------------------------------- | ---------------------------------------------------- |
+| Non-contiguous → `.contiguous()`       | Per-family base `forward()` or per-op implementation |
+| Alignment padding                      | Per-family base `forward()` or kernel masked loads   |
+| CUDA device check                      | Per-family base `forward()` or per-op implementation |
+| `torch.library.custom_op` registration | Per-op module or shared registration utility         |
+| Docstring format (Google style)        | Linter / CI check                                    |
+
+## Adding a New Family Base
 
 1. **Implement 2-3 concrete ops inheriting Op directly** — understand the pattern before abstracting
 1. **Identify shared steps** — which parts of `forward()` are identical?
