@@ -15,7 +15,8 @@ TileOPs is a high-performance LLM operator library built on TileLang. The goal i
 ### Design
 
 - [architecture.md](docs/architecture.md) — system modules (M1-M8), data flow, agent production loop, directory structure
-- [ops-design.md](docs/ops-design.md) — Op/Kernel interface design principles, inheritance hierarchy, class variable protocol
+- [ops-design.md](docs/ops-design.md) — Op interface execution guide (how to add a new op)
+- [ops-design-reference.md](docs/ops-design-reference.md) — Op interface detail reference (interface tables, codegen, naming, protocol)
 - [manifest.md](docs/manifest.md) — `ops_manifest.yaml` spec format (signature, workloads, roofline, source)
 - [roofline.md](docs/roofline.md) — performance evaluation methodology (SOL bound, efficiency ratio, GPU profiles)
 
