@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -14,9 +12,9 @@ class FusedTopKTest(WorkloadBase):
         self.renormalize = renormalize
         self.dtype = dtype
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor]:
         torch.manual_seed(42)
-        return torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda")
+        return (torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda"),)
 
 
 class MoePermuteTest(WorkloadBase):
@@ -28,7 +26,7 @@ class MoePermuteTest(WorkloadBase):
         self.hidden_size = hidden_size
         self.dtype = dtype
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         hidden_states = torch.randn(
             self.total_tokens, self.hidden_size, dtype=self.dtype, device="cuda"
         )
@@ -48,7 +46,7 @@ class MoePermuteAlignTest(WorkloadBase):
         self.num_experts = num_experts
         self.block_size = block_size
 
-    def gen_inputs(self) -> Tuple[torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor]:
         topk_ids = torch.randint(
             0, self.num_experts,
             (self.total_tokens, self.top_k),
@@ -67,7 +65,7 @@ class MoeUnpermuteTest(WorkloadBase):
         # Use padded_batch_sum = T*K (no actual padding) for standalone tests.
         self.padded_batch_sum = total_tokens * top_k
 
-    def gen_inputs(self):
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         numel = self.total_tokens * self.top_k
         mm2_pad = torch.randn(numel, self.hidden_size, dtype=self.dtype, device="cuda")
         # fwd_idx: each flat_idx maps to a padded_slot in [0, padded_batch_sum)

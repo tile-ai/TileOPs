@@ -1,6 +1,4 @@
 
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -20,7 +18,7 @@ class MhaDecodePagedTest(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(
-            self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_pages = self.seqlen_kv // self.page_size
         real_seqlen_kv = torch.ones(
             (self.batch,), dtype=torch.int32, device="cuda") * self.seqlen_kv

@@ -1,5 +1,4 @@
 
-from typing import Tuple
 
 import pytest
 import torch
@@ -16,7 +15,7 @@ def gla_decode_torch(
     gk: torch.Tensor,
     state: torch.Tensor,
     scale: float = -1.0,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Pure-PyTorch reference for single-step GLA recurrence."""
     DK = q.shape[-1]
     if scale <= 0:
@@ -41,7 +40,7 @@ class GLADecodeTest(_GLADecodeTestWorkload, TestBase):
         v: torch.Tensor,
         gk: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         o, new_state = gla_decode_torch(q, k, v, gk, state, self.scale)
         return o.to(self.dtype), new_state.to(self.dtype)
 

@@ -59,7 +59,7 @@ class _UnaryWorkload(Protocol):
     n_total: int
     dtype: torch.dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]: ...
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]: ...
 
 
 class UnaryBenchCase:

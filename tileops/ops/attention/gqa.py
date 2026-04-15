@@ -23,12 +23,12 @@ from tileops.utils import is_hopper
 from ..op_base import Op
 
 __all__ = [
-    "GroupedQueryAttentionFwdOp",
     "GroupedQueryAttentionBwdOp",
-    "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
-    "GqaSlidingWindowFwdOp",
-    "GqaSlidingWindowVarlenFwdOp",
+    "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
+    "GroupedQueryAttentionFwdOp",
+    "GroupedQueryAttentionSlidingWindowFwdOp",
+    "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
 ]
 
 
@@ -197,7 +197,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         return self.kernel(q, k, v, real_seqlen_kv, block_table)
 
 
-class GqaSlidingWindowFwdOp(Op):
+class GroupedQueryAttentionSlidingWindowFwdOp(Op):
     """Fixed-length GQA forward with sliding window attention.
 
     Token at q_pos attends to k_pos when ALL applicable conditions hold:
@@ -338,7 +338,7 @@ class GqaSlidingWindowFwdOp(Op):
         return 2 * self.batch * self.seq_len * (self.heads + self.heads_kv) * self.dim * elem
 
 
-class GqaSlidingWindowVarlenFwdOp(Op):
+class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
     """Variable-length GQA forward with sliding window attention.
 
     Inputs are packed (no padding); per-sample boundaries are given via

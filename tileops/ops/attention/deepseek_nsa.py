@@ -14,9 +14,9 @@ from ..op_base import Op
 
 __all__ = [
     "MeanPoolingForwardOp",
+    "NSACmpFwdVarlenOp",
     "NSAFwdVarlenOp",
     "NSATopkVarlenOp",
-    "NSACmpFwdVarlenOp",
 ]
 
 

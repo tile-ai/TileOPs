@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import pytest
 import torch
@@ -236,9 +236,9 @@ class Conv2dTest(TestBase):
         h: int,
         w: int,
         c_out: int,
-        kernel_size: Tuple[int, int],
-        stride: Tuple[int, int],
-        padding: Tuple[int, int],
+        kernel_size: tuple[int, int],
+        stride: tuple[int, int],
+        padding: tuple[int, int],
         dtype: torch.dtype,
     ) -> None:
         self.n = n
@@ -251,7 +251,7 @@ class Conv2dTest(TestBase):
         self.padding = padding
         self.dtype = dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = torch.randn(self.n, self.h, self.w, self.c_in, device="cuda", dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1],
@@ -285,9 +285,9 @@ def test_conv2d(
     h: int,
     w: int,
     c_out: int,
-    kernel_size: Tuple[int, int],
-    stride: Tuple[int, int],
-    padding: Tuple[int, int],
+    kernel_size: tuple[int, int],
+    stride: tuple[int, int],
+    padding: tuple[int, int],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
@@ -431,9 +431,9 @@ class Conv3dTest(TestBase):
         h_in: int,
         w_in: int,
         c_out: int,
-        kernel_size: Tuple[int, int, int],
-        stride: Tuple[int, int, int],
-        padding: Tuple[int, int, int],
+        kernel_size: tuple[int, int, int],
+        stride: tuple[int, int, int],
+        padding: tuple[int, int, int],
         dtype: torch.dtype,
     ) -> None:
         self.n = n
@@ -485,9 +485,9 @@ def test_conv3d(
     h_in: int,
     w_in: int,
     c_out: int,
-    kernel_size: Tuple[int, int, int],
-    stride: Tuple[int, int, int],
-    padding: Tuple[int, int, int],
+    kernel_size: tuple[int, int, int],
+    stride: tuple[int, int, int],
+    padding: tuple[int, int, int],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:

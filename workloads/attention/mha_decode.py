@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -16,7 +14,7 @@ class MhaDecodeTest(WorkloadBase):
         self.dim = dim
         self.dtype = dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(
             self.batch, self.seq_len_q, self.heads, self.dim, device='cuda', dtype=self.dtype)
         K = torch.randn(

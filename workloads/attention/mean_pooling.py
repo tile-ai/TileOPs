@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
@@ -25,7 +25,7 @@ class MeanPoolingTest(WorkloadBase):
         self.offsets = offsets
         self.indices = indices
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         x = torch.randn(
             self.batch_size, self.seq_len, self.heads, self.dim,
             device='cuda', dtype=self.dtype)

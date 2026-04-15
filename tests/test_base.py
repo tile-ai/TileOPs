@@ -2,7 +2,7 @@ import logging
 import threading
 from abc import abstractmethod
 from functools import partial
-from typing import Any, Tuple
+from typing import Any
 
 import torch
 
@@ -15,8 +15,8 @@ _check_result = threading.local()
 
 # Re-export for backward compatibility with tests that import from here.
 __all__ = [
-    "FixtureMeta",
     "FixtureBase",
+    "FixtureMeta",
     "TestBase",
     "allclose_compare",
     "exact_compare",
@@ -72,7 +72,7 @@ class TestBase(WorkloadBase):
 
     def check(self,
               op,
-              *inputs: Tuple[torch.Tensor],
+              *inputs: tuple[torch.Tensor],
               compare=None,
               atol: float = 1e-08,
               rtol: float = 1e-05) -> None:

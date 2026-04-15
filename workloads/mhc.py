@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -13,7 +11,7 @@ class MHCPreTest(WorkloadBase):
         self.c_x = c_x
         self.dtype = dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,
                                   torch.Tensor, torch.Tensor, torch.Tensor, int, float]:
         batch = self.batch
         n_expand = self.n_expand
@@ -40,7 +38,7 @@ class MHCPostTest(WorkloadBase):
         self.c_x = c_x
         self.dtype = dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch = self.batch
         n_expand = self.n_expand
         c_x = self.c_x

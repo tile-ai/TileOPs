@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -16,7 +14,7 @@ class GemmTest(WorkloadBase):
         self.trans_a = trans_a
         self.trans_b = trans_b
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         shape_a = (self.k, self.m) if self.trans_a else (self.m, self.k)
         a = torch.randn(*shape_a, device='cuda', dtype=self.dtype)
         shape_b = (self.n, self.k) if self.trans_b else (self.k, self.n)

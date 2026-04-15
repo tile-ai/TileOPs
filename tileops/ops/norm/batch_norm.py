@@ -33,7 +33,7 @@ from tileops.kernels.norm.batch_norm import (
 
 from ..op_base import Op
 
-__all__ = ["BatchNormFwdOp", "BatchNormBwdOp"]
+__all__ = ["BatchNormBwdOp", "BatchNormFwdOp"]
 
 
 def _reshape_to_CL(x: torch.Tensor) -> Tuple[torch.Tensor, Tuple]:

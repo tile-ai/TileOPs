@@ -9,7 +9,7 @@ Verifies:
 
 
 import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import pytest
 import torch
@@ -25,7 +25,7 @@ def _ref_moe_permute(
     num_experts: int,
     block_m: int = 64,
     perm_h_pad_buf: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Pure-PyTorch reference for moe_permute."""
     T, H = hidden_states.shape
     K = topk_ids.shape[1]

@@ -7,6 +7,10 @@ authors = [{ name="Tile-AI"}]
 dependencies = [
     "torch>=2.1.0,<2.11.0",
     "tilelang==0.1.8",
+    # FIXME(apache-tvm-ffi-pin): Remove once tilelang>0.1.8 carries its own
+    # apache-tvm-ffi<0.1.10 pin (already on tilelang main, not yet released).
+    # Tracking: https://github.com/tile-ai/TileOPs/issues/969
+    "apache-tvm-ffi>=0.1.2,<0.1.10",
     "einops",
     "pyyaml>=6.0",
 ]
@@ -89,6 +93,8 @@ select = [
     # "D",
     # pep8-naming (naming conventions)
     "N",
+    # ruff-specific: sort __all__
+    "RUF022",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage
     # "ANN",
 ]
@@ -118,6 +124,11 @@ known-first-party = ["tileops"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "bench_*.py" = ["F401"]
+# __all__ intentionally grouped by category, not alphabetical
+"tileops/kernels/elementwise.py" = ["RUF022"]
+"tileops/ops/__init__.py" = ["RUF022"]
+"tileops/ops/elementwise.py" = ["RUF022"]
+"tileops/ops/reduction/__init__.py" = ["RUF022"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

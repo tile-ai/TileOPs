@@ -13,7 +13,7 @@ Usage:
 """
 
 import math
-from typing import List, Optional
+from typing import Optional
 
 import pytest
 import torch
@@ -37,7 +37,7 @@ _BLOCK_M_VARIANTS = [16, 32, 64, 128]
 # ---------------------------------------------------------------------------
 
 
-def _padded_batch_sum(true_batch_sizes: List[int], block_m: int) -> int:
+def _padded_batch_sum(true_batch_sizes: list[int], block_m: int) -> int:
     return sum(math.ceil(s / block_m) * block_m for s in true_batch_sizes)
 
 

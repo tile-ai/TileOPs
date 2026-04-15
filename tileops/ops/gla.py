@@ -7,7 +7,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["GLAFwdOp", "GLABwdOp"]
+__all__ = ["GLABwdOp", "GLAFwdOp"]
 
 
 class GLAFwdOp(Op):

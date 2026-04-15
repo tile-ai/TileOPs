@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
@@ -149,7 +149,7 @@ class FP8LightingIndexerTest(WorkloadBase):
     def gen_inputs(
             self,
             params=None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         IndexQ = torch.randn(
             self.batch,
             self.seq_len,

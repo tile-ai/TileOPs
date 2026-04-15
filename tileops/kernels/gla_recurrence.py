@@ -22,7 +22,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["GLADecodeKernel", "GLADecodeFP32Kernel"]
+__all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
 _LOG2E = 1.4426950408889634
 _DEFAULT_K_TILE = 16

@@ -7,7 +7,7 @@ from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
 
 from .op_base import Op
 
-__all__ = ["MHCPreOp", "MHCPostOp"]
+__all__ = ["MHCPostOp", "MHCPreOp"]
 
 
 class MHCPreOp(Op):

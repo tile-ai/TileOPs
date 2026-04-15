@@ -10,8 +10,12 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
 __all__ = [
-    'FlashAttnBwdPreprocessKernel', 'FlashAttnBwdPostprocessKernel', 'MHABwdKernel',
-    'MHABwdWgmmaPipelinedKernel', 'GQABwdKernel', 'GQABwdWgmmaPipelinedKernel'
+    'FlashAttnBwdPostprocessKernel',
+    'FlashAttnBwdPreprocessKernel',
+    'GQABwdKernel',
+    'GQABwdWgmmaPipelinedKernel',
+    'MHABwdKernel',
+    'MHABwdWgmmaPipelinedKernel'
 ]
 
 # pre/post process for mha/gqa bwd

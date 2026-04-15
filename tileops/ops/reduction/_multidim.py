@@ -16,8 +16,8 @@ from typing import Union
 import torch
 
 __all__ = [
-    "normalize_dim",
     "flatten_for_multidim",
+    "normalize_dim",
     "restore_multidim_shape",
 ]
 

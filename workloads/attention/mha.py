@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from tileops.ops import MultiHeadAttentionFwdOp
@@ -19,7 +17,7 @@ class MhaBwdTest(WorkloadBase):
 
     def gen_inputs(
         self
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
             self.batch,
             self.seq_len,
@@ -65,7 +63,7 @@ class MhaFwdTest(WorkloadBase):
         self.is_causal = is_causal
         self.dtype = dtype
 
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
             self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
         k = torch.randn(

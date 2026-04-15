@@ -10,7 +10,7 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["DeltaNetFwdOp", "DeltaNetBwdOp", "DeltaNetOp"]
+__all__ = ["DeltaNetBwdOp", "DeltaNetFwdOp", "DeltaNetOp"]
 
 
 class DeltaNetFwdOp(Op):
