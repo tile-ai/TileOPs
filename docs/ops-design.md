@@ -134,9 +134,12 @@ def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
     # kernel cached by dynamic dimension (M)
     if M not in self._kernel_cache:
-        self._kernel_cache[M] = self.kernel_map["rms_norm"](M, self.N, self.dtype)
+        self._kernel_cache[M] = self.kernel_map["rms_norm"](
+            M, self.N, self.dtype, eps=self.eps
+        )
     kernel = self._kernel_cache[M]
-    x = x.contiguous().reshape(M, self.N)
+    # move target dim to last, then reshape to 2D
+    x = x.movedim(dim, -1).contiguous().reshape(M, self.N)
     return kernel(x, weight)
 ```
 
