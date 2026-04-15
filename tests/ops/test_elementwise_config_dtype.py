@@ -129,3 +129,51 @@ def test_fused_gated_kernel_sets_output_dtype_in_init():
     ):
         kernel = SiluAndMulKernel(M=32, N=1024, dtype=torch.float16)
     assert kernel.output_dtype == torch.float16
+
+
+@pytest.mark.full
+def test_unary_default_config_preserves_strategy_npt_split():
+    """Unary kernels should keep the explicit_parallel/register_copy npt split."""
+    with (
+        patch.object(ReluKernel, "_build_kernel", return_value=None),
+        patch.object(ReluKernel, "init_config"),
+    ):
+        explicit = ReluKernel(N_total=1024, dtype=torch.float16, strategy="explicit_parallel")
+        register = ReluKernel(N_total=1024, dtype=torch.float16, strategy="register_copy")
+    assert explicit.default_config["num_per_thread"] == 4
+    assert register.default_config["num_per_thread"] == 8
+
+
+@pytest.mark.full
+def test_binary_default_config_preserves_strategy_npt_split():
+    """Binary kernels should keep the explicit_parallel/register_copy npt split."""
+    common_kwargs = {
+        "N_total": 1024,
+        "dtype": torch.float16,
+        "coalesced_shape": (1024,),
+        "a_strides": (1,),
+        "b_strides": (1,),
+        "a_numel": 1024,
+        "b_numel": 1024,
+    }
+    with (
+        patch.object(AddKernel, "_build_kernel", return_value=None),
+        patch.object(AddKernel, "init_config"),
+    ):
+        explicit = AddKernel(strategy="explicit_parallel", **common_kwargs)
+        register = AddKernel(strategy="register_copy", **common_kwargs)
+    assert explicit.default_config["num_per_thread"] == 4
+    assert register.default_config["num_per_thread"] == 8
+
+
+@pytest.mark.full
+def test_fused_gated_default_config_preserves_strategy_npt_split():
+    """Fused-gated kernels should keep the direct/explicit_parallel npt split."""
+    with (
+        patch.object(SiluAndMulKernel, "_build_kernel", return_value=None),
+        patch.object(SiluAndMulKernel, "init_config"),
+    ):
+        direct = SiluAndMulKernel(M=32, N=1024, dtype=torch.float16, strategy="direct")
+        explicit = SiluAndMulKernel(M=32, N=1024, dtype=torch.float16, strategy="explicit_parallel")
+    assert direct.default_config["num_per_thread"] == 8
+    assert explicit.default_config["num_per_thread"] == 4
