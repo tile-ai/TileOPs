@@ -13,6 +13,13 @@ def setup() -> None:
         torch.cuda.manual_seed_all(1235)
 
 
+NON_RUNTIME_OPS_TIER_FILES = {
+    "tests/ops/test_elementwise_caching_autotune.py",
+    "tests/ops/test_elementwise_compile.py",
+    "tests/ops/test_elementwise_config_dtype.py",
+}
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Validate explicit test tier assignments."""
     tier_errors: list[str] = []
@@ -37,6 +44,9 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         ops_groups[(path, test_name)].append(item)
 
     for (_path, _test_name), group in ops_groups.items():
+        if any(_path.endswith(path) for path in NON_RUNTIME_OPS_TIER_FILES):
+            continue
+
         non_xfail_items = [
             item for item in group if item.get_closest_marker("xfail") is None
         ]

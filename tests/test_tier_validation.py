@@ -50,9 +50,12 @@ def _make_item(
 
     item.get_closest_marker = _get_closest_marker
 
-    # callspec with optional tune param
+    params: dict[str, object] = {}
     if tune is not None:
-        item.callspec = SimpleNamespace(params={"tune": tune})
+        params["tune"] = tune
+
+    if params:
+        item.callspec = SimpleNamespace(params=params)
     else:
         item.callspec = None
 
@@ -64,7 +67,7 @@ def _make_item(
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestZeroSmokeFails:
     """At least one smoke param is required per ops test function."""
 
@@ -82,7 +85,7 @@ class TestZeroSmokeFails:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestMultiSmokePasses:
     """Tests with >1 smoke params must pass tier validation."""
 
@@ -111,7 +114,7 @@ class TestMultiSmokePasses:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestSmokeOrdering:
     """Smoke cases must be contiguous at the front of non-xfail items."""
 
@@ -160,7 +163,7 @@ class TestSmokeOrdering:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestSingleSmokeBackwardCompat:
     """Existing single-smoke test fixtures must pass unchanged."""
 
@@ -179,7 +182,7 @@ class TestSingleSmokeBackwardCompat:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestSmokeConstraints:
     """Every smoke case must have tune=False and must not be xfail."""
 
@@ -255,3 +258,28 @@ class TestSmokeConstraints:
         # Only the xfail rejection should fire; ordering is fine
         assert "must not be xfail" in str(exc_info.value)
         assert "must appear as the first" not in str(exc_info.value)
+
+
+@pytest.mark.full
+class TestNonRuntimeOpsFileExemption:
+    """Explicitly exempted non-runtime ops files may be full-only."""
+
+    def test_exempt_ops_file_may_have_zero_smoke(self):
+        items = [
+            _make_item(
+                name="test_compile[0]",
+                originalname="test_compile",
+                path="tests/ops/test_elementwise_compile.py",
+                markers=["full"],
+                tune=False,
+            ),
+            _make_item(
+                name="test_compile[1]",
+                originalname="test_compile",
+                path="tests/ops/test_elementwise_compile.py",
+                markers=["full"],
+                tune=True,
+            ),
+        ]
+
+        pytest_collection_modifyitems(items)
