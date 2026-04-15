@@ -67,7 +67,7 @@ Agent reads the manifest and generates code (codegen). [Validator](../scripts/va
 ### Calling Conventions
 
 - **Fully static op:** `_infer_output_shapes` and `eval_roofline` called once in `__init__`, results stored as instance attributes.
-- **Op with dynamic dims:** `_infer_output_shapes` and `eval_roofline` called in `forward()` when dynamic dims are resolved. Results cached by dynamic dimension values.
+- **Op with dynamic dims:** called in `forward()` when dynamic dims are resolved. Kernel construction caches by `M`; `_infer_output_shapes` depends on full input shape; `eval_roofline` uses `self.*` attributes set during forward.
 - **`_validate_dtypes`:** runs on every `forward()` call — dtype validity depends on the actual tensors passed, not cached.
 - **Non-runtime consumers** (validator, graph compiler): can call codegen methods with concrete shapes without constructing tensors.
 

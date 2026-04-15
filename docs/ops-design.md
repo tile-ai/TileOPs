@@ -132,7 +132,8 @@ def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         raise ValueError(
             f"init_dims mismatch: expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}"
         )
-    M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
+    self.M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
+    M = self.M  # stored on self for eval_roofline()
     # kernel cached by M (kernel only depends on 2D shape)
     if M not in self._kernel_cache:
         self._kernel_cache[M] = self.kernel_map["rms_norm"](
