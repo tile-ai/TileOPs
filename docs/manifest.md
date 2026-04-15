@@ -87,6 +87,7 @@ dtype_combos:
 - Dimensions not in `init_dims` are derived from tensors at forward time.
 - `from` expressions use tensor shapes and params (e.g., `"x.shape[dim]"`). At forward time, the user-provided value must match the evaluated expression.
 - `init_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).
+- Key order in `init_dims` determines `__init__` parameter order, consistent with R1.
 
 ```yaml
 x: {dtype: "float16", shape: "[N, H, W, C]", layout: "channels_last"}

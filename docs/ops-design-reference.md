@@ -62,7 +62,7 @@ Do NOT create one when only 1 op uses the pattern, ops share math but differ in 
 
 The manifest ([`ops_manifest.yaml`](../tileops/ops_manifest.yaml)) is the **sole source of truth** for op interfaces. Op-layer runtime behavior — dtype validation, shape inference, roofline evaluation — MUST be derived from the manifest, not independently maintained.
 
-Agent reads the manifest and generates code (codegen). [Validator](../scripts/validate_manifest.py) (CI) checks consistency between generated code and manifest.
+Agent reads the manifest and generates code (codegen). [Validator](../scripts/validate_manifest.py) (CI) enforces manifest schema and signature consistency. Codegen parity checks are planned (see [Consistency Enforcement](#consistency-enforcement)).
 
 ### Calling Conventions
 

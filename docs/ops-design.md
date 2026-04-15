@@ -124,7 +124,9 @@ def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     self._validate_dtypes(x, weight)
     # M not in init_dims — derived here
     M = math.prod(x.shape[: self.dim])
-    assert x.shape[self.dim] == self.N  # validate init_dims
+    assert (
+        x.shape[self.dim] == self.N
+    ), f"init_dims mismatch: expected x.shape[{self.dim}] == {self.N}, got {x.shape[self.dim]}"
     x = x.contiguous().reshape(M, self.N)
     return self.kernel(x, weight)
 ```
