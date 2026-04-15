@@ -97,8 +97,7 @@ Agent reads the manifest and generates code (codegen). [Validator](../scripts/va
 {PascalCaseName}{Direction}Op
 ```
 
-- **Direction** — mandatory: `Fwd` or `Bwd`.
-- Exception: elementwise ops omit the direction suffix (`ReluOp`, `AddOp`).
+- **Direction** — mandatory: `Fwd` or `Bwd`. No exceptions.
 
 The manifest key must exactly equal `cls.__name__`.
 
@@ -108,7 +107,7 @@ The manifest key must exactly equal `cls.__name__`.
 {PascalCaseName}{Direction}Kernel
 ```
 
-- Exception: elementwise kernels omit the direction suffix (`ReluKernel`, `AddKernel`).
+- **Direction** — mandatory: `Fwd` or `Bwd`. No exceptions.
 
 #### Kernel Dispatch (kernel_map)
 

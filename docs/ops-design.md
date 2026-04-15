@@ -25,6 +25,17 @@ New ops start by inheriting L1 directly. When a family accumulates 2-3 ops with 
 
 See [Development Path](ops-design-reference.md#development-path) for when to create an L2 family base.
 
+## Execution Timing
+
+Kernel construction, shape inference, dtype validation, and roofline evaluation all follow one principle: **do it at the first moment all required information is known, do it once, cache the result. Same inputs never trigger recomputation.**
+
+| Op category    | When all info is known                             | Behavior                                                                                                         |
+| -------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Fixed-rank     | `__init__` (all dimensions provided)               | Everything runs once at init.                                                                                    |
+| Arbitrary-rank | `forward` (dynamic dimensions derived from tensor) | Runs on first encounter of each unique dynamic dimension combination. Result cached by dynamic dimension values. |
+
+This applies uniformly to kernel construction, `_infer_output_shapes`, `_validate_dtypes`, and `eval_roofline` — no per-feature timing logic.
+
 ## Implementing an Op
 
 A complete Op implements `__init__`, `forward`, `default_kernel_map`, and three codegen methods:
@@ -64,9 +75,11 @@ The manifest ([`ops_manifest.yaml`](../tileops/ops_manifest.yaml)) is the sole s
 | ------------------------------------ | ---------- | ----------------------- |
 | `signature.inputs` (tensors)         | `forward`  | `x`, `weight`           |
 | `signature.params` (non-tensor)      | `__init__` | `dim`, `eps`, `keepdim` |
-| `dtype`                              | `__init__` | `torch.float16`         |
+| per-tensor `dtype` fields            | `__init__` | `dtype` (see below)     |
 | `shape` dimension names (fixed-rank) | `__init__` | `M`, `K`, `N`           |
 | `init_dims` (arbitrary-rank)         | `__init__` | `N`                     |
+
+**dtype parameter derivation:** When all tensors share the same dtype via `same_as(x)`, a single `dtype` parameter covers all of them. When `dtype_combos` declares multiple independent dtype axes, the agent generates a named parameter for each independent axis.
 
 Information not declared in the manifest MUST NOT appear in `__init__`. No exceptions.
 
@@ -133,7 +146,7 @@ def _infer_output_shapes(self, x_shape: tuple, weight_shape: tuple) -> Dict[str,
     return {"y": x_shape}
 ```
 
-Called once at init for fully static ops, or at forward time for ops with undeclared dimensions.
+Follows the [Execution Timing](#execution-timing) principle: called at init (fixed-rank) or first forward with each unique dynamic dimension combination (arbitrary-rank), then cached.
 
 ### `_validate_dtypes` (codegen)
 
@@ -159,7 +172,7 @@ Supersedes `SUPPORTED_DTYPES` as a standalone class variable.
 
 ### `eval_roofline` (codegen)
 
-Generated from manifest `roofline` section. Uses `self.*` attributes from `__init__`.
+Generated from manifest `roofline` section. Uses `self.*` attributes populated at init (fixed-rank) or forward (arbitrary-rank). Follows the [Execution Timing](#execution-timing) principle.
 
 ```python
 # generated class-level declarations
@@ -235,8 +248,8 @@ class MyFwdKernel(Kernel):
 
 ## Naming Conventions
 
-- Op: `{PascalCaseName}{Direction}Op` (e.g., `RMSNormFwdOp`). Elementwise ops omit direction.
-- Kernel: `{PascalCaseName}{Direction}Kernel`. Elementwise kernels omit direction.
+- Op: `{PascalCaseName}{Direction}Op` (e.g., `RMSNormFwdOp`). Direction suffix is mandatory, no exceptions.
+- Kernel: `{PascalCaseName}{Direction}Kernel`. Direction suffix is mandatory, no exceptions.
 - `kernel_map` keys: `snake_case`, decoupled from class names.
 - Builder functions: `snake_case` (e.g., `rms_norm_fwd(M, N, dtype, ...)`).
 - Manifest key must exactly equal `cls.__name__`.
