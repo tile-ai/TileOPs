@@ -6,7 +6,7 @@
 
 Every operator requires an **Op** (host-side orchestration) and a **Kernel** (device-side computation). Op validates inputs, prepares layout, dispatches to Kernel, assembles output. Kernel owns the TileLang program, tile config, and JIT compilation. The two layers are independently modifiable.
 
-See [Op/Kernel Interface](ops-design-reference.md#opkernel-interface) for full interface tables and skeleton code.
+See [Op/Kernel Interface](ops-design-reference.md#opkernel-interface) for full interface tables and [Skeleton Code Examples](ops-design-reference.md#skeleton-code-examples) for implementation templates.
 
 ### 2. Determine Hierarchy Position
 
@@ -48,7 +48,7 @@ Agent generates three methods from manifest declarations:
 | `_validate_dtypes()`     | `dtype` / `dtype_combos` | Input dtype validation  |
 | `eval_roofline()`        | `roofline`               | Performance model       |
 
-See [Codegen Methods](ops-design-reference.md#codegen-methods) for calling conventions, inheritance rules, and examples.
+See [Codegen Methods](ops-design-reference.md#codegen) for calling conventions, inheritance rules, and examples.
 
 ### 6. Follow Naming Conventions
 
