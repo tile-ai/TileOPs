@@ -17,6 +17,14 @@ Adding a new operator requires implementing two classes: an **Op** and a **Kerne
 | `_validate_dtypes()`     | yes      | Codegen from manifest `dtype`. See [Dtype Validation](#dtype-validation-codegen).          |
 | `eval_roofline()`        | yes      | Codegen from manifest `roofline`. See [Roofline Evaluation](#roofline-evaluation-codegen). |
 
+L1 base class ([`Op`](../tileops/ops/op_base.py)) provides these to all subclasses — no need to reimplement:
+
+| Method / Attribute  | Description                                                                              |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| `__call__(*args)`   | Delegates to `forward()`. Enables `op(x)` syntax.                                        |
+| `dispatch_kernel()` | Populates `self.kernel_map` from `default_kernel_map`, validates GPU arch compatibility. |
+| `autotune()`        | Autotunes all `Kernel` instances on the op.                                              |
+
 ```python
 class MyFwdOp(Op):
     def __init__(self, *, M: int, N: int, dtype: torch.dtype, ...):
@@ -45,7 +53,7 @@ class MyFwdOp(Op):
 > [!NOTE]
 > `def __init__(self, *, ...)` — the `*` forces all parameters to be keyword-only. Callers must write `MyFwdOp(M=2048, N=4096, dtype=torch.float16)`; positional arguments are rejected. This is deliberate: parameter names come from manifest dimension names (single letters like `M`, `K`, `N`), keyword-only eliminates ordering ambiguity.
 >
-> **TODO:** When implementation catches up, add a corresponding rule to `.claude/rules/code-style.md`.
+> **TODO:** When implementation catches up, add a corresponding rule to [`.claude/rules/code-style.md`](../.claude/rules/code-style.md).
 
 **Kernel** — device-side computation. Owns the TileLang program, tile configuration, and JIT compilation.
 
@@ -120,27 +128,39 @@ Do NOT create one when only 1 op uses the pattern, ops share math but differ in 
 
 ## Manifest-Driven Op Interface
 
-The manifest (`ops_manifest.yaml`) is the **sole source of truth** for op interfaces. Op-layer runtime behavior — dtype validation, shape inference, roofline evaluation — MUST be derived from the manifest, not independently maintained.
+The manifest ([`ops_manifest.yaml`](../tileops/ops_manifest.yaml)) is the **sole source of truth** for op interfaces. Op-layer runtime behavior — dtype validation, shape inference, roofline evaluation — MUST be derived from the manifest, not independently maintained.
 
-Agent reads the manifest and generates code (codegen). Validator (CI) checks consistency between generated code and manifest. This prevents drift between spec and implementation.
+Agent reads the manifest and generates code (codegen). [Validator](../scripts/validate_manifest.py) (CI) checks consistency between generated code and manifest. This prevents drift between spec and implementation.
 
-### Keyword-Only `__init__` with Manifest Dimension Names
+### `__init__` and `forward` Parameter Sourcing
 
-Op `__init__` parameters use **keyword-only arguments** named after the manifest's dimension names and param names.
+Every `__init__` and `forward` parameter must trace back to a manifest declaration. The manifest covers three information categories; each has a fixed destination:
 
-**Fixed-rank op** (manifest declares `shape`):
+| Manifest source                      | Goes to    | Examples                |
+| ------------------------------------ | ---------- | ----------------------- |
+| `signature.inputs` (tensors)         | `forward`  | `x`, `weight`           |
+| `signature.params` (non-tensor)      | `__init__` | `dim`, `eps`, `keepdim` |
+| `dtype`                              | `__init__` | `torch.float16`         |
+| `shape` dimension names (fixed-rank) | `__init__` | `M`, `K`, `N`           |
+| `init_dims` (arbitrary-rank)         | `__init__` | `N` (see below)         |
+
+Information not declared in the manifest MUST NOT appear in `__init__`. No exceptions.
+
+Op `__init__` parameters use **keyword-only arguments**. See [manifest.md](manifest.md) for the full manifest specification.
+
+### Fixed-Rank Ops
+
+Manifest declares `shape` with dimension names → dimension names become `__init__` keyword arguments.
 
 ```yaml
 # manifest
 inputs:
   a: {dtype: "float16 | bfloat16", shape: "[M, K]"}
   b: {dtype: "same_as(a)", shape: "[K, N]"}
-params:
-  # (none for GEMM)
 ```
 
 ```python
-# generated Op __init__
+# generated Op __init__ — M, K, N from shape declaration
 class GemmFwdOp(Op):
     def __init__(self, *, M: int, K: int, N: int, dtype: torch.dtype, ...):
         self.M = M
@@ -149,54 +169,74 @@ class GemmFwdOp(Op):
         self.dtype = dtype
 ```
 
-**Arbitrary-rank op** (manifest uses `roofline.vars` to derive dimensions):
+All shape dimensions known at init → kernel construction and shape inference complete at init.
+
+### Arbitrary-Rank Ops and `init_dims`
+
+Manifest does not declare `shape` (accepts arbitrary rank), but this does not mean all shape information must wait until forward.
+
+Three time points with increasing information specificity:
+
+1. **Manifest declaration** — most general. Describes constraint structure: "one dimension is known (the dimension to apply norm on), others are arbitrary."
+1. **Op declaration (init)** — user knows partial concrete values. E.g., RMSNorm user knows hidden_dim=4096 but not batch size.
+1. **Forward** — all information is concrete. Tensors are passed in, all shapes are known.
+
+`init_dims` allows the manifest to declare which derived dimensions users must provide at init:
 
 ```yaml
 # manifest
-inputs:
-  x: {dtype: "float16 | bfloat16"}
-  weight: {dtype: "same_as(x)"}
-params:
-  dim: {type: int, default: -1}
-  eps: {type: float, default: 1e-6}
-roofline:
-  vars:
-    M: "product(x.shape[:dim])"
-    N: "x.shape[dim]"
+RMSNormFwdOp:
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16"}
+      weight: {dtype: "same_as(x)"}
+    params:
+      dim: {type: int, default: -1}
+      eps: {type: float, default: 1e-6}
+    init_dims:
+      N: {from: "x.shape[dim]"}
 ```
+
+**`init_dims` 规则：**
+
+- Dimensions declared in `init_dims` → user **must** provide at init. No optional.
+- Dimensions not in `init_dims` → derived from tensor at forward time, not in `__init__`.
+- The `from` expression defines the dimension's semantics. At forward time, it serves as a validation rule: the user-provided value must match the actual tensor shape.
+- `init_dims` is only for arbitrary-rank ops (ops without `shape` declaration). Fixed-rank op dimensions come directly from `shape`.
 
 ```python
-# generated Op __init__
+# generated Op __init__ — N from init_dims, dim/eps from params
 class RMSNormFwdOp(RowNormOp):
     def __init__(self, *, N: int, dtype: torch.dtype,
-                 M: int | None = None, dim: int = -1, eps: float = 1e-6, ...):
-        self.N = N      # kernel-relevant, required
-        self.M = M      # batch-relevant, optional (dynamic when None)
+                 dim: int = -1, eps: float = 1e-6, ...):
+        self.N = N      # from init_dims, required
         self.dim = dim
         self.eps = eps
-```
 
-**Naming rule:** keyword names are taken directly from the manifest — `shape` dimension names (`M`, `K`, `N`), `roofline.vars` keys, and `params` keys. No additional mapping.
+    def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        # M not in init_dims — derived here
+        M = product(x.shape[:self.dim])
+        # validate init_dims: N must match actual tensor
+        assert x.shape[self.dim] == self.N
+        ...
+```
 
 ### Static and Dynamic Dimensions
 
-Static `__init__` is the **default path**. All shape dimensions provided at construction time enables shape inference, kernel construction, and roofline evaluation to complete once at init. This aligns with TileLang's JIT compilation model where kernels are shape-specialized.
+The two op categories form two distinct paths:
 
-Dynamic dimensions are supported as a controlled extension for cases where shapes vary across calls (e.g., variable batch size in serving).
-
-**Convention:** provided value = static, `None` = dynamic.
-
-| Phase        | All static                                   | Has dynamic dimensions                                                                                 |
-| ------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `__init__`   | Shape inference complete, kernel constructed | Static dimensions resolved, dynamic deferred                                                           |
-| `forward()`  | Validate input shapes → call kernel          | Resolve dynamic dims from input tensors → complete shape inference → kernel cache lookup → call kernel |
-| Kernel cache | Single kernel instance                       | Cached by dynamic dimension values                                                                     |
+|                          | Fixed-rank op            | Arbitrary-rank op                                             |
+| ------------------------ | ------------------------ | ------------------------------------------------------------- |
+| Manifest has `shape`     | yes                      | no                                                            |
+| `__init__` shape source  | `shape` dimension names  | `init_dims`                                                   |
+| Undeclared dimensions    | none (all dims declared) | derived from tensor at forward time                           |
+| Kernel construction time | init (all dims known)    | init (`init_dims` known) or forward (first encounter, cached) |
 
 ```python
-# Fully static (default, recommended) — everything resolved at init
+# Fixed-rank: all dimensions at init
 op = GemmFwdOp(M=2048, K=4096, N=1024, dtype=torch.float16)
 
-# Dynamic M — resolved at forward time, kernel cached by M
+# Arbitrary-rank: init_dims (N) at init, rest (M) at forward
 op = RMSNormFwdOp(N=4096, dtype=torch.float16)
 ```
 
@@ -355,7 +395,7 @@ def rms_norm_fwd(M, N, dtype, ...): ...
 
 ### Base Class Protocol
 
-#### Op base class (`tileops/ops/op_base.py`)
+#### Op base class ([`tileops/ops/op_base.py`](../tileops/ops/op_base.py))
 
 | Attribute        | Type                          | Purpose                                               |
 | ---------------- | ----------------------------- | ----------------------------------------------------- |
@@ -373,7 +413,7 @@ Manifest-driven methods (generated by agent):
 - `_validate_dtypes(...)` → raise on invalid dtypes
 - `eval_roofline()` → (flops, bytes)
 
-#### Kernel base class (`tileops/kernels/kernel_base.py`)
+#### Kernel base class ([`tileops/kernels/kernel_base.py`](../tileops/kernels/kernel_base.py))
 
 | Attribute          | Type                    | Purpose                                        |
 | ------------------ | ----------------------- | ---------------------------------------------- |
