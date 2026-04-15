@@ -1,21 +1,80 @@
 # Op Interface Design
 
-## Architecture
+## How to Add a New Op
 
-### Op/Kernel Boundary
+### 1. Implement Two Classes: Op and Kernel
+
+Every operator requires an **Op** (host-side orchestration) and a **Kernel** (device-side computation). Op validates inputs, prepares layout, dispatches to Kernel, assembles output. Kernel owns the TileLang program, tile config, and JIT compilation. The two layers are independently modifiable.
+
+See [Op/Kernel Interface](#opkernel-interface) for full interface tables and skeleton code.
+
+### 2. Determine Hierarchy Position
+
+Target architecture is three layers: Op (L1) → FamilyBase (L2) → ConcreteOp (L3). New ops start by inheriting L1 directly. When a family accumulates 2-3 ops with identical `forward()` flow, extract an L2 base.
+
+See [Op Class Hierarchy](#op-class-hierarchy) for the full hierarchy design and [Development Path](#development-path) for when to create an L2 family base.
+
+### 3. Source Parameters from Manifest
+
+Every `__init__` and `forward` parameter must trace back to a manifest declaration:
+
+| Manifest source                      | Goes to    | Examples                |
+| ------------------------------------ | ---------- | ----------------------- |
+| `signature.inputs` (tensors)         | `forward`  | `x`, `weight`           |
+| `signature.params` (non-tensor)      | `__init__` | `dim`, `eps`, `keepdim` |
+| `dtype`                              | `__init__` | `torch.float16`         |
+| `shape` dimension names (fixed-rank) | `__init__` | `M`, `K`, `N`           |
+| `init_dims` (arbitrary-rank)         | `__init__` | `N` (see below)         |
+
+Information not declared in the manifest MUST NOT appear in `__init__`. No exceptions.
+
+Op `__init__` parameters use **keyword-only arguments**. See [manifest.md](manifest.md) for the full manifest specification.
+
+### 4. Fixed-Rank vs Arbitrary-Rank
+
+**Fixed-rank** — manifest declares `shape` with dimension names → all dimensions become `__init__` keywords → kernel constructed at init.
+
+**Arbitrary-rank** — manifest does not declare `shape`. Use `init_dims` to declare which derived dimensions users must provide at init. Undeclared dimensions are derived from tensors at forward time.
+
+See [Fixed-Rank Ops](#fixed-rank-ops) and [Arbitrary-Rank Ops and init_dims](#arbitrary-rank-ops-and-init_dims) for spec and examples.
+
+### 5. Generate Codegen Methods
+
+Agent generates three methods from manifest declarations:
+
+| Method                   | Manifest source          | Purpose                 |
+| ------------------------ | ------------------------ | ----------------------- |
+| `_infer_output_shapes()` | `shape_rules`            | Output shape derivation |
+| `_validate_dtypes()`     | `dtype` / `dtype_combos` | Input dtype validation  |
+| `eval_roofline()`        | `roofline`               | Performance model       |
+
+See [Codegen Methods](#codegen-methods) for calling conventions, inheritance rules, and examples.
+
+### 6. Follow Naming Conventions
+
+- Op: `{PascalCaseName}{Direction}Op` (e.g., `RMSNormFwdOp`). Elementwise ops omit direction.
+- Kernel: `{PascalCaseName}{Direction}Kernel`. Elementwise kernels omit direction.
+- `kernel_map` keys: `snake_case`, decoupled from class names.
+- Manifest key must exactly equal `cls.__name__`.
+
+See [Naming Conventions](#naming-conventions) for full rules.
+
+______________________________________________________________________
+
+## Detail: Op/Kernel Interface
 
 Adding a new operator requires implementing two classes: an **Op** and a **Kernel**. They have distinct responsibilities and interfaces.
 
 **Op** — host-side orchestration. Receives user-facing tensors, validates inputs, prepares data layout, dispatches to Kernel, and assembles output.
 
-| Interface                | Required | Description                                                                                |
-| ------------------------ | -------- | ------------------------------------------------------------------------------------------ |
-| `__init__(self, *, ...)` | yes      | Keyword-only params from manifest. Dispatches kernel, runs shape inference.                |
-| `forward(self, ...)`     | yes      | Validate → reshape → call kernel → reshape output. User-facing entry point.                |
-| `default_kernel_map`     | yes      | Property. Returns `{dispatch_key: KernelClass}`.                                           |
-| `_infer_output_shapes()` | yes      | Codegen from manifest `shape_rules`. See [Shape Inference](#shape-inference-codegen).      |
-| `_validate_dtypes()`     | yes      | Codegen from manifest `dtype`. See [Dtype Validation](#dtype-validation-codegen).          |
-| `eval_roofline()`        | yes      | Codegen from manifest `roofline`. See [Roofline Evaluation](#roofline-evaluation-codegen). |
+| Interface                | Required | Description                                                                   |
+| ------------------------ | -------- | ----------------------------------------------------------------------------- |
+| `__init__(self, *, ...)` | yes      | Keyword-only params from manifest. Dispatches kernel, runs shape inference.   |
+| `forward(self, ...)`     | yes      | Validate → reshape → call kernel → reshape output. User-facing entry point.   |
+| `default_kernel_map`     | yes      | Property. Returns `{dispatch_key: KernelClass}`.                              |
+| `_infer_output_shapes()` | yes      | Codegen from manifest `shape_rules`. See [Codegen Methods](#codegen-methods). |
+| `_validate_dtypes()`     | yes      | Codegen from manifest `dtype`. See [Codegen Methods](#codegen-methods).       |
+| `eval_roofline()`        | yes      | Codegen from manifest `roofline`. See [Codegen Methods](#codegen-methods).    |
 
 L1 base class ([`Op`](../tileops/ops/op_base.py)) provides these to all subclasses — no need to reimplement:
 
@@ -88,9 +147,7 @@ class MyFwdKernel(Kernel):
         return self.kernel(x, **self.config)
 ```
 
-The two layers are independently modifiable — changing a Kernel's tile strategy does not require changing the Op, and vice versa.
-
-### Op Class Hierarchy
+## Detail: Op Class Hierarchy
 
 ```
 Op                          ← L1: thin base, shared by all ops
@@ -114,7 +171,7 @@ Shared mechanics — validation, reshape, padding, shape inference, dtype valida
 
 Ops that still inherit L1 directly own their full `forward()`. As their family matures, shared logic migrates to an L2 base, and concrete ops converge toward declarations.
 
-## Development Path
+## Detail: Development Path
 
 Agent-driven development follows a pragmatic sequence:
 
@@ -126,29 +183,7 @@ Create an L2 family base when **multiple ops share the same `forward()` control 
 
 Do NOT create one when only 1 op uses the pattern, ops share math but differ in flow, or a common base would need excessive `if/else`.
 
-## Manifest-Driven Op Interface
-
-The manifest ([`ops_manifest.yaml`](../tileops/ops_manifest.yaml)) is the **sole source of truth** for op interfaces. Op-layer runtime behavior — dtype validation, shape inference, roofline evaluation — MUST be derived from the manifest, not independently maintained.
-
-Agent reads the manifest and generates code (codegen). [Validator](../scripts/validate_manifest.py) (CI) checks consistency between generated code and manifest. This prevents drift between spec and implementation.
-
-### `__init__` and `forward` Parameter Sourcing
-
-Every `__init__` and `forward` parameter must trace back to a manifest declaration. The manifest covers three information categories; each has a fixed destination:
-
-| Manifest source                      | Goes to    | Examples                |
-| ------------------------------------ | ---------- | ----------------------- |
-| `signature.inputs` (tensors)         | `forward`  | `x`, `weight`           |
-| `signature.params` (non-tensor)      | `__init__` | `dim`, `eps`, `keepdim` |
-| `dtype`                              | `__init__` | `torch.float16`         |
-| `shape` dimension names (fixed-rank) | `__init__` | `M`, `K`, `N`           |
-| `init_dims` (arbitrary-rank)         | `__init__` | `N` (see below)         |
-
-Information not declared in the manifest MUST NOT appear in `__init__`. No exceptions.
-
-Op `__init__` parameters use **keyword-only arguments**. See [manifest.md](manifest.md) for the full manifest specification.
-
-### Fixed-Rank Ops
+## Detail: Fixed-Rank Ops
 
 Manifest declares `shape` with dimension names → dimension names become `__init__` keyword arguments.
 
@@ -171,7 +206,7 @@ class GemmFwdOp(Op):
 
 All shape dimensions known at init → kernel construction and shape inference complete at init.
 
-### Arbitrary-Rank Ops and `init_dims`
+## Detail: Arbitrary-Rank Ops and `init_dims`
 
 Manifest does not declare `shape` (accepts arbitrary rank), but this does not mean all shape information must wait until forward.
 
@@ -197,7 +232,7 @@ RMSNormFwdOp:
       N: {from: "x.shape[dim]"}
 ```
 
-**`init_dims` 规则：**
+**`init_dims` rules:**
 
 - Dimensions declared in `init_dims` → user **must** provide at init. No optional.
 - Dimensions not in `init_dims` → derived from tensor at forward time, not in `__init__`.
@@ -221,9 +256,7 @@ class RMSNormFwdOp(RowNormOp):
         ...
 ```
 
-### Static and Dynamic Dimensions
-
-The two op categories form two distinct paths:
+**Static vs dynamic comparison:**
 
 |                          | Fixed-rank op            | Arbitrary-rank op                                             |
 | ------------------------ | ------------------------ | ------------------------------------------------------------- |
@@ -240,7 +273,13 @@ op = GemmFwdOp(M=2048, K=4096, N=1024, dtype=torch.float16)
 op = RMSNormFwdOp(N=4096, dtype=torch.float16)
 ```
 
-### Shape Inference (Codegen)
+## Detail: Codegen Methods
+
+The manifest ([`ops_manifest.yaml`](../tileops/ops_manifest.yaml)) is the **sole source of truth** for op interfaces. Op-layer runtime behavior — dtype validation, shape inference, roofline evaluation — MUST be derived from the manifest, not independently maintained.
+
+Agent reads the manifest and generates code (codegen). [Validator](../scripts/validate_manifest.py) (CI) checks consistency between generated code and manifest.
+
+### Shape Inference
 
 Agent generates an `_infer_output_shapes()` instance method on each Op from the manifest's `shape_rules`. The method accepts shape tuples and params, returns output name → shape mapping.
 
@@ -273,7 +312,7 @@ def _infer_output_shapes(
 | Family member has variant logic (e.g., multi-output) | L3 concrete op                    | Overrides             |
 | Op inherits L1 directly                              | L3 concrete op                    | Agent generates       |
 
-### Dtype Validation (Codegen)
+### Dtype Validation
 
 Agent generates a `_validate_dtypes()` instance method from the manifest's `dtype` fields and `dtype_combos`.
 
@@ -295,7 +334,7 @@ def _validate_dtypes(self, x: torch.Tensor, weight: torch.Tensor) -> None:
 
 `SUPPORTED_DTYPES` as a standalone class variable is superseded by this approach. Dtype constraints live in the manifest; Op code is generated from them.
 
-### Roofline Evaluation (Codegen)
+### Roofline Evaluation
 
 Agent generates roofline metadata as class-level declarations from the manifest's `roofline` section. Evaluation uses the same `self.*` attributes populated by `__init__`.
 
@@ -337,9 +376,7 @@ Roofline variable names, `__init__` keyword names, and `shape` dimension names a
 | `_infer_output_shapes` consistent with `shape_rules`      | Validator codegen parity check     | Planned     |
 | `_validate_dtypes` consistent with `dtype`/`dtype_combos` | Validator codegen parity check     | Planned     |
 
-## Reference
-
-### Naming Conventions
+## Detail: Naming Conventions
 
 #### Op Classes
 
@@ -393,7 +430,7 @@ Kernel builder functions remain `snake_case`:
 def rms_norm_fwd(M, N, dtype, ...): ...
 ```
 
-### Base Class Protocol
+## Detail: Base Class Protocol
 
 #### Op base class ([`tileops/ops/op_base.py`](../tileops/ops/op_base.py))
 
@@ -439,7 +476,7 @@ Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
 
 Adding a new protocol variable requires updating: (1) the base class, (2) all concrete ops, (3) the manifest schema if applicable.
 
-### Conventions in Code, Not Documentation
+## Detail: Conventions in Code
 
 | Convention                             | Enforced By                                          |
 | -------------------------------------- | ---------------------------------------------------- |
@@ -449,7 +486,7 @@ Adding a new protocol variable requires updating: (1) the base class, (2) all co
 | `torch.library.custom_op` registration | Per-op module or shared registration utility         |
 | Docstring format (Google style)        | Linter / CI check                                    |
 
-## Adding a New Family Base
+## Detail: Adding a New Family Base
 
 1. **Implement 2-3 concrete ops inheriting Op directly** — understand the pattern before abstracting
 1. **Identify shared steps** — which parts of `forward()` are identical?
