@@ -125,15 +125,19 @@ class RMSNormFwdOp(RowNormOp):
 ```python
 def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     self._validate_dtypes(x, weight)
-    # normalize dim, then derive M (not in init_dims)
+    # normalize dim, validate init_dims, derive M
     dim = self.dim % x.ndim
-    M = math.prod(x.shape[:dim])
     if x.shape[dim] != self.N:
         raise ValueError(
             f"init_dims mismatch: expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}"
         )
+    M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
+    # kernel cached by dynamic dimension (M)
+    if M not in self._kernel_cache:
+        self._kernel_cache[M] = self.kernel_map["rms_norm"](M, self.N, self.dtype)
+    kernel = self._kernel_cache[M]
     x = x.contiguous().reshape(M, self.N)
-    return self.kernel(x, weight)
+    return kernel(x, weight)
 ```
 
 ### `_infer_output_shapes` (codegen)

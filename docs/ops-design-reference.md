@@ -66,8 +66,9 @@ Agent reads the manifest and generates code (codegen). [Validator](../scripts/va
 
 ### Calling Conventions
 
-- **Fully static op:** codegen methods called once in `__init__`, results stored as instance attributes.
-- **Op with dynamic dims:** codegen methods called in `forward()` when dynamic dims are resolved. Results cached by dynamic dimension values.
+- **Fully static op:** `_infer_output_shapes` and `eval_roofline` called once in `__init__`, results stored as instance attributes.
+- **Op with dynamic dims:** `_infer_output_shapes` and `eval_roofline` called in `forward()` when dynamic dims are resolved. Results cached by dynamic dimension values.
+- **`_validate_dtypes`:** runs on every `forward()` call — dtype validity depends on the actual tensors passed, not cached.
 - **Non-runtime consumers** (validator, graph compiler): can call codegen methods with concrete shapes without constructing tensors.
 
 ### Inheritance in Family-Base Hierarchies
@@ -83,7 +84,8 @@ Agent reads the manifest and generates code (codegen). [Validator](../scripts/va
 | Check                                                     | Mechanism                          | Status      |
 | --------------------------------------------------------- | ---------------------------------- | ----------- |
 | Manifest schema and declared fields are well-formed       | Validator (CI), L0 checks          | Implemented |
-| `__init__` keywords match manifest dims + params          | Validator signature check (L1)     | Implemented |
+| `__init__` params match manifest `params`                 | Validator signature check (L1)     | Implemented |
+| `__init__` keywords match `shape` dims + `init_dims`      | Validator signature check (L1)     | Planned     |
 | `shape_rules` syntax is valid                             | Validator shape_rules parsing (L2) | Implemented |
 | `dtype`/`dtype_combos` strings are valid                  | Validator dtype conformance (L3)   | Implemented |
 | `_infer_output_shapes` consistent with `shape_rules`      | Validator codegen parity check     | Planned     |
