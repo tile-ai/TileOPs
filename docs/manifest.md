@@ -55,7 +55,7 @@ dtype_combos:
 
 **R6. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). Names become roofline variables. No ellipsis or wildcards.
 
-**R7. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules` + `init_dims`.
+**R7. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `init_dims` declares dimensions known at Op construction time (R20).
 
 **R8. No shape aliasing.** Each tensor declares its own shape. Use shared dimension names (R9) or `shape_rules` (R11) to express shape relationships.
 
