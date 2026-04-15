@@ -83,7 +83,7 @@ dtype_combos:
 
 **R20. `init_dims`.** For arbitrary-rank ops (no `shape` declaration), `init_dims` declares derived dimensions that users must provide at Op construction time. Each entry maps a dimension name to a `from` expression that defines its semantics and serves as a forward-time validation rule.
 
-- Dimensions in `init_dims` are required `__init__` parameters. No optional.
+- Dimensions in `init_dims` are required `__init__` parameters. Not optional.
 - Dimensions not in `init_dims` are derived from tensors at forward time.
 - `from` expressions use tensor shapes and params (e.g., `"x.shape[dim]"`). At forward time, the user-provided value must match the evaluated expression.
 - `init_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).

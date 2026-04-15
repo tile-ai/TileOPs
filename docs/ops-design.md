@@ -29,10 +29,10 @@ See [Development Path](ops-design-reference.md#development-path) for when to cre
 
 Kernel construction, shape inference, and roofline evaluation follow one principle: **do it at the first moment all required information is known, do it once, cache the result. Same inputs never trigger recomputation.**
 
-| Op category    | When all info is known                             | Behavior                                                                                                         |
-| -------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Fixed-rank     | `__init__` (all dimensions provided)               | Everything runs once at init.                                                                                    |
-| Arbitrary-rank | `forward` (dynamic dimensions derived from tensor) | Runs on first encounter of each unique dynamic dimension combination. Result cached by dynamic dimension values. |
+| Op category    | When all info is known                                                 | Behavior                                                                                                                         |
+| -------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Fixed-rank     | `__init__` (all dimensions provided)                                   | Everything runs once at init.                                                                                                    |
+| Arbitrary-rank | `init` for `init_dims` dimensions; `forward` for undeclared dimensions | `init_dims` dimensions resolve at init. Undeclared dimensions trigger kernel/shape/roofline on first encounter, cached by value. |
 
 This applies uniformly to kernel construction, `_infer_output_shapes`, and `eval_roofline`.
 
@@ -128,9 +128,10 @@ def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     # normalize dim, then derive M (not in init_dims)
     dim = self.dim % x.ndim
     M = math.prod(x.shape[:dim])
-    assert (
-        x.shape[dim] == self.N
-    ), f"init_dims mismatch: expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}"
+    if x.shape[dim] != self.N:
+        raise ValueError(
+            f"init_dims mismatch: expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}"
+        )
     x = x.contiguous().reshape(M, self.N)
     return self.kernel(x, weight)
 ```

@@ -32,7 +32,7 @@ RMSNormFwdOp:
 
 **`init_dims` rules:**
 
-- Dimensions declared in `init_dims` → user **must** provide at init. No optional.
+- Dimensions declared in `init_dims` → user **must** provide at init. Not optional.
 - Dimensions not in `init_dims` → derived from tensor at forward time, not in `__init__`.
 - The `from` expression defines the dimension's semantics. At forward time, it serves as a validation rule: the user-provided value must match the actual tensor shape.
 - `init_dims` is only for arbitrary-rank ops (ops without `shape` declaration). Fixed-rank op dimensions come directly from `shape`.
