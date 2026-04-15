@@ -23,7 +23,7 @@ Op                          ← L1: thin base, shared by all ops
 
 New ops start by inheriting L1 directly. When a family accumulates 2-3 ops with identical `forward()` flow, extract an L2 base via refactoring. L1-direct and L1→L2→L3 coexist as a natural consequence of incremental development.
 
-See [Op Class Hierarchy](ops-design-reference.md#op-class-hierarchy) and [Development Path](ops-design-reference.md#development-path) for details.
+See [Development Path](ops-design-reference.md#development-path) for when to create an L2 family base.
 
 ## Implementing an Op
 
@@ -110,7 +110,7 @@ class RMSNormFwdOp(RowNormOp):
 def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     self._validate_dtypes(x, weight)
     # M not in init_dims — derived here
-    M = product(x.shape[: self.dim])
+    M = math.prod(x.shape[: self.dim])
     assert x.shape[self.dim] == self.N  # validate init_dims
     x = x.contiguous().reshape(M, self.N)
     return self.kernel(x, weight)
