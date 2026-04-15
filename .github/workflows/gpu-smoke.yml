@@ -267,19 +267,6 @@ jobs:
               case "$path" in
                 .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|.github/workflows/auto-label.yml|.github/workflows/stale-issues.yml|*.md)
                   ;;
-                tileops/ops/*.py)
-                  test_path="tests/ops/test_$(basename "${path%.py}").py"
-                  if [[ -f "$test_path" ]]; then
-                    add_target "$test_path"
-                    if [[ "$scope" == "skip" ]]; then
-                      scope="targeted"
-                    fi
-                  else
-                    scope="full-smoke"
-                    reason="No direct smoke test mapping for $path; falling back to full smoke."
-                    break
-                  fi
-                  ;;
                 tests/ops/test_*.py)
                   add_target "$path"
                   if [[ "$scope" == "skip" ]]; then
