@@ -169,7 +169,7 @@ roofline:
 # generated Op __init__
 class RMSNormFwdOp(RowNormOp):
     def __init__(self, *, N: int, dtype: torch.dtype,
-                 M: int = None, dim: int = -1, eps: float = 1e-6, ...):
+                 M: int | None = None, dim: int = -1, eps: float = 1e-6, ...):
         self.N = N      # kernel-relevant, required
         self.M = M      # batch-relevant, optional (dynamic when None)
         self.dim = dim
@@ -277,23 +277,25 @@ _bytes_expr = "(2 * M * N + N) * elem_bytes"
 ```
 
 ```python
-# base class provides eval_roofline()
+# base class provides eval_roofline() using AST-based safe evaluator
 def eval_roofline(self) -> Tuple[int, int]:
     ctx = {name: getattr(self, name) for name in self._roofline_vars}
-    ctx["elem_bytes"] = torch.finfo(self.dtype).bits // 8
-    return eval(self._flops_expr, ctx), eval(self._bytes_expr, ctx)
+    ctx["elem_bytes"] = torch.tensor([], dtype=self.dtype).element_size()
+    return _safe_eval(self._flops_expr, ctx), _safe_eval(self._bytes_expr, ctx)
 ```
 
 Roofline variable names, `__init__` keyword names, and `shape` dimension names all share the same namespace — defined once in the manifest, consumed uniformly.
 
 ### Consistency Enforcement
 
-| Check                                                     | Mechanism                             | When     |
-| --------------------------------------------------------- | ------------------------------------- | -------- |
-| Generated code matches manifest                           | Validator (CI), extended L1/L2 checks | Every PR |
-| `__init__` keywords match manifest dims + params          | Validator signature check             | Every PR |
-| `_infer_output_shapes` consistent with `shape_rules`      | Validator shape check                 | Every PR |
-| `_validate_dtypes` consistent with `dtype`/`dtype_combos` | Validator dtype check                 | Every PR |
+| Check                                                     | Mechanism                          | Status      |
+| --------------------------------------------------------- | ---------------------------------- | ----------- |
+| Manifest schema and declared fields are well-formed       | Validator (CI), L0 checks          | Implemented |
+| `__init__` keywords match manifest dims + params          | Validator signature check (L1)     | Implemented |
+| `shape_rules` syntax is valid                             | Validator shape_rules parsing (L2) | Implemented |
+| `dtype`/`dtype_combos` strings are valid                  | Validator dtype conformance (L3)   | Implemented |
+| `_infer_output_shapes` consistent with `shape_rules`      | Validator codegen parity check     | Planned     |
+| `_validate_dtypes` consistent with `dtype`/`dtype_combos` | Validator codegen parity check     | Planned     |
 
 ## Reference
 
