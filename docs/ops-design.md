@@ -139,10 +139,10 @@ def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
             M, self.N, self.dtype, eps=self.eps
         )
     kernel = self._kernel_cache[M]
-    # move target dim to last, reshape to 2D, compute, restore shape
+    # move target dim to last, reshape to 2D, compute, restore layout
     x = x.movedim(dim, -1).contiguous().reshape(M, self.N)
     y = kernel(x, weight)
-    return y.reshape(orig_shape)
+    return y.reshape(*orig_shape[:dim], *orig_shape[dim + 1 :], self.N).movedim(-1, dim)
 ```
 
 ### `_infer_output_shapes` (codegen)
@@ -162,7 +162,7 @@ def _infer_output_shapes(self, x_shape: tuple, weight_shape: tuple) -> Dict[str,
     return {"y": x_shape}
 ```
 
-Follows the [Execution Timing](#execution-timing) principle: called at init (fixed-rank) or first forward with each unique dynamic dimension combination (arbitrary-rank), then cached.
+Follows the [Execution Timing](#execution-timing) principle: called at init (fixed-rank) or at forward (arbitrary-rank). For arbitrary-rank ops, shape inference depends on the full input shape (not just M), so it runs per unique input shape — not per unique M like kernel construction.
 
 ### `_validate_dtypes` (codegen)
 
