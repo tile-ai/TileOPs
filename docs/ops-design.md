@@ -4,22 +4,80 @@
 
 ### Op/Kernel Boundary
 
-Every operator splits into Op and Kernel:
+Adding a new operator requires implementing two classes: an **Op** and a **Kernel**. They have distinct responsibilities and interfaces.
 
-| Concern                   | Owner  | Examples                                    |
-| ------------------------- | ------ | ------------------------------------------- |
-| Input validation          | Op     | CUDA check, dtype check, shape check        |
-| Memory layout             | Op     | `.contiguous()`, reshape, alignment padding |
-| Dtype casting             | Op     | fp8 pre/post cast, bool output cast         |
-| Output reshape            | Op     | Trim padding, restore original shape        |
-| TileLang program          | Kernel | `T.prim_func`, shared memory, `T.copy`      |
-| Tile configuration        | Kernel | `block_m`, `threads`, `num_stages`          |
-| Autotuning                | Kernel | Config search space, `tilelang.autotuner`   |
-| JIT compilation + caching | Kernel | `@functools.lru_cache`                      |
+**Op** — host-side orchestration. Receives user-facing tensors, validates inputs, prepares data layout, dispatches to Kernel, and assembles output.
 
-Either layer can be modified independently.
+| Interface                | Required | Description                                                                                |
+| ------------------------ | -------- | ------------------------------------------------------------------------------------------ |
+| `__init__(self, *, ...)` | yes      | Keyword-only params from manifest. Dispatches kernel, runs shape inference.                |
+| `forward(self, ...)`     | yes      | Validate → reshape → call kernel → reshape output. User-facing entry point.                |
+| `default_kernel_map`     | yes      | Property. Returns `{dispatch_key: KernelClass}`.                                           |
+| `_infer_output_shapes()` | yes      | Codegen from manifest `shape_rules`. See [Shape Inference](#shape-inference-codegen).      |
+| `_validate_dtypes()`     | yes      | Codegen from manifest `dtype`. See [Dtype Validation](#dtype-validation-codegen).          |
+| `eval_roofline()`        | yes      | Codegen from manifest `roofline`. See [Roofline Evaluation](#roofline-evaluation-codegen). |
 
-### Class Hierarchy
+```python
+class MyFwdOp(Op):
+    def __init__(self, *, M: int, N: int, dtype: torch.dtype, ...):
+        self.M, self.N, self.dtype = M, N, dtype
+        self.dispatch_kernel()
+        self.kernel = self.kernel_map["my_kernel"](M, N, dtype)
+        self._output_shapes = self._infer_output_shapes(x_shape=(M, N))
+
+    @property
+    def default_kernel_map(self):
+        return {"my_kernel": MyFwdKernel}
+
+    def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
+        return {"y": x_shape}
+
+    def _validate_dtypes(self, x: torch.Tensor) -> None:
+        if x.dtype not in {torch.float16, torch.bfloat16}:
+            raise ValueError(...)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._validate_dtypes(x)
+        x = x.contiguous().reshape(self.M, self.N)
+        return self.kernel(x)
+```
+
+**Kernel** — device-side computation. Owns the TileLang program, tile configuration, and JIT compilation.
+
+| Interface             | Required | Description                                               |
+| --------------------- | -------- | --------------------------------------------------------- |
+| `__init__(self, ...)` | yes      | Receives shape params and dtype. Builds TileLang program. |
+| `forward(self, ...)`  | yes      | Launches the compiled kernel. Called by Op's `forward()`. |
+| `kernel`              | yes      | Attribute. The TileLang program builder (JIT-compiled).   |
+| `default_config`      | no       | Property. Default tile configuration dict.                |
+| `autotune_configs`    | no       | Class variable. Search space for autotuning.              |
+| `supported_archs`     | no       | Class variable. List of supported GPU SM versions.        |
+
+```python
+class MyFwdKernel(Kernel):
+    supported_archs = [80, 86, 89, 90]
+
+    def __init__(self, M, N, dtype, *, config=None, tune=False):
+        super().__init__()
+        self.M, self.N, self.dtype = M, N, dtype
+        self.kernel = self._build_program(M, N, dtype)
+        self.init_config(config, tune)
+
+    def _build_program(self, M, N, dtype):
+        # Returns a TileLang program (JIT-compiled)
+        ...
+
+    @property
+    def default_config(self):
+        return {"block_M": 128, "block_N": 128, "num_stages": 2}
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.kernel(x, **self.config)
+```
+
+The two layers are independently modifiable — changing a Kernel's tile strategy does not require changing the Op, and vice versa.
+
+### Op Class Hierarchy
 
 ```
 Op                          ← L1: thin base, shared by all ops
@@ -43,7 +101,7 @@ Shared mechanics — validation, reshape, padding, shape inference, dtype valida
 
 Ops that still inherit L1 directly own their full `forward()`. As their family matures, shared logic migrates to an L2 base, and concrete ops converge toward declarations.
 
-### Development Path
+## Development Path
 
 Agent-driven development follows a pragmatic sequence:
 
