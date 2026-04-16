@@ -80,8 +80,11 @@ class Fp8FusedGatedBenchCase:
 
 class Fp8FusedGatedBenchmark(BenchmarkBase[Fp8FusedGatedBenchCase]):
     def calculate_flops(self) -> Optional[float]:
-        # FIXME(ying): hardcoded for silu (4 FLOPs/elem + 1 mul with value = 5).
-        # Must update when benchmarking other activations (e.g. gelu).
+        # FIXME(staged-rollout): hardcoded silu FLOPs in Fp8FusedGatedBenchmark
+        #
+        # Broken invariant: calculate_flops assumes silu (5 FLOPs/elem), wrong for other activations
+        # Why: only silu is benchmarked currently, other activations not yet added
+        # Cleanup: implement per-activation FLOPs lookup when benchmarking gelu/other activations
         return self.workload.M * self.workload.N * 5
 
     def calculate_memory(self) -> Optional[float]:
