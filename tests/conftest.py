@@ -47,6 +47,135 @@ def _without_dtype(params: dict) -> tuple[tuple[str, object], ...]:
     )
 
 
+_SMOKE_OP_NAME_PARAM_KEYS = ("op_kind", "op_name", "op_cls_path", "op_cls")
+
+_SHAPE_PARAM_GROUPS = (
+    ("a_shape", "b_shape"),
+    ("shape",),
+    ("m", "n"),
+    ("batch", "seq", "hidden"),
+    ("b0", "b1", "b2", "n"),
+    ("seq_len", "num_heads"),
+    ("seq_len", "d_model"),
+    ("batch", "seq_len", "heads", "dim_k", "dim_v", "chunk_size"),
+    ("batch", "heads", "seq_len", "dim_k", "dim_v", "chunk_size"),
+    ("n_total",),
+    ("n",),
+)
+
+_OP_NAME_SUFFIXES = (
+    "_smoke_float16",
+    "_smoke_bfloat16",
+    "_smoke_float32",
+    "_smoke_int32",
+    "_smoke_int64",
+    "_smoke_bool",
+    "_signed_zero_with_nan",
+    "_nan_propagation",
+    "_optimized_large",
+    "_non_contiguous",
+    "_non_contig",
+    "_same_shape",
+    "_dtype_size",
+    "_min_gt_max",
+    "_upper_only",
+    "_lower_only",
+    "_all_true",
+    "_all_false",
+    "_edge_cases",
+    "_edge_case",
+    "_spec_keepdim",
+    "_spec_basic",
+    "_spec_dim0_keepdim",
+    "_spec_dim1_3d",
+    "_spec_dim0",
+    "_spec_dim",
+    "_spec_1d",
+    "_dim0_keepdim",
+    "_3d_dim0_keepdim",
+    "_4d_dim0_keepdim",
+    "_3d_dim0",
+    "_4d_dim0",
+    "_keepdim",
+    "_broadcast",
+    "_strategies",
+    "_signed_zero",
+    "_tiled",
+    "_3d",
+    "_4d",
+    "_1d",
+    "_dim",
+    "_edge",
+    "_op",
+)
+
+
+def _normalize_dtype(dtype: object) -> str:
+    if isinstance(dtype, torch.dtype):
+        return str(dtype).split(".")[-1]
+    return str(dtype)
+
+
+def _normalize_shape_value(value: object) -> tuple:
+    if isinstance(value, torch.Size):
+        return tuple(value)
+    if isinstance(value, (tuple, list)):
+        return tuple(value)
+    return (value,)
+
+
+def _extract_shape_signature(item: pytest.Item) -> tuple | None:
+    callspec = getattr(item, "callspec", None)
+    if callspec is None:
+        return None
+
+    params = callspec.params
+    for group in _SHAPE_PARAM_GROUPS:
+        if all(name in params for name in group):
+            if group == ("a_shape", "b_shape"):
+                return (
+                    _normalize_shape_value(params["a_shape"]),
+                    _normalize_shape_value(params["b_shape"]),
+                )
+            if group == ("shape",):
+                return (_normalize_shape_value(params["shape"]),)
+            return (tuple(params[name] for name in group),)
+    return None
+
+
+def _infer_op_key(item: pytest.Item) -> str:
+    callspec = getattr(item, "callspec", None)
+    params = callspec.params if callspec is not None else {}
+
+    for key in _SMOKE_OP_NAME_PARAM_KEYS:
+        if key not in params:
+            continue
+        value = params[key]
+        if key == "op_cls_path":
+            return str(value).split(".")[-1]
+        if key == "op_cls":
+            return getattr(value, "__name__", str(value))
+        return str(value)
+
+    name = getattr(item, "originalname", item.name)
+    if name.startswith("test_"):
+        name = name[5:]
+
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _OP_NAME_SUFFIXES:
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                changed = True
+                break
+    return name
+
+
+def _format_values(values: set[str]) -> str:
+    return ", ".join(sorted(values))
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Validate explicit test tier assignments."""
     tier_errors: list[str] = []
@@ -62,12 +191,21 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             )
 
     ops_groups: dict[tuple[str, str], list[pytest.Item]] = defaultdict(list)
+    smoke_contract_groups: dict[tuple[str, str], list[pytest.Item]] = defaultdict(list)
     for item in items:
         path = str(item.path)
         if "tests/ops/" not in path or "benchmarks/tests/" in path:
             continue
         test_name = getattr(item, "originalname", item.name)
         ops_groups[(path, test_name)].append(item)
+        if any(path.endswith(skip_path) for skip_path in NON_RUNTIME_OPS_TIER_FILES):
+            continue
+        callspec = getattr(item, "callspec", None)
+        if callspec is None or "dtype" not in callspec.params:
+            continue
+        if _extract_shape_signature(item) is None:
+            continue
+        smoke_contract_groups[(path, _infer_op_key(item))].append(item)
 
     for (_path, _test_name), group in ops_groups.items():
         if any(_path.endswith(path) for path in NON_RUNTIME_OPS_TIER_FILES):
@@ -90,57 +228,37 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item for item in smoke_items if item.get_closest_marker("xfail") is None
         ]
 
-        if non_xfail_items:
-            if len(valid_smoke_items) < 1:
+        if valid_smoke_items:
+            # All smoke cases must appear as the first N non-xfail items
+            expected_smoke = non_xfail_items[: len(valid_smoke_items)]
+            if valid_smoke_items != expected_smoke:
                 tier_errors.append(
-                    f"{non_xfail_items[0].nodeid}: each test must have at least one smoke case"
+                    f"{non_xfail_items[0].nodeid}: all smoke cases must appear "
+                    f"as the first {len(valid_smoke_items)} non-xfail cases of each test"
                 )
-            else:
-                # All smoke cases must appear as the first N non-xfail items
-                expected_smoke = non_xfail_items[: len(valid_smoke_items)]
-                if valid_smoke_items != expected_smoke:
-                    tier_errors.append(
-                        f"{non_xfail_items[0].nodeid}: all smoke cases must appear "
-                        f"as the first {len(valid_smoke_items)} non-xfail cases of each test"
-                    )
 
-        dtype_supported: set[object] = set()
-        dtype_smoke: set[object] = set()
         smoke_signatures: set[tuple[tuple[str, object], ...]] = set()
-        dtype_cases_present = False
 
         for item in non_xfail_items:
             params = _get_callspec_params(item)
             if not params or "dtype" not in params:
                 continue
 
-            dtype_cases_present = True
-            dtype_supported.add(params["dtype"])
-
             if item.get_closest_marker("smoke") is not None:
-                dtype_smoke.add(params["dtype"])
                 smoke_signatures.add(_without_dtype(params))
 
-        if dtype_cases_present:
-            missing_smoke_dtypes = dtype_supported - dtype_smoke
-            if missing_smoke_dtypes:
+        for item in non_xfail_items:
+            if item.get_closest_marker("full") is None:
+                continue
+
+            params = _get_callspec_params(item)
+            if not params or "dtype" not in params:
+                continue
+
+            if _without_dtype(params) in smoke_signatures:
                 tier_errors.append(
-                    f"{non_xfail_items[0].nodeid}: each dtype must have at least one smoke case; "
-                    f"missing smoke for {sorted(str(dtype) for dtype in missing_smoke_dtypes)}"
+                    f"{item.nodeid}: full cases must not differ from a smoke case only by dtype"
                 )
-
-            for item in non_xfail_items:
-                if item.get_closest_marker("full") is None:
-                    continue
-
-                params = _get_callspec_params(item)
-                if not params or "dtype" not in params:
-                    continue
-
-                if _without_dtype(params) in smoke_signatures:
-                    tier_errors.append(
-                        f"{item.nodeid}: full cases must not differ from a smoke case only by dtype"
-                    )
 
         first_tuned_item: pytest.Item | None = None
         full_tuned_items: list[pytest.Item] = []
@@ -172,10 +290,70 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                     f"{first_tuned_item.nodeid}: the first tune=True case must be the only full tuned case"
                 )
 
+    for (path, op_key), group in smoke_contract_groups.items():
+        non_xfail_items = [item for item in group if item.get_closest_marker("xfail") is None]
+        if not non_xfail_items:
+            continue
+
+        supported_dtypes = {
+            _normalize_dtype(item.callspec.params["dtype"]) for item in non_xfail_items
+        }
+        valid_smoke_items = [
+            item
+            for item in non_xfail_items
+            if item.get_closest_marker("smoke") is not None
+        ]
+        smoke_dtypes = {
+            _normalize_dtype(item.callspec.params["dtype"]) for item in valid_smoke_items
+        }
+        smoke_shapes = {
+            _extract_shape_signature(item) for item in valid_smoke_items
+        }
+
+        if len(valid_smoke_items) != len(supported_dtypes):
+            tier_errors.append(
+                f"{path}::{op_key}: expected exactly {len(supported_dtypes)} smoke cases "
+                f"(one typical shape x all supported dtypes), found {len(valid_smoke_items)}"
+            )
+
+        if smoke_dtypes != supported_dtypes:
+            missing = supported_dtypes - smoke_dtypes
+            extra = smoke_dtypes - supported_dtypes
+            details: list[str] = []
+            if missing:
+                details.append(f"missing [{_format_values(missing)}]")
+            if extra:
+                details.append(f"unexpected [{_format_values(extra)}]")
+            tier_errors.append(
+                f"{path}::{op_key}: smoke dtype coverage must match supported dtypes; "
+                + ", ".join(details)
+            )
+
+        if len(smoke_shapes) > 1:
+            shape_desc = ", ".join(str(shape) for shape in sorted(smoke_shapes, key=str))
+            tier_errors.append(
+                f"{path}::{op_key}: smoke cases must use exactly one typical shape, found {shape_desc}"
+            )
+
     if tier_errors:
         raise pytest.UsageError(
             "Invalid explicit test tier assignments detected:\n" + "\n".join(tier_errors)
         )
+
+    # Runtime policy: for tests/ops, only smoke-tier cases are allowed to run.
+    # Non-smoke cases are always deselected, regardless of -m selection.
+    deselected: list[pytest.Item] = []
+    kept: list[pytest.Item] = []
+    for item in items:
+        path = str(item.path)
+        if "tests/ops/" in path and item.get_closest_marker("smoke") is None:
+            deselected.append(item)
+            continue
+        kept.append(item)
+
+    if deselected and items:
+        items[0].config.hook.pytest_deselected(items=deselected)
+    items[:] = kept
 
 
 @pytest.hookimpl(hookwrapper=True)
