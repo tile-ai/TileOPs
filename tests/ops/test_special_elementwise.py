@@ -27,7 +27,7 @@ class SpecialEdgeFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(4096, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -141,7 +141,7 @@ class IndependentEdgeFixture(FixtureBase):
 
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(4096, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -235,6 +235,7 @@ class AlibiFixture(FixtureBase):
     PARAMS = [
         ("seq_len, num_heads, dtype", [
             pytest.param(128, 8, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(128, 8, torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(128, 8, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
@@ -256,7 +257,12 @@ def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     )
     ref = (-slopes[:, None, None] * dist[None, :, :]).to(dtype)
 
-    tol = {"atol": 1e-2, "rtol": 1e-2} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
+    if dtype == torch.float16:
+        tol = {"atol": 1e-2, "rtol": 1e-2}
+    elif dtype == torch.bfloat16:
+        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
+    else:
+        tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
     print("All checks passed for AlibiFwdOp.")
 
@@ -267,6 +273,7 @@ class SinusoidalFixture(FixtureBase):
     PARAMS = [
         ("seq_len, d_model, dtype", [
             pytest.param(512, 256, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(512, 256, torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(512, 256, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
@@ -291,6 +298,8 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
 
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
+    elif dtype == torch.bfloat16:
+        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
@@ -305,9 +314,10 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
 class ClampDtypeSizeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.float32, marks=pytest.mark.full),
+            pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(4096, torch.float16, marks=pytest.mark.full),
             pytest.param(16_777_216, torch.float16, marks=pytest.mark.full),
         ]),
     ]

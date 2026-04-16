@@ -51,7 +51,7 @@ def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
 class ReluStrategyFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype, strategy", [
-            pytest.param(1_000_000, torch.float16, "direct", marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.float16, "direct", marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float16, "explicit_parallel", marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float16, "register_copy", marks=pytest.mark.full),
         ]),
@@ -87,7 +87,7 @@ class ActivationEdgeFixture(FixtureBase):
     """L4 edge-case fixture: fp32, 4K elements."""
     PARAMS = [
         ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(4096, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 

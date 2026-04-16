@@ -31,11 +31,6 @@ class AvgPool1dFixture(FixtureBase):
                 id="smoke-k3-default-stride-bf16",
             ),
             pytest.param(
-                2, 64, 512, 3, None, 1, False, True, torch.float32, False,
-                marks=pytest.mark.smoke,
-                id="smoke-k3-default-stride-fp32",
-            ),
-            pytest.param(
                 2, 32, 257, 5, 2, 2, False, False, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-k5-s2-no-pad-count-fp16",

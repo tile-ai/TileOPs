@@ -49,9 +49,14 @@ class LogicalReduceNonContigFixture(FixtureBase):
         (
             "m, n, dtype",
             [
-                pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.bool, marks=pytest.mark.smoke),
+                pytest.param(128, 512, torch.float32, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.int32, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.int64, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.bool, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.complex64, marks=pytest.mark.full),
+                pytest.param(128, 512, torch.complex128, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -62,8 +67,14 @@ class LogicalReduce3DFixture(FixtureBase):
         (
             "batch, seq, hidden, dtype",
             [
-                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 512, torch.float32, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.int32, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.int64, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.bool, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.complex64, marks=pytest.mark.full),
+                pytest.param(2, 64, 512, torch.complex128, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -74,8 +85,14 @@ class LogicalReduce4DFixture(FixtureBase):
         (
             "b0, b1, b2, n, dtype",
             [
-                pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 8, 512, torch.float32, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.int32, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.int64, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.bool, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.complex64, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 512, torch.complex128, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -86,10 +103,14 @@ class LogicalReduce1DFixture(FixtureBase):
         (
             "n, dtype",
             [
-                pytest.param(512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(512, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(512, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(512, torch.bool, marks=pytest.mark.smoke),
+                pytest.param(512, torch.float32, marks=pytest.mark.full),
+                pytest.param(512, torch.float16, marks=pytest.mark.full),
+                pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(512, torch.int32, marks=pytest.mark.full),
+                pytest.param(512, torch.int64, marks=pytest.mark.full),
+                pytest.param(512, torch.bool, marks=pytest.mark.full),
+                pytest.param(512, torch.complex64, marks=pytest.mark.full),
+                pytest.param(512, torch.complex128, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -103,8 +124,14 @@ class LogicalReduceDimFixture(FixtureBase):
             "shape, dim, dtype",
             [
                 # dim=0 reduction on 2D
-                pytest.param((64, 512), 0, torch.float16, marks=pytest.mark.smoke),
-                pytest.param((64, 512), 0, torch.float32, marks=pytest.mark.smoke),
+                pytest.param((64, 512), 0, torch.float32, marks=pytest.mark.full),
+                pytest.param((64, 512), 0, torch.float16, marks=pytest.mark.full),
+                pytest.param((64, 512), 0, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param((64, 512), 0, torch.int32, marks=pytest.mark.full),
+                pytest.param((64, 512), 0, torch.int64, marks=pytest.mark.full),
+                pytest.param((64, 512), 0, torch.bool, marks=pytest.mark.full),
+                pytest.param((64, 512), 0, torch.complex64, marks=pytest.mark.full),
+                pytest.param((64, 512), 0, torch.complex128, marks=pytest.mark.full),
                 # dim=1 reduction on 3D (reduces middle dim)
                 pytest.param((4, 64, 512), 1, torch.float16, marks=pytest.mark.full),
                 # dim=0 reduction on 3D
@@ -123,7 +150,14 @@ class LogicalReduceKeepdimFixture(FixtureBase):
         (
             "shape, dim, dtype",
             [
-                pytest.param((64, 512), -1, torch.float16, marks=pytest.mark.smoke),
+                pytest.param((64, 512), -1, torch.float32, marks=pytest.mark.full),
+                pytest.param((64, 512), -1, torch.float16, marks=pytest.mark.full),
+                pytest.param((64, 512), -1, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param((64, 512), -1, torch.int32, marks=pytest.mark.full),
+                pytest.param((64, 512), -1, torch.int64, marks=pytest.mark.full),
+                pytest.param((64, 512), -1, torch.bool, marks=pytest.mark.full),
+                pytest.param((64, 512), -1, torch.complex64, marks=pytest.mark.full),
+                pytest.param((64, 512), -1, torch.complex128, marks=pytest.mark.full),
                 pytest.param((64, 512), 0, torch.float16, marks=pytest.mark.full),
                 pytest.param((4, 64, 512), 1, torch.float16, marks=pytest.mark.full),
             ],
@@ -177,25 +211,32 @@ def _exact_compare_int64(output: torch.Tensor, output_ref: torch.Tensor) -> None
     )
 
 
+def _make_random_input(shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
+    """Create random inputs across all logical-reduce supported dtype families."""
+    if dtype == torch.bool:
+        return torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    if dtype in (torch.int32, torch.int64):
+        return torch.randint(-3, 4, shape, dtype=dtype, device="cuda")
+    if dtype in (torch.complex64, torch.complex128):
+        real = torch.randn(shape, dtype=torch.float32, device="cuda")
+        imag = torch.randn(shape, dtype=torch.float32, device="cuda")
+        return torch.complex(real, imag).to(dtype)
+    return torch.randn(shape, dtype=dtype, device="cuda")
+
+
 def _make_noncontig_input(m: int, n: int, dtype: torch.dtype) -> torch.Tensor:
     """Create a non-contiguous 2D tensor of shape (m, n*2) for slicing tests."""
-    if dtype == torch.bool:
-        return torch.randint(0, 2, (m, n * 2), dtype=torch.bool, device="cuda")
-    return torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    return _make_random_input((m, n * 2), dtype)
 
 
 def _make_1d_input(n: int, dtype: torch.dtype) -> torch.Tensor:
     """Create a 1D tensor of shape (n,) for 1D tests."""
-    if dtype == torch.bool:
-        return torch.randint(0, 2, (n,), dtype=torch.bool, device="cuda")
-    return torch.randn(n, dtype=dtype, device="cuda")
+    return _make_random_input((n,), dtype)
 
 
 def _make_nd_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     """Create an N-D tensor for dim/keepdim tests."""
-    if dtype == torch.bool:
-        return torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
-    return torch.randn(shape, dtype=dtype, device="cuda")
+    return _make_random_input(shape, dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +270,7 @@ def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = _make_nd_input((batch, seq, hidden), dtype)
     op = AnyFwdOp(dtype=dtype)
     ref = x.bool().any(dim=-1)
     y = op(x)
@@ -241,7 +282,7 @@ def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 def test_any_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = _make_nd_input((b0, b1, b2, n), dtype)
     op = AnyFwdOp(dtype=dtype)
     ref = x.bool().any(dim=-1)
     y = op(x)
@@ -318,7 +359,7 @@ def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = _make_nd_input((batch, seq, hidden), dtype)
     op = AllFwdOp(dtype=dtype)
     ref = x.bool().all(dim=-1)
     y = op(x)
@@ -330,7 +371,7 @@ def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 def test_all_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = _make_nd_input((b0, b1, b2, n), dtype)
     op = AllFwdOp(dtype=dtype)
     ref = x.bool().all(dim=-1)
     y = op(x)
@@ -407,7 +448,7 @@ def test_count_nonzero_non_contiguous(m: int, n: int, dtype: torch.dtype) -> Non
 def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = _make_nd_input((batch, seq, hidden), dtype)
     op = CountNonzeroFwdOp(dtype=dtype)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
@@ -419,7 +460,7 @@ def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype)
 def test_count_nonzero_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = _make_nd_input((b0, b1, b2, n), dtype)
     op = CountNonzeroFwdOp(dtype=dtype)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
@@ -453,7 +494,7 @@ def test_count_nonzero_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Dtype smoke tests: ensure all 6 supported dtypes are covered at smoke tier.
+# Dtype smoke tests: ensure the common supported dtypes are covered at smoke tier.
 # Each uses a single-param fixture so the framework's "exactly 1 smoke per
 # test function" constraint is satisfied while giving broad dtype coverage.
 # ---------------------------------------------------------------------------
@@ -469,7 +510,7 @@ def _make_dtype_smoke_fixture(dt: torch.dtype) -> type:
         PARAMS = [
             (
                 "m, n, dtype",
-                [pytest.param(_DTYPE_SMOKE_M, _DTYPE_SMOKE_N, dt, marks=pytest.mark.smoke)],
+                [pytest.param(_DTYPE_SMOKE_M, _DTYPE_SMOKE_N, dt, marks=pytest.mark.full)],
             )
         ]
 
