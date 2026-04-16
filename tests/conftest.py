@@ -53,12 +53,42 @@ _SHAPE_PARAM_GROUPS = (
     ("a_shape", "b_shape"),
     ("shape",),
     ("m", "n"),
+    ("M", "N"),
+    ("M", "seq_len", "d"),
     ("batch", "seq", "hidden"),
+    ("batch", "seq_len", "hidden"),
     ("b0", "b1", "b2", "n"),
     ("seq_len", "num_heads"),
     ("seq_len", "d_model"),
+    ("batch", "heads", "dim_k", "dim_v"),
+    ("batch", "heads", "heads_kv", "dim"),
+    ("batch", "heads", "heads_kv", "seq_len_kv", "dim"),
+    ("batch", "heads", "heads_kv", "seqlen_kv", "dim", "page_size"),
+    ("batch", "heads", "seq_len_q", "seq_len_kv", "dim", "dim_tail", "topk"),
+    ("batch", "heads", "seqlen_q", "seqlen_kv", "dim", "page_size"),
+    ("batch", "seq_len", "heads", "heads_kv", "dim"),
     ("batch", "seq_len", "heads", "dim_k", "dim_v", "chunk_size"),
     ("batch", "heads", "seq_len", "dim_k", "dim_v", "chunk_size"),
+    ("batch", "seq", "heads", "heads_kv", "dim", "wl", "wr"),
+    ("batch", "seqlens_q", "seqlens_k", "heads", "heads_kv", "dim", "wl", "wr"),
+    ("b", "h", "s_q", "s_kv", "d"),
+    ("batch_size", "seq_len", "heads", "dim", "chunk_size"),
+    ("seq_num", "c_seq_len", "heads", "dim", "group", "selected_block_num"),
+    ("seq_num", "c_seq_len", "heads", "dim_k", "dim_v", "group"),
+    ("batch", "heads", "c_seq_len", "dim", "block_size", "groups", "selected_blocks"),
+    ("batch", "num_chunks", "chunk_len", "n_heads", "d_head", "d_state"),
+    ("batch", "num_chunks", "chunk_len", "n_heads", "d_head", "d_state", "n_groups"),
+    ("batch", "num_chunks", "n_heads", "d_state"),
+    ("batch", "n_heads", "d_head", "d_state", "n_groups"),
+    ("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation"),
+    ("batch", "n_expand", "c_x"),
+    ("N", "C", "spatial"),
+    ("batch_sum", "batch_count", "N", "K"),
+    ("num_tokens", "num_experts", "top_k", "hidden_size", "ffn_size"),
+    ("total_tokens", "top_k", "num_experts", "hidden_size"),
+    ("total_tokens", "top_k", "hidden_size"),
+    ("batch", "seq_len_kv", "kv_group", "index_dim"),
+    ("batch", "seq_len", "seq_len_kv", "kv_group", "topk"),
     ("n_total",),
     ("n",),
 )
@@ -124,6 +154,65 @@ def _normalize_shape_value(value: object) -> tuple:
     return (value,)
 
 
+_NON_SHAPE_PARAM_NAMES = {
+    "dtype",
+    "in_dtype",
+    "out_dtype",
+    "accum_dtype",
+    "compute_dtype",
+    "weight_dtype",
+    "input_dtype",
+    "in_dtype_str",
+    "out_dtype_str",
+    "tune",
+    "training",
+    "causal",
+    "is_causal",
+    "renormalize",
+    "with_correction_bias",
+    "transpose_a",
+    "transpose_b",
+    "kernel_name",
+    "extra_kwargs",
+    "op_cls",
+    "op_kind",
+    "op_name",
+    "op_cls_path",
+    "scoring_func",
+    "sm_scale",
+    "scale",
+    "q_start_index_s",
+    "offsets",
+}
+
+
+def _is_shape_like_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, torch.Size):
+        return True
+    if isinstance(value, (tuple, list)):
+        return all(isinstance(v, int) for v in value)
+    return False
+
+
+def _fallback_shape_signature(params: dict) -> tuple | None:
+    shape_items: list[tuple[str, tuple]] = []
+    for key, value in params.items():
+        if key in _NON_SHAPE_PARAM_NAMES:
+            continue
+        if not _is_shape_like_value(value):
+            continue
+        shape_items.append((key, _normalize_shape_value(value)))
+
+    if not shape_items:
+        return None
+
+    return tuple(shape_items)
+
+
 def _extract_shape_signature(item: pytest.Item) -> tuple | None:
     callspec = getattr(item, "callspec", None)
     if callspec is None:
@@ -140,7 +229,7 @@ def _extract_shape_signature(item: pytest.Item) -> tuple | None:
             if group == ("shape",):
                 return (_normalize_shape_value(params["shape"]),)
             return (tuple(params[name] for name in group),)
-    return None
+    return _fallback_shape_signature(params)
 
 
 def _infer_op_key(item: pytest.Item) -> str:

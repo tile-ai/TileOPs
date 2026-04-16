@@ -96,7 +96,7 @@ class Qwen3Fixture(FixtureBase):
                 ),
                 pytest.param(
                     32, 8, 2, 64, 32, "sigmoid", True, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-sigmoid-renorm-bf16",
+                    marks=pytest.mark.full, id="smoke-sigmoid-renorm-bf16",
                 ),
                 pytest.param(
                     512, 128, 8, 2048, 1024, "softmax", False, torch.bfloat16,
@@ -188,14 +188,6 @@ class KimiFixture(FixtureBase):
             " routed_scaling_factor, with_correction_bias, dtype",
             [
                 pytest.param(
-                    32, 8, 2, 64, 32, 1.0, False, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-nobias-bf16",
-                ),
-                pytest.param(
-                    32, 8, 2, 64, 32, 1.0, True, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-bias-bf16",
-                ),
-                pytest.param(
                     32, 8, 2, 64, 32, 2.827, True, torch.bfloat16,
                     marks=pytest.mark.smoke, id="smoke-bias-scale-bf16",
                 ),
@@ -204,8 +196,16 @@ class KimiFixture(FixtureBase):
                     marks=pytest.mark.smoke, id="smoke-bias-scale-fp16",
                 ),
                 pytest.param(
+                    32, 8, 2, 64, 32, 1.0, False, torch.bfloat16,
+                    marks=pytest.mark.full, id="smoke-nobias-bf16",
+                ),
+                pytest.param(
+                    32, 8, 2, 64, 32, 1.0, True, torch.bfloat16,
+                    marks=pytest.mark.full, id="smoke-bias-bf16",
+                ),
+                pytest.param(
                     64, 384, 8, 64, 32, 2.827, True, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="kimi-k2-smoke-bf16",
+                    marks=pytest.mark.full, id="kimi-k2-smoke-bf16",
                 ),
                 pytest.param(
                     512, 384, 8, 256, 128, 2.827, True, torch.bfloat16,
@@ -390,16 +390,16 @@ class VllmFixture(FixtureBase):
             " routed_scaling_factor, dtype",
             [
                 pytest.param(
-                    32, 8, 2, 64, 32, 1.0, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="smoke-bf16",
-                ),
-                pytest.param(
                     32, 8, 2, 64, 32, 2.827, torch.bfloat16,
                     marks=pytest.mark.smoke, id="smoke-scale-bf16",
                 ),
                 pytest.param(
+                    32, 8, 2, 64, 32, 1.0, torch.bfloat16,
+                    marks=pytest.mark.full, id="smoke-bf16",
+                ),
+                pytest.param(
                     64, 384, 8, 64, 32, 2.827, torch.bfloat16,
-                    marks=pytest.mark.smoke, id="kimi-k2-smoke-bf16",
+                    marks=pytest.mark.full, id="kimi-k2-smoke-bf16",
                 ),
                 pytest.param(
                     512, 384, 8, 256, 128, 2.827, torch.bfloat16,
