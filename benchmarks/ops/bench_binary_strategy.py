@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops.elementwise import AddOp
+from tileops.ops.elementwise import AddFwdOp
 from workloads.workload_base import FixtureBase
 
 # DNN-realistic 2D shapes — same-shape (no broadcast) for clean strategy comparison
@@ -163,7 +163,7 @@ def test_binary_strategy_bench(
     inputs = test.gen_inputs()
 
     shape = (n_total,)
-    op = AddOp(a_shape=shape, b_shape=shape, dtype=dtype, strategy=strategy)
+    op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=dtype, strategy=strategy)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "binary_strategy",

@@ -9,7 +9,12 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, exact_compare
-from tileops.ops.elementwise import BitwiseAndOp, BitwiseNotOp, BitwiseOrOp, BitwiseXorOp
+from tileops.ops.elementwise import (
+    BitwiseAndFwdOp,
+    BitwiseNotFwdOp,
+    BitwiseOrFwdOp,
+    BitwiseXorFwdOp,
+)
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -58,7 +63,7 @@ class BitwiseAndFixture(FixtureBase):
 def test_bitwise_and_op(n_total: int) -> None:
     test = BitwiseTest(n_total, torch.bitwise_and)
     shape = (n_total,)
-    op = BitwiseAndOp(a_shape=shape, b_shape=shape, dtype=torch.int32)
+    op = BitwiseAndFwdOp(a_shape=shape, b_shape=shape, dtype=torch.int32)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -80,7 +85,7 @@ class BitwiseOrFixture(FixtureBase):
 def test_bitwise_or_op(n_total: int) -> None:
     test = BitwiseTest(n_total, torch.bitwise_or)
     shape = (n_total,)
-    op = BitwiseOrOp(a_shape=shape, b_shape=shape, dtype=torch.int32)
+    op = BitwiseOrFwdOp(a_shape=shape, b_shape=shape, dtype=torch.int32)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -102,7 +107,7 @@ class BitwiseXorFixture(FixtureBase):
 def test_bitwise_xor_op(n_total: int) -> None:
     test = BitwiseTest(n_total, torch.bitwise_xor)
     shape = (n_total,)
-    op = BitwiseXorOp(a_shape=shape, b_shape=shape, dtype=torch.int32)
+    op = BitwiseXorFwdOp(a_shape=shape, b_shape=shape, dtype=torch.int32)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -117,9 +122,9 @@ _BROADCAST_PATTERNS = [
 ]
 
 _BITWISE_OPS = [
-    ("bitwise_and", BitwiseAndOp, torch.bitwise_and),
-    ("bitwise_or", BitwiseOrOp, torch.bitwise_or),
-    ("bitwise_xor", BitwiseXorOp, torch.bitwise_xor),
+    ("bitwise_and", BitwiseAndFwdOp, torch.bitwise_and),
+    ("bitwise_or", BitwiseOrFwdOp, torch.bitwise_or),
+    ("bitwise_xor", BitwiseXorFwdOp, torch.bitwise_xor),
 ]
 
 
@@ -191,7 +196,7 @@ class BitwiseNotTest(TestBase):
 @BitwiseFixture
 def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:
     test = BitwiseNotTest(n_total, dtype)
-    op = BitwiseNotOp(N_total=n_total, dtype=dtype)
+    op = BitwiseNotFwdOp(N_total=n_total, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=exact_compare)
 
 
@@ -201,10 +206,10 @@ def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:
     pytest.param(torch.float32, marks=pytest.mark.smoke),
 ])
 def test_bitwise_not_rejects_float_dtype(dtype: torch.dtype) -> None:
-    from tileops.kernels.elementwise import BitwiseNotKernel
+    from tileops.kernels.elementwise import BitwiseNotFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
-        BitwiseNotKernel(N_total=16, dtype=dtype)
+        BitwiseNotFwdKernel(N_total=16, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -215,11 +220,11 @@ def test_bitwise_not_rejects_float_dtype(dtype: torch.dtype) -> None:
 class BitwiseBinaryRejectFixture(FixtureBase):
     PARAMS = [
         ("op_cls, dtype", [
-            pytest.param(BitwiseAndOp, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(BitwiseAndOp, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(BitwiseAndOp, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(BitwiseOrOp, torch.float16, marks=pytest.mark.full),
-            pytest.param(BitwiseXorOp, torch.float16, marks=pytest.mark.full),
+            pytest.param(BitwiseAndFwdOp, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(BitwiseAndFwdOp, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(BitwiseAndFwdOp, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(BitwiseOrFwdOp, torch.float16, marks=pytest.mark.full),
+            pytest.param(BitwiseXorFwdOp, torch.float16, marks=pytest.mark.full),
         ]),
     ]
 

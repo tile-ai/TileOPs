@@ -12,11 +12,11 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import (
-    BitwiseNotOp,
-    ExpOp,
-    GeluOp,
-    IsnanOp,
-    LogicalNotOp,
+    BitwiseNotFwdOp,
+    ExpFwdOp,
+    GeluFwdOp,
+    IsnanFwdOp,
+    LogicalNotFwdOp,
 )
 from workloads.workload_base import FixtureBase
 
@@ -84,87 +84,87 @@ class UnaryElementwiseBenchFixture(FixtureBase):
         ("op_name, n_total, dtype, output_dtype, op_cls, baseline_fn, gen_inputs", [
             pytest.param(
                 "exp", _SHAPES[0], torch.float16, torch.float16,
-                ExpOp, torch.exp, _randn,
+                ExpFwdOp, torch.exp, _randn,
             ),
             pytest.param(
                 "exp", _SHAPES[1], torch.float16, torch.float16,
-                ExpOp, torch.exp, _randn,
+                ExpFwdOp, torch.exp, _randn,
             ),
             pytest.param(
                 "exp", _SHAPES[2], torch.float16, torch.float16,
-                ExpOp, torch.exp, _randn,
+                ExpFwdOp, torch.exp, _randn,
             ),
             pytest.param(
                 "exp", _SHAPES[0], torch.bfloat16, torch.bfloat16,
-                ExpOp, torch.exp, _randn,
+                ExpFwdOp, torch.exp, _randn,
             ),
             pytest.param(
                 "exp", _SHAPES[1], torch.bfloat16, torch.bfloat16,
-                ExpOp, torch.exp, _randn,
+                ExpFwdOp, torch.exp, _randn,
             ),
             pytest.param(
                 "exp", _SHAPES[2], torch.bfloat16, torch.bfloat16,
-                ExpOp, torch.exp, _randn,
+                ExpFwdOp, torch.exp, _randn,
             ),
             pytest.param(
                 "gelu", _SHAPES[0], torch.float16, torch.float16,
-                GeluOp, F.gelu, _randn,
+                GeluFwdOp, F.gelu, _randn,
             ),
             pytest.param(
                 "gelu", _SHAPES[1], torch.float16, torch.float16,
-                GeluOp, F.gelu, _randn,
+                GeluFwdOp, F.gelu, _randn,
             ),
             pytest.param(
                 "gelu", _SHAPES[2], torch.float16, torch.float16,
-                GeluOp, F.gelu, _randn,
+                GeluFwdOp, F.gelu, _randn,
             ),
             pytest.param(
                 "gelu", _SHAPES[0], torch.bfloat16, torch.bfloat16,
-                GeluOp, F.gelu, _randn,
+                GeluFwdOp, F.gelu, _randn,
             ),
             pytest.param(
                 "gelu", _SHAPES[1], torch.bfloat16, torch.bfloat16,
-                GeluOp, F.gelu, _randn,
+                GeluFwdOp, F.gelu, _randn,
             ),
             pytest.param(
                 "gelu", _SHAPES[2], torch.bfloat16, torch.bfloat16,
-                GeluOp, F.gelu, _randn,
+                GeluFwdOp, F.gelu, _randn,
             ),
             pytest.param(
                 "logical_not", _SHAPES[0], torch.float16, torch.bool,
-                LogicalNotOp, torch.logical_not, _logical_inputs,
+                LogicalNotFwdOp, torch.logical_not, _logical_inputs,
             ),
             pytest.param(
                 "logical_not", _SHAPES[1], torch.float16, torch.bool,
-                LogicalNotOp, torch.logical_not, _logical_inputs,
+                LogicalNotFwdOp, torch.logical_not, _logical_inputs,
             ),
             pytest.param(
                 "logical_not", _SHAPES[2], torch.float16, torch.bool,
-                LogicalNotOp, torch.logical_not, _logical_inputs,
+                LogicalNotFwdOp, torch.logical_not, _logical_inputs,
             ),
             pytest.param(
                 "bitwise_not", _SHAPES[0], torch.int32, torch.int32,
-                BitwiseNotOp, torch.bitwise_not, _bitwise_inputs,
+                BitwiseNotFwdOp, torch.bitwise_not, _bitwise_inputs,
             ),
             pytest.param(
                 "bitwise_not", _SHAPES[1], torch.int32, torch.int32,
-                BitwiseNotOp, torch.bitwise_not, _bitwise_inputs,
+                BitwiseNotFwdOp, torch.bitwise_not, _bitwise_inputs,
             ),
             pytest.param(
                 "bitwise_not", _SHAPES[2], torch.int32, torch.int32,
-                BitwiseNotOp, torch.bitwise_not, _bitwise_inputs,
+                BitwiseNotFwdOp, torch.bitwise_not, _bitwise_inputs,
             ),
             pytest.param(
                 "isnan", _SHAPES[0], torch.float16, torch.bool,
-                IsnanOp, torch.isnan, _special_inputs,
+                IsnanFwdOp, torch.isnan, _special_inputs,
             ),
             pytest.param(
                 "isnan", _SHAPES[1], torch.float16, torch.bool,
-                IsnanOp, torch.isnan, _special_inputs,
+                IsnanFwdOp, torch.isnan, _special_inputs,
             ),
             pytest.param(
                 "isnan", _SHAPES[2], torch.float16, torch.bool,
-                IsnanOp, torch.isnan, _special_inputs,
+                IsnanFwdOp, torch.isnan, _special_inputs,
             ),
         ]),
     ]
