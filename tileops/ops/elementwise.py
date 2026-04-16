@@ -6,7 +6,7 @@ Three Op template base classes:
 - FusedGatedOp: wraps FusedGatedKernel with (M, 2N) layout
 
 torch.compile support:
-- All 55 concrete ops are registered via @torch.library.custom_op at module load time
+- All 66 concrete ops are registered via @torch.library.custom_op at module load time
 - Three factory functions (_register_unary_custom_op, _register_binary_custom_op,
   _register_fused_gated_custom_op) register every op; instances are looked up at
   runtime via _OP_REGISTRY keyed by id(instance)
@@ -1789,7 +1789,7 @@ class SinusoidalFwdOp(Op):
 
 
 # ---------------------------------------------------------------------------
-# torch.compile registration for all 55 concrete ops
+# torch.compile registration for all 66 concrete ops
 # ---------------------------------------------------------------------------
 
 # --- Unary ops: float-preserving output (1 + 17 + 8 + 1 = 27 ops) ---
