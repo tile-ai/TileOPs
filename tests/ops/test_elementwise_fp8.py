@@ -40,18 +40,18 @@ class Fp8DtypeAcceptanceFixture(FixtureBase):
 @Fp8DtypeAcceptanceFixture
 def test_unary_kernel_accepts_fp8(dtype):
     """UnaryKernel base class can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import ReluKernel
+    from tileops.kernels.elementwise import ReluFwdKernel
 
-    kernel = ReluKernel(N_total=_N, dtype=dtype)
+    kernel = ReluFwdKernel(N_total=_N, dtype=dtype)
     assert kernel.dtype == dtype
 
 
 @Fp8DtypeAcceptanceFixture
 def test_binary_kernel_accepts_fp8(dtype):
     """BinaryKernel base class can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import AddKernel
+    from tileops.kernels.elementwise import AddFwdKernel
 
-    kernel = AddKernel(
+    kernel = AddFwdKernel(
         N_total=_N, dtype=dtype,
         coalesced_shape=(_N,), a_strides=(1,), b_strides=(1,),
         a_numel=_N, b_numel=_N,
@@ -62,10 +62,10 @@ def test_binary_kernel_accepts_fp8(dtype):
 @Fp8DtypeAcceptanceFixture
 def test_fused_gated_kernel_accepts_fp8(dtype):
     """FusedGatedKernel base class can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import SiluAndMulKernel
+    from tileops.kernels.elementwise import SiluAndMulFwdKernel
 
     M, N = 64, 128
-    kernel = SiluAndMulKernel(M=M, N=N, dtype=dtype)
+    kernel = SiluAndMulFwdKernel(M=M, N=N, dtype=dtype)
     assert kernel.dtype == dtype
 
 
@@ -77,9 +77,9 @@ def test_fused_gated_kernel_accepts_fp8(dtype):
 @Fp8DtypeAcceptanceFixture
 def test_fp8_default_config_npt16(dtype):
     """fp8 default_config returns num_per_thread=16 for 128-bit alignment."""
-    from tileops.kernels.elementwise import ReluKernel
+    from tileops.kernels.elementwise import ReluFwdKernel
 
-    kernel = ReluKernel(N_total=_N, dtype=dtype)
+    kernel = ReluFwdKernel(N_total=_N, dtype=dtype)
     assert kernel.config["num_per_thread"] == 16
 
 
@@ -91,11 +91,11 @@ def test_fp8_default_config_npt16(dtype):
 @pytest.mark.smoke
 def test_unary_kernel_forward_e5m2_dtype():
     """UnaryKernel.forward() returns float8_e5m2, not float16."""
-    from tileops.kernels.elementwise import ExpKernel
+    from tileops.kernels.elementwise import ExpFwdKernel
 
     n = _N
     dtype = torch.float8_e5m2
-    kernel = ExpKernel(N_total=n, dtype=dtype)
+    kernel = ExpFwdKernel(N_total=n, dtype=dtype)
     x = (torch.randn(n, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
     out = kernel(x)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
@@ -104,11 +104,11 @@ def test_unary_kernel_forward_e5m2_dtype():
 @pytest.mark.smoke
 def test_binary_kernel_forward_e5m2_dtype():
     """BinaryKernel.forward() returns float8_e5m2, not float16."""
-    from tileops.kernels.elementwise import AddKernel
+    from tileops.kernels.elementwise import AddFwdKernel
 
     n = _N
     dtype = torch.float8_e5m2
-    kernel = AddKernel(
+    kernel = AddFwdKernel(
         N_total=n, dtype=dtype,
         coalesced_shape=(n,), a_strides=(1,), b_strides=(1,),
         a_numel=n, b_numel=n,
@@ -122,11 +122,11 @@ def test_binary_kernel_forward_e5m2_dtype():
 @pytest.mark.smoke
 def test_fused_gated_kernel_forward_e5m2_dtype():
     """FusedGatedKernel.forward() returns float8_e5m2, not float16."""
-    from tileops.kernels.elementwise import SiluAndMulKernel
+    from tileops.kernels.elementwise import SiluAndMulFwdKernel
 
     M, N = 64, 128
     dtype = torch.float8_e5m2
-    kernel = SiluAndMulKernel(M=M, N=N, dtype=dtype)
+    kernel = SiluAndMulFwdKernel(M=M, N=N, dtype=dtype)
     x = (torch.randn(M, 2 * N, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
     out = kernel(x)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
@@ -141,7 +141,7 @@ def test_fused_gated_direct_e5m2_preserves_inf():
     The fix routes e5m2 through an fp16 output buffer (matching
     explicit_parallel) so PyTorch's .to() preserves Inf/NaN.
     """
-    from tileops.kernels.elementwise import SiluAndMulKernel
+    from tileops.kernels.elementwise import SiluAndMulFwdKernel
 
     M, N = 1, 16
     dtype = torch.float8_e5m2
@@ -150,7 +150,7 @@ def test_fused_gated_direct_e5m2_preserves_inf():
     value_fp16 = torch.full((M, N), 50000.0, dtype=torch.float16, device="cuda")
     x_fp16 = torch.cat([gate_fp16, value_fp16], dim=1)
     x = x_fp16.to(dtype)
-    kernel = SiluAndMulKernel(M=M, N=N, dtype=dtype, strategy="direct")
+    kernel = SiluAndMulFwdKernel(M=M, N=N, dtype=dtype, strategy="direct")
     out = kernel(x)
     out_fp32 = out.to(torch.float32)
     assert torch.any(torch.isinf(out_fp32)), (
@@ -162,11 +162,11 @@ def test_fused_gated_direct_e5m2_preserves_inf():
 @pytest.mark.smoke
 def test_unary_kernel_forward_e5m2_preserves_inf():
     """UnaryKernel.forward() preserves Inf for e5m2 (direct kernel call)."""
-    from tileops.kernels.elementwise import ExpKernel
+    from tileops.kernels.elementwise import ExpFwdKernel
 
     n = _N
     dtype = torch.float8_e5m2
-    kernel = ExpKernel(N_total=n, dtype=dtype)
+    kernel = ExpFwdKernel(N_total=n, dtype=dtype)
     # exp(16) overflows to Inf in fp16
     x = torch.full((n,), 16.0, dtype=torch.float16, device="cuda").to(dtype)
     out = kernel(x)
@@ -209,11 +209,11 @@ class Fp8ReluTest(TestBase):
 @Fp8UnaryFixture
 def test_relu_fp8(dtype):
     """ReLU correctness with fp8 input/output."""
-    from tileops.ops.elementwise import ReluOp
+    from tileops.ops.elementwise import ReluFwdOp
 
     n = _N
     test = Fp8ReluTest(n, dtype)
-    op = ReluOp(N_total=n, dtype=dtype)
+    op = ReluFwdOp(N_total=n, dtype=dtype)
     inputs = test.gen_inputs()
     test.check(op, *inputs, atol=0, rtol=0, compare=exact_compare)
 
@@ -240,11 +240,11 @@ class Fp8AddTest(TestBase):
 @Fp8BinaryFixture
 def test_add_fp8(dtype):
     """Add correctness with fp8, including broadcast."""
-    from tileops.ops.elementwise import AddOp
+    from tileops.ops.elementwise import AddFwdOp
 
     shape = (128, 128)
     test = Fp8AddTest(shape, dtype)
-    op = AddOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     inputs = test.gen_inputs()
     test.check(op, *inputs, atol=0, rtol=0, compare=exact_compare)
 
@@ -252,13 +252,13 @@ def test_add_fp8(dtype):
 @Fp8BinaryFixture
 def test_add_fp8_broadcast(dtype):
     """Add correctness with fp8 and row broadcast."""
-    from tileops.ops.elementwise import AddOp
+    from tileops.ops.elementwise import AddFwdOp
 
     a_shape = (128, 128)
     b_shape = (1, 128)
     a = (torch.randn(a_shape, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
     b = (torch.randn(b_shape, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
-    op = AddOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
+    op = AddFwdOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
     ref = (a.to(torch.float16) + b.to(torch.float16)).to(dtype)
     out = op(a, b)
     assert torch.equal(out, ref)
@@ -289,11 +289,11 @@ class Fp8SiluAndMulTest(TestBase):
 @Fp8FusedGatedFixture
 def test_silu_and_mul_fp8(dtype):
     """SiLU-and-Mul correctness with fp8."""
-    from tileops.ops.elementwise import SiluAndMulOp
+    from tileops.ops.elementwise import SiluAndMulFwdOp
 
     M, N = 64, 128
     test = Fp8SiluAndMulTest(M, N, dtype)
-    op = SiluAndMulOp(M=M, N=N, dtype=dtype)
+    op = SiluAndMulFwdOp(M=M, N=N, dtype=dtype)
     inputs = test.gen_inputs()
     out = op(*inputs)
     ref = test.ref_program(*inputs)
@@ -315,7 +315,7 @@ def test_e4m3fn_saturates_on_overflow():
     Per NVIDIA spec, e4m3fn has no Inf representation. Values exceeding
     the max representable magnitude clamp to +/-448.0.
     """
-    from tileops.ops.elementwise import AddOp
+    from tileops.ops.elementwise import AddFwdOp
 
     # Create values near e4m3fn max (448.0)
     n = 1024
@@ -326,7 +326,7 @@ def test_e4m3fn_saturates_on_overflow():
     dtype = torch.float8_e4m3fn
     a = a_fp16.to(dtype)
     b = b_fp16.to(dtype)
-    op = AddOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
+    op = AddFwdOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
     out = op(a, b)
     out_fp32 = out.to(torch.float32)
     # Result should be 448.0 (saturated max), not Inf
@@ -346,7 +346,7 @@ def test_e5m2_overflow_produces_inf():
     The kernel produces fp16 output to preserve Inf, then the Op layer
     casts to e5m2 via PyTorch's non-saturating conversion.
     """
-    from tileops.ops.elementwise import AddOp
+    from tileops.ops.elementwise import AddFwdOp
 
     n = 1024
     a_shape = (n,)
@@ -356,7 +356,7 @@ def test_e5m2_overflow_produces_inf():
     b_fp16 = torch.full((n,), 40000.0, dtype=torch.float16, device="cuda")
     a = a_fp16.to(dtype)
     b = b_fp16.to(dtype)
-    op = AddOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
+    op = AddFwdOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
     out = op(a, b)
     out_fp32 = out.to(torch.float32)
     # e5m2 supports Inf, so overflowed values should be Inf
@@ -368,14 +368,14 @@ def test_e5m2_overflow_produces_inf():
 @pytest.mark.smoke
 def test_e5m2_exp_overflow_produces_inf():
     """e5m2 exp(large) should produce Inf, matching PyTorch reference."""
-    from tileops.ops.elementwise import ExpOp
+    from tileops.ops.elementwise import ExpFwdOp
 
     n = 1024
     dtype = torch.float8_e5m2
     # exp(16) in fp16 overflows to Inf
     x_fp16 = torch.full((n,), 16.0, dtype=torch.float16, device="cuda")
     x = x_fp16.to(dtype)
-    op = ExpOp(N_total=n, dtype=dtype)
+    op = ExpFwdOp(N_total=n, dtype=dtype)
     out = op(x)
     ref = torch.exp(x.to(torch.float16)).to(dtype)
     assert torch.equal(out, ref), (
@@ -387,14 +387,14 @@ def test_e5m2_exp_overflow_produces_inf():
 @pytest.mark.smoke
 def test_e5m2_div_by_zero_produces_inf():
     """e5m2 1/0 should produce Inf, matching PyTorch reference."""
-    from tileops.ops.elementwise import DivOp
+    from tileops.ops.elementwise import DivFwdOp
 
     n = 1024
     dtype = torch.float8_e5m2
     a_shape = (n,)
     a = torch.ones(n, dtype=torch.float16, device="cuda").to(dtype)
     b = torch.zeros(n, dtype=torch.float16, device="cuda").to(dtype)
-    op = DivOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
+    op = DivFwdOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
     out = op(a, b)
     out_fp32 = out.to(torch.float32)
     assert torch.all(torch.isinf(out_fp32)), (
@@ -405,12 +405,12 @@ def test_e5m2_div_by_zero_produces_inf():
 @pytest.mark.smoke
 def test_e5m2_log_zero_produces_neg_inf():
     """e5m2 log(0) should produce -Inf, matching PyTorch reference."""
-    from tileops.ops.elementwise import LogOp
+    from tileops.ops.elementwise import LogFwdOp
 
     n = 1024
     dtype = torch.float8_e5m2
     x = torch.zeros(n, dtype=torch.float16, device="cuda").to(dtype)
-    op = LogOp(N_total=n, dtype=dtype)
+    op = LogFwdOp(N_total=n, dtype=dtype)
     out = op(x)
     ref = torch.log(x.to(torch.float16)).to(dtype)
     assert torch.equal(out, ref), (
@@ -422,13 +422,13 @@ def test_e5m2_log_zero_produces_neg_inf():
 @pytest.mark.smoke
 def test_e4m3fn_exp_overflow_saturates():
     """e4m3fn exp(large) should saturate to 448.0, not produce Inf."""
-    from tileops.ops.elementwise import ExpOp
+    from tileops.ops.elementwise import ExpFwdOp
 
     n = 1024
     dtype = torch.float8_e4m3fn
     x_fp16 = torch.full((n,), 10.0, dtype=torch.float16, device="cuda")
     x = x_fp16.to(dtype)
-    op = ExpOp(N_total=n, dtype=dtype)
+    op = ExpFwdOp(N_total=n, dtype=dtype)
     out = op(x)
     out_fp32 = out.to(torch.float32)
     e4m3_max = torch.finfo(torch.float8_e4m3fn).max
@@ -450,14 +450,14 @@ def test_fp8_accumulation_in_higher_precision():
     SiLU involves sigmoid which requires higher precision. The result
     should match fp16 computation cast back to fp8, not direct fp8 arithmetic.
     """
-    from tileops.ops.elementwise import SiluOp
+    from tileops.ops.elementwise import SiluFwdOp
 
     n = _N
     dtype = torch.float8_e4m3fn
     # Values in a range where fp8 precision matters
     x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 2.0
     x = x_fp16.to(dtype)
-    op = SiluOp(N_total=n, dtype=dtype)
+    op = SiluFwdOp(N_total=n, dtype=dtype)
     out = op(x)
     # Reference: compute in fp16, cast back to fp8
     ref = torch.nn.functional.silu(x.to(torch.float16)).to(dtype)
@@ -529,20 +529,20 @@ def test_wrap_fp8_accumulation_arity2():
 
 @pytest.mark.smoke
 def test_bitwise_kernel_rejects_fp8():
-    """BitwiseNotKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
-    from tileops.kernels.elementwise import BitwiseNotKernel
+    """BitwiseNotFwdKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
+    from tileops.kernels.elementwise import BitwiseNotFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
-        BitwiseNotKernel(N_total=_N, dtype=torch.float8_e4m3fn)
+        BitwiseNotFwdKernel(N_total=_N, dtype=torch.float8_e4m3fn)
 
 
 @pytest.mark.smoke
 def test_binary_bitwise_kernel_rejects_fp8():
-    """BitwiseAndKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
-    from tileops.kernels.elementwise import BitwiseAndKernel
+    """BitwiseAndFwdKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
+    from tileops.kernels.elementwise import BitwiseAndFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
-        BitwiseAndKernel(
+        BitwiseAndFwdKernel(
             N_total=_N, dtype=torch.float8_e4m3fn,
             coalesced_shape=(_N,), a_strides=(1,), b_strides=(1,),
             a_numel=_N, b_numel=_N,

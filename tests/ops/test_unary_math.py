@@ -9,23 +9,23 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import (
-    AbsOp,
-    CeilOp,
-    CosOp,
-    ErfOp,
-    Expm1Op,
-    ExpOp,
-    FloorOp,
-    Log1pOp,
-    LogOp,
-    NegOp,
-    ReciprocalOp,
-    RoundOp,
-    RsqrtOp,
-    SignOp,
-    SinOp,
-    SqrtOp,
-    TruncOp,
+    AbsFwdOp,
+    CeilFwdOp,
+    CosFwdOp,
+    ErfFwdOp,
+    ExpFwdOp,
+    Expm1FwdOp,
+    FloorFwdOp,
+    Log1pFwdOp,
+    LogFwdOp,
+    NegFwdOp,
+    ReciprocalFwdOp,
+    RoundFwdOp,
+    RsqrtFwdOp,
+    SignFwdOp,
+    SinFwdOp,
+    SqrtFwdOp,
+    TruncFwdOp,
 )
 
 
@@ -110,52 +110,52 @@ def _make_math_test(n_total, dtype, gen_fn, ref_fn, op_cls):
 
 @MathFixture
 def test_exp(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, torch.exp, ExpOp)
+    _make_math_test(n_total, dtype, _randn, torch.exp, ExpFwdOp)
 
 
 @MathFixture
 def test_log(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _positive, torch.log, LogOp)
+    _make_math_test(n_total, dtype, _positive, torch.log, LogFwdOp)
 
 
 @MathFixture
 def test_sqrt(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _positive, torch.sqrt, SqrtOp)
+    _make_math_test(n_total, dtype, _positive, torch.sqrt, SqrtFwdOp)
 
 
 @MathFixture
 def test_rsqrt(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _positive, torch.rsqrt, RsqrtOp)
+    _make_math_test(n_total, dtype, _positive, torch.rsqrt, RsqrtFwdOp)
 
 
 @MathFixture
 def test_abs(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, torch.abs, AbsOp)
+    _make_math_test(n_total, dtype, _randn, torch.abs, AbsFwdOp)
 
 
 @MathFixture
 def test_neg(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, torch.neg, NegOp)
+    _make_math_test(n_total, dtype, _randn, torch.neg, NegFwdOp)
 
 
 @MathFixture
 def test_reciprocal(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _nonzero, torch.reciprocal, ReciprocalOp)
+    _make_math_test(n_total, dtype, _nonzero, torch.reciprocal, ReciprocalFwdOp)
 
 
 @MathFixture
 def test_sign(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, torch.sign, SignOp)
+    _make_math_test(n_total, dtype, _randn, torch.sign, SignFwdOp)
 
 
 @MathFixture
 def test_sin(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, torch.sin, SinOp)
+    _make_math_test(n_total, dtype, _randn, torch.sin, SinFwdOp)
 
 
 @MathFixture
 def test_cos(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, torch.cos, CosOp)
+    _make_math_test(n_total, dtype, _randn, torch.cos, CosFwdOp)
 
 
 @MathFixture
@@ -165,7 +165,7 @@ def test_floor(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         _randn,
         lambda x: torch.floor(x.float()).to(x.dtype),
-        FloorOp,
+        FloorFwdOp,
     )
 
 
@@ -176,7 +176,7 @@ def test_ceil(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         _randn,
         lambda x: torch.ceil(x.float()).to(x.dtype),
-        CeilOp,
+        CeilFwdOp,
     )
 
 
@@ -187,7 +187,7 @@ def test_round(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         _randn,
         lambda x: torch.round(x.float()).to(x.dtype),
-        RoundOp,
+        RoundFwdOp,
     )
 
 
@@ -198,13 +198,13 @@ def test_trunc(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         _randn,
         lambda x: torch.trunc(x.float()).to(x.dtype),
-        TruncOp,
+        TruncFwdOp,
     )
 
 
 @MathFixture
 def test_erf(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, torch.erf, ErfOp)
+    _make_math_test(n_total, dtype, _randn, torch.erf, ErfFwdOp)
 
 
 @MathFixture
@@ -212,20 +212,20 @@ def test_log1p(n_total: int, dtype: torch.dtype) -> None:
     def _gen(n, gen_dtype):
         return torch.rand(n, device="cuda", dtype=gen_dtype).clamp(min=0.01)
 
-    _make_math_test(n_total, dtype, _gen, torch.log1p, Log1pOp)
+    _make_math_test(n_total, dtype, _gen, torch.log1p, Log1pFwdOp)
 
 
 @MathFixture
 def test_expm1(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, torch.expm1, Expm1Op)
+    _make_math_test(n_total, dtype, _randn, torch.expm1, Expm1FwdOp)
 
 
 @pytest.mark.smoke
 def test_math_ops_reject_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import ExpKernel
+    from tileops.kernels.elementwise import ExpFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
-        ExpKernel(N_total=16, dtype=torch.int32)
+        ExpFwdKernel(N_total=16, dtype=torch.int32)
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ def test_sqrt_edge(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
         torch.sqrt,
-        SqrtOp,
+        SqrtFwdOp,
     )
 
 
@@ -251,7 +251,7 @@ def test_rsqrt_edge(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
         torch.rsqrt,
-        RsqrtOp,
+        RsqrtFwdOp,
     )
 
 
@@ -262,7 +262,7 @@ def test_log_edge(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
         torch.log,
-        LogOp,
+        LogFwdOp,
     )
 
 
@@ -273,7 +273,7 @@ def test_log1p_edge(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         lambda n, d: _repeat_values([-2.0, -1.0, 0.0, 1e-7], n, d),
         torch.log1p,
-        Log1pOp,
+        Log1pFwdOp,
     )
 
 
@@ -284,7 +284,7 @@ def test_exp_edge(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         lambda n, d: _repeat_values([0.0, 88.8, -88.8, 200.0], n, d),
         torch.exp,
-        ExpOp,
+        ExpFwdOp,
     )
 
 
@@ -295,7 +295,7 @@ def test_expm1_edge(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         lambda n, d: _repeat_values([0.0, 88.8, -88.8, 1e-7], n, d),
         torch.expm1,
-        Expm1Op,
+        Expm1FwdOp,
     )
 
 
@@ -306,7 +306,7 @@ def test_erf_edge(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         lambda n, d: _repeat_values([0.0, 3.0, -3.0, 100.0], n, d),
         torch.erf,
-        ErfOp,
+        ErfFwdOp,
     )
 
 
@@ -317,7 +317,7 @@ def test_reciprocal_edge(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         lambda n, d: _repeat_values([0.0, 1.0, -1.0, 1e-38], n, d),
         torch.reciprocal,
-        ReciprocalOp,
+        ReciprocalFwdOp,
     )
 
 
@@ -328,7 +328,7 @@ def test_sign_edge(n_total: int, dtype: torch.dtype) -> None:
         dtype,
         lambda n, d: _repeat_values([-5.0, 0.0, 3.0, float("nan")], n, d),
         torch.sign,
-        SignOp,
+        SignFwdOp,
     )
 
 

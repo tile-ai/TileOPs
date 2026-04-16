@@ -6,22 +6,22 @@ import pytest
 import torch
 
 from tileops.kernels.elementwise import (
-    AddKernel,
-    EluKernel,
-    EqKernel,
-    GeKernel,
-    GtKernel,
-    HardtanhKernel,
+    AddFwdKernel,
+    EluFwdKernel,
+    EqFwdKernel,
+    GeFwdKernel,
+    GtFwdKernel,
+    HardtanhFwdKernel,
     # Independent kernels (custom-signature)
-    LeakyReluKernel,
-    LeKernel,
-    LogicalAndKernel,
-    LogicalOrKernel,
-    LtKernel,
-    NeKernel,
-    PreluKernel,
-    ReluKernel,
-    SiluAndMulKernel,
+    LeakyReluFwdKernel,
+    LeFwdKernel,
+    LogicalAndFwdKernel,
+    LogicalOrFwdKernel,
+    LtFwdKernel,
+    NeFwdKernel,
+    PreluFwdKernel,
+    ReluFwdKernel,
+    SiluAndMulFwdKernel,
 )
 
 # ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ from tileops.kernels.elementwise import (
 # ---------------------------------------------------------------------------
 
 
-INDEPENDENT_KERNELS_SIMPLE = [LeakyReluKernel, EluKernel, HardtanhKernel]
+INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKernel]
 
 
 @pytest.mark.full
@@ -64,7 +64,7 @@ def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expecte
 )
 def test_prelu_preserves_dtype_driven_default_npt(dtype, expected_npt):
     """Prelu is the custom-signature outlier and should keep the same dtype mapping."""
-    kernel = PreluKernel.__new__(PreluKernel)
+    kernel = PreluFwdKernel.__new__(PreluFwdKernel)
     kernel.dtype = dtype
     assert kernel.default_config["num_per_thread"] == expected_npt
 
@@ -74,8 +74,8 @@ def test_prelu_preserves_dtype_driven_default_npt(dtype, expected_npt):
 # ---------------------------------------------------------------------------
 
 
-COMPARISON_KERNELS = [EqKernel, NeKernel, GtKernel, LtKernel, GeKernel, LeKernel]
-LOGICAL_BINARY_KERNELS = [LogicalAndKernel, LogicalOrKernel]
+COMPARISON_KERNELS = [EqFwdKernel, NeFwdKernel, GtFwdKernel, LtFwdKernel, GeFwdKernel, LeFwdKernel]
+LOGICAL_BINARY_KERNELS = [LogicalAndFwdKernel, LogicalOrFwdKernel]
 
 
 @pytest.mark.full
@@ -98,10 +98,10 @@ def test_bool_like_elementwise_kernels_expose_torch_dtype_output(kernel_cls):
 def test_unary_kernel_sets_output_dtype_in_init():
     """Unary kernels should initialize `output_dtype` during construction."""
     with (
-        patch.object(ReluKernel, "_build_kernel", return_value=None),
-        patch.object(ReluKernel, "init_config"),
+        patch.object(ReluFwdKernel, "_build_kernel", return_value=None),
+        patch.object(ReluFwdKernel, "init_config"),
     ):
-        kernel = ReluKernel(N_total=1024, dtype=torch.float16)
+        kernel = ReluFwdKernel(N_total=1024, dtype=torch.float16)
     assert kernel.output_dtype == torch.float16
 
 
@@ -109,10 +109,10 @@ def test_unary_kernel_sets_output_dtype_in_init():
 def test_binary_kernel_sets_output_dtype_in_init():
     """Binary kernels should initialize `output_dtype` during construction."""
     with (
-        patch.object(AddKernel, "_build_kernel", return_value=None),
-        patch.object(AddKernel, "init_config"),
+        patch.object(AddFwdKernel, "_build_kernel", return_value=None),
+        patch.object(AddFwdKernel, "init_config"),
     ):
-        kernel = AddKernel(
+        kernel = AddFwdKernel(
             N_total=1024, dtype=torch.float16,
             coalesced_shape=(1024,), a_strides=(1,), b_strides=(1,),
             a_numel=1024, b_numel=1024,
@@ -124,10 +124,10 @@ def test_binary_kernel_sets_output_dtype_in_init():
 def test_fused_gated_kernel_sets_output_dtype_in_init():
     """Fused-gated kernels should initialize `output_dtype` during construction."""
     with (
-        patch.object(SiluAndMulKernel, "_build_kernel", return_value=None),
-        patch.object(SiluAndMulKernel, "init_config"),
+        patch.object(SiluAndMulFwdKernel, "_build_kernel", return_value=None),
+        patch.object(SiluAndMulFwdKernel, "init_config"),
     ):
-        kernel = SiluAndMulKernel(M=32, N=1024, dtype=torch.float16)
+        kernel = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float16)
     assert kernel.output_dtype == torch.float16
 
 
@@ -135,11 +135,11 @@ def test_fused_gated_kernel_sets_output_dtype_in_init():
 def test_unary_default_config_preserves_strategy_npt_split():
     """Unary kernels should keep the explicit_parallel/register_copy npt split."""
     with (
-        patch.object(ReluKernel, "_build_kernel", return_value=None),
-        patch.object(ReluKernel, "init_config"),
+        patch.object(ReluFwdKernel, "_build_kernel", return_value=None),
+        patch.object(ReluFwdKernel, "init_config"),
     ):
-        explicit = ReluKernel(N_total=1024, dtype=torch.float16, strategy="explicit_parallel")
-        register = ReluKernel(N_total=1024, dtype=torch.float16, strategy="register_copy")
+        explicit = ReluFwdKernel(N_total=1024, dtype=torch.float16, strategy="explicit_parallel")
+        register = ReluFwdKernel(N_total=1024, dtype=torch.float16, strategy="register_copy")
     assert explicit.default_config["num_per_thread"] == 4
     assert register.default_config["num_per_thread"] == 8
 
@@ -157,11 +157,11 @@ def test_binary_default_config_preserves_strategy_npt_split():
         "b_numel": 1024,
     }
     with (
-        patch.object(AddKernel, "_build_kernel", return_value=None),
-        patch.object(AddKernel, "init_config"),
+        patch.object(AddFwdKernel, "_build_kernel", return_value=None),
+        patch.object(AddFwdKernel, "init_config"),
     ):
-        explicit = AddKernel(strategy="explicit_parallel", **common_kwargs)
-        register = AddKernel(strategy="register_copy", **common_kwargs)
+        explicit = AddFwdKernel(strategy="explicit_parallel", **common_kwargs)
+        register = AddFwdKernel(strategy="register_copy", **common_kwargs)
     assert explicit.default_config["num_per_thread"] == 4
     assert register.default_config["num_per_thread"] == 8
 
@@ -170,10 +170,10 @@ def test_binary_default_config_preserves_strategy_npt_split():
 def test_fused_gated_default_config_preserves_strategy_npt_split():
     """Fused-gated kernels should keep the direct/explicit_parallel npt split."""
     with (
-        patch.object(SiluAndMulKernel, "_build_kernel", return_value=None),
-        patch.object(SiluAndMulKernel, "init_config"),
+        patch.object(SiluAndMulFwdKernel, "_build_kernel", return_value=None),
+        patch.object(SiluAndMulFwdKernel, "init_config"),
     ):
-        direct = SiluAndMulKernel(M=32, N=1024, dtype=torch.float16, strategy="direct")
-        explicit = SiluAndMulKernel(M=32, N=1024, dtype=torch.float16, strategy="explicit_parallel")
+        direct = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float16, strategy="direct")
+        explicit = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float16, strategy="explicit_parallel")
     assert direct.default_config["num_per_thread"] == 8
     assert explicit.default_config["num_per_thread"] == 4

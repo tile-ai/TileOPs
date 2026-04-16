@@ -20,12 +20,12 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.kernels.elementwise import (
-    ErfKernel,
-    MishKernel,
-    ReluKernel,
+    ErfFwdKernel,
+    MishFwdKernel,
+    ReluFwdKernel,
     _make_unary_explicit,
 )
-from tileops.ops.elementwise import ErfOp, GeluOp, MishOp, ReluOp
+from tileops.ops.elementwise import ErfFwdOp, GeluFwdOp, MishFwdOp, ReluFwdOp
 from workloads.activation import ReluTest
 from workloads.workload_base import FixtureBase
 
@@ -106,7 +106,7 @@ def test_r2_small_tensor_unary(n_total: int, dtype: torch.dtype) -> None:
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = ReluOp(N_total=n_total, dtype=dtype)
+    op = ReluFwdOp(N_total=n_total, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -151,7 +151,7 @@ def test_r3_jit_compilation_cost(n_total: int) -> None:
     # Cold: time the first call including JIT compilation
     torch.cuda.synchronize()
     t0 = time.perf_counter()
-    op = ReluOp(N_total=n_total, dtype=dtype)
+    op = ReluFwdOp(N_total=n_total, dtype=dtype)
     _ = op(x)
     torch.cuda.synchronize()
     cold_ms = (time.perf_counter() - t0) * 1000.0
@@ -209,7 +209,7 @@ def test_r4_default_strategy_unary(
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = ReluOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_strategy_unary",
@@ -251,7 +251,7 @@ def test_r4_default_strategy_gelu(
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = GeluOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    op = GeluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_strategy_gelu",
@@ -296,7 +296,7 @@ def test_r5_boundary_guard(n_total: int, align_label: str) -> None:
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = ReluOp(N_total=n_total, dtype=dtype, strategy="explicit_parallel")
+    op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy="explicit_parallel")
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r5_boundary",
@@ -312,9 +312,9 @@ def test_r5_boundary_guard(n_total: int, align_label: str) -> None:
 
 
 _R6_KERNEL_OPS = [
-    ("relu", ReluKernel),
-    ("erf", ErfKernel),
-    ("mish", MishKernel),
+    ("relu", ReluFwdKernel),
+    ("erf", ErfFwdKernel),
+    ("mish", MishFwdKernel),
 ]
 
 _R6_THREADS = [128, 256]
@@ -430,7 +430,7 @@ def test_r7_dtype_npt(
 
     # Build kernel directly with the desired threads/npt so block_size is correct
     kernel_fn = _make_unary_explicit(
-        n_total, dtype_str, ReluKernel.op_func,
+        n_total, dtype_str, ReluFwdKernel.op_func,
         threads=threads, num_per_thread=num_per_thread,
     )
     compiled = kernel_fn(threads, num_per_thread)
@@ -461,7 +461,7 @@ def test_relu_bench(n_total: int, dtype: torch.dtype) -> None:
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = ReluOp(N_total=n_total, dtype=dtype)
+    op = ReluFwdOp(N_total=n_total, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

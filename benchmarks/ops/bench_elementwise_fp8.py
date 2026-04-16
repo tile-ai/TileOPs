@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops.elementwise import AddOp, ExpOp, ReluOp, SiluAndMulOp
+from tileops.ops.elementwise import AddFwdOp, ExpFwdOp, ReluFwdOp, SiluAndMulFwdOp
 from workloads.workload_base import FixtureBase
 
 # Shapes modeled on real LLM workloads: batch × seq_len × hidden_dim
@@ -95,8 +95,8 @@ class Fp8FusedGatedBenchmark(BenchmarkBase[Fp8FusedGatedBenchCase]):
 
 _unary_params = []
 for _op_name, _op_cls, _bl_fn in [
-    ("relu_fp8", ReluOp, torch.relu),
-    ("exp_fp8", ExpOp, torch.exp),
+    ("relu_fp8", ReluFwdOp, torch.relu),
+    ("exp_fp8", ExpFwdOp, torch.exp),
 ]:
     for _shape in _SHAPES_1D:
         for _dt in _FP8_DTYPES:
@@ -151,7 +151,7 @@ def test_fp8_binary_bench(op_name, n_total, dtype):
     bm = Fp8BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = AddOp(a_shape=(n_total,), b_shape=(n_total,), dtype=dtype)
+    op = AddFwdOp(a_shape=(n_total,), b_shape=(n_total,), dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
@@ -194,7 +194,7 @@ def test_fp8_fused_gated_bench(op_name, M, N, dtype):
     bm = Fp8FusedGatedBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SiluAndMulOp(M=M, N=N, dtype=dtype)
+    op = SiluAndMulFwdOp(M=M, N=N, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
