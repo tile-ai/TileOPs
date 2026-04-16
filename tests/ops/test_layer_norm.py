@@ -68,9 +68,9 @@ def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 class LayerNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
-            pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(1024, 4096, torch.float32, marks=pytest.mark.full),
+            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.full),
+            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 
@@ -101,9 +101,9 @@ def test_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 class LayerNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
-            pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.full),
+            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.full),
+            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 

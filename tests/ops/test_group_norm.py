@@ -69,8 +69,8 @@ def test_group_norm_op(n: int, c: int, spatial: tuple, g: int,
 class GroupNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("n, c, spatial, g, dtype", [
-            pytest.param(2, 32, (8, 8), 8, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 32, (8, 8), 8, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(2, 32, (8, 8), 8, torch.float16, marks=pytest.mark.full),
+            pytest.param(2, 32, (8, 8), 8, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 

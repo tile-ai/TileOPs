@@ -59,8 +59,8 @@ def test_instance_norm_op(n: int, c: int, spatial: tuple,
 class InstanceNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("n, c, spatial, dtype", [
-            pytest.param(2, 16, (8, 8), torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 16, (8, 8), torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(2, 16, (8, 8), torch.float16, marks=pytest.mark.full),
+            pytest.param(2, 16, (8, 8), torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 

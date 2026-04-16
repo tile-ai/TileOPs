@@ -317,8 +317,8 @@ class RopeEdgeFixture(FixtureBase):
     """Edge case fixture: seq_len=1, small head_dim."""
     PARAMS = [
         ("batch, seq_len, num_heads, head_dim, dtype", [
-            pytest.param(1, 1, 1, 16, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(1, 1, 1, 16, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1, 1, 1, 16, torch.float32, marks=pytest.mark.full),
+            pytest.param(1, 1, 1, 16, torch.float16, marks=pytest.mark.full),
             pytest.param(2, 512, 8, 64, torch.float16, marks=pytest.mark.full),
         ]),
     ]
