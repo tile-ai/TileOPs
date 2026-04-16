@@ -101,7 +101,7 @@ def test_gqa_sliding_window_fwd_op(
 class TestGroupedQueryAttentionSlidingWindowFwdOpMetrics:
     """Unit tests for total_flops and total_memory correctness."""
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_total_flops_causal_wl0(self):
         """is_causal=True, wl=0: every query attends only to itself (eff_kv=1)."""
         B, S, H, Hkv, D = 2, 256, 8, 2, 64
@@ -111,7 +111,7 @@ class TestGroupedQueryAttentionSlidingWindowFwdOpMetrics:
         expected = 4 * B * H * S * 1 * D   # total_attended = S * 1
         assert op.total_flops == expected, f"got {op.total_flops}, expected {expected}"
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_total_flops_causal_finite_window(self):
         """is_causal=True, wl=128, S=512: window limits left context, not S//2."""
         B, S, H, Hkv, D = 1, 512, 8, 2, 64
@@ -123,7 +123,7 @@ class TestGroupedQueryAttentionSlidingWindowFwdOpMetrics:
         expected = 4 * B * H * total_attended * D
         assert op.total_flops == expected, f"got {op.total_flops}, expected {expected}"
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_total_memory_gqa(self):
         """For GQA (heads > heads_kv), Q and O must use heads, not heads_kv."""
         B, S, H, Hkv, D = 2, 512, 8, 2, 64
@@ -141,14 +141,14 @@ class TestGroupedQueryAttentionSlidingWindowFwdOpValidation:
 
     # ── window_size validation (caught in __init__, no GPU kernel needed) ─────
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_invalid_window_size_left_raises(self):
         with pytest.raises(ValueError, match="window_size_left"):
             GroupedQueryAttentionSlidingWindowFwdOp(
                 batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
                 is_causal=True, window_size_left=-2)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_invalid_window_size_right_raises(self):
         with pytest.raises(ValueError, match="window_size_right"):
             GroupedQueryAttentionSlidingWindowFwdOp(
@@ -163,7 +163,7 @@ class TestGroupedQueryAttentionSlidingWindowFwdOpValidation:
             batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
             is_causal=True, dtype=torch.float16)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_dtype_mismatch_raises(self, float16_op):
         q = torch.randn(1, 64, 4, 64, dtype=torch.bfloat16, device="cuda")
         k = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device="cuda")
@@ -171,7 +171,7 @@ class TestGroupedQueryAttentionSlidingWindowFwdOpValidation:
         with pytest.raises(ValueError, match="dtype"):
             float16_op.forward(q, k, v)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_cpu_tensor_raises(self, float16_op):
         q = torch.randn(1, 64, 4, 64, dtype=torch.float16)   # CPU
         k = torch.randn(1, 64, 2, 64, dtype=torch.float16)

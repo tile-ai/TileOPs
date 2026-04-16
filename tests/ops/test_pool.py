@@ -108,25 +108,25 @@ def test_avg_pool1d(
     test.check(op, *test.gen_inputs(n, c_in, l_in), atol=atol, rtol=rtol)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool1d_dispatches_kernel() -> None:
     op = AvgPool1dOp(n=1, c_in=32, l_in=128, kernel_size=3, stride=2, padding=1)
     assert isinstance(op.kernel, AvgPool1dKernel)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool1d_rejects_wrong_tuple_arity() -> None:
     with pytest.raises(ValueError, match="kernel_size must be an int or a tuple of 1 ints"):
         AvgPool1dOp(n=1, c_in=8, l_in=32, kernel_size=(3, 4))
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool1d_rejects_non_positive_stride() -> None:
     with pytest.raises(ValueError, match="stride must be greater than zero"):
         AvgPool1dOp(n=1, c_in=8, l_in=32, kernel_size=3, stride=0)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
@@ -147,7 +147,7 @@ def test_avg_pool1d_rejects_bool_pool_params(kwargs: dict[str, object], match: s
         AvgPool1dOp(**base_kwargs)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool1d_forward_warns_on_ambiguous_nlc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool1dOp(
@@ -277,13 +277,13 @@ def test_avg_pool2d(
     test.check(op, *test.gen_inputs(n, c_in, h_in, w_in), atol=atol, rtol=rtol)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool2d_dispatches_kernel() -> None:
     op = AvgPool2dOp(n=1, c_in=32, h_in=28, w_in=28, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
     assert isinstance(op.kernel, AvgPool2dKernel)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool2d_rejects_zero_divisor_override() -> None:
     with pytest.raises(ValueError, match="divisor_override must not be zero"):
         AvgPool2dOp(
@@ -296,7 +296,7 @@ def test_avg_pool2d_rejects_zero_divisor_override() -> None:
         )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool2d_rejects_non_positive_stride() -> None:
     with pytest.raises(ValueError, match="stride must be greater than zero"):
         AvgPool2dOp(
@@ -309,7 +309,7 @@ def test_avg_pool2d_rejects_non_positive_stride() -> None:
         )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool2d_rejects_invalid_padding() -> None:
     with pytest.raises(ValueError, match="padding must be at most half"):
         AvgPool2dOp(
@@ -322,7 +322,7 @@ def test_avg_pool2d_rejects_invalid_padding() -> None:
         )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
@@ -347,7 +347,7 @@ def test_avg_pool2d_rejects_invalid_param_types(kwargs: dict[str, object], match
         AvgPool2dOp(**base_kwargs)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool2d_negative_divisor_override_matches_torch() -> None:
     x = torch.randn(1, 8, 8, 4, device="cuda", dtype=torch.float16).contiguous()
@@ -373,7 +373,7 @@ def test_avg_pool2d_negative_divisor_override_matches_torch() -> None:
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool2d_forward_rejects_nchw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool2dOp(
@@ -390,7 +390,7 @@ def test_avg_pool2d_forward_rejects_nchw_shape(monkeypatch: pytest.MonkeyPatch) 
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool2d_forward_warns_on_ambiguous_nhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool2dOp(
@@ -523,7 +523,7 @@ def test_avg_pool3d(
     test.check(op, *test.gen_inputs(n, c_in, d_in, h_in, w_in), atol=atol, rtol=rtol)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool3d_dispatches_kernel() -> None:
     op = AvgPool3dOp(
         n=1,
@@ -538,7 +538,7 @@ def test_avg_pool3d_dispatches_kernel() -> None:
     assert isinstance(op.kernel, AvgPool3dKernel)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool3d_rejects_zero_divisor_override() -> None:
     with pytest.raises(ValueError, match="divisor_override must not be zero"):
         AvgPool3dOp(
@@ -552,7 +552,7 @@ def test_avg_pool3d_rejects_zero_divisor_override() -> None:
         )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool3d_rejects_non_positive_stride() -> None:
     with pytest.raises(ValueError, match="stride must be greater than zero"):
         AvgPool3dOp(
@@ -566,7 +566,7 @@ def test_avg_pool3d_rejects_non_positive_stride() -> None:
         )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
@@ -592,7 +592,7 @@ def test_avg_pool3d_rejects_invalid_param_types(kwargs: dict[str, object], match
         AvgPool3dOp(**base_kwargs)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool3d_negative_divisor_override_matches_torch() -> None:
     x = torch.randn(1, 4, 6, 6, 3, device="cuda", dtype=torch.float16).contiguous()
@@ -619,7 +619,7 @@ def test_avg_pool3d_negative_divisor_override_matches_torch() -> None:
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool3d_forward_rejects_ncdhw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool3dOp(
@@ -637,7 +637,7 @@ def test_avg_pool3d_forward_rejects_ncdhw_shape(monkeypatch: pytest.MonkeyPatch)
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_avg_pool3d_forward_warns_on_ambiguous_ndhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool3dOp(

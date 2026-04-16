@@ -176,7 +176,7 @@ def test_selu(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _randn, F.selu, SeluFwdOp)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_activation_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import GeluFwdKernel
 
@@ -296,7 +296,7 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
     print("All checks passed for PreluFwdOp.")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_prelu_batch_dim() -> None:
     """PReLU with a leading batch dimension: shape (2, 4, 8)."""
     from tileops.ops.elementwise import PreluFwdOp
@@ -313,7 +313,7 @@ def test_prelu_batch_dim() -> None:
     print("All checks passed for PreluFwdOp batch-dim.")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_independent_activation_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import LeakyReluFwdKernel
     with pytest.raises(ValueError, match="only supports dtypes"):

@@ -110,7 +110,7 @@ def test_isfinite_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_special_test(n_total, dtype, IsfiniteFwdOp, torch.isfinite, gen_fn=_all_finite)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_special_predicates_reject_non_float_dtype() -> None:
     from tileops.kernels.elementwise import IsnanFwdKernel
 
@@ -469,7 +469,7 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
     print("All checks passed for NanToNumFwdOp edge case.")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_independent_special_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import ClampFwdKernel
     with pytest.raises(ValueError, match="only supports dtypes"):
@@ -481,7 +481,7 @@ def test_independent_special_rejects_non_float_dtype() -> None:
 # ===========================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize("op_cls, kwargs", [
     pytest.param("EluFwdOp", {"alpha": 1.0}, id="elu"),
     pytest.param("HardtanhFwdOp", {"min_val": -1.0, "max_val": 1.0}, id="hardtanh"),
@@ -498,7 +498,7 @@ def test_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> None:
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize("op_cls, kwargs", [
     pytest.param("EluFwdOp", {"alpha": 1.0}, id="elu"),
     pytest.param("HardtanhFwdOp", {"min_val": -1.0, "max_val": 1.0}, id="hardtanh"),
@@ -515,7 +515,7 @@ def test_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> None:
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize("op_cls, kwargs", [
     pytest.param("MaskedFillFwdOp", {"fill_value": -100.0}, id="masked_fill"),
 ])
@@ -530,7 +530,7 @@ def test_masked_fill_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> N
         op(x, mask)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize("op_cls, kwargs", [
     pytest.param("MaskedFillFwdOp", {"fill_value": -100.0}, id="masked_fill"),
 ])
@@ -550,7 +550,7 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
 # ===========================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_elu_rejects_unrepresentable_alpha() -> None:
     """EluFwdOp must reject alpha that overflows the kernel dtype."""
     from tileops.ops.elementwise import EluFwdOp
@@ -558,7 +558,7 @@ def test_elu_rejects_unrepresentable_alpha() -> None:
         EluFwdOp(N_total=1024, dtype=torch.float16, alpha=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_hardtanh_rejects_unrepresentable_min_val() -> None:
     """HardtanhFwdOp must reject min_val that overflows the kernel dtype."""
     from tileops.ops.elementwise import HardtanhFwdOp
@@ -566,7 +566,7 @@ def test_hardtanh_rejects_unrepresentable_min_val() -> None:
         HardtanhFwdOp(N_total=1024, dtype=torch.float16, min_val=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_hardtanh_rejects_unrepresentable_max_val() -> None:
     """HardtanhFwdOp must reject max_val that overflows the kernel dtype."""
     from tileops.ops.elementwise import HardtanhFwdOp
@@ -574,7 +574,7 @@ def test_hardtanh_rejects_unrepresentable_max_val() -> None:
         HardtanhFwdOp(N_total=1024, dtype=torch.float16, max_val=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_softplus_rejects_unrepresentable_beta() -> None:
     """SoftplusFwdOp must reject beta that overflows the kernel dtype."""
     from tileops.ops.elementwise import SoftplusFwdOp
@@ -582,7 +582,7 @@ def test_softplus_rejects_unrepresentable_beta() -> None:
         SoftplusFwdOp(N_total=1024, dtype=torch.float16, beta=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_softplus_rejects_unrepresentable_threshold() -> None:
     """SoftplusFwdOp must reject threshold that overflows the kernel dtype."""
     from tileops.ops.elementwise import SoftplusFwdOp
@@ -590,7 +590,7 @@ def test_softplus_rejects_unrepresentable_threshold() -> None:
         SoftplusFwdOp(N_total=1024, dtype=torch.float16, threshold=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_clamp_rejects_unrepresentable_min_val() -> None:
     """ClampFwdOp must reject min_val that overflows the kernel dtype."""
     from tileops.ops.elementwise import ClampFwdOp
@@ -598,7 +598,7 @@ def test_clamp_rejects_unrepresentable_min_val() -> None:
         ClampFwdOp(N_total=1024, dtype=torch.float16, min_val=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_clamp_rejects_unrepresentable_max_val() -> None:
     """ClampFwdOp must reject max_val that overflows the kernel dtype."""
     from tileops.ops.elementwise import ClampFwdOp
@@ -606,7 +606,7 @@ def test_clamp_rejects_unrepresentable_max_val() -> None:
         ClampFwdOp(N_total=1024, dtype=torch.float16, max_val=1e6)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_masked_fill_forward_rejects_cpu_mask() -> None:
     """MaskedFillFwdOp forward() must raise ValueError when mask is not on CUDA."""
     from tileops.ops.elementwise import MaskedFillFwdOp
@@ -617,7 +617,7 @@ def test_masked_fill_forward_rejects_cpu_mask() -> None:
         op(x, mask)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_masked_fill_forward_rejects_non_bool_mask() -> None:
     """MaskedFillFwdOp forward() must raise ValueError when mask dtype is not bool."""
     from tileops.ops.elementwise import MaskedFillFwdOp
@@ -628,7 +628,7 @@ def test_masked_fill_forward_rejects_non_bool_mask() -> None:
         op(x, mask)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
     """MaskedFillFwdOp forward() must raise ValueError when mask numel mismatches."""
     from tileops.ops.elementwise import MaskedFillFwdOp
@@ -639,7 +639,7 @@ def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
         op(x, mask)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_elu_rejects_infinite_alpha() -> None:
     """EluFwdOp must reject infinite alpha."""
     from tileops.ops.elementwise import EluFwdOp
@@ -647,7 +647,7 @@ def test_elu_rejects_infinite_alpha() -> None:
         EluFwdOp(N_total=1024, dtype=torch.float32, alpha=float("inf"))
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_softplus_rejects_non_numeric_beta() -> None:
     """SoftplusFwdOp must reject non-numeric beta."""
     from tileops.ops.elementwise import SoftplusFwdOp

@@ -72,7 +72,7 @@ class DistributedFixture(FixtureBase):
         (
             "T, E_global, K, H, F, world_size",
             [
-                pytest.param(64, 8, 2, 128, 64, 2, marks=pytest.mark.smoke, id="smoke-ep2"),
+                pytest.param(64, 8, 2, 128, 64, 2, marks=pytest.mark.full, id="smoke-ep2"),
                 pytest.param(512, 384, 8, 7168, 2048, 8, marks=pytest.mark.full, id="kimi-k2-ep8"),
             ],
         )
@@ -85,7 +85,7 @@ class SharedDistributedFixture(FixtureBase):
         (
             "T, E_global, K, H, F, shared_F, world_size",
             [
-                pytest.param(64, 8, 2, 128, 64, 32, 2, marks=pytest.mark.smoke, id="smoke-shared-ep2"),
+                pytest.param(64, 8, 2, 128, 64, 32, 2, marks=pytest.mark.full, id="smoke-shared-ep2"),
                 pytest.param(512, 384, 8, 7168, 2048, 18432, 8, marks=pytest.mark.full, id="kimi-k2-shared-ep8"),
             ],
         )

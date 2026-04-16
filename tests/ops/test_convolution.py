@@ -141,7 +141,7 @@ def test_conv1d(
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv1d_accepts_zero_bias() -> None:
     op = Conv1dFwdOp(
         n=1,
@@ -162,7 +162,7 @@ def test_conv1d_accepts_zero_bias() -> None:
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv1d_dispatches_kernel() -> None:
     op = Conv1dFwdOp(
         n=1,
@@ -323,7 +323,7 @@ def test_conv2d(
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_accepts_zero_bias() -> None:
     pytest.skip("Temporarily skipping known Conv2d zero-bias failure under TileLang 5f70374c (#999).")
     op = Conv2dOp(
@@ -345,7 +345,7 @@ def test_conv2d_accepts_zero_bias() -> None:
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_dispatches_1x1_kernel() -> None:
     op = Conv2dOp(
         n=1,
@@ -359,7 +359,7 @@ def test_conv2d_dispatches_1x1_kernel() -> None:
     assert isinstance(op.kernel, Conv2d1x1Kernel)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
     op = Conv2dOp(
         n=1,
@@ -374,7 +374,7 @@ def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
     assert isinstance(op.kernel, Conv2dKernel)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_dispatches_3x3_kernel() -> None:
     op = Conv2dOp(
         n=1,
@@ -389,7 +389,7 @@ def test_conv2d_dispatches_3x3_kernel() -> None:
     assert isinstance(op.kernel, Conv2dKernel)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv2d_dispatches_5x5_kernel() -> None:
     op = Conv2dOp(
         n=1,
@@ -527,7 +527,7 @@ def test_conv3d(
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv3d_accepts_zero_bias() -> None:
     pytest.skip("Temporarily skipping known Conv3d zero-bias failure under TileLang 5f70374c (#999).")
     op = Conv3dOp(
@@ -557,7 +557,7 @@ def test_conv3d_accepts_zero_bias() -> None:
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_conv3d_dispatches_kernel() -> None:
     op = Conv3dOp(
         n=1,

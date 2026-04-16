@@ -19,7 +19,7 @@ from workloads.mamba import (
 class DaCumsumFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, num_chunks, chunk_len, n_heads, tune", [
-            pytest.param(1, 2, 64, 4, False, marks=pytest.mark.smoke),
+            pytest.param(1, 2, 64, 4, False, marks=pytest.mark.full),
             pytest.param(2, 4, 64, 8, False, marks=pytest.mark.full),
             pytest.param(1, 2, 128, 4, False, marks=pytest.mark.full),
             pytest.param(2, 4, 128, 16, False, marks=pytest.mark.full),

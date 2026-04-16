@@ -70,7 +70,7 @@ def test_kernel_accepts_fp8(dtype, kernel_name, extra_kwargs):
     assert kernel.dtype == dtype
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_masked_fill_kernel_clamps_overflow_fill_value():
     """MaskedFillFwdKernel clamps fill_value exceeding e4m3fn max (448)."""
     dtype = torch.float8_e4m3fn
@@ -78,7 +78,7 @@ def test_masked_fill_kernel_clamps_overflow_fill_value():
     assert kernel.fill_value == torch.finfo(dtype).max
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_nan_to_num_kernel_clamps_overflow_defaults():
     """NanToNumFwdKernel clamps default posinf_val/neginf_val for e4m3fn."""
     dtype = torch.float8_e4m3fn
@@ -229,7 +229,7 @@ def test_masked_fill_fp8_correctness(dtype):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_leaky_relu_e4m3fn_saturation():
     """LeakyReLU e4m3fn saturates to max value on overflow."""
     from tileops.ops.elementwise import LeakyReluFwdOp
@@ -249,7 +249,7 @@ def test_leaky_relu_e4m3fn_saturation():
     assert not torch.any(torch.isinf(out_fp32)), "e4m3fn should not produce Inf"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_clamp_e5m2_preserves_values():
     """Clamp e5m2 preserves values within range correctly."""
     from tileops.ops.elementwise import ClampFwdOp
@@ -265,7 +265,7 @@ def test_clamp_e5m2_preserves_values():
     assert torch.equal(out, ref)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_elu_e5m2_output_dtype():
     """ELU e5m2 forward returns e5m2 dtype, not fp16."""
     from tileops.ops.elementwise import EluFwdOp
@@ -278,7 +278,7 @@ def test_elu_e5m2_output_dtype():
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_masked_fill_e5m2_overflow_fill_value():
     """MaskedFill rejects fill_value that exceeds effective kernel dtype range."""
     from tileops.ops.elementwise import MaskedFillFwdOp
@@ -290,7 +290,7 @@ def test_masked_fill_e5m2_overflow_fill_value():
         MaskedFillFwdOp(N_total=n, dtype=dtype, fill_value=fill_value)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_nan_to_num_e5m2_overflow_scalar_params_rejected():
     """NanToNum rejects replacement values that exceed effective kernel dtype range."""
     from tileops.ops.elementwise import NanToNumFwdOp
@@ -303,7 +303,7 @@ def test_nan_to_num_e5m2_overflow_scalar_params_rejected():
         NanToNumFwdOp(N_total=n, dtype=dtype, nan_val=0.0, posinf_val=1.0, neginf_val=-1e5)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_leaky_relu_e5m2_overflow_negative_slope_rejected():
     """LeakyReLU rejects negative_slope that exceeds effective kernel dtype range."""
     from tileops.ops.elementwise import LeakyReluFwdOp

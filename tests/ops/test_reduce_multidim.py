@@ -395,7 +395,7 @@ def test_inf_norm_multidim(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_empty_dim_list_raises() -> None:
     """dim=[] must raise ValueError; the helper cannot produce correct semantics."""
     from tileops.ops.reduction._multidim import normalize_dim
@@ -404,7 +404,7 @@ def test_empty_dim_list_raises() -> None:
         normalize_dim([], ndim=3)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_sum_empty_dim_raises() -> None:
     """SumFwdOp(dim=[]) must raise before dispatching to the multi-dim helper."""
     from tileops.ops.reduction.reduce import SumFwdOp
@@ -415,7 +415,7 @@ def test_sum_empty_dim_raises() -> None:
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_mean_empty_dim_raises() -> None:
     """MeanFwdOp(dim=[]) must raise before dispatching to the multi-dim helper."""
     from tileops.ops.reduction.reduce import MeanFwdOp
@@ -426,7 +426,7 @@ def test_mean_empty_dim_raises() -> None:
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_negative_dims_accepted() -> None:
     """Negative dims should be normalized and produce correct results."""
     from tileops.ops.reduction.reduce import SumFwdOp
@@ -439,7 +439,7 @@ def test_negative_dims_accepted() -> None:
     assert torch.allclose(y, ref, **_tol(torch.float16))
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_duplicate_dims_raises() -> None:
     """Duplicate dims (after normalization) must raise ValueError at op level."""
     from tileops.ops.reduction.reduce import SumFwdOp

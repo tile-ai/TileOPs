@@ -15,31 +15,31 @@ import pytest
 class TestAlignUp:
     """Tests for align_up utility function."""
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_align_up_already_aligned(self):
         from tileops.kernels.reduction._primitives import align_up
 
         assert align_up(256, 256) == 256
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_align_up_needs_padding(self):
         from tileops.kernels.reduction._primitives import align_up
 
         assert align_up(100, 256) == 256
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_align_up_one_over(self):
         from tileops.kernels.reduction._primitives import align_up
 
         assert align_up(257, 256) == 512
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_align_up_zero(self):
         from tileops.kernels.reduction._primitives import align_up
 
         assert align_up(0, 256) == 0
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_align_up_custom_alignment(self):
         from tileops.kernels.reduction._primitives import align_up
 
@@ -47,7 +47,7 @@ class TestAlignUp:
         assert align_up(8, 8) == 8
         assert align_up(9, 8) == 16
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_align_up_non_positive_raises(self):
         from tileops.kernels.reduction._primitives import align_up
 
@@ -56,7 +56,7 @@ class TestAlignUp:
         with pytest.raises(ValueError, match="positive"):
             align_up(10, -1)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_align_up_powers_of_two(self):
         """Verify correctness across a range of power-of-two alignments."""
         from tileops.kernels.reduction._primitives import align_up
@@ -76,13 +76,13 @@ class TestAlignUp:
 class TestDefaultAlignment:
     """Tests for DEFAULT_ALIGNMENT constant."""
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_default_alignment_value(self):
         from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT
 
         assert DEFAULT_ALIGNMENT == 256
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_default_alignment_is_int(self):
         from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT
 
@@ -97,14 +97,14 @@ class TestDefaultAlignment:
 class TestMakeReduceEpilogue:
     """Tests for make_reduce_epilogue factory."""
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_reduce_epilogue_returns_callable(self):
         from tileops.kernels.reduction._primitives import make_reduce_epilogue
 
         macro = make_reduce_epilogue("sum")
         assert callable(macro)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_reduce_epilogue_all_valid_kinds(self):
         from tileops.kernels.reduction._primitives import make_reduce_epilogue
 
@@ -112,7 +112,7 @@ class TestMakeReduceEpilogue:
             macro = make_reduce_epilogue(kind)
             assert callable(macro)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_reduce_epilogue_invalid_kind_raises(self):
         from tileops.kernels.reduction._primitives import make_reduce_epilogue
 
@@ -128,14 +128,14 @@ class TestMakeReduceEpilogue:
 class TestMakeWelfordUpdate:
     """Tests for make_welford_update factory."""
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_welford_returns_callable(self):
         from tileops.kernels.reduction._primitives import make_welford_update
 
         macro = make_welford_update(block_m=4, N_padded=256)
         assert callable(macro)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_welford_different_shapes(self):
         from tileops.kernels.reduction._primitives import make_welford_update
 
@@ -144,7 +144,7 @@ class TestMakeWelfordUpdate:
         assert m1 is not None
         assert m2 is not None
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_welford_uses_reduce_sum(self):
         """Verify the macro uses T.reduce_sum for parallel-safe reduction."""
         import inspect
@@ -154,7 +154,7 @@ class TestMakeWelfordUpdate:
         src = inspect.getsource(mod.make_welford_update)
         assert "T.reduce_sum" in src, "Welford must use T.reduce_sum for parallel-safe reduction"
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_welford_no_race_condition(self):
         """The source must NOT update mean[i] inside a T.Parallel(block_m, N_padded) loop."""
         import inspect
@@ -164,7 +164,7 @@ class TestMakeWelfordUpdate:
         src = inspect.getsource(mod.make_welford_update)
         assert "mean[i] = mean[i] + delta" not in src, "Found racy mean update inside parallel loop"
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_welford_sq_diff_uses_batch_mean(self):
         """sq_diff must use batch_mean (batch's own mean), not new_mean (combined mean).
 
@@ -192,28 +192,28 @@ class TestMakeWelfordUpdate:
 class TestMakeSoftmaxEpilogue:
     """Tests for make_softmax_epilogue factory."""
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_softmax_epilogue_returns_callable(self):
         from tileops.kernels.reduction._primitives import make_softmax_epilogue
 
         macro = make_softmax_epilogue("softmax")
         assert callable(macro)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_log_softmax_epilogue_returns_callable(self):
         from tileops.kernels.reduction._primitives import make_softmax_epilogue
 
         macro = make_softmax_epilogue("log_softmax")
         assert callable(macro)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_softmax_epilogue_invalid_kind_raises(self):
         from tileops.kernels.reduction._primitives import make_softmax_epilogue
 
         with pytest.raises(ValueError, match="Unsupported"):
             make_softmax_epilogue("invalid_op")
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_softmax_epilogue_has_division(self):
         """Softmax epilogue must normalize by row_sum (division)."""
         import inspect
@@ -223,7 +223,7 @@ class TestMakeSoftmaxEpilogue:
         src = inspect.getsource(mod.make_softmax_epilogue)
         assert "/ row_sum[i]" in src, "Softmax epilogue must divide by row_sum"
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_log_softmax_epilogue_has_log(self):
         """Log-softmax epilogue must apply T.log."""
         import inspect
@@ -233,7 +233,7 @@ class TestMakeSoftmaxEpilogue:
         src = inspect.getsource(mod.make_softmax_epilogue)
         assert "T.log" in src, "Log-softmax epilogue must use T.log"
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_softmax_vs_log_softmax_differ(self):
         """The two softmax variants must produce different macros."""
         from tileops.kernels.reduction._primitives import make_softmax_epilogue
@@ -251,28 +251,28 @@ class TestMakeSoftmaxEpilogue:
 class TestMakeCumulativeScan:
     """Tests for make_cumulative_scan factory."""
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_cumsum_scan_returns_callable(self):
         from tileops.kernels.reduction._primitives import make_cumulative_scan
 
         macro = make_cumulative_scan("sum")
         assert callable(macro)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_cumprod_scan_returns_callable(self):
         from tileops.kernels.reduction._primitives import make_cumulative_scan
 
         macro = make_cumulative_scan("prod")
         assert callable(macro)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_cumulative_scan_invalid_kind_raises(self):
         from tileops.kernels.reduction._primitives import make_cumulative_scan
 
         with pytest.raises(ValueError, match="Unsupported"):
             make_cumulative_scan("invalid_op")
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_cumulative_scan_uses_serial_loop(self):
         """Cumulative scan must use T.Serial for sequential dependency."""
         import inspect
@@ -282,7 +282,7 @@ class TestMakeCumulativeScan:
         src = inspect.getsource(mod.make_cumulative_scan)
         assert "T.Serial" in src, "Cumulative scan must use T.Serial for sequential scan"
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_cumsum_scan_has_addition(self):
         """Sum scan must accumulate via addition."""
         import inspect
@@ -294,7 +294,7 @@ class TestMakeCumulativeScan:
             "Sum scan must add previous output to current input"
         )
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_cumprod_scan_has_multiplication(self):
         """Prod scan must accumulate via multiplication."""
         import inspect
@@ -306,7 +306,7 @@ class TestMakeCumulativeScan:
             "Prod scan must multiply previous output by current input"
         )
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_cumsum_vs_cumprod_differ(self):
         """Sum and prod scans must be different macros."""
         from tileops.kernels.reduction._primitives import make_cumulative_scan
@@ -324,7 +324,7 @@ class TestMakeCumulativeScan:
 class TestInitReExports:
     """Tests for __init__.py re-exports (AC-2)."""
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_kernel_init_has_all(self):
         import tileops.kernels.reduction as reduction
 
@@ -340,7 +340,7 @@ class TestInitReExports:
         for name in expected:
             assert name in reduction.__all__, f"{name} missing from __all__"
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_kernel_init_imports_work(self):
         from tileops.kernels.reduction import (
             DEFAULT_ALIGNMENT,
@@ -358,7 +358,7 @@ class TestInitReExports:
         assert callable(make_softmax_epilogue)
         assert callable(make_cumulative_scan)
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_kernel_init_no_underscore_in_all(self):
         """Public __all__ should not export underscore-prefixed names."""
         import tileops.kernels.reduction as reduction
@@ -366,7 +366,7 @@ class TestInitReExports:
         for name in reduction.__all__:
             assert not name.startswith("_"), f"'{name}' has underscore prefix but is in __all__"
 
-    @pytest.mark.smoke
+    @pytest.mark.full
     def test_ops_init_has_all(self):
         import tileops.ops.reduction as reduction
 

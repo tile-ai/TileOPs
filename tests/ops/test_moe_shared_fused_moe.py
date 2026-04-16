@@ -14,7 +14,7 @@ import torch
 from tileops.ops.moe import FusedMoe, SharedFusedMoE
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_shared_fused_moe_basic():
     """SharedFusedMoE with shared expert kernel."""
     torch.manual_seed(42)
@@ -68,7 +68,7 @@ def test_shared_fused_moe_basic():
     print(f"PASS SharedFusedMoE basic [T={T}, E={E}, K={K}, H={H}, F={F}, F_s={F_s}]")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_shared_fused_moe_none():
     """SharedFusedMoE with shared_ffn_size=None returns shared_out=None."""
     torch.manual_seed(42)
@@ -94,7 +94,7 @@ def test_shared_fused_moe_none():
     print("PASS SharedFusedMoE with shared_ffn_size=None")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_shared_fused_moe_tp():
     """TP sharding: sum of partial outputs matches float32 math reference.
 
@@ -166,7 +166,7 @@ def test_shared_fused_moe_tp():
     print(f"PASS SharedFusedMoE TP [T={T}, H={H}, F_s={F_s}, tp_size={tp_size}]")
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_shared_fused_moe_tp_rejects_local_shards():
     """TP contract: forward() must reject pre-sharded weights with a clear ValueError.
 

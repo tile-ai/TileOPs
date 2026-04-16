@@ -252,7 +252,7 @@ def test_engram_decode(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation
     test.check(op, *inputs, atol=atol, rtol=rtol)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_engram_decode_multi_step():
     """Verify multi-step decode with growing conv_state and dilated conv."""
     B, d_mem, d = 2, 256, 256

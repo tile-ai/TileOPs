@@ -439,7 +439,7 @@ def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 @pytest.mark.parametrize("op_cls_path, dim", [
     ("tileops.ops.reduction.argmax.ArgmaxFwdOp", [0, 1]),
     ("tileops.ops.reduction.argmin.ArgminFwdOp", [0, 1]),

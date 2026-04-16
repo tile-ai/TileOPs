@@ -288,7 +288,7 @@ def test_fused_moe_kimi(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_expert_map_local_filter() -> None:
     """Simulate EP=2 on a single GPU: each rank owns half the experts.
 
@@ -346,7 +346,7 @@ def test_expert_map_local_filter() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_correction_bias_routing_precision() -> None:
     """Verify correction_bias is used only for top-k selection, not for weights.
 

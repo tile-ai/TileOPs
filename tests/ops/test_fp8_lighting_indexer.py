@@ -75,7 +75,7 @@ class FP8LightingIndexerTest(_FP8LightingIndexerTestWorkload, TestBase):
 class FP8LightingIndexerFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune", [
-             pytest.param(1, 4096, 32, 64, 8192, 1, True, None, False, marks=pytest.mark.smoke),
+             pytest.param(1, 4096, 32, 64, 8192, 1, True, None, False, marks=pytest.mark.full),
         ]),
     ]
 

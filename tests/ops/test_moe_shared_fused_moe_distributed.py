@@ -111,7 +111,7 @@ class TPFixture:
         (
             "T, H, F_s, tp_size",
             [
-                pytest.param(64,   128,  64,  2, marks=pytest.mark.smoke, id="smoke-tp2"),
+                pytest.param(64,   128,  64,  2, marks=pytest.mark.full, id="smoke-tp2"),
                 pytest.param(512,  7168, 18432, 2, marks=pytest.mark.full,  id="kimi-k2-tp2"),
                 pytest.param(512,  7168, 18432, 8, marks=pytest.mark.full,  id="kimi-k2-tp8"),
             ],

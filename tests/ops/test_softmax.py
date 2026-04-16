@@ -508,7 +508,7 @@ def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_softmax_rejects_multidim_before_kernel() -> None:
     """SoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
     x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
@@ -519,7 +519,7 @@ def test_softmax_rejects_multidim_before_kernel() -> None:
     assert len(op._kernel_cache) == 0
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_log_softmax_rejects_multidim_before_kernel() -> None:
     """LogSoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
     x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
@@ -529,7 +529,7 @@ def test_log_softmax_rejects_multidim_before_kernel() -> None:
     assert len(op._kernel_cache) == 0
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_logsumexp_accepts_multidim() -> None:
     """LogSumExpFwdOp must accept list dim without error (multi-dim is supported)."""
     x = torch.randn(4, 8, device="cuda", dtype=torch.float32)

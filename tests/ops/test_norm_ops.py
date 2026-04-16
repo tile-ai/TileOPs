@@ -12,7 +12,7 @@ import torch
 # BatchNormFwdOp input validation
 # ---------------------------------------------------------------------------
 
-@pytest.mark.smoke
+@pytest.mark.full
 
 
 class TestBatchNormFwdValidation:
@@ -55,7 +55,7 @@ class TestBatchNormFwdValidation:
 # BatchNorm torch.compile smoke tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.smoke
+@pytest.mark.full
 
 
 class TestBatchNormCustomOp:

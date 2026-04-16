@@ -220,7 +220,7 @@ def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(n_total, dtype, _randn, torch.expm1, Expm1FwdOp)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_math_ops_reject_non_float_dtype() -> None:
     from tileops.kernels.elementwise import ExpFwdKernel
 

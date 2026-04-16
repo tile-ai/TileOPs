@@ -90,7 +90,7 @@ def test_fp8_default_config_npt16(dtype):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_unary_kernel_forward_e5m2_dtype():
     """UnaryKernel.forward() returns float8_e5m2, not float16."""
     from tileops.kernels.elementwise import ExpFwdKernel
@@ -103,7 +103,7 @@ def test_unary_kernel_forward_e5m2_dtype():
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_kernel_forward_e5m2_dtype():
     """BinaryKernel.forward() returns float8_e5m2, not float16."""
     from tileops.kernels.elementwise import AddFwdKernel
@@ -121,7 +121,7 @@ def test_binary_kernel_forward_e5m2_dtype():
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_fused_gated_kernel_forward_e5m2_dtype():
     """FusedGatedKernel.forward() returns float8_e5m2, not float16."""
     from tileops.kernels.elementwise import SiluAndMulFwdKernel
@@ -134,7 +134,7 @@ def test_fused_gated_kernel_forward_e5m2_dtype():
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_fused_gated_direct_e5m2_preserves_inf():
     """FusedGated direct strategy must preserve Inf for e5m2, not saturate.
 
@@ -161,7 +161,7 @@ def test_fused_gated_direct_e5m2_preserves_inf():
     )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_unary_kernel_forward_e5m2_preserves_inf():
     """UnaryKernel.forward() preserves Inf for e5m2 (direct kernel call)."""
     from tileops.kernels.elementwise import ExpFwdKernel
@@ -312,7 +312,7 @@ def test_silu_and_mul_fp8(dtype):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_e4m3fn_saturates_on_overflow():
     """e4m3fn saturates to max value (448.0) instead of producing Inf.
 
@@ -342,7 +342,7 @@ def test_e4m3fn_saturates_on_overflow():
     assert not torch.any(torch.isnan(out_fp32)), "e4m3fn should not produce NaN"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_e5m2_overflow_produces_inf():
     """e5m2 produces Inf on overflow (has Inf/NaN representation).
 
@@ -369,7 +369,7 @@ def test_e5m2_overflow_produces_inf():
     )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_e5m2_exp_overflow_produces_inf():
     """e5m2 exp(large) should produce Inf, matching PyTorch reference."""
     from tileops.ops.elementwise import ExpFwdOp
@@ -388,7 +388,7 @@ def test_e5m2_exp_overflow_produces_inf():
     )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_e5m2_div_by_zero_produces_inf():
     """e5m2 1/0 should produce Inf, matching PyTorch reference."""
     from tileops.ops.elementwise import DivFwdOp
@@ -406,7 +406,7 @@ def test_e5m2_div_by_zero_produces_inf():
     )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_e5m2_log_zero_produces_neg_inf():
     """e5m2 log(0) should produce -Inf, matching PyTorch reference."""
     from tileops.ops.elementwise import LogFwdOp
@@ -423,7 +423,7 @@ def test_e5m2_log_zero_produces_neg_inf():
     )
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_e4m3fn_exp_overflow_saturates():
     """e4m3fn exp(large) should saturate to 448.0, not produce Inf."""
     pytest.skip("Temporarily skipping known e4m3fn exp overflow failure under TileLang 5f70374c (#999).")
@@ -448,7 +448,7 @@ def test_e4m3fn_exp_overflow_saturates():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_fp8_accumulation_in_higher_precision():
     """Verify fp8 computation uses fp16 accumulation for non-trivial ops.
 
@@ -477,7 +477,7 @@ def test_fp8_accumulation_in_higher_precision():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_wrap_fp8_accumulation_is_module_private():
     """_wrap_fp8_accumulation exists and is module-private (underscore prefix)."""
     from tileops.kernels import elementwise
@@ -486,7 +486,7 @@ def test_wrap_fp8_accumulation_is_module_private():
     assert elementwise._wrap_fp8_accumulation.__name__ == "_wrap_fp8_accumulation"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_wrap_fp8_accumulation_noop_for_fp16():
     """Non-fp8 dtypes return the original op unchanged."""
     from tileops.kernels.elementwise import _wrap_fp8_accumulation
@@ -496,7 +496,7 @@ def test_wrap_fp8_accumulation_noop_for_fp16():
     assert result is sentinel, "Non-fp8 dtype should return original op unchanged"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_wrap_fp8_accumulation_wraps_for_e4m3fn():
     """e4m3fn returns a different (wrapped) callable."""
     from tileops.kernels.elementwise import _wrap_fp8_accumulation
@@ -506,7 +506,7 @@ def test_wrap_fp8_accumulation_wraps_for_e4m3fn():
     assert result is not sentinel, "e4m3fn should return a wrapped op"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_wrap_fp8_accumulation_wraps_for_e5m2():
     """e5m2 returns a different (wrapped) callable."""
     from tileops.kernels.elementwise import _wrap_fp8_accumulation
@@ -516,7 +516,7 @@ def test_wrap_fp8_accumulation_wraps_for_e5m2():
     assert result is not sentinel, "e5m2 should return a wrapped op"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_wrap_fp8_accumulation_arity2():
     """Binary arity (2) wraps correctly for fp8."""
     from tileops.kernels.elementwise import _wrap_fp8_accumulation
@@ -533,7 +533,7 @@ def test_wrap_fp8_accumulation_arity2():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_bitwise_kernel_rejects_fp8():
     """BitwiseNotFwdKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
     from tileops.kernels.elementwise import BitwiseNotFwdKernel
@@ -542,7 +542,7 @@ def test_bitwise_kernel_rejects_fp8():
         BitwiseNotFwdKernel(N_total=_N, dtype=torch.float8_e4m3fn)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_bitwise_kernel_rejects_fp8():
     """BitwiseAndFwdKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
     from tileops.kernels.elementwise import BitwiseAndFwdKernel

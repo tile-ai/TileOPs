@@ -535,7 +535,7 @@ def test_rope_non_neox_edge(batch: int, seq_len: int, num_heads: int,
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_rope_rejects_wrong_shape_2d() -> None:
     """A same-numel but wrong-shape 2D tensor must be rejected."""
     from tileops.ops.rope import RopeNeoxOp
@@ -549,7 +549,7 @@ def test_rope_rejects_wrong_shape_2d() -> None:
         op(x)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_rope_noncontiguous_1d_works() -> None:
     """A non-contiguous 1D view must produce correct results after contiguity normalization."""
     from tileops.ops.rope import RopeNeoxOp
@@ -569,7 +569,7 @@ def test_rope_noncontiguous_1d_works() -> None:
     torch.testing.assert_close(out_nc, out_c, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_rope_rejects_non_float_dtype() -> None:
     from tileops.kernels.rope import RopeNeoxKernel
 

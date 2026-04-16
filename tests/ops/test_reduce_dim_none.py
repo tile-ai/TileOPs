@@ -72,7 +72,7 @@ def _all_dims(shape: tuple) -> list[int]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_normalize_dim_none() -> None:
     """normalize_dim(None, ndim) must return list(range(ndim))."""
     from tileops.ops.reduction._multidim import normalize_dim
@@ -303,7 +303,7 @@ def test_any_dim_none(
     assert torch.equal(y, ref), "any dim=None mismatch"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_count_nonzero_dim_none() -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 

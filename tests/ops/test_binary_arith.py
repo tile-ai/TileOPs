@@ -38,7 +38,7 @@ class CoalesceFixture(FixtureBase):
     PARAMS = [
         ("a_shape, b_shape, expected_ndim", [
             # same-shape: coalesces to 1D
-            pytest.param((1024, 1024), (1024, 1024), 1, marks=pytest.mark.smoke),
+            pytest.param((1024, 1024), (1024, 1024), 1, marks=pytest.mark.full),
             # bias-add: (B,S,D) + (1,1,D) -> 2 groups
             pytest.param((2, 512, 768), (1, 1, 768), 2, marks=pytest.mark.full),
             # row broadcast: (B,S,D) + (B,S,1) -> 2 groups
@@ -227,7 +227,7 @@ class ArithBroadcastFixture(FixtureBase):
                 gb,
                 a_s,
                 b_s,
-                marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
+                marks=pytest.mark.full,
             )
             for j, (name, cls, ref, ga, gb) in enumerate(_ARITH_BROADCAST_OPS)
             for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
@@ -797,7 +797,7 @@ class EdgeCaseFixture(FixtureBase):
                     torch.randn(n, dtype=d, device="cuda"),
                     torch.rand(n, dtype=d, device="cuda") + 0.1,
                 ),
-                marks=pytest.mark.smoke,
+                marks=pytest.mark.full,
             ),
             # remainder: positive inputs
             pytest.param(
@@ -884,7 +884,7 @@ def test_float_only_binary_ops_reject_integer_dtype(op_cls, dtype: torch.dtype) 
         op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
     """Runtime inputs should fail fast instead of reaching backend lowering."""
     op = SubFwdOp(a_shape=(16,), b_shape=(16,), dtype=torch.float16)
@@ -899,7 +899,7 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_kernel_has_autotune_configs() -> None:
     """BinaryKernel subclasses must expose autotune_configs with >= 3 entries."""
 
@@ -921,7 +921,7 @@ def test_binary_kernel_has_autotune_configs() -> None:
             assert "num_per_thread" in cfg, f"Config missing 'num_per_thread': {cfg}"
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_kernel_autotune_configs_distinct() -> None:
     """autotune_configs entries must be distinct (no duplicates)."""
     shape = (4096,)
@@ -980,7 +980,7 @@ def test_minimum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_register_copy_downgrades_on_broadcast() -> None:
     """Explicitly requesting register_copy on broadcast shapes must not crash.
 
@@ -1017,7 +1017,7 @@ def test_register_copy_downgrades_on_broadcast() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 def test_binary_tune_true_does_not_crash() -> None:
     """tune=True must not crash even though op_func closures are not serializable.
 

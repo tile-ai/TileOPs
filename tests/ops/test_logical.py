@@ -107,8 +107,7 @@ class LogicalBroadcastFixture(FixtureBase):
     PARAMS = [
         ("op_name, op_cls, ref_fn, a_shape, b_shape", [
             pytest.param(name, cls, ref, a_s, b_s,
-                         marks=pytest.mark.smoke if i == 0 and j == 0
-                         else pytest.mark.full)
+                         marks=pytest.mark.full)
             for j, (name, cls, ref) in enumerate(_LOGICAL_OPS)
             for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
         ]),
