@@ -32,7 +32,7 @@ def _freeze_value(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_value(item) for item in value)
     if isinstance(value, set):
-        return tuple(sorted(_freeze_value(item) for item in value))
+        return tuple(sorted((_freeze_value(item) for item in value), key=str))
     return value
 
 

@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from tests.conftest import pytest_collection_modifyitems
+from tests.conftest import _freeze_value, pytest_collection_modifyitems
 
 # ---------------------------------------------------------------------------
 # Helpers to build mock pytest.Items
@@ -64,6 +64,15 @@ def _make_item(
         item.callspec = None
 
     return item
+
+
+@pytest.mark.full
+class TestFreezeValue:
+    """Regression coverage for stable signatures built from set values."""
+
+    def test_set_with_non_comparable_values_is_sorted_stably(self):
+        frozen = _freeze_value({torch.float16, None, 1})
+        assert frozen == tuple(sorted((torch.float16, None, 1), key=str))
 
 
 # ===================================================================
@@ -285,6 +294,7 @@ class TestNonRuntimeOpsFileExemption:
                 tune=True,
             ),
         ]
+        pytest_collection_modifyitems(items)
 
 # ===================================================================
 # AC-6: Every dtype needs smoke coverage
