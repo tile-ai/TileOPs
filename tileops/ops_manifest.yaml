@@ -1518,8 +1518,6 @@ ops:
       params:
         dim: {type: "int | list[int]", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
         - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
@@ -1533,8 +1531,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-        N: "x.shape[dim % x.ndim]"
+        M: "product(x.shape[i] for i in range(x.ndim) if (i not in ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim])))"
+        N: "product(x.shape[i] for i in ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))"
       # Per row: max (N), subtract+exp (2N), sum (N), log+add (2) = 4N + 2
       flops: "4 * M * N"
       # Read x (M*N) + write y (M)
@@ -1566,8 +1564,6 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1607,8 +1603,6 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1648,8 +1642,6 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1689,8 +1681,6 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1729,8 +1719,6 @@ ops:
       params:
         dim: {type: "int | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else 1)"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else [dim % x.ndim]) and keepdim else x.shape[i])"
@@ -1775,8 +1763,6 @@ ops:
         dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1817,8 +1803,6 @@ ops:
         dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1860,8 +1844,6 @@ ops:
         dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "var.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "var.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1995,8 +1977,6 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -2035,8 +2015,6 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -2074,8 +2052,6 @@ ops:
         y: {dtype: "int64"}
       params:
         dim: {type: "int | list[int] | None", default: -1}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])))"
@@ -2119,8 +2095,6 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -2160,8 +2134,6 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -2201,8 +2173,6 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
