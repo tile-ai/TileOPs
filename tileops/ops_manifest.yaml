@@ -55,6 +55,8 @@ ops:
       params:
         dim: {type: int, default: -1}
         eps: {type: float, default: 1.0e-6}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "weight.shape == (x.shape[dim],)"
 
@@ -71,8 +73,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim])"
-        N: "x.shape[dim]"
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
       # Per row: N squares + (N-1) adds + div + add + rsqrt + N muls (normalize) + N muls (weight) ≈ 4N
       flops: "4 * M * N"
       # Read x (M*N) + read weight (N) + write y (M*N), x elem_size
@@ -98,6 +100,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      init_dims:
+        N: {from: "x.shape[-1]"}
       shape_rules:
         - "weight.shape == (x.shape[-1],)"
         - "bias.shape == (x.shape[-1],)"
@@ -145,6 +149,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      init_dims:
+        N: {from: "x.shape[-1]"}
       shape_rules:
         - "scale.shape == x.shape"
         - "shift.shape == x.shape"
@@ -189,6 +195,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      init_dims:
+        N: {from: "x.shape[-1]"}
       shape_rules:
         - "scale.shape == x.shape"
         - "shift.shape == x.shape"
@@ -235,6 +243,8 @@ ops:
         residual_out: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      init_dims:
+        N: {from: "x.shape[-1]"}
       shape_rules:
         - "residual.shape == x.shape"
         - "weight.shape == (x.shape[-1],)"
@@ -282,6 +292,8 @@ ops:
         residual_out: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-6}
+      init_dims:
+        N: {from: "x.shape[-1]"}
       shape_rules:
         - "residual.shape == x.shape"
         - "weight.shape == (x.shape[-1],)"
@@ -340,6 +352,8 @@ ops:
         training: {type: bool, default: true}
         eps: {type: float, default: 1.0e-5}
         momentum: {type: float, default: 0.1}
+      init_dims:
+        C: {from: "x.shape[1]"}
       shape_rules:
         - "weight.shape == (x.shape[1],)"
         - "bias.shape == (x.shape[1],)"
@@ -393,6 +407,8 @@ ops:
         grad_weight: {dtype: "float32"}
         grad_bias: {dtype: "float32"}
       params: {}
+      init_dims:
+        C: {from: "grad_out.shape[1]"}
       shape_rules:
         - "x.shape == grad_out.shape"
         - "weight.shape == (grad_out.shape[1],)"
@@ -443,6 +459,8 @@ ops:
       params:
         groups: {type: int}
         eps: {type: float, default: 1.0e-5}
+      init_dims:
+        C: {from: "x.shape[1]"}
       shape_rules:
         - "weight.shape == (x.shape[1],)"
         - "bias.shape == (x.shape[1],)"
@@ -485,6 +503,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      init_dims:
+        C: {from: "x.shape[1]"}
       shape_rules:
         - "weight.shape == (x.shape[1],)"
         - "bias.shape == (x.shape[1],)"
@@ -1413,6 +1433,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.shape == x.shape"
 
@@ -1453,6 +1475,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.shape == x.shape"
 
@@ -1494,6 +1518,8 @@ ops:
       params:
         dim: {type: "int | list[int]", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
         - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
@@ -1540,6 +1566,8 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1579,6 +1607,8 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1618,6 +1648,8 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1657,6 +1689,8 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1695,6 +1729,8 @@ ops:
       params:
         dim: {type: "int | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else 1)"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else [dim % x.ndim]) and keepdim else x.shape[i])"
@@ -1739,6 +1775,8 @@ ops:
         dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1779,6 +1817,8 @@ ops:
         dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1820,6 +1860,8 @@ ops:
         dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "var.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "var.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1865,6 +1907,8 @@ ops:
       params:
         dim: {type: int, default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - 1"
         - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
@@ -1905,6 +1949,8 @@ ops:
       params:
         dim: {type: int, default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - 1"
         - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
@@ -1949,6 +1995,8 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -1987,6 +2035,8 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -2024,6 +2074,8 @@ ops:
         y: {dtype: "int64"}
       params:
         dim: {type: "int | list[int] | None", default: -1}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])))"
@@ -2067,6 +2119,8 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -2106,6 +2160,8 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -2145,6 +2201,8 @@ ops:
       params:
         dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
@@ -2187,6 +2245,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.shape == x.shape"
 
@@ -2223,6 +2283,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
+      init_dims:
+        N: {from: "x.shape[dim]"}
       shape_rules:
         - "y.shape == x.shape"
 
