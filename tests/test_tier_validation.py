@@ -332,7 +332,7 @@ class TestSmokeContract:
                 shape=(64, 512),
             ),
         ]
-        with pytest.raises(pytest.UsageError, match="expected exactly 2 smoke cases"):
+        with pytest.raises(pytest.UsageError, match="invalid smoke contract"):
             pytest_collection_modifyitems(items)
 
     def test_smoke_dtype_coverage_matches_supported_dtypes(self):
@@ -352,7 +352,7 @@ class TestSmokeContract:
                 shape=(128, 512),
             ),
         ]
-        with pytest.raises(pytest.UsageError, match="smoke dtype coverage must match supported dtypes"):
+        with pytest.raises(pytest.UsageError, match="invalid smoke dtype coverage"):
             pytest_collection_modifyitems(items)
 
     def test_smoke_shapes_must_be_unique(self):
@@ -372,7 +372,7 @@ class TestSmokeContract:
                 shape=(128, 512),
             ),
         ]
-        with pytest.raises(pytest.UsageError, match="smoke cases must use exactly one typical shape"):
+        with pytest.raises(pytest.UsageError, match="invalid smoke shape contract"):
             pytest_collection_modifyitems(items)
 
 

@@ -24,6 +24,10 @@ NON_RUNTIME_OPS_TIER_FILES = {
     "tests/ops/test_elementwise_config_dtype.py",
 }
 
+
+def _is_non_runtime_ops_tier_file(path: str) -> bool:
+    return any(path.endswith(skip_path) for skip_path in NON_RUNTIME_OPS_TIER_FILES)
+
 def _get_callspec_params(item: pytest.Item) -> dict | None:
     callspec = getattr(item, "callspec", None)
     if callspec is None:
@@ -265,6 +269,12 @@ def _format_values(values: set[str]) -> str:
     return ", ".join(sorted(values))
 
 
+def _format_contract_error(title: str, *details: str) -> str:
+    lines = [title]
+    lines.extend(f"  {detail}" for detail in details if detail)
+    return "\n".join(lines)
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Validate explicit test tier assignments."""
     tier_errors: list[str] = []
@@ -287,7 +297,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             continue
         test_name = getattr(item, "originalname", item.name)
         ops_groups[(path, test_name)].append(item)
-        if any(path.endswith(skip_path) for skip_path in NON_RUNTIME_OPS_TIER_FILES):
+        if _is_non_runtime_ops_tier_file(path):
             continue
         callspec = getattr(item, "callspec", None)
         if callspec is None or "dtype" not in callspec.params:
@@ -297,7 +307,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         smoke_contract_groups[(path, _infer_op_key(item))].append(item)
 
     for (_path, _test_name), group in ops_groups.items():
-        if any(_path.endswith(path) for path in NON_RUNTIME_OPS_TIER_FILES):
+        if _is_non_runtime_ops_tier_file(_path):
             continue
 
         non_xfail_items = [
@@ -401,8 +411,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
         if len(valid_smoke_items) != len(supported_dtypes):
             tier_errors.append(
-                f"{path}::{op_key}: expected exactly {len(supported_dtypes)} smoke cases "
-                f"(one typical shape x all supported dtypes), found {len(valid_smoke_items)}"
+                _format_contract_error(
+                    f"{path}::{op_key}: invalid smoke contract",
+                    f"expected smoke cases: {len(supported_dtypes)}",
+                    f"actual smoke cases: {len(valid_smoke_items)}",
+                )
             )
 
         if smoke_dtypes != supported_dtypes:
@@ -414,14 +427,20 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             if extra:
                 details.append(f"unexpected [{_format_values(extra)}]")
             tier_errors.append(
-                f"{path}::{op_key}: smoke dtype coverage must match supported dtypes; "
-                + ", ".join(details)
+                _format_contract_error(
+                    f"{path}::{op_key}: invalid smoke dtype coverage",
+                    *details,
+                )
             )
 
         if len(smoke_shapes) > 1:
             shape_desc = ", ".join(str(shape) for shape in sorted(smoke_shapes, key=str))
             tier_errors.append(
-                f"{path}::{op_key}: smoke cases must use exactly one typical shape, found {shape_desc}"
+                _format_contract_error(
+                    f"{path}::{op_key}: invalid smoke shape contract",
+                    "expected: exactly one typical shape",
+                    f"found: {shape_desc}",
+                )
             )
 
     if tier_errors:
