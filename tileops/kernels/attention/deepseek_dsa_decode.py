@@ -243,7 +243,7 @@ def _sparse_mla_kernel(batch: int,
                             T.barrier_wait(bar_s_scale_and_s_free, ((i_i * 2) & 1) ^ 1)
 
                         T.copy(m_i, m_i_prev)
-                        T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                        T.reduce_max(acc_s, m_i, dim=1, clear=True)
                         for h_i in T.Parallel(h_per_block):
                             m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
                         for h_i in T.Parallel(h_per_block):
@@ -280,7 +280,7 @@ def _sparse_mla_kernel(batch: int,
                         T.barrier_wait(bar_s_scale_and_s_free, ((i_i * 2 + 1) & 1) ^ 1)
 
                         T.copy(m_i, m_i_prev)
-                        T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                        T.reduce_max(acc_s, m_i, dim=1, clear=True)
                         for h_i in T.Parallel(h_per_block):
                             m_i[h_i] = T.max(m_i[h_i], m_i_prev[h_i])
                         for h_i in T.Parallel(h_per_block):
