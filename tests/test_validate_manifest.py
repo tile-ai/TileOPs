@@ -526,6 +526,62 @@ class TestSignature:
             f"Expected error about 'eps' not found, got: {errors}"
         )
 
+    def test_init_dims_key_in_init_accepted(self, validator):
+        """init_dims key that appears in __init__() is valid (R20)."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = {"dim": {"type": "int", "default": -1}}
+        manifest_init_dims = {"N": {"from": "x.shape[dim]"}}
+        forward_params = ["x"]
+        init_params = ["N", "dtype", "dim"]
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+            init_params=init_params,
+            manifest_init_dims=manifest_init_dims,
+        )
+        assert errors == []
+
+    def test_init_dims_key_missing_from_init_fails(self, validator):
+        """init_dims key not in __init__() must fail (R20)."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = {"dim": {"type": "int", "default": -1}}
+        manifest_init_dims = {"N": {"from": "x.shape[dim]"}}
+        forward_params = ["x"]
+        init_params = ["dtype", "dim"]  # N missing
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+            init_params=init_params,
+            manifest_init_dims=manifest_init_dims,
+        )
+        assert any("init_dims" in e and "'N'" in e for e in errors), (
+            f"Expected error about init_dims 'N' missing from __init__, got: {errors}"
+        )
+
+    def test_init_dims_absent_ignored(self, validator):
+        """When manifest has no init_dims, no related error is raised."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = {}
+        forward_params = ["x"]
+        init_params = ["dtype"]
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+            init_params=init_params,
+            manifest_init_dims=None,
+        )
+        assert errors == []
+
+    def test_init_dims_non_dict_fails(self, validator):
+        """init_dims must be a mapping; non-dict values are reported."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = {}
+        forward_params = ["x"]
+        init_params = ["dtype"]
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+            init_params=init_params,
+            manifest_init_dims=["N"],  # list, not dict
+        )
+        assert any("init_dims" in e for e in errors)
+
 
 # ---------------------------------------------------------------------------
 # dtype: dtype string conformance
