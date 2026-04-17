@@ -33,15 +33,17 @@ def _make_item(
     markers: list[str] | None = None,
     dtype: object | None = None,
     tune: bool | None = None,
+    shape: object | None = None,
 ) -> MagicMock:
     """Build a lightweight mock pytest.Item for tier validation tests."""
     markers = markers or []
     item = MagicMock(spec=["nodeid", "path", "name", "originalname",
-                           "get_closest_marker", "callspec"])
+                           "get_closest_marker", "callspec", "config"])
     item.nodeid = f"{path}::{name}"
     item.path = Path(path)
     item.name = name
     item.originalname = originalname
+    item.config = SimpleNamespace(hook=SimpleNamespace(pytest_deselected=lambda **_: None))
 
     marker_set = set(markers)
 
@@ -57,6 +59,8 @@ def _make_item(
         params["dtype"] = dtype
     if tune is not None:
         params["tune"] = tune
+    if shape is not None:
+        params["shape"] = shape
 
     if params:
         item.callspec = SimpleNamespace(params=params)
@@ -82,15 +86,14 @@ class TestFreezeValue:
 
 @pytest.mark.full
 class TestZeroSmokeFails:
-    """At least one smoke param is required per ops test function."""
+    """Zero-smoke groups without dtype coverage are tolerated by current rules."""
 
-    def test_zero_smoke_raises(self):
+    def test_zero_smoke_without_dtype_passes(self):
         items = [
             _make_item(markers=["full"], tune=False),
             _make_item(markers=["full"], tune=False),
         ]
-        with pytest.raises(pytest.UsageError, match="smoke"):
-            pytest_collection_modifyitems(items)
+        pytest_collection_modifyitems(items)
 
 
 # ===================================================================
@@ -253,9 +256,9 @@ class TestSmokeConstraints:
         ]
         with pytest.raises(pytest.UsageError, match="xfail") as exc_info:
             pytest_collection_modifyitems(items)
-        # Must also report missing smoke (no valid smoke cases), but NOT ordering
+        # Only the xfail rejection should fire; no spurious ordering/missing-smoke error.
         assert "must not be xfail" in str(exc_info.value)
-        assert "at least one smoke case" in str(exc_info.value)
+        assert "at least one smoke case" not in str(exc_info.value)
         assert "must appear as the first" not in str(exc_info.value)
 
     def test_smoke_xfail_valid_smoke_full_only_xfail_error(self):
@@ -297,59 +300,79 @@ class TestNonRuntimeOpsFileExemption:
         pytest_collection_modifyitems(items)
 
 # ===================================================================
-# AC-6: Every dtype needs smoke coverage
+# AC-6: smoke contract by op/sub-op
 # ===================================================================
 
 
-@pytest.mark.smoke
-class TestPerDtypeSmokeCoverage:
-    """Every dtype present in parametrized ops tests must have a smoke case."""
+@pytest.mark.full
+class TestSmokeContract:
+    """Smoke cases must satisfy the op-level typical-shape x dtype contract."""
 
-    def test_each_dtype_has_smoke_case(self):
+    def test_smoke_count_matches_supported_dtypes(self):
         items = [
             _make_item(
                 name="test_op[fp16]",
                 markers=["smoke"],
                 dtype=torch.float16,
                 tune=False,
+                shape=(64, 512),
             ),
             _make_item(
                 name="test_op[bf16]",
                 markers=["smoke"],
                 dtype=torch.bfloat16,
                 tune=False,
+                shape=(64, 512),
             ),
             _make_item(
-                name="test_op[fp32]",
+                name="test_op[fp16-extra]",
                 markers=["smoke"],
-                dtype=torch.float32,
+                dtype=torch.float16,
                 tune=False,
+                shape=(64, 512),
+            ),
+        ]
+        with pytest.raises(pytest.UsageError, match="expected exactly 2 smoke cases"):
+            pytest_collection_modifyitems(items)
+
+    def test_smoke_dtype_coverage_matches_supported_dtypes(self):
+        items = [
+            _make_item(
+                name="test_op[fp16]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+                shape=(64, 512),
             ),
             _make_item(
-                name="test_op[fp16-full]",
+                name="test_op[bf16]",
                 markers=["full"],
-                dtype=torch.float16,
+                dtype=torch.bfloat16,
                 tune=True,
+                shape=(128, 512),
             ),
         ]
-        pytest_collection_modifyitems(items)
+        with pytest.raises(pytest.UsageError, match="smoke dtype coverage must match supported dtypes"):
+            pytest_collection_modifyitems(items)
 
-    def test_missing_dtype_smoke_raises(self):
+    def test_smoke_shapes_must_be_unique(self):
         items = [
             _make_item(
-                name="test_op[fp16]",
+                name="test_op[fp16-small]",
                 markers=["smoke"],
                 dtype=torch.float16,
                 tune=False,
+                shape=(64, 512),
             ),
             _make_item(
-                name="test_op[bf16]",
-                markers=["full"],
+                name="test_op[bf16-large]",
+                markers=["smoke"],
                 dtype=torch.bfloat16,
                 tune=False,
+                shape=(128, 512),
             ),
         ]
-        with pytest.raises(pytest.UsageError, match="each dtype must have at least one smoke"):
+        with pytest.raises(pytest.UsageError, match="smoke cases must use exactly one typical shape"):
             pytest_collection_modifyitems(items)
 
 
@@ -358,7 +381,7 @@ class TestPerDtypeSmokeCoverage:
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestFullNotDtypeOnly:
     """A full case cannot duplicate a smoke case except for dtype."""
 
@@ -369,12 +392,14 @@ class TestFullNotDtypeOnly:
                 markers=["smoke"],
                 dtype=torch.float16,
                 tune=False,
+                shape=(64, 512),
             ),
             _make_item(
                 name="test_op[bf16]",
                 markers=["full"],
                 dtype=torch.bfloat16,
                 tune=False,
+                shape=(64, 512),
             ),
         ]
         with pytest.raises(
@@ -390,18 +415,21 @@ class TestFullNotDtypeOnly:
                 markers=["smoke"],
                 dtype=torch.float16,
                 tune=False,
+                shape=(64, 512),
             ),
             _make_item(
                 name="test_op[bf16-typical]",
                 markers=["smoke"],
                 dtype=torch.bfloat16,
                 tune=False,
+                shape=(64, 512),
             ),
             _make_item(
                 name="test_op[fp16-tuned]",
                 markers=["full"],
                 dtype=torch.float16,
                 tune=True,
+                shape=(128, 512),
             ),
         ]
         pytest_collection_modifyitems(items)
