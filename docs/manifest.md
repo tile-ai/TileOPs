@@ -89,6 +89,10 @@ dtype_combos:
 - `init_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).
 - Key order in `init_dims` determines `__init__` parameter order, consistent with R1.
 
+**Applicability:** `init_dims` is for dimensions that are natural user-provided hyperparameters of the op (e.g., hidden size `N` for norms, channel count `C` for batch/group/instance norm, reduction extent for a user-chosen `dim`). A dimension that can only be computed from the full input tensor shape is **not** an init-time value.
+
+Concretely: if a reduction op accepts `dim=None` (full reduction), the reduction extent equals `product(x.shape)`, which is not a hyperparameter a user commits to at construction time. Such ops must **not** declare `init_dims` for the reduction extent — that dimension is forward-derived per the generalized roofline `vars` (R14). The same principle applies to any dimension whose value depends on the entire input shape rather than on op-level configuration.
+
 ```yaml
 x: {dtype: "float16", shape: "[N, H, W, C]", layout: "channels_last"}
 ```
