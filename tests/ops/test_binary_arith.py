@@ -865,13 +865,13 @@ def test_binary_arith_edge_cases(op_cls, ref_fn, gen_fn) -> None:
 class FloatOnlyBinaryRejectFixture(FixtureBase):
     PARAMS = [
         ("op_cls, dtype", [
-            pytest.param(DivOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(RemainderOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(PowOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(FloorDivideOp, torch.int64, marks=pytest.mark.full),
-            pytest.param(LerpOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(MaximumOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(MinimumOp, torch.int64, marks=pytest.mark.full),
+            pytest.param(DivFwdOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(RemainderFwdOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(PowFwdOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(FloorDivideFwdOp, torch.int64, marks=pytest.mark.full),
+            pytest.param(LerpFwdOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(MaximumFwdOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(MinimumFwdOp, torch.int64, marks=pytest.mark.full),
         ]),
     ]
 
