@@ -345,6 +345,40 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      # Trusted actions checkout: must run AFTER the workspace checkouts so
+      # their `git clean -ffdx` pass does not wipe `.trusted/`. Anything
+      # loaded via `uses: ./...` from here on MUST resolve through
+      # `.trusted/` so that fork-controlled PR code cannot substitute the
+      # composite action.
+      #
+      # Ref selection by trust level. `is_fork` alone is too coarse: a repo
+      # member may open a PR from their personal fork, which still counts as
+      # a fork PR but the author already has push access to the base repo.
+      # Combine repo equality with `author_association` so repo-owned CI
+      # changes can self-validate on the PR that introduces them, while
+      # external contributors are kept on the trusted base ref.
+      #
+      #   - external fork PR (author not OWNER/MEMBER/COLLABORATOR)
+      #       → `base.sha` (authoritative; external author can't alter)
+      #   - same-repo PR, member-fork PR, or push
+      #       → head sha (author already has write access to base repo)
+      - name: Checkout trusted actions (base repo)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ (needs.security-policy.outputs.is_fork == 'true' && !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)) && github.event.pull_request.base.sha || github.event.pull_request.head.sha || github.sha }}
+          path: .trusted
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions
+
+      - name: Reclaim runner disk
+        uses: ./.trusted/.github/actions/reclaim-runner-disk
+        with:
+          reclaim-below-gib: "10"
+          cache-trim-cooldown-minutes: "120"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
