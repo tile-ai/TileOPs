@@ -345,8 +345,25 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      # Trusted actions checkout: must run AFTER the workspace checkouts so
+      # their `git clean -ffdx` pass does not wipe `.trusted/`. Anything
+      # loaded via `uses: ./...` from here on MUST resolve through
+      # `.trusted/` so that fork-controlled PR code cannot substitute the
+      # composite action. The PR's base sha (or `github.ref` for push) is
+      # the authoritative trusted source — fork commits cannot alter it.
+      - name: Checkout trusted actions (base repo)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha || github.ref }}
+          path: .trusted
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions
+
       - name: Reclaim runner disk
-        uses: ./.github/actions/reclaim-runner-disk
+        uses: ./.trusted/.github/actions/reclaim-runner-disk
         with:
           reclaim-below-gib: "10"
           cache-trim-cooldown-minutes: "120"
