@@ -350,6 +350,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Reclaim runner disk
+        uses: ./.github/actions/reclaim-runner-disk
+        with:
+          current-run-dir: gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Resolve runtime state
         env:
           IS_FORK: ${{ needs.security-policy.outputs.is_fork }}

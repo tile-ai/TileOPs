@@ -1,0 +1,133 @@
+name: Reclaim runner disk
+description: >
+  Reclaim disk on self-hosted CI runners before heavy steps run. Prunes
+  stale trusted venvs, orphan per-run temp dirs, and aged compile/wheel/pip
+  caches under /home/ci-runner. Fails fast if the volume is still near full
+  after reclaim, so downstream steps report disk pressure clearly instead of
+  a cryptic mkdir error.
+
+inputs:
+  venv-keep:
+    description: Number of most-recent tileops_ci_venv_* directories to retain.
+    required: false
+    default: "2"
+  temp-orphan-minutes:
+    description: >
+      Age threshold (minutes) for purging orphan gpu-smoke-*/nightly-* temp
+      dirs in RUNNER_TEMP that do not belong to the current run.
+    required: false
+    default: "120"
+  cache-age-days:
+    description: Age threshold (days) for trimming compile/wheel/pip cache files.
+    required: false
+    default: "30"
+  min-avail-gib:
+    description: >
+      Hard floor on free space (GiB) in RUNNER_TEMP after reclaim. Below this
+      the step fails with an explicit message.
+    required: false
+    default: "5"
+  current-run-dir:
+    description: >
+      Name of the per-run temp directory that must NOT be pruned. Leave blank
+      if the caller does not create one.
+    required: false
+    default: ""
+  cache-dirs:
+    description: >
+      Newline-separated list of cache directory roots whose files older than
+      cache-age-days should be trimmed. Defaults target the `venv`-label runner
+      layout. Nightly's `nightly`-label runner stores caches under
+      /data/ci-cache/* — pass that layout explicitly.
+    required: false
+    default: |
+      /home/ci-runner/.tilelang/cache
+      /home/ci-runner/.triton/cache
+      /home/ci-runner/.cache/pip
+      /home/ci-runner/.wheel-cache
+  prune-tool-cache:
+    description: >
+      Whether to prune old tileops_ci_venv_* directories under runner.tool_cache.
+      Disable on runners that do not use the per-hash trusted-venv scheme
+      (e.g. nightly's docker-based jobs).
+    required: false
+    default: "true"
+  df-paths:
+    description: Space-separated paths to pass to `df -h` for before/after logging.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Reclaim runner disk
+      shell: bash
+      env:
+        VENV_KEEP: ${{ inputs.venv-keep }}
+        TEMP_ORPHAN_MINUTES: ${{ inputs.temp-orphan-minutes }}
+        CACHE_AGE_DAYS: ${{ inputs.cache-age-days }}
+        MIN_AVAIL_GIB: ${{ inputs.min-avail-gib }}
+        CURRENT_RUN_DIR: ${{ inputs.current-run-dir }}
+        CACHE_DIRS: ${{ inputs.cache-dirs }}
+        PRUNE_TOOL_CACHE: ${{ inputs.prune-tool-cache }}
+        DF_PATHS: ${{ inputs.df-paths }}
+        TOOL_CACHE: ${{ runner.tool_cache }}
+      run: |
+        set -uo pipefail
+        # shellcheck disable=SC2206
+        DF_TARGETS=( ${DF_PATHS} )
+        if [[ ${#DF_TARGETS[@]} -eq 0 ]]; then
+          DF_TARGETS=( "${RUNNER_TEMP}" "${TOOL_CACHE}" /home/ci-runner )
+        fi
+
+        echo "Disk before reclaim:"
+        df -h "${DF_TARGETS[@]}" 2>/dev/null || true
+
+        # 1) Prune old trusted venvs: keep N most recent by mtime.
+        if [[ "${PRUNE_TOOL_CACHE}" == "true" && -d "${TOOL_CACHE}" ]]; then
+          mapfile -t venvs < <(find "${TOOL_CACHE}" -maxdepth 1 -type d -name "tileops_ci_venv_*" -printf '%T@ %p\n' 2>/dev/null | sort -rn | awk '{print $2}')
+          if [[ ${#venvs[@]} -gt ${VENV_KEEP} ]]; then
+            for stale in "${venvs[@]:${VENV_KEEP}}"; do
+              echo "Removing stale venv: ${stale}"
+              rm -rf "${stale}" || true
+            done
+          fi
+        fi
+
+        # 2) Purge orphan per-run dirs in RUNNER_TEMP older than N minutes,
+        #    excluding the current run's directory if provided.
+        if [[ -n "${RUNNER_TEMP:-}" && -d "${RUNNER_TEMP}" ]]; then
+          for pattern in 'gpu-smoke-*' 'nightly-*'; do
+            if [[ -n "${CURRENT_RUN_DIR}" ]]; then
+              find "${RUNNER_TEMP}" -maxdepth 1 -type d -name "${pattern}" \
+                ! -name "${CURRENT_RUN_DIR}" -mmin "+${TEMP_ORPHAN_MINUTES}" \
+                -exec echo "Removing orphan runtime: {}" \; \
+                -exec rm -rf {} + 2>/dev/null || true
+            else
+              find "${RUNNER_TEMP}" -maxdepth 1 -type d -name "${pattern}" \
+                -mmin "+${TEMP_ORPHAN_MINUTES}" \
+                -exec echo "Removing orphan runtime: {}" \; \
+                -exec rm -rf {} + 2>/dev/null || true
+            fi
+          done
+        fi
+
+        # 3) Age-based trim of trusted compile/wheel/pip caches.
+        while IFS= read -r dir; do
+          dir="${dir//$'\r'/}"
+          [[ -z "$dir" ]] && continue
+          [[ -d "$dir" ]] || continue
+          find "$dir" -type f -mtime "+${CACHE_AGE_DAYS}" -delete 2>/dev/null || true
+          find "$dir" -type d -empty -mtime "+${CACHE_AGE_DAYS}" -delete 2>/dev/null || true
+        done <<< "${CACHE_DIRS}"
+
+        echo "Disk after reclaim:"
+        df -h "${DF_TARGETS[@]}" 2>/dev/null || true
+
+        # Hard guard: abort early with a clear message if still near-full.
+        AVAIL_KB=$(df -Pk "${RUNNER_TEMP}" | awk 'NR==2 {print $4}')
+        MIN_KB=$(( MIN_AVAIL_GIB * 1024 * 1024 ))
+        if [[ -n "${AVAIL_KB:-}" && "${AVAIL_KB}" -lt "${MIN_KB}" ]]; then
+          echo "::error::Runner ${RUNNER_NAME:-unknown} has <${MIN_AVAIL_GIB}GiB free on ${RUNNER_TEMP} after reclaim (${AVAIL_KB} KiB). Manual cleanup required."
+          exit 1
+        fi
