@@ -361,13 +361,13 @@ def check_l1_signature(
     forward_params: list[str],
     *,
     init_params: list[str] | None = None,
-    manifest_init_dims: dict | None = None,
+    manifest_static_dims: dict | None = None,
 ) -> list[str]:
     """Check that forward() params match manifest inputs + params.
 
     The strict rule: every manifest-declared param must appear in the union
     of ``__init__()`` and ``forward()`` parameter names. Manifest inputs must
-    appear in ``forward()`` in declaration order. Every ``init_dims`` key
+    appear in ``forward()`` in declaration order. Every ``static_dims`` key
     must appear as an ``__init__()`` parameter (per R20).
 
     Args:
@@ -377,7 +377,7 @@ def check_l1_signature(
         forward_params: List of parameter names from Op.forward() (excluding 'self').
         init_params: List of parameter names from Op.__init__() (excluding 'self').
             When None, treated as empty (only forward is checked).
-        manifest_init_dims: The signature.init_dims dict from manifest (may be None).
+        manifest_static_dims: The signature.static_dims dict from manifest (may be None).
 
     Returns:
         List of error strings (empty if OK).
@@ -414,19 +414,19 @@ def check_l1_signature(
                 f"__init__() or forward() parameters"
             )
 
-    # 3. init_dims check (R20): every init_dims key must be an __init__ param
-    if manifest_init_dims:
-        if not isinstance(manifest_init_dims, dict):
+    # 3. static_dims check (R20): every static_dims key must be an __init__ param
+    if manifest_static_dims:
+        if not isinstance(manifest_static_dims, dict):
             errors.append(
-                f"[signature] {op_name}: signature.init_dims is not a mapping"
+                f"[signature] {op_name}: signature.static_dims is not a mapping"
             )
         else:
             init_param_set = set(init_params)
-            for dim_name in manifest_init_dims:
+            for dim_name in manifest_static_dims:
                 if dim_name not in init_param_set:
                     errors.append(
-                        f"[signature] {op_name}: init_dims key {dim_name!r} not found in "
-                        f"__init__() parameters (R20: init_dims keys are required __init__ params)"
+                        f"[signature] {op_name}: static_dims key {dim_name!r} not found in "
+                        f"__init__() parameters (R20: static_dims keys are required __init__ params)"
                     )
 
     return errors
@@ -609,13 +609,13 @@ def check_l1(
 
     manifest_inputs = sig.get("inputs", {})
     manifest_params = sig.get("params", {})
-    manifest_init_dims = sig.get("init_dims")
+    manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
 
     return check_l1_signature(
         op_name, manifest_inputs, manifest_params, forward_params,
         init_params=init_params,
-        manifest_init_dims=manifest_init_dims,
+        manifest_static_dims=manifest_static_dims,
     )
 
 

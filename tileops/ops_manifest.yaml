@@ -55,8 +55,8 @@ ops:
       params:
         dim: {type: int, default: -1}
         eps: {type: float, default: 1.0e-6}
-      init_dims:
-        N: {from: "x.shape[dim]"}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
         - "weight.shape == (x.shape[dim],)"
 
@@ -100,8 +100,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
-      init_dims:
-        N: {from: "x.shape[-1]"}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "weight.shape == (x.shape[-1],)"
         - "bias.shape == (x.shape[-1],)"
@@ -149,8 +149,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
-      init_dims:
-        N: {from: "x.shape[-1]"}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "scale.shape == x.shape"
         - "shift.shape == x.shape"
@@ -195,8 +195,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
-      init_dims:
-        N: {from: "x.shape[-1]"}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "scale.shape == x.shape"
         - "shift.shape == x.shape"
@@ -243,8 +243,8 @@ ops:
         residual_out: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
-      init_dims:
-        N: {from: "x.shape[-1]"}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "residual.shape == x.shape"
         - "weight.shape == (x.shape[-1],)"
@@ -292,8 +292,8 @@ ops:
         residual_out: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-6}
-      init_dims:
-        N: {from: "x.shape[-1]"}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "residual.shape == x.shape"
         - "weight.shape == (x.shape[-1],)"
@@ -352,8 +352,8 @@ ops:
         training: {type: bool, default: true}
         eps: {type: float, default: 1.0e-5}
         momentum: {type: float, default: 0.1}
-      init_dims:
-        C: {from: "x.shape[1]"}
+      static_dims:
+        C: "x.shape[1]"
       shape_rules:
         - "weight.shape == (x.shape[1],)"
         - "bias.shape == (x.shape[1],)"
@@ -407,8 +407,8 @@ ops:
         grad_weight: {dtype: "float32"}
         grad_bias: {dtype: "float32"}
       params: {}
-      init_dims:
-        C: {from: "grad_out.shape[1]"}
+      static_dims:
+        C: "grad_out.shape[1]"
       shape_rules:
         - "x.shape == grad_out.shape"
         - "weight.shape == (grad_out.shape[1],)"
@@ -459,8 +459,8 @@ ops:
       params:
         groups: {type: int}
         eps: {type: float, default: 1.0e-5}
-      init_dims:
-        C: {from: "x.shape[1]"}
+      static_dims:
+        C: "x.shape[1]"
       shape_rules:
         - "weight.shape == (x.shape[1],)"
         - "bias.shape == (x.shape[1],)"
@@ -503,8 +503,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
-      init_dims:
-        C: {from: "x.shape[1]"}
+      static_dims:
+        C: "x.shape[1]"
       shape_rules:
         - "weight.shape == (x.shape[1],)"
         - "bias.shape == (x.shape[1],)"
@@ -1433,8 +1433,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
-      init_dims:
-        N: {from: "x.shape[dim]"}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
         - "y.shape == x.shape"
 
@@ -1475,8 +1475,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
-      init_dims:
-        N: {from: "x.shape[dim]"}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
         - "y.shape == x.shape"
 
@@ -1518,8 +1518,6 @@ ops:
       params:
         dim: {type: "int | list[int] | tuple[int, ...]", default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "product(x.shape[i] for i in ([d % x.ndim for d in dim] if isinstance(dim, (list, tuple)) else [dim % x.ndim]))"}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
         - "y.shape[i] == (1 if i in ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim]) and keepdim else x.shape[i])"
@@ -1891,8 +1889,8 @@ ops:
       params:
         dim: {type: int, default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - 1"
         - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
@@ -1933,8 +1931,8 @@ ops:
       params:
         dim: {type: int, default: -1}
         keepdim: {type: bool, default: false}
-      init_dims:
-        N: {from: "x.shape[dim]"}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - 1"
         - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
@@ -2217,8 +2215,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
-      init_dims:
-        N: {from: "x.shape[dim]"}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
         - "y.shape == x.shape"
 
@@ -2255,8 +2253,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
-      init_dims:
-        N: {from: "x.shape[dim]"}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
         - "y.shape == x.shape"
 
