@@ -2,6 +2,10 @@
 
 [`ops_manifest.yaml`](../tileops/ops_manifest.yaml) is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
 
+## Design-first
+
+This document, together with [ops-design.md](ops-design.md) and [ops-design-reference.md](ops-design-reference.md), is the authoritative specification for the Op interface and its codegen inputs. Codegen MUST strictly implement what is specified here. Handwritten Ops that deviate from the generated shape are implementation bugs — tracked via issues and fixed — not alternate designs. This document does not describe migration, rollout, or reconciliation of existing handwritten ops; those are project-management concerns outside the spec.
+
 ## Trust Model
 
 ```mermaid
@@ -55,7 +59,7 @@ dtype_combos:
 
 **R6. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). Names become roofline variables. No ellipsis or wildcards.
 
-**R7. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `init_dims` declares dimensions known at Op construction time (R20).
+**R7. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `static_dims` declares values the user commits to at Op construction time (R20).
 
 **R8. No shape aliasing.** Each tensor declares its own shape. Use shared dimension names (R9) or `shape_rules` (R11) to express shape relationships.
 
@@ -81,21 +85,113 @@ dtype_combos:
 
 **R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order.
 
-**R20. `init_dims`.** For arbitrary-rank ops (no `shape` declaration), `init_dims` declares derived dimensions that users must provide at Op construction time. Each entry maps a dimension name to a `from` expression that defines its semantics and serves as a forward-time validation rule.
-
-- Dimensions in `init_dims` are required `__init__` parameters. Not optional.
-- Dimensions not in `init_dims` are derived from tensors at forward time.
-- `from` expressions use tensor shapes and params (e.g., `"x.shape[dim]"`). At forward time, the user-provided value must match the evaluated expression.
-- `init_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).
-- Key order in `init_dims` determines `__init__` parameter order, consistent with R1.
-
-**Applicability:** `init_dims` is for dimensions that are natural user-provided hyperparameters of the op (e.g., hidden size `N` for norms, channel count `C` for batch/group/instance norm, reduction extent for a user-chosen `dim`). A dimension that can only be computed from the full input tensor shape is **not** an init-time value.
-
-Concretely: if a reduction op accepts `dim=None` (full reduction), the reduction extent equals `product(x.shape)`, which is not a hyperparameter a user commits to at construction time. Such ops must **not** declare `init_dims` for the reduction extent — that dimension is forward-derived per the generalized roofline `vars` (R14). The same principle applies to any dimension whose value depends on the entire input shape rather than on op-level configuration.
+**R20. `static_dims`.** For arbitrary-rank ops (no `shape` declaration), `static_dims` declares values the user commits to at Op construction time. Each entry maps an `__init__` keyword name to a single-axis shape expression.
 
 ```yaml
-x: {dtype: "float16", shape: "[N, H, W, C]", layout: "channels_last"}
+static_dims:
+  N: "x.shape[dim]"
 ```
+
+**Declaration-point semantics.** `static_dims` is per-op, not per-family. It declares what becomes statically known at the moment the user constructs the Op instance. The shape expression is a **forward-time validation rule**, not an init-time derivation — no tensor exists at `__init__`.
+
+**Rules:**
+
+- Every `static_dims` entry's key is a required `__init__` keyword parameter. **No defaults**; the user must supply every committed value at ctor.
+- The expression MUST be a **single-axis reference** of the form `<tensor>.shape[<const_or_param>]`. Multi-axis forms (e.g., `product(x.shape[i] for i in ...)`, comprehensions, arithmetic over shape) are forbidden.
+- Referenced tensor names must be in `signature.inputs`. Referenced axis names (when not integer literals) must be in `signature.params`.
+- Key order determines the order those kwargs appear in the generated `__init__`, consistent with R1.
+- `static_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).
+
+**Evaluation context** (shared with `shape_rules` and `roofline.vars`): all `signature.inputs` tensor names (with `.shape` accessor) and all `signature.params` names.
+
+**Two time points — ctor vs forward.** The manifest declaration:
+
+```yaml
+static_dims:
+  N: "x.shape[dim]"
+```
+
+generates the following Op code. `__init__` is the **commitment point** — the value is stored, the expression is NOT evaluated. `forward` is the **validation point** — the expression is evaluated against the actual tensor and must match the committed value.
+
+```python
+# __init__ — commitment point. No tensor; expression not evaluated.
+def __init__(self, *, N: int, dim: int = -1, dtype: torch.dtype, ...):
+    self.N = N
+    self.dim = dim
+    # ...
+
+# forward — validation point. Expression evaluated against the actual tensor.
+def forward(self, x: torch.Tensor):
+    if x.shape[self.dim] != self.N:
+        raise ValueError(
+            f"static_dim mismatch: expected x.shape[{self.dim}] == {self.N}, "
+            f"got {x.shape[self.dim]}"
+        )
+    # ... rest of forward
+```
+
+**Multi-input example — LinearFwdOp.** The expression may reference any tensor in `signature.inputs`, not just the primary one. For `torch.nn.functional.linear(input, weight, bias)` with arbitrary-rank `input`:
+
+```yaml
+LinearFwdOp:
+  signature:
+    inputs:
+      input:  {dtype: "float16 | bfloat16"}
+      weight: {dtype: "same_as(input)"}
+      bias:   {dtype: "same_as(input)"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    static_dims:
+      in_features:  "input.shape[-1]"
+      out_features: "weight.shape[0]"
+    shape_rules:
+      - "weight.shape == (out_features, in_features)"
+      - "bias.shape == (out_features,)"
+      - "output.shape == input.shape[:-1] + (out_features,)"
+```
+
+`out_features` is intrinsically a property of `weight`, not `input` — there is no equivalent expression in terms of `input.shape`. Binding to `weight.shape[0]` is the only faithful declaration.
+
+**Generated `__init__` kwarg block order.** The signature has three blocks in this order:
+
+1. `static_dims` entries — in manifest key order
+1. `dtype` (single parameter, unless the op has explicit multi-dtype axes)
+1. `params` entries — in manifest key order
+
+All parameters are keyword-only (`*`-separated). Block order determines the visible signature for documentation and introspection; callers always use kwargs.
+
+**Empty `static_dims` (absent or `{}`) is legal.** Ops with no ctor-time commitments — typically PyTorch-aligned reductions that accept `dim=None`, where the reduction extent depends on the entire input shape and is not a user-provided hyperparameter — declare no `static_dims`:
+
+```yaml
+SumFwdOp:
+  signature:
+    inputs:  {x: {dtype: "..."}}
+    outputs: {y: {dtype: "same_as(x)"}}
+    params:
+      dim:     {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+      keepdim: {type: bool, default: false}
+    # static_dims absent — equivalent to static_dims: {}
+    shape_rules: [...]
+```
+
+The generated `__init__` has no shape kwargs:
+
+```python
+def __init__(self, *, dtype, dim=-1, keepdim=False, ...):
+    # ...
+```
+
+**When `static_dims` is empty, the Op author MUST override `_cache_key`.** The Op base class's default `_cache_key` falls back to the full input shape tuple when no axes are committed — correct, but pathological under dynamic shapes: every distinct input shape produces a new kernel compile. A typical full-reduce override:
+
+```python
+class SumFwdOp(Op):
+    def _cache_key(self, x_shape):
+        return (
+            math.prod(x_shape),
+        )  # all full-reductions with same numel share a kernel
+```
+
+The base class emits a once-per-type runtime warning if the default `_cache_key` is invoked with empty `static_dims` and no subclass override, to catch missing overrides early. See [ops-design.md § Implementing an Op](ops-design.md#implementing-an-op) for the `_cache_key` interface.
 
 ## Manifest Key Format
 
@@ -147,7 +243,7 @@ signature:
   inputs:       # tensor name → {dtype, shape?, constraints?}
   outputs:      # tensor name → {dtype, shape?, constraints?}
   params:       # param name → {type, default?}
-  init_dims:    # dim name → {from: expr} — arbitrary-rank only (R20)
+  static_dims:  # kwarg → "<tensor>.shape[<axis>]" — arbitrary-rank only (R20)
   shape_rules:  # Python expressions for shape inference
   dtype_combos: # valid cross-tensor dtype combinations
 ```
@@ -172,8 +268,8 @@ Fixed rank, expressible with dimension names?
 │   └─ YES → add shape_rules                              [R11]
 └─ NO (arbitrary rank)
    ├─ write shape_rules                                   [R11]
-   └─ Dimensions known at Op construction time?
-      └─ YES → add init_dims                              [R20]
+   └─ Values committed at Op construction time?
+      └─ YES → add static_dims                            [R20]
 ```
 
 #### Optional Inputs
@@ -301,8 +397,8 @@ outputs:
 params:
   dim: {type: int, default: -1}
   eps: {type: float, default: 1e-6}
-init_dims:
-  N: {from: "x.shape[dim]"}
+static_dims:
+  N: "x.shape[dim]"
 shape_rules:
   - "y.shape == x.shape"
   - "weight.shape == (x.shape[dim],)"
@@ -343,8 +439,8 @@ ops:
       params:
         dim: {type: int, default: -1}
         eps: {type: float, default: 1e-6}
-      init_dims:
-        N: {from: "x.shape[dim]"}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
         - "y.shape == x.shape"
         - "weight.shape == (x.shape[dim],)"
