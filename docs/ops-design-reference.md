@@ -4,17 +4,17 @@ Detail sections referenced by [ops-design.md](ops-design.md). This file contains
 
 ## Parameter Design
 
-### Arbitrary-Rank Ops and `init_dims`
+### Arbitrary-Rank Ops and `static_dims`
 
 Manifest does not declare `shape` (accepts arbitrary rank), but this does not mean all shape information must wait until forward.
 
 Three time points with increasing information specificity:
 
 1. **Manifest declaration** — most general. Describes constraint structure: "one dimension is known (the dimension to apply norm on), others are arbitrary."
-1. **Op declaration (init)** — user knows partial concrete values. E.g., RMSNorm user knows hidden_dim=4096 but not batch size.
-1. **Forward** — all information is concrete. Tensors are passed in, all shapes are known.
+1. **Op declaration (init)** — user commits to specific values. E.g., RMSNorm user commits `N=4096` but not batch size.
+1. **Forward** — all information is concrete. Tensors are passed in, all shapes are known; committed values are validated against actual tensor shapes.
 
-`init_dims` allows the manifest to declare which derived dimensions users must provide at init:
+`static_dims` allows the manifest to declare which values the user commits to at ctor:
 
 ```yaml
 # manifest
@@ -26,25 +26,21 @@ RMSNormFwdOp:
     params:
       dim: {type: int, default: -1}
       eps: {type: float, default: 1e-6}
-    init_dims:
-      N: {from: "x.shape[dim]"}
+    static_dims:
+      N: "x.shape[dim]"
 ```
 
-**`init_dims` rules:**
-
-- Dimensions declared in `init_dims` → user **must** provide at init. Not optional.
-- Dimensions not in `init_dims` → derived from tensor at forward time, not in `__init__`.
-- The `from` expression defines the dimension's semantics. At forward time, it serves as a validation rule: the user-provided value must match the actual tensor shape.
-- `init_dims` is only for arbitrary-rank ops (ops without `shape` declaration). Fixed-rank op dimensions come directly from `shape`.
+See [manifest.md §R20](manifest.md#rules) for full syntax, single-axis constraint, evaluation context, two-time-point semantics, and empty-`static_dims` rules.
 
 ### Static vs Dynamic Comparison
 
-|                          | Fixed-rank op            | Arbitrary-rank op                                             |
-| ------------------------ | ------------------------ | ------------------------------------------------------------- |
-| Manifest has `shape`     | yes                      | no                                                            |
-| `__init__` shape source  | `shape` dimension names  | `init_dims`                                                   |
-| Undeclared dimensions    | none (all dims declared) | derived from tensor at forward time                           |
-| Kernel construction time | init (all dims known)    | init (`init_dims` known) or forward (first encounter, cached) |
+|                          | Fixed-rank op            | Arbitrary-rank op                                                  |
+| ------------------------ | ------------------------ | ------------------------------------------------------------------ |
+| Manifest has `shape`     | yes                      | no                                                                 |
+| `__init__` shape source  | `shape` dimension names  | `static_dims`                                                      |
+| Undeclared dimensions    | none (all dims declared) | derived from tensor at forward time                                |
+| Kernel construction time | init (all dims known)    | init (`static_dims` known) or forward (first encounter, cached)    |
+| Forward cache keying     | N/A (single kernel)      | `_cache_key(*input_shapes)` — default non-static axes, overridable |
 
 ## Development Path
 
@@ -62,12 +58,12 @@ Do NOT create one when only 1 op uses the pattern, ops share math but differ in 
 
 The manifest ([`ops_manifest.yaml`](../tileops/ops_manifest.yaml)) is the **sole source of truth** for op interfaces. Op-layer runtime behavior — dtype validation, shape inference, roofline evaluation — MUST be derived from the manifest, not independently maintained.
 
-Agent reads the manifest and generates code (codegen). [Validator](../scripts/validate_manifest.py) (CI) enforces manifest schema and signature consistency. Codegen parity checks are planned (see [Consistency Enforcement](#consistency-enforcement)).
+Agent reads the manifest and generates code (codegen). [Validator](../scripts/validate_manifest.py) (CI) enforces manifest schema and signature consistency; enforced checks are listed in [Consistency Enforcement](#consistency-enforcement) below.
 
 ### Calling Conventions
 
 - **Fully static op:** `_infer_output_shapes` and `eval_roofline` called once in `__init__`, results stored as instance attributes.
-- **Op with dynamic dims:** called in `forward()` when dynamic dims are resolved. Kernel construction caches by `M`; `_infer_output_shapes` depends on full input shape; `eval_roofline` uses `self.*` attributes set during forward.
+- **Op with dynamic dims:** called in `forward()` when dynamic dims are resolved. Kernel construction caches keyed by `_cache_key(*input_shapes)` (see [ops-design.md](ops-design.md#_cache_key)); `_infer_output_shapes` depends on full input shape; `eval_roofline` uses `self.*` attributes set during forward.
 - **`_validate_dtypes`:** runs on every `forward()` call — dtype validity depends on the actual tensors passed, not cached.
 - **Non-runtime consumers** (validator, graph compiler): can call `_infer_output_shapes` with concrete shapes without constructing tensors. `_validate_dtypes` requires actual dtypes (not shapes). `eval_roofline` for dynamic-rank ops requires `self.*` attributes set during forward — non-runtime evaluation should use `tileops.manifest.eval_roofline()` directly.
 
@@ -81,15 +77,16 @@ Agent reads the manifest and generates code (codegen). [Validator](../scripts/va
 
 ### Consistency Enforcement
 
-| Check                                                     | Mechanism                          | Status      |
-| --------------------------------------------------------- | ---------------------------------- | ----------- |
-| Manifest schema and declared fields are well-formed       | Validator (CI), L0 checks          | Implemented |
-| `__init__` params match manifest `params`                 | Validator signature check (L1)     | Implemented |
-| `__init__` keywords match `shape` dims + `init_dims`      | Validator signature check (L1)     | Planned     |
-| `shape_rules` syntax is valid                             | Validator shape_rules parsing (L2) | Implemented |
-| `dtype`/`dtype_combos` strings are valid                  | Validator dtype conformance (L3)   | Implemented |
-| `_infer_output_shapes` consistent with `shape_rules`      | Validator codegen parity check     | Planned     |
-| `_validate_dtypes` consistent with `dtype`/`dtype_combos` | Validator codegen parity check     | Planned     |
+| Check                                               | Mechanism                          |
+| --------------------------------------------------- | ---------------------------------- |
+| Manifest schema and declared fields are well-formed | Validator (CI), L0 checks          |
+| `__init__` params match manifest `params`           | Validator signature check (L1)     |
+| `static_dims` keys are `__init__` parameters        | Validator signature check (L1)     |
+| `shape_rules` syntax is valid                       | Validator shape_rules parsing (L2) |
+| `dtype`/`dtype_combos` strings are valid            | Validator dtype conformance (L3)   |
+| Empty `static_dims` without `_cache_key` override   | Op base class runtime warning      |
+
+Checks beyond this table are tracked as separate issues, not as spec status.
 
 ## Naming Conventions
 
@@ -131,13 +128,14 @@ def rms_norm_fwd(M, N, dtype, ...): ...
 
 #### Op base class ([`tileops/ops/op_base.py`](../tileops/ops/op_base.py))
 
-| Attribute        | Type                          | Purpose                                               |
-| ---------------- | ----------------------------- | ----------------------------------------------------- |
-| `kernel`         | `Kernel`                      | Kernel instance used by `forward()`                   |
-| `kernel_map`     | `Optional[Dict[str, Kernel]]` | Dispatched kernels keyed by name                      |
-| `dtype`          | `Optional[torch.dtype]`       | Computation dtype                                     |
-| `device`         | `Optional[str]`               | Device (default `'cuda'`)                             |
-| `_output_shapes` | `Optional[Dict[str, tuple]]`  | Inferred output shapes (populated at init or forward) |
+| Attribute        | Type                          | Purpose                                                                                      |
+| ---------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
+| `kernel`         | `Kernel`                      | Kernel instance used by `forward()`                                                          |
+| `kernel_map`     | `Optional[Dict[str, Kernel]]` | Dispatched kernels keyed by name                                                             |
+| `dtype`          | `Optional[torch.dtype]`       | Computation dtype                                                                            |
+| `device`         | `Optional[str]`               | Device (default `'cuda'`)                                                                    |
+| `_output_shapes` | `Optional[Dict[str, tuple]]`  | Inferred output shapes (populated at init or forward)                                        |
+| `_static_axes`   | `frozenset[tuple[int, int]]`  | Static axes as `(input_index, axis)` pairs (default `frozenset()`); consumed by `_cache_key` |
 
 Abstract interface: `default_kernel_map` (property), `forward()`.
 
@@ -146,6 +144,10 @@ Manifest-driven methods (generated by agent):
 - `_infer_output_shapes(...)` → output name → shape
 - `_validate_dtypes(...)` → raise on invalid dtypes
 - `eval_roofline()` → (flops, bytes)
+
+Base-class provided methods (optional override):
+
+- `_cache_key(*input_shapes) → Hashable` — default returns tuple of non-static-axis sizes across all input shapes, using `self._static_axes` to determine which axes are committed. Override to project the shape onto whatever the kernel actually depends on. See [ops-design.md § `_cache_key`](ops-design.md#_cache_key). When `_static_axes` is empty and no override is provided, the base class emits a once-per-type runtime warning.
 
 #### Kernel base class ([`tileops/kernels/kernel_base.py`](../tileops/kernels/kernel_base.py))
 

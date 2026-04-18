@@ -29,18 +29,18 @@ See [Development Path](ops-design-reference.md#development-path) for when to cre
 
 Kernel construction, shape inference, and roofline evaluation follow one principle: **do it at the first moment all required information is known, do it once, cache the result. Same inputs never trigger recomputation.**
 
-| Op category    | When all info is known                                                 | Behavior                                                                                                                         |
-| -------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Fixed-rank     | `__init__` (all dimensions provided)                                   | Everything runs once at init.                                                                                                    |
-| Arbitrary-rank | `init` for `init_dims` dimensions; `forward` for undeclared dimensions | `init_dims` dimensions resolve at init. Undeclared dimensions trigger kernel/shape/roofline on first encounter, cached by value. |
+| Op category    | When all info is known                                             | Behavior                                                                                                                                              |
+| -------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fixed-rank     | `__init__` (all dimensions provided)                               | Everything runs once at init.                                                                                                                         |
+| Arbitrary-rank | `__init__` for `static_dims` values; `forward` for everything else | Values committed in `static_dims` are stored at init; remaining shape information triggers kernel/shape/roofline on first encounter, cached by value. |
 
-This applies uniformly to kernel construction, `_infer_output_shapes`, and `eval_roofline`. Cache key granularity may differ: kernels depend on 2D `(M, N)`, while shape inference and roofline may need the full input shape to produce correct output shapes.
+This applies uniformly to kernel construction, `_infer_output_shapes`, and `eval_roofline`. Cache key granularity is determined by the Op author via `_cache_key` (see [`_cache_key`](#_cache_key) below) — the default is correct for any op; an override buys efficiency when the kernel's math permits coarser keying.
 
 **Exception:** `_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes.
 
 ## Implementing an Op
 
-A complete Op implements `__init__`, `forward`, `default_kernel_map`, and three codegen methods:
+A complete Op implements `__init__`, `forward`, `default_kernel_map`, three codegen methods, and optionally overrides `_cache_key`:
 
 ```python
 class MyFwdOp(Op):
@@ -79,7 +79,7 @@ The manifest ([`ops_manifest.yaml`](../tileops/ops_manifest.yaml)) is the sole s
 | `signature.params` (non-tensor)      | `__init__` | `dim`, `eps`, `keepdim` |
 | per-tensor `dtype` fields            | `__init__` | `dtype` (see below)     |
 | `shape` dimension names (fixed-rank) | `__init__` | `M`, `K`, `N`           |
-| `init_dims` (arbitrary-rank)         | `__init__` | `N`                     |
+| `static_dims` (arbitrary-rank)       | `__init__` | `N`                     |
 
 **dtype parameter derivation:** When all tensors share the same dtype via `same_as(x)`, a single `dtype` parameter covers all of them. When `dtype_combos` declares multiple independent dtype axes, the agent generates a named parameter for each independent axis.
 
@@ -102,21 +102,27 @@ class GemmFwdOp(Op):
         self._output_shapes = self._infer_output_shapes(a_shape=(M, K), b_shape=(K, N))
 ```
 
-**Arbitrary-rank op** — `init_dims` dimensions + `params`:
+**Arbitrary-rank op** — `static_dims` values + `params`:
 
 ```python
 class RMSNormFwdOp(RowNormOp):
     def __init__(self, *, N: int, dtype: torch.dtype, dim: int = -1, eps: float = 1e-6):
         self.N, self.dtype, self.dim, self.eps = N, dtype, dim, eps
         self.dispatch_kernel()
-        # kernel construction deferred to forward — M unknown at init
+        # kernel construction deferred to forward — non-static axes unknown at init
         self._kernel_cache = {}
 ```
 
+**Kwarg block order.** The `__init__` signature has three blocks in this order:
+
+1. `static_dims` entries — in manifest key order
+1. `dtype` (single parameter, unless the op has multi-dtype axes)
+1. `params` entries — in manifest key order
+
+All keyword-only. Callers always use kwargs; block order fixes the visible signature for documentation and introspection.
+
 > [!NOTE]
-> `def __init__(self, *, ...)` — the `*` forces all parameters to be keyword-only. Callers must write `MyOp(M=2048, N=4096, dtype=torch.float16)`; positional arguments are rejected. Parameter names come from manifest dimension names (single letters like `M`, `K`, `N`), keyword-only eliminates ordering ambiguity.
->
-> **TODO:** When implementation catches up, add a corresponding rule to [`.claude/rules/code-style.md`](../.claude/rules/code-style.md).
+> `def __init__(self, *, ...)` — the `*` forces all parameters to be keyword-only. Callers must write `MyOp(N=4096, dtype=torch.float16, dim=-1)`; positional arguments are rejected.
 
 ### `forward`
 
@@ -126,20 +132,21 @@ class RMSNormFwdOp(RowNormOp):
 def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     self._validate_dtypes(x, weight)
     orig_shape = x.shape
-    # normalize dim, validate init_dims, derive M
+    # validate static_dims commitment, then derive M
     dim = self.dim % x.ndim
     if x.shape[dim] != self.N:
         raise ValueError(
-            f"init_dims mismatch: expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}"
+            f"static_dim mismatch: expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}"
         )
     self.M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
     M = self.M  # stored on self for eval_roofline()
-    # kernel cached by M (kernel only depends on 2D shape)
-    if M not in self._kernel_cache:
-        self._kernel_cache[M] = self.kernel_map["rms_norm"](
+    # kernel cached by _cache_key (overridden to return (M,) — see _cache_key section)
+    key = self._cache_key(x.shape)
+    if key not in self._kernel_cache:
+        self._kernel_cache[key] = self.kernel_map["rms_norm"](
             M, self.N, self.dtype, eps=self.eps
         )
-    kernel = self._kernel_cache[M]
+    kernel = self._kernel_cache[key]
     # move target dim to last, reshape to 2D, compute, restore layout
     x = x.movedim(dim, -1).contiguous().reshape(M, self.N)
     y = kernel(x, weight)
@@ -230,6 +237,33 @@ def default_kernel_map(self):
     }
 ```
 
+### `_cache_key`
+
+For arbitrary-rank ops, kernels are compiled lazily at forward time and cached. The Op base class provides a default `_cache_key(self, *input_shapes) -> Hashable` that returns a tuple of non-static-axis sizes across all inputs — correct for any op, but potentially over-fragmenting (one compile per distinct input shape when `static_dims` is empty).
+
+Override `_cache_key` when the kernel's math permits coarser keying:
+
+```python
+class RMSNormFwdOp(Op):
+    def _cache_key(self, x_shape):
+        # kernel treats input as (M, N); M is the only non-static axis
+        dim = self.dim % len(x_shape)
+        return (math.prod(s for i, s in enumerate(x_shape) if i != dim),)
+```
+
+**When `static_dims` is empty, the override is mandatory.** Typical case: PyTorch-aligned reductions that accept `dim=None`. The default would cache by the full input shape tuple, producing one kernel compile per distinct shape — pathological under dynamic shapes. Override to project the shape onto whatever the kernel actually depends on:
+
+```python
+class SumFwdOp(Op):
+    def _cache_key(self, x_shape):
+        # every full-reduction with the same numel shares a kernel
+        return (math.prod(x_shape),)
+```
+
+The base class emits a once-per-type runtime warning if the default `_cache_key` is invoked with empty `static_dims` and no subclass override, surfacing missing overrides during development.
+
+Override for **finer** granularity is rare but supported (e.g., kernel math depending on parity or divisibility of a non-static axis).
+
 ## Implementing a Kernel
 
 | Interface             | Required | Description                                               |
@@ -275,7 +309,7 @@ See [Naming Conventions](ops-design-reference.md#naming-conventions) for full ru
 
 ## Further Reference
 
-- [Parameter Design](ops-design-reference.md#parameter-design) — `init_dims` spec, static vs dynamic comparison
+- [Parameter Design](ops-design-reference.md#parameter-design) — `static_dims` spec, static vs dynamic comparison
 - [Development Path](ops-design-reference.md#development-path) — when and how to extract an L2 family base
 - [Codegen details](ops-design-reference.md#codegen) — calling conventions, inheritance rules, consistency enforcement
 - [Base Class Protocol](ops-design-reference.md#base-class-protocol) — Op and Kernel base class attributes
