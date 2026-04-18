@@ -48,15 +48,34 @@ inputs:
   cache-dirs:
     description: >
       Newline-separated list of cache directory roots whose files older than
-      cache-age-days should be trimmed. Defaults target the `venv`-label runner
-      layout. Nightly's `nightly`-label runner stores caches under
-      /data/ci-cache/* — pass that layout explicitly.
+      cache-age-days should be trimmed at file granularity. Defaults target
+      the `venv`-label runner layout. Nightly's `nightly`-label runner stores
+      caches under /data/ci-cache/* — pass that layout explicitly.
+      Do NOT include atomic cache roots here (see atomic-cache-dirs); file-
+      level trim on an atomic root can produce a half-dead "directory exists
+      but sentinel missing" state that crashes downstream consumers.
     required: false
     default: |
-      /home/ci-runner/.tilelang/cache
       /home/ci-runner/.triton/cache
       /home/ci-runner/.cache/pip
       /home/ci-runner/.wheel-cache
+  atomic-cache-dirs:
+    description: >
+      Newline-separated list of cache directory roots whose first-level
+      subdirectories are *atomic units*: consumers assume "directory exists
+      => contents complete" and the subdir is only valid when the sentinel
+      file (best_config.json, hardcoded) is present. These roots get two
+      passes instead of file-level trim:
+        1. Unconditional sentinel-repair: remove any first-level subdir
+           missing the sentinel (self-heals half-dead state from prior runs).
+        2. Age-based atomic-trim: if the newest file in a first-level subdir
+           is older than cache-age-days, delete the whole subdir — never
+           individual files inside it.
+      Default targets the tilelang autotuner cache, which stores per-shape
+      tuning artefacts alongside a best_config.json sentinel.
+    required: false
+    default: |
+      /home/ci-runner/.tilelang/cache/autotuner
   prune-tool-cache:
     description: >
       Whether to prune old tileops_ci_venv_* directories under runner.tool_cache.
@@ -89,12 +108,28 @@ runs:
         CACHE_TRIM_COOLDOWN_MINUTES: ${{ inputs.cache-trim-cooldown-minutes }}
         CURRENT_RUN_DIR: ${{ inputs.current-run-dir }}
         CACHE_DIRS: ${{ inputs.cache-dirs }}
+        ATOMIC_CACHE_DIRS: ${{ inputs.atomic-cache-dirs }}
         PRUNE_TOOL_CACHE: ${{ inputs.prune-tool-cache }}
         DF_PATHS: ${{ inputs.df-paths }}
         FORCE_RECLAIM: ${{ inputs.force-reclaim }}
         TOOL_CACHE: ${{ runner.tool_cache }}
       run: |
         set -uo pipefail
+
+        # The reclaim primitives (sentinel-repair, atomic-trim, trim-files)
+        # live in scripts/reclaim_cache.sh so they can be exercised under
+        # pytest without a self-hosted runner. This composite action is a
+        # thin policy wrapper — gating (when to run), not mechanism (how
+        # to trim).
+        #
+        # ${GITHUB_ACTION_PATH} resolves to
+        #   .../.github/actions/reclaim-runner-disk
+        # so the script lives three levels up under scripts/.
+        RECLAIM_SCRIPT="${GITHUB_ACTION_PATH}/../../../scripts/reclaim_cache.sh"
+        if [[ ! -x "${RECLAIM_SCRIPT}" ]]; then
+          echo "::error::reclaim-runner-disk: expected ${RECLAIM_SCRIPT} to be executable"
+          exit 1
+        fi
 
         # Validate numeric inputs up-front so typos fail with a clear error
         # instead of a cryptic bash arithmetic/find error deeper in the script.
@@ -129,6 +164,25 @@ runs:
         CACHE_TRIM_STAMP="/home/ci-runner/.ci-maintenance/reclaim-runner-disk-cache-trim.stamp"
         DID_RECLAIM="false"
         SHOULD_RECLAIM="false"
+
+        # 0) Unconditional sentinel-repair on atomic cache roots.
+        #    Runs regardless of SHOULD_RECLAIM so that half-dead state
+        #    left by an earlier file-level trim (directory exists but
+        #    best_config.json missing) is healed on the *next* invocation,
+        #    not only when disk pressure crosses the reclaim threshold.
+        #    The per-subdir cost is a single readdir + stat, so this is
+        #    safe to run every time.
+        if [[ -n "${ATOMIC_CACHE_DIRS}" ]]; then
+          ATOMIC_ARGS=()
+          while IFS= read -r dir; do
+            dir="${dir//$'\r'/}"
+            [[ -z "$dir" ]] && continue
+            ATOMIC_ARGS+=( "$dir" )
+          done <<< "${ATOMIC_CACHE_DIRS}"
+          if (( ${#ATOMIC_ARGS[@]} > 0 )); then
+            bash "${RECLAIM_SCRIPT}" sentinel-repair "${ATOMIC_ARGS[@]}" || true
+          fi
+        fi
 
         if [[ "${FORCE_RECLAIM}" == "true" ]]; then
           SHOULD_RECLAIM="true"
@@ -179,9 +233,10 @@ runs:
           done
         fi
 
-        # 3) Age-based trim of trusted compile/wheel/pip caches.
+        # 3) Age-based trim of trusted compile/wheel/pip caches, plus
+        #    atomic-granularity trim of atomic cache roots.
         SHOULD_TRIM_CACHE="false"
-        if [[ "${SHOULD_RECLAIM}" == "true" && -n "${CACHE_DIRS}" ]]; then
+        if [[ "${SHOULD_RECLAIM}" == "true" && ( -n "${CACHE_DIRS}" || -n "${ATOMIC_CACHE_DIRS}" ) ]]; then
           if [[ "${FORCE_RECLAIM}" == "true" || "${CACHE_TRIM_COOLDOWN_MINUTES}" == "0" ]]; then
             SHOULD_TRIM_CACHE="true"
           elif [[ ! -e "${CACHE_TRIM_STAMP}" ]]; then
@@ -201,16 +256,36 @@ runs:
 
         if [[ "${SHOULD_TRIM_CACHE}" == "true" ]]; then
           DID_RECLAIM="true"
-          while IFS= read -r dir; do
-            dir="${dir//$'\r'/}"
-            [[ -z "$dir" ]] && continue
-            [[ -d "$dir" ]] || continue
-            find "$dir" -type f -mtime "+${CACHE_AGE_DAYS}" -delete 2>/dev/null || true
-            # Remove directories that are now empty. Don't gate on -mtime here:
-            # deleting files above updates the parent directory's mtime to
-            # "now", so a mtime filter would leave newly-empty dirs behind.
-            find "$dir" -depth -mindepth 1 -type d -empty -delete 2>/dev/null || true
-          done <<< "${CACHE_DIRS}"
+
+          # File-level trim for non-atomic roots (triton cache, pip, wheel).
+          if [[ -n "${CACHE_DIRS}" ]]; then
+            FILE_TRIM_ARGS=()
+            while IFS= read -r dir; do
+              dir="${dir//$'\r'/}"
+              [[ -z "$dir" ]] && continue
+              FILE_TRIM_ARGS+=( "$dir" )
+            done <<< "${CACHE_DIRS}"
+            if (( ${#FILE_TRIM_ARGS[@]} > 0 )); then
+              bash "${RECLAIM_SCRIPT}" trim-files "${CACHE_AGE_DAYS}" "${FILE_TRIM_ARGS[@]}" || true
+            fi
+          fi
+
+          # Whole-subdir trim for atomic roots (tilelang autotuner).
+          # Atomic roots are NEVER file-trimmed: doing so can strand a
+          # subdir without its best_config.json sentinel and crash the
+          # next consumer.
+          if [[ -n "${ATOMIC_CACHE_DIRS}" ]]; then
+            ATOMIC_TRIM_ARGS=()
+            while IFS= read -r dir; do
+              dir="${dir//$'\r'/}"
+              [[ -z "$dir" ]] && continue
+              ATOMIC_TRIM_ARGS+=( "$dir" )
+            done <<< "${ATOMIC_CACHE_DIRS}"
+            if (( ${#ATOMIC_TRIM_ARGS[@]} > 0 )); then
+              bash "${RECLAIM_SCRIPT}" atomic-trim "${CACHE_AGE_DAYS}" "${ATOMIC_TRIM_ARGS[@]}" || true
+            fi
+          fi
+
           mkdir -p "$(dirname "${CACHE_TRIM_STAMP}")"
           touch "${CACHE_TRIM_STAMP}"
         fi
