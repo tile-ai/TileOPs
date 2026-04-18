@@ -1,4 +1,4 @@
-"""Unit tests for scripts/reclaim_cache.sh.
+"""Unit tests for .github/actions/reclaim-runner-disk/reclaim_cache.sh.
 
 Covers the sentinel-repair + atomic-trim primitives that protect caches
 whose consumers assume "directory exists => contents complete" (the
@@ -29,7 +29,9 @@ import pytest
 pytestmark = pytest.mark.smoke
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-RECLAIM_SCRIPT = REPO_ROOT / "scripts" / "reclaim_cache.sh"
+# Script is colocated with the composite action so the gpu-smoke
+# `.trusted/.github/actions` sparse-checkout picks it up; see action.yml.
+RECLAIM_SCRIPT = REPO_ROOT / ".github" / "actions" / "reclaim-runner-disk" / "reclaim_cache.sh"
 
 
 # ---------------------------------------------------------------------------

@@ -59,6 +59,7 @@ inputs:
       /home/ci-runner/.triton/cache
       /home/ci-runner/.cache/pip
       /home/ci-runner/.wheel-cache
+      /home/ci-runner/.tilelang/cache/tmp
   atomic-cache-dirs:
     description: >
       Newline-separated list of cache directory roots whose first-level
@@ -117,19 +118,42 @@ runs:
         set -uo pipefail
 
         # The reclaim primitives (sentinel-repair, atomic-trim, trim-files)
-        # live in scripts/reclaim_cache.sh so they can be exercised under
-        # pytest without a self-hosted runner. This composite action is a
-        # thin policy wrapper — gating (when to run), not mechanism (how
-        # to trim).
+        # live in reclaim_cache.sh (colocated with this action.yml) so
+        # they can be exercised under pytest without a self-hosted
+        # runner, *and* so the gpu-smoke trusted-action sparse-checkout
+        # (which only pulls `.github/actions`) still picks them up.
+        # This composite action is a thin policy wrapper — gating (when
+        # to run), not mechanism (how to trim).
         #
         # ${GITHUB_ACTION_PATH} resolves to
         #   .../.github/actions/reclaim-runner-disk
-        # so the script lives three levels up under scripts/.
-        RECLAIM_SCRIPT="${GITHUB_ACTION_PATH}/../../../scripts/reclaim_cache.sh"
-        if [[ ! -x "${RECLAIM_SCRIPT}" ]]; then
-          echo "::error::reclaim-runner-disk: expected ${RECLAIM_SCRIPT} to be executable"
+        # and the script sits alongside action.yml so the trusted-action
+        # sparse-checkout (which only pulls .github/actions) still picks
+        # it up on the gpu-smoke job.
+        RECLAIM_SCRIPT="${GITHUB_ACTION_PATH}/reclaim_cache.sh"
+        if [[ ! -f "${RECLAIM_SCRIPT}" || ! -r "${RECLAIM_SCRIPT}" ]]; then
+          echo "::error::reclaim-runner-disk: expected ${RECLAIM_SCRIPT} to exist and be readable"
           exit 1
         fi
+
+        # Parse a newline-separated input (as received from YAML `|` block
+        # scalars) into a bash array, stripping CR and skipping blank
+        # lines. Usage:
+        #   parse_list_into_array TARGET_ARRAY <<< "${INPUT_VAR}"
+        # The named array is declared via `declare -n`; callers must have
+        # declared the target array with `local -a`/`declare -a` first, or
+        # let this helper create it implicitly (we do the latter — the
+        # helper resets the target to a fresh empty array on each call).
+        parse_list_into_array() {
+          local -n _target_array="$1"
+          _target_array=()
+          local _line
+          while IFS= read -r _line; do
+            _line="${_line//$'\r'/}"
+            [[ -z "$_line" ]] && continue
+            _target_array+=( "$_line" )
+          done
+        }
 
         # Validate numeric inputs up-front so typos fail with a clear error
         # instead of a cryptic bash arithmetic/find error deeper in the script.
@@ -173,12 +197,7 @@ runs:
         #    The per-subdir cost is a single readdir + stat, so this is
         #    safe to run every time.
         if [[ -n "${ATOMIC_CACHE_DIRS}" ]]; then
-          ATOMIC_ARGS=()
-          while IFS= read -r dir; do
-            dir="${dir//$'\r'/}"
-            [[ -z "$dir" ]] && continue
-            ATOMIC_ARGS+=( "$dir" )
-          done <<< "${ATOMIC_CACHE_DIRS}"
+          parse_list_into_array ATOMIC_ARGS <<< "${ATOMIC_CACHE_DIRS}"
           if (( ${#ATOMIC_ARGS[@]} > 0 )); then
             bash "${RECLAIM_SCRIPT}" sentinel-repair "${ATOMIC_ARGS[@]}" || true
           fi
@@ -259,12 +278,7 @@ runs:
 
           # File-level trim for non-atomic roots (triton cache, pip, wheel).
           if [[ -n "${CACHE_DIRS}" ]]; then
-            FILE_TRIM_ARGS=()
-            while IFS= read -r dir; do
-              dir="${dir//$'\r'/}"
-              [[ -z "$dir" ]] && continue
-              FILE_TRIM_ARGS+=( "$dir" )
-            done <<< "${CACHE_DIRS}"
+            parse_list_into_array FILE_TRIM_ARGS <<< "${CACHE_DIRS}"
             if (( ${#FILE_TRIM_ARGS[@]} > 0 )); then
               bash "${RECLAIM_SCRIPT}" trim-files "${CACHE_AGE_DAYS}" "${FILE_TRIM_ARGS[@]}" || true
             fi
@@ -275,12 +289,7 @@ runs:
           # subdir without its best_config.json sentinel and crash the
           # next consumer.
           if [[ -n "${ATOMIC_CACHE_DIRS}" ]]; then
-            ATOMIC_TRIM_ARGS=()
-            while IFS= read -r dir; do
-              dir="${dir//$'\r'/}"
-              [[ -z "$dir" ]] && continue
-              ATOMIC_TRIM_ARGS+=( "$dir" )
-            done <<< "${ATOMIC_CACHE_DIRS}"
+            parse_list_into_array ATOMIC_TRIM_ARGS <<< "${ATOMIC_CACHE_DIRS}"
             if (( ${#ATOMIC_TRIM_ARGS[@]} > 0 )); then
               bash "${RECLAIM_SCRIPT}" atomic-trim "${CACHE_AGE_DAYS}" "${ATOMIC_TRIM_ARGS[@]}" || true
             fi

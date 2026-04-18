@@ -81,8 +81,19 @@ atomic_trim() {
     local age_days="$1"
     shift
     local now_epoch cutoff root subdir newest_mtime
+    # Validate age_days is a plain non-negative integer before feeding it
+    # into arithmetic. Bash defaults to base-8 for literals with a leading
+    # zero, so a caller-supplied value like "08"/"09" (e.g. from a
+    # zero-padded workflow input) would abort the whole trim with
+    # "value too great for base". We fail *open* — log and return 0 —
+    # so a bad input can't crash the wider reclaim pass, and we force
+    # base-10 parsing via `10#...` for defence in depth.
+    if [[ ! "$age_days" =~ ^[0-9]+$ ]]; then
+        _log "atomic-trim: ignoring invalid age_days='${age_days}' (expected non-negative integer)"
+        return 0
+    fi
     now_epoch=$(date +%s)
-    cutoff=$(( now_epoch - age_days * 86400 ))
+    cutoff=$(( now_epoch - 10#${age_days} * 86400 ))
     for root in "$@"; do
         [[ -z "$root" ]] && continue
         [[ -d "$root" ]] || continue
@@ -116,6 +127,15 @@ trim_files() {
     local age_days="$1"
     shift
     local root
+    # Same validation as atomic_trim: refuse non-integer age_days and fail
+    # open. `find -mtime` itself is tolerant of leading-zero strings, but
+    # we keep the contract identical across subcommands so a caller that
+    # passes a bogus value gets the same behaviour everywhere.
+    if [[ ! "$age_days" =~ ^[0-9]+$ ]]; then
+        _log "trim-files: ignoring invalid age_days='${age_days}' (expected non-negative integer)"
+        return 0
+    fi
+    age_days=$(( 10#${age_days} ))
     for root in "$@"; do
         [[ -z "$root" ]] && continue
         [[ -d "$root" ]] || continue
