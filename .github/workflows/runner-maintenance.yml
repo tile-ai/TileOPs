@@ -2,8 +2,9 @@ name: Runner Maintenance
 
 # Heavy disk reclamation for the self-hosted runner. Runs once per day at
 # 18:00 UTC (02:00 Asia/Shanghai) so it lands in an off-peak window. Per-PR
-# `gpu-smoke` jobs only perform full reclaim when disk is already under
-# pressure; this scheduled job forces the full cleanup pass on days with
+# `gpu-smoke` jobs only attempt the heavier reclaim path when disk is under
+# pressure, and still rate-limit the expensive cache-trim pass via a
+# cooldown; this scheduled job forces the full cleanup pass on days with
 # little PR traffic.
 #
 # FIXME: The `nightly`-label runner has its own cache tree under
