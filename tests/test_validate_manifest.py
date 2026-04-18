@@ -262,6 +262,67 @@ class TestSchema:
             "static_dims.N" in e and "string expression" in e for e in errors
         ), f"Expected static_dims value-type error, got: {errors}"
 
+    def test_static_dims_single_axis_integer_passes(self, validator):
+        """Single-axis reference with integer literal passes R20 parser."""
+        entry = _make_entry()
+        entry["signature"]["static_dims"] = {"N": "x.shape[-1]"}
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected errors: {errors}"
+
+    def test_static_dims_single_axis_param_passes(self, validator):
+        """Axis reference via a declared param passes R20 parser."""
+        entry = _make_entry(params={"dim": {"type": "int", "default": -1}})
+        entry["signature"]["static_dims"] = {"N": "x.shape[dim]"}
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected errors: {errors}"
+
+    def test_static_dims_multi_axis_product_fails(self, validator):
+        """Multi-axis product forms are rejected at L0 (R20 single-axis rule)."""
+        entry = _make_entry(params={"dim": {"type": "int | None", "default": -1}})
+        entry["signature"]["static_dims"] = {
+            "N": "product(x.shape[i] for i in range(x.ndim))"
+        }
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims.N" in e and "single-axis reference" in e for e in errors
+        ), f"Expected single-axis rule rejection, got: {errors}"
+
+    def test_static_dims_unknown_tensor_fails(self, validator):
+        """Referenced tensor must be in signature.inputs."""
+        entry = _make_entry()  # inputs = {'x': ...}
+        entry["signature"]["static_dims"] = {"N": "weight.shape[0]"}
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims.N" in e and "'weight'" in e and "inputs" in e
+            for e in errors
+        ), f"Expected unknown-tensor error, got: {errors}"
+
+    def test_static_dims_unknown_param_axis_fails(self, validator):
+        """Non-int axis reference must be a declared param name."""
+        entry = _make_entry()  # no params
+        entry["signature"]["static_dims"] = {"N": "x.shape[dim]"}
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims.N" in e and "'dim'" in e and "param" in e
+            for e in errors
+        ), f"Expected unknown-param error, got: {errors}"
+
+    def test_static_dims_multi_input_non_primary_tensor_passes(self, validator):
+        """Expression may reference any tensor in signature.inputs
+        (LinearFwdOp-style: out_features binds to weight.shape[0])."""
+        entry = _make_entry(
+            inputs={
+                "input": {"dtype": "float16"},
+                "weight": {"dtype": "float16"},
+            },
+        )
+        entry["signature"]["static_dims"] = {
+            "in_features": "input.shape[-1]",
+            "out_features": "weight.shape[0]",
+        }
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected errors: {errors}"
+
     def test_dtype_combos_valid_passes(self, validator):
         """Valid dtype_combos list passes schema check (R4)."""
         entry = _make_entry(

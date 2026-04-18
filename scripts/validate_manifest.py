@@ -53,6 +53,62 @@ _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 # Valid tensor layout values (R19)
 _VALID_LAYOUTS = {"channels_last"}
 
+# Single-axis reference: `<tensor>.shape[<int_literal_or_identifier>]` (R20)
+_STATIC_DIM_EXPR_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)\.shape\[(-?\d+|[A-Za-z_][A-Za-z0-9_]*)\]$"
+)
+
+
+def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
+    """Validate `signature.static_dims` per R20.
+
+    - Must be a mapping of str → str.
+    - Each value must be a single-axis reference: `<tensor>.shape[<axis>]`
+      where `<tensor>` is a name in `signature.inputs` and `<axis>` is either
+      an integer literal or a param name declared in `signature.params`.
+    """
+    errors: list[str] = []
+
+    if not isinstance(sdims, dict):
+        errors.append(
+            f"[schema] {op_name}: signature.static_dims must be a mapping"
+        )
+        return errors
+
+    input_names = set((sig.get("inputs") or {}).keys())
+    param_names = set((sig.get("params") or {}).keys())
+
+    for dname, expr in sdims.items():
+        if not isinstance(expr, str):
+            errors.append(
+                f"[schema] {op_name}: static_dims.{dname} must be a "
+                f"string expression (got {type(expr).__name__})"
+            )
+            continue
+        match = _STATIC_DIM_EXPR_RE.match(expr)
+        if match is None:
+            errors.append(
+                f"[schema] {op_name}: static_dims.{dname} expression "
+                f"{expr!r} is not a single-axis reference of the form "
+                f"`<tensor>.shape[<const_or_param>]` (R20)"
+            )
+            continue
+        tensor_name, axis_ref = match.groups()
+        if tensor_name not in input_names:
+            errors.append(
+                f"[schema] {op_name}: static_dims.{dname} references tensor "
+                f"{tensor_name!r}, which is not in signature.inputs "
+                f"(known: {sorted(input_names) or 'none'})"
+            )
+        # axis_ref is an int literal (possibly negative) or an identifier
+        if not (axis_ref.lstrip("-").isdigit() or axis_ref in param_names):
+            errors.append(
+                f"[schema] {op_name}: static_dims.{dname} axis reference "
+                f"{axis_ref!r} is neither an integer literal nor a declared "
+                f"param (known params: {sorted(param_names) or 'none'})"
+            )
+    return errors
+
 
 # ---------------------------------------------------------------------------
 # schema: YAML structure validation
@@ -173,18 +229,9 @@ def check_l0(
 
         # static_dims must be a mapping of str -> str expression (R20)
         if "static_dims" in sig:
-            sdims = sig["static_dims"]
-            if not isinstance(sdims, dict):
-                errors.append(
-                    f"[schema] {op_name}: signature.static_dims must be a mapping"
-                )
-            else:
-                for dname, expr in sdims.items():
-                    if not isinstance(expr, str):
-                        errors.append(
-                            f"[schema] {op_name}: static_dims.{dname} must be a "
-                            f"string expression (got {type(expr).__name__})"
-                        )
+            errors.extend(
+                _check_static_dims(op_name, sig["static_dims"], sig)
+            )
     elif "signature" in entry:
         errors.append(f"[schema] {op_name}: signature must be a mapping")
 
