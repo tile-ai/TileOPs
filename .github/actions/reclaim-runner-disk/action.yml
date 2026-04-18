@@ -83,10 +83,24 @@ runs:
         TOOL_CACHE: ${{ runner.tool_cache }}
       run: |
         set -uo pipefail
-        # shellcheck disable=SC2206
-        DF_TARGETS=( ${DF_PATHS} )
-        if [[ ${#DF_TARGETS[@]} -eq 0 ]]; then
-          DF_TARGETS=( "${RUNNER_TEMP}" "${TOOL_CACHE}" /home/ci-runner )
+
+        # Validate numeric inputs up-front so typos fail with a clear error
+        # instead of a cryptic bash arithmetic/find error deeper in the script.
+        for var in VENV_KEEP TEMP_ORPHAN_MINUTES CACHE_AGE_DAYS MIN_AVAIL_GIB; do
+          val="${!var}"
+          if [[ ! "${val}" =~ ^[0-9]+$ ]]; then
+            echo "::error::reclaim-runner-disk: input ${var}='${val}' is not a non-negative integer"
+            exit 1
+          fi
+        done
+
+        if [[ -n "${DF_PATHS}" ]]; then
+          read -r -a DF_TARGETS <<< "${DF_PATHS}"
+        else
+          DF_TARGETS=()
+          for path in "${RUNNER_TEMP:-}" "${TOOL_CACHE:-}" /home/ci-runner; do
+            [[ -n "${path}" ]] && DF_TARGETS+=( "${path}" )
+          done
         fi
 
         echo "Disk before reclaim:"
@@ -98,7 +112,7 @@ runs:
 
         # 1) Prune old trusted venvs: keep N most recent by mtime.
         if [[ "${GUARD_ONLY}" != "true" && "${PRUNE_TOOL_CACHE}" == "true" && -d "${TOOL_CACHE}" ]]; then
-          mapfile -t venvs < <(find "${TOOL_CACHE}" -maxdepth 1 -type d -name "tileops_ci_venv_*" -printf '%T@ %p\n' 2>/dev/null | sort -rn | awk '{print $2}')
+          mapfile -t venvs < <(find "${TOOL_CACHE}" -maxdepth 1 -type d -name "tileops_ci_venv_*" -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
           if [[ ${#venvs[@]} -gt ${VENV_KEEP} ]]; then
             for stale in "${venvs[@]:${VENV_KEEP}}"; do
               echo "Removing stale venv: ${stale}"
@@ -141,6 +155,10 @@ runs:
         df -h "${DF_TARGETS[@]}" 2>/dev/null || true
 
         # Hard guard: abort early with a clear message if still near-full.
+        if [[ -z "${RUNNER_TEMP:-}" ]]; then
+          echo "::error::reclaim-runner-disk: RUNNER_TEMP is unset; cannot enforce disk floor"
+          exit 1
+        fi
         AVAIL_KB=$(df -Pk "${RUNNER_TEMP}" | awk 'NR==2 {print $4}')
         MIN_KB=$(( MIN_AVAIL_GIB * 1024 * 1024 ))
         if [[ -n "${AVAIL_KB:-}" && "${AVAIL_KB}" -lt "${MIN_KB}" ]]; then

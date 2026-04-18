@@ -350,10 +350,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Guard against disk pressure
+      - name: Reclaim runner disk
         uses: ./.github/actions/reclaim-runner-disk
-        with:
-          guard-only: "true"
 
       - name: Resolve runtime state
         env:

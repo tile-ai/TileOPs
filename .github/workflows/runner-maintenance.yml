@@ -1,15 +1,18 @@
 name: Runner Maintenance
 
 # Heavy disk reclamation for the self-hosted runner. Runs once per day at
-# 18:00 UTC (02:00 Asia/Shanghai) so it lands in an off-peak window and does
-# not fight `gpu-smoke` for the same runner. Per-PR `gpu-smoke` jobs only
-# invoke the composite action in `guard-only` mode, so this workflow is where
-# the actual pruning happens.
+# 18:00 UTC (02:00 Asia/Shanghai) so it lands in an off-peak window. Per-PR
+# `gpu-smoke` jobs also invoke the composite action so the first affected run
+# can self-heal; this scheduled job guarantees pruning still happens on days
+# with little PR traffic.
 
 on:
   schedule:
     - cron: "0 18 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: runner-maintenance
