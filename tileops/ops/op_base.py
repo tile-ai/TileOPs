@@ -1,10 +1,14 @@
+import warnings
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, FrozenSet, Hashable, Optional, Tuple, Union
 
 import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
+
+# Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
+_EMPTY_STATIC_DIMS_WARNED: set = set()
 
 
 class Op(ABC):
@@ -43,6 +47,12 @@ class Op(ABC):
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
 
+    # Set of (input_index, axis) pairs identifying static (ctor-committed) axes.
+    # `input_index` is the position in *input_shapes; `axis` is a non-negative
+    # axis index within that shape. Subclasses set this to reflect their
+    # manifest `static_dims`. Default empty = no committed axes.
+    _static_axes: FrozenSet[Tuple[int, int]] = frozenset()
+
     @property
     @abstractmethod
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -77,3 +87,41 @@ class Op(ABC):
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, Tuple]:
         """Make the op callable - delegates to forward()"""
         return self.forward(*args, **kwargs)
+
+    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+        """Return a cache key for kernel dispatch given forward-time input shapes.
+
+        Default implementation returns the tuple of non-static-axis sizes across
+        all input shapes, using ``self._static_axes`` to decide which axes are
+        committed at ctor. This is always correct for any Op, but may
+        over-fragment the kernel cache when ``_static_axes`` is empty (one
+        compile per distinct input shape).
+
+        Override in subclasses to project the shape onto whatever the kernel
+        actually depends on — for example, flattening leading dims to a single
+        product when the kernel treats input as 2D.
+
+        When ``_static_axes`` is empty AND the subclass does not override
+        ``_cache_key``, a ``UserWarning`` is emitted once per subclass type to
+        surface the missing override.
+        """
+        if not self._static_axes and type(self)._cache_key is Op._cache_key:
+            cls = type(self)
+            if cls not in _EMPTY_STATIC_DIMS_WARNED:
+                _EMPTY_STATIC_DIMS_WARNED.add(cls)
+                warnings.warn(
+                    f"{cls.__name__}: Op._cache_key() called with empty "
+                    f"_static_axes and no subclass override. The default "
+                    f"keys the kernel cache by the full input shape, which "
+                    f"produces one compile per distinct shape under dynamic "
+                    f"inputs. Override _cache_key to project onto whatever "
+                    f"the kernel math actually depends on.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        return tuple(
+            s
+            for i, shape in enumerate(input_shapes)
+            for axis, s in enumerate(shape)
+            if (i, axis) not in self._static_axes
+        )
