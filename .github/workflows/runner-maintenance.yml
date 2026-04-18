@@ -30,13 +30,13 @@ jobs:
     runs-on: [self-hosted, tile-ops, venv]
     timeout-minutes: 60
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
+      # Invoke the action directly via owner/repo/path@ref so this workflow
+      # does not depend on `actions/checkout` succeeding first — in the
+      # disk-full scenarios this job is meant to remediate, a prior checkout
+      # could itself fail for lack of space and prevent reclaim from ever
+      # running. `@main` is trusted because this workflow only triggers on
+      # schedule / workflow_dispatch; no fork-PR code path reaches it.
       - name: Reclaim runner disk
-        uses: ./.github/actions/reclaim-runner-disk
+        uses: tile-ai/TileOPs/.github/actions/reclaim-runner-disk@main
         with:
           force-reclaim: "true"
