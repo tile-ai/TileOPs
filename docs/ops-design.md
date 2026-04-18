@@ -1,9 +1,5 @@
 # Op Interface Design
 
-## Design-first
-
-This document, together with [manifest.md](manifest.md) and [ops-design-reference.md](ops-design-reference.md), is the authoritative specification for the Op interface and its codegen inputs. Codegen MUST strictly implement what is specified here. Handwritten Ops that deviate from the generated shape are implementation bugs — tracked via issues and fixed — not alternate designs. This document does not describe migration, rollout, or reconciliation of existing handwritten ops; those are project-management concerns outside the spec.
-
 ## Op and Kernel
 
 Every operator is split into two classes: **Op** and **Kernel**.

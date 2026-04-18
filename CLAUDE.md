@@ -4,6 +4,8 @@
 
 TileOPs is a high-performance LLM operator library built on TileLang. The goal is to provide efficient, modular, and maintainable AI workload implementations.
 
+This project follows **design-first, spec-driven** development: design docs and `ops_manifest.yaml` are the authoritative spec; code conforms to the spec, not the other way around.
+
 ## Development Environment
 
 1. Clone repository: `git clone https://github.com/tile-ai/TileOPs && cd TileOPs`
