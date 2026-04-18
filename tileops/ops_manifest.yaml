@@ -1516,7 +1516,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...]", default: -1}
+        dim: {type: "int | list[int]", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
@@ -1562,7 +1562,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
@@ -1601,7 +1601,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
@@ -1640,7 +1640,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
@@ -1679,7 +1679,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
@@ -1760,7 +1760,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
@@ -1800,7 +1800,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
@@ -1841,7 +1841,7 @@ ops:
         var: {dtype: "same_as(x)"}
         mean: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
@@ -1975,7 +1975,7 @@ ops:
       outputs:
         y: {dtype: "bool"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
@@ -2013,7 +2013,7 @@ ops:
       outputs:
         y: {dtype: "bool"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
@@ -2051,7 +2051,7 @@ ops:
       outputs:
         y: {dtype: "int64"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
       shape_rules:
         - "y.ndim == x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
         - "y.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])))"
@@ -2093,7 +2093,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
@@ -2132,7 +2132,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
@@ -2171,7 +2171,7 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
