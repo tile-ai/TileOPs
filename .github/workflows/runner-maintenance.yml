@@ -1,0 +1,31 @@
+name: Runner Maintenance
+
+# Heavy disk reclamation for the self-hosted runner. Runs once per day at
+# 18:00 UTC (02:00 Asia/Shanghai) so it lands in an off-peak window and does
+# not fight `gpu-smoke` for the same runner. Per-PR `gpu-smoke` jobs only
+# invoke the composite action in `guard-only` mode, so this workflow is where
+# the actual pruning happens.
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: runner-maintenance
+  cancel-in-progress: false
+
+jobs:
+  reclaim-disk:
+    if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    runs-on: [self-hosted, tile-ops, venv]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Reclaim runner disk
+        uses: ./.github/actions/reclaim-runner-disk
