@@ -363,7 +363,7 @@ def check_l0(
 
 
 # ---------------------------------------------------------------------------
-# variant_of: cross-entry consistency (R16-R18)
+# variant_of: cross-entry consistency (R16)
 # ---------------------------------------------------------------------------
 
 def check_variant_of_consistency(
@@ -371,9 +371,10 @@ def check_variant_of_consistency(
 ) -> list[str]:
     """Validate variant_of references across all entries.
 
-    Rules (R16-R18):
+    Per R16:
     - variant_of must reference an existing op in the manifest.
-    - The primary (referenced) entry must NOT itself have variant_of (no chaining).
+    - Single-level: the primary (referenced) entry must NOT itself have
+      variant_of (no chaining).
     - Variant and primary must share source.kernel and source.op.
 
     When *scope* is given, only ops whose names are in *scope* are checked;
@@ -390,7 +391,7 @@ def check_variant_of_consistency(
         if primary_name is None:
             continue
 
-        # R16: target must exist
+        # Target must exist
         if primary_name not in ops:
             errors.append(
                 f"[schema] {op_name}: variant_of '{primary_name}' "
@@ -402,25 +403,25 @@ def check_variant_of_consistency(
         if not isinstance(primary, dict):
             continue  # malformed primary — check_l0 will report it
 
-        # R17: no chaining — primary must not be a variant itself
+        # Single-level: primary must not be a variant itself
         if "variant_of" in primary:
             errors.append(
                 f"[schema] {op_name}: variant_of '{primary_name}' is itself "
-                f"a variant (chaining not allowed, R17)"
+                f"a variant (chaining not allowed per R16)"
             )
 
-        # R18: shared source.kernel and source.op
+        # Shared source.kernel and source.op
         src = entry.get("source", {})
         pri_src = primary.get("source", {})
         if src.get("kernel") != pri_src.get("kernel"):
             errors.append(
                 f"[schema] {op_name}: source.kernel differs from primary "
-                f"'{primary_name}' (must match per R18)"
+                f"'{primary_name}' (must match per R16)"
             )
         if src.get("op") != pri_src.get("op"):
             errors.append(
                 f"[schema] {op_name}: source.op differs from primary "
-                f"'{primary_name}' (must match per R18)"
+                f"'{primary_name}' (must match per R16)"
             )
 
     return errors

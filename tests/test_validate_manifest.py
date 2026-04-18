@@ -443,7 +443,7 @@ class TestSchema:
 
 
 # ---------------------------------------------------------------------------
-# variant_of: cross-entry consistency (R16-R18)
+# variant_of: cross-entry consistency (R16)
 # ---------------------------------------------------------------------------
 
 class TestVariantOf:
@@ -479,7 +479,7 @@ class TestVariantOf:
         assert errors == []
 
     def test_variant_chaining_fails(self, validator):
-        """Chained variant_of fails (R17)."""
+        """Chained variant_of fails (R16 single-level)."""
         ops = {
             "primary": _make_entry(),
             "variant_a": {**_make_entry(), "variant_of": "primary"},
@@ -489,7 +489,7 @@ class TestVariantOf:
         assert any("chaining" in e.lower() for e in errors)
 
     def test_variant_mismatched_kernel_fails(self, validator):
-        """Variant with different source.kernel fails (R18)."""
+        """Variant with different source.kernel fails (R16)."""
         ops = {
             "primary": _make_entry(source_kernel="shared.py"),
             "variant": {
@@ -498,17 +498,17 @@ class TestVariantOf:
             },
         }
         errors = validator.check_variant_of_consistency(ops)
-        assert any("source.kernel" in e and "R18" in e for e in errors)
+        assert any("source.kernel" in e and "R16" in e for e in errors)
 
     def test_variant_mismatched_op_fails(self, validator):
-        """Variant with different source.op fails (R18)."""
+        """Variant with different source.op fails (R16)."""
         primary = _make_entry()
         variant = _make_entry()
         variant["source"]["op"] = "different_op.py"
         variant["variant_of"] = "primary"
         ops = {"primary": primary, "variant": variant}
         errors = validator.check_variant_of_consistency(ops)
-        assert any("source.op" in e and "R18" in e for e in errors)
+        assert any("source.op" in e and "R16" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -1066,9 +1066,9 @@ class TestCheckOp:
     def test_check_op_validates_variant_family(self, validator, tmp_path):
         """--check-op on a primary also validates its immediate variants.
 
-        Regression: an agent could modify a variant to break R17/R18 rules,
-        and --check-op <primary> would still pass because variants were
-        excluded from the validation scope.
+        Regression: an agent could modify a variant to break R16 variant
+        rules, and --check-op <primary> would still pass because variants
+        were excluded from the validation scope.
         """
         import yaml
 
@@ -1077,7 +1077,7 @@ class TestCheckOp:
         valid_variant = _make_entry(source_kernel="shared_kernel.py")
         valid_variant["variant_of"] = "primary_op"
 
-        # Broken variant: different source.kernel violates R18
+        # Broken variant: different source.kernel violates R16
         broken_variant = _make_entry(source_kernel="different_kernel.py")
         broken_variant["variant_of"] = "primary_op"
 
@@ -1088,22 +1088,22 @@ class TestCheckOp:
             "bad_variant": broken_variant,
         }}))
 
-        # check_op="primary_op" must catch the R18 violation on bad_variant
+        # check_op="primary_op" must catch the R16 violation on bad_variant
         errors, _ = validator.validate_manifest(
             manifest_path=manifest_file,
             repo_root=tmp_path,
             check_op="primary_op",
         )
-        r18_errors = [e for e in errors if "bad_variant" in e and "R18" in e]
-        assert len(r18_errors) > 0, (
-            f"--check-op on primary must catch R18 violation in variant, "
+        r16_errors = [e for e in errors if "bad_variant" in e and "R16" in e]
+        assert len(r16_errors) > 0, (
+            f"--check-op on primary must catch R16 violation in variant, "
             f"got errors: {errors}"
         )
 
-        # good_variant should NOT have R18 errors
-        good_r18 = [e for e in errors if "good_variant" in e and "R18" in e]
-        assert good_r18 == [], (
-            f"good_variant should pass R18, got: {good_r18}"
+        # good_variant should NOT have R16 errors
+        good_r16 = [e for e in errors if "good_variant" in e and "R16" in e]
+        assert good_r16 == [], (
+            f"good_variant should pass R16, got: {good_r16}"
         )
 
     def test_check_op_variant_family_runs_schema_on_variants(self, validator, tmp_path):

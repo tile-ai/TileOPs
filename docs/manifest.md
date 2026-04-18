@@ -33,9 +33,9 @@ flowchart LR
 
 **R2. Full interface.** Params include all PyTorch-supported parameters, even if the kernel only supports the default.
 
-**R3. `dtype` syntax.** `|` for alternatives, `same_as(ref)` to indicate the dtype is the same as `ref`.
+**R2a. Param placement — default rule.** Params are `__init__` kwargs by default (architecture-decided, fixed for the Op instance's lifetime). In rare cases a param belongs in `forward()` when PyTorch's reference API requires it or when the value is per-batch. The exception is justified in the op's introducing issue; the manifest schema does not encode the distinction.
 
-**R3a. `same_as(ref)` identity constraint.** `same_as(ref)` is dtype-only: the tensor must have the exact same dtype as `ref` at runtime. `same_as`-bound tensors do not contribute independent axes to the Cartesian product in R4. Do not use `same_as` for shape.
+**R3. `dtype` syntax.** `|` for alternatives. `same_as(ref)` is a dtype-only identity constraint: the tensor must have the exact same dtype as `ref` at runtime, does not contribute an independent axis to the Cartesian product in R4, and must not be used for shape.
 
 **R4. `dtype_combos`.** Enumerates supported cross-tensor dtype combinations.
 
@@ -51,7 +51,7 @@ dtype_combos:
   - {x: bfloat16, weight: bfloat16}
 ```
 
-**R5. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R7). `same_as` is dtype-only — do not use it for shape.
+**R5. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R7).
 
 **R6. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). Names become roofline variables. No ellipsis or wildcards.
 
@@ -65,49 +65,33 @@ dtype_combos:
 
 **R11. `shape_rules`.** Python expressions for shape relationships. Required when `shape` alone cannot fully specify output shape.
 
-**R12. Shape derivation.** `shape` + `shape_rules` fully specify output shape derivation. Manifest and implementation must be consistent.
-
 **R13. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
 
 **R14. Roofline variable binding.** See [Roofline](#roofline).
 
 **R15. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
 
-**R16. No Optional[Tensor].** Fixed tensor inputs per entry. Conditional inputs → split into variants via `variant_of`.
-
-> **R17.** `variant_of` is one level only. Variant → primary. No chaining.
->
-> **R18.** Variants share `source.kernel` and `source.op`. Each has its own `signature`, `workloads`, `roofline`.
+**R16. No Optional[Tensor].** Fixed tensor inputs per entry. Conditional inputs split into variants via `variant_of`, which is single-level (variant → primary, no chaining). Variants share `source.kernel` and `source.op`; each has its own `signature`, `workloads`, `roofline`.
 
 **R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order.
 
-**R20. `static_dims`.** For arbitrary-rank ops (no `shape` declaration), `static_dims` declares values the user commits to at Op construction time. Each entry maps an `__init__` keyword name to a single-axis shape expression.
+**R20. `static_dims`.** For arbitrary-rank ops (no `shape` declaration), `static_dims` declares values the user commits to at Op construction time. Each entry maps an `__init__` keyword name to a single-axis shape expression `<tensor>.shape[<const_or_param>]`. See [`static_dims`](#static_dims) for full semantics, rules, and examples.
+
+## `static_dims`
+
+`static_dims` declares what becomes statically known at the moment the user constructs the Op instance. It is **per-op**, not per-family.
 
 ```yaml
 static_dims:
   N: "x.shape[dim]"
 ```
 
-**Declaration-point semantics.** `static_dims` is per-op, not per-family. It declares what becomes statically known at the moment the user constructs the Op instance. The shape expression is a **forward-time validation rule**, not an init-time derivation — no tensor exists at `__init__`.
+### Semantics
 
-**Rules:**
+The shape expression is a **forward-time validation rule**, not an init-time derivation — no tensor exists at `__init__`. Two time points, one contract:
 
-- Every `static_dims` entry's key is a required `__init__` keyword parameter. **No defaults**; the user must supply every committed value at ctor.
-- The expression MUST be a **single-axis reference** of the form `<tensor>.shape[<const_or_param>]`. Multi-axis forms (e.g., `product(x.shape[i] for i in ...)`, comprehensions, arithmetic over shape) are forbidden.
-- Referenced tensor names must be in `signature.inputs`. Referenced axis names (when not integer literals) must be in `signature.params`.
-- Key order determines the order those kwargs appear in the generated `__init__`, consistent with R1.
-- `static_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).
-
-**Evaluation context** (shared with `shape_rules` and `roofline.vars`): all `signature.inputs` tensor names (with `.shape` accessor) and all `signature.params` names.
-
-**Two time points — ctor vs forward.** The manifest declaration:
-
-```yaml
-static_dims:
-  N: "x.shape[dim]"
-```
-
-generates the following Op code. `__init__` is the **commitment point** — the value is stored, the expression is NOT evaluated. `forward` is the **validation point** — the expression is evaluated against the actual tensor and must match the committed value.
+- `__init__` is the **commitment point**. The user-supplied value is stored on `self`. The expression is NOT evaluated here.
+- `forward` is the **validation point**. The expression is evaluated against the actual tensor and must match the committed value.
 
 ```python
 # __init__ — commitment point. No tensor; expression not evaluated.
@@ -127,7 +111,21 @@ def forward(self, x: torch.Tensor):
     # ... rest of forward
 ```
 
-**Multi-input example — LinearFwdOp.** The expression may reference any tensor in `signature.inputs`, not just the primary one. For `torch.nn.functional.linear(input, weight, bias)` with arbitrary-rank `input`:
+### Rules
+
+- Every `static_dims` entry's key is a required `__init__` keyword parameter. **No defaults**; the user must supply every committed value at ctor.
+- The expression MUST be a **single-axis reference** of the form `<tensor>.shape[<const_or_param>]`. Multi-axis forms (e.g., `product(x.shape[i] for i in ...)`, comprehensions, arithmetic over shape) are forbidden.
+- Referenced tensor names must be in `signature.inputs`. Referenced axis names (when not integer literals) must be in `signature.params`.
+- Key order determines the order those kwargs appear in the generated `__init__`, consistent with R1.
+- `static_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).
+
+### Evaluation context
+
+Shared with `shape_rules` and `roofline.vars`: all `signature.inputs` tensor names (with `.shape` accessor) and all `signature.params` names.
+
+### Multi-input example — LinearFwdOp
+
+The expression may reference any tensor in `signature.inputs`, not just the primary one. For `torch.nn.functional.linear(input, weight, bias)` with arbitrary-rank `input`:
 
 ```yaml
 LinearFwdOp:
@@ -149,7 +147,9 @@ LinearFwdOp:
 
 `out_features` is intrinsically a property of `weight`, not `input` — there is no equivalent expression in terms of `input.shape`. Binding to `weight.shape[0]` is the only faithful declaration.
 
-**Generated `__init__` kwarg block order.** The signature has three blocks in this order:
+### Generated `__init__` kwarg block order
+
+The signature has three blocks in this order:
 
 1. `static_dims` entries — in manifest key order
 1. `dtype` (single parameter, unless the op has explicit multi-dtype axes)
@@ -157,7 +157,9 @@ LinearFwdOp:
 
 All parameters are keyword-only (`*`-separated). Block order determines the visible signature for documentation and introspection; callers always use kwargs.
 
-**Empty `static_dims` (absent or `{}`) is legal.** Ops with no ctor-time commitments — typically PyTorch-aligned reductions that accept `dim=None`, where the reduction extent depends on the entire input shape and is not a user-provided hyperparameter — declare no `static_dims`:
+### Empty `static_dims`
+
+Empty (`static_dims: {}` or absent) is legal. Typical case: PyTorch-aligned reductions that accept `dim=None`, where the reduction extent depends on the entire input shape and is not a user-provided hyperparameter:
 
 ```yaml
 SumFwdOp:
@@ -271,7 +273,7 @@ Fixed rank, expressible with dimension names?
 
 #### Optional Inputs
 
-Manifest does not support `Optional[Tensor]` (R16). Split into variant entries with fixed signatures, linked by `variant_of` (R17-R18).
+Manifest does not support `Optional[Tensor]` (R16). Split into variant entries with fixed signatures, linked by `variant_of`.
 
 **Decision tree:**
 
