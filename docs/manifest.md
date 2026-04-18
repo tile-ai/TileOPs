@@ -411,14 +411,26 @@ inputs:
 outputs:
   y: {dtype: "same_as(x)"}
 params:
-  dim: {type: "int | list[int]"}
+  dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
   keepdim: {type: bool, default: false}
 shape_rules:
-  - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-  - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+  # reduce_axes is a SET of normalized axis indices
+  - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+  - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+  # sequence dims must be unique after normalization (per R11a)
+  - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 ```
 
 All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `y.shape == x.shape`. count_nonzero has no `keepdim` (per R15).
+
+**R11a. Sequence-`dim` contract for reduction ops.** When `dim` accepts a sequence (`list[int]` / `tuple[int, ...]`), two invariants apply, expressed as `shape_rules`:
+
+1. **Uniqueness after normalization.** Entries in the sequence, reduced by `% x.ndim`, must be pairwise distinct. PyTorch rejects duplicates; the manifest mirrors this via the `len({d % x.ndim for d in dim}) == len(dim)` rule.
+1. **Empty-sequence semantics is per-op.**
+   - For ops that accept `dim=None` (full reduction: `sum`, `mean`, `amax`, `amin`, `var`, `std`, `var_mean`, `all`, `any`, `count_nonzero`, `linalg.vector_norm` variants): an empty sequence is equivalent to `dim=None` (full reduction). Formulas use `set(range(x.ndim))` as the fallback axis set.
+   - For ops that do **not** accept `dim=None` (e.g. `logsumexp`): an empty sequence is invalid; declare a `shape_rule` asserting `len(dim) > 0`.
+
+These rules are `shape_rules` (Python expressions) rather than a new manifest field — they reuse the existing vocabulary and are enforceable by future codegen or by the op's forward-time validation.
 
 **Full entry — RMSNorm:**
 

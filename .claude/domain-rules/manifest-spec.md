@@ -19,6 +19,7 @@ ______________________________________________________________________
 - `shape` present = fixed rank. Names become roofline variables. `shape` absent = arbitrary rank, use `params` + `shape_rules`.
 - Shared dimension names across tensors = sizes must match.
 - `shape_rules` are Python expressions for shape relationships. `shape` and `shape_rules` fully specify output shape derivation.
+- For reduction ops whose `dim` accepts a sequence (`list[int]` / `tuple[int, ...]`): express axes as the set `{d % x.ndim for d in dim}` to deduplicate, add a `shape_rule` asserting `len({d % x.ndim for d in dim}) == len(dim)` for uniqueness, treat empty sequence as equivalent to `dim=None` for ops that accept `None` (full reduction), and add `len(dim) > 0` for ops that do not accept `None` (e.g. logsumexp).
 - `status` is required. `status: implemented` = all validator levels apply. `status: spec-only` = L0 only.
 - Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
 - Op signatures must match PyTorch's public API (parameter names, parameter set, semantics). Do not invent parameters.
