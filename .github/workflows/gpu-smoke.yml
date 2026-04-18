@@ -353,7 +353,7 @@ jobs:
       - name: Reclaim runner disk
         uses: ./.github/actions/reclaim-runner-disk
         with:
-          reclaim-below-gib: "30"
+          reclaim-below-gib: "10"
           cache-trim-cooldown-minutes: "120"
 
       - name: Resolve runtime state
