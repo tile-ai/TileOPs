@@ -227,6 +227,16 @@ def check_l0(
                             f"[schema] {op_name}: shape_rules[{i}] must be a string"
                         )
 
+        # Reject the deprecated `init_dims` key explicitly (R20 rename).
+        # L0 doesn't flag unknown signature keys, so without this check an
+        # accidental reintroduction would silently pass and be ignored by L1.
+        if "init_dims" in sig:
+            errors.append(
+                f"[schema] {op_name}: `signature.init_dims` is deprecated — "
+                f"use `signature.static_dims` with flat `<name>: \"<tensor>.shape[<axis>]\"` "
+                f"entries per R20"
+            )
+
         # static_dims must be a mapping of str -> str expression (R20)
         if "static_dims" in sig:
             errors.extend(

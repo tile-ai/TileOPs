@@ -307,6 +307,16 @@ class TestSchema:
             for e in errors
         ), f"Expected unknown-param error, got: {errors}"
 
+    def test_init_dims_deprecated_key_fails(self, validator):
+        """Deprecated `init_dims` key must be flagged with a migration error (R20)."""
+        entry = _make_entry()
+        entry["signature"]["init_dims"] = {"N": {"from": "x.shape[-1]"}}
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "init_dims" in e and "deprecated" in e and "static_dims" in e
+            for e in errors
+        ), f"Expected init_dims deprecation error, got: {errors}"
+
     def test_static_dims_multi_input_non_primary_tensor_passes(self, validator):
         """Expression may reference any tensor in signature.inputs
         (LinearFwdOp-style: out_features binds to weight.shape[0])."""
