@@ -349,13 +349,18 @@ jobs:
       # their `git clean -ffdx` pass does not wipe `.trusted/`. Anything
       # loaded via `uses: ./...` from here on MUST resolve through
       # `.trusted/` so that fork-controlled PR code cannot substitute the
-      # composite action. The PR's base sha (or `github.ref` for push) is
-      # the authoritative trusted source — fork commits cannot alter it.
+      # composite action.
+      #
+      # Ref selection by trust level:
+      #   - fork PR  → `base.sha` (authoritative base commit; fork can't alter)
+      #   - same-repo PR / push → head sha (only collaborators can push, so
+      #     the PR's own version is trusted — and this lets repo-owned CI
+      #     changes self-validate before merge)
       - name: Checkout trusted actions (base repo)
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
-          ref: ${{ github.event.pull_request.base.sha || github.ref }}
+          ref: ${{ needs.security-policy.outputs.is_fork == 'true' && github.event.pull_request.base.sha || github.event.pull_request.head.sha || github.sha }}
           path: .trusted
           persist-credentials: false
           fetch-depth: 1
