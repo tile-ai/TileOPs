@@ -163,22 +163,30 @@ runs:
           fi
         fi
 
-        # 2) Purge orphan per-run dirs in RUNNER_TEMP older than N minutes,
-        #    excluding the current run's directory if provided.
+        # 2) Purge orphan per-run dirs in RUNNER_TEMP whose newest activity in
+        #    the subtree is older than N minutes, excluding the current run's
+        #    directory if provided. Directory mtime alone is unreliable — it
+        #    only updates when entries are added/removed, so an active
+        #    long-running job whose files are being written (but not the dir
+        #    itself) would be wrongly eligible. Use the newest file mtime
+        #    anywhere in the subtree instead.
         if [[ "${SHOULD_RECLAIM}" == "true" && -d "${RUNNER_TEMP}" ]]; then
           DID_RECLAIM="true"
+          now_epoch=$(date +%s)
+          stale_seconds=$(( TEMP_ORPHAN_MINUTES * 60 ))
           for pattern in 'gpu-smoke-*' 'nightly-*'; do
-            if [[ -n "${CURRENT_RUN_DIR}" ]]; then
-              find "${RUNNER_TEMP}" -maxdepth 1 -type d -name "${pattern}" \
-                ! -name "${CURRENT_RUN_DIR}" -mmin "+${TEMP_ORPHAN_MINUTES}" \
-                -exec echo "Removing orphan runtime: {}" \; \
-                -exec rm -rf {} + 2>/dev/null || true
-            else
-              find "${RUNNER_TEMP}" -maxdepth 1 -type d -name "${pattern}" \
-                -mmin "+${TEMP_ORPHAN_MINUTES}" \
-                -exec echo "Removing orphan runtime: {}" \; \
-                -exec rm -rf {} + 2>/dev/null || true
-            fi
+            while IFS= read -r candidate; do
+              [[ -n "${candidate}" ]] || continue
+              if [[ -n "${CURRENT_RUN_DIR}" && "$(basename "${candidate}")" == "${CURRENT_RUN_DIR}" ]]; then
+                continue
+              fi
+              newest_mtime=$(find "${candidate}" -printf '%T@\n' 2>/dev/null | sort -nr | head -n 1)
+              [[ -n "${newest_mtime}" ]] || newest_mtime=$(stat -c %Y "${candidate}" 2>/dev/null || echo 0)
+              if awk "BEGIN { exit !(${now_epoch} - ${newest_mtime} >= ${stale_seconds}) }"; then
+                echo "Removing orphan runtime: ${candidate}"
+                rm -rf "${candidate}" 2>/dev/null || true
+              fi
+            done < <(find "${RUNNER_TEMP}" -mindepth 1 -maxdepth 1 -type d -name "${pattern}" 2>/dev/null)
           done
         fi
 
@@ -212,7 +220,10 @@ runs:
             [[ -z "$dir" ]] && continue
             [[ -d "$dir" ]] || continue
             find "$dir" -type f -mtime "+${CACHE_AGE_DAYS}" -delete 2>/dev/null || true
-            find "$dir" -type d -empty -mtime "+${CACHE_AGE_DAYS}" -delete 2>/dev/null || true
+            # Remove directories that are now empty. Don't gate on -mtime here:
+            # deleting files above updates the parent directory's mtime to
+            # "now", so a mtime filter would leave newly-empty dirs behind.
+            find "$dir" -depth -mindepth 1 -type d -empty -delete 2>/dev/null || true
           done <<< "${CACHE_DIRS}"
           mkdir -p "$(dirname "${CACHE_TRIM_STAMP}")"
           touch "${CACHE_TRIM_STAMP}"

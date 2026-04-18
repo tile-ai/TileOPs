@@ -5,6 +5,12 @@ name: Runner Maintenance
 # `gpu-smoke` jobs only perform full reclaim when disk is already under
 # pressure; this scheduled job forces the full cleanup pass on days with
 # little PR traffic.
+#
+# FIXME: The `nightly`-label runner has its own cache tree under
+# `/data/ci-cache/*` and is not wired up here. This PR intentionally defers
+# that work until #987 lands, which collapses nightly's cache layout into
+# `/home/ci-runner/.*/cache`; once that is merged, add a second job (or a
+# matrix entry) targeting the `nightly` runner with its own `cache-dirs`.
 
 on:
   schedule:
