@@ -27,6 +27,18 @@ inputs:
       the step fails with an explicit message.
     required: false
     default: "5"
+  reclaim-below-gib:
+    description: >
+      Only attempt reclaim work when RUNNER_TEMP has less than this many GiB
+      free, unless force-reclaim is enabled.
+    required: false
+    default: "30"
+  cache-trim-cooldown-minutes:
+    description: >
+      Minimum interval between the expensive recursive cache-trim passes on the
+      same runner. Cheap disk checks still run on every invocation.
+    required: false
+    default: "0"
   current-run-dir:
     description: >
       Name of the per-run temp directory that must NOT be pruned. Leave blank
@@ -56,6 +68,12 @@ inputs:
     description: Space-separated paths to pass to `df -h` for before/after logging.
     required: false
     default: ""
+  force-reclaim:
+    description: >
+      When "true", bypass reclaim-below-gib and cache-trim cooldown checks and
+      always run the full reclaim pass.
+    required: false
+    default: "false"
   guard-only:
     description: >
       When "true", skip the venv/orphan/cache pruning and only run the
@@ -75,10 +93,13 @@ runs:
         TEMP_ORPHAN_MINUTES: ${{ inputs.temp-orphan-minutes }}
         CACHE_AGE_DAYS: ${{ inputs.cache-age-days }}
         MIN_AVAIL_GIB: ${{ inputs.min-avail-gib }}
+        RECLAIM_BELOW_GIB: ${{ inputs.reclaim-below-gib }}
+        CACHE_TRIM_COOLDOWN_MINUTES: ${{ inputs.cache-trim-cooldown-minutes }}
         CURRENT_RUN_DIR: ${{ inputs.current-run-dir }}
         CACHE_DIRS: ${{ inputs.cache-dirs }}
         PRUNE_TOOL_CACHE: ${{ inputs.prune-tool-cache }}
         DF_PATHS: ${{ inputs.df-paths }}
+        FORCE_RECLAIM: ${{ inputs.force-reclaim }}
         GUARD_ONLY: ${{ inputs.guard-only }}
         TOOL_CACHE: ${{ runner.tool_cache }}
       run: |
@@ -86,7 +107,7 @@ runs:
 
         # Validate numeric inputs up-front so typos fail with a clear error
         # instead of a cryptic bash arithmetic/find error deeper in the script.
-        for var in VENV_KEEP TEMP_ORPHAN_MINUTES CACHE_AGE_DAYS MIN_AVAIL_GIB; do
+        for var in VENV_KEEP TEMP_ORPHAN_MINUTES CACHE_AGE_DAYS MIN_AVAIL_GIB RECLAIM_BELOW_GIB CACHE_TRIM_COOLDOWN_MINUTES; do
           val="${!var}"
           if [[ ! "${val}" =~ ^[0-9]+$ ]]; then
             echo "::error::reclaim-runner-disk: input ${var}='${val}' is not a non-negative integer"
@@ -106,12 +127,33 @@ runs:
         echo "Disk before reclaim:"
         df -h "${DF_TARGETS[@]}" 2>/dev/null || true
 
+        if [[ -z "${RUNNER_TEMP:-}" ]]; then
+          echo "::error::reclaim-runner-disk: RUNNER_TEMP is unset; cannot enforce disk floor"
+          exit 1
+        fi
+
+        AVAIL_KB=$(df -Pk "${RUNNER_TEMP}" | awk 'NR==2 {print $4}')
+        MIN_KB=$(( MIN_AVAIL_GIB * 1024 * 1024 ))
+        RECLAIM_BELOW_KB=$(( RECLAIM_BELOW_GIB * 1024 * 1024 ))
+        CACHE_TRIM_STAMP="/home/ci-runner/.ci-maintenance/reclaim-runner-disk-cache-trim.stamp"
+        DID_RECLAIM="false"
+        SHOULD_RECLAIM="false"
+
         if [[ "${GUARD_ONLY}" == "true" ]]; then
           echo "guard-only mode: skipping venv/orphan/cache pruning"
+        elif [[ "${FORCE_RECLAIM}" == "true" ]]; then
+          SHOULD_RECLAIM="true"
+          echo "force-reclaim enabled: running full reclaim pass"
+        elif [[ -n "${AVAIL_KB:-}" && "${AVAIL_KB}" -lt "${RECLAIM_BELOW_KB}" ]]; then
+          SHOULD_RECLAIM="true"
+          echo "Free space below ${RECLAIM_BELOW_GIB}GiB: running reclaim pass"
+        else
+          echo "Free space is healthy; skipping reclaim pass"
         fi
 
         # 1) Prune old trusted venvs: keep N most recent by mtime.
-        if [[ "${GUARD_ONLY}" != "true" && "${PRUNE_TOOL_CACHE}" == "true" && -d "${TOOL_CACHE}" ]]; then
+        if [[ "${SHOULD_RECLAIM}" == "true" && "${PRUNE_TOOL_CACHE}" == "true" && -d "${TOOL_CACHE}" ]]; then
+          DID_RECLAIM="true"
           mapfile -t venvs < <(find "${TOOL_CACHE}" -maxdepth 1 -type d -name "tileops_ci_venv_*" -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
           if [[ ${#venvs[@]} -gt ${VENV_KEEP} ]]; then
             for stale in "${venvs[@]:${VENV_KEEP}}"; do
@@ -123,7 +165,8 @@ runs:
 
         # 2) Purge orphan per-run dirs in RUNNER_TEMP older than N minutes,
         #    excluding the current run's directory if provided.
-        if [[ "${GUARD_ONLY}" != "true" && -n "${RUNNER_TEMP:-}" && -d "${RUNNER_TEMP}" ]]; then
+        if [[ "${SHOULD_RECLAIM}" == "true" && -d "${RUNNER_TEMP}" ]]; then
+          DID_RECLAIM="true"
           for pattern in 'gpu-smoke-*' 'nightly-*'; do
             if [[ -n "${CURRENT_RUN_DIR}" ]]; then
               find "${RUNNER_TEMP}" -maxdepth 1 -type d -name "${pattern}" \
@@ -143,24 +186,49 @@ runs:
         if [[ "${GUARD_ONLY}" == "true" ]]; then
           CACHE_DIRS=""
         fi
-        while IFS= read -r dir; do
-          dir="${dir//$'\r'/}"
-          [[ -z "$dir" ]] && continue
-          [[ -d "$dir" ]] || continue
-          find "$dir" -type f -mtime "+${CACHE_AGE_DAYS}" -delete 2>/dev/null || true
-          find "$dir" -type d -empty -mtime "+${CACHE_AGE_DAYS}" -delete 2>/dev/null || true
-        done <<< "${CACHE_DIRS}"
+        SHOULD_TRIM_CACHE="false"
+        if [[ "${SHOULD_RECLAIM}" == "true" && -n "${CACHE_DIRS}" ]]; then
+          if [[ "${FORCE_RECLAIM}" == "true" || "${CACHE_TRIM_COOLDOWN_MINUTES}" == "0" ]]; then
+            SHOULD_TRIM_CACHE="true"
+          elif [[ ! -e "${CACHE_TRIM_STAMP}" ]]; then
+            SHOULD_TRIM_CACHE="true"
+          else
+            now_epoch=$(date +%s)
+            stamp_epoch=$(stat -c %Y "${CACHE_TRIM_STAMP}" 2>/dev/null || echo 0)
+            cooldown_seconds=$(( CACHE_TRIM_COOLDOWN_MINUTES * 60 ))
+            if (( now_epoch - stamp_epoch >= cooldown_seconds )); then
+              SHOULD_TRIM_CACHE="true"
+            else
+              remaining_minutes=$(( (cooldown_seconds - (now_epoch - stamp_epoch) + 59) / 60 ))
+              echo "Skipping cache trim: ${remaining_minutes} minute(s) left in cooldown"
+            fi
+          fi
+        fi
+
+        if [[ "${SHOULD_TRIM_CACHE}" == "true" ]]; then
+          DID_RECLAIM="true"
+          while IFS= read -r dir; do
+            dir="${dir//$'\r'/}"
+            [[ -z "$dir" ]] && continue
+            [[ -d "$dir" ]] || continue
+            find "$dir" -type f -mtime "+${CACHE_AGE_DAYS}" -delete 2>/dev/null || true
+            find "$dir" -type d -empty -mtime "+${CACHE_AGE_DAYS}" -delete 2>/dev/null || true
+          done <<< "${CACHE_DIRS}"
+          mkdir -p "$(dirname "${CACHE_TRIM_STAMP}")"
+          touch "${CACHE_TRIM_STAMP}"
+        fi
+
+        if [[ "${SHOULD_RECLAIM}" != "true" ]]; then
+          echo "Reclaim work skipped because free space is above the proactive threshold"
+        elif [[ "${DID_RECLAIM}" != "true" ]]; then
+          echo "Reclaim pass ran, but nothing was eligible for deletion"
+        fi
 
         echo "Disk after reclaim:"
         df -h "${DF_TARGETS[@]}" 2>/dev/null || true
 
         # Hard guard: abort early with a clear message if still near-full.
-        if [[ -z "${RUNNER_TEMP:-}" ]]; then
-          echo "::error::reclaim-runner-disk: RUNNER_TEMP is unset; cannot enforce disk floor"
-          exit 1
-        fi
         AVAIL_KB=$(df -Pk "${RUNNER_TEMP}" | awk 'NR==2 {print $4}')
-        MIN_KB=$(( MIN_AVAIL_GIB * 1024 * 1024 ))
         if [[ -n "${AVAIL_KB:-}" && "${AVAIL_KB}" -lt "${MIN_KB}" ]]; then
           echo "::error::Runner ${RUNNER_NAME:-unknown} has <${MIN_AVAIL_GIB}GiB free on ${RUNNER_TEMP} after reclaim (${AVAIL_KB} KiB). Manual cleanup required."
           exit 1
