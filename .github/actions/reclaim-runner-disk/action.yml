@@ -74,14 +74,6 @@ inputs:
       always run the full reclaim pass.
     required: false
     default: "false"
-  guard-only:
-    description: >
-      When "true", skip the venv/orphan/cache pruning and only run the
-      disk-floor guard. Intended for per-PR jobs that rely on a scheduled
-      maintenance workflow for the heavy reclaim; the guard still fails
-      fast with an explicit error if the scheduled workflow has lagged.
-    required: false
-    default: "false"
 
 runs:
   using: composite
@@ -100,7 +92,6 @@ runs:
         PRUNE_TOOL_CACHE: ${{ inputs.prune-tool-cache }}
         DF_PATHS: ${{ inputs.df-paths }}
         FORCE_RECLAIM: ${{ inputs.force-reclaim }}
-        GUARD_ONLY: ${{ inputs.guard-only }}
         TOOL_CACHE: ${{ runner.tool_cache }}
       run: |
         set -uo pipefail
@@ -139,9 +130,7 @@ runs:
         DID_RECLAIM="false"
         SHOULD_RECLAIM="false"
 
-        if [[ "${GUARD_ONLY}" == "true" ]]; then
-          echo "guard-only mode: skipping venv/orphan/cache pruning"
-        elif [[ "${FORCE_RECLAIM}" == "true" ]]; then
+        if [[ "${FORCE_RECLAIM}" == "true" ]]; then
           SHOULD_RECLAIM="true"
           echo "force-reclaim enabled: running full reclaim pass"
         elif [[ -n "${AVAIL_KB:-}" && "${AVAIL_KB}" -lt "${RECLAIM_BELOW_KB}" ]]; then
@@ -191,9 +180,6 @@ runs:
         fi
 
         # 3) Age-based trim of trusted compile/wheel/pip caches.
-        if [[ "${GUARD_ONLY}" == "true" ]]; then
-          CACHE_DIRS=""
-        fi
         SHOULD_TRIM_CACHE="false"
         if [[ "${SHOULD_RECLAIM}" == "true" && -n "${CACHE_DIRS}" ]]; then
           if [[ "${FORCE_RECLAIM}" == "true" || "${CACHE_TRIM_COOLDOWN_MINUTES}" == "0" ]]; then
