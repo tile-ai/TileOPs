@@ -89,7 +89,7 @@ ops:
   LayerNormFwdOp:
     ref_api: "torch.nn.functional.layer_norm"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -138,7 +138,7 @@ ops:
   AdaLayerNormFwdOp:
     ref_api: "none"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -183,7 +183,7 @@ ops:
   AdaLayerNormZeroFwdOp:
     ref_api: "none"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -230,7 +230,7 @@ ops:
   FusedAddLayerNormFwdOp:
     ref_api: "none"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -280,7 +280,7 @@ ops:
   FusedAddRMSNormFwdOp:
     ref_api: "none"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -335,7 +335,7 @@ ops:
   BatchNormFwdOp:
     ref_api: "torch.nn.functional.batch_norm"
     family: normalization
-    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -393,7 +393,7 @@ ops:
   BatchNormBwdOp:
     ref_api: "torch.nn.functional.batch_norm"
     family: normalization
-    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -492,7 +492,7 @@ ops:
   InstanceNormFwdOp:
     ref_api: "torch.nn.functional.instance_norm"
     family: normalization
-    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1424,7 +1424,7 @@ ops:
   SoftmaxFwdOp:
     ref_api: "torch.nn.functional.softmax"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1466,7 +1466,7 @@ ops:
   LogSoftmaxFwdOp:
     ref_api: "torch.nn.functional.log_softmax"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1508,7 +1508,7 @@ ops:
   LogSumExpFwdOp:
     ref_api: "torch.logsumexp"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1879,7 +1879,7 @@ ops:
   ArgmaxFwdOp:
     ref_api: "torch.argmax"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1921,7 +1921,7 @@ ops:
   ArgminFwdOp:
     ref_api: "torch.argmin"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with init_dims in follow-up PR
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:

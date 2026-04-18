@@ -111,8 +111,9 @@ generates the following Op code. `__init__` is the **commitment point** — the 
 
 ```python
 # __init__ — commitment point. No tensor; expression not evaluated.
-def __init__(self, *, N: int, dim: int = -1, dtype: torch.dtype, ...):
+def __init__(self, *, N: int, dtype: torch.dtype, dim: int = -1, ...):
     self.N = N
+    self.dtype = dtype
     self.dim = dim
     # ...
 

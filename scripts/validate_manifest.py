@@ -170,6 +170,21 @@ def check_l0(
                         errors.append(
                             f"[schema] {op_name}: shape_rules[{i}] must be a string"
                         )
+
+        # static_dims must be a mapping of str -> str expression (R20)
+        if "static_dims" in sig:
+            sdims = sig["static_dims"]
+            if not isinstance(sdims, dict):
+                errors.append(
+                    f"[schema] {op_name}: signature.static_dims must be a mapping"
+                )
+            else:
+                for dname, expr in sdims.items():
+                    if not isinstance(expr, str):
+                        errors.append(
+                            f"[schema] {op_name}: static_dims.{dname} must be a "
+                            f"string expression (got {type(expr).__name__})"
+                        )
     elif "signature" in entry:
         errors.append(f"[schema] {op_name}: signature must be a mapping")
 

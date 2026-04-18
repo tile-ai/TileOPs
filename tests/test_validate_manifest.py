@@ -237,6 +237,31 @@ class TestSchema:
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected schema errors: {errors}"
 
+    def test_static_dims_dict_passes(self, validator):
+        """Valid static_dims mapping passes schema check (R20)."""
+        entry = _make_entry()
+        entry["signature"]["static_dims"] = {"N": "x.shape[-1]"}
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_static_dims_list_fails(self, validator):
+        """Non-dict static_dims (e.g. list) is rejected at L0 (R20)."""
+        entry = _make_entry()
+        entry["signature"]["static_dims"] = ["N"]  # list, not mapping
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims" in e and "must be a mapping" in e for e in errors
+        ), f"Expected static_dims mapping error, got: {errors}"
+
+    def test_static_dims_non_string_value_fails(self, validator):
+        """static_dims entries must map to string expressions (R20)."""
+        entry = _make_entry()
+        entry["signature"]["static_dims"] = {"N": {"from": "x.shape[-1]"}}
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims.N" in e and "string expression" in e for e in errors
+        ), f"Expected static_dims value-type error, got: {errors}"
+
     def test_dtype_combos_valid_passes(self, validator):
         """Valid dtype_combos list passes schema check (R4)."""
         entry = _make_entry(
