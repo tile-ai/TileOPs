@@ -196,6 +196,35 @@ def test_atomic_trim_never_trims_individual_files(tmp_path: Path) -> None:
     assert (subdir / "best_config.json").exists()
 
 
+def test_atomic_trim_uses_file_mtime_not_dir_mtime(tmp_path: Path) -> None:
+    """Directory mtime must not make a stale subdir look fresh.
+
+    A cache restore/extract can bump the subdir's own mtime to "now" while
+    every regular file inside keeps its original (old) timestamp. atomic-trim
+    must decide staleness from the newest FILE mtime in the subtree, not the
+    directory mtime, otherwise age-based reclaim is defeated.
+    """
+    root = tmp_path / "autotuner"
+    root.mkdir()
+    stale = root / "deadbeef"
+    stale.mkdir()
+    (stale / "best_config.json").write_text("{}")
+    (stale / "kernel.so").write_text("x")
+
+    # Backdate only the files; deliberately leave the subdir mtime at "now".
+    past = time.time() - 30 * 86400
+    for entry in stale.iterdir():
+        os.utime(entry, (past, past))
+    os.utime(stale, (time.time(), time.time()))
+
+    _run("atomic-trim", "7", str(root))
+
+    assert not stale.exists(), (
+        "atomic-trim regressed: stale subdir kept alive by dir mtime. "
+        "Newest-mtime logic must restrict to -type f."
+    )
+
+
 def test_atomic_trim_tolerates_missing_root(tmp_path: Path) -> None:
     missing = tmp_path / "nope"
     _run("atomic-trim", "7", str(missing))

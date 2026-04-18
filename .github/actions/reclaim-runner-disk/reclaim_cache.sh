@@ -98,12 +98,14 @@ atomic_trim() {
         [[ -z "$root" ]] && continue
         [[ -d "$root" ]] || continue
         while IFS= read -r -d '' subdir; do
-            # Use the newest mtime anywhere in the subtree. Directory
-            # mtime alone is unreliable (only bumped on entry add/del)
-            # so a subdir whose files are being actively rewritten
-            # would look stale. `find -printf %T@` on all entries
-            # (files + dirs) piped to awk gives a robust newest-mtime.
-            newest_mtime=$(find "$subdir" -printf '%T@\n' 2>/dev/null \
+            # Use the newest FILE mtime anywhere in the subtree — directory
+            # mtimes must not participate. Rationale: a cache restore/extract
+            # can bump the subdir's own mtime to "now" while every regular
+            # file inside is still at its original (old) timestamp; counting
+            # the dir mtime would wrongly mark the subdir as fresh and defeat
+            # age-based reclaim. Only fall back to the subdir mtime when the
+            # subtree has no regular files at all.
+            newest_mtime=$(find "$subdir" -type f -printf '%T@\n' 2>/dev/null \
                 | awk 'NR == 1 || $1 > max { max = $1 } END { if (NR > 0) printf "%d\n", max }')
             if [[ -z "$newest_mtime" ]]; then
                 newest_mtime=$(stat -c %Y "$subdir" 2>/dev/null || echo 0)
