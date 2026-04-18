@@ -345,16 +345,16 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Reclaim runner disk
         uses: ./.github/actions/reclaim-runner-disk
         with:
           reclaim-below-gib: "10"
           cache-trim-cooldown-minutes: "120"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Resolve runtime state
         env:

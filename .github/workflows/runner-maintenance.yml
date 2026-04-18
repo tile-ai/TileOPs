@@ -28,7 +28,7 @@ jobs:
   reclaim-disk:
     if: ${{ github.repository == 'tile-ai/TileOPs' }}
     runs-on: [self-hosted, tile-ops, venv]
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -180,7 +180,7 @@ runs:
               if [[ -n "${CURRENT_RUN_DIR}" && "$(basename "${candidate}")" == "${CURRENT_RUN_DIR}" ]]; then
                 continue
               fi
-              newest_mtime=$(find "${candidate}" -printf '%T@\n' 2>/dev/null | sort -nr | head -n 1)
+              newest_mtime=$(find "${candidate}" -printf '%T@\n' 2>/dev/null | awk 'NR == 1 || $1 > max { max = $1 } END { if (NR > 0) print max }')
               [[ -n "${newest_mtime}" ]] || newest_mtime=$(stat -c %Y "${candidate}" 2>/dev/null || echo 0)
               if awk "BEGIN { exit !(${now_epoch} - ${newest_mtime} >= ${stale_seconds}) }"; then
                 echo "Removing orphan runtime: ${candidate}"
