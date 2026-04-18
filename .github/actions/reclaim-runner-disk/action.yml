@@ -20,7 +20,7 @@ inputs:
   cache-age-days:
     description: Age threshold (days) for trimming compile/wheel/pip cache files.
     required: false
-    default: "30"
+    default: "7"
   min-avail-gib:
     description: >
       Hard floor on free space (GiB) in RUNNER_TEMP after reclaim. Below this
