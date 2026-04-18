@@ -75,8 +75,12 @@ def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
         )
         return errors
 
-    input_names = set((sig.get("inputs") or {}).keys())
-    param_names = set((sig.get("params") or {}).keys())
+    # Tolerate malformed inputs/params (reported as schema errors elsewhere):
+    # treat non-dicts as empty so static_dims checks don't crash the validator.
+    inputs = sig.get("inputs")
+    params = sig.get("params")
+    input_names = set(inputs.keys()) if isinstance(inputs, dict) else set()
+    param_names = set(params.keys()) if isinstance(params, dict) else set()
 
     for dname, expr in sdims.items():
         if not isinstance(expr, str):
