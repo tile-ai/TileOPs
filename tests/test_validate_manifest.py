@@ -805,9 +805,293 @@ class TestDtype:
 
 
 # ---------------------------------------------------------------------------
-# bench: benchmark uses manifest workloads
+# L2 extension: _infer_output_shapes parity with shape_rules
 # ---------------------------------------------------------------------------
 
+
+
+def _make_op_cls_with_infer(infer_fn, *, name="FakeOp"):
+    """Build a minimal Op subclass whose ``_infer_output_shapes`` is *infer_fn*.
+
+    Uses the real :class:`tileops.ops.op_base.Op` so ``_class_overrides_method``
+    correctly treats the method as an override.
+    """
+    from tileops.ops.op_base import Op
+
+    attrs = {
+        "_infer_output_shapes": infer_fn,
+        "forward": lambda self, *a, **kw: None,
+        "default_kernel_map": property(lambda self: {}),
+    }
+    return type(name, (Op,), attrs)
+
+
+class TestInferShapeParity:
+    """L2 extension: ``_infer_output_shapes`` output must satisfy shape_rules."""
+
+    def test_no_override_skipped(self, validator):
+        """Ops without a ``_infer_output_shapes`` override produce no errors."""
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):  # noqa: D401
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        assert validator.check_l2_infer_parity("BareOp", entry, BareOp) == []
+
+    def test_no_cls_skipped(self, validator):
+        entry = {"signature": {"shape_rules": ["y.shape == x.shape"]}}
+        assert validator.check_l2_infer_parity("Foo", entry, None) == []
+
+    def test_correct_infer_passes(self, validator):
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        assert validator.check_l2_infer_parity("FakeOp", entry, cls) == []
+
+    def test_incorrect_infer_fails(self, validator):
+        """AC-2: parity error when _infer_output_shapes disagrees with shape_rules."""
+        def infer(self, x_shape):
+            # Wrong: drops a dim.
+            return {"y": x_shape[:-1]}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        errors = validator.check_l2_infer_parity("FakeOp", entry, cls)
+        assert any("_infer_output_shapes output violates" in e for e in errors), (
+            f"Expected parity error, got: {errors}"
+        )
+
+    def test_missing_output_fails(self, validator):
+        def infer(self, x_shape):
+            return {}  # missing y
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        errors = validator.check_l2_infer_parity("FakeOp", entry, cls)
+        assert any("missing output" in e for e in errors), errors
+
+    def test_signature_mismatch_reports(self, validator):
+        def infer(self, a_shape):
+            return {"y": a_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        errors = validator.check_l2_infer_parity("FakeOp", entry, cls)
+        assert any("signature does not match" in e for e in errors), errors
+
+    def test_tuple_literal_rule_rank(self, validator):
+        """tensor.shape == (A, B) rules inform the mock input rank."""
+        seen_rank: list[int] = []
+
+        def infer(self, x_shape):
+            seen_rank.append(len(x_shape))
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": [
+                    "x.shape == (B, S, H, D)",
+                    "y.shape == x.shape",
+                ],
+            },
+        }
+        assert validator.check_l2_infer_parity("FakeOp", entry, cls) == []
+        assert seen_rank == [4], seen_rank
+
+
+# ---------------------------------------------------------------------------
+# L3 extension: _validate_dtypes parity with dtype_combos / unions
+# ---------------------------------------------------------------------------
+
+
+def _make_op_cls_with_validate(validate_fn, *, name="FakeDtypeOp"):
+    from tileops.ops.op_base import Op
+
+    attrs = {
+        "_validate_dtypes": validate_fn,
+        "forward": lambda self, *a, **kw: None,
+        "default_kernel_map": property(lambda self: {}),
+    }
+    return type(name, (Op,), attrs)
+
+
+class TestValidateDtypesParity:
+    """L3 extension: ``_validate_dtypes`` matches manifest dtype_combos/unions."""
+
+    def test_no_override_skipped(self, validator):
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        assert validator.check_l3_validate_dtypes_parity("Bare", entry, BareOp) == []
+
+    def test_union_accept_all_passes(self, validator):
+        import torch
+
+        def validate(self, x):
+            if x.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError(f"bad dtype {x.dtype}")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        assert validator.check_l3_validate_dtypes_parity("FakeDtypeOp", entry, cls) == []
+
+    def test_union_reject_declared_fails(self, validator):
+        """AC-3: rejects a dtype in the declared union -> parity error."""
+        import torch
+
+        def validate(self, x):
+            if x.dtype != torch.float16:
+                raise ValueError("only fp16")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity("FakeDtypeOp", entry, cls)
+        assert any("rejects valid combo" in e for e in errors), errors
+
+    def test_dtype_combos_accept_listed_pass(self, validator):
+        import torch
+
+        def validate(self, x, w):
+            allowed = {(torch.float16, torch.float16), (torch.bfloat16, torch.bfloat16)}
+            if (x.dtype, w.dtype) not in allowed:
+                raise ValueError("unlisted")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+        }
+        assert validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        ) == []
+
+    def test_dtype_combos_rejects_listed_fails(self, validator):
+        import torch
+
+        def validate(self, x, w):
+            # Rejects the listed (bfloat16, bfloat16) combo.
+            if x.dtype != torch.float16:
+                raise ValueError("unlisted")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        )
+        assert any("rejects dtype_combos" in e for e in errors), errors
+
+    def test_dtype_combos_accepts_unlisted_fails(self, validator):
+        """AC-3: accepts a non-listed combo -> parity error."""
+        def validate(self, x, w):
+            return None  # accepts everything
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "float16 | bfloat16"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                ],
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        )
+        assert any("accepts non-listed combo" in e for e in errors), errors
+
+
+# ---------------------------------------------------------------------------
+# Bench checks
+# ---------------------------------------------------------------------------
 class TestBench:
     """bench checks that bench files use manifest workloads and op roofline."""
 

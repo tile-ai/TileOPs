@@ -77,14 +77,16 @@ Agent reads the manifest and generates code (codegen). [Validator](../scripts/va
 
 ### Consistency Enforcement
 
-| Check                                               | Mechanism                          |
-| --------------------------------------------------- | ---------------------------------- |
-| Manifest schema and declared fields are well-formed | Validator (CI), L0 checks          |
-| `__init__` params match manifest `params`           | Validator signature check (L1)     |
-| `static_dims` keys are `__init__` parameters        | Validator signature check (L1)     |
-| `shape_rules` syntax is valid                       | Validator shape_rules parsing (L2) |
-| `dtype`/`dtype_combos` strings are valid            | Validator dtype conformance (L3)   |
-| Empty `static_dims` without `_cache_key` override   | Op base class runtime warning      |
+| Check                                                    | Mechanism                          |
+| -------------------------------------------------------- | ---------------------------------- |
+| Manifest schema and declared fields are well-formed      | Validator (CI), L0 checks          |
+| `__init__` params match manifest `params`                | Validator signature check (L1)     |
+| `static_dims` keys are `__init__` parameters             | Validator signature check (L1)     |
+| `shape_rules` syntax is valid                            | Validator shape_rules parsing (L2) |
+| `_infer_output_shapes` output satisfies `shape_rules`    | Validator infer-shape parity (L2)  |
+| `dtype`/`dtype_combos` strings are valid                 | Validator dtype conformance (L3)   |
+| `_validate_dtypes` matches `dtype_combos` / dtype unions | Validator dtype parity (L3)        |
+| Empty `static_dims` without `_cache_key` override        | Op base class runtime warning      |
 
 Checks beyond this table are tracked as separate issues, not as spec status.
 
