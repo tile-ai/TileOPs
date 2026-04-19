@@ -676,7 +676,11 @@ jobs:
         env:
           IS_FORK: ${{ needs.security-policy.outputs.is_fork }}
         run: |
-          set -euo pipefail
+          # Cache stats is informational only. Do NOT use `set -e`: a transient
+          # failure in find/du/wc (e.g. a cache file vanishing mid-scan due to a
+          # concurrent cleanup) must not fail the gpu-smoke job, and must not
+          # skip the CACHE_SIGNAL logging below.
+          set -u
           echo "=== Cache stats (is_fork=${IS_FORK}) ==="
           echo "VENV_REUSED=${VENV_REUSED:-unknown}"
           echo "FORK_CAN_COPY_TRUSTED_VENV=${FORK_CAN_COPY_TRUSTED_VENV:-unknown}"
@@ -686,8 +690,12 @@ jobs:
               continue
             fi
             if [[ -d "${cache_dir}" ]]; then
-              file_count=$(find "${cache_dir}" -type f | wc -l)
-              cache_size=$(du -sh "${cache_dir}" 2>/dev/null | cut -f1)
+              # Tolerate errors from find/du/wc; emit "unknown" when a scan
+              # fails rather than aborting the step.
+              file_count=$(find "${cache_dir}" -type f 2>/dev/null | wc -l 2>/dev/null || echo "unknown")
+              cache_size=$(du -sh "${cache_dir}" 2>/dev/null | cut -f1 2>/dev/null || echo "unknown")
+              if [[ -z "${file_count}" ]]; then file_count="unknown"; fi
+              if [[ -z "${cache_size}" ]]; then cache_size="unknown"; fi
               echo "${cache_dir}: ${file_count} files, ${cache_size}"
             else
               echo "${cache_dir}: does not exist"
