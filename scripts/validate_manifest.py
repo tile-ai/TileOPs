@@ -1143,6 +1143,12 @@ def check_l2_infer_parity(
     ctx: dict = dict(param_defaults)
     for name, shape in mock_shapes.items():
         ctx[name] = _MockShape(shape)
+    # Input-only context (no inferred outputs) is used to detect rules
+    # that already fail on the mock inputs themselves — such rules
+    # encode input-only preconditions (e.g. ``weight.shape ==
+    # (x.shape[dim],)``) that mock inputs may violate. A correct
+    # ``_infer_output_shapes`` must not be blamed in that case.
+    input_only_ctx: dict = dict(ctx)
     for out_name, out_shape in result.items():
         try:
             ctx[out_name] = _MockShape(tuple(out_shape))
@@ -1152,6 +1158,7 @@ def check_l2_infer_parity(
                 f"non-iterable shape for {out_name!r}: {out_shape!r}"
             )
 
+    output_names = set(result.keys()) | set(outputs.keys())
     for i, rule in enumerate(rules):
         if not isinstance(rule, str):
             continue
@@ -1166,6 +1173,27 @@ def check_l2_infer_parity(
                 )
             continue
         if not ok:
+            # Distinguish a genuine parity mismatch from a mock-input
+            # precondition violation: if the rule already fails with
+            # inputs only (and does not reference any declared output),
+            # the mock input shapes themselves violate the rule — skip
+            # with a warning instead of blaming _infer_output_shapes.
+            mentions_output = any(
+                re.search(rf"\b{re.escape(o)}\b", rule) for o in output_names
+            )
+            if not mentions_output:
+                ok_inputs, reason_inputs = _eval_shape_rule(
+                    rule, input_only_ctx,
+                )
+                if reason_inputs is None and not ok_inputs:
+                    if warnings is not None:
+                        warnings.append(
+                            f"[shape] {op_name}: shape_rules[{i}] "
+                            f"{rule!r} not satisfied by synthetic mock "
+                            f"inputs {shape_kwargs}; parity check "
+                            f"skipped (input-only precondition)"
+                        )
+                    continue
             errors.append(
                 f"[shape] {op_name}: _infer_output_shapes output violates "
                 f"shape_rules[{i}] {rule!r} under mock inputs "
@@ -1339,7 +1367,14 @@ def check_l3_validate_dtypes_parity(
             accepted, reason = _combo_accepted(
                 cls, forward_inputs, combo, param_defaults,
             )
-            if reason and reason.startswith(("unexpected", "TypeError")):
+            if reason and reason.startswith("TypeError"):
+                errors.append(
+                    f"[dtype] {op_name}: _validate_dtypes signature does "
+                    f"not match manifest inputs (expected kwargs "
+                    f"{sorted(forward_inputs)}): {reason}"
+                )
+                return errors
+            if reason and reason.startswith("unexpected"):
                 if warnings is not None:
                     warnings.append(
                         f"[dtype] {op_name}: _validate_dtypes parity skipped "
@@ -1406,7 +1441,17 @@ def check_l3_validate_dtypes_parity(
             accepted, reason = _combo_accepted(
                 cls, forward_inputs, candidate, param_defaults,
             )
-            if reason and reason.startswith(("unexpected", "TypeError")):
+            if reason and reason.startswith("TypeError"):
+                # Signature mismatch between manifest inputs and the op's
+                # _validate_dtypes — surface as a parity error (analogous
+                # to the L2 _infer_output_shapes signature check).
+                errors.append(
+                    f"[dtype] {op_name}: _validate_dtypes signature does "
+                    f"not match manifest inputs (expected kwargs "
+                    f"{sorted(forward_inputs)}): {reason}"
+                )
+                return errors
+            if reason and reason.startswith("unexpected"):
                 if warnings is not None:
                     warnings.append(
                         f"[dtype] {op_name}: _validate_dtypes parity skipped "

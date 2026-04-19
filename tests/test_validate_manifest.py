@@ -1019,6 +1019,52 @@ class TestInferShapeParity:
             for e in errors
         ), f"Expected ndim parity mismatch, got: {errors}"
 
+    def test_input_only_precondition_not_blamed_on_infer(self, validator):
+        """Mock-input precondition violations must not become parity errors.
+
+        When ``shape_rules`` encode an input-only precondition (e.g.
+        ``weight.shape == (x.shape[dim],)``) that the synthesised mock
+        inputs happen to violate, a correct ``_infer_output_shapes`` must
+        not be blamed. The rule must be reported as skipped via warning
+        rather than an error.
+        """
+        def infer(self, x_shape, weight_shape):
+            # Correct: y has the same shape as x.
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16"},
+                    "weight": {"dtype": "float16"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "params": {"dim": {"default": -1}},
+                "shape_rules": [
+                    # Input-only precondition the mock (4,4) vs (4,4)
+                    # arrangement would naively satisfy; use a form that
+                    # the mock synthesis will not satisfy to trigger the
+                    # precondition-violation path.
+                    "weight.shape == (x.shape[dim] + 1,)",
+                    "y.shape == x.shape",
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        assert not any(
+            "_infer_output_shapes output violates" in e for e in errors
+        ), (
+            "Correct _infer_output_shapes should not be blamed for an "
+            f"input-only precondition violation on mock inputs: {errors}"
+        )
+        assert any(
+            "input-only precondition" in w for w in warnings
+        ), f"Expected precondition-skip warning, got: {warnings}"
+
 
 # ---------------------------------------------------------------------------
 # L3 extension: _validate_dtypes parity with dtype_combos / unions
@@ -1213,6 +1259,64 @@ class TestValidateDtypesParity:
             for e in errors
         ), (
             f"Expected (bfloat16, float16) combo in errors, got: {errors}"
+        )
+
+    def test_signature_mismatch_union_fails(self, validator):
+        """AC-3 regression: _validate_dtypes with a wrong kwarg name must fail.
+
+        Previously TypeError from a signature mismatch was silently
+        downgraded to a warning, letting an unusable _validate_dtypes
+        satisfy parity. The validator must surface this as a hard error.
+        """
+        def validate(self, wrong_name):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "signature does not match manifest inputs" in e for e in errors
+        ), (
+            "Signature mismatch in _validate_dtypes must surface as a "
+            f"parity error, got errors={errors} warnings={warnings}"
+        )
+
+    def test_signature_mismatch_dtype_combos_fails(self, validator):
+        """Same signature-mismatch hard-fail on the dtype_combos branch."""
+        def validate(self, wrong_name, other_wrong):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "signature does not match manifest inputs" in e for e in errors
+        ), (
+            "Signature mismatch must surface on dtype_combos branch too, "
+            f"got errors={errors} warnings={warnings}"
         )
 
 
