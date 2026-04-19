@@ -271,3 +271,33 @@ def test_manifest_benchmark_falls_back_when_no_vars(monkeypatch):
     rv = bm._roofline_vars()
     # Falls back to last-axis heuristic.
     assert rv == {"M": 4, "N": 8, "elem_bytes": 4}
+
+
+@pytest.mark.smoke
+def test_manifest_benchmark_propagates_vars_eval_error(monkeypatch):
+    """If ``roofline.vars`` is declared but evaluation fails, ManifestBenchmark
+    must propagate the error rather than silently falling back to the legacy
+    last-axis heuristic — otherwise bad manifest expressions would mask as
+    plausible M/N bindings and feed the roofline calculator garbage.
+    """
+    from tileops.manifest import _load_manifest
+
+    _load_manifest.cache_clear()
+    real = _load_manifest()
+    patched = dict(real)
+    # Copy the SumFwdOp entry but poison its roofline.vars mapping so one
+    # expression references a name that is never bound.
+    base = dict(real["SumFwdOp"])
+    base_roofline = dict(base["roofline"])
+    base_roofline["vars"] = {
+        "M": "missing_name + 1",
+        "N": "x.shape[-1]",
+    }
+    base["roofline"] = base_roofline
+    patched["SumFwdOp"] = base
+    monkeypatch.setattr("tileops.manifest._load_manifest", lambda: patched)
+
+    w = _DuckShapeDtype((4, 8), torch.float16)
+    bm = ManifestBenchmark("SumFwdOp", w, op_params={"dim": 0})
+    with pytest.raises(ValueError, match="Failed to evaluate"):
+        bm._roofline_vars()

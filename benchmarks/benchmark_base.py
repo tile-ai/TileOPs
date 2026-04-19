@@ -17,7 +17,12 @@ import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
-from tileops.manifest import eval_roofline, load_workloads, resolve_roofline_vars
+from tileops.manifest import (
+    eval_roofline,
+    has_roofline_vars,
+    load_workloads,
+    resolve_roofline_vars,
+)
 
 # Workload dict keys that describe tensor/dtype parametrization and are *not*
 # passed through as op-call parameters. Everything else on a workload entry
@@ -444,17 +449,18 @@ class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
         params (e.g. ops whose vars reference multiple input tensors).
         """
         elem_bytes = torch.tensor([], dtype=self.workload.dtype).element_size()
-        try:
-            resolved = resolve_roofline_vars(
-                self._op_name,
-                tensor_shapes={"x": tuple(self.workload.shape)},
-                params=self._op_params,
-            )
-        except (ValueError, KeyError):
-            # No manifest entry (e.g. synthetic test op) or no
-            # ``roofline.vars`` declared — keep legacy behaviour so
-            # existing benches remain backward-compatible.
+        # Fall back to the legacy last-axis heuristic only when the manifest
+        # has nothing to resolve for this op (missing entry or missing/empty
+        # ``roofline.vars``). If ``roofline.vars`` is declared but evaluation
+        # raises, propagate the error so bad manifest expressions cannot
+        # silently degrade to legacy M/N.
+        if not has_roofline_vars(self._op_name):
             return roofline_vars(self.workload)
+        resolved = resolve_roofline_vars(
+            self._op_name,
+            tensor_shapes={"x": tuple(self.workload.shape)},
+            params=self._op_params,
+        )
         resolved.setdefault("elem_bytes", elem_bytes)
         return resolved
 

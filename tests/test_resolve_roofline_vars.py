@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tileops.manifest import resolve_roofline_vars
+from tileops.manifest import has_roofline_vars, resolve_roofline_vars
 
 pytestmark = pytest.mark.smoke
 
@@ -135,6 +135,47 @@ class TestErrors:
             pytest.skip("every op in manifest declares roofline.vars")
         with pytest.raises(ValueError, match="roofline.vars"):
             resolve_roofline_vars(target, tensor_shapes={"x": (4,)})
+
+
+class TestHasRooflineVars:
+    """``has_roofline_vars`` is the precondition callers use to decide
+    whether to call ``resolve_roofline_vars`` or fall back to a legacy
+    heuristic. It must cleanly distinguish "nothing to resolve" (False)
+    from "something to resolve, may raise on eval" (True)."""
+
+    def test_unknown_op_is_false(self):
+        assert has_roofline_vars("NotAnOp") is False
+
+    def test_op_with_vars_is_true(self):
+        assert has_roofline_vars("SumFwdOp") is True
+
+    def test_empty_vars_is_false(self, monkeypatch):
+        from tileops.manifest import _load_manifest
+
+        _load_manifest.cache_clear()
+        real = _load_manifest()
+        patched = dict(real)
+        patched["_EmptyVarsOp"] = {
+            "roofline": {"vars": {}, "flops": "0", "bytes": "0"}
+        }
+        monkeypatch.setattr(
+            "tileops.manifest._load_manifest", lambda: patched
+        )
+        assert has_roofline_vars("_EmptyVarsOp") is False
+
+    def test_missing_vars_key_is_false(self, monkeypatch):
+        from tileops.manifest import _load_manifest
+
+        _load_manifest.cache_clear()
+        real = _load_manifest()
+        patched = dict(real)
+        patched["_NoVarsOp"] = {
+            "roofline": {"flops": "0", "bytes": "0"}
+        }
+        monkeypatch.setattr(
+            "tileops.manifest._load_manifest", lambda: patched
+        )
+        assert has_roofline_vars("_NoVarsOp") is False
 
 
 class TestSandbox:

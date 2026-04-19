@@ -223,6 +223,24 @@ _ROOFLINE_VARS_BUILTINS: dict[str, Any] = {
 }
 
 
+def has_roofline_vars(op_name: str) -> bool:
+    """Return True iff the manifest declares a non-empty ``roofline.vars``
+    mapping for *op_name*.
+
+    Returns False when the op is absent from the manifest, when it has no
+    ``roofline`` section, or when ``roofline.vars`` is missing / empty / not
+    a mapping. This is the precondition callers should use before
+    :func:`resolve_roofline_vars`, so they can distinguish "nothing to
+    resolve" (legitimate fallback) from "resolution failed" (propagate).
+    """
+    ops = _load_manifest()
+    entry = ops.get(op_name)
+    if not isinstance(entry, dict):
+        return False
+    vars_decl = entry.get("roofline", {}).get("vars")
+    return isinstance(vars_decl, dict) and bool(vars_decl)
+
+
 def resolve_roofline_vars(
     op_name: str,
     tensor_shapes: dict[str, tuple[int, ...]],
