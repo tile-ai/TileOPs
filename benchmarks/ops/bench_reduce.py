@@ -63,7 +63,7 @@ def test_sum_bench(
     bm = ManifestBenchmark(_SUM_OP, test, op_params=op_params)
     inputs = test.gen_inputs()
 
-    op = SumFwdOp(dtype=dtype)
+    op = SumFwdOp(dtype=dtype, **op_params)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
