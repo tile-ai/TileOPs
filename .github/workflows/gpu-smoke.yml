@@ -251,7 +251,7 @@ jobs:
             for path in "${changed_files[@]}"; do
               if [[ "$is_fork" == "true" ]]; then
                 case "$path" in
-                  .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|tileops/ops/*.py|tests/ops/test_*.py|*.md)
+                  .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|tests/ops/test_*.py|*.md)
                     ;;
                   .github/workflows/*|pyproject.toml|requirements*.txt|requirements*.in|setup.py|setup.cfg|Dockerfile*|scripts/bootstrap*|scripts/install*)
                     allow_fast_path="false"
