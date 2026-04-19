@@ -971,6 +971,54 @@ class TestInferShapeParity:
             f"Expected R11-style rule to evaluate and flag mismatch, got: {errors}"
         )
 
+    def test_r11a_comprehension_rule_evaluates(self, validator):
+        """R11a rules using generator / set comprehensions must be evaluable.
+
+        Regression: ``eval(rule, globals, locals)`` scopes comprehension
+        bodies against globals only, so passing ctx names only as locals
+        made every comprehension-shaped rule raise ``NameError`` and get
+        silently downgraded to a warning. An infer-shape mismatch could
+        pass because no rule ever evaluated to False.
+        """
+        # Wrong infer: keeps input rank even though dim reduction + keepdim=False
+        # must drop a rank.
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "params": {
+                    "dim": {"default": [-1]},
+                    "keepdim": {"default": False},
+                },
+                "shape_rules": [
+                    # Generator expression inside all(...): comprehension scope.
+                    "all(d % x.ndim in range(x.ndim) for d in dim)",
+                    # Set comprehension: also its own scope.
+                    "len({d % x.ndim for d in dim}) == len(dim)",
+                    # Actual parity rule we expect to catch the mismatch:
+                    # y.ndim must shrink by len(dim) when keepdim is False.
+                    "y.ndim == x.ndim - len(dim)",
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        # No rule should be skipped with a NameError from a comprehension.
+        assert not any(
+            "could not be evaluated" in w for w in warnings
+        ), f"Comprehension rule skipped via warning: {warnings}"
+        # The parity mismatch on y.ndim must surface as an error.
+        assert any(
+            "_infer_output_shapes output violates" in e and "y.ndim" in e
+            for e in errors
+        ), f"Expected ndim parity mismatch, got: {errors}"
+
 
 # ---------------------------------------------------------------------------
 # L3 extension: _validate_dtypes parity with dtype_combos / unions

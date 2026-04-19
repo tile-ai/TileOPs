@@ -1032,10 +1032,22 @@ def _eval_shape_rule(
     ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``, ``max``) so
     R11 / R11a-style rules that use these helpers can be evaluated
     against the mock context instead of being silently skipped.
+
+    The context names (inputs / outputs / params) are injected into both
+    eval globals and locals. Comprehensions (generator / set / list /
+    dict) create their own enclosing scope at compile time that only
+    sees the eval globals, not the locals dict; passing ctx as globals
+    too lets rules like ``all(d % x.ndim in ... for d in dim)`` resolve
+    ``x`` and ``dim`` inside the generator expression.
     """
+    eval_globals = {"__builtins__": _SHAPE_RULE_BUILTINS}
+    # Ctx names must be visible inside comprehensions, which only see
+    # globals. Merge ctx into globals while keeping locals=ctx so plain
+    # (non-comprehension) lookups behave identically.
+    eval_globals.update(ctx)
     try:
         result = eval(  # noqa: S307 — manifest-controlled
-            rule, {"__builtins__": _SHAPE_RULE_BUILTINS}, ctx,
+            rule, eval_globals, ctx,
         )
     except Exception as exc:  # noqa: BLE001
         return False, f"eval error: {exc.__class__.__name__}: {exc}"
