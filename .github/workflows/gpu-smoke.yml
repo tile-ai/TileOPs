@@ -699,9 +699,11 @@ jobs:
             fi
             if [[ -d "${cache_dir}" ]]; then
               # Tolerate errors from find/du/wc; emit "unknown" when a scan
-              # fails rather than aborting the step.
-              file_count=$(find "${cache_dir}" -type f 2>/dev/null | wc -l 2>/dev/null || echo "unknown")
-              cache_size=$(du -sh "${cache_dir}" 2>/dev/null | cut -f1 2>/dev/null || echo "unknown")
+              # fails rather than aborting the step. Enable pipefail inside
+              # the subshell so a find/du failure upstream of wc/cut
+              # propagates to the || fallback instead of being masked.
+              file_count=$(set -o pipefail; find "${cache_dir}" -type f 2>/dev/null | wc -l 2>/dev/null) || file_count="unknown"
+              cache_size=$(set -o pipefail; du -sh "${cache_dir}" 2>/dev/null | cut -f1 2>/dev/null) || cache_size="unknown"
               if [[ -z "${file_count}" ]]; then file_count="unknown"; fi
               if [[ -z "${cache_size}" ]]; then cache_size="unknown"; fi
               echo "${cache_dir}: ${file_count} files, ${cache_size}"
