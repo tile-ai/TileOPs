@@ -421,17 +421,25 @@ jobs:
             echo "TRUSTED_VENV_PATH=${TRUSTED_VENV_PATH}"
             if [[ -d "${TRUSTED_VENV_PATH}" ]]; then
               echo "Trusted venv directory exists:"
-              ls -la "${TRUSTED_VENV_PATH}" || true
+              # find + -printf keeps shellcheck SC2012 clean vs `ls -la`.
+              find "${TRUSTED_VENV_PATH}" -maxdepth 1 -printf '  %M %u %g %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null || true
               if [[ -d "${TRUSTED_VENV_PATH}/bin" ]]; then
-                echo "Trusted venv bin/ contents:"
-                ls -la "${TRUSTED_VENV_PATH}/bin" | head -20 || true
+                echo "Trusted venv bin/ contents (up to 20 entries):"
+                find "${TRUSTED_VENV_PATH}/bin" -maxdepth 1 -printf '  %M %u %g %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null | head -20 || true
               else
                 echo "Trusted venv bin/ does not exist"
               fi
             else
               echo "Trusted venv directory does not exist"
               echo "Sibling venvs under ${{ runner.tool_cache }}:"
-              ls -la "${{ runner.tool_cache }}" 2>/dev/null | grep -E "tileops_ci_venv" || echo "  (none)"
+              # Use find + -printf (not `ls | grep`) so actionlint+shellcheck
+              # (SC2010/SC2012) stays clean while listing hash-suffixed venvs.
+              sibling_list=$(find "${{ runner.tool_cache }}" -maxdepth 1 -name "tileops_ci_venv_*" -printf '  %M %u %g %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null || true)
+              if [[ -n "${sibling_list}" ]]; then
+                printf '%s\n' "${sibling_list}"
+              else
+                echo "  (none)"
+              fi
             fi
             python_bin="${TRUSTED_VENV_PATH}/bin/python"
             if [[ -e "${python_bin}" ]]; then
