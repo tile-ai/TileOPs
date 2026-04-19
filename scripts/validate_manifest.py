@@ -997,6 +997,26 @@ def _class_overrides_method(cls: type, name: str) -> bool:
     return False
 
 
+# Safe builtins allowed in shape_rules eval — matches the R11 / R11a
+# documented helper set (see docs/ops-design-reference.md). Keep this list
+# aligned with manifest spec; widening it changes the rule language.
+_SHAPE_RULE_BUILTINS: dict = {
+    "len": len,
+    "isinstance": isinstance,
+    "int": int,
+    "tuple": tuple,
+    "list": list,
+    "type": type,
+    "all": all,
+    "any": any,
+    "range": range,
+    "set": set,
+    "abs": abs,
+    "min": min,
+    "max": max,
+}
+
+
 def _eval_shape_rule(
     rule: str, ctx: dict,
 ) -> tuple[bool, str | None]:
@@ -1006,9 +1026,17 @@ def _eval_shape_rule(
     rule evaluated to a falsy non-exception value; a non-None reason
     indicates the rule could not be evaluated (treated as skipped, not a
     parity error).
+
+    The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set
+    (``len``, ``isinstance``, ``int``, ``tuple``, ``list``, ``type``,
+    ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``, ``max``) so
+    R11 / R11a-style rules that use these helpers can be evaluated
+    against the mock context instead of being silently skipped.
     """
     try:
-        result = eval(rule, {"__builtins__": {}}, ctx)  # noqa: S307 — manifest-controlled
+        result = eval(  # noqa: S307 — manifest-controlled
+            rule, {"__builtins__": _SHAPE_RULE_BUILTINS}, ctx,
+        )
     except Exception as exc:  # noqa: BLE001
         return False, f"eval error: {exc.__class__.__name__}: {exc}"
     try:
@@ -1312,8 +1340,10 @@ def check_l3_validate_dtypes_parity(
                     f"dtype_combos[{i}] {combo!r} listed in manifest"
                 )
 
-        # A non-listed combo drawn from the inputs' union must be rejected.
-        # Build the union of each input independently and exclude listed combos.
+        # Every non-listed combo drawn from the inputs' union must be
+        # rejected. Enumerate the full Cartesian product and report any
+        # non-listed combo that ``_validate_dtypes`` accepts. Breaking on
+        # the first rejection would miss a later accepted combo.
         input_options: list[list[str]] = [
             dtype_options.get(name, []) for name in forward_inputs
         ]
@@ -1335,15 +1365,15 @@ def check_l3_validate_dtypes_parity(
                 continue
             if not accepted:
                 rejected_at_least_one = True
-                break
-            # Accepted non-listed combo — parity violation.
+                continue
+            # Accepted non-listed combo — parity violation. Keep scanning
+            # so multiple such combos are all surfaced in a single run.
             errors.append(
                 f"[dtype] {op_name}: _validate_dtypes accepts non-listed "
                 f"combo {candidate!r} (not in dtype_combos)"
             )
-            rejected_at_least_one = True
-            break
-        if checked_any and not rejected_at_least_one and warnings is not None:
+        if checked_any and not rejected_at_least_one and not errors \
+                and warnings is not None:
             warnings.append(
                 f"[dtype] {op_name}: could not find a non-listed combo to "
                 f"exercise rejection (dtype_combos exhausts the union)"

@@ -939,6 +939,38 @@ class TestInferShapeParity:
         assert validator.check_l2_infer_parity("FakeOp", entry, cls) == []
         assert seen_rank == [4], seen_rank
 
+    def test_r11_style_rule_uses_len_helper(self, validator):
+        """R11 / R11a rules that call ``len`` must be evaluable.
+
+        Regression: previously the eval context stripped ``__builtins__`` so
+        every rule using ``len`` / ``isinstance`` / ``set`` raised NameError
+        and was silently downgraded to a warning, causing real parity
+        mismatches to slip through.
+        """
+        # Wrong: reduction op declares dim=-1, keepdim=False so y should drop
+        # a rank, but _infer_output_shapes returns x_shape verbatim.
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "params": {
+                    "dim": {"default": -1},
+                    "keepdim": {"default": False},
+                },
+                "shape_rules": [
+                    "y.ndim == x.ndim - len({dim % x.ndim})",
+                ],
+            },
+        }
+        errors = validator.check_l2_infer_parity("FakeOp", entry, cls)
+        assert any("_infer_output_shapes output violates" in e for e in errors), (
+            f"Expected R11-style rule to evaluate and flag mismatch, got: {errors}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # L3 extension: _validate_dtypes parity with dtype_combos / unions
@@ -1087,6 +1119,53 @@ class TestValidateDtypesParity:
             "FakeDtypeOp", entry, cls,
         )
         assert any("accepts non-listed combo" in e for e in errors), errors
+
+    def test_dtype_combos_first_rejected_later_accepted_fails(self, validator):
+        """Regression: non-listed combos must all be checked, not just first.
+
+        Previously the loop broke on the first rejection, letting a later
+        accepted non-listed combo escape detection. Enumerate every
+        non-listed combination and report each acceptance.
+        """
+        import torch
+
+        def validate(self, x, w):
+            # Reject the first non-listed combo (fp16, bf16) but accept a
+            # later non-listed combo (bf16, fp16). Listed (fp16, fp16) is
+            # also accepted.
+            if x.dtype == torch.float16 and w.dtype == torch.bfloat16:
+                raise ValueError("rejected early non-listed combo")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "float16 | bfloat16"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                ],
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        )
+        # Must flag the later accepted non-listed combo (bf16, fp16) and
+        # may also flag (bf16, bf16). At minimum one 'accepts non-listed'
+        # error must be present.
+        assert any("accepts non-listed combo" in e for e in errors), (
+            f"Expected later non-listed acceptance to be flagged, got: {errors}"
+        )
+        # Stronger check: the (bfloat16, float16) combo specifically is
+        # surfaced — proves the loop did not stop at the first rejection.
+        assert any(
+            "'x': 'bfloat16'" in e and "'w': 'float16'" in e
+            for e in errors
+        ), (
+            f"Expected (bfloat16, float16) combo in errors, got: {errors}"
+        )
 
 
 # ---------------------------------------------------------------------------
