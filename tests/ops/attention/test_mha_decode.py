@@ -34,7 +34,7 @@ class MhaDecodeFixture(FixtureBase):
 def test_mha_decode(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
                     tune: bool) -> None:
     if s_kv == 8192:
-        pytest.skip("Temporarily skipping known long-context MHA decode failures in ded6 validation.")
+        pytest.skip("Temporarily skipping known long-context MHA decode failures under TileLang 5f70374c (#999).")
     test = MhaDecodeTest(b, h, s_q, s_kv, d, dtype)
     op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=2e-3, rtol=1e-5)

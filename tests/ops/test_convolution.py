@@ -9,6 +9,19 @@ from tileops.kernels.convolution import Conv1dKernel, Conv2d1x1Kernel, Conv2dKer
 from tileops.ops import Conv1dFwdOp, Conv2dOp, Conv3dOp
 
 
+SKIPPED_CONV2D_CASES = {
+    (2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), torch.float16, False),
+    (2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), torch.bfloat16, False),
+    (1, 32, 28, 28, 64, (5, 5), (1, 1), (2, 2), torch.float16, False),
+}
+
+SKIPPED_CONV3D_CASES = {
+    (1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.float16, False),
+    (1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.bfloat16, False),
+    (1, 32, 32, 64, 64, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.bfloat16, False),
+}
+
+
 class Conv1dFixture(FixtureBase):
     PARAMS = [
         ("n, c_in, l_in, c_out, kernel_size, stride, padding, dtype, tune", [
@@ -291,18 +304,8 @@ def test_conv2d(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    if (
-        (n, c_in, h, w, c_out, kernel_size, stride, padding, dtype, tune) == (
-            2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), torch.float16, False
-        )
-        or (n, c_in, h, w, c_out, kernel_size, stride, padding, dtype, tune) == (
-            2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), torch.bfloat16, False
-        )
-        or (n, c_in, h, w, c_out, kernel_size, stride, padding, dtype, tune) == (
-            1, 32, 28, 28, 64, (5, 5), (1, 1), (2, 2), torch.float16, False
-        )
-    ):
-        pytest.skip("Temporarily skipping known Conv2d failures in ded6 validation.")
+    if (n, c_in, h, w, c_out, kernel_size, stride, padding, dtype, tune) in SKIPPED_CONV2D_CASES:
+        pytest.skip("Temporarily skipping known Conv2d failures under TileLang 5f70374c (#999).")
     test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dtype)
     op = Conv2dOp(
         n=n,
@@ -323,7 +326,7 @@ def test_conv2d(
 
 @pytest.mark.smoke
 def test_conv2d_accepts_zero_bias() -> None:
-    pytest.skip("Temporarily skipping known Conv2d zero-bias failure in ded6 validation.")
+    pytest.skip("Temporarily skipping known Conv2d zero-bias failure under TileLang 5f70374c (#999).")
     op = Conv2dOp(
         n=1,
         c_in=32,
@@ -504,18 +507,8 @@ def test_conv3d(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    if (
-        (n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype, tune) == (
-            1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.float16, False
-        )
-        or (n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype, tune) == (
-            1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.bfloat16, False
-        )
-        or (n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype, tune) == (
-            1, 32, 32, 64, 64, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.bfloat16, False
-        )
-    ):
-        pytest.skip("Temporarily skipping known Conv3d failures in ded6 validation.")
+    if (n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype, tune) in SKIPPED_CONV3D_CASES:
+        pytest.skip("Temporarily skipping known Conv3d failures under TileLang 5f70374c (#999).")
     test = Conv3dTest(n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype)
     op = Conv3dOp(
         n=n,
@@ -537,7 +530,7 @@ def test_conv3d(
 
 @pytest.mark.smoke
 def test_conv3d_accepts_zero_bias() -> None:
-    pytest.skip("Temporarily skipping known Conv3d zero-bias failure in ded6 validation.")
+    pytest.skip("Temporarily skipping known Conv3d zero-bias failure under TileLang 5f70374c (#999).")
     op = Conv3dOp(
         n=1,
         c_in=8,

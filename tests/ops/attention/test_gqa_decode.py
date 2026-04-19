@@ -35,7 +35,7 @@ class GroupedQueryAttentionDecodeFixture(FixtureBase):
 @GroupedQueryAttentionDecodeFixture
 def test_gqa_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                     dtype: torch.dtype, tune: bool) -> None:
-    pytest.skip("Temporarily skipping known GQA decode failures in ded6 validation.")
+    pytest.skip("Temporarily skipping known GQA decode failures under TileLang 5f70374c (#999).")
     test = GroupedQueryAttentionDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dtype)
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)

@@ -71,7 +71,7 @@ def test_sparse_mla_decode(batch: int, heads: int, seq_len_q: int, seq_len_kv: i
                            dim_tail: int, topk: int, stride_kv: int, heads_kv: int,
                            q_start_index_s: int, sm_scale: float, dtype: torch.dtype,
                            tune: bool) -> None:
-    pytest.skip("Temporarily skipping known DeepSeek DSA decode failure in ded6 validation.")
+    pytest.skip("Temporarily skipping known DeepSeek DSA decode failure under TileLang 5f70374c (#999).")
     test = DsaDecodeTest(
         batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype)

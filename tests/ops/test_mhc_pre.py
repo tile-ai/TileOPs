@@ -85,7 +85,7 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
 @MHCPreFixture
 def test_mhc_pre_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                     tune: bool) -> None:
-    pytest.skip("Temporarily skipping known MHC pre failures in ded6 validation.")
+    pytest.skip("Temporarily skipping known MHC pre failures under TileLang 5f70374c (#999).")
     test = MHCPreTest(batch, n_expand, c_x, dtype)
     op = MHCPreOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
