@@ -212,7 +212,6 @@ _ROOFLINE_VARS_BUILTINS: dict[str, Any] = {
     "int": int,
     "float": float,
     "bool": bool,
-    "type": type,
     "min": min,
     "max": max,
     "sum": sum,

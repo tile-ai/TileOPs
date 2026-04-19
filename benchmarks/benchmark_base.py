@@ -365,7 +365,13 @@ def _workload_extra_params(w: dict) -> dict[str, Any]:
     manifest's ``roofline.vars`` expressions see the same bindings the op
     would be called with.
     """
-    return {k: v for k, v in w.items() if k not in _WORKLOAD_META_KEYS}
+    return {
+        k: v
+        for k, v in w.items()
+        if k not in _WORKLOAD_META_KEYS
+        and not k.endswith("_shape")
+        and not k.startswith("__")
+    }
 
 
 def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
@@ -389,16 +395,8 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
         extra = _workload_extra_params(w)
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            if include_extra:
-                params.append(pytest.param(
-                    shape, dtype, extra,
-                    id=f"{label}-{dtype_str}",
-                ))
-            else:
-                params.append(pytest.param(
-                    shape, dtype,
-                    id=f"{label}-{dtype_str}",
-                ))
+            param_args = (shape, dtype, extra) if include_extra else (shape, dtype)
+            params.append(pytest.param(*param_args, id=f"{label}-{dtype_str}"))
     return params
 
 
