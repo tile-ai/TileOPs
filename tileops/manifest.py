@@ -13,6 +13,8 @@ import importlib
 import math
 import operator
 from importlib import resources
+from math import prod as _math_prod
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
@@ -180,3 +182,141 @@ def eval_roofline(op_name: str, **variables: float) -> tuple[float, float]:
         ) from exc
 
     return flops, mem_bytes
+
+
+# ---------------------------------------------------------------------------
+# roofline.vars resolver
+# ---------------------------------------------------------------------------
+
+
+def _product(iterable: Any) -> int:
+    """Manifest-facing ``product`` builtin.
+
+    Accepts any iterable of numbers and returns their product. Empty iterable
+    returns 1 (matches :func:`math.prod` / the convention used in manifest
+    expressions such as ``product(x.shape[:-1])`` when ``x.ndim == 1``).
+    """
+    return _math_prod(iterable)
+
+
+# Builtins exposed to roofline.vars expressions. Kept small and explicit so
+# the evaluation context is auditable and cannot reach arbitrary globals.
+_ROOFLINE_VARS_BUILTINS: dict[str, Any] = {
+    "product": _product,
+    "isinstance": isinstance,
+    "len": len,
+    "set": set,
+    "tuple": tuple,
+    "list": list,
+    "range": range,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "type": type,
+    "min": min,
+    "max": max,
+    "sum": sum,
+    "abs": abs,
+    "log2": math.log2,
+    "ceil": math.ceil,
+    "floor": math.floor,
+}
+
+
+def resolve_roofline_vars(
+    op_name: str,
+    tensor_shapes: dict[str, tuple[int, ...]],
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate ``roofline.vars`` expressions for *op_name* against real inputs.
+
+    Parameters
+    ----------
+    op_name:
+        Manifest key for the op (e.g. ``"SumFwdOp"``).
+    tensor_shapes:
+        Mapping from tensor name (as declared in ``signature.inputs``) to the
+        concrete ``shape`` tuple. Each shape is exposed to the expression as
+        ``<name>.shape`` / ``<name>.ndim`` via a ``SimpleNamespace``.
+    params:
+        Optional mapping of op param names to their concrete values (e.g.
+        ``{"dim": 0, "keepdim": False}``). Param defaults declared in the
+        manifest ``signature.params`` are filled in for any key not supplied.
+
+    Returns
+    -------
+    dict
+        Mapping from var name (as declared in ``roofline.vars``) to the
+        evaluated scalar value.
+
+    Notes
+    -----
+    The evaluator uses Python's :func:`eval` with a restricted ``globals``
+    dict (no ``__builtins__``; only whitelisted helpers such as ``product``,
+    ``isinstance``, ``len``, ``set``, ``range``) and a fresh ``locals`` dict
+    populated from ``tensor_shapes`` + ``params``. The manifest is
+    project-owned data; expressions cannot originate from untrusted input.
+    """
+    ops = _load_manifest()
+    if op_name not in ops:
+        raise KeyError(f"op '{op_name}' not found in ops_manifest.yaml")
+
+    entry = ops[op_name]
+    roofline = entry.get("roofline", {})
+    vars_decl = roofline.get("vars")
+    if not isinstance(vars_decl, dict) or not vars_decl:
+        raise ValueError(
+            f"op '{op_name}' has no 'roofline.vars' mapping; cannot resolve "
+            "variables from manifest"
+        )
+
+    # Build locals namespace: tensor.shape objects + params (with defaults).
+    eval_locals: dict[str, Any] = {}
+    for tname, shape in tensor_shapes.items():
+        shape_tuple = tuple(shape)
+        eval_locals[tname] = SimpleNamespace(
+            shape=shape_tuple, ndim=len(shape_tuple)
+        )
+
+    # Fill param defaults from manifest, then override with caller params.
+    sig_params = entry.get("signature", {}).get("params", {})
+    if isinstance(sig_params, dict):
+        for pname, pspec in sig_params.items():
+            if isinstance(pspec, dict) and "default" in pspec:
+                eval_locals[pname] = pspec["default"]
+    if params:
+        for k, v in params.items():
+            eval_locals[k] = v
+
+    # Merge tensor bindings + params + whitelisted helpers into a single
+    # namespace and pass it as *globals* to ``eval``. Using a unified
+    # namespace (rather than a separate locals dict) is required because
+    # Python's generator expressions and set/dict comprehensions create an
+    # inner function scope that can only see *globals*, not outer locals —
+    # and the manifest expressions rely heavily on genexps / comprehensions
+    # (e.g. ``product(x.shape[i] for i in range(x.ndim) if ...)``).
+    eval_namespace: dict[str, Any] = {
+        "__builtins__": {},
+        **_ROOFLINE_VARS_BUILTINS,
+        **eval_locals,
+    }
+
+    resolved: dict[str, Any] = {}
+    for var_name, expr in vars_decl.items():
+        if not isinstance(expr, str):
+            raise ValueError(
+                f"op '{op_name}': roofline.vars[{var_name!r}] must be a "
+                f"string expression, got {type(expr).__name__}"
+            )
+        try:
+            value = eval(  # noqa: S307 -- restricted globals, project-owned expr
+                expr, eval_namespace
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to evaluate roofline.vars[{var_name!r}] for "
+                f"'{op_name}': {expr!r} with locals={eval_locals}"
+            ) from exc
+        resolved[var_name] = value
+
+    return resolved

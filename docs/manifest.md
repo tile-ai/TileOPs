@@ -511,6 +511,58 @@ def test_rms_norm_bench(m, n, dtype, tune): ...
 flops, mem_bytes = eval_roofline(_OP_NAME, M=m, N=n, elem_bytes=elem_bytes)
 ```
 
+### Workload entry schema
+
+Each entry under `workloads:` is a mapping. Three keys are reserved by the
+benchmark harness; everything else is treated as an **op-call parameter** and
+forwarded to `resolve_roofline_vars()` when the entry drives a benchmark:
+
+| Key             | Required | Meaning                                                                                                  |
+| --------------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `x_shape`       | yes      | Input tensor shape (list of ints).                                                                       |
+| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
+| `label`         | no       | Human-readable id used in the pytest param id and report tables.                                         |
+| *any other key* | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
+
+Example — parametrizing a reduction workload over a non-last `dim`:
+
+```yaml
+workloads:
+  - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: -1, label: "reduce-last"}
+  - {x_shape: [2048, 4096], dtypes: [bfloat16], dim:  0, label: "reduce-first"}
+```
+
+### Manifest-driven roofline variables
+
+`ManifestBenchmark` evaluates the op's declared `roofline.vars` expressions
+against the concrete workload shape and op params, so M/N for non-last-axis
+or multi-axis reductions match what the op is actually called with (instead
+of a last-axis heuristic):
+
+```python
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
+
+
+# include_extra=True yields (shape, dtype, op_params) triples where
+# op_params carries any extra keys declared on the workload entry.
+@pytest.mark.parametrize(
+    "shape, dtype, op_params", workloads_to_params("SumFwdOp", include_extra=True)
+)
+def test_sum_bench(shape, dtype, op_params):
+    test = SumTest(shape, dtype)
+    bm = ManifestBenchmark("SumFwdOp", test, op_params=op_params)
+    # bm._roofline_vars() now resolves M/N from manifest.roofline.vars
+    # using op_params["dim"], op_params.get("keepdim"), etc.
+    ...
+```
+
+The expression evaluator exposes `product`, `isinstance`, `len`, `set`,
+`tuple`, `list`, `range`, `int`, `float`, `bool`, `type`, `min`, `max`,
+`sum`, `abs`, `log2`, `ceil`, `floor` — sufficient for the set/dict
+comprehensions used in reduction `vars`. Expressions run with
+`__builtins__` stripped, so `__import__` and similar escapes are
+unavailable.
+
 ## Manifest Validation
 
 [`scripts/validate_manifest.py`](../scripts/validate_manifest.py) runs five levels:
