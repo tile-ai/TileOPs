@@ -71,6 +71,12 @@ def is_hopper():
     return torch.cuda.get_device_capability() == (9, 0)
 
 
+def is_h200():
+    if not torch.cuda.is_available():
+        return False
+    return "H200" in torch.cuda.get_device_name().upper()
+
+
 def get_sm_version():
     major, minor = torch.cuda.get_device_capability()
     return major * 10 + minor
