@@ -830,7 +830,12 @@ class TestInferShapeParity:
     """L2 extension: ``_infer_output_shapes`` output must satisfy shape_rules."""
 
     def test_no_override_skipped(self, validator):
-        """Ops without a ``_infer_output_shapes`` override produce no errors."""
+        """Ops without a ``_infer_output_shapes`` override produce no errors.
+
+        The check still surfaces the missing manifest-derived method as a
+        warning (see ``test_no_override_emits_missing_method_warning``);
+        this test pins the no-hard-error behaviour.
+        """
         from tileops.ops.op_base import Op
 
         class BareOp(Op):
@@ -849,6 +854,127 @@ class TestInferShapeParity:
             },
         }
         assert validator.check_l2_infer_parity("BareOp", entry, BareOp) == []
+
+    def test_no_override_emits_missing_method_warning(self, validator):
+        """F002 regression: missing override must not pass silently.
+
+        Implemented ops whose class does not yet define
+        ``_infer_output_shapes`` must surface a warning naming the gap.
+        Silently skipping every such op would make the parity check
+        vacuous on the current manifest (no op currently overrides this
+        method).
+        """
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "BareOp", entry, BareOp, warnings=warnings,
+        )
+        assert errors == []
+        assert any(
+            "does not override _infer_output_shapes" in w for w in warnings
+        ), (
+            f"Expected missing-method warning when implemented op lacks "
+            f"the codegen-derived method, got: {warnings}"
+        )
+
+    def test_no_override_opt_out_suppresses_warning(self, validator):
+        """F002: parity_opt_out: [shape_parity] suppresses the warning.
+
+        Documented GPU-only ops can opt out of shape parity via a
+        manifest flag.
+        """
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "parity_opt_out": ["shape_parity"],
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "BareOp", entry, BareOp, warnings=warnings,
+        )
+        assert errors == []
+        assert not any(
+            "does not override _infer_output_shapes" in w for w in warnings
+        ), warnings
+
+    def test_symbolic_dim_rule_detects_wrong_output(self, validator):
+        """F001 regression: rules like ``o.shape == (B, S, H, D)`` must fire.
+
+        The MultiHeadAttentionFwdOp-style manifest rule references
+        symbolic dimension names (B, S, H, D) declared only via literal
+        ``tensor.shape == (...)`` rules. Without binding those names into
+        the evaluation context, the rule raised NameError and the
+        validator silently downgraded it to a warning — meaning a
+        genuinely wrong ``_infer_output_shapes`` (e.g. returning a 1-D
+        shape instead of a 4-D shape) could pass parity.
+        """
+        def infer(self, q_shape, k_shape, v_shape):
+            # Wrong: returns a 1-D shape instead of a 4-D shape.
+            return {"o": (999,)}
+
+        cls = _make_op_cls_with_infer(infer, name="BadMHA")
+        entry = {
+            "signature": {
+                "inputs": {
+                    "q": {"dtype": "float16"},
+                    "k": {"dtype": "float16"},
+                    "v": {"dtype": "float16"},
+                },
+                "outputs": {"o": {"dtype": "float16"}},
+                "shape_rules": [
+                    "q.shape == (B, S, H, D)",
+                    "k.shape == (B, S, H, D)",
+                    "v.shape == (B, S, H, D)",
+                    "o.shape == (B, S, H, D)",
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "BadMHA", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "_infer_output_shapes output violates" in e and "o.shape" in e
+            for e in errors
+        ), (
+            f"Expected symbolic-dim rule to evaluate and flag mismatch, "
+            f"got errors={errors} warnings={warnings}"
+        )
+        assert not any(
+            "could not be evaluated" in w for w in warnings
+        ), (
+            f"Symbolic dim names must be bound into ctx, not reported as "
+            f"NameError: {warnings}"
+        )
 
     def test_no_cls_skipped(self, validator):
         entry = {"signature": {"shape_rules": ["y.shape == x.shape"]}}
@@ -1103,6 +1229,61 @@ class TestValidateDtypesParity:
             },
         }
         assert validator.check_l3_validate_dtypes_parity("Bare", entry, BareOp) == []
+
+    def test_no_override_emits_missing_method_warning(self, validator):
+        """F002 regression: missing override must not pass silently on L3."""
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "BareOp", entry, BareOp, warnings=warnings,
+        )
+        assert errors == []
+        assert any(
+            "does not override _validate_dtypes" in w for w in warnings
+        ), warnings
+
+    def test_no_override_opt_out_suppresses_warning(self, validator):
+        """F002: parity_opt_out: [dtype_parity] suppresses the warning."""
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "parity_opt_out": ["dtype_parity"],
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "BareOp", entry, BareOp, warnings=warnings,
+        )
+        assert errors == []
+        assert not any(
+            "does not override _validate_dtypes" in w for w in warnings
+        ), warnings
 
     def test_union_accept_all_passes(self, validator):
         import torch

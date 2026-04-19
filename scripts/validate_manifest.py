@@ -909,12 +909,16 @@ def _extract_shape_tuple_literals(rules: list) -> dict[str, int]:
 
 def _mock_input_shapes(
     sig: dict,
-) -> dict[str, _MockShape] | None:
+) -> tuple[dict[str, _MockShape], dict[str, int]] | None:
     """Derive concrete mock input shapes for every declared input.
 
     Uses rank hints from ``shape_rules`` (literal ``tensor.shape == (...)``
     forms). Falls back to a default 2D shape when the rank is unknown.
-    Returns None only if ``signature.inputs`` is malformed.
+    Returns (shapes, dim_sizes) where ``dim_sizes`` maps each symbolic
+    dimension name (e.g. ``B``, ``S``, ``H``, ``D``) to the integer size
+    used in the mock shapes, so callers can bind those names into a
+    shape_rules evaluation context. Returns None only if
+    ``signature.inputs`` is malformed.
     """
     inputs = sig.get("inputs")
     if not isinstance(inputs, dict) or not inputs:
@@ -965,7 +969,7 @@ def _mock_input_shapes(
         shapes[name] = _MockShape(
             (_MOCK_DIM_SIZE, _MOCK_DIM_SIZE)
         )
-    return shapes
+    return shapes, dim_sizes
 
 
 def _param_defaults(params: dict) -> dict:
@@ -980,6 +984,23 @@ def _param_defaults(params: dict) -> dict:
         if isinstance(pattrs, dict) and "default" in pattrs:
             out[pname] = pattrs["default"]
     return out
+
+
+def _parity_opted_out(entry: dict, check: str) -> bool:
+    """Return True when the manifest entry opts out of *check*.
+
+    Recognises two shapes for the ``parity_opt_out`` field:
+      - ``parity_opt_out: true`` — opt out of every parity check.
+      - ``parity_opt_out: [shape_parity, dtype_parity]`` — opt out of
+        specific checks only.
+
+    Used for documented GPU-only ops where the manifest-derived method
+    cannot be invoked from a CPU-only validator context.
+    """
+    opt = entry.get("parity_opt_out")
+    if opt is True:
+        return True
+    return bool(isinstance(opt, list) and check in opt)
 
 
 def _class_overrides_method(cls: type, name: str) -> bool:
@@ -1071,9 +1092,16 @@ def check_l2_infer_parity(
     into a shape_rules evaluation context and verifies every rule holds.
 
     Behaviour:
-      - Silently skips ops whose class does not override
-        ``_infer_output_shapes`` — this lets the validator coexist with
-        ops that have not yet been migrated to the codegen protocol.
+      - For implemented ops whose class does not override
+        ``_infer_output_shapes``, emits a warning reporting the missing
+        manifest-derived method. The parity check itself is skipped
+        because there is no concrete method to compare against, but the
+        gap is surfaced (no silent pass).
+      - Honors ``parity_opt_out: [shape_parity]`` (or a bare
+        ``parity_opt_out: true``) declared in the manifest entry — used
+        for documented GPU-only cases where the method cannot be called
+        outside a GPU context. Opt-out suppresses the missing-method
+        warning entirely.
       - Skips ops whose ``_infer_output_shapes`` raises during the call
         (e.g. method expects GPU-only state); emits a warning instead.
       - Produces L2 errors only for concrete disagreement: the method
@@ -1089,15 +1117,24 @@ def check_l2_infer_parity(
         return errors
 
     if not _class_overrides_method(cls, "_infer_output_shapes"):
+        if not _parity_opted_out(entry, "shape_parity") and warnings is not None:
+            warnings.append(
+                f"[shape] {op_name}: class does not override "
+                f"_infer_output_shapes — manifest-derived method not yet "
+                f"generated; parity check skipped. Declare "
+                f"'parity_opt_out: [shape_parity]' on the manifest entry "
+                f"to suppress this warning for documented GPU-only ops."
+            )
         return errors
 
     infer_fn = getattr(cls, "_infer_output_shapes", None)
     if infer_fn is None:
         return errors
 
-    mock_shapes = _mock_input_shapes(sig)
-    if mock_shapes is None:
+    mock = _mock_input_shapes(sig)
+    if mock is None:
         return errors
+    mock_shapes, dim_sizes = mock
 
     params = sig.get("params") or {}
     param_defaults = _param_defaults(params)
@@ -1139,8 +1176,14 @@ def check_l2_infer_parity(
                 f"{out_name!r} (declared in manifest)"
             )
 
-    # Assemble evaluation context: inputs + outputs + params.
-    ctx: dict = dict(param_defaults)
+    # Assemble evaluation context: symbolic dims + inputs + outputs +
+    # params. Symbolic dim names (e.g. B, S, H, D extracted from literal
+    # shape_rules like ``q.shape == (B, S, H, D)``) are bound first so
+    # param / tensor names later in the dict take precedence on any
+    # accidental collision.
+    ctx: dict = {}
+    ctx.update(dim_sizes)
+    ctx.update(param_defaults)
     for name, shape in mock_shapes.items():
         ctx[name] = _MockShape(shape)
     # Input-only context (no inferred outputs) is used to detect rules
@@ -1333,14 +1376,25 @@ def check_l3_validate_dtypes_parity(
     Without ``dtype_combos``: verify every combination in the Cartesian
     product of each input's declared dtype union is accepted.
 
-    Silently skips ops whose class does not override ``_validate_dtypes``
-    (bootstrap-friendly — ops not yet migrated are ignored).
+    For ops whose class does not override ``_validate_dtypes``, emits a
+    warning reporting the missing manifest-derived method (no silent
+    pass). Honors ``parity_opt_out: [dtype_parity]`` (or a bare
+    ``parity_opt_out: true``) declared in the manifest entry to suppress
+    the warning for documented GPU-only cases.
     """
     errors: list[str] = []
     if cls is None:
         return errors
 
     if not _class_overrides_method(cls, "_validate_dtypes"):
+        if not _parity_opted_out(entry, "dtype_parity") and warnings is not None:
+            warnings.append(
+                f"[dtype] {op_name}: class does not override "
+                f"_validate_dtypes — manifest-derived method not yet "
+                f"generated; parity check skipped. Declare "
+                f"'parity_opt_out: [dtype_parity]' on the manifest entry "
+                f"to suppress this warning for documented GPU-only ops."
+            )
         return errors
 
     sig = entry.get("signature", {})
