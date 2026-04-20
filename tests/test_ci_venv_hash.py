@@ -146,6 +146,44 @@ def test_fallback_matches_full_file_hash_shape(tmp_path: Path) -> None:
     assert a == b
 
 
+def test_hash_stable_when_dependencies_reordered(tmp_path: Path) -> None:
+    """Pure reordering of ``[project].dependencies`` must NOT change the hash.
+
+    ``pip install`` is order-insensitive, so swapping two dep entries installs
+    the same wheels and must share a venv cache key.
+    """
+    base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
+    reordered = BASE_PYPROJECT.replace(
+        '    "torch>=2.1.0",\n    "tilelang==0.1.8",',
+        '    "tilelang==0.1.8",\n    "torch>=2.1.0",',
+    )
+    new = CI_VENV_HASH.compute(_write(tmp_path, reordered))
+    assert new == base, "reordering runtime deps must not invalidate the venv"
+
+
+def test_hash_stable_when_optional_dependencies_reordered(tmp_path: Path) -> None:
+    """Pure reordering inside a ``[project.optional-dependencies]`` extra
+    list must NOT change the hash."""
+    base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
+    reordered = BASE_PYPROJECT.replace(
+        'dev = ["pytest>=8.0", "ruff==0.14.13"]',
+        'dev = ["ruff==0.14.13", "pytest>=8.0"]',
+    )
+    new = CI_VENV_HASH.compute(_write(tmp_path, reordered))
+    assert new == base, "reordering dev extras must not invalidate the venv"
+
+
+def test_hash_stable_when_build_system_requires_reordered(tmp_path: Path) -> None:
+    """Pure reordering of ``[build-system].requires`` must NOT change the hash."""
+    base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
+    reordered = BASE_PYPROJECT.replace(
+        'requires = ["setuptools>=68", "wheel"]',
+        'requires = ["wheel", "setuptools>=68"]',
+    )
+    new = CI_VENV_HASH.compute(_write(tmp_path, reordered))
+    assert new == base, "reordering build requires must not invalidate the venv"
+
+
 def test_hash_stable_when_project_version_changes(tmp_path: Path) -> None:
     """Metadata-only edits to ``[project].version`` must NOT change the hash."""
     base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))

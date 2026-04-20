@@ -59,6 +59,29 @@ _PROJECT_DEP_FIELDS = (
 )
 
 
+def _canonicalize(value):
+    """Recursively sort dependency-like string lists so pure reordering of
+    entries (e.g. swapping two items in ``[project].dependencies``) does not
+    change the hash. Order-sensitive structures (dicts, non-string lists) are
+    preserved as-is apart from descending into their children.
+
+    Rationale: ``pip install`` is order-insensitive for a requirements list,
+    so two pyproject files that differ only by list order install the same
+    wheels and must share a venv cache key.
+    """
+    if isinstance(value, list):
+        canon = [_canonicalize(v) for v in value]
+        # Only sort when every element is a string — this covers the
+        # dependency-list shape (``["torch>=2.1", "tilelang==0.1.8", ...]``)
+        # without reordering structured lists where position may matter.
+        if all(isinstance(v, str) for v in canon):
+            return sorted(canon)
+        return canon
+    if isinstance(value, dict):
+        return {k: _canonicalize(v) for k, v in value.items()}
+    return value
+
+
 def _narrow_hash(data: dict) -> str:
     """Hash only the dependency-relevant sections of a parsed pyproject."""
     project = data.get("project", {}) or {}
@@ -67,7 +90,8 @@ def _narrow_hash(data: dict) -> str:
         "project": project_deps,
         "build-system": data.get("build-system", {}),
     }
-    payload = json.dumps(relevant, sort_keys=True).encode("utf-8")
+    canonical = _canonicalize(relevant)
+    payload = json.dumps(canonical, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:HASH_LEN]
 
 
