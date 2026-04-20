@@ -6,6 +6,11 @@ import torch
 from tests.test_base import _check_result
 
 
+def _under_repo_tests(item: pytest.Item) -> bool:
+    path = str(item.path)
+    return "tests/" in path and "benchmarks/tests/" not in path
+
+
 @pytest.fixture(autouse=True)
 def setup() -> None:
     torch.manual_seed(1235)
@@ -48,8 +53,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     tier_names = ("smoke", "full", "nightly")
 
     for item in items:
-        path = str(item.path)
-        if "tests/" not in path:
+        if not _under_repo_tests(item):
             continue
         tiers = [name for name in tier_names if item.get_closest_marker(name) is not None]
         if len(tiers) != 1:
@@ -60,7 +64,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     ops_groups: dict[tuple[str, str], list[pytest.Item]] = defaultdict(list)
     for item in items:
         path = str(item.path)
-        if "tests/ops/" not in path:
+        if "tests/ops/" not in path or "benchmarks/tests/" in path:
             continue
         test_name = getattr(item, "originalname", item.name)
         ops_groups[(path, test_name)].append(item)

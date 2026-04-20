@@ -131,7 +131,7 @@ known-first-party = ["tileops"]
 "tileops/ops/reduction/__init__.py" = ["RUF022"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "benchmarks/tests"]
 python_files = ["test_*.py", "bench_*.py"]
 markers = [
     "smoke: fast PR critical-path tests",
