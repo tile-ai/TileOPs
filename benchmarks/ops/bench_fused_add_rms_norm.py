@@ -56,7 +56,7 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
     bm = FusedAddRMSNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = FusedAddRMSNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)
+    op = FusedAddRMSNormFwdOp(N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

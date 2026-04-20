@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, Hashable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -28,7 +28,7 @@ class AdaLayerNormFwdOp(Op):
             + \\epsilon}} + d
 
     where *s* (scale) and *d* (shift) are per-token tensors of shape
-    ``(M, N)``, pre-computed by the caller from a conditioning signal.
+    ``(*leading, N)``, pre-computed by the caller from a conditioning signal.
     Linear projection from the conditioning input to scale/shift is the
     caller's responsibility.
 
@@ -41,8 +41,8 @@ class AdaLayerNormFwdOp(Op):
         by padding to 256-element alignment.
 
     Args:
-        M: Number of rows (product of all dims except the last).
-        N: Hidden dimension (last dim).
+        N: Hidden dimension (last dim). Committed at construction per
+            manifest ``static_dims``; forward validates ``x.shape[-1] == N``.
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
         eps: Epsilon for numerical stability.
@@ -52,26 +52,42 @@ class AdaLayerNormFwdOp(Op):
 
     def __init__(
         self,
-        M: int,
+        *,
         N: int,
         dtype: torch.dtype,
         eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
         self.N = N
         self.dtype = dtype
         self.eps = eps
+        self._tune = tune
         self.N_padded = _align_up(N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["ada_layer_norm"](
-            M, N, eps, dtype, has_gate=False, tune=tune,
-        )
+        self._kernel_cache: Dict[Hashable, Kernel] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"ada_layer_norm": AdaLayerNormKernel}
+
+    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+        """Kernel cache key: the (M,) product of leading dims of ``x``."""
+        x_shape = input_shapes[0]
+        M = 1
+        for s in x_shape[:-1]:
+            M *= s
+        return (M,)
+
+    def _get_or_create_kernel(self, M: int) -> Kernel:
+        key = (M,)
+        kernel = self._kernel_cache.get(key)
+        if kernel is None:
+            kernel = self.kernel_map["ada_layer_norm"](
+                M, self.N, self.eps, self.dtype, has_gate=False, tune=self._tune,
+            )
+            self._kernel_cache[key] = kernel
+        return kernel
 
     def forward(
         self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor,
@@ -108,6 +124,7 @@ class AdaLayerNormFwdOp(Op):
             raise ValueError(
                 f"Expected shift.dtype {self.dtype}, got {shift.dtype}"
             )
+        # static_dims validation: x.shape[-1] == N (committed at ctor).
         if x.shape[-1] != self.N:
             raise ValueError(
                 f"Expected hidden dim {self.N}, got {x.shape[-1]}"
@@ -117,11 +134,8 @@ class AdaLayerNormFwdOp(Op):
         x = x.contiguous().reshape(-1, self.N)
         scale = scale.contiguous().reshape(-1, self.N)
         shift = shift.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
-            raise ValueError(
-                f"Expected M={self.M} (product of leading dims), got {M_actual}"
-            )
+        M = x.shape[0]
+        kernel = self._get_or_create_kernel(M)
 
         # Pad hidden dim to 256-element alignment if needed
         if self.N_padded != self.N:
@@ -129,7 +143,7 @@ class AdaLayerNormFwdOp(Op):
             scale = F.pad(scale, (0, self.N_padded - self.N))
             shift = F.pad(shift, (0, self.N_padded - self.N))
 
-        y = self.kernel(x, scale, shift)
+        y = kernel(x, scale, shift)
 
         # Trim padding
         if self.N_padded != self.N:

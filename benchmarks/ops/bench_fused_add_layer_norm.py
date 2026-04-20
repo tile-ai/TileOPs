@@ -49,7 +49,7 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
     bm = FusedAddLayerNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = FusedAddLayerNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)
+    op = FusedAddLayerNormFwdOp(N=n, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

@@ -56,7 +56,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @AdaLayerNormFixture
 def test_ada_layer_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormTest(m, n, dtype)
-    op = AdaLayerNormFwdOp(M=m, N=n, dtype=dtype)
+    op = AdaLayerNormFwdOp(N=n, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -78,8 +78,7 @@ def test_ada_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype
     scale = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
     shift = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
 
-    M = batch * seq
-    op = AdaLayerNormFwdOp(M=M, N=hidden, dtype=dtype)
+    op = AdaLayerNormFwdOp(N=hidden, dtype=dtype)
 
     # Reference: scale * LayerNorm(x) + shift
     eps = 1e-5

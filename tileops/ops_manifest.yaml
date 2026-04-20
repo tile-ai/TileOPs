@@ -89,7 +89,7 @@ ops:
   LayerNormFwdOp:
     ref_api: "torch.nn.functional.layer_norm"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -138,7 +138,7 @@ ops:
   AdaLayerNormFwdOp:
     ref_api: "none"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -183,7 +183,7 @@ ops:
   AdaLayerNormZeroFwdOp:
     ref_api: "none"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -230,7 +230,7 @@ ops:
   FusedAddLayerNormFwdOp:
     ref_api: "none"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -280,7 +280,7 @@ ops:
   FusedAddRMSNormFwdOp:
     ref_api: "none"
     family: normalization
-    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:

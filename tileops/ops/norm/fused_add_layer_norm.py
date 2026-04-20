@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, Hashable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -43,8 +43,8 @@ class FusedAddLayerNormFwdOp(Op):
         by padding to 256-element alignment.
 
     Args:
-        M: Number of rows (product of all dims except the last).
-        N: Hidden dimension (last dim).
+        N: Hidden dimension (last dim). Committed at construction per
+            manifest ``static_dims``; forward validates ``x.shape[-1] == N``.
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
         eps: Epsilon for numerical stability.
@@ -54,26 +54,42 @@ class FusedAddLayerNormFwdOp(Op):
 
     def __init__(
         self,
-        M: int,
+        *,
         N: int,
         dtype: torch.dtype,
         eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
         self.N = N
         self.dtype = dtype
         self.eps = eps
+        self._tune = tune
         self.N_padded = _align_up(N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["fused_add_layer_norm"](
-            M, N, eps, dtype, tune=tune,
-        )
+        self._kernel_cache: Dict[Hashable, Kernel] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"fused_add_layer_norm": FusedAddLayerNormKernel}
+
+    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+        """Kernel cache key: the (M,) product of leading dims of ``x``."""
+        x_shape = input_shapes[0]
+        M = 1
+        for s in x_shape[:-1]:
+            M *= s
+        return (M,)
+
+    def _get_or_create_kernel(self, M: int) -> Kernel:
+        key = (M,)
+        kernel = self._kernel_cache.get(key)
+        if kernel is None:
+            kernel = self.kernel_map["fused_add_layer_norm"](
+                M, self.N, self.eps, self.dtype, tune=self._tune,
+            )
+            self._kernel_cache[key] = kernel
+        return kernel
 
     def forward(
         self,
@@ -114,6 +130,7 @@ class FusedAddLayerNormFwdOp(Op):
             raise ValueError(
                 f"Expected bias to be 1D, got {bias.ndim}D"
             )
+        # static_dims validation: x.shape[-1] == N (committed at ctor).
         if x.shape[-1] != self.N:
             raise ValueError(
                 f"Expected hidden dim {self.N}, got {x.shape[-1]}"
@@ -134,11 +151,8 @@ class FusedAddLayerNormFwdOp(Op):
         orig_shape = x.shape
         x = x.contiguous().reshape(-1, self.N)
         residual = residual.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
-            raise ValueError(
-                f"Expected M={self.M} (product of leading dims), got {M_actual}"
-            )
+        M = x.shape[0]
+        kernel = self._get_or_create_kernel(M)
 
         # Pad hidden dim to 256-element alignment if needed
         if self.N_padded != self.N:
@@ -147,7 +161,7 @@ class FusedAddLayerNormFwdOp(Op):
             weight = F.pad(weight, (0, self.N_padded - self.N))
             bias = F.pad(bias, (0, self.N_padded - self.N))
 
-        y, residual_out = self.kernel(x, residual, weight, bias)
+        y, residual_out = kernel(x, residual, weight, bias)
 
         # Trim padding
         if self.N_padded != self.N:
