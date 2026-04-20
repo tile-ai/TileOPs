@@ -1234,6 +1234,80 @@ class TestInferShapeParity:
         assert reason is not None
         assert "dunder attribute access not permitted" in reason
 
+    def test_body_typeerror_not_reported_as_signature_mismatch(self, validator):
+        """TypeError raised inside _infer_output_shapes body must not be
+        misreported as a signature mismatch.
+
+        Regression: previously any TypeError from infer_fn — including
+        those raised by a buggy body (e.g. arithmetic on None) — was
+        labeled as ``signature does not match manifest inputs``. After
+        pre-binding the signature via ``inspect.signature().bind``, a
+        TypeError from the body surfaces as a parity-skip warning
+        instead.
+        """
+        def infer(self, x_shape):
+            # Signature matches; the body itself raises TypeError.
+            raise TypeError("simulated implementation bug")
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        assert not any(
+            "signature does not match manifest inputs" in e for e in errors
+        ), (
+            "Body TypeError must not be misreported as signature mismatch; "
+            f"errors={errors}"
+        )
+        assert any(
+            "parity skipped" in w and "TypeError" in w for w in warnings
+        ), (
+            "Body TypeError should surface as a parity-skip warning; "
+            f"warnings={warnings}"
+        )
+
+
+class TestDtypeOptionsHelper:
+    """Unit tests for ``_dtype_options_for_tensor`` unresolved-ref contract."""
+
+    def test_pure_same_as_unresolved_returns_none(self, validator):
+        """same_as(ref) with ref missing from ``resolved`` returns None.
+
+        Regression: previously returned [] which silently disabled
+        downstream dtype parity (``_resolve_tensor_dtype_options`` only
+        bails on None, and an empty list yields an empty Cartesian
+        product).
+        """
+        out = validator._dtype_options_for_tensor(
+            "y", "same_as(x)", resolved={},
+        )
+        assert out is None, (
+            f"Pure same_as(unresolved) must return None, got {out!r}"
+        )
+
+    def test_mixed_token_unresolved_returns_none(self, validator):
+        """``same_as(ref) | float32`` with unresolved ref returns None."""
+        out = validator._dtype_options_for_tensor(
+            "y", "same_as(x) | float32", resolved={},
+        )
+        assert out is None, (
+            f"Mixed same_as(unresolved) must return None, got {out!r}"
+        )
+
+    def test_pure_same_as_resolved_inherits_options(self, validator):
+        out = validator._dtype_options_for_tensor(
+            "y", "same_as(x)", resolved={"x": ["float16", "bfloat16"]},
+        )
+        assert out == ["float16", "bfloat16"]
+
 
 # ---------------------------------------------------------------------------
 # L3 extension: _validate_dtypes parity with dtype_combos / unions
@@ -1578,6 +1652,92 @@ class TestValidateDtypesParity:
         assert any(
             "exceeds _MAX_DTYPE_COMBOS" in w for w in warnings
         ), f"Expected over-bound skip warning, got: {warnings}"
+
+    def test_body_typeerror_is_rejection_not_signature_mismatch(self, validator):
+        """TypeError raised inside _validate_dtypes body is a legitimate
+        rejection, not a signature mismatch.
+
+        Regression: previously a bare ``except (ValueError, TypeError)``
+        could not distinguish between a kwarg-name mismatch (signature
+        error) and a TypeError raised inside the body (legitimate
+        rejection). The validator must pre-bind the signature and only
+        flag the former as a signature mismatch.
+        """
+        # Signature matches (``x`` kwarg), but the body raises TypeError
+        # on every call. This should be treated as a rejection of every
+        # combo drawn from the union, not a signature mismatch — which in
+        # turn means each Cartesian combo is reported as rejected.
+        def validate(self, x):
+            raise TypeError("dtype comparison not supported")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        # No signature-mismatch error.
+        assert not any(
+            "signature does not match manifest inputs" in e for e in errors
+        ), (
+            "Body-level TypeError must not be misreported as signature "
+            f"mismatch; errors={errors}"
+        )
+        # The body rejects every combo drawn from the union, so the
+        # no-dtype_combos branch reports each as a parity violation.
+        assert any(
+            "rejects valid combo" in e for e in errors
+        ), (
+            "Body TypeError should surface as a rejection of declared "
+            f"union combos; errors={errors}"
+        )
+
+    def test_dtype_combos_exhausts_union_emits_warning(self, validator):
+        """When dtype_combos covers every Cartesian tuple, the validator
+        emits the 'exhausts the union' warning even though no non-listed
+        combo was checked.
+
+        Regression: previously the warning fired only when
+        ``checked_any and not rejected_at_least_one`` — which is
+        impossible in the exhaustive case because every tuple hits the
+        ``listed_combo_keys`` continue path and ``checked_any`` stays
+        False.
+        """
+        def validate(self, x, w):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "float16", "w": "bfloat16"},
+                    {"x": "bfloat16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert any(
+            "exhausts the union" in w for w in warnings
+        ), (
+            "Validator must warn when dtype_combos covers every "
+            f"Cartesian combo; warnings={warnings}"
+        )
 
 
 # ---------------------------------------------------------------------------

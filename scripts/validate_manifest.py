@@ -1177,17 +1177,35 @@ def check_l2_infer_parity(
     mock_self = types.SimpleNamespace(**param_defaults)
 
     shape_kwargs = {f"{name}_shape": tuple(shape) for name, shape in mock_shapes.items()}
+    # First, validate the callable signature independently of the body: a
+    # TypeError from inspect.signature().bind is a genuine signature mismatch
+    # between the expected ``<input>_shape=`` kwargs and _infer_output_shapes.
+    # TypeErrors raised inside the body (e.g. arithmetic on None) must not be
+    # misreported as signature mismatch.
     try:
-        result = infer_fn(mock_self, **shape_kwargs)
+        inspect.signature(infer_fn).bind(mock_self, **shape_kwargs)
     except TypeError as exc:
-        # Signature mismatch between expected ``<input>_shape=`` kwargs and
-        # the op's ``_infer_output_shapes``; surface this as a parity error.
         errors.append(
             f"[shape] {op_name}: _infer_output_shapes signature does not match "
             f"manifest inputs (expected kwargs {sorted(shape_kwargs)}): {exc}"
         )
         return errors
     except Exception as exc:  # noqa: BLE001
+        # signature() itself failed (e.g. builtin without introspection) —
+        # skip parity rather than fabricating a signature error.
+        if warnings is not None:
+            warnings.append(
+                f"[shape] {op_name}: _infer_output_shapes parity skipped — "
+                f"inspect.signature raised {exc.__class__.__name__}: {exc}"
+            )
+        return errors
+
+    try:
+        result = infer_fn(mock_self, **shape_kwargs)
+    except Exception as exc:  # noqa: BLE001
+        # Signature is valid but the body raised. Treat as an
+        # implementation issue surfaced via warning (parity skipped) rather
+        # than a signature mismatch.
         if warnings is not None:
             warnings.append(
                 f"[shape] {op_name}: _infer_output_shapes parity skipped — "
@@ -1298,13 +1316,19 @@ def _dtype_options_for_tensor(
         m = _SAME_AS_RE.match(tokens[0])
         if m:
             ref = m.group(1)
-            return list(resolved.get(ref, []))
+            if ref not in resolved:
+                # Unresolved reference — propagate failure per docstring
+                # contract. Returning [] here would silently disable parity.
+                return None
+            return list(resolved[ref])
     out: list[str] = []
     for tok in tokens:
         m = _SAME_AS_RE.match(tok)
         if m:
             ref = m.group(1)
-            out.extend(resolved.get(ref, []))
+            if ref not in resolved:
+                return None
+            out.extend(resolved[ref])
         elif tok in _TORCH_DTYPES:
             out.append(tok)
         else:
@@ -1384,11 +1408,25 @@ def _combo_accepted(
         tensors[name] = t
 
     mock_self = types.SimpleNamespace(**param_defaults)
+    # Pre-bind the callable signature so only genuine signature mismatches
+    # surface as ``TypeError: ...``. TypeError raised from inside the body
+    # (e.g. comparing incompatible torch dtypes) is a legitimate rejection
+    # and must not be misreported as a signature mismatch.
+    try:
+        inspect.signature(validate_fn).bind(mock_self, **tensors)
+    except TypeError as exc:
+        return False, f"TypeError: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        # inspect.signature failed to introspect — treat as a skip.
+        return False, f"unexpected {exc.__class__.__name__}: {exc}"
+
     try:
         validate_fn(mock_self, **tensors)
-    except (ValueError, TypeError) as exc:
-        # Expected rejection path.
-        return False, None if isinstance(exc, ValueError) else f"TypeError: {exc}"
+    except (ValueError, TypeError):
+        # Body-level rejection: either an explicit ValueError or a
+        # TypeError arising from dtype comparisons. Both are legitimate
+        # rejections once the signature has been validated above.
+        return False, None
     except Exception as exc:  # noqa: BLE001
         return False, f"unexpected {exc.__class__.__name__}: {exc}"
     return True, None
@@ -1521,12 +1559,24 @@ def check_l3_validate_dtypes_parity(
                 f"[dtype] {op_name}: _validate_dtypes accepts non-listed "
                 f"combo {candidate!r} (not in dtype_combos)"
             )
-        if checked_any and not rejected_at_least_one and not errors \
-                and warnings is not None:
-            warnings.append(
-                f"[dtype] {op_name}: could not find a non-listed combo to "
-                f"exercise rejection (dtype_combos exhausts the union)"
-            )
+        if not errors and warnings is not None:
+            if not checked_any:
+                # No non-listed combo exists in the Cartesian product —
+                # dtype_combos already enumerates every reachable tuple.
+                warnings.append(
+                    f"[dtype] {op_name}: could not find a non-listed combo "
+                    f"to exercise rejection (dtype_combos exhausts the "
+                    f"union)"
+                )
+            elif not rejected_at_least_one:
+                # Non-listed combos were tried but none were rejected —
+                # either _validate_dtypes is too lax or every non-listed
+                # candidate was skipped (unexpected/TypeError).
+                warnings.append(
+                    f"[dtype] {op_name}: no non-listed dtype combo was "
+                    f"rejected by _validate_dtypes; parity coverage may be "
+                    f"incomplete"
+                )
     else:
         # No dtype_combos — verify every Cartesian combination is accepted.
         input_options = [
