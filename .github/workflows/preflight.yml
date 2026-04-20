@@ -84,13 +84,13 @@ jobs:
               .check_runs
               | group_by(.name)
               | map(max_by(.id))[]
-              | select(.name == "pre-commit" or .name == "gitleaks" or .name == "actionlint")
+              | select(.name == "pre-commit" or .name == "gitleaks" or .name == "actionlint" or .name == "benchmark-contract-tests")
               | .conclusion
             ]
           ')
           ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
           COUNT=$(echo "$CHECKS" | jq 'length')
-          if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 3 ]]; then
+          if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 4 ]]; then
             echo "CI already passed for SHA $HEAD_SHA; skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
