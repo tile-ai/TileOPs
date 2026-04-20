@@ -991,8 +991,9 @@ def _mock_input_shapes(
             if parts is not None and all(
                 re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p) for p in parts
             ):
-                shapes[name] = _MockShape(dim_sizes.get(p, _MOCK_DIM_SIZE)
-                                           for p in parts)
+                shapes[name] = _MockShape(
+                    dim_sizes.get(p, _MOCK_DIM_SIZE) for p in parts
+                )
                 continue
         # Fallback: 2D shape
         shapes[name] = _MockShape(
