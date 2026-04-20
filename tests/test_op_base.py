@@ -240,6 +240,26 @@ class TestSafeEval:
             _safe_eval("1 + True", {})
         assert "bool" in str(excinfo.value)
 
+    def test_rejects_bool_name_binding(self):
+        """Name lookup must reject a ``bool`` ctx binding (subclass of int)."""
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("x", {"x": True})
+        assert "bool" in str(excinfo.value)
+        assert "'x'" in str(excinfo.value)
+
+    def test_rejects_bool_name_binding_in_binop(self):
+        """``x + 1`` with ``x=True`` must not evaluate to ``2``."""
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("x + 1", {"x": True})
+        assert "bool" in str(excinfo.value)
+
+    def test_rejects_str_name_binding(self):
+        """Name lookup must reject a non-numeric (e.g. ``str``) binding."""
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("x", {"x": "3"})
+        assert "str" in str(excinfo.value)
+        assert "'x'" in str(excinfo.value)
+
 
 class TestBaseClassStubs:
     def test_infer_output_shapes_raises_not_implemented(self):

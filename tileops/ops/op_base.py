@@ -84,7 +84,17 @@ def _safe_eval(expr: str, ctx: Dict[str, Union[int, float]]) -> Union[int, float
             if node.id not in ctx:
                 raise ValueError(
                     f"undefined name {node.id!r} in roofline expression {expr!r}")
-            return ctx[node.id]
+            value = ctx[node.id]
+            # Mirror the Constant branch: ``bool`` is a subclass of ``int``,
+            # so explicitly reject it, then require int/float. This prevents
+            # non-numeric ctx bindings from bypassing the numeric-only
+            # contract via Name lookup.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"forbidden binding type {type(value).__name__} for name "
+                    f"{node.id!r} in roofline expression {expr!r}; "
+                    f"only int/float bindings are permitted")
+            return value
         if isinstance(node, ast.UnaryOp):
             operand = _walk(node.operand)
             if isinstance(node.op, ast.UAdd):
