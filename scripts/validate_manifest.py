@@ -860,9 +860,20 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 # Default mock sizes for symbolic shape dimensions. Chosen small to keep
-# evaluation cheap; 2 avoids degenerate cases (e.g. shape[0]==1 matching
-# scalar broadcasts) while staying small.
+# evaluation cheap; 4 avoids degenerate cases (e.g. shape[0]==1 matching
+# scalar broadcasts) while staying small. Distinct symbolic dims get
+# ``_MOCK_DIM_SIZE + counter`` so cross-tensor equality checks remain
+# meaningful (see ``_mock_input_shapes``).
 _MOCK_DIM_SIZE = 4
+
+# Safety bound for Cartesian-product enumeration in L3 dtype parity. A
+# pathological future op with many inputs × wide dtype unions could blow
+# CI budgets (each candidate allocates tiny tensors and invokes
+# _validate_dtypes). Current manifest maxes out at ~5 inputs × ~4 options
+# = 1024 combos, so this cap only fires on genuinely outsized specs; when
+# it does we skip the op deterministically with a warning rather than
+# sampling, so validation output stays reproducible.
+_MAX_DTYPE_COMBOS = 4096
 
 
 class _MockShape(tuple):
@@ -928,6 +939,11 @@ def _mock_input_shapes(
 
     shapes: dict[str, _MockShape] = {}
     # Assign dim-name → size map shared across tensors for consistent rules.
+    # Use a global counter keyed on first-seen order so distinct symbolic
+    # dims get distinct sizes across rules (e.g. rule1 ``x.shape == (A, B)``
+    # and rule2 ``y.shape == (C, D)`` produce A=4, B=5, C=6, D=7 rather than
+    # colliding A==C and B==D, which would spuriously satisfy cross-tensor
+    # equality checks).
     dim_sizes: dict[str, int] = {}
     shape_eq_re = re.compile(
         r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\s*==\s*\(([^)]*)\)\s*$"
@@ -940,11 +956,12 @@ def _mock_input_shapes(
             continue
         body = m.group(2)
         parts = [p.strip() for p in body.split(",") if p.strip()]
-        for i, p in enumerate(parts):
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p):
-                # Give each distinct symbolic dim a unique mock size so
-                # equality checks across tensors are still meaningful.
-                dim_sizes.setdefault(p, _MOCK_DIM_SIZE + i)
+        for p in parts:
+            if (
+                re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p)
+                and p not in dim_sizes
+            ):
+                dim_sizes[p] = _MOCK_DIM_SIZE + len(dim_sizes)
 
     for name in inputs:
         if name in ranks:
@@ -1061,6 +1078,23 @@ def _eval_shape_rule(
     too lets rules like ``all(d % x.ndim in ... for d in dim)`` resolve
     ``x`` and ``dim`` inside the generator expression.
     """
+    # Defense-in-depth: even though manifest content is trusted (PR review
+    # gates it), parse the rule first and reject any dunder attribute
+    # access. This closes the classic ``().__class__.__mro__[1].
+    # __subclasses__()`` sandbox-escape against the restricted builtins.
+    try:
+        tree = ast.parse(rule, mode="eval")
+    except SyntaxError as exc:
+        return False, f"eval error: SyntaxError: {exc}"
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and (
+            node.attr.startswith("__") or node.attr.endswith("__")
+        ):
+            return False, (
+                f"eval error: dunder attribute access not permitted "
+                f"({node.attr!r})"
+            )
+
     eval_globals = {"__builtins__": _SHAPE_RULE_BUILTINS}
     # Ctx names must be visible inside comprehensions, which only see
     # globals. Merge ctx into globals while keeping locals=ctx so plain
@@ -1448,6 +1482,20 @@ def check_l3_validate_dtypes_parity(
         input_options: list[list[str]] = [
             dtype_options.get(name, []) for name in forward_inputs
         ]
+        product_size = 1
+        for opts in input_options:
+            product_size *= max(len(opts), 1)
+        if product_size > _MAX_DTYPE_COMBOS:
+            if warnings is not None:
+                warnings.append(
+                    f"[dtype] {op_name}: Cartesian product of dtype "
+                    f"options ({product_size}) exceeds "
+                    f"_MAX_DTYPE_COMBOS={_MAX_DTYPE_COMBOS}; non-listed "
+                    f"rejection check skipped "
+                    f"({len(forward_inputs)} inputs × options "
+                    f"{[len(o) for o in input_options]})"
+                )
+            return errors
         listed_combo_keys = {
             tuple(combo.get(n) for n in forward_inputs)
             for combo in dtype_combos if isinstance(combo, dict)
@@ -1485,6 +1533,19 @@ def check_l3_validate_dtypes_parity(
             dtype_options.get(name, []) for name in forward_inputs
         ]
         if not all(input_options):
+            return errors
+        product_size = 1
+        for opts in input_options:
+            product_size *= len(opts)
+        if product_size > _MAX_DTYPE_COMBOS:
+            if warnings is not None:
+                warnings.append(
+                    f"[dtype] {op_name}: Cartesian product of dtype "
+                    f"options ({product_size}) exceeds "
+                    f"_MAX_DTYPE_COMBOS={_MAX_DTYPE_COMBOS}; parity check "
+                    f"skipped ({len(forward_inputs)} inputs × options "
+                    f"{[len(o) for o in input_options]})"
+                )
             return errors
         for tup in itertools.product(*input_options):
             # Only keep combos that honour same_as identity constraints:

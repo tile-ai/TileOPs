@@ -1191,6 +1191,49 @@ class TestInferShapeParity:
             "input-only precondition" in w for w in warnings
         ), f"Expected precondition-skip warning, got: {warnings}"
 
+    def test_mock_input_shapes_cross_tensor_dims_distinct(self, validator):
+        """Distinct symbolic dims across rules must get distinct mock sizes.
+
+        Regression for a latent correctness bug where a per-rule index
+        caused different symbolic dims to collide (e.g. ``A`` in rule
+        ``x.shape == (A, B)`` and ``C`` in rule ``y.shape == (C, D)``
+        both got assigned ``_MOCK_DIM_SIZE + 0``). A downstream rule
+        comparing ``x.shape[0]`` to ``y.shape[0]`` would then get a
+        spurious True / False depending on direction.
+        """
+        sig = {
+            "inputs": {"x": {}, "y": {}},
+            "shape_rules": [
+                "x.shape == (A, B)",
+                "y.shape == (C, D)",
+            ],
+        }
+        result = validator._mock_input_shapes(sig)
+        assert result is not None
+        shapes, dim_sizes = result
+        # Four distinct symbolic dims → four distinct mock sizes.
+        assert len({dim_sizes[k] for k in ("A", "B", "C", "D")}) == 4
+        # Corollary: the mock shapes of x and y disagree on the first
+        # dim, so a ``x.shape[0] == y.shape[0]`` rule would correctly
+        # evaluate False on mock inputs.
+        assert tuple(shapes["x"])[0] != tuple(shapes["y"])[0]
+
+    def test_eval_shape_rule_rejects_dunder_attr(self, validator):
+        """Shape-rule evaluator must reject dunder attribute access.
+
+        Defense-in-depth: manifest content is trusted (PR-gated), but
+        a classic sandbox-escape expression such as
+        ``().__class__.__mro__[1].__subclasses__()`` would bypass the
+        restricted builtins. The evaluator runs an AST filter that
+        rejects any attribute whose name starts or ends with ``__``.
+        """
+        ok, reason = validator._eval_shape_rule(
+            "().__class__ is None", {},
+        )
+        assert ok is False
+        assert reason is not None
+        assert "dunder attribute access not permitted" in reason
+
 
 # ---------------------------------------------------------------------------
 # L3 extension: _validate_dtypes parity with dtype_combos / unions
@@ -1499,6 +1542,42 @@ class TestValidateDtypesParity:
             "Signature mismatch must surface on dtype_combos branch too, "
             f"got errors={errors} warnings={warnings}"
         )
+
+    def test_cartesian_product_over_bound_skipped_with_warning(
+        self, validator, monkeypatch,
+    ):
+        """Enumerating every combo must stay within a configurable bound.
+
+        Guards against future ops that declare many inputs × wide dtype
+        unions from exploding CI wall-time. When the product exceeds
+        ``_MAX_DTYPE_COMBOS`` the op is skipped deterministically with
+        a warning naming input count × option sizes.
+        """
+        monkeypatch.setattr(validator, "_MAX_DTYPE_COMBOS", 4)
+
+        def _accept_all(self, **kwargs):
+            return None
+
+        cls = _make_op_cls_with_validate(_accept_all, name="WideDtypeOp")
+        entry = {
+            "signature": {
+                "inputs": {
+                    "a": {"dtype": "float16 | bfloat16 | float32"},
+                    "b": {"dtype": "float16 | bfloat16 | float32"},
+                },
+                "outputs": {"y": {"dtype": "same_as(a)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "WideDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            f"Over-bound enumeration should skip, not error: {errors}"
+        )
+        assert any(
+            "exceeds _MAX_DTYPE_COMBOS" in w for w in warnings
+        ), f"Expected over-bound skip warning, got: {warnings}"
 
 
 # ---------------------------------------------------------------------------
