@@ -161,5 +161,92 @@ def test_batch_norm_bwd(N, C, spatial, dtype):
     print("test_batch_norm_bwd passed: grad_x/weight/bias all match")
 
 
+@pytest.mark.smoke
+def test_batch_norm_bwd_input_validation():
+    """BatchNormBwdOp rejects inconsistent backward inputs in both the
+    user-facing ``forward`` path and the eager path used by the custom op
+    (``_eager_forward``)."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+
+    device = torch.device("cuda")
+    C = 4
+    dtype = torch.float16
+    op = BatchNormBwdOp(C=C, dtype=dtype)
+
+    def _good():
+        grad_out = torch.randn(2, C, 3, device=device, dtype=dtype)
+        x = torch.randn(2, C, 3, device=device, dtype=dtype)
+        weight = torch.randn(C, device=device, dtype=torch.float32)
+        mean = torch.randn(C, device=device, dtype=torch.float32)
+        rstd = torch.ones(C, device=device, dtype=torch.float32)
+        return grad_out, x, weight, mean, rstd
+
+    # Baseline: valid inputs must pass _validate_inputs (no raise).
+    op._validate_inputs(*_good())
+
+    # Case 1: x.shape != grad_out.shape — the exact bug from the finding.
+    grad_out, x, weight, mean, rstd = _good()
+    x_bad = torch.randn(1, C, 3, device=device, dtype=dtype)
+    with pytest.raises(ValueError, match="x.shape == grad_out.shape"):
+        op._validate_inputs(grad_out, x_bad, weight, mean, rstd)
+    with pytest.raises(ValueError, match="x.shape == grad_out.shape"):
+        op.forward(grad_out, x_bad, weight, mean, rstd)
+    # Eager path used by the custom op must validate consistently.
+    with pytest.raises(ValueError, match="x.shape == grad_out.shape"):
+        op._eager_forward(grad_out, x_bad, weight, mean, rstd)
+
+    # Case 2: grad_out not CUDA.
+    grad_out, x, weight, mean, rstd = _good()
+    with pytest.raises(ValueError, match="grad_out must be a CUDA tensor"):
+        op._validate_inputs(grad_out.cpu(), x, weight, mean, rstd)
+
+    # Case 3: grad_out dtype mismatch.
+    grad_out, x, weight, mean, rstd = _good()
+    grad_out_bad = grad_out.to(torch.float32)
+    with pytest.raises(ValueError, match="grad_out.dtype"):
+        op._validate_inputs(grad_out_bad, x, weight, mean, rstd)
+
+    # Case 4: grad_out.ndim < 2.
+    grad_out_1d = torch.randn(C, device=device, dtype=dtype)
+    x_1d = torch.randn(C, device=device, dtype=dtype)
+    _, _, weight, mean, rstd = _good()
+    with pytest.raises(ValueError, match="ndim >= 2"):
+        op._validate_inputs(grad_out_1d, x_1d, weight, mean, rstd)
+
+    # Case 5: channel dim mismatch.
+    grad_out_badc = torch.randn(2, C + 1, 3, device=device, dtype=dtype)
+    x_badc = torch.randn(2, C + 1, 3, device=device, dtype=dtype)
+    _, _, weight, mean, rstd = _good()
+    with pytest.raises(ValueError, match=f"Expected channel dim {C}"):
+        op._validate_inputs(grad_out_badc, x_badc, weight, mean, rstd)
+
+    # Case 6: x dtype mismatch.
+    grad_out, x, weight, mean, rstd = _good()
+    x_bad_dtype = x.to(torch.float32)
+    with pytest.raises(ValueError, match="x.dtype"):
+        op._validate_inputs(grad_out, x_bad_dtype, weight, mean, rstd)
+
+    # Case 7: weight wrong shape.
+    grad_out, x, weight, mean, rstd = _good()
+    weight_bad = torch.randn(C + 1, device=device, dtype=torch.float32)
+    with pytest.raises(ValueError, match=r"weight\.shape"):
+        op._validate_inputs(grad_out, x, weight_bad, mean, rstd)
+
+    # Case 8: mean wrong dtype (must be float32).
+    grad_out, x, weight, mean, rstd = _good()
+    mean_bad = mean.to(torch.float16)
+    with pytest.raises(ValueError, match=r"mean\.dtype"):
+        op._validate_inputs(grad_out, x, weight, mean_bad, rstd)
+
+    # Case 9: rstd wrong shape.
+    grad_out, x, weight, mean, rstd = _good()
+    rstd_bad = torch.ones(C + 2, device=device, dtype=torch.float32)
+    with pytest.raises(ValueError, match=r"rstd\.shape"):
+        op._validate_inputs(grad_out, x, weight, mean, rstd_bad)
+
+    print("test_batch_norm_bwd_input_validation passed")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

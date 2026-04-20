@@ -303,6 +303,80 @@ class BatchNormBwdOp(Op):
         t_cl, _ = _reshape_to_CL(t)
         return t_cl
 
+    def _validate_inputs(
+        self,
+        grad_out: torch.Tensor,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        mean: torch.Tensor,
+        rstd: torch.Tensor,
+    ) -> None:
+        """Validate device, dtype, ndim, and shape of all backward inputs.
+
+        Checks:
+          * ``grad_out`` is CUDA, dtype ``self.dtype``, ndim >= 2, and
+            ``grad_out.shape[1] == self.C`` (static_dims contract).
+          * ``x`` has the same shape and dtype as ``grad_out`` and resides
+            on the same CUDA device.
+          * ``weight``, ``mean``, ``rstd`` each have shape ``(self.C,)``
+            and reside on the same CUDA device as ``grad_out``.
+          * ``weight``, ``mean``, and ``rstd`` are ``torch.float32``
+            (``mean``/``rstd`` are produced by the forward training kernel;
+            ``weight`` is upcast to float32 before the backward kernel).
+        """
+        if not grad_out.is_cuda:
+            raise ValueError("grad_out must be a CUDA tensor")
+        if grad_out.dtype != self.dtype:
+            raise ValueError(
+                f"Expected grad_out.dtype {self.dtype}, got {grad_out.dtype}"
+            )
+        if grad_out.ndim < 2:
+            raise ValueError(
+                "Expected grad_out.ndim >= 2 (N, C, *spatial), got "
+                f"{grad_out.ndim}"
+            )
+        # static_dims validation: grad_out.shape[1] == C (committed at ctor).
+        if grad_out.shape[1] != self.C:
+            raise ValueError(
+                f"Expected channel dim {self.C}, got {grad_out.shape[1]}"
+            )
+
+        if not x.is_cuda or x.device != grad_out.device:
+            raise ValueError(
+                "x must be a CUDA tensor on the same device as grad_out"
+            )
+        if x.dtype != self.dtype:
+            raise ValueError(
+                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+            )
+        if tuple(x.shape) != tuple(grad_out.shape):
+            raise ValueError(
+                "Expected x.shape == grad_out.shape, got "
+                f"x.shape={tuple(x.shape)} vs "
+                f"grad_out.shape={tuple(grad_out.shape)}"
+            )
+
+        expected_c_shape = (self.C,)
+        for name, t, expected_dtype in (
+                ("weight", weight, torch.float32),
+                ("mean", mean, torch.float32),
+                ("rstd", rstd, torch.float32),
+        ):
+            if not t.is_cuda or t.device != grad_out.device:
+                raise ValueError(
+                    f"{name} must be a CUDA tensor on the same device as "
+                    "grad_out"
+                )
+            if tuple(t.shape) != expected_c_shape:
+                raise ValueError(
+                    f"Expected {name}.shape {expected_c_shape}, got "
+                    f"{tuple(t.shape)}"
+                )
+            if t.dtype != expected_dtype:
+                raise ValueError(
+                    f"Expected {name}.dtype {expected_dtype}, got {t.dtype}"
+                )
+
     def forward(
         self,
         grad_out: torch.Tensor,
@@ -333,11 +407,7 @@ class BatchNormBwdOp(Op):
             has the same shape as *x*, *grad_weight* has shape ``(C,)``,
             and *grad_bias* has shape ``(C,)``.
         """
-        # static_dims validation: grad_out.shape[1] == C (committed at ctor).
-        if grad_out.shape[1] != self.C:
-            raise ValueError(
-                f"Expected channel dim {self.C}, got {grad_out.shape[1]}"
-            )
+        self._validate_inputs(grad_out, x, weight, mean, rstd)
         orig_shape = grad_out.shape
         go_cl = self._prepare(grad_out)
         x_cl = self._prepare(x)
@@ -511,10 +581,7 @@ def _batchnorm_bwd_eager_forward(
     rstd: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Direct kernel call (no torch.compile wrapping)."""
-    if grad_out.shape[1] != self.C:
-        raise ValueError(
-            f"Expected channel dim {self.C}, got {grad_out.shape[1]}"
-        )
+    self._validate_inputs(grad_out, x, weight, mean, rstd)
     orig_shape = grad_out.shape
     go_cl = self._prepare(grad_out)
     x_cl = self._prepare(x)
