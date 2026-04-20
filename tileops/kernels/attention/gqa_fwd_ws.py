@@ -178,6 +178,9 @@ def _gqa_fwd_ws_persistent_kernel(
 
                 elif tx < 256:
                     T.inc_max_nreg(240)
+                    # Bootstrap the named-barrier carry state once per CTA.
+                    # Later sync_threads(barrier_id=1/2, arrive_count=256)
+                    # intentionally reuses that steady-state carryover protocol.
                     T.call_extern("handle", "tl::barrier_arrive_named", 1, 256)
                     for tile_b, tile_hkv, tile_m, tile_g in T.Persistent(
                         [batch, heads_kv, T.ceildiv(seq_len, block_m), groups],
