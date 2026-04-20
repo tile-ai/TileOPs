@@ -27,7 +27,7 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = ManifestBenchmark(_ARGMAX_OP, workload)
     inputs = workload.gen_inputs()
 
-    op = ArgmaxFwdOp(dtype=dtype)
+    op = ArgmaxFwdOp(N=shape[-1], dtype=dtype)
     # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
     #
     # Broken invariant: benchmark must execute all manifest workload shapes
@@ -60,7 +60,7 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = ManifestBenchmark(_ARGMIN_OP, workload)
     inputs = workload.gen_inputs()
 
-    op = ArgminFwdOp(dtype=dtype)
+    op = ArgminFwdOp(N=shape[-1], dtype=dtype)
     # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
     #
     # Broken invariant: benchmark must execute all manifest workload shapes

@@ -10,7 +10,7 @@ from the input tensor at forward time, and kernels are cached by
 """
 
 from math import prod
-from typing import Dict, List, Optional, Union
+from typing import Dict, Hashable, List, Optional, Tuple, Union
 
 import torch
 
@@ -42,14 +42,28 @@ class _SoftmaxBaseOp(Op):
     _kernel_class: type  # set by subclass
     _supports_multidim: bool = False  # override to True in reduced-dim ops (e.g. LogSumExpFwdOp)
 
+    # The manifest commits ``N = x.shape[dim]`` as a static axis for
+    # softmax/log_softmax; but ``dim`` is configurable at ctor, so the static
+    # axis position cannot be expressed as a compile-time (input_index, axis)
+    # pair.  ``_cache_key`` is overridden below to project directly onto ``(M,)``
+    # for same-shape ops (softmax/log_softmax) or ``(M, N)`` for LogSumExp
+    # (no static_dims, so N is dynamic).  ``_static_axes`` remains empty.
+    _static_axes = frozenset()
+
     def __init__(
         self,
         *,
+        N: Optional[int] = None,
         dtype: torch.dtype,
         dim: Union[int, List[int]] = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        # ``N`` captures the manifest ``static_dims`` commitment for
+        # subclasses whose reduction extent is known at construction
+        # (softmax, log_softmax, argmax, argmin). LogSumExp has no
+        # static_dims; it leaves ``N`` as ``None``.
+        self.N = N
         self.dtype = dtype
         self.dim = dim
         self.keepdim = False
@@ -116,6 +130,14 @@ class _SoftmaxBaseOp(Op):
             )
         dim = self.dim % x.ndim
 
+        # static_dims validation: when N is committed at ctor, the reduction
+        # extent along ``dim`` must match.
+        if self.N is not None and x.shape[dim] != self.N:
+            raise ValueError(
+                f"static_dim mismatch: expected x.shape[{dim}] == {self.N}, "
+                f"got {x.shape[dim]}"
+            )
+
         # N = size along reduction dim, M = product of all other dims.
         N = x.shape[dim]
         M = prod(s for i, s in enumerate(x.shape) if i != dim)
@@ -139,6 +161,28 @@ class _SoftmaxBaseOp(Op):
             y = y[:, :N] if y.ndim == 2 else y
 
         return self._reshape_output(y, orig_shape, dim, needs_transpose)
+
+    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+        """Kernel cache key projection.
+
+        When ``N`` is committed at ctor (softmax/log_softmax), the kernel
+        depends only on ``M`` (product of non-reduction dims); otherwise
+        (LogSumExp), both ``M`` and ``N`` drive kernel selection.
+        """
+        x_shape = input_shapes[0]
+        # Resolve reduction dim once — ``self.dim`` is an int here; multidim
+        # (LogSumExp) bypasses this code path via ``_kernel_cache`` keyed
+        # directly in ``_get_or_create_kernel``.
+        if isinstance(self.dim, int):
+            d = self.dim % len(x_shape)
+            M = prod(s for i, s in enumerate(x_shape) if i != d)
+            N = x_shape[d]
+        else:
+            # Multidim dim (tuple/list): fall back to full shape.
+            return tuple(x_shape)
+        if self.N is not None:
+            return (M,)
+        return (M, N)
 
     def _get_or_create_kernel(self, M: int, N: int, device_index: int | None = None) -> object:
         """Return a cached kernel for (M, N, device_index), creating one if needed."""

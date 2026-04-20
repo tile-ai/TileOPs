@@ -1424,7 +1424,7 @@ ops:
   SoftmaxFwdOp:
     ref_api: "torch.nn.functional.softmax"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -1467,7 +1467,7 @@ ops:
   LogSoftmaxFwdOp:
     ref_api: "torch.nn.functional.log_softmax"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -1510,7 +1510,7 @@ ops:
   LogSumExpFwdOp:
     ref_api: "torch.logsumexp"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -1903,7 +1903,7 @@ ops:
   ArgmaxFwdOp:
     ref_api: "torch.argmax"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -1946,7 +1946,7 @@ ops:
   ArgminFwdOp:
     ref_api: "torch.argmin"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:

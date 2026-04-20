@@ -2,7 +2,9 @@
 
 The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment,
 calls the kernel, and reshapes the output back. Output dtype is always int64.
-Kernels are cached by ``(M, N)`` so the same op instance handles varying shapes.
+Kernels are cached by ``(M, N)`` so the same op instance handles varying
+leading dims.  ``N`` is committed at construction per manifest
+``static_dims``; forward validates ``x.shape[dim] == N``.
 """
 
 from typing import Dict, Optional
@@ -20,11 +22,14 @@ __all__ = ["ArgminFwdOp"]
 class ArgminFwdOp(_ReduceOpBase):
     """Argmin reduction along an arbitrary dim, returning int64 indices.
 
-    Construction: ``ArgminFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
-    derived from the input tensor at forward time, and kernels are cached
-    by ``(M, N)`` to avoid rebuilds.
+    Construction: ``ArgminFwdOp(N=..., dtype=..., dim=-1, keepdim=False)``.
+    The reduction extent ``N`` is committed at construction per manifest
+    ``static_dims``; forward validates ``x.shape[dim] == N``.  Non-static
+    leading dimensions are derived from the input at forward time, and
+    kernels are cached by ``(M, N)`` to avoid rebuilds.
 
     Args:
+        N: Reduction-dim extent (``x.shape[dim]``).
         dtype: Input data type.
         dim: Reduction dimension (default -1).
         keepdim: Whether to retain the reduced dimension as size 1.
@@ -39,6 +44,7 @@ class ArgminFwdOp(_ReduceOpBase):
     def __init__(
         self,
         *,
+        N: int,
         dtype: torch.dtype,
         dim: int = -1,
         keepdim: bool = False,
@@ -46,7 +52,7 @@ class ArgminFwdOp(_ReduceOpBase):
         tune: bool = False,
     ):
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            N=N, dtype=dtype, dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 

@@ -38,7 +38,7 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = ManifestBenchmark(_SOFTMAX_OP, test)
     inputs = test.gen_inputs()
 
-    op = SoftmaxFwdOp(dtype=dtype, dim=-1, tune=True)
+    op = SoftmaxFwdOp(N=shape[-1], dtype=dtype, dim=-1, tune=True)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -65,7 +65,7 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = ManifestBenchmark(_LOG_SOFTMAX_OP, test)
     inputs = test.gen_inputs()
 
-    op = LogSoftmaxFwdOp(dtype=dtype, dim=-1, tune=True)
+    op = LogSoftmaxFwdOp(N=shape[-1], dtype=dtype, dim=-1, tune=True)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:

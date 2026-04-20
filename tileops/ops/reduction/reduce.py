@@ -13,7 +13,7 @@ varying shapes.
 """
 
 from math import prod
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Hashable, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -70,15 +70,28 @@ class _ReduceOpBase(Op):
     _kernel_cls: type = ReduceKernel  # overridden by subclasses for different kernel classes
     _kernel_handles_padding: bool = False  # True when kernel accepts (M, N) with masked loads
 
+    # ``dim`` is a ctor parameter, so the static reduction axis cannot be
+    # encoded as a compile-time (input_index, axis) pair.  ``_cache_key`` is
+    # overridden below to project onto ``(M,)`` when ``N`` is committed at
+    # ctor (argmax/argmin) and ``(M, N)`` otherwise (simple/Welford reduce
+    # ops with ``static_dims: None``).
+    _static_axes = frozenset()
+
     def __init__(
         self,
         *,
+        N: Optional[int] = None,
         dtype: torch.dtype,
         dim: Union[int, List[int], None] = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        # ``N`` captures the manifest ``static_dims`` commitment for
+        # subclasses whose reduction extent is known at construction
+        # (argmax, argmin). Simple/Welford reduce ops with
+        # ``static_dims: None`` leave ``N`` as ``None``.
+        self.N = N
         self.dtype = dtype
         self.dim = dim
         self.keepdim = keepdim
@@ -172,6 +185,23 @@ class _ReduceOpBase(Op):
     # Kernel cache
     # ------------------------------------------------------------------
 
+    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+        """Kernel cache key projection.
+
+        When ``N`` is committed at ctor (argmax/argmin), the kernel depends
+        only on ``M``; otherwise simple/Welford reduce ops key by both.
+        Multi-dim reduction falls back to the full shape.
+        """
+        x_shape = input_shapes[0]
+        if isinstance(self.dim, int):
+            d = self.dim % len(x_shape)
+            M = prod(s for i, s in enumerate(x_shape) if i != d)
+            N = x_shape[d]
+            if self.N is not None:
+                return (M,)
+            return (M, N)
+        return tuple(x_shape)
+
     def _get_or_create_kernel(self, M: int, N: int) -> object:
         """Return a cached kernel for (M, N), creating one if needed."""
         key = (M, N)
@@ -233,6 +263,14 @@ class _ReduceOpBase(Op):
                 f"[{-x.ndim}, {x.ndim - 1}], but got {self.dim})"
             )
         dim = self.dim % x.ndim
+
+        # static_dims validation: when N is committed at ctor, the reduction
+        # extent along ``dim`` must match.
+        if self.N is not None and x.shape[dim] != self.N:
+            raise ValueError(
+                f"static_dim mismatch: expected x.shape[{dim}] == {self.N}, "
+                f"got {x.shape[dim]}"
+            )
 
         N = x.shape[dim]
         M = prod(s for i, s in enumerate(x.shape) if i != dim)
