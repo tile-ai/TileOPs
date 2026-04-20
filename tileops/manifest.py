@@ -553,8 +553,9 @@ def resolve_roofline_vars(
         Manifest key for the op (e.g. ``"SumFwdOp"``).
     tensor_shapes:
         Mapping from tensor name (as declared in ``signature.inputs``) to the
-        concrete ``shape`` tuple. Each shape is exposed to the expression as
-        ``<name>.shape`` / ``<name>.ndim`` via a ``SimpleNamespace``.
+        concrete ``shape`` tuple. Each tensor name is bound directly in the
+        expression environment to a :class:`_ShapeProxy`, so expressions may
+        access only ``<name>.shape`` and ``<name>.ndim``.
     params:
         Optional mapping of op param names to their concrete values (e.g.
         ``{"dim": 0, "keepdim": False}``). Param defaults declared in the

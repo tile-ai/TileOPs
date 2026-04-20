@@ -563,8 +563,8 @@ def test_sum_bench(shape, dtype, op_params):
 ```
 
 The expression evaluator exposes `product`, `isinstance`, `len`, `set`,
-`tuple`, `list`, `range`, `int`, `float`, `bool`, `type`, `min`, `max`,
-`sum`, `abs`, `log2`, `ceil`, `floor` — sufficient for the set/dict
+`tuple`, `list`, `range`, `int`, `float`, `bool`, `min`, `max`, `sum`,
+`abs`, `log2`, `ceil`, `floor` — sufficient for the set/dict
 comprehensions used in reduction `vars`. Expressions run with
 `__builtins__` stripped, so `__import__` and similar escapes are
 unavailable.

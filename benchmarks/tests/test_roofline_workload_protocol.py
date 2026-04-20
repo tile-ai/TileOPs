@@ -237,9 +237,11 @@ def test_workloads_to_params_include_extra_propagates_dim():
          "dim": 0, "keepdim": True}
     ) == {"dim": 0, "keepdim": True}
 
-    # End-to-end with the manifest: SumFwdOp entries carry no extras today,
-    # so include_extra=True must still yield well-formed triples with an
-    # empty extras dict, preserving the existing (shape, dtype) ordering.
+    # End-to-end with the manifest: include_extra=True must still yield
+    # well-formed triples preserving the existing (shape, dtype, extra)
+    # ordering. This assertion checks that the first manifest-derived entry
+    # has an empty extras dict (the canonical Llama-3.1-8B reduction
+    # workload defined on the first line of SumFwdOp.workloads).
     triples = workloads_to_params("SumFwdOp", include_extra=True)
     assert len(triples) > 0
     shape, dtype, extra = triples[0].values
