@@ -3,3 +3,4 @@ self-hosted-runner:
     - tile-ops
     - venv
     - nightly
+    - nightly-containerized
