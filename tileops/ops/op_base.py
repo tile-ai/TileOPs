@@ -11,27 +11,21 @@ from tileops.utils import get_sm_version
 # Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
 _EMPTY_STATIC_DIMS_WARNED: set = set()
 
-# ``ast.Num`` is a deprecated alias (Python 3.8+) that becomes ``ast.Constant``
-# under the hood; AC-4 requires the roofline evaluator to accept legacy
-# ``Num`` nodes for back-compat. Resolve it here without triggering the
-# Python 3.12+ DeprecationWarning, and omit it from the whitelist tuple when
-# ``ast.Constant`` already covers it (which is true on every supported Python).
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    _AST_NUM: type = getattr(ast, "Num", ast.Constant)
-
 # Whitelist of AST nodes permitted in roofline expressions.
 # Explicitly excludes Call, Attribute, Subscript, Lambda, Comprehension, etc.
-# ``ast.Num`` nodes (legacy) are instances of ``ast.Constant`` on Python 3.8+,
-# so they pass the Constant gate without needing a separate whitelist entry.
+#
+# ``ast.Num`` is a deprecated alias of ``ast.Constant`` on every supported
+# Python (3.8+) — AC-4's back-compat requirement for ``ast.Num`` is satisfied
+# by accepting ``ast.Constant``, since any legacy ``ast.Num`` node instance is
+# also an ``ast.Constant``. We intentionally omit ``ast.Num`` from the tuple
+# to avoid the Python 3.12+ DeprecationWarning that firing at isinstance()
+# time; the whitelist is evaluated on the recursive AST walk hot path.
 _SAFE_AST_NODES: Tuple[type, ...] = (
     ast.Expression,
     ast.BinOp,
     ast.UnaryOp,
-    ast.Constant,
-    _AST_NUM,  # ast.Num (back-compat); subclass of Constant on Python 3.8+
+    ast.Constant,  # covers legacy ast.Num (alias on Python 3.8+)
     ast.Name,
-    ast.Load,
     # Arithmetic operators
     ast.Add,
     ast.Sub,
@@ -64,14 +58,11 @@ def _safe_eval(expr: str, ctx: Dict[str, Union[int, float]]) -> Union[int, float
         raise ValueError(f"invalid roofline expression {expr!r}: {e}") from e
 
     def _walk(node: ast.AST) -> Union[int, float]:
-        # Suppress the Python 3.12+ DeprecationWarning triggered by ast.Num
-        # appearing inside the isinstance tuple. The ast.Num entry is a legacy
-        # alias of ast.Constant on all supported Pythons; keeping it in the
-        # whitelist matches AC-4 and the design doc without changing behavior.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            permitted = isinstance(node, _SAFE_AST_NODES)
-        if not permitted:
+        # The whitelist is built once at module load (see _SAFE_AST_NODES).
+        # On supported Pythons, ast.Num is already an alias of ast.Constant,
+        # so the isinstance check here does not trigger a DeprecationWarning
+        # and needs no per-node suppression.
+        if not isinstance(node, _SAFE_AST_NODES):
             raise ValueError(
                 f"forbidden AST node {type(node).__name__} in roofline expression "
                 f"{expr!r}; only arithmetic over Name/Constant is permitted")
