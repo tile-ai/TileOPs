@@ -42,6 +42,23 @@ Therefore exp(dA_end - dA_l) is already a decaying factor in (0, 1],
 and exp(min(dA_end - dA_l, 0)) is equivalent. We keep the min-clamp
 for numerical safety.
 
+GEMM reformulation
+------------------
+Define the per-position scalar weight:
+
+  w[l] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
+          * (1 if no seq_idx else (seq_idx[l] == seq_idx[Q-1]))
+
+Then the output tile can be written as a matrix product:
+
+  out[p, n] = sum_l  x[l, p] * w[l] * B[l, n]
+            = (x_scaled)^T @ B_tile
+
+where x_scaled[l, p] = x[l, p] * w[l]  (scale each row of x by a
+per-row scalar before the GEMM).  This is a (block_p × block_l)^T @
+(block_l × block_n) tensor-core GEMM with transpose_A=True, replacing
+the previous serialised outer-product loop.
+
 Notation:
   B = batch, S = seq_len, H = n_heads, P = d_head, G = n_groups,
   N = d_state, C = num_chunks, Q = chunk_len
@@ -54,7 +71,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel import Kernel
 
 __all__ = ["SSDChunkStateFwdKernel"]
 
@@ -141,10 +158,21 @@ def _ssd_chunk_state_fwd_kernel(
 
                 # --------------------------------------------------------
                 # 4. Allocate tiles once outside the reduction loop
+                #
+                #    x_scaled_tile[l, p] = x[l, p] * w[l]   (row-scaled x)
+                #    b_tile[l, n]         = B[l, n]           (unscaled)
+                #
+                #    x_scaled_f32  -- float32 scratch for the row-scale step
+                #    x_scaled      -- dtype version passed to T.gemm
+                #    b_tile        -- dtype shared tile for B
+                #
+                #    GEMM:  acc[p, n] += x_scaled^T @ b_tile
+                #           i.e. (block_l x block_p)^T @ (block_l x block_n)
+                #                = (block_p x block_l) @ (block_l x block_n)
                 # --------------------------------------------------------
-                x_tile = T.alloc_shared((block_l, block_p), dtype)
-                b_tile = T.alloc_shared((block_l, block_n), dtype)
-                decay_tile = T.alloc_fragment((block_l,), accum_dtype)
+                x_scaled_f32 = T.alloc_fragment((block_l, block_p), accum_dtype)
+                x_scaled     = T.alloc_shared((block_l, block_p), dtype)
+                b_tile       = T.alloc_shared((block_l, block_n), dtype)
 
                 # --------------------------------------------------------
                 # 5. Reduce over chunk positions in L-tiles
@@ -152,16 +180,46 @@ def _ssd_chunk_state_fwd_kernel(
                 for l_blk in T.Serial(T.ceildiv(Q, block_l)):
                     l0 = l_blk * block_l
 
-                    # 5.1 Cooperative load: x
-                    #     x_tile[ll, pp] = x[bz, chunk_start + l0 + ll, bh, p0 + pp]
+                    # 5.1 Compute x_scaled[ll, pp] = x[ll, pp] * w[ll]
+                    #     where w[ll] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
+                    #                   * seq_mask[l]
+                    #     Done in float32, then cast to dtype for GEMM.
                     for ll, pp in T.Parallel(block_l, block_p):
                         l_idx = l0 + ll
                         p_idx = p0 + pp
-                        x_tile[ll, pp] = T.if_then_else(
-                            (l_idx < Q) and (p_idx < P),
-                            x[bz, chunk_start + l_idx, bh, p_idx],
-                            T.cast(T.float32(0.0), dtype),
+                        in_bounds = (l_idx < Q) and (p_idx < P)
+                        dA_l = T.if_then_else(
+                            l_idx < Q,
+                            dA_cumsum[bz, bh, bc, l_idx],
+                            T.float32(0.0),
                         )
+                        dt_l = T.if_then_else(
+                            l_idx < Q,
+                            dt[bz, bh, bc, l_idx],
+                            T.float32(0.0),
+                        )
+                        x_val = T.if_then_else(
+                            in_bounds,
+                            T.cast(x[bz, chunk_start + l_idx, bh, p_idx], accum_dtype),
+                            T.float32(0.0),
+                        )
+                        if has_seq_idx:
+                            same_seq = T.if_then_else(
+                                l_idx < Q,
+                                seq_idx[bz, chunk_start + l_idx] == seq_end,
+                                T.bool(False),
+                            )
+                            w = T.if_then_else(
+                                same_seq,
+                                T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l,
+                                T.float32(0.0),
+                            )
+                        else:
+                            w = T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l
+                        x_scaled_f32[ll, pp] = x_val * w
+
+                    # Cast scaled-x to kernel dtype for tensor-core GEMM
+                    T.copy(x_scaled_f32, x_scaled)
 
                     # 5.2 Cooperative load: B
                     #     b_tile[ll, nn] = Bmat[bz, chunk_start + l0 + ll, bg, n0 + nn]
@@ -174,45 +232,10 @@ def _ssd_chunk_state_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # 5.3 Compute per-position decay * dt, masked by seq_idx
-                    #     decay_tile[ll] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
-                    #                      * (seq_idx[l] == seq_idx[Q-1])  if has_seq_idx
-                    for ll in T.Parallel(block_l):
-                        l_idx = l0 + ll
-                        in_bounds = l_idx < Q
-                        dA_l = T.if_then_else(
-                            in_bounds,
-                            dA_cumsum[bz, bh, bc, l_idx],
-                            T.float32(0.0),
-                        )
-                        dt_l = T.if_then_else(
-                            in_bounds,
-                            dt[bz, bh, bc, l_idx],
-                            T.float32(0.0),
-                        )
-                        if has_seq_idx:
-                            same_seq = T.if_then_else(
-                                in_bounds,
-                                seq_idx[bz, chunk_start + l_idx] == seq_end,
-                                T.bool(False),
-                            )
-                            decay_tile[ll] = T.if_then_else(
-                                same_seq,
-                                T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l,
-                                T.float32(0.0),
-                            )
-                        else:
-                            decay_tile[ll] = T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l
-
-                    # 5.4 Local outer-product reduction:
-                    #     acc[p, n] += sum_ll  x[ll, p] * B[ll, n] * decay[ll]
-                    for ll in T.Serial(block_l):
-                        for pp, nn in T.Parallel(block_p, block_n):
-                            acc[pp, nn] += (
-                                T.cast(x_tile[ll, pp], accum_dtype)
-                                * T.cast(b_tile[ll, nn], accum_dtype)
-                                * decay_tile[ll]
-                            )
+                    # 5.3 Tensor-core GEMM:
+                    #     acc[p, n] += x_scaled^T @ b_tile
+                    #     shapes: (block_l x block_p)^T @ (block_l x block_n)
+                    T.gemm(x_scaled, b_tile, acc, transpose_A=True)
 
                 # --------------------------------------------------------
                 # 6. Write back output tile: out[bz, bc, bh, p0:p0+block_p, n0:n0+block_n]
