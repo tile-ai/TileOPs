@@ -34,7 +34,6 @@ def _gqa_fwd_ws_persistent_kernel(
 ) -> Callable:
     assert heads % heads_kv == 0 and dim == 128
     block_m = 128
-    block_n = 128
     half_m = block_m // 2
     groups = heads // heads_kv
     scale = make_log2e_scale(dim)
@@ -118,7 +117,7 @@ def _gqa_fwd_ws_persistent_kernel(
 
                 if tx < 128:
                     T.dec_max_nreg(24)
-                    for tile_b, tile_hkv, tile_m, tile_g in T.Persistent(
+                    for tile_b, tile_hkv, _tile_m, tile_g in T.Persistent(
                         [batch, heads_kv, T.ceildiv(seq_len, block_m), groups],
                         wave_size=NUM_SMS,
                         index=bx,
@@ -352,7 +351,6 @@ def _gqa_fwd_ws_persistent_causal_kernel(
 ) -> Callable:
     assert heads % heads_kv == 0 and dim == 128
     block_m = 128
-    block_n = 128
     half_m = block_m // 2
     groups = heads // heads_kv
     hkv_sections = heads_kv
@@ -441,7 +439,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
 
                 if tx < 128:
                     T.dec_max_nreg(24)
-                    for tile_b, tile_hkv_section, pair_idx, tile_local_hkv, tile_g in T.Persistent(
+                    for tile_b, tile_hkv_section, pair_idx, tile_local_hkv, _tile_g in T.Persistent(
                         [batch, hkv_sections, half_m_blocks, 1, groups],
                         wave_size=NUM_SMS,
                         index=bx,

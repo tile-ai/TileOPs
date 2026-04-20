@@ -13,8 +13,8 @@ from tileops.kernels.attention import (
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
 )
-from tileops.ops.attention.gqa import _select_gqa_fwd_kernel_cls
 from tileops.ops import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
+from tileops.ops.attention.gqa import _select_gqa_fwd_kernel_cls
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdTest as _GroupedQueryAttentionBwdTestWorkload,
 )
