@@ -164,6 +164,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           BASE_REPO: ${{ github.repository }}
+          AUTHOR_ASSOC: ${{ github.event.pull_request.author_association || '' }}
         run: |
           set -euo pipefail
 
@@ -182,8 +183,26 @@ jobs:
           pytest_targets="tests"
           reason="GPU smoke will run."
 
+          # `is_fork` gates the downstream runtime isolation: when true, the
+          # gpu-smoke job refuses to write persistent state under
+          # /home/ci-runner and instead runs from a disposable per-run dir.
+          # A repo member opening a PR from their personal fork technically
+          # satisfies head != base, but they already have push access to the
+          # base repo — treating their PR as untrusted forces them to
+          # round-trip through a fresh venv rebuild every run, for no real
+          # security gain. Keep external contributors on the isolated path;
+          # promote OWNER/MEMBER/COLLABORATOR authors back onto the trusted
+          # runtime layout.
           if [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPO" != "$BASE_REPO" ]]; then
-            is_fork="true"
+            case "$AUTHOR_ASSOC" in
+              OWNER|MEMBER|COLLABORATOR)
+                is_fork="false"
+                echo "Member-fork PR (author_association=${AUTHOR_ASSOC}); treating as trusted."
+                ;;
+              *)
+                is_fork="true"
+                ;;
+            esac
           fi
 
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
@@ -378,6 +397,11 @@ jobs:
         with:
           reclaim-below-gib: "10"
           cache-trim-cooldown-minutes: "120"
+          # Daily runner-maintenance.yml owns the destructive autotuner
+          # age-trim; per-PR runs only need sentinel-repair (still
+          # unconditional) so they don't evict tuning artefacts the next
+          # PR would otherwise reuse.
+          skip-atomic-age-trim: "true"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -390,11 +414,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Narrow the venv cache key to sections that actually drive the
+          # installed package set. Hashing the whole pyproject.toml means a
+          # tweak to [tool.pytest] or [tool.ruff] invalidates every warm
+          # fork-PR venv, defeating #996's fast path for no packaging
+          # reason. See scripts/ci_venv_hash.py for the parsed sections and
+          # the full-file fallback contract.
+          PYPROJECT_HASH=$(python scripts/ci_venv_hash.py pyproject.toml)
           HASH_INPUT="$(
             {
               echo "python=3.11"
               echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              sha256sum pyproject.toml
+              echo "pyproject=${PYPROJECT_HASH}"
             } | sha256sum | cut -c1-16
           )"
           VENV_PREFIX="tileops_ci_venv"
@@ -412,51 +443,12 @@ jobs:
             PIP_CACHE_DIR="${RUNTIME_ROOT}/pip/cache"
             WHEEL_DIR="${RUNTIME_ROOT}/wheels"
             VENV_PATH="${RUNTIME_ROOT}/venv"
-
-            # Diagnostic: log the trusted venv probe so FORK_CAN_COPY_TRUSTED_VENV
-            # decisions are traceable in CI logs. This surfaces permission issues
-            # (runner tool_cache owned by a different user), missing paths, or
-            # partial venvs where bin/python exists but is not executable.
-            echo "=== Trusted venv probe ==="
-            echo "TRUSTED_VENV_PATH=${TRUSTED_VENV_PATH}"
-            if [[ -d "${TRUSTED_VENV_PATH}" ]]; then
-              echo "Trusted venv directory exists:"
-              # find + -printf keeps shellcheck SC2012 clean vs `ls -la`.
-              find "${TRUSTED_VENV_PATH}" -maxdepth 1 -printf '  %M %u %g %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null || true
-              if [[ -d "${TRUSTED_VENV_PATH}/bin" ]]; then
-                echo "Trusted venv bin/ contents (up to 20 entries):"
-                find "${TRUSTED_VENV_PATH}/bin" -maxdepth 1 -printf '  %M %u %g %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null | head -20 || true
-              else
-                echo "Trusted venv bin/ does not exist"
-              fi
-            else
-              echo "Trusted venv directory does not exist"
-              echo "Sibling venvs under ${{ runner.tool_cache }}:"
-              # Use find + -printf (not `ls | grep`) so actionlint+shellcheck
-              # (SC2010/SC2012) stays clean while listing hash-suffixed venvs.
-              sibling_list=$(find "${{ runner.tool_cache }}" -maxdepth 1 -name "tileops_ci_venv_*" -printf '  %M %u %g %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null || true)
-              if [[ -n "${sibling_list}" ]]; then
-                printf '%s\n' "${sibling_list}"
-              else
-                echo "  (none)"
-              fi
-            fi
-            python_bin="${TRUSTED_VENV_PATH}/bin/python"
-            if [[ -e "${python_bin}" ]]; then
-              echo "python_bin exists=true executable=$([[ -x "${python_bin}" ]] && echo true || echo false) readable=$([[ -r "${python_bin}" ]] && echo true || echo false)"
-              stat "${python_bin}" || true
-            else
-              echo "python_bin exists=false"
-            fi
-            echo "=========================="
-
             if [[ -x "${TRUSTED_VENV_PATH}/bin/python" ]]; then
               FORK_CAN_COPY_TRUSTED_VENV="true"
               VENV_REUSED="true"
             else
               VENV_REUSED="false"
             fi
-            echo "FORK_CAN_COPY_TRUSTED_VENV decision: ${FORK_CAN_COPY_TRUSTED_VENV} (path=${TRUSTED_VENV_PATH})"
             mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
             # Copy trusted compile caches into the isolated per-run dir.
@@ -601,22 +593,18 @@ jobs:
             # TileLang cache keys include the library's mtime (kernel_cache.py); a fresh
             # pip install produces a new mtime, causing all rsync'd cache entries to miss.
             # See: https://github.com/tile-ai/TileOPs/issues/594
-            #
-            # Use TRUSTED_VENV_PATH (the hash-matched venv) directly. Picking an
-            # arbitrary venv via `find ... | sort | head -1` can select a stale
-            # venv built against a different pyproject.toml, whose libtilelang.so
-            # mtime does not match any rsync'd cache entry.
-            if [[ -d "${TRUSTED_VENV_PATH}" ]]; then
-              TRUSTED_LIB=$(find "${TRUSTED_VENV_PATH}" -name "libtilelang.so" -type f 2>/dev/null | head -1 || true)
+            TRUSTED_VENV=$(find "${{ runner.tool_cache }}" -maxdepth 1 -type d -name "tileops_ci_venv_*" -exec test -x '{}/bin/python' \; -print 2>/dev/null | sort -t_ -k5 -r | head -1 || true)
+            if [[ -n "$TRUSTED_VENV" ]]; then
+              TRUSTED_LIB=$(find "$TRUSTED_VENV" -name "libtilelang.so" -type f 2>/dev/null | head -1 || true)
               FORK_LIB=$(find "${VENV_PATH}" -name "libtilelang.so" -type f 2>/dev/null | head -1 || true)
               if [[ -n "$TRUSTED_LIB" && -n "$FORK_LIB" ]]; then
                 touch -r "$TRUSTED_LIB" "$FORK_LIB"
-                echo "Synced libtilelang.so mtime from ${TRUSTED_LIB} to ${FORK_LIB}"
+                echo "Synced libtilelang.so mtime for cache key compatibility"
               else
-                echo "Warning: could not locate libtilelang.so for mtime sync (trusted=${TRUSTED_LIB:-<none>}, fork=${FORK_LIB:-<none>})"
+                echo "Warning: could not locate libtilelang.so for mtime sync"
               fi
             else
-              echo "Warning: hash-matched trusted venv ${TRUSTED_VENV_PATH} does not exist; skipping mtime sync"
+              echo "Warning: no trusted venv found for mtime sync"
             fi
           else
             PIP_NO_BUILD_ISOLATION=1 PIP_NO_CACHE_DIR=1 pip install -e '.[dev]'
@@ -680,56 +668,22 @@ jobs:
         run: cat gpu_smoke_report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cache stats
-        if: ${{ always() }}
-        env:
-          IS_FORK: ${{ needs.security-policy.outputs.is_fork }}
+        if: ${{ always() && needs.security-policy.outputs.is_fork != 'true' }}
         run: |
-          # Cache stats is informational only. Do NOT use `set -e`: a transient
-          # failure in find/du/wc (e.g. a cache file vanishing mid-scan due to a
-          # concurrent cleanup) must not fail the gpu-smoke job, and must not
-          # skip the CACHE_SIGNAL logging below.
-          set -u
-          echo "=== Cache stats (is_fork=${IS_FORK}) ==="
-          echo "VENV_REUSED=${VENV_REUSED:-unknown}"
-          echo "FORK_CAN_COPY_TRUSTED_VENV=${FORK_CAN_COPY_TRUSTED_VENV:-unknown}"
-          echo "TRUSTED_VENV_PATH=${TRUSTED_VENV_PATH:-unknown}"
+          set -euo pipefail
+          echo "=== Trusted cache stats ==="
           for cache_dir in "${TILELANG_CACHE_DIR:-}" "${TRITON_CACHE_DIR:-}" "${WHEEL_DIR:-}"; do
             if [[ -z "${cache_dir}" ]]; then
               continue
             fi
             if [[ -d "${cache_dir}" ]]; then
-              # Tolerate errors from find/du/wc; emit "unknown" when a scan
-              # fails rather than aborting the step. Enable pipefail inside
-              # the subshell so a find/du failure upstream of wc/cut
-              # propagates to the || fallback instead of being masked.
-              file_count=$(set -o pipefail; find "${cache_dir}" -type f 2>/dev/null | wc -l 2>/dev/null) || file_count="unknown"
-              cache_size=$(set -o pipefail; du -sh "${cache_dir}" 2>/dev/null | cut -f1 2>/dev/null) || cache_size="unknown"
-              if [[ -z "${file_count}" ]]; then file_count="unknown"; fi
-              if [[ -z "${cache_size}" ]]; then cache_size="unknown"; fi
+              file_count=$(find "${cache_dir}" -type f | wc -l)
+              cache_size=$(du -sh "${cache_dir}" 2>/dev/null | cut -f1)
               echo "${cache_dir}: ${file_count} files, ${cache_size}"
             else
               echo "${cache_dir}: does not exist"
             fi
           done
-
-          # Emit a concise cache hit/miss signal so future regressions surface
-          # in CI logs without needing to diff per-run durations manually.
-          # For fork PRs, "hit" means the trusted venv was copied (no cold pip
-          # install); for trusted runs, "hit" means the hash-matched venv was
-          # reused in place.
-          if [[ "${IS_FORK}" == "true" ]]; then
-            if [[ "${FORK_CAN_COPY_TRUSTED_VENV:-false}" == "true" ]]; then
-              echo "CACHE_SIGNAL: fork venv=hit"
-            else
-              echo "CACHE_SIGNAL: fork venv=miss (cold pip install path)"
-            fi
-          else
-            if [[ "${VENV_REUSED:-false}" == "true" ]]; then
-              echo "CACHE_SIGNAL: trusted venv=hit"
-            else
-              echo "CACHE_SIGNAL: trusted venv=miss (fresh venv created)"
-            fi
-          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
