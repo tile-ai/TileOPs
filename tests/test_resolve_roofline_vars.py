@@ -179,18 +179,20 @@ class TestHasRooflineVars:
 
 
 class TestSandbox:
-    """The evaluator runs against project-owned expressions but should still
-    block access to the Python builtins that enable trivial escapes."""
+    """The evaluator runs against project-owned expressions but the
+    sandbox must still reject every known class of Python-level escape so
+    that a mis-authored or tampered manifest cannot execute arbitrary
+    code."""
 
-    def test_no_import_via_vars(self, monkeypatch):
+    def _poison(self, monkeypatch, expr: str) -> None:
         from tileops.manifest import _load_manifest
 
         _load_manifest.cache_clear()
         real = _load_manifest()
         poisoned = dict(real)
-        poisoned["__EvilOp2"] = {
+        poisoned["__EvilOp"] = {
             "roofline": {
-                "vars": {"pwn": "__import__('os')"},
+                "vars": {"pwn": expr},
                 "flops": "0",
                 "bytes": "0",
             }
@@ -198,8 +200,101 @@ class TestSandbox:
         monkeypatch.setattr(
             "tileops.manifest._load_manifest", lambda: poisoned
         )
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # __import__ direct call (historic escape vector)
+            "__import__('os')",
+            # Dunder attribute traversal used by classic eval escapes
+            "().__class__",
+            "().__class__.__base__.__subclasses__()",
+            "(1).__class__",
+            # Builtins probe
+            "__builtins__",
+            "__builtins__['__import__']",
+            # getattr / open / import keyword
+            "getattr(x, 'shape')",
+            "open('/etc/passwd')",
+            # Immediately-invoked lambda (rejected because Lambda is not
+            # on the whitelist)
+            "(lambda: 0)()",
+            # Attribute on a bare int — not a shape proxy, should still
+            # reject before __class__ etc. is evaluated.
+            "(0).__class__",
+            # Subclass-traversal payload that exfiltrated os via the
+            # previous eval sandbox (copilot PoC).
+            "[c for c in ().__class__.__base__.__subclasses__() "
+            "if c.__name__=='catch_warnings'][0]()._module."
+            "__builtins__['__import__']('os').popen('echo X').read()",
+        ],
+    )
+    def test_sandbox_rejects_escapes(self, monkeypatch, expr):
+        self._poison(monkeypatch, expr)
         with pytest.raises(ValueError, match="Failed to evaluate"):
-            resolve_roofline_vars("__EvilOp2", tensor_shapes={})
+            resolve_roofline_vars(
+                "__EvilOp", tensor_shapes={"x": (2, 3)}
+            )
+
+    def test_sandbox_rejects_import_statement_syntax(self, monkeypatch):
+        """An ``import`` statement is not even a valid expression, but we
+        assert that the failure path still routes through the standard
+        ValueError instead of leaking a raw SyntaxError to callers."""
+        self._poison(monkeypatch, "import os")
+        with pytest.raises(ValueError, match="Failed to evaluate"):
+            resolve_roofline_vars(
+                "__EvilOp", tensor_shapes={"x": (2, 3)}
+            )
+
+    def test_sandbox_rejects_attribute_chain_on_shape_proxy(
+        self, monkeypatch
+    ):
+        """Even the legit ``x`` binding must not leak object-graph access
+        beyond the narrow ``.shape`` / ``.ndim`` whitelist."""
+        self._poison(monkeypatch, "x.__class__")
+        with pytest.raises(ValueError, match="Failed to evaluate"):
+            resolve_roofline_vars(
+                "__EvilOp", tensor_shapes={"x": (2, 3)}
+            )
+
+
+class TestNonMappingRoofline:
+    """``has_roofline_vars`` / ``resolve_roofline_vars`` must handle
+    manifest entries whose ``roofline`` value is not a mapping (e.g. an
+    accidental list or string) without leaking AttributeError."""
+
+    def _poison(self, monkeypatch, roofline_value):
+        from tileops.manifest import _load_manifest
+
+        _load_manifest.cache_clear()
+        real = _load_manifest()
+        poisoned = dict(real)
+        poisoned["_OddRoofline"] = {"roofline": roofline_value}
+        monkeypatch.setattr(
+            "tileops.manifest._load_manifest", lambda: poisoned
+        )
+
+    def test_has_roofline_vars_false_for_string(self, monkeypatch):
+        self._poison(monkeypatch, "not-a-dict")
+        assert has_roofline_vars("_OddRoofline") is False
+
+    def test_has_roofline_vars_false_for_list(self, monkeypatch):
+        self._poison(monkeypatch, [])
+        assert has_roofline_vars("_OddRoofline") is False
+
+    def test_resolve_raises_valueerror_for_string(self, monkeypatch):
+        self._poison(monkeypatch, "not-a-dict")
+        with pytest.raises(ValueError, match="roofline.vars"):
+            resolve_roofline_vars(
+                "_OddRoofline", tensor_shapes={"x": (2, 3)}
+            )
+
+    def test_resolve_raises_valueerror_for_list(self, monkeypatch):
+        self._poison(monkeypatch, [])
+        with pytest.raises(ValueError, match="roofline.vars"):
+            resolve_roofline_vars(
+                "_OddRoofline", tensor_shapes={"x": (2, 3)}
+            )
 
 
 class TestEndToEndWithEvalRoofline:

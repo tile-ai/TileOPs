@@ -73,9 +73,10 @@ def test_sum_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     dim = op_params.get("dim", -1)
+    keepdim = op_params.get("keepdim", False)
 
     def baseline_fn(x):
-        return x.float().sum(dim=dim).to(x.dtype)
+        return x.float().sum(dim=dim, keepdim=keepdim).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")

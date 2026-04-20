@@ -24,10 +24,16 @@ from tileops.manifest import (
     resolve_roofline_vars,
 )
 
-# Workload dict keys that describe tensor/dtype parametrization and are *not*
-# passed through as op-call parameters. Everything else on a workload entry
-# (e.g. ``dim``, ``keepdim``, ``correction``) is treated as an op param and
-# forwarded to ``resolve_roofline_vars``.
+# Workload dict keys reserved by the benchmark harness. Everything else on
+# a workload entry (e.g. ``dim``, ``keepdim``, ``correction``) is treated
+# as an op-call parameter and forwarded to ``resolve_roofline_vars``.
+#
+# The current harness is explicitly scoped to **single-input ops whose
+# sole tensor input is named ``x``**. Multi-input ops (e.g. attention
+# families that declare ``q_shape`` / ``kv_shape``) are not supported:
+# :func:`workloads_to_params` will raise ``KeyError`` if ``x_shape`` is
+# absent. Extending to signature-aware tensor binding is tracked as a
+# follow-up and must also update ``docs/manifest.md``.
 _WORKLOAD_META_KEYS: frozenset[str] = frozenset(
     {"x_shape", "dtypes", "label"}
 )
@@ -361,16 +367,21 @@ def _workload_extra_params(w: dict) -> dict[str, Any]:
 
     A workload entry may carry optional op-call parameter values beyond
     ``x_shape`` / ``dtypes`` / ``label`` (e.g. ``dim``, ``keepdim``,
-    ``correction``). These are forwarded to ``resolve_roofline_vars`` so the
-    manifest's ``roofline.vars`` expressions see the same bindings the op
-    would be called with.
+    ``correction``). These are forwarded to ``resolve_roofline_vars`` so
+    the manifest's ``roofline.vars`` expressions see the same bindings the
+    op would be called with.
+
+    Only the reserved meta keys (``x_shape``, ``dtypes``, ``label``) and
+    dunder-style metadata keys are stripped; everything else — including
+    any other ``*_shape`` keys — is surfaced as an op param. This matches
+    the single-input ``x_shape``-only harness contract documented in
+    :data:`_WORKLOAD_META_KEYS`; multi-input ops with ``q_shape`` /
+    ``kv_shape`` are out of scope and would need a dedicated harness.
     """
     return {
         k: v
         for k, v in w.items()
-        if k not in _WORKLOAD_META_KEYS
-        and not k.endswith("_shape")
-        and not k.startswith("__")
+        if k not in _WORKLOAD_META_KEYS and not k.startswith("__")
     }
 
 
@@ -390,6 +401,13 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     workloads = load_workloads(op_name)
     params = []
     for w in workloads:
+        if "x_shape" not in w:
+            raise KeyError(
+                f"workloads_to_params({op_name!r}) only supports single-input "
+                "ops whose tensor input is named 'x' (workload must declare "
+                "'x_shape'); multi-input ops with q_shape/kv_shape/... are "
+                "out of scope for this harness."
+            )
         shape = tuple(w["x_shape"])
         label = w.get("label", "x".join(str(s) for s in shape))
         extra = _workload_extra_params(w)

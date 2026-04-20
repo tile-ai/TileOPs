@@ -1582,6 +1582,8 @@ ops:
       - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
       # Non-last-axis reduction (exercises dim=0 path)
       - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: 0, label: "hidden-state-reduce-dim0"}
+      # Keepdim variant (exercises keepdim forwarding through the baseline)
+      - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: -1, keepdim: true, label: "hidden-state-reduce-keepdim"}
 
     roofline:
       vars:

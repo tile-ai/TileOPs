@@ -514,15 +514,21 @@ flops, mem_bytes = eval_roofline(_OP_NAME, M=m, N=n, elem_bytes=elem_bytes)
 ### Workload entry schema
 
 Each entry under `workloads:` is a mapping. Three keys are reserved by the
-benchmark harness; everything else is treated as an **op-call parameter** and
-forwarded to `resolve_roofline_vars()` when the entry drives a benchmark:
+benchmark harness; everything else is treated as an **op-call parameter**
+and forwarded to `resolve_roofline_vars()` when the entry drives a
+benchmark. The `ManifestBenchmark` + `workloads_to_params` harness is
+scoped to **single-input ops whose sole tensor input is named `x`**, so
+`x_shape` is mandatory for manifest-driven benchmarks. Multi-input ops
+(attention families declaring `q_shape` / `kv_shape`, etc.) are out of
+scope for the current harness and must either ship a bespoke benchmark
+helper or wait for signature-aware tensor binding.
 
-| Key             | Required | Meaning                                                                                                  |
-| --------------- | -------- | -------------------------------------------------------------------------------------------------------- |
-| `x_shape`       | yes      | Input tensor shape (list of ints).                                                                       |
-| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
-| `label`         | no       | Human-readable id used in the pytest param id and report tables.                                         |
-| *any other key* | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
+| Key             | Required                             | Meaning                                                                                                  |
+| --------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `x_shape`       | yes (for manifest-driven benchmarks) | Input tensor shape (list of ints). Required by `workloads_to_params`; missing keys raise `KeyError`.     |
+| `dtypes`        | yes                                  | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
+| `label`         | no                                   | Human-readable id used in the pytest param id and report tables.                                         |
+| *any other key* | no                                   | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
 
 Example — parametrizing a reduction workload over a non-last `dim`:
 
