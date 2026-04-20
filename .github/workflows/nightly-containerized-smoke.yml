@@ -10,32 +10,22 @@ jobs:
     if: ${{ github.repository == 'tile-ai/TileOPs' }}
     timeout-minutes: 30
     runs-on: [self-hosted, tile-ops, nightly, nightly-containerized]
-    container:
-      image: tileops-runner:latest
-      volumes:
-        - /data/ci-cache/pip:/cache/pip
-        - /data/ci-cache/wheels:/cache/wheels
-        - /data/ci-cache/tilelang:/cache/tilelang
-        - /data/ci-cache/triton:/cache/triton
-      options: >-
-        --gpus device=1
-        --shm-size=16g
-      env:
-        TILELANG_CACHE_DIR: /cache/tilelang
-        TILELANG_TMP_DIR: /cache/tilelang/tmp
-        TRITON_CACHE_DIR: /cache/triton
-        PIP_CACHE_DIR: /cache/pip
-        WHEEL_DIR: /cache/wheels
     defaults:
       run:
         shell: bash
+    env:
+      TILELANG_CACHE_DIR: /home/ci-runner/.tilelang/cache
+      TILELANG_TMP_DIR: /home/ci-runner/.tilelang/cache/tmp
+      TRITON_CACHE_DIR: /home/ci-runner/.triton/cache
+      PIP_CACHE_DIR: /home/ci-runner/.cache/pip
+      WHEEL_DIR: /home/ci-runner/.wheel-cache
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Validate containerized nightly runner path
+      - name: Validate direct-exec containerized nightly runner path
         run: |
           set -euo pipefail
 
@@ -49,6 +39,13 @@ jobs:
           python -V
           pip -V
           nvidia-smi -L
+
+          echo "Cache layout:"
+          printf '  TILELANG_CACHE_DIR=%s\n' "${TILELANG_CACHE_DIR}"
+          printf '  TILELANG_TMP_DIR=%s\n' "${TILELANG_TMP_DIR}"
+          printf '  TRITON_CACHE_DIR=%s\n' "${TRITON_CACHE_DIR}"
+          printf '  PIP_CACHE_DIR=%s\n' "${PIP_CACHE_DIR}"
+          printf '  WHEEL_DIR=%s\n' "${WHEEL_DIR}"
 
           touch "${PIP_CACHE_DIR}/.nightly-containerized-smoke"
           touch "${WHEEL_DIR}/.nightly-containerized-smoke"
