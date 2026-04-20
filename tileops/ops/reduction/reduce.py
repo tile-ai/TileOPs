@@ -80,18 +80,21 @@ class _ReduceOpBase(Op):
     def __init__(
         self,
         *,
-        N: Optional[int] = None,
         dtype: torch.dtype,
         dim: Union[int, List[int], None] = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        # ``N`` captures the manifest ``static_dims`` commitment for
+        # ``self.N`` captures the manifest ``static_dims`` commitment for
         # subclasses whose reduction extent is known at construction
         # (argmax, argmin). Simple/Welford reduce ops with
-        # ``static_dims: None`` leave ``N`` as ``None``.
-        self.N = N
+        # ``static_dims: None`` leave ``self.N`` as ``None``.  Argreduce
+        # subclasses set ``self.N`` before calling ``super().__init__()`` so
+        # that ``N`` stays out of the simple/Welford op public signatures
+        # (AC-4: codegen-style constructors from manifest).
+        if not hasattr(self, "N"):
+            self.N = None
         self.dtype = dtype
         self.dim = dim
         self.keepdim = keepdim

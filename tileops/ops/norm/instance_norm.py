@@ -88,9 +88,19 @@ class InstanceNormFwdOp(Op):
         return {"group_norm": GroupNormKernel}
 
     def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
-        """Kernel cache key: (N, *spatial) — everything except the channel axis."""
+        """Kernel cache key: (M, D) with M = N * C and D = prod(spatial).
+
+        Matches the kernel construction projection in ``forward``: kernels are
+        keyed by the same ``(M, D)`` tuple used at ``_get_or_create_kernel``,
+        so input shapes that differ only in how spatial dims split (e.g.
+        ``(N, C, H, W)`` vs ``(N, C, H*W)``) share one cached kernel.
+        """
         x_shape = input_shapes[0]
-        return tuple(s for i, s in enumerate(x_shape) if i != 1)
+        N = x_shape[0]
+        spatial = x_shape[2:]
+        D = prod(spatial) if spatial else 1
+        M = N * self.C
+        return (M, D)
 
     def _get_or_create_kernel(self, M: int, D: int) -> Kernel:
         key = (M, D)
