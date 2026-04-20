@@ -1,9 +1,12 @@
 from collections import defaultdict
+from pathlib import Path
 
 import pytest
 import torch
 
 from tests.test_base import _check_result
+
+_TESTS_ROOT = Path(__file__).resolve().parent
 
 
 @pytest.fixture(autouse=True)
@@ -48,8 +51,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     tier_names = ("smoke", "full", "nightly")
 
     for item in items:
-        path = str(item.path)
-        if "tests/" not in path:
+        if not item.path.is_relative_to(_TESTS_ROOT):
             continue
         tiers = [name for name in tier_names if item.get_closest_marker(name) is not None]
         if len(tiers) != 1:
@@ -58,10 +60,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             )
 
     ops_groups: dict[tuple[str, str], list[pytest.Item]] = defaultdict(list)
+    ops_root = _TESTS_ROOT / "ops"
     for item in items:
-        path = str(item.path)
-        if "tests/ops/" not in path:
+        if not item.path.is_relative_to(ops_root):
             continue
+        path = str(item.path)
         test_name = getattr(item, "originalname", item.name)
         ops_groups[(path, test_name)].append(item)
 
