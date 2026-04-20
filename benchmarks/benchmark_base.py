@@ -410,7 +410,7 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
             )
         shape = tuple(w["x_shape"])
         label = w.get("label", "x".join(str(s) for s in shape))
-        extra = _workload_extra_params(w)
+        extra = _workload_extra_params(w) if include_extra else {}
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
             # Copy ``extra`` per parametrization so accidental mutation in
@@ -471,7 +471,6 @@ class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
         variables beyond those derivable from the workload shape + op
         params (e.g. ops whose vars reference multiple input tensors).
         """
-        elem_bytes = torch.tensor([], dtype=self.workload.dtype).element_size()
         # Fall back to the legacy last-axis heuristic only when the manifest
         # has nothing to resolve for this op (missing entry or missing/empty
         # ``roofline.vars``). If ``roofline.vars`` is declared but evaluation
@@ -479,6 +478,7 @@ class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
         # silently degrade to legacy M/N.
         if not has_roofline_vars(self._op_name):
             return roofline_vars(self.workload)
+        elem_bytes = torch.tensor([], dtype=self.workload.dtype).element_size()
         resolved = resolve_roofline_vars(
             self._op_name,
             tensor_shapes={"x": tuple(self.workload.shape)},

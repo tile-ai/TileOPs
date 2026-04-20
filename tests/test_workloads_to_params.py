@@ -61,17 +61,31 @@ def test_extra_params_preserves_non_x_shape_keys():
     assert extra == {"q_shape": [1, 2]}
 
 
-def test_keepdim_workload_is_surfaced_as_op_param():
-    """The new keepdim workload on SumFwdOp must flow through as an op
-    param so the benchmark baseline can see it."""
-    params = workloads_to_params("SumFwdOp", include_extra=True)
-    keepdim_found = False
-    for p in params:
-        _, _, extra = p.values
-        if extra.get("keepdim") is True:
-            keepdim_found = True
-            break
-    assert keepdim_found, (
-        "Expected at least one SumFwdOp workload with keepdim=True "
-        "(see ops_manifest.yaml)"
-    )
+def test_keepdim_workload_is_surfaced_as_op_param(monkeypatch):
+    """``keepdim`` on a workload entry must flow through as an op param so
+    the benchmark baseline can see it.
+
+    Uses a synthetic workload list (patched in place of ``load_workloads``)
+    so the assertion describes the helper's contract, not the contents or
+    ordering of ``ops_manifest.yaml``.
+    """
+    synthetic = [
+        {"x_shape": [8, 16], "dtypes": ["bfloat16"], "label": "no-extras"},
+        {
+            "x_shape": [8, 16],
+            "dtypes": ["bfloat16"],
+            "label": "with-keepdim",
+            "dim": 0,
+            "keepdim": True,
+        },
+    ]
+    import benchmarks.benchmark_base as bb
+
+    monkeypatch.setattr(bb, "load_workloads", lambda op: synthetic)
+
+    params = workloads_to_params("FakeOp", include_extra=True)
+    extras_by_label = {p.id: p.values[2] for p in params}
+    assert extras_by_label == {
+        "no-extras-bfloat16": {},
+        "with-keepdim-bfloat16": {"dim": 0, "keepdim": True},
+    }

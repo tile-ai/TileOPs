@@ -238,16 +238,20 @@ def test_workloads_to_params_include_extra_propagates_dim():
     ) == {"dim": 0, "keepdim": True}
 
     # End-to-end with the manifest: include_extra=True must still yield
-    # well-formed triples preserving the existing (shape, dtype, extra)
-    # ordering. This assertion checks that the first manifest-derived entry
-    # has an empty extras dict (the canonical Llama-3.1-8B reduction
-    # workload defined on the first line of SumFwdOp.workloads).
+    # well-formed triples with the (shape, dtype, extra) mapping. The
+    # contract being asserted is per-triple shape/dtype/extra typing; it
+    # must not depend on the ordering of SumFwdOp.workloads (which is QA
+    # curated and may be reordered without regressing the helper).
     triples = workloads_to_params("SumFwdOp", include_extra=True)
     assert len(triples) > 0
-    shape, dtype, extra = triples[0].values
-    assert isinstance(shape, tuple)
-    assert isinstance(dtype, torch.dtype)
-    assert extra == {}
+    for p in triples:
+        shape, dtype, extra = p.values
+        assert isinstance(shape, tuple)
+        assert isinstance(dtype, torch.dtype)
+        assert isinstance(extra, dict)
+    # At least one workload intentionally carries no extras; the harness
+    # must expose that as an empty dict rather than omitting the slot.
+    assert any(p.values[2] == {} for p in triples)
 
 
 @pytest.mark.smoke
