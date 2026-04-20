@@ -151,5 +151,30 @@ class FusedGatedDirectStrategyFixture(FixtureBase):
         ]),
     ]
 
+
+@FusedGatedDirectStrategyFixture
+def test_silu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> None:
+    test = SiluAndMulTest(m, n, dtype)
+    op = SiluAndMulFwdOp(M=m, N=n, dtype=dtype, strategy="direct")
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+@FusedGatedDirectStrategyFixture
+def test_gelu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> None:
+    test = GeluAndMulTest(m, n, dtype)
+    op = GeluAndMulFwdOp(M=m, N=n, dtype=dtype, strategy="direct")
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+@FusedGatedDirectStrategyFixture
+def test_gelu_tanh_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> None:
+    test = GeluTanhAndMulTest(m, n, dtype)
+    op = GeluTanhAndMulFwdOp(M=m, N=n, dtype=dtype, strategy="direct")
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
