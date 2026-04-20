@@ -28,8 +28,30 @@ jobs:
           echo "workspace=${GITHUB_WORKSPACE}"
           pwd
           ls -la
-          nvidia-smi || true
-          echo "PIP cache mounted?" && ls -la /cache/pip || true
-          echo "Wheels cache mounted?" && ls -la /cache/wheels || true
-          echo "TileLang cache mounted?" && ls -la /cache/tilelang || true
-          echo "Triton cache mounted?" && ls -la /cache/triton || true
+          if ! nvidia-smi; then
+            echo "nvidia-smi unavailable"
+          fi
+          echo "PIP cache mounted?"
+          if [ -d /cache/pip ]; then
+            ls -la /cache/pip
+          else
+            echo "/cache/pip missing"
+          fi
+          echo "Wheels cache mounted?"
+          if [ -d /cache/wheels ]; then
+            ls -la /cache/wheels
+          else
+            echo "/cache/wheels missing"
+          fi
+          echo "TileLang cache mounted?"
+          if [ -d /cache/tilelang ]; then
+            ls -la /cache/tilelang
+          else
+            echo "/cache/tilelang missing"
+          fi
+          echo "Triton cache mounted?"
+          if [ -d /cache/triton ]; then
+            ls -la /cache/triton
+          else
+            echo "/cache/triton missing"
+          fi
