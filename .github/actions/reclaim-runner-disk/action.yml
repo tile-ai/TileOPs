@@ -94,6 +94,16 @@ inputs:
       always run the full reclaim pass.
     required: false
     default: "false"
+  skip-atomic-age-trim:
+    description: >
+      When "true", skip the age-based atomic-trim pass on atomic cache roots.
+      Sentinel-repair on those roots still runs unconditionally (it self-heals
+      half-dead state and is cheap). Callers that run on every PR should opt
+      out of the destructive whole-subdir trim so it only runs via the daily
+      runner-maintenance.yml job; co-locating it on the per-PR path evicts
+      autotuner entries the next PR would otherwise reuse.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -113,6 +123,7 @@ runs:
         PRUNE_TOOL_CACHE: ${{ inputs.prune-tool-cache }}
         DF_PATHS: ${{ inputs.df-paths }}
         FORCE_RECLAIM: ${{ inputs.force-reclaim }}
+        SKIP_ATOMIC_AGE_TRIM: ${{ inputs.skip-atomic-age-trim }}
         TOOL_CACHE: ${{ runner.tool_cache }}
       run: |
         set -uo pipefail
@@ -288,7 +299,15 @@ runs:
           # Atomic roots are NEVER file-trimmed: doing so can strand a
           # subdir without its best_config.json sentinel and crash the
           # next consumer.
-          if [[ -n "${ATOMIC_CACHE_DIRS}" ]]; then
+          #
+          # Callers that run on every PR (gpu-smoke.yml) opt out via
+          # skip-atomic-age-trim so the destructive whole-subdir eviction
+          # only happens via the daily runner-maintenance.yml job;
+          # sentinel-repair above still ran unconditionally, so half-dead
+          # state is healed regardless of this opt-out.
+          if [[ "${SKIP_ATOMIC_AGE_TRIM}" == "true" ]]; then
+            echo "Skipping atomic age-trim (opted out)"
+          elif [[ -n "${ATOMIC_CACHE_DIRS}" ]]; then
             parse_list_into_array ATOMIC_TRIM_ARGS <<< "${ATOMIC_CACHE_DIRS}"
             if (( ${#ATOMIC_TRIM_ARGS[@]} > 0 )); then
               bash "${RECLAIM_SCRIPT}" atomic-trim "${CACHE_AGE_DAYS}" "${ATOMIC_TRIM_ARGS[@]}" || true
