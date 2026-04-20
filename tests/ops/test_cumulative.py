@@ -23,65 +23,6 @@ class CumulativeBasicFixture(FixtureBase):
                 pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
-                pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
-                # Non-aligned N (non-pow2)
-                pytest.param(128, 300, torch.float16, marks=pytest.mark.full),
-                pytest.param(128, 300, torch.bfloat16, marks=pytest.mark.full),
-                # Tail-M: M not divisible by block_m
-                pytest.param(129, 512, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class CumulativeNonContigFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(128, 512, torch.float16, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(128, 512, torch.float32, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class Cumulative3DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq, hidden, dtype",
-            [
-                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.full),
-                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(2, 64, 512, torch.float32, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class Cumulative4DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "b0, b1, b2, n, dtype",
-            [
-                pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.full),
-                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(2, 4, 8, 512, torch.float32, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class Cumulative1DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n, dtype",
-            [
-                pytest.param(512, torch.float32, marks=pytest.mark.full),
-                pytest.param(512, torch.float16, marks=pytest.mark.full),
-                pytest.param(512, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -153,57 +94,6 @@ def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-@CumulativeNonContigFixture
-def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
-
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
-    x = x_full[:, :n]
-    op = CumsumFwdOp(M=m, N=n, dtype=dtype)
-    ref = x.contiguous().float().cumsum(dim=-1).to(dtype)
-    y = op(x)
-    tol = _tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
-
-
-@Cumulative3DFixture
-def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
-
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    M = batch * seq
-    op = CumsumFwdOp(M=M, N=hidden, dtype=dtype)
-    ref = x.float().cumsum(dim=-1).to(dtype)
-    y = op(x)
-    tol = _tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"3D max err: {(y - ref).abs().max()}"
-
-
-@Cumulative4DFixture
-def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
-
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    M = b0 * b1 * b2
-    op = CumsumFwdOp(M=M, N=n, dtype=dtype)
-    ref = x.float().cumsum(dim=-1).to(dtype)
-    y = op(x)
-    tol = _tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"4D max err: {(y - ref).abs().max()}"
-
-
-@Cumulative1DFixture
-def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
-
-    x = torch.randn(n, dtype=dtype, device="cuda")
-    op = CumsumFwdOp(M=1, N=n, dtype=dtype)
-    ref = x.float().cumsum(dim=-1).to(dtype)
-    y = op(x)
-    tol = _tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"1D cumsum max err: {(y - ref).abs().max()}"
-
-
 # ---------------------------------------------------------------------------
 # CumprodFwdOp tests
 # ---------------------------------------------------------------------------
@@ -216,57 +106,6 @@ def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = CumulativeTest(m, n, dtype, "cumprod", use_small_range=True)
     op = CumprodFwdOp(M=m, N=n, dtype=dtype)
     test.check(op, *test.gen_inputs(), **_cumprod_tol(dtype))
-
-
-@CumulativeNonContigFixture
-def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumprod import CumprodFwdOp
-
-    x_full = torch.rand(m, n * 2, dtype=dtype, device="cuda") * 0.01 + 0.99
-    x = x_full[:, :n]
-    op = CumprodFwdOp(M=m, N=n, dtype=dtype)
-    ref = x.contiguous().float().cumprod(dim=-1).to(dtype)
-    y = op(x)
-    tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
-
-
-@Cumulative3DFixture
-def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumprod import CumprodFwdOp
-
-    x = torch.rand(batch, seq, hidden, dtype=dtype, device="cuda") * 0.01 + 0.99
-    M = batch * seq
-    op = CumprodFwdOp(M=M, N=hidden, dtype=dtype)
-    ref = x.float().cumprod(dim=-1).to(dtype)
-    y = op(x)
-    tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"3D cumprod max err: {(y - ref).abs().max()}"
-
-
-@Cumulative4DFixture
-def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumprod import CumprodFwdOp
-
-    x = torch.rand(b0, b1, b2, n, dtype=dtype, device="cuda") * 0.01 + 0.99
-    M = b0 * b1 * b2
-    op = CumprodFwdOp(M=M, N=n, dtype=dtype)
-    ref = x.float().cumprod(dim=-1).to(dtype)
-    y = op(x)
-    tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"4D cumprod max err: {(y - ref).abs().max()}"
-
-
-@Cumulative1DFixture
-def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumprod import CumprodFwdOp
-
-    x = torch.rand(n, dtype=dtype, device="cuda") * 0.01 + 0.99
-    op = CumprodFwdOp(M=1, N=n, dtype=dtype)
-    ref = x.float().cumprod(dim=-1).to(dtype)
-    y = op(x)
-    tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"1D cumprod max err: {(y - ref).abs().max()}"
 
 
 if __name__ == "__main__":

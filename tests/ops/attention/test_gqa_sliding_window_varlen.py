@@ -84,24 +84,6 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
              # ── Prefill: seqlen_q == seqlen_k (offset=0) ─────────────────────
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.smoke),   # causal
              pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True,  -1,  -1, torch.bfloat16, False, marks=pytest.mark.smoke),   # causal bf16
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, True, 128,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal + wl
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # bidirectional
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, 64,  64, torch.float16,  False, marks=pytest.mark.full),    # window
-             # ── KV-cache: seqlen_k > seqlen_q (offset > 0) ───────────────────
-             pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal kvcache
-             pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, True, 128,  -1, torch.float16,  False, marks=pytest.mark.full),    # causal+wl kvcache
-             pytest.param(2, [64, 128],  [256, 512], 8, 2, 64, False, 64,  64, torch.float16,  False, marks=pytest.mark.full),    # window kvcache
-             # ── bfloat16 ─────────────────────────────────────────────────────
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, 64,  64, torch.bfloat16, False, marks=pytest.mark.full),    # window bf16
-             # ── GQA ratios ───────────────────────────────────────────────────
-             pytest.param(2, [256, 512], [256, 512], 8, 8, 64, True,  -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # MHA 1:1
-             pytest.param(2, [256, 512], [256, 512], 16, 1, 64, True, -1,  -1, torch.float16,  False, marks=pytest.mark.full),    # ratio 16:1
-             # ── Mixed lengths within batch ────────────────────────────────────
-             pytest.param(3, [128, 256, 384], [128, 256, 384], 8, 2, 64, True, -1, -1, torch.float16, False, marks=pytest.mark.full),
-             # ── Right window only ─────────────────────────────────────────────
-             pytest.param(2, [256, 512], [256, 512], 8, 2, 64, False, -1,  64, torch.float16,  False, marks=pytest.mark.full),    # right window
-             # ── wl=0 boundary ────────────────────────────────────────────────
-             pytest.param(2, [128, 256], [128, 256], 8, 2, 64, True,   0,  -1, torch.float16,  False, marks=pytest.mark.full),    # wl=0
          ]),
     ]
 

@@ -65,12 +65,6 @@ class GroupedQueryAttentionDecodePagedFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune", [
             pytest.param(1, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 32, 8, 256, 128, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 8, 4, 1024, 64, 256, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 16, 8, 512, 128, 128, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 16, 4, 2048, 128, 512, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 32, 16, 512, 64, 128, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 

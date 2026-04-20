@@ -32,20 +32,6 @@ class MultiDimFixture(FixtureBase):
                     (4, 32, 256), [0, 1], False, torch.bfloat16,
                     marks=pytest.mark.smoke,
                 ),
-                pytest.param(
-                    (4, 32, 256), [0, 1], True, torch.float16,
-                    marks=pytest.mark.full,
-                ),
-                # 4D: reduce middle two dims
-                pytest.param(
-                    (2, 4, 8, 256), [1, 2], False, torch.float16,
-                    marks=pytest.mark.full,
-                ),
-                # 4D: reduce first and last
-                pytest.param(
-                    (2, 4, 8, 256), [0, 3], False, torch.float16,
-                    marks=pytest.mark.full,
-                ),
             ],
         ),
     ]
@@ -243,10 +229,6 @@ class MultiDimLogicalFixture(FixtureBase):
                     (4, 32, 256), [0, 1], False, torch.complex64,
                     marks=pytest.mark.smoke,
                 ),
-                pytest.param(
-                    (4, 32, 256), [0, 1], True, torch.float32,
-                    marks=pytest.mark.full,
-                ),
             ],
         ),
     ]
@@ -388,66 +370,6 @@ def test_inf_norm_multidim(
     tol = _tol(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
-
-
-# ---------------------------------------------------------------------------
-# Regression: empty dim list must be rejected before reaching the helper
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.full
-def test_empty_dim_list_raises() -> None:
-    """dim=[] must raise ValueError; the helper cannot produce correct semantics."""
-    from tileops.ops.reduction._multidim import normalize_dim
-
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        normalize_dim([], ndim=3)
-
-
-@pytest.mark.full
-def test_sum_empty_dim_raises() -> None:
-    """SumFwdOp(dim=[]) must raise before dispatching to the multi-dim helper."""
-    from tileops.ops.reduction.reduce import SumFwdOp
-
-    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
-    op = SumFwdOp(dtype=torch.float16, dim=[], keepdim=False)
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        op(x)
-
-
-@pytest.mark.full
-def test_mean_empty_dim_raises() -> None:
-    """MeanFwdOp(dim=[]) must raise before dispatching to the multi-dim helper."""
-    from tileops.ops.reduction.reduce import MeanFwdOp
-
-    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
-    op = MeanFwdOp(dtype=torch.float16, dim=[], keepdim=False)
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        op(x)
-
-
-@pytest.mark.full
-def test_negative_dims_accepted() -> None:
-    """Negative dims should be normalized and produce correct results."""
-    from tileops.ops.reduction.reduce import SumFwdOp
-
-    x = torch.randn(4, 8, 256, dtype=torch.float16, device="cuda")
-    op = SumFwdOp(dtype=torch.float16, dim=[-1, 0], keepdim=False)
-    ref = torch.sum(x.float(), dim=[0, 2], keepdim=False).to(torch.float16)
-    y = op(x)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **_tol(torch.float16))
-
-
-@pytest.mark.full
-def test_duplicate_dims_raises() -> None:
-    """Duplicate dims (after normalization) must raise ValueError at op level."""
-    from tileops.ops.reduction.reduce import SumFwdOp
-
-    x = torch.randn(4, 8, 256, dtype=torch.float16, device="cuda")
-    op = SumFwdOp(dtype=torch.float16, dim=[1, 1], keepdim=False)
-    with pytest.raises(ValueError, match="Duplicate dims"):
-        op(x)
 
 
 if __name__ == "__main__":

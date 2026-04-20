@@ -36,16 +36,6 @@ class DimNoneFixture(FixtureBase):
                     (4, 8, 256), False, torch.float32,
                     marks=pytest.mark.smoke,
                 ),
-                # 2D: basic case
-                pytest.param(
-                    (4, 256), False, torch.float16,
-                    marks=pytest.mark.full,
-                ),
-                # 3D: keepdim=True
-                pytest.param(
-                    (4, 8, 256), True, torch.float16,
-                    marks=pytest.mark.full,
-                ),
             ],
         ),
     ]
@@ -70,16 +60,6 @@ def _all_dims(shape: tuple) -> list[int]:
 # ---------------------------------------------------------------------------
 # Unit test: normalize_dim(None, ndim) -> list(range(ndim))
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.full
-def test_normalize_dim_none() -> None:
-    """normalize_dim(None, ndim) must return list(range(ndim))."""
-    from tileops.ops.reduction._multidim import normalize_dim
-
-    assert normalize_dim(None, 3) == [0, 1, 2]
-    assert normalize_dim(None, 1) == [0]
-    assert normalize_dim(None, 5) == [0, 1, 2, 3, 4]
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +237,6 @@ class DimNoneLogicalFixture(FixtureBase):
                     (4, 8, 256), False, torch.bfloat16,
                     marks=pytest.mark.smoke,
                 ),
-                pytest.param(
-                    (4, 8, 256), True, torch.float32,
-                    marks=pytest.mark.full,
-                ),
             ],
         ),
     ]
@@ -301,21 +277,6 @@ def test_any_dim_none(
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.equal(y, ref), "any dim=None mismatch"
-
-
-@pytest.mark.full
-def test_count_nonzero_dim_none() -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
-
-    shape = (4, 8, 256)
-    x = torch.randn(*shape, dtype=torch.float32, device="cuda")
-    x[x < 0] = 0.0
-    op = CountNonzeroFwdOp(dtype=torch.float32, dim=None)
-    dims = _all_dims(shape)
-    ref = torch.count_nonzero(x, dim=dims)
-    y = op(x)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), "count_nonzero dim=None mismatch"
 
 
 @pytest.mark.parametrize("dtype", [

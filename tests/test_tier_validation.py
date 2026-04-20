@@ -1,7 +1,7 @@
 """Tests for smoke-param tier validation in conftest.py.
 
 Verifies:
-- AC-1: Zero smoke params are deselected.
+- AC-1: Zero smoke params still fail.
 - AC-2: Multiple smoke params pass validation.
 - AC-3: Smoke params must appear as first N non-xfail cases; ordering
          violation raises pytest.UsageError.
@@ -37,12 +37,11 @@ def _make_item(
     """Build a lightweight mock pytest.Item for tier validation tests."""
     markers = markers or []
     item = MagicMock(spec=["nodeid", "path", "name", "originalname",
-                           "get_closest_marker", "callspec", "config"])
+                           "get_closest_marker", "callspec"])
     item.nodeid = f"{path}::{name}"
     item.path = Path(path)
     item.name = name
     item.originalname = originalname
-    item.config = SimpleNamespace(hook=SimpleNamespace(pytest_deselected=MagicMock()))
 
     marker_set = set(markers)
 
@@ -77,25 +76,21 @@ class TestFreezeValue:
 
 
 # ===================================================================
-# AC-1: Zero smoke params are deselected
+# AC-1: Zero smoke params still fail
 # ===================================================================
 
 
 @pytest.mark.full
-class TestZeroSmokeHandling:
-    """Ops tests without smoke cases are deselected."""
+class TestZeroSmokeFails:
+    """At least one smoke param is required per ops test function."""
 
-    def test_zero_smoke_items_are_deselected(self):
+    def test_zero_smoke_raises(self):
         items = [
             _make_item(markers=["full"], tune=False),
             _make_item(markers=["full"], tune=False),
         ]
-        deselected_hook = items[0].config.hook.pytest_deselected
-
-        pytest_collection_modifyitems(items)
-
-        deselected_hook.assert_called_once()
-        assert items == []
+        with pytest.raises(pytest.UsageError, match="smoke"):
+            pytest_collection_modifyitems(items)
 
 
 # ===================================================================
@@ -258,9 +253,9 @@ class TestSmokeConstraints:
         ]
         with pytest.raises(pytest.UsageError, match="xfail") as exc_info:
             pytest_collection_modifyitems(items)
-        # Only the xfail rejection should fire; the missing-smoke rule is gone.
+        # Must also report missing smoke (no valid smoke cases), but NOT ordering
         assert "must not be xfail" in str(exc_info.value)
-        assert "at least one smoke case" not in str(exc_info.value)
+        assert "at least one smoke case" in str(exc_info.value)
         assert "must appear as the first" not in str(exc_info.value)
 
     def test_smoke_xfail_valid_smoke_full_only_xfail_error(self):
@@ -300,18 +295,47 @@ class TestNonRuntimeOpsFileExemption:
             ),
         ]
         pytest_collection_modifyitems(items)
-        assert items == []
+
 
 # ===================================================================
-# AC-6: Only smoke ops tests are collected
+# AC-6: Every dtype needs smoke coverage
 # ===================================================================
 
 
 @pytest.mark.smoke
-class TestOpsSmokeOnlyCollection:
-    """Non-smoke tests under tests/ops are deselected regardless of marker."""
+class TestPerDtypeSmokeCoverage:
+    """Every dtype present in parametrized ops tests must have a smoke case."""
 
-    def test_non_smoke_ops_items_are_deselected(self):
+    def test_each_dtype_has_smoke_case(self):
+        items = [
+            _make_item(
+                name="test_op[fp16]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[bf16]",
+                markers=["smoke"],
+                dtype=torch.bfloat16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[fp32]",
+                markers=["smoke"],
+                dtype=torch.float32,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[fp16-full]",
+                markers=["full"],
+                dtype=torch.float16,
+                tune=True,
+            ),
+        ]
+        pytest_collection_modifyitems(items)
+
+    def test_missing_dtype_smoke_raises(self):
         items = [
             _make_item(
                 name="test_op[fp16]",
@@ -323,45 +347,11 @@ class TestOpsSmokeOnlyCollection:
                 name="test_op[bf16]",
                 markers=["full"],
                 dtype=torch.bfloat16,
-                tune=True,
-            ),
-            _make_item(
-                name="test_op[fp32]",
-                markers=["nightly"],
-                dtype=torch.float32,
                 tune=False,
             ),
         ]
-        deselected_hook = items[0].config.hook.pytest_deselected
-
-        pytest_collection_modifyitems(items)
-
-        deselected_hook.assert_called_once()
-        assert [item.name for item in items] == ["test_op[fp16]"]
-
-    def test_non_ops_tests_are_not_deselected(self):
-        items = [
-            _make_item(
-                path="tests/test_misc.py",
-                name="test_misc[full]",
-                markers=["full"],
-                dtype=torch.float16,
-                tune=False,
-            ),
-            _make_item(
-                path="tests/test_misc.py",
-                name="test_misc[nightly]",
-                markers=["nightly"],
-                dtype=torch.bfloat16,
-                tune=False,
-            ),
-        ]
-        deselected_hook = items[0].config.hook.pytest_deselected
-
-        pytest_collection_modifyitems(items)
-
-        deselected_hook.assert_not_called()
-        assert len(items) == 2
+        with pytest.raises(pytest.UsageError, match="each dtype must have at least one smoke"):
+            pytest_collection_modifyitems(items)
 
 
 # ===================================================================

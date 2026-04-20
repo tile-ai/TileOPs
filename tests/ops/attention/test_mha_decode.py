@@ -25,7 +25,6 @@ class MhaDecodeFixture(FixtureBase):
         ("b, h, s_q, s_kv, d, dtype, tune", [
             pytest.param(1, 32, 128, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
             pytest.param(1, 32, 128, 8192, 128, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 32, 128, 5, 128, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 

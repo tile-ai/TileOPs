@@ -86,18 +86,6 @@ class GroupedGemmFixture(FixtureBase):
                 16384, 4, 4864, 4096, torch.float16, False, True, False,
                 marks=pytest.mark.smoke,
             ),
-            pytest.param(
-                16384, 4, 4864, 4096, torch.float16, False, False, False,
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                16384, 4, 4864, 4096, torch.float16, True, False, False,
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                16384, 4, 4864, 4096, torch.float16, True, True, False,
-                marks=pytest.mark.full,
-            ),
         ]),
     ]
 

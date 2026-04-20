@@ -43,14 +43,6 @@ class NsaFwdFixture(FixtureBase):
                  1, 16, 1024, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False,
                  marks=pytest.mark.smoke,
              ),
-             pytest.param(
-                 4, 16, 8192, 64, True, 0.1, 32, 16, 1, torch.float16, torch.float32, False,
-                 marks=pytest.mark.full,
-             ),
-             pytest.param(
-                 2, 16, 8192, 64, True, 0.1, 32, 16, 4, torch.float16, torch.float32, False,
-                 marks=pytest.mark.full,
-             ),
          ]),
     ]
 

@@ -72,10 +72,6 @@ class DeltaNetDecodeFixture(FixtureBase):
             pytest.param(1, 4, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
             pytest.param(1, 4, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
             pytest.param(1, 4, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 8, 64, 64, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 

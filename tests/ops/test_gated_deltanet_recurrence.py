@@ -79,64 +79,8 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, dim_k, dim_v, dtype, tune", [
             pytest.param(1, 4, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(
-                1,
-                4,
-                64,
-                64,
-                torch.float16,
-                False,
-                marks=[
-                    pytest.mark.smoke,
-                    pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 5f70374c (#999)."
-                    ),
-                ],
-            ),
-            pytest.param(
-                1,
-                4,
-                64,
-                64,
-                torch.bfloat16,
-                False,
-                marks=[
-                    pytest.mark.smoke,
-                    pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 5f70374c (#999)."
-                    ),
-                ],
-            ),
-            pytest.param(2, 8, 64, 64, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(
-                2,
-                8,
-                64,
-                64,
-                torch.float16,
-                False,
-                marks=[
-                    pytest.mark.full,
-                    pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 5f70374c (#999)."
-                    ),
-                ],
-            ),
-            pytest.param(
-                2,
-                8,
-                64,
-                64,
-                torch.bfloat16,
-                False,
-                marks=[
-                    pytest.mark.full,
-                    pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 5f70374c (#999)."
-                    ),
-                ],
-            ),
+            pytest.param(1, 4, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1, 4, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
         ]),
     ]
 

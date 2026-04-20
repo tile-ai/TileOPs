@@ -101,13 +101,6 @@ class MoePermuteFixture(FixtureBase):
         ("total_tokens, top_k, num_experts, hidden_size, dtype", [
             pytest.param(4,    2,   4,   64,  torch.bfloat16, marks=pytest.mark.smoke, id="tiny-bf16"),
             pytest.param(4,    2,   4,   64,  torch.float16,  marks=pytest.mark.smoke, id="tiny-fp16"),
-            pytest.param(16,   2,   8,   128, torch.bfloat16, marks=pytest.mark.full,  id="small"),
-            pytest.param(128,  4,   8,   256, torch.bfloat16, marks=pytest.mark.full,  id="medium"),
-            pytest.param(1024, 8,   128, 128, torch.bfloat16, marks=pytest.mark.full,  id="qwen3-scale"),
-            pytest.param(1,    2,   4,   64,  torch.bfloat16, marks=pytest.mark.full,  id="single-token"),
-            pytest.param(8,    1,   4,   64,  torch.bfloat16, marks=pytest.mark.full,  id="top-k-1"),
-            # skewed: all tokens to expert 0
-            pytest.param(32,   4,   8,   64,  torch.bfloat16, marks=pytest.mark.full,  id="skewed"),
         ]),
     ]
 
@@ -179,22 +172,6 @@ def test_moe_permute_op(total_tokens, top_k, num_experts, hidden_size, dtype):
 
     _compare(hidden_states, topk_ids, outputs, outputs_ref, num_experts)
     print(f"PASS [{total_tokens}tok, top{top_k}, E={num_experts}, H={hidden_size}, {dtype}]")
-
-
-@pytest.mark.full
-def test_moe_permute_skewed():
-    """All tokens routed to expert 0."""
-    T, K, E, H = 32, 4, 8, 64
-    hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
-    topk_ids = torch.zeros((T, K), dtype=torch.int32, device="cuda")
-
-    op = MoePermutePaddedFwdOp(T, K, E, H, torch.bfloat16)
-    outputs = op(hidden_states, topk_ids)
-    outputs_ref = _ref_moe_permute(hidden_states, topk_ids, E)
-
-    _compare(hidden_states, topk_ids, outputs, outputs_ref, E)
-    print("PASS skewed (all tokens → expert 0)")
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

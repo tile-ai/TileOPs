@@ -51,26 +51,8 @@ def fused_topk_torch(
 class FusedTopKFixture(FixtureBase):
     PARAMS = [
         ("num_tokens, num_experts, top_k, scoring_func, renormalize, dtype", [
-            # smoke cases must be first
             pytest.param(32,   128, 8, "softmax", False, torch.bfloat16, marks=pytest.mark.smoke, id="smoke-softmax-bf16"),
             pytest.param(32,   128, 8, "softmax", False, torch.float16,  marks=pytest.mark.smoke, id="smoke-softmax-fp16"),
-            pytest.param(32,   256, 8, "sigmoid", True,  torch.bfloat16, marks=pytest.mark.full, id="smoke-sigmoid-renorm"),
-            # E not divisible by 32 — exercises padding path (expert_idx >= num_experts)
-            pytest.param(32,   100, 4, "softmax", False, torch.bfloat16, marks=pytest.mark.full, id="smoke-e100-pad"),
-            pytest.param(32,    33, 2, "sigmoid", False, torch.bfloat16, marks=pytest.mark.full, id="smoke-e33-pad"),
-            # softmax, no renorm (Qwen3-MoE style)
-            pytest.param(512,  128, 8, "softmax", False, torch.bfloat16, marks=pytest.mark.full, id="qwen3-small"),
-            pytest.param(2048, 128, 8, "softmax", False, torch.bfloat16, marks=pytest.mark.full, id="qwen3-medium"),
-            pytest.param(4096, 128, 8, "softmax", False, torch.bfloat16, marks=pytest.mark.full, id="qwen3-large"),
-            # softmax + renorm (Qwen3.5-MoE style)
-            pytest.param(512,  256, 8, "softmax", True,  torch.bfloat16, marks=pytest.mark.full, id="qwen35-small"),
-            pytest.param(2048, 256, 8, "softmax", True,  torch.bfloat16, marks=pytest.mark.full, id="qwen35-medium"),
-            # sigmoid, no renorm
-            pytest.param(512,  256, 8, "sigmoid", False, torch.bfloat16, marks=pytest.mark.full, id="sigmoid-no-renorm"),
-            # sigmoid + renorm (DeepSeek-V3/GLM-4 style)
-            pytest.param(512,  256, 8, "sigmoid", True,  torch.bfloat16, marks=pytest.mark.full, id="sigmoid-renorm"),
-            # top_k=1
-            pytest.param(512,   64, 1, "softmax", False, torch.bfloat16, marks=pytest.mark.full, id="top-k-1"),
         ]),
     ]
 

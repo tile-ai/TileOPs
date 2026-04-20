@@ -91,37 +91,57 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item for item in smoke_items if item.get_closest_marker("xfail") is None
         ]
 
-        if valid_smoke_items:
-            # All smoke cases must appear as the first N non-xfail items
-            expected_smoke = non_xfail_items[: len(valid_smoke_items)]
-            if valid_smoke_items != expected_smoke:
+        if non_xfail_items:
+            if len(valid_smoke_items) < 1:
                 tier_errors.append(
-                    f"{non_xfail_items[0].nodeid}: all smoke cases must appear "
-                    f"as the first {len(valid_smoke_items)} non-xfail cases of each test"
+                    f"{non_xfail_items[0].nodeid}: each test must have at least one smoke case"
                 )
+            else:
+                # All smoke cases must appear as the first N non-xfail items
+                expected_smoke = non_xfail_items[: len(valid_smoke_items)]
+                if valid_smoke_items != expected_smoke:
+                    tier_errors.append(
+                        f"{non_xfail_items[0].nodeid}: all smoke cases must appear "
+                        f"as the first {len(valid_smoke_items)} non-xfail cases of each test"
+                    )
 
+        dtype_supported: set[object] = set()
+        dtype_smoke: set[object] = set()
         smoke_signatures: set[tuple[tuple[str, object], ...]] = set()
+        dtype_cases_present = False
 
         for item in non_xfail_items:
             params = _get_callspec_params(item)
             if not params or "dtype" not in params:
                 continue
+
+            dtype_cases_present = True
+            dtype_supported.add(params["dtype"])
 
             if item.get_closest_marker("smoke") is not None:
+                dtype_smoke.add(params["dtype"])
                 smoke_signatures.add(_without_dtype(params))
 
-        for item in non_xfail_items:
-            if item.get_closest_marker("full") is None:
-                continue
-
-            params = _get_callspec_params(item)
-            if not params or "dtype" not in params:
-                continue
-
-            if _without_dtype(params) in smoke_signatures:
+        if dtype_cases_present:
+            missing_smoke_dtypes = dtype_supported - dtype_smoke
+            if missing_smoke_dtypes:
                 tier_errors.append(
-                    f"{item.nodeid}: full cases must not differ from a smoke case only by dtype"
+                    f"{non_xfail_items[0].nodeid}: each dtype must have at least one smoke case; "
+                    f"missing smoke for {sorted(str(dtype) for dtype in missing_smoke_dtypes)}"
                 )
+
+            for item in non_xfail_items:
+                if item.get_closest_marker("full") is None:
+                    continue
+
+                params = _get_callspec_params(item)
+                if not params or "dtype" not in params:
+                    continue
+
+                if _without_dtype(params) in smoke_signatures:
+                    tier_errors.append(
+                        f"{item.nodeid}: full cases must not differ from a smoke case only by dtype"
+                    )
 
         first_tuned_item: pytest.Item | None = None
         full_tuned_items: list[pytest.Item] = []
@@ -157,19 +177,6 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         raise pytest.UsageError(
             "Invalid explicit test tier assignments detected:\n" + "\n".join(tier_errors)
         )
-
-    deselected: list[pytest.Item] = []
-    kept: list[pytest.Item] = []
-    for item in items:
-        path = str(item.path)
-        if "tests/ops/" in path and item.get_closest_marker("smoke") is None:
-            deselected.append(item)
-            continue
-        kept.append(item)
-
-    if deselected and items:
-        items[0].config.hook.pytest_deselected(items=deselected)
-    items[:] = kept
 
 
 @pytest.hookimpl(hookwrapper=True)

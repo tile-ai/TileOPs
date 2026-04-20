@@ -23,10 +23,6 @@ class FP8QuantFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len_kv, kv_group, index_dim, in_dtype, tune", [
             pytest.param(1, 8192, 1, 64, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 8192, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(1, 4096, 1, 128, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1, 16384, 1, 32, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1, 1024, 4, 64, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 

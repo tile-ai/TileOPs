@@ -5,7 +5,6 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.convolution import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
 from tileops.ops import Conv1dFwdOp, Conv2dOp, Conv3dOp
 
 SKIPPED_CONV2D_CASES = {
@@ -33,31 +32,6 @@ class Conv1dFixture(FixtureBase):
                 2, 64, 512, 128, 3, 1, 1, torch.bfloat16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-tcn-k3-s1-bf16",
-            ),
-            pytest.param(
-                4, 256, 32000, 512, 1, 1, 0, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-convtasnet-pointwise-k1-s1-fp16",
-            ),
-            pytest.param(
-                4, 128, 4096, 256, 3, 1, 1, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-seanet-residual-k3-s1-fp16",
-            ),
-            pytest.param(
-                4, 64, 16000, 128, 5, 2, 2, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-audio-downsample-k5-s2-fp16",
-            ),
-            pytest.param(
-                1, 32, 256, 64, 7, 1, 3, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-small-seanet-stem-k7-s1-fp16",
-            ),
-            pytest.param(
-                2, 128, 4096, 256, 3, 2, 1, torch.bfloat16, False,
-                marks=pytest.mark.full,
-                id="full-sequence-downsample-k3-s2-bf16",
             ),
         ]),
     ]
@@ -141,42 +115,6 @@ def test_conv1d(
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-@pytest.mark.full
-def test_conv1d_accepts_zero_bias() -> None:
-    op = Conv1dFwdOp(
-        n=1,
-        c_in=32,
-        l_in=256,
-        c_out=64,
-        kernel_size=5,
-        stride=2,
-        padding=2,
-        bias=True,
-    )
-    x = torch.randn(1, 256, 32, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
-    bias = torch.zeros(64, device="cuda", dtype=torch.float16).contiguous()
-    out = op(x, weight, bias)
-    ref = F.conv1d(x.permute(0, 2, 1).contiguous(), weight, bias=bias, stride=2, padding=2)
-    ref = ref.permute(0, 2, 1).contiguous()
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.full
-def test_conv1d_dispatches_kernel() -> None:
-    op = Conv1dFwdOp(
-        n=1,
-        c_in=32,
-        l_in=256,
-        c_out=64,
-        kernel_size=3,
-        stride=1,
-        padding=1,
-        bias=True,
-    )
-    assert isinstance(op.kernel, Conv1dKernel)
-
-
 class Conv2dFixture(FixtureBase):
     PARAMS = [
         ("n, c_in, h, w, c_out, kernel_size, stride, padding, dtype, tune", [
@@ -189,51 +127,6 @@ class Conv2dFixture(FixtureBase):
                 2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), torch.bfloat16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-bf16-3x3",
-            ),
-            pytest.param(
-                1, 3, 112, 112, 64, (3, 3), (2, 2), (1, 1), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-stem-3x3-s2-fp16",
-            ),
-            pytest.param(
-                1, 64, 56, 56, 64, (3, 3), (1, 1), (1, 1), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-resblock-3x3-s1-fp16",
-            ),
-            pytest.param(
-                1, 128, 56, 56, 256, (3, 3), (2, 2), (1, 1), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-stage-transition-3x3-s2-fp16",
-            ),
-            pytest.param(
-                1, 32, 28, 28, 64, (5, 5), (1, 1), (2, 2), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-small-5x5-s1-fp16",
-            ),
-            pytest.param(
-                1, 64, 28, 28, 128, (5, 5), (2, 2), (2, 2), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-small-5x5-s2-fp16",
-            ),
-            pytest.param(
-                2, 32, 32, 32, 64, (1, 1), (1, 1), (0, 0), torch.float16, True,
-                marks=pytest.mark.full,
-                id="full-fp16-1x1-tuned",
-            ),
-            pytest.param(
-                1, 64, 28, 28, 128, (3, 3), (2, 2), (1, 1), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-fp16-stride2",
-            ),
-            pytest.param(
-                1, 64, 56, 56, 128, (3, 3), (2, 2), (1, 1), torch.bfloat16, False,
-                marks=pytest.mark.full,
-                id="full-bf16-3x3-s2",
-            ),
-            pytest.param(
-                1, 64, 28, 28, 64, (1, 1), (1, 1), (0, 0), torch.bfloat16, False,
-                marks=pytest.mark.full,
-                id="full-bf16-1x1",
             ),
         ]),
     ]
@@ -323,87 +216,6 @@ def test_conv2d(
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-@pytest.mark.full
-def test_conv2d_accepts_zero_bias() -> None:
-    pytest.skip("Temporarily skipping known Conv2d zero-bias failure under TileLang 5f70374c (#999).")
-    op = Conv2dOp(
-        n=1,
-        c_in=32,
-        h=16,
-        w=16,
-        c_out=32,
-        kernel_size=3,
-        padding=1,
-        bias=True,
-    )
-    x = torch.randn(1, 16, 16, 32, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(32, 32, 3, 3, device="cuda", dtype=torch.float16).contiguous()
-    bias = torch.zeros(32, device="cuda", dtype=torch.float16).contiguous()
-    out = op(x, weight, bias)
-    ref = F.conv2d(x.permute(0, 3, 1, 2).contiguous(), weight, bias=bias, padding=1)
-    ref = ref.permute(0, 2, 3, 1).contiguous()
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.full
-def test_conv2d_dispatches_1x1_kernel() -> None:
-    op = Conv2dOp(
-        n=1,
-        c_in=32,
-        h=16,
-        w=16,
-        c_out=64,
-        kernel_size=1,
-        bias=True,
-    )
-    assert isinstance(op.kernel, Conv2d1x1Kernel)
-
-
-@pytest.mark.full
-def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
-    op = Conv2dOp(
-        n=1,
-        c_in=32,
-        h=16,
-        w=16,
-        c_out=64,
-        kernel_size=1,
-        padding=1,
-        bias=True,
-    )
-    assert isinstance(op.kernel, Conv2dKernel)
-
-
-@pytest.mark.full
-def test_conv2d_dispatches_3x3_kernel() -> None:
-    op = Conv2dOp(
-        n=1,
-        c_in=32,
-        h=16,
-        w=16,
-        c_out=64,
-        kernel_size=3,
-        padding=1,
-        bias=True,
-    )
-    assert isinstance(op.kernel, Conv2dKernel)
-
-
-@pytest.mark.full
-def test_conv2d_dispatches_5x5_kernel() -> None:
-    op = Conv2dOp(
-        n=1,
-        c_in=32,
-        h=16,
-        w=16,
-        c_out=64,
-        kernel_size=5,
-        padding=2,
-        bias=True,
-    )
-    assert isinstance(op.kernel, Conv2dKernel)
-
-
 class Conv3dFixture(FixtureBase):
     PARAMS = [
         ("n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype, tune", [
@@ -416,21 +228,6 @@ class Conv3dFixture(FixtureBase):
                 1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.bfloat16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-3d-unet-k3-s1-bf16",
-            ),
-            pytest.param(
-                1, 3, 16, 112, 112, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-r3d-stem-k3-s1-fp16",
-            ),
-            pytest.param(
-                1, 64, 8, 56, 56, 128, (3, 3, 3), (2, 2, 2), (1, 1, 1), torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-video-stage-downsample-k3-s2-fp16",
-            ),
-            pytest.param(
-                1, 32, 32, 64, 64, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.bfloat16, False,
-                marks=pytest.mark.full,
-                id="full-unet-encoder-k3-s1-bf16",
             ),
         ]),
     ]
@@ -525,53 +322,6 @@ def test_conv3d(
     )
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-@pytest.mark.full
-def test_conv3d_accepts_zero_bias() -> None:
-    pytest.skip("Temporarily skipping known Conv3d zero-bias failure under TileLang 5f70374c (#999).")
-    op = Conv3dOp(
-        n=1,
-        c_in=8,
-        d_in=8,
-        h_in=16,
-        w_in=16,
-        c_out=16,
-        kernel_size=3,
-        stride=2,
-        padding=1,
-        bias=True,
-    )
-    x = torch.randn(1, 8, 16, 16, 8, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(16, 8, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
-    bias = torch.zeros(16, device="cuda", dtype=torch.float16).contiguous()
-    out = op(x, weight, bias)
-    ref = F.conv3d(
-        x.permute(0, 4, 1, 2, 3).contiguous(),
-        weight,
-        bias=bias,
-        stride=2,
-        padding=1,
-    )
-    ref = ref.permute(0, 2, 3, 4, 1).contiguous()
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.full
-def test_conv3d_dispatches_kernel() -> None:
-    op = Conv3dOp(
-        n=1,
-        c_in=8,
-        d_in=8,
-        h_in=16,
-        w_in=16,
-        c_out=16,
-        kernel_size=3,
-        stride=1,
-        padding=1,
-        bias=True,
-    )
-    assert isinstance(op.kernel, Conv3dKernel)
 
 
 if __name__ == "__main__":

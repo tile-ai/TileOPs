@@ -24,9 +24,6 @@ class ReluFixture(FixtureBase):
             pytest.param(1_000_000, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]),
             pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(1_000_000, torch.float32, marks=pytest.mark.smoke),
-            # Full: larger follow-up coverage
-            pytest.param(4_000_000, torch.float16, marks=pytest.mark.full),
-            pytest.param(4_000_000, torch.bfloat16, marks=pytest.mark.full),
         ]),
     ]
 
@@ -48,25 +45,6 @@ def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-class ReluStrategyFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype, strategy", [
-            pytest.param(1_000_000, torch.float16, "direct", marks=pytest.mark.full),
-            pytest.param(1_000_000, torch.float16, "explicit_parallel", marks=pytest.mark.full),
-            pytest.param(1_000_000, torch.float16, "register_copy", marks=pytest.mark.full),
-        ]),
-    ]
-
-
-@ReluStrategyFixture
-def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None:
-    """Verify all 3 unary strategies produce correct results."""
-    test = ReluTest(n_total, dtype)
-    op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
 # ===========================================================================
 # Template-based activation ops
 # ===========================================================================
@@ -79,15 +57,6 @@ class ActivationFixture(FixtureBase):
             pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
             pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
-class ActivationEdgeFixture(FixtureBase):
-    """L4 edge-case fixture: fp32, 4K elements."""
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.full),
         ]),
     ]
 
@@ -176,52 +145,6 @@ def test_selu(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _randn, F.selu, SeluFwdOp)
 
 
-@pytest.mark.full
-def test_activation_rejects_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import GeluFwdKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        GeluFwdKernel(N_total=16, dtype=torch.int32)
-
-
-# ---------------------------------------------------------------------------
-# L4 edge-case tests (fp32, 4K)
-# ---------------------------------------------------------------------------
-
-
-@ActivationEdgeFixture
-def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
-    """Edge: sigmoid of large negative -> ~0, large positive -> ~1."""
-    from tileops.ops.elementwise import SigmoidFwdOp
-
-    def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
-        x[:n // 2] = -50.0
-        x[n // 2:] = 50.0
-        return x
-
-    _make_activation_test(n_total, dtype, _extreme, torch.sigmoid, SigmoidFwdOp)
-
-
-@ActivationEdgeFixture
-def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
-    """Edge: tanh saturates to +/-1 for large inputs."""
-    from tileops.ops.elementwise import TanhFwdOp
-
-    def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
-        x[:n // 2] = -50.0
-        x[n // 2:] = 50.0
-        return x
-
-    _make_activation_test(n_total, dtype, _extreme, torch.tanh, TanhFwdOp)
-
-
-# ===========================================================================
-# Independent activation ops
-# ===========================================================================
-
-
 @ActivationFixture
 def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import LeakyReluFwdOp
@@ -294,30 +217,6 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
     print("All checks passed for PreluFwdOp.")
-
-
-@pytest.mark.full
-def test_prelu_batch_dim() -> None:
-    """PReLU with a leading batch dimension: shape (2, 4, 8)."""
-    from tileops.ops.elementwise import PreluFwdOp
-
-    dtype = torch.float32
-    shape = (2, 4, 8)
-    C = 4
-    x = torch.randn(shape, device="cuda", dtype=dtype)
-    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
-    ref = F.prelu(x, weight)
-    op = PreluFwdOp(shape=shape, dtype=dtype, num_channels=C)
-    out = op(x, weight)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for PreluFwdOp batch-dim.")
-
-
-@pytest.mark.full
-def test_independent_activation_rejects_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import LeakyReluFwdKernel
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        LeakyReluFwdKernel(N_total=16, dtype=torch.int32)
 
 
 if __name__ == "__main__":

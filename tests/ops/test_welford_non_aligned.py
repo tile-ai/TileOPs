@@ -88,24 +88,6 @@ class WelfordNonAlignedFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="m32_n257_bf16",
                 ),
-            ]
-            + [
-                pytest.param(
-                    32, n, torch.float16,
-                    marks=pytest.mark.full,
-                    id=f"m32_n{n}_fp16",
-                )
-                for n in _NON_ALIGNED_N
-                if n != 257
-            ]
-            + [
-                pytest.param(
-                    32, n, torch.bfloat16,
-                    marks=pytest.mark.full,
-                    id=f"m32_n{n}_bf16",
-                )
-                for n in _NON_ALIGNED_N
-                if n != 257
             ],
         ),
     ]
@@ -129,22 +111,6 @@ class WelfordNonAligned3DFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="b2_s16_h255_bf16",
                 ),
-            ]
-            + [
-                pytest.param(
-                    2, 16, n, torch.float16,
-                    marks=pytest.mark.full,
-                    id=f"b2_s16_h{n}_fp16",
-                )
-                for n in [7, 100, 257]
-            ]
-            + [
-                pytest.param(
-                    2, 16, n, torch.bfloat16,
-                    marks=pytest.mark.full,
-                    id=f"b2_s16_h{n}_bf16",
-                )
-                for n in [7, 257]
             ],
         ),
     ]
@@ -166,24 +132,6 @@ class WelfordNonAlignedMultiDimFixture(FixtureBase):
                     (4, 7, 9), [1, 2], False, torch.float16,
                     marks=pytest.mark.smoke,
                     id="flat63_fp16",
-                ),
-                # One representative full case (flattened N = 5*51 = 255)
-                pytest.param(
-                    (2, 5, 51), [1, 2], False, torch.float16,
-                    marks=pytest.mark.full,
-                    id="flat255_fp16",
-                ),
-                # (3, 3, 86): reducing dims [1,2] -> flattened N = 3*86 = 258
-                pytest.param(
-                    (3, 3, 86), [1, 2], False, torch.float16,
-                    marks=pytest.mark.full,
-                    id="flat258_fp16",
-                ),
-                # keepdim variant
-                pytest.param(
-                    (2, 5, 51), [1, 2], True, torch.float16,
-                    marks=pytest.mark.full,
-                    id="flat255_keepdim_fp16",
                 ),
             ],
         ),

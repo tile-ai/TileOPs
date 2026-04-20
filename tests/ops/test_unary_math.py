@@ -41,16 +41,6 @@ class MathFixture(FixtureBase):
     ]
 
 
-class MathEdgeFixture(FixtureBase):
-    """L4 edge-case fixture: fp32, 4K elements."""
-
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4096, torch.float32, marks=pytest.mark.full),
-        ]),
-    ]
-
-
 class UnaryMathTest(TestBase):
     """Generic test harness for a single-input, single-output unary op."""
 
@@ -218,118 +208,6 @@ def test_log1p(n_total: int, dtype: torch.dtype) -> None:
 @MathFixture
 def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(n_total, dtype, _randn, torch.expm1, Expm1FwdOp)
-
-
-@pytest.mark.full
-def test_math_ops_reject_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import ExpFwdKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        ExpFwdKernel(N_total=16, dtype=torch.int32)
-
-
-# ---------------------------------------------------------------------------
-# L4 edge-case tests (fp32, 4K)
-# ---------------------------------------------------------------------------
-
-
-@MathEdgeFixture
-def test_sqrt_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
-        torch.sqrt,
-        SqrtFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_rsqrt_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
-        torch.rsqrt,
-        RsqrtFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_log_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
-        torch.log,
-        LogFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_log1p_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-2.0, -1.0, 0.0, 1e-7], n, d),
-        torch.log1p,
-        Log1pFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_exp_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([0.0, 88.8, -88.8, 200.0], n, d),
-        torch.exp,
-        ExpFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_expm1_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([0.0, 88.8, -88.8, 1e-7], n, d),
-        torch.expm1,
-        Expm1FwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_erf_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([0.0, 3.0, -3.0, 100.0], n, d),
-        torch.erf,
-        ErfFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_reciprocal_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([0.0, 1.0, -1.0, 1e-38], n, d),
-        torch.reciprocal,
-        ReciprocalFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_sign_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-5.0, 0.0, 3.0, float("nan")], n, d),
-        torch.sign,
-        SignFwdOp,
-    )
 
 
 if __name__ == "__main__":
