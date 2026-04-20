@@ -121,6 +121,38 @@ def test_reclaim_action_declares_skip_atomic_age_trim_input() -> None:
     )
 
 
+def test_fork_divergent_pyproject_forces_fresh_install() -> None:
+    """Fork PRs must not reuse the trusted venv when the fork's workspace
+    pyproject.toml diverges from the trusted base-repo pyproject.toml.
+
+    The trusted venv is keyed by the base-repo pyproject hash. If a fork
+    edits `[project].dependencies` (or any other hashed section) in its own
+    workspace pyproject, copying the trusted venv would install a package
+    set that silently disagrees with the fork's `.[dev]`. The Resolve
+    runtime state step must re-run the (trusted) hash script against the
+    fork's workspace pyproject and gate FORK_CAN_COPY_TRUSTED_VENV on the
+    two hashes being equal.
+    """
+    wf = _load(GPU_SMOKE)
+    steps = wf["jobs"]["gpu-smoke"]["steps"]
+    resolve_step = next(
+        (s for s in steps if s.get("name") == "Resolve runtime state"), None
+    )
+    assert resolve_step is not None, "Resolve runtime state step must exist"
+    script = resolve_step["run"]
+
+    # Must run the trusted hash script against the workspace pyproject.
+    assert "python .trusted/scripts/ci_venv_hash.py ./pyproject.toml" in script, (
+        "Workspace pyproject must be hashed via the trusted script so the "
+        "fork cannot substitute its own ci_venv_hash.py."
+    )
+    # Must gate the copy fast-path on hashes matching.
+    assert "WORKSPACE_PYPROJECT_HASH" in script
+    assert 'WORKSPACE_PYPROJECT_HASH}" == "${PYPROJECT_HASH}' in script, (
+        "FORK_CAN_COPY_TRUSTED_VENV must require workspace hash == trusted hash."
+    )
+
+
 def test_reclaim_action_emits_opt_out_log_line() -> None:
     """When the opt-out is active, operators need a grep-able log line to
     confirm the destructive path was skipped. The AC explicitly names this

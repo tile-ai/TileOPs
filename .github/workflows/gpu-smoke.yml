@@ -453,10 +453,25 @@ jobs:
             PIP_CACHE_DIR="${RUNTIME_ROOT}/pip/cache"
             WHEEL_DIR="${RUNTIME_ROOT}/wheels"
             VENV_PATH="${RUNTIME_ROOT}/venv"
-            if [[ -x "${TRUSTED_VENV_PATH}/bin/python" ]]; then
+            # Divergence guard: TRUSTED_VENV_PATH was derived from the trusted
+            # base-repo pyproject.toml hash. A fork PR may have edited its own
+            # workspace pyproject.toml (added/removed dependencies) without
+            # that touching the base-repo file. If we copy the trusted venv
+            # for such a fork, the installed package set silently disagrees
+            # with `.[dev]` in the fork's workspace. Re-run the (trusted) hash
+            # script against the fork's workspace pyproject.toml and only
+            # fast-path when both hashes match; otherwise fall through to a
+            # fresh isolated pip install below.
+            WORKSPACE_PYPROJECT_HASH=$(python .trusted/scripts/ci_venv_hash.py ./pyproject.toml)
+            echo "WORKSPACE_PYPROJECT_HASH=${WORKSPACE_PYPROJECT_HASH}"
+            echo "TRUSTED_PYPROJECT_HASH=${PYPROJECT_HASH}"
+            if [[ -x "${TRUSTED_VENV_PATH}/bin/python" && "${WORKSPACE_PYPROJECT_HASH}" == "${PYPROJECT_HASH}" ]]; then
               FORK_CAN_COPY_TRUSTED_VENV="true"
               VENV_REUSED="true"
             else
+              if [[ -x "${TRUSTED_VENV_PATH}/bin/python" ]]; then
+                echo "Fork pyproject diverges from trusted base; forcing fresh isolated venv install"
+              fi
               VENV_REUSED="false"
             fi
             mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
