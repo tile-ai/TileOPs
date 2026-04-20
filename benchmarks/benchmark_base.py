@@ -413,7 +413,14 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
         extra = _workload_extra_params(w)
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            param_args = (shape, dtype, extra) if include_extra else (shape, dtype)
+            # Copy ``extra`` per parametrization so accidental mutation in
+            # one test case cannot leak into later parametrized cases that
+            # share the same workload entry.
+            param_args = (
+                (shape, dtype, dict(extra))
+                if include_extra
+                else (shape, dtype)
+            )
             params.append(pytest.param(*param_args, id=f"{label}-{dtype_str}"))
     return params
 
