@@ -1,0 +1,35 @@
+name: container-smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, tile-ops, nightly]
+    container:
+      image: tileops-runner:latest
+      volumes:
+        - /data/ci-cache/pip:/cache/pip
+        - /data/ci-cache/wheels:/cache/wheels
+        - /data/ci-cache/tilelang:/cache/tilelang
+        - /data/ci-cache/triton:/cache/triton
+      options: >-
+        --gpus device=1
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Basic env check
+        run: |
+          set -euo pipefail
+          python -V
+          echo "workspace=${GITHUB_WORKSPACE}"
+          pwd
+          ls -la
+          nvidia-smi || true
+          echo "PIP cache mounted?" && ls -la /cache/pip || true
+          echo "Wheels cache mounted?" && ls -la /cache/wheels || true
+          echo "TileLang cache mounted?" && ls -la /cache/tilelang || true
+          echo "Triton cache mounted?" && ls -la /cache/triton || true
