@@ -296,7 +296,6 @@ class TestNonRuntimeOpsFileExemption:
         ]
         pytest_collection_modifyitems(items)
 
-
 # ===================================================================
 # AC-6: Every dtype needs smoke coverage
 # ===================================================================

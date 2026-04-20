@@ -24,7 +24,6 @@ NON_RUNTIME_OPS_TIER_FILES = {
     "tests/ops/test_elementwise_config_dtype.py",
 }
 
-
 def _get_callspec_params(item: pytest.Item) -> dict | None:
     callspec = getattr(item, "callspec", None)
     if callspec is None:
