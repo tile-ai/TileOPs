@@ -449,8 +449,10 @@ def test_argreduce_rejects_multidim(op_cls_path: str, dim) -> None:
     mod = importlib.import_module(module_path)
     op_cls = getattr(mod, cls_name)
 
-    with pytest.raises((TypeError, ValueError)):
-        op_cls(dtype=torch.float16, dim=dim)
+    # Supply the required N kwarg so the test exercises the multidim/None
+    # dim-rejection path rather than the missing-required-argument path.
+    with pytest.raises(ValueError):
+        op_cls(N=8, dtype=torch.float16, dim=dim)
 
 
 if __name__ == "__main__":

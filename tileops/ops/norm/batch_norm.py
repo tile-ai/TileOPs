@@ -5,9 +5,10 @@ in a standard TileOPs Op interface.
 
 User-facing API mirrors torch.nn.functional.batch_norm:
 
-    fwd_op = BatchNormFwdOp(C=channels, dtype=dtype, momentum=0.1, eps=1e-5)
-    y, mean, rstd = fwd_op(x, weight, bias, running_mean, running_var,
-                           training=True)
+    fwd_op = BatchNormFwdOp(C=channels, dtype=dtype, training=True,
+                            eps=1e-5, momentum=0.1)
+    y, mean, rstd = fwd_op(x, weight, bias, running_mean, running_var)
+    # forward() also accepts an optional `training` override per call.
 
     bwd_op = BatchNormBwdOp(C=channels, dtype=dtype)
     grad_x, grad_weight, grad_bias = bwd_op(grad_out, x, weight, mean, rstd)
@@ -81,6 +82,10 @@ class BatchNormFwdOp(Op):
         C: Number of channels (committed at construction per manifest
             ``static_dims``; forward validates ``x.shape[1] == C``).
         dtype: Input/output data type.
+        training: Default training-mode flag. Stored as ``self.training`` and
+            used when ``forward()`` is called without an explicit ``training``
+            override. Order matches manifest ``params`` block (training, eps,
+            momentum) per codegen contract.
         eps: Epsilon for numerical stability.
         momentum: Running-stat update momentum (used in training mode).
         kernel_map: Optional kernel override dictionary.
@@ -95,6 +100,7 @@ class BatchNormFwdOp(Op):
         *,
         C: int,
         dtype: torch.dtype,
+        training: bool = True,
         eps: float = 1e-5,
         momentum: float = 0.1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -102,6 +108,7 @@ class BatchNormFwdOp(Op):
     ) -> None:
         self.C = C
         self.dtype = dtype
+        self.training = training
         self.eps = eps
         self.momentum = momentum
         self._tune = tune
@@ -176,7 +183,7 @@ class BatchNormFwdOp(Op):
         bias: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
-        training: bool = True,
+        training: Optional[bool] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Run batch normalization forward pass.
 
@@ -192,8 +199,8 @@ class BatchNormFwdOp(Op):
             running_var: Running variance of shape ``(C,)`` on the same CUDA
                 device as ``x``, with dtype ``torch.float32``. Updated
                 in-place during training.
-            training: If ``True``, compute batch statistics and update
-                running stats; otherwise use running stats directly.
+            training: Optional per-call override. When ``None`` (default), the
+                instance's ``self.training`` (set at ``__init__``) is used.
 
         Returns:
             Tuple of ``(y, mean, rstd)`` where *y* is the normalized output
@@ -205,6 +212,8 @@ class BatchNormFwdOp(Op):
         x_cl, orig_shape = self._prepare(x)
         L = x_cl.shape[1]
 
+        if training is None:
+            training = self.training
         if training:
             kernel = self._get_train_kernel(L)
             y_cl, mean, rstd = kernel(
@@ -408,12 +417,14 @@ def _batchnorm_fwd_eager_forward(
     bias: torch.Tensor,
     running_mean: torch.Tensor,
     running_var: torch.Tensor,
-    training: bool = True,
+    training: Optional[bool] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     """Direct kernel call (no torch.compile wrapping)."""
     self._validate_inputs(x)
     x_cl, orig_shape = self._prepare(x)
     L = x_cl.shape[1]
+    if training is None:
+        training = self.training
     if training:
         kernel = self._get_train_kernel(L)
         y_cl, mean, rstd = kernel(
@@ -441,7 +452,9 @@ def _patched_fwd_init(self, *args, **kwargs):
 BatchNormFwdOp.__init__ = _patched_fwd_init
 
 
-def _patched_fwd_forward(self, x, weight, bias, running_mean, running_var, training=True):
+def _patched_fwd_forward(self, x, weight, bias, running_mean, running_var, training=None):
+    if training is None:
+        training = self.training
     y, mean, rstd = _batch_norm_fwd_wrapped(
         x, weight, bias, running_mean, running_var, training, self._instance_key)
     if mean.numel() == 0:
