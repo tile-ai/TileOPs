@@ -78,6 +78,7 @@ def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, 
 @GroupedQueryAttentionBwdFixture
 def test_gqa_bwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
+    pytest.skip("Temporarily skipping known GQA backward failures under TileLang 5f70374c (#999).")
     test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
