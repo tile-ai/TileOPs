@@ -2,8 +2,6 @@
 
 Tests and benchmarks are separated by concern: `pytest tests/` validates correctness only; `pytest benchmarks/` runs profiling only and auto-generates `profile_run.log`.
 
-Nightly self-hosted runner and Docker host details are documented in [`docs/ci-host.md`](ci-host.md).
-
 ## Core Abstractions
 
 | Class              | Location                                                          | Role                                                                                                                                                                                |
