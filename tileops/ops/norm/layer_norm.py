@@ -1,3 +1,4 @@
+from math import prod
 from typing import Dict, Hashable, Optional, Tuple
 
 import torch
@@ -79,9 +80,7 @@ class LayerNormFwdOp(Op):
         at construction, so keying by ``M`` alone is sufficient.
         """
         x_shape = input_shapes[0]
-        M = 1
-        for s in x_shape[:-1]:
-            M *= s
+        M = prod(x_shape[:-1])
         return (M,)
 
     def _get_or_create_kernel(self, M: int) -> Kernel:

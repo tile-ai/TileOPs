@@ -20,6 +20,7 @@ lazily per-``L`` and cached.
 
 import functools
 import weakref
+from math import prod
 from typing import Dict, Hashable, Optional, Tuple
 
 import torch
@@ -128,10 +129,7 @@ class BatchNormFwdOp(Op):
         """Kernel cache key: (L,) where L = N * prod(spatial) for input x."""
         x_shape = input_shapes[0]
         # L = all non-static (non-C) axes multiplied
-        L = 1
-        for i, s in enumerate(x_shape):
-            if i != 1:
-                L *= s
+        L = prod(s for i, s in enumerate(x_shape) if i != 1)
         return (L,)
 
     def _get_train_kernel(self, L: int) -> BatchNormFwdTrainKernel:
@@ -283,10 +281,7 @@ class BatchNormBwdOp(Op):
     def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
         """Kernel cache key: (L,) where L = N * prod(spatial) for grad_out."""
         grad_out_shape = input_shapes[0]
-        L = 1
-        for i, s in enumerate(grad_out_shape):
-            if i != 1:
-                L *= s
+        L = prod(s for i, s in enumerate(grad_out_shape) if i != 1)
         return (L,)
 
     def _get_bwd_kernel(self, L: int) -> BatchNormBwdKernel:
