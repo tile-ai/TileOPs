@@ -157,7 +157,7 @@ def _manifest_bwd_params():
 def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     inputs = _make_inputs(N, C, spatial, dtype)
 
-    op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, tune=tune)
+    op = BatchNormFwdOp(C=C, dtype=dtype, tune=tune)
 
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
     bm = BatchNormFwdBenchmark(test, N, C, spatial)
@@ -174,7 +174,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
 def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     inputs = _make_bwd_inputs(N, C, spatial, dtype)
 
-    op = BatchNormBwdOp(N, C, *spatial, dtype=dtype)
+    op = BatchNormBwdOp(C=C, dtype=dtype)
 
     test = BatchNormBwdTest(N, C, spatial, dtype)
     bm = BatchNormBwdBenchmark(test, N, C, spatial)

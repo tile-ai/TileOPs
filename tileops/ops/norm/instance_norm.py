@@ -5,14 +5,16 @@ is its own group). This operator delegates to GroupNormKernel with G=C.
 
 User-facing API mirrors torch.nn.functional.instance_norm:
 
-    op = InstanceNormFwdOp(N=batch, C=channels, spatial=(H, W), dtype=dtype)
+    op = InstanceNormFwdOp(C=channels, dtype=dtype)
     y = op(x, weight, bias)
 
-Input tensors accept shape (N, C, *spatial).
+Input tensors accept shape ``(N, C, *spatial)``.  ``N`` and ``*spatial``
+are derived at forward time; kernels are cached by
+``(M=N*C, D=prod(spatial))``.
 """
 
-import math
-from typing import Dict, Optional
+from math import prod
+from typing import Dict, Hashable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -54,9 +56,8 @@ class InstanceNormFwdOp(Op):
         Hidden dimension is padded to 256-element alignment internally.
 
     Args:
-        N: Batch size.
-        C: Number of channels.
-        spatial: Spatial dimensions tuple ``(H, W, ...)``.
+        C: Number of channels (committed at construction per manifest
+            ``static_dims``; forward validates ``x.shape[1] == C``).
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
         eps: Epsilon for numerical stability.
@@ -64,35 +65,42 @@ class InstanceNormFwdOp(Op):
         tune: If ``True``, autotune tile configurations.
     """
 
+    _static_axes = frozenset({(0, 1)})
+
     def __init__(
         self,
-        N: int,
+        *,
         C: int,
-        spatial: tuple,
         dtype: torch.dtype,
         eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.N = N
         self.C = C
-        self.spatial = spatial
-        self.G = C  # InstanceNorm: each channel is its own group
         self.dtype = dtype
         self.eps = eps
-        self.spatial_size = math.prod(spatial)
-        # For InstanceNorm (G=C): D = (C/C) * spatial_size = spatial_size
-        self.D = self.spatial_size
-        self.M = N * C  # number of rows = N * G = N * C
-        self.D_padded = _align_up(self.D, ALIGNMENT)
+        self._tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["group_norm"](
-            self.M, self.D, eps, dtype, tune=tune,
-        )
+        self._kernel_cache: Dict[Hashable, Kernel] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"group_norm": GroupNormKernel}
+
+    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+        """Kernel cache key: (N, *spatial) — everything except the channel axis."""
+        x_shape = input_shapes[0]
+        return tuple(s for i, s in enumerate(x_shape) if i != 1)
+
+    def _get_or_create_kernel(self, M: int, D: int) -> Kernel:
+        key = (M, D)
+        kernel = self._kernel_cache.get(key)
+        if kernel is None:
+            kernel = self.kernel_map["group_norm"](
+                M, D, self.eps, self.dtype, tune=self._tune,
+            )
+            self._kernel_cache[key] = kernel
+        return kernel
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         """Apply instance normalization.
@@ -127,6 +135,15 @@ class InstanceNormFwdOp(Op):
             raise ValueError(
                 f"Expected bias.dtype {self.dtype}, got {bias.dtype}"
             )
+        if x.ndim < 3:
+            raise ValueError(
+                f"Expected x.ndim >= 3 (N, C, *spatial), got {x.ndim}"
+            )
+        # static_dims validation: x.shape[1] == C (committed at ctor).
+        if x.shape[1] != self.C:
+            raise ValueError(
+                f"Expected channel dim {self.C}, got {x.shape[1]}"
+            )
         if weight.ndim != 1 or weight.shape[0] != self.C:
             raise ValueError(
                 f"Expected weight shape ({self.C},), got {weight.shape}"
@@ -137,31 +154,40 @@ class InstanceNormFwdOp(Op):
             )
 
         orig_shape = x.shape
+        N = orig_shape[0]
+        spatial = orig_shape[2:]
+        spatial_size = prod(spatial) if spatial else 1
+        # For InstanceNorm (G=C): D = spatial_size, M = N * C
+        D = spatial_size
+        M = N * self.C
+        D_padded = _align_up(D, ALIGNMENT)
+        kernel = self._get_or_create_kernel(M, D)
+
         x = x.contiguous()
 
         # Reshape: (N, C, *spatial) -> (N*C, spatial_size)
-        x_2d = x.reshape(self.M, self.D)
+        x_2d = x.reshape(M, D)
 
         # Unit weight and zero bias for the kernel (affine applied after)
-        unit_weight = torch.ones(self.D_padded, dtype=self.dtype, device=x.device)
-        zero_bias = torch.zeros(self.D_padded, dtype=self.dtype, device=x.device)
+        unit_weight = torch.ones(D_padded, dtype=self.dtype, device=x.device)
+        zero_bias = torch.zeros(D_padded, dtype=self.dtype, device=x.device)
 
         # Pad to alignment
-        if self.D_padded != self.D:
-            x_2d = F.pad(x_2d, (0, self.D_padded - self.D))
+        if D_padded != D:
+            x_2d = F.pad(x_2d, (0, D_padded - D))
 
         # Run kernel: produces (x - mean) / sqrt(var + eps)
-        y_2d = self.kernel(x_2d, unit_weight, zero_bias)
+        y_2d = kernel(x_2d, unit_weight, zero_bias)
 
         # Trim padding
-        if self.D_padded != self.D:
-            y_2d = y_2d[:, :self.D]
+        if D_padded != D:
+            y_2d = y_2d[:, :D]
 
         # Reshape back: (N*C, spatial_size) -> (N, C, *spatial)
         y = y_2d.reshape(orig_shape)
 
         # Apply per-channel affine: y = y * weight + bias
-        affine_shape = [1, self.C] + [1] * len(self.spatial)
+        affine_shape = [1, self.C] + [1] * len(spatial)
         y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
 
         return y

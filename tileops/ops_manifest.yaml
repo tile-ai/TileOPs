@@ -335,7 +335,7 @@ ops:
   BatchNormFwdOp:
     ref_api: "torch.nn.functional.batch_norm"
     family: normalization
-    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -393,7 +393,7 @@ ops:
   BatchNormBwdOp:
     ref_api: "torch.nn.functional.batch_norm"
     family: normalization
-    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -492,7 +492,7 @@ ops:
   InstanceNormFwdOp:
     ref_api: "torch.nn.functional.instance_norm"
     family: normalization
-    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:

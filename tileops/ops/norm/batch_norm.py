@@ -5,22 +5,21 @@ in a standard TileOPs Op interface.
 
 User-facing API mirrors torch.nn.functional.batch_norm:
 
-    fwd_op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, momentum=0.1, eps=1e-5)
+    fwd_op = BatchNormFwdOp(C=channels, dtype=dtype, momentum=0.1, eps=1e-5)
     y, mean, rstd = fwd_op(x, weight, bias, running_mean, running_var,
                            training=True)
 
-    bwd_op = BatchNormBwdOp(N, C, *spatial, dtype=dtype)
+    bwd_op = BatchNormBwdOp(C=channels, dtype=dtype)
     grad_x, grad_weight, grad_bias = bwd_op(grad_out, x, weight, mean, rstd)
 
-Input tensors accept any shape (N, C, *spatial); the op reshapes to (C, L)
-internally.  L = N * prod(spatial) must be divisible by the kernel's block_l
-(chosen automatically by the kernel's default_config).
+Input tensors accept any shape ``(N, C, *spatial)``; the op reshapes to
+``(C, L)`` internally where ``L = N * prod(spatial)``.  Kernels are built
+lazily per-``L`` and cached.
 """
 
 import functools
-import math
 import weakref
-from typing import Dict, Optional, Tuple
+from typing import Dict, Hashable, Optional, Tuple
 
 import torch
 
@@ -74,12 +73,13 @@ class BatchNormFwdOp(Op):
 
     Note:
         Input tensors accept any shape ``(N, C, *spatial)``; the op reshapes
-        to ``(C, L)`` internally where ``L = N * prod(spatial)``.
+        to ``(C, L)`` internally where ``L = N * prod(spatial)``.  ``N`` and
+        ``*spatial`` are derived from the input tensor at forward time;
+        kernels are cached by ``L``.
 
     Args:
-        N: Batch size.
-        C: Number of channels.
-        *spatial: Spatial dimensions (H, W, ...).
+        C: Number of channels (committed at construction per manifest
+            ``static_dims``; forward validates ``x.shape[1] == C``).
         dtype: Input/output data type.
         eps: Epsilon for numerical stability.
         momentum: Running-stat update momentum (used in training mode).
@@ -87,31 +87,28 @@ class BatchNormFwdOp(Op):
         tune: If ``True``, autotune tile configurations.
     """
 
+    # Channel axis (1 of input 0) is static.
+    _static_axes = frozenset({(0, 1)})
+
     def __init__(
         self,
-        N: int,
+        *,
         C: int,
-        *spatial: int,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype,
         eps: float = 1e-5,
         momentum: float = 0.1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.N = N
         self.C = C
-        self.spatial = spatial
-        self.L = N * math.prod(spatial) if spatial else N
         self.dtype = dtype
         self.eps = eps
         self.momentum = momentum
+        self._tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        self.train_kernel: BatchNormFwdTrainKernel = self.kernel_map["fwd_train_kernel"](
-            C, self.L, dtype, eps, momentum, tune=tune)
-        self.infer_kernel: BatchNormFwdInferKernel = self.kernel_map["fwd_infer_kernel"](
-            C, self.L, dtype, eps, tune=tune)
+        self._train_cache: Dict[Hashable, BatchNormFwdTrainKernel] = {}
+        self._infer_cache: Dict[Hashable, BatchNormFwdInferKernel] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -119,6 +116,36 @@ class BatchNormFwdOp(Op):
             "fwd_train_kernel": BatchNormFwdTrainKernel,
             "fwd_infer_kernel": BatchNormFwdInferKernel,
         }
+
+    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+        """Kernel cache key: (L,) where L = N * prod(spatial) for input x."""
+        x_shape = input_shapes[0]
+        # L = all non-static (non-C) axes multiplied
+        L = 1
+        for i, s in enumerate(x_shape):
+            if i != 1:
+                L *= s
+        return (L,)
+
+    def _get_train_kernel(self, L: int) -> BatchNormFwdTrainKernel:
+        key = (L,)
+        kernel = self._train_cache.get(key)
+        if kernel is None:
+            kernel = self.kernel_map["fwd_train_kernel"](
+                self.C, L, self.dtype, self.eps, self.momentum, tune=self._tune,
+            )
+            self._train_cache[key] = kernel
+        return kernel
+
+    def _get_infer_kernel(self, L: int) -> BatchNormFwdInferKernel:
+        key = (L,)
+        kernel = self._infer_cache.get(key)
+        if kernel is None:
+            kernel = self.kernel_map["fwd_infer_kernel"](
+                self.C, L, self.dtype, self.eps, tune=self._tune,
+            )
+            self._infer_cache[key] = kernel
+        return kernel
 
     def _prepare(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple]:
         """Reshape x to (C, L)."""
@@ -132,10 +159,14 @@ class BatchNormFwdOp(Op):
             raise ValueError(
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
-        expected_shape = (self.N, self.C, *self.spatial)
-        if x.shape != expected_shape:
+        if x.ndim < 2:
             raise ValueError(
-                f"Expected input shape {expected_shape}, got {x.shape}"
+                f"Expected x.ndim >= 2 (N, C, *spatial), got {x.ndim}"
+            )
+        # static_dims validation: x.shape[1] == C (committed at ctor).
+        if x.shape[1] != self.C:
+            raise ValueError(
+                f"Expected channel dim {self.C}, got {x.shape[1]}"
             )
 
     def forward(
@@ -172,15 +203,18 @@ class BatchNormFwdOp(Op):
         """
         self._validate_inputs(x)
         x_cl, orig_shape = self._prepare(x)
+        L = x_cl.shape[1]
 
         if training:
-            y_cl, mean, rstd = self.train_kernel(
+            kernel = self._get_train_kernel(L)
+            y_cl, mean, rstd = kernel(
                 x_cl, weight.float(), bias.float(),
                 running_mean, running_var)
             y = _restore_shape(y_cl, orig_shape)
             return y, mean, rstd
         else:
-            y_cl = self.infer_kernel(
+            kernel = self._get_infer_kernel(L)
+            y_cl = kernel(
                 x_cl, weight.float(), bias.float(),
                 running_mean, running_var)
             y = _restore_shape(y_cl, orig_shape)
@@ -204,40 +238,57 @@ class BatchNormBwdOp(Op):
 
     Note:
         Input tensors accept any shape ``(N, C, *spatial)``; the op reshapes
-        to ``(C, L)`` internally where ``L = N * prod(spatial)``.
+        to ``(C, L)`` internally where ``L = N * prod(spatial)``.  ``N`` and
+        ``*spatial`` are derived from the input tensor at forward time;
+        kernels are cached by ``L``.
 
     Args:
-        N: Batch size.
-        C: Number of channels.
-        *spatial: Spatial dimensions (H, W, ...).
+        C: Number of channels (committed at construction per manifest
+            ``static_dims``; forward validates ``grad_out.shape[1] == C``).
         dtype: Data type of ``grad_out``, ``x``, and ``grad_x``.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
 
+    _static_axes = frozenset({(0, 1)})
+
     def __init__(
         self,
-        N: int,
+        *,
         C: int,
-        *spatial: int,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.N = N
         self.C = C
-        self.spatial = spatial
-        self.L = N * math.prod(spatial) if spatial else N
         self.dtype = dtype
+        self._tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        self.bwd_kernel: BatchNormBwdKernel = self.kernel_map["bwd_kernel"](
-            C, self.L, dtype, tune=tune)
+        self._bwd_cache: Dict[Hashable, BatchNormBwdKernel] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"bwd_kernel": BatchNormBwdKernel}
+
+    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+        """Kernel cache key: (L,) where L = N * prod(spatial) for grad_out."""
+        grad_out_shape = input_shapes[0]
+        L = 1
+        for i, s in enumerate(grad_out_shape):
+            if i != 1:
+                L *= s
+        return (L,)
+
+    def _get_bwd_kernel(self, L: int) -> BatchNormBwdKernel:
+        key = (L,)
+        kernel = self._bwd_cache.get(key)
+        if kernel is None:
+            kernel = self.kernel_map["bwd_kernel"](
+                self.C, L, self.dtype, tune=self._tune,
+            )
+            self._bwd_cache[key] = kernel
+        return kernel
 
     def _prepare(self, t: torch.Tensor) -> torch.Tensor:
         t_cl, _ = _reshape_to_CL(t)
@@ -273,11 +324,18 @@ class BatchNormBwdOp(Op):
             has the same shape as *x*, *grad_weight* has shape ``(C,)``,
             and *grad_bias* has shape ``(C,)``.
         """
+        # static_dims validation: grad_out.shape[1] == C (committed at ctor).
+        if grad_out.shape[1] != self.C:
+            raise ValueError(
+                f"Expected channel dim {self.C}, got {grad_out.shape[1]}"
+            )
         orig_shape = grad_out.shape
         go_cl = self._prepare(grad_out)
         x_cl = self._prepare(x)
+        L = go_cl.shape[1]
+        kernel = self._get_bwd_kernel(L)
 
-        grad_x_cl, grad_weight, grad_bias = self.bwd_kernel(
+        grad_x_cl, grad_weight, grad_bias = kernel(
             go_cl, x_cl, weight.float(), mean, rstd)
 
         grad_x = _restore_shape(grad_x_cl, orig_shape)
@@ -355,12 +413,15 @@ def _batchnorm_fwd_eager_forward(
     """Direct kernel call (no torch.compile wrapping)."""
     self._validate_inputs(x)
     x_cl, orig_shape = self._prepare(x)
+    L = x_cl.shape[1]
     if training:
-        y_cl, mean, rstd = self.train_kernel(
+        kernel = self._get_train_kernel(L)
+        y_cl, mean, rstd = kernel(
             x_cl, weight.float(), bias.float(), running_mean, running_var)
         return _restore_shape(y_cl, orig_shape), mean, rstd
     else:
-        y_cl = self.infer_kernel(
+        kernel = self._get_infer_kernel(L)
+        y_cl = kernel(
             x_cl, weight.float(), bias.float(), running_mean, running_var)
         return _restore_shape(y_cl, orig_shape), None, None
 
@@ -437,10 +498,16 @@ def _batchnorm_bwd_eager_forward(
     rstd: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Direct kernel call (no torch.compile wrapping)."""
+    if grad_out.shape[1] != self.C:
+        raise ValueError(
+            f"Expected channel dim {self.C}, got {grad_out.shape[1]}"
+        )
     orig_shape = grad_out.shape
     go_cl = self._prepare(grad_out)
     x_cl = self._prepare(x)
-    grad_x_cl, grad_weight, grad_bias = self.bwd_kernel(
+    L = go_cl.shape[1]
+    kernel = self._get_bwd_kernel(L)
+    grad_x_cl, grad_weight, grad_bias = kernel(
         go_cl, x_cl, weight.float(), mean, rstd)
     grad_x = _restore_shape(grad_x_cl, orig_shape)
     return grad_x, grad_weight, grad_bias

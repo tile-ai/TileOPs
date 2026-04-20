@@ -54,7 +54,7 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
     bm = InstanceNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = InstanceNormFwdOp(N=n, C=c, spatial=spatial, dtype=dtype, tune=tune)
+    op = InstanceNormFwdOp(C=c, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
