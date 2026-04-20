@@ -1739,6 +1739,170 @@ class TestValidateDtypesParity:
             f"Cartesian combo; warnings={warnings}"
         )
 
+    def test_no_combos_accepts_out_of_union_fails(self, validator):
+        """AC-3 rejection side: when the op has no ``dtype_combos`` and
+        ``_validate_dtypes`` accepts a dtype outside the declared union,
+        the no-combos branch must emit a parity error.
+
+        Regression for F010: previously the no-combos branch iterated
+        only the union's Cartesian product and so could not detect an
+        overly-permissive ``_validate_dtypes``.
+        """
+        # Overly-permissive implementation: accepts any dtype.
+        def validate(self, x):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "out-of-union" in e for e in errors
+        ), (
+            "Out-of-union dtype must surface as parity error when "
+            f"_validate_dtypes accepts it; errors={errors}"
+        )
+
+    def test_no_combos_rejects_out_of_union_pass(self, validator):
+        """Well-behaved op that rejects out-of-union dtypes produces no
+        parity error.
+        """
+        import torch
+
+        def validate(self, x):
+            if x.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError(f"unsupported dtype {x.dtype}")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            "Conforming op must not emit a parity error; "
+            f"errors={errors}"
+        )
+
+    def test_no_combos_out_of_union_probe_respects_max(
+        self, validator, monkeypatch,
+    ):
+        """Out-of-union probe must stay within ``_MAX_DTYPE_COMBOS``.
+
+        With the cap tightened to 2, at most 2 out-of-union probes fire
+        even though the sentinel pool contains 6 out-of-union dtypes
+        for a {float16, bfloat16} union.
+        """
+        # Product size for a single-input {float16, bfloat16} union is 2,
+        # so _MAX_DTYPE_COMBOS=2 keeps the Cartesian enumeration alive.
+        monkeypatch.setattr(validator, "_MAX_DTYPE_COMBOS", 2)
+
+        def validate(self, x):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        out_of_union_errs = [e for e in errors if "out-of-union" in e]
+        # Sentinel pool has 6 out-of-union entries but probe budget is 2.
+        assert len(out_of_union_errs) == 2, (
+            "Out-of-union probe must be bounded by _MAX_DTYPE_COMBOS; "
+            f"got {len(out_of_union_errs)} errors: {out_of_union_errs}"
+        )
+
+    def test_no_combos_accepts_same_as_violation_fails(self, validator):
+        """AC-3 / R3: when ``_validate_dtypes`` accepts a same_as
+        identity violation, the no-combos branch must surface it.
+
+        Regression for F011: the union-iteration loop skips every
+        same_as-violating candidate via ``_honours_same_as``, so a
+        permissive op that fails to enforce same_as would go unflagged
+        without a dedicated probe.
+        """
+        # Overly-permissive: does not check x.dtype == w.dtype.
+        def validate(self, x, w):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "same_as violation" in e for e in errors
+        ), (
+            "same_as identity violation must surface as parity error "
+            f"when _validate_dtypes accepts it; errors={errors}"
+        )
+
+    def test_no_combos_rejects_same_as_violation_pass(self, validator):
+        """Well-behaved op that enforces same_as produces no parity
+        error on the same_as probe.
+        """
+        import torch
+
+        allowed = (torch.float16, torch.bfloat16)
+
+        def validate(self, x, w):
+            if x.dtype not in allowed or w.dtype not in allowed:
+                raise ValueError(
+                    f"unsupported dtype: x.dtype={x.dtype} "
+                    f"w.dtype={w.dtype}"
+                )
+            if x.dtype != w.dtype:
+                raise ValueError(
+                    f"same_as violated: x.dtype={x.dtype} "
+                    f"w.dtype={w.dtype}"
+                )
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            "Conforming op must not emit a parity error; "
+            f"errors={errors}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Bench checks

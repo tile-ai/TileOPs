@@ -875,6 +875,18 @@ _MOCK_DIM_SIZE = 4
 # sampling, so validation output stays reproducible.
 _MAX_DTYPE_COMBOS = 4096
 
+# Sentinel pool used to probe out-of-union dtype rejection in the
+# no-dtype_combos branch of ``check_l3_validate_dtypes_parity``. Chosen to
+# be common, cheap-to-allocate torch dtypes that are unlikely to appear
+# in every manifest declared union simultaneously — giving the probe at
+# least one out-of-union candidate per input on realistic specs. Probes
+# are bounded by ``_MAX_DTYPE_COMBOS`` so wide unions still stay within
+# CI budget.
+_DTYPE_SENTINELS: tuple[str, ...] = (
+    "float16", "bfloat16", "float32", "float64",
+    "int8", "int16", "int32", "int64",
+)
+
 
 class _MockShape(tuple):
     """Tuple subclass representing a tensor shape, exposed via ``.shape``.
@@ -1628,7 +1640,126 @@ def check_l3_validate_dtypes_parity(
                     f"[dtype] {op_name}: _validate_dtypes rejects valid "
                     f"combo {candidate!r} drawn from manifest dtype unions"
                 )
+
+        # --- Out-of-union negative probe (AC-3 rejection side) ---------
+        # For each input, substitute one dtype outside its declared union
+        # and assert _validate_dtypes rejects it. Candidates are built on
+        # a same_as-honouring baseline so the only deviation is the
+        # out-of-union dtype. Bounded by _MAX_DTYPE_COMBOS.
+        baseline: dict[str, str] | None = None
+        for tup in itertools.product(*input_options):
+            cand = dict(zip(forward_inputs, tup, strict=True))
+            if _honours_same_as(sig, cand):
+                baseline = cand
+                break
+        if baseline is not None:
+            same_as_refs = _same_as_refs(sig)
+            probe_budget = _MAX_DTYPE_COMBOS
+            probed = 0
+            for target in forward_inputs:
+                # Don't directly mutate tensors that are bound by
+                # same_as(ref) — their dtype is controlled by ``ref``.
+                # Instead mutate the ref (or a free tensor) and let
+                # same_as propagation carry the out-of-union dtype.
+                if target in same_as_refs:
+                    continue
+                declared = set(dtype_options.get(target, []))
+                out_of_union = [
+                    d for d in _DTYPE_SENTINELS if d not in declared
+                ]
+                for bad_dtype in out_of_union:
+                    if probed >= probe_budget:
+                        break
+                    probed += 1
+                    candidate = dict(baseline)
+                    candidate[target] = bad_dtype
+                    # Propagate to all same_as(target) tensors so the
+                    # only manifest violation is the out-of-union dtype.
+                    for tname, ref in same_as_refs.items():
+                        if ref == target and tname in candidate:
+                            candidate[tname] = bad_dtype
+                    accepted, reason = _combo_accepted(
+                        cls, forward_inputs, candidate, param_defaults,
+                    )
+                    if reason and reason.startswith(
+                        ("unexpected", "TypeError")
+                    ):
+                        continue
+                    if accepted:
+                        errors.append(
+                            f"[dtype] {op_name}: _validate_dtypes "
+                            f"accepts out-of-union dtype "
+                            f"{candidate!r} (input {target!r} declared "
+                            f"{sorted(declared)})"
+                        )
+                if probed >= probe_budget:
+                    break
+
+        # --- same_as identity negative probe (R3 rejection side) -------
+        # For each same_as(ref) input, build a candidate where that
+        # tensor's dtype differs from its ref and assert rejection.
+        # Complements (does not replace) the ``_honours_same_as`` skip
+        # in the union-iteration loop above.
+        if baseline is not None:
+            same_as_refs = _same_as_refs(sig)
+            probed_same_as = 0
+            for tname, ref in same_as_refs.items():
+                if probed_same_as >= _MAX_DTYPE_COMBOS:
+                    break
+                if tname not in baseline or ref not in baseline:
+                    continue
+                ref_dtype = baseline[ref]
+                # Pick any dtype different from the ref. Prefer values in
+                # the tensor's own declared options (so a pure same_as
+                # check is the only violation); fall back to sentinels.
+                own_opts = dtype_options.get(tname, [])
+                alt_dtypes = [d for d in own_opts if d != ref_dtype]
+                if not alt_dtypes:
+                    alt_dtypes = [
+                        d for d in _DTYPE_SENTINELS if d != ref_dtype
+                    ]
+                for alt in alt_dtypes[:1]:  # one probe per same_as edge
+                    probed_same_as += 1
+                    candidate = dict(baseline)
+                    candidate[tname] = alt
+                    accepted, reason = _combo_accepted(
+                        cls, forward_inputs, candidate, param_defaults,
+                    )
+                    if reason and reason.startswith(
+                        ("unexpected", "TypeError")
+                    ):
+                        continue
+                    if accepted:
+                        errors.append(
+                            f"[dtype] {op_name}: _validate_dtypes "
+                            f"accepts same_as violation {candidate!r} "
+                            f"(input {tname!r} declared same_as({ref}))"
+                        )
     return errors
+
+
+def _same_as_refs(sig: dict) -> dict[str, str]:
+    """Return ``{tensor: ref}`` for every pure ``same_as(ref)`` input.
+
+    Used by the negative-probe pass in
+    :func:`check_l3_validate_dtypes_parity` to identify edges that must
+    be exercised against a mismatched dtype and to propagate out-of-union
+    substitutions to dependent tensors.
+    """
+    refs: dict[str, str] = {}
+    inputs = sig.get("inputs") or {}
+    if not isinstance(inputs, dict):
+        return refs
+    for tname, attrs in inputs.items():
+        if not isinstance(attrs, dict):
+            continue
+        dstr = attrs.get("dtype", "")
+        tokens = _parse_dtype_expr(dstr)
+        if len(tokens) == 1:
+            m = _SAME_AS_RE.match(tokens[0])
+            if m:
+                refs[tname] = m.group(1)
+    return refs
 
 
 def _honours_same_as(sig: dict, candidate: dict[str, str]) -> bool:
