@@ -1,0 +1,64 @@
+name: Nightly Containerized Runner Smoke
+
+permissions: read-all
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    timeout-minutes: 30
+    runs-on: [self-hosted, tile-ops, nightly, nightly-containerized]
+    container:
+      image: tileops-runner:latest
+      volumes:
+        - /data/ci-cache/pip:/cache/pip
+        - /data/ci-cache/wheels:/cache/wheels
+        - /data/ci-cache/tilelang:/cache/tilelang
+        - /data/ci-cache/triton:/cache/triton
+      options: >-
+        --gpus device=1
+        --shm-size=16g
+      env:
+        TILELANG_CACHE_DIR: /cache/tilelang
+        TILELANG_TMP_DIR: /cache/tilelang/tmp
+        TRITON_CACHE_DIR: /cache/triton
+        PIP_CACHE_DIR: /cache/pip
+        WHEEL_DIR: /cache/wheels
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate containerized nightly runner path
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
+
+          echo "Runner: ${RUNNER_NAME:-unknown}"
+          echo "Workspace: ${GITHUB_WORKSPACE}"
+          pwd
+          ls -la
+
+          python -V
+          pip -V
+          nvidia-smi -L
+
+          touch "${PIP_CACHE_DIR}/.nightly-containerized-smoke"
+          touch "${WHEEL_DIR}/.nightly-containerized-smoke"
+          touch "${TILELANG_CACHE_DIR}/.nightly-containerized-smoke"
+          touch "${TRITON_CACHE_DIR}/.nightly-containerized-smoke"
+
+          ls -la "${PIP_CACHE_DIR}" "${WHEEL_DIR}" "${TILELANG_CACHE_DIR}" "${TRITON_CACHE_DIR}"
+
+          rm -f \
+            "${PIP_CACHE_DIR}/.nightly-containerized-smoke" \
+            "${WHEEL_DIR}/.nightly-containerized-smoke" \
+            "${TILELANG_CACHE_DIR}/.nightly-containerized-smoke" \
+            "${TRITON_CACHE_DIR}/.nightly-containerized-smoke"
