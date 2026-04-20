@@ -48,13 +48,22 @@ _VAR_MEAN_OP = "VarMeanFwdOp"
 # ===================================================================
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SUM_OP))
-def test_sum_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_SUM_OP, include_extra=True),
+)
+def test_sum_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = SumTest(shape, dtype)
-    bm = ManifestBenchmark(_SUM_OP, test)
+    # ``op_params`` carries any op-call kwargs declared on the workload
+    # entry (``dim``, ``keepdim``, …). Forwarding them to
+    # ``ManifestBenchmark`` makes M/N reflect the actual reduction axis set
+    # rather than a last-axis heuristic.
+    bm = ManifestBenchmark(_SUM_OP, test, op_params=op_params)
     inputs = test.gen_inputs()
 
-    op = SumFwdOp(dtype=dtype)
+    op = SumFwdOp(dtype=dtype, **op_params)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -63,8 +72,11 @@ def test_sum_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params.get("dim", -1)
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return x.float().sum(dim=-1).to(x.dtype)
+        return x.float().sum(dim=dim, keepdim=keepdim).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")

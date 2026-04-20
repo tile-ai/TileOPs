@@ -174,3 +174,136 @@ def test_workload_base_satisfies_benchmark_workload():
     # Should also work with ManifestBenchmark
     bm = ManifestBenchmark("TestOp", w)
     assert bm._roofline_vars() == {"M": 4, "N": 8, "elem_bytes": 4}
+
+
+# ---------------------------------------------------------------------------
+# Manifest-driven var resolution (roofline.vars)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_manifest_benchmark_uses_manifest_vars_for_default_dim():
+    """For an op with ``roofline.vars`` declared, ManifestBenchmark should
+    evaluate those expressions — default ``dim=-1`` matches legacy behaviour.
+    """
+    w = _DuckShapeDtype((2048, 4096), torch.float16)
+    bm = ManifestBenchmark("SumFwdOp", w)
+    rv = bm._roofline_vars()
+    assert rv["M"] == 2048
+    assert rv["N"] == 4096
+    assert rv["elem_bytes"] == 2
+
+
+@pytest.mark.smoke
+def test_manifest_benchmark_respects_dim_zero():
+    """With ``op_params={"dim": 0}`` the vars must reduce the *first* axis,
+    producing M/N that differ from the hardcoded last-axis heuristic.
+    """
+    w = _DuckShapeDtype((2048, 4096), torch.float16)
+    bm = ManifestBenchmark("SumFwdOp", w, op_params={"dim": 0})
+    rv = bm._roofline_vars()
+    # dim=0 -> N = x.shape[0] = 2048, M = x.shape[1] = 4096
+    assert rv["N"] == 2048
+    assert rv["M"] == 4096
+    # Legacy heuristic would give M=2048, N=4096 — confirm we diverge.
+    legacy = roofline_vars(w)
+    assert (rv["M"], rv["N"]) != (legacy["M"], legacy["N"])
+
+
+@pytest.mark.smoke
+def test_manifest_benchmark_multi_axis_dim():
+    """Tuple ``dim`` collapses multiple axes — M/N reflect that."""
+    w = _DuckShapeDtype((4, 8, 16), torch.float32)
+    bm = ManifestBenchmark("SumFwdOp", w, op_params={"dim": (0, 2)})
+    rv = bm._roofline_vars()
+    assert rv["M"] == 8
+    assert rv["N"] == 4 * 16
+    assert rv["elem_bytes"] == 4
+
+
+@pytest.mark.smoke
+def test_workloads_to_params_include_extra_propagates_dim():
+    """When a workload entry carries ``dim``, ``include_extra=True`` should
+    surface it in the pytest param triple.
+    """
+    from benchmarks.benchmark_base import (
+        _workload_extra_params,
+        workloads_to_params,
+    )
+
+    # Direct unit test on the helper (no manifest mutation required).
+    assert _workload_extra_params(
+        {"x_shape": [4, 4], "dtypes": ["float16"], "label": "t",
+         "dim": 0, "keepdim": True}
+    ) == {"dim": 0, "keepdim": True}
+
+    # End-to-end with the manifest: include_extra=True must still yield
+    # well-formed triples with the (shape, dtype, extra) mapping. The
+    # contract being asserted is per-triple shape/dtype/extra typing; it
+    # must not depend on the ordering of SumFwdOp.workloads (which is QA
+    # curated and may be reordered without regressing the helper).
+    triples = workloads_to_params("SumFwdOp", include_extra=True)
+    assert len(triples) > 0
+    for p in triples:
+        shape, dtype, extra = p.values
+        assert isinstance(shape, tuple)
+        assert isinstance(dtype, torch.dtype)
+        assert isinstance(extra, dict)
+    # At least one workload intentionally carries no extras; the harness
+    # must expose that as an empty dict rather than omitting the slot.
+    assert any(p.values[2] == {} for p in triples)
+
+
+@pytest.mark.smoke
+def test_manifest_benchmark_falls_back_when_no_vars(monkeypatch):
+    """If the manifest entry has no ``roofline.vars``, ManifestBenchmark
+    must fall back to the legacy last-axis helper without raising.
+    """
+    from tileops.manifest import _load_manifest
+
+    _load_manifest.cache_clear()
+    real = _load_manifest()
+    patched = dict(real)
+    patched["_NoVarsOp"] = {
+        "roofline": {
+            "flops": "M * N",
+            "bytes": "(M * N + M) * elem_bytes",
+        }
+    }
+    monkeypatch.setattr("tileops.manifest._load_manifest", lambda: patched)
+
+    w = _DuckShapeDtype((4, 8), torch.float32)
+    bm = ManifestBenchmark("_NoVarsOp", w)
+    rv = bm._roofline_vars()
+    # Falls back to last-axis heuristic.
+    assert rv == {"M": 4, "N": 8, "elem_bytes": 4}
+
+
+@pytest.mark.smoke
+def test_manifest_benchmark_propagates_vars_eval_error(monkeypatch):
+    """If ``roofline.vars`` is declared but evaluation fails, ManifestBenchmark
+    must propagate the error rather than silently falling back to the legacy
+    last-axis heuristic — otherwise bad manifest expressions would mask as
+    plausible M/N bindings and feed the roofline calculator garbage.
+    """
+    from tileops.manifest import _load_manifest
+
+    _load_manifest.cache_clear()
+    real = _load_manifest()
+    patched = dict(real)
+    # Copy the SumFwdOp entry but poison its roofline.vars mapping so one
+    # expression references a name that is never bound.
+    base = dict(real["SumFwdOp"])
+    base_roofline = dict(base["roofline"])
+    base_roofline["vars"] = {
+        "M": "missing_name + 1",
+        "N": "x.shape[-1]",
+    }
+    base["roofline"] = base_roofline
+    patched["SumFwdOp"] = base
+    monkeypatch.setattr("tileops.manifest._load_manifest", lambda: patched)
+
+    w = _DuckShapeDtype((4, 8), torch.float16)
+    bm = ManifestBenchmark("SumFwdOp", w, op_params={"dim": 0})
+    with pytest.raises(ValueError, match="Failed to evaluate"):
+        bm._roofline_vars()
