@@ -682,22 +682,56 @@ jobs:
         run: cat gpu_smoke_report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cache stats
-        if: ${{ always() && needs.security-policy.outputs.is_fork != 'true' }}
+        if: ${{ always() }}
+        env:
+          IS_FORK: ${{ needs.security-policy.outputs.is_fork }}
         run: |
-          set -euo pipefail
-          echo "=== Trusted cache stats ==="
+          # Cache stats is informational only. Do NOT use `set -e`: a transient
+          # failure in find/du/wc (e.g. a cache file vanishing mid-scan due to a
+          # concurrent cleanup) must not fail the gpu-smoke job, and must not
+          # skip the CACHE_SIGNAL logging below.
+          set -u
+          echo "=== Cache stats (is_fork=${IS_FORK}) ==="
+          echo "VENV_REUSED=${VENV_REUSED:-unknown}"
+          echo "FORK_CAN_COPY_TRUSTED_VENV=${FORK_CAN_COPY_TRUSTED_VENV:-unknown}"
+          echo "TRUSTED_VENV_PATH=${TRUSTED_VENV_PATH:-unknown}"
           for cache_dir in "${TILELANG_CACHE_DIR:-}" "${TRITON_CACHE_DIR:-}" "${WHEEL_DIR:-}"; do
             if [[ -z "${cache_dir}" ]]; then
               continue
             fi
             if [[ -d "${cache_dir}" ]]; then
-              file_count=$(find "${cache_dir}" -type f | wc -l)
-              cache_size=$(du -sh "${cache_dir}" 2>/dev/null | cut -f1)
+              # Tolerate errors from find/du/wc; emit "unknown" when a scan
+              # fails rather than aborting the step. Enable pipefail inside
+              # the subshell so a find/du failure upstream of wc/cut
+              # propagates to the || fallback instead of being masked.
+              file_count=$(set -o pipefail; find "${cache_dir}" -type f 2>/dev/null | wc -l 2>/dev/null) || file_count="unknown"
+              cache_size=$(set -o pipefail; du -sh "${cache_dir}" 2>/dev/null | cut -f1 2>/dev/null) || cache_size="unknown"
+              if [[ -z "${file_count}" ]]; then file_count="unknown"; fi
+              if [[ -z "${cache_size}" ]]; then cache_size="unknown"; fi
               echo "${cache_dir}: ${file_count} files, ${cache_size}"
             else
               echo "${cache_dir}: does not exist"
             fi
           done
+
+          # Emit a concise cache hit/miss signal so future regressions surface
+          # in CI logs without needing to diff per-run durations manually.
+          # For fork PRs, "hit" means the trusted venv was copied (no cold pip
+          # install); for trusted runs, "hit" means the hash-matched venv was
+          # reused in place.
+          if [[ "${IS_FORK}" == "true" ]]; then
+            if [[ "${FORK_CAN_COPY_TRUSTED_VENV:-false}" == "true" ]]; then
+              echo "CACHE_SIGNAL: fork venv=hit"
+            else
+              echo "CACHE_SIGNAL: fork venv=miss (cold pip install path)"
+            fi
+          else
+            if [[ "${VENV_REUSED:-false}" == "true" ]]; then
+              echo "CACHE_SIGNAL: trusted venv=hit"
+            else
+              echo "CACHE_SIGNAL: trusted venv=miss (fresh venv created)"
+            fi
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
