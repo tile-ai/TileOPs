@@ -139,8 +139,27 @@ def test_fallback_matches_full_file_hash_shape(tmp_path: Path) -> None:
     """The fallback path is a pure function of the file bytes, so identical
     malformed files must hash identically."""
     malformed = "nope = = =\nstill bad\n"
-    a = CI_VENV_HASH.compute(_write(tmp_path / "a", malformed) if False else _write(tmp_path, malformed))
+    a = CI_VENV_HASH.compute(_write(tmp_path, malformed))
     p2 = tmp_path / "other.toml"
     p2.write_text(malformed)
     b = CI_VENV_HASH.compute(p2)
     assert a == b
+
+
+def test_hash_stable_when_project_version_changes(tmp_path: Path) -> None:
+    """Metadata-only edits to ``[project].version`` must NOT change the hash."""
+    base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
+    mutated = BASE_PYPROJECT.replace('version = "0.0.1"', 'version = "0.0.2"')
+    new = CI_VENV_HASH.compute(_write(tmp_path, mutated))
+    assert new == base, "version-only bump must not invalidate the venv"
+
+
+def test_hash_stable_when_project_description_changes(tmp_path: Path) -> None:
+    """Adding/changing ``[project].description`` must NOT change the hash."""
+    base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
+    mutated = BASE_PYPROJECT.replace(
+        'version = "0.0.1"',
+        'version = "0.0.1"\ndescription = "A different blurb"',
+    )
+    new = CI_VENV_HASH.compute(_write(tmp_path, mutated))
+    assert new == base, "description-only edit must not invalidate the venv"
