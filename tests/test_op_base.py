@@ -221,6 +221,25 @@ class TestSafeEval:
         assert _safe_eval("-a + b", {"a": 5, "b": 7}) == 2
         assert _safe_eval("2 ** 10", {}) == 1024
 
+    def test_rejects_bool_literal_true(self):
+        """``bool`` subclasses ``int`` in Python; ensure a bare ``True``
+        literal is rejected rather than silently treated as ``1``."""
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("True", {})
+        assert "bool" in str(excinfo.value)
+
+    def test_rejects_bool_in_binop_left(self):
+        """``False + 1`` must not evaluate to ``1``."""
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("False + 1", {})
+        assert "bool" in str(excinfo.value)
+
+    def test_rejects_bool_in_binop_right(self):
+        """``1 + True`` must not evaluate to ``2``."""
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("1 + True", {})
+        assert "bool" in str(excinfo.value)
+
 
 class TestBaseClassStubs:
     def test_infer_output_shapes_raises_not_implemented(self):

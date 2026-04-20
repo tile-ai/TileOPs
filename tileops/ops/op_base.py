@@ -78,7 +78,11 @@ def _safe_eval(expr: str, ctx: Dict[str, Union[int, float]]) -> Union[int, float
         if isinstance(node, ast.Expression):
             return _walk(node.body)
         if isinstance(node, ast.Constant):
-            if not isinstance(node.value, (int, float)):
+            # ``bool`` is a subclass of ``int`` in Python, so the int/float check
+            # below would accept ``True``/``False`` as numeric constants. Reject
+            # bool literals explicitly so boolean expressions (e.g. ``True``,
+            # ``False + 1``) cannot masquerade as valid roofline arithmetic.
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
                 raise ValueError(
                     f"forbidden constant type {type(node.value).__name__} in "
                     f"roofline expression {expr!r}")
