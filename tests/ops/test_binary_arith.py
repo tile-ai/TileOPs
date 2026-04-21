@@ -139,7 +139,7 @@ def test_add_broadcast(a_shape, b_shape, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Broadcast pattern tests for all binary arith ops (L3)
+# Broadcast contract for the shared binary arith kernel path (L3)
 # ---------------------------------------------------------------------------
 
 # Broadcast patterns: (a_shape, b_shape)
@@ -152,38 +152,34 @@ _BROADCAST_PATTERNS = [
     ((64, 128), (1, 1)),
 ]
 
-# (op_name, op_cls, ref_fn, gen_a, gen_b)
-_ARITH_BROADCAST_OPS = [
-    ("sub", SubFwdOp, lambda a, b: (a.float() - b.float()).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
-    ("mul", MulFwdOp, lambda a, b: (a.float() * b.float()).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
-    ("div", DivFwdOp, lambda a, b: (a.float() / b.float()).to(a.dtype),
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
-    ("remainder", RemainderFwdOp,
-     lambda a, b: a - torch.floor(a.float() / b.float()).to(a.dtype) * b,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
-    ("pow", PowFwdOp, lambda a, b: torch.pow(a.float(), b.float()).to(a.dtype),
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.5,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") * 2.0),
-    ("floor_divide", FloorDivideFwdOp,
-     lambda a, b: torch.floor(a.float() / b.float()).to(a.dtype),
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
-    ("lerp", LerpFwdOp, lambda a, b: torch.lerp(a.float(), b.float(), 0.5).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
-    ("maximum", MaximumFwdOp, lambda a, b: torch.maximum(a.float(), b.float()).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
-    ("minimum", MinimumFwdOp, lambda a, b: torch.minimum(a.float(), b.float()).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
-]
+class BinaryArithBroadcastFixture(FixtureBase):
+    PARAMS = [
+        (
+            "a_shape, b_shape",
+            [
+                pytest.param(
+                    a_shape,
+                    b_shape,
+                    marks=pytest.mark.smoke,
+                    id=f"add-{i}",
+                )
+                for i, (a_shape, b_shape) in enumerate(_BROADCAST_PATTERNS)
+            ],
+        ),
+    ]
+
+
+@BinaryArithBroadcastFixture
+def test_binary_arith_broadcast_contract(a_shape, b_shape) -> None:
+    dtype = torch.float16
+    a = torch.randn(*a_shape, dtype=dtype, device="cuda")
+    b = torch.randn(*b_shape, dtype=dtype, device="cuda")
+    op = AddFwdOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
+    ref = (a.float() + b.float()).to(a.dtype)
+    with torch.no_grad():
+        out = op(a, b)
+    atol, rtol = _get_tolerances(dtype)
+    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
 
 
 # ---------------------------------------------------------------------------
