@@ -1316,7 +1316,7 @@ class TestInferShapeParity:
             "FakeOp", entry, cls, warnings=warnings,
         )
         assert any(
-            "disagrees with declared shape" in e for e in errors
+            "disagrees with declared" in e for e in errors
         ), (
             "Wrong _infer_output_shapes against declared output shape "
             f"must surface as a parity error; errors={errors}"
@@ -1371,6 +1371,149 @@ class TestInferShapeParity:
             "self.<class_attr> lookup must not cause a parity skip; "
             f"warnings={warnings}"
         )
+
+    def test_infer_reads_static_dim_attr_populated(self, validator):
+        """``_infer_output_shapes`` reading ``self.<static_dim>`` must
+        exercise parity, not skip with AttributeError.
+
+        Regression (review thread 1): ``_build_mock_self`` previously
+        installed only ``signature.params`` defaults, so a generated
+        ``_infer_output_shapes`` that consults ``self.N`` (a
+        ``static_dims`` key) raised AttributeError and the check was
+        silently skipped. With static_dims now resolved against mock
+        inputs and installed on mock_self, the method runs and its
+        output is compared end-to-end.
+        """
+        from tileops.ops.op_base import Op
+
+        class StaticDimOp(Op):
+
+            def forward(self, x):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+            def _infer_output_shapes(self, x_shape):
+                # Reads a static_dims attribute: N = x.shape[-1]
+                return {"y": (self.N, self.N)}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[B, N]"}},
+                "outputs": {"y": {"dtype": "float16", "shape": "[N, N]"}},
+                "static_dims": {"N": "x.shape[-1]"},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "StaticDimOp", entry, StaticDimOp, warnings=warnings,
+        )
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert not any(
+            "AttributeError" in w for w in warnings
+        ), f"static_dims lookup must not AttributeError-skip; warnings={warnings}"
+
+    def test_conv_like_output_only_symbol_not_blamed(self, validator):
+        """Conv-like op with output-only ``L_out`` derived by shape_rules
+        must pass parity when ``_infer_output_shapes`` is correct.
+
+        Regression (review thread 2): previously the declared
+        output-shape comparison pulled an arbitrary concrete size for
+        ``L_out`` from ``dim_sizes`` and flagged the correct
+        ``_infer_output_shapes`` as a mismatch. Output-only symbols must
+        only be checked for rank + per-symbol consistency across
+        outputs.
+        """
+        def infer(self, x_shape, w_shape):
+            # x: [N, C_in, L_in]; w: [C_out, C_in, kW]
+            # y: [N, C_out, L_in - kW + 1]
+            return {"y": (x_shape[0], w_shape[0], x_shape[2] - w_shape[2] + 1)}
+
+        cls = _make_op_cls_with_infer(infer, name="ConvLikeOp")
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
+                    "w": {"dtype": "float16", "shape": "[C_out, C_in, kW]"},
+                },
+                "outputs": {
+                    "y": {"dtype": "float16", "shape": "[N, C_out, L_out]"},
+                },
+                "shape_rules": ["L_out == L_in - kW + 1"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "ConvLikeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            f"Correct conv-like infer must not be flagged for output-only "
+            f"symbol L_out; errors={errors}"
+        )
+
+    def test_conv_like_wrong_rank_still_caught(self, validator):
+        """Rank disagreement against declared output shape is still an
+        error, even for an op with an output-only ``L_out`` symbol.
+
+        Pins the positive side of the thread 2 fix: loosening the
+        output-only value check must not weaken the rank check.
+        """
+        def infer(self, x_shape, w_shape):
+            # Wrong rank: drops the spatial dim entirely.
+            return {"y": (x_shape[0], w_shape[0])}
+
+        cls = _make_op_cls_with_infer(infer, name="ConvLikeBadOp")
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
+                    "w": {"dtype": "float16", "shape": "[C_out, C_in, kW]"},
+                },
+                "outputs": {
+                    "y": {"dtype": "float16", "shape": "[N, C_out, L_out]"},
+                },
+                "shape_rules": ["L_out == L_in - kW + 1"],
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "ConvLikeBadOp", entry, cls,
+        )
+        assert any(
+            "rank" in e and "disagrees" in e for e in errors
+        ), f"Expected rank error; got: {errors}"
+
+    def test_conv_like_output_only_inconsistent_across_outputs(self, validator):
+        """Output-only symbol reused across multiple outputs must be
+        consistent; otherwise the parity check flags the disagreement.
+        """
+        def infer(self, x_shape):
+            # Two outputs that both claim ``L_out`` but produce different
+            # concrete sizes — this is an internal inconsistency even
+            # though L_out is output-only.
+            return {
+                "y1": (x_shape[0], x_shape[1] - 1),
+                "y2": (x_shape[0], x_shape[1] - 2),
+            }
+
+        cls = _make_op_cls_with_infer(infer, name="InconsistentOutOnlyOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[N, L_in]"}},
+                "outputs": {
+                    "y1": {"dtype": "float16", "shape": "[N, L_out]"},
+                    "y2": {"dtype": "float16", "shape": "[N, L_out]"},
+                },
+                "shape_rules": ["L_out == L_in - 1"],
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "InconsistentOutOnlyOp", entry, cls,
+        )
+        assert any(
+            "output-only symbol" in e and "L_out" in e for e in errors
+        ), f"Expected output-only consistency error; got: {errors}"
 
 
 class TestDtypeOptionsHelper:
@@ -2108,6 +2251,42 @@ class TestValidateDtypesParity:
         ), (
             "missing-input skip must not be reported as rejection; "
             f"errors={errors}"
+        )
+
+    def test_validate_dtypes_reads_self_dtype_attr(self, validator):
+        """``_validate_dtypes`` that compares ``x.dtype != self.dtype``
+        must accept every listed combo when mock_self.dtype is populated.
+
+        Regression (review thread 1): ``_build_mock_self`` previously
+        installed only ``signature.params`` defaults, so
+        ``self.dtype`` fell through to the base-class ``Op.dtype = None``
+        and the comparison always raised — causing the parity check to
+        mark every listed combo as rejected. With the dtype axis now
+        populated from the candidate combo, listed combos are accepted
+        end-to-end.
+        """
+        def validate(self, x):
+            # The generated pattern under test: compare the input dtype
+            # against ``self.dtype`` (set in __init__ via a dtype param).
+            if x.dtype != self.dtype:
+                raise ValueError(
+                    f"x.dtype {x.dtype} does not match self.dtype {self.dtype}"
+                )
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            "With self.dtype populated from the combo, listed combos "
+            f"must be accepted; errors={errors} warnings={warnings}"
         )
 
 
