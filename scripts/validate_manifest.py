@@ -827,6 +827,13 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
         errors.extend(
             _check_dtype_combos_same_as_identity(op_name, dtype_combos, same_as_map)
         )
+        # Hard data-validation for combo values: every combo entry must
+        # resolve to a concrete torch dtype (or a ``same_as(ref)`` whose
+        # ref resolves to concrete torch dtypes). Runs unconditionally —
+        # independent of whether the op overrides ``_validate_dtypes`` —
+        # so an un-migrated op carrying invalid combo data still surfaces
+        # a hard L3 error rather than only a missing-override warning.
+        errors.extend(check_l3_dtype_combos_data(op_name, sig))
 
     # Validate workload dtypes
     workloads = entry.get("workloads", [])
@@ -853,6 +860,53 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
                     if err:
                         errors.append(err)
 
+    return errors
+
+
+def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
+    """Validate ``dtype_combos`` entries resolve to concrete torch dtypes.
+
+    Manifest-data check, independent of any op class / ``_validate_dtypes``
+    implementation. Every combo value must be either:
+      * a concrete dtype name in ``_TORCH_DTYPES``; or
+      * a ``same_as(ref)`` expression whose ref resolves transitively to
+        concrete dtype names.
+
+    Anything else (e.g. ``"not_a_real_dtype"``, ``same_as(unknown)``) is a
+    hard L3 error — callers must not silently proceed with invalid combo
+    data.
+    """
+    errors: list[str] = []
+    dtype_combos = sig.get("dtype_combos")
+    if not isinstance(dtype_combos, list) or not dtype_combos:
+        return errors
+    dtype_options = _resolve_tensor_dtype_options(sig)
+    if dtype_options is None:
+        # Tensor-level dtype errors already reported in ``check_l3``.
+        return errors
+    for i, combo in enumerate(dtype_combos):
+        if not isinstance(combo, dict):
+            continue
+        for key, val in combo.items():
+            if not isinstance(val, str):
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                    f"{val!r} is not a string"
+                )
+                continue
+            opts = _dtype_options_for_tensor(key, val, dtype_options)
+            if opts is None:
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                    f"{val!r} is not a valid dtype (unresolved "
+                    f"same_as reference or not in torch dtype set)"
+                )
+            elif not all(t in _TORCH_DTYPES for t in opts):
+                bad = [t for t in opts if t not in _TORCH_DTYPES]
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                    f"{val!r} resolves to unknown dtype(s) {bad!r}"
+                )
     return errors
 
 
@@ -1715,10 +1769,15 @@ def _resolve_tensor_dtype_options(
 ) -> dict[str, list[str]] | None:
     """Return dtype options for every declared tensor (inputs + outputs).
 
-    Resolves ``same_as`` references in declaration order; returns None if
-    any tensor's expression cannot be resolved.
+    Resolves ``same_as`` references to a fixpoint: declaration order is
+    irrelevant, so ``x: same_as(y)`` declared before ``y: float16`` still
+    resolves. Returns None only if some tensor's expression is genuinely
+    unresolvable (unknown token, dangling ``same_as`` reference, or a
+    ``same_as`` cycle).
     """
-    resolved: dict[str, list[str]] = {}
+    # Collect every tensor's raw dtype string first, so iteration order
+    # cannot affect the result.
+    pending: dict[str, str] = {}
     for group in ("inputs", "outputs"):
         tensors = sig.get(group) or {}
         if not isinstance(tensors, dict):
@@ -1726,13 +1785,29 @@ def _resolve_tensor_dtype_options(
         for tname, attrs in tensors.items():
             if not isinstance(attrs, dict):
                 return None
-            opts = _dtype_options_for_tensor(
-                tname, attrs.get("dtype", ""), resolved,
-            )
+            pending[tname] = attrs.get("dtype", "")
+
+    resolved: dict[str, list[str]] = {}
+    # Iterate to fixpoint: each pass resolves every tensor whose
+    # dependencies are already known. Bound the loop by len(pending) + 1
+    # — any longer progression implies a cycle (no new resolutions).
+    for _ in range(len(pending) + 1):
+        made_progress = False
+        for tname, dtype_str in list(pending.items()):
+            opts = _dtype_options_for_tensor(tname, dtype_str, resolved)
             if opts is None:
-                return None
+                continue
             resolved[tname] = opts
-    return resolved
+            del pending[tname]
+            made_progress = True
+        if not pending:
+            return resolved
+        if not made_progress:
+            # Remaining tensors reference something unresolvable (unknown
+            # dtype name, dangling ref, or a same_as cycle). Propagate
+            # failure per docstring contract.
+            return None
+    return resolved if not pending else None
 
 
 def _primary_dtype_input(
@@ -1925,45 +2000,42 @@ def check_l3_validate_dtypes_parity(
 
     dtype_combos = sig.get("dtype_combos")
     if isinstance(dtype_combos, list) and dtype_combos:
-        # Upfront validation of dtype_combos values: every entry must be
-        # a concrete torch dtype (in ``_TORCH_DTYPES``) or a resolvable
-        # ``same_as(ref)`` expression that itself resolves to concrete
-        # torch dtypes. Invalid values are manifest data errors — surface
-        # as hard L3 errors rather than letting them fall through to a
-        # parity-skip warning (which would silently disable the check).
-        # The ``cannot build mock tensor`` warning path is reserved for
-        # valid dtype names that the local torch build cannot materialize
-        # (a validator-environment limitation, not a manifest defect).
-        combo_validation_errors: list[str] = []
-        for i, combo in enumerate(dtype_combos):
-            if not isinstance(combo, dict):
-                continue
-            for key, val in combo.items():
-                if not isinstance(val, str):
-                    combo_validation_errors.append(
-                        f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
-                        f"{val!r} is not a string"
-                    )
-                    continue
-                opts = _dtype_options_for_tensor(key, val, dtype_options)
-                if opts is None:
-                    combo_validation_errors.append(
-                        f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
-                        f"{val!r} is not a valid dtype (unresolved "
-                        f"same_as reference or not in torch dtype set)"
-                    )
-                elif not all(t in _TORCH_DTYPES for t in opts):
-                    bad = [t for t in opts if t not in _TORCH_DTYPES]
-                    combo_validation_errors.append(
-                        f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
-                        f"{val!r} resolves to unknown dtype(s) {bad!r}"
-                    )
+        # Combo-data validity: surface invalid entries as hard L3 errors
+        # so downstream parity probing does not run on junk data (which
+        # would otherwise produce a cascade of misleading "rejects" /
+        # "skipped" diagnostics). The same check also runs
+        # unconditionally in ``check_l3`` — the driver dedupes error
+        # strings so users see each message once even when both entry
+        # points are invoked in the same run.
+        combo_validation_errors = check_l3_dtype_combos_data(op_name, sig)
         if combo_validation_errors:
-            # Surface the data errors and stop before any parity probing:
-            # invalid combo entries would otherwise generate a cascade
-            # of misleading "rejects" / "skipped" diagnostics.
             errors.extend(combo_validation_errors)
             return errors
+
+        # Expand ``same_as(ref)`` in combo values to a concrete dtype
+        # before parity probing: ``_combo_accepted`` / ``_make_mock_tensor``
+        # expect literal torch dtype names and would otherwise try to look
+        # up ``same_as(x)`` as a torch attribute. Per R3 + R4 we already
+        # enforce identity (``_check_dtype_combos_same_as_identity``), so
+        # each ``same_as(ref)`` value resolves to the same concrete dtype
+        # the ref carries in the same combo row.
+        expanded_combos: list[dict[str, str]] = []
+        for combo in dtype_combos:
+            if not isinstance(combo, dict):
+                expanded_combos.append({})
+                continue
+            expanded: dict[str, str] = {}
+            for key, val in combo.items():
+                if isinstance(val, str):
+                    m = _SAME_AS_RE.match(val.strip())
+                    if m:
+                        ref = m.group(1)
+                        ref_val = combo.get(ref)
+                        expanded[key] = ref_val if isinstance(ref_val, str) else val
+                        continue
+                expanded[key] = val
+            expanded_combos.append(expanded)
+        dtype_combos = expanded_combos
 
         # Each listed combo should be accepted.
         for i, combo in enumerate(dtype_combos):
@@ -2627,7 +2699,21 @@ def validate_manifest(
                 else:
                     all_warnings.extend(bench_errors)
 
-    return all_errors, all_warnings
+    # Deduplicate aggregate error/warning strings while preserving order.
+    # ``check_l3`` and ``check_l3_validate_dtypes_parity`` both surface
+    # ``dtype_combos`` data errors (each is a valid standalone entry
+    # point); deduping at the driver keeps user-visible reports crisp.
+    def _dedup(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            if item in seen:
+                continue
+            seen.add(item)
+            out.append(item)
+        return out
+
+    return _dedup(all_errors), _dedup(all_warnings)
 
 
 # ---------------------------------------------------------------------------

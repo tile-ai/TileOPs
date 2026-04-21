@@ -803,6 +803,62 @@ class TestDtype:
             f"Expected partial-combo error, got: {errors}"
         )
 
+    def test_dtype_combos_invalid_value_is_hard_l3_error(self, validator):
+        """Un-migrated op with invalid dtype_combos value still produces
+        a hard L3 error in ``check_l3`` — does not depend on
+        ``_validate_dtypes`` override.
+        """
+        entry = {
+            "status": "implemented",
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "not_a_real_dtype"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any(
+            "not_a_real_dtype" in e and "dtype_combos" in e for e in errors
+        ), f"Expected hard L3 error for invalid combo value, got: {errors}"
+
+    def test_resolve_dtype_options_forward_reference(self, validator):
+        """``_resolve_tensor_dtype_options`` resolves ``same_as(y)`` even
+        when ``y`` is declared later than ``x``. Declaration order must
+        not affect resolution (R3 is an identity constraint, not an
+        ordering rule).
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "same_as(y)"},
+                "y": {"dtype": "float16 | bfloat16"},
+            },
+            "outputs": {"z": {"dtype": "same_as(y)"}},
+        }
+        resolved = validator._resolve_tensor_dtype_options(sig)
+        assert resolved is not None, "Forward same_as reference must resolve"
+        assert resolved["x"] == ["float16", "bfloat16"]
+        assert resolved["y"] == ["float16", "bfloat16"]
+        assert resolved["z"] == ["float16", "bfloat16"]
+
+    def test_resolve_dtype_options_same_as_cycle_fails(self, validator):
+        """A pure ``same_as`` cycle (``x: same_as(y)``, ``y: same_as(x)``)
+        has no concrete dtype grounding — resolver returns None.
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "same_as(y)"},
+                "y": {"dtype": "same_as(x)"},
+            },
+            "outputs": {},
+        }
+        resolved = validator._resolve_tensor_dtype_options(sig)
+        assert resolved is None, (
+            "same_as cycle without concrete dtype must not resolve"
+        )
+
 
 # ---------------------------------------------------------------------------
 # L2 extension: _infer_output_shapes parity with shape_rules
