@@ -12,10 +12,18 @@ concurrency:
   cancel-in-progress: false
 
 # ---------------------------------------------------------------------------
-# All nightly jobs run on the host-based runner (label: nightly) and launch
-# work inside the local tileops-runner:latest Docker image via `docker run`.
-# Persistent caches are mounted from /data/ci-cache/ on the host.
+# All nightly jobs run on a containerized self-hosted runner (label: nightly).
+# The runner container is provisioned by the host with GPU access, persistent
+# cache mounts, and the runtime environment variables below.
 # ---------------------------------------------------------------------------
+
+env:
+  TILELANG_CACHE_DIR: /cache/tilelang
+  TILELANG_TMP_DIR: /cache/tilelang/tmp
+  TRITON_CACHE_DIR: /cache/triton
+  PIP_CACHE_DIR: /cache/pip
+  WHEEL_DIR: /cache/wheels
+  MAX_JOBS: "64"
 
 jobs:
   # =========================================================================
@@ -26,48 +34,25 @@ jobs:
     timeout-minutes: 60
     runs-on: [self-hosted, tile-ops, nightly]
     steps:
-      - name: Fix workspace ownership
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE":/workspace \
-            --entrypoint chown \
-            tileops-runner:latest \
-            -R "$(id -u):$(id -g)" /workspace
-
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Verify nightly runner environment
+        run: scripts/ci/verify_nightly_runner.sh
+        shell: bash
+
       - name: Warm kernel compilation cache
         continue-on-error: true
         run: |
-          docker run --rm \
-            --gpus '"device=1"' \
-            -v "$GITHUB_WORKSPACE":/workspace \
-            -v /data/ci-cache/tilelang:/cache/tilelang \
-            -v /data/ci-cache/triton:/cache/triton \
-            -v /data/ci-cache/pip:/cache/pip \
-            -v /data/ci-cache/wheels:/cache/wheels \
-            -e TILELANG_CACHE_DIR=/cache/tilelang \
-            -e TILELANG_TMP_DIR=/cache/tilelang/tmp \
-            -e TRITON_CACHE_DIR=/cache/triton \
-            -e PIP_CACHE_DIR=/cache/pip \
-            -e WHEEL_DIR=/cache/wheels \
-            -e MAX_JOBS=64 \
-            -w /workspace \
-            --entrypoint bash \
-            tileops-runner:latest \
-            -c '
-              set -euo pipefail
-              mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
+          set -euo pipefail
 
-              PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
+          PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
 
-              export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
-              echo "Starting kernel cache warmup..."
-              python scripts/warmup_kernel_cache.py --max-workers 64 -n 16
-            '
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          echo "Starting kernel cache warmup..."
+          python scripts/warmup_kernel_cache.py --max-workers 64 -n 16
         shell: bash
 
   # =========================================================================
@@ -79,75 +64,51 @@ jobs:
     timeout-minutes: 120
     runs-on: [self-hosted, tile-ops, nightly]
     steps:
-      - name: Fix workspace ownership
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE":/workspace \
-            --entrypoint chown \
-            tileops-runner:latest \
-            -R "$(id -u):$(id -g)" /workspace
-
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Verify nightly runner environment
+        run: scripts/ci/verify_nightly_runner.sh
+        shell: bash
+
       - name: Run benchmark ops
         id: benchmark_tests
         continue-on-error: true
         run: |
-          docker run --rm \
-            --gpus '"device=1"' \
-            -v "$GITHUB_WORKSPACE":/workspace \
-            -v /data/ci-cache/tilelang:/cache/tilelang \
-            -v /data/ci-cache/triton:/cache/triton \
-            -v /data/ci-cache/pip:/cache/pip \
-            -v /data/ci-cache/wheels:/cache/wheels \
-            -e TILELANG_CACHE_DIR=/cache/tilelang \
-            -e TILELANG_TMP_DIR=/cache/tilelang/tmp \
-            -e TRITON_CACHE_DIR=/cache/triton \
-            -e PIP_CACHE_DIR=/cache/pip \
-            -e WHEEL_DIR=/cache/wheels \
-            -e MAX_JOBS=64 \
-            -w /workspace \
-            --entrypoint bash \
-            tileops-runner:latest \
-            -c '
-              set -euo pipefail
-              mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
+          set -euo pipefail
 
-              # Validate GPU frequency
-              TARGET_CLOCK_MHZ=1830
-              RETRIES=5
-              nvidia-smi -L
-              for i in $(seq 1 $RETRIES); do
-                gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
-                echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
-                if [ "$gpu_clock" = "$TARGET_CLOCK_MHZ" ]; then break; fi
-                if [ "$i" -eq "$RETRIES" ]; then
-                  echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
-                  exit 1
-                fi
-                sleep 2
-              done
+          # Validate GPU frequency
+          TARGET_CLOCK_MHZ=1830
+          RETRIES=5
+          for i in $(seq 1 "${RETRIES}"); do
+            gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
+            echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
+            if [ "${gpu_clock}" = "${TARGET_CLOCK_MHZ}" ]; then break; fi
+            if [ "${i}" -eq "${RETRIES}" ]; then
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
+              exit 1
+            fi
+            sleep 2
+          done
 
-              PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
+          PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
 
-              export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
-              echo "Runtime cache env:"
-              echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
-              echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
-              echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          echo "Runtime cache env:"
+          echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
+          echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
+          echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
-              set -o pipefail
-              python -m pytest -q benchmarks/ops --junit-xml=bench_results.xml | tee tileops_benchmarks.log
+          set -o pipefail
+          python -m pytest -q benchmarks/ops --junit-xml=bench_results.xml | tee tileops_benchmarks.log
 
-              if [ -f profile_run.log ]; then
-                { echo; echo "===== profile_run.log summary ====="; cat profile_run.log; } >> tileops_benchmarks.log
-              else
-                echo "::warning::profile_run.log not found; benchmark may have failed partially" >> tileops_benchmarks.log
-              fi
-            '
+          if [ -f profile_run.log ]; then
+            { echo; echo "===== profile_run.log summary ====="; cat profile_run.log; } >> tileops_benchmarks.log
+          else
+            echo "::warning::profile_run.log not found; benchmark may have failed partially" >> tileops_benchmarks.log
+          fi
         shell: bash
 
       - name: Upload benchmark artifacts
@@ -175,53 +136,31 @@ jobs:
     timeout-minutes: 180
     runs-on: [self-hosted, tile-ops, nightly]
     steps:
-      - name: Fix workspace ownership
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE":/workspace \
-            --entrypoint chown \
-            tileops-runner:latest \
-            -R "$(id -u):$(id -g)" /workspace
-
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Verify nightly runner environment
+        run: scripts/ci/verify_nightly_runner.sh
+        shell: bash
+
       - name: Run full op tests
         id: op_tests
         continue-on-error: true
         run: |
-          docker run --rm \
-            --gpus '"device=1"' \
-            -v "$GITHUB_WORKSPACE":/workspace \
-            -v /data/ci-cache/tilelang:/cache/tilelang \
-            -v /data/ci-cache/triton:/cache/triton \
-            -v /data/ci-cache/pip:/cache/pip \
-            -v /data/ci-cache/wheels:/cache/wheels \
-            -e TILELANG_CACHE_DIR=/cache/tilelang \
-            -e TILELANG_TMP_DIR=/cache/tilelang/tmp \
-            -e TRITON_CACHE_DIR=/cache/triton \
-            -e PIP_CACHE_DIR=/cache/pip \
-            -e WHEEL_DIR=/cache/wheels \
-            -w /workspace \
-            --entrypoint bash \
-            tileops-runner:latest \
-            -c '
-              set -euo pipefail
-              mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
+          set -euo pipefail
 
-              PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
+          PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
 
-              export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
-              echo "Runtime cache env:"
-              echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
-              echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
-              echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          echo "Runtime cache env:"
+          echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
+          echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
+          echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
-              set -o pipefail
-              python -m pytest tests/ -v --tb=short --junit-xml=test_results.xml | tee tileops_op_test.log
-            '
+          set -o pipefail
+          python -m pytest tests/ -v --tb=short --junit-xml=test_results.xml | tee tileops_op_test.log
         shell: bash
 
       - name: Download benchmark artifacts
@@ -297,29 +236,22 @@ jobs:
       - name: Generate nightly report
         if: ${{ always() }}
         run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE":/workspace \
-            -w /workspace \
-            --entrypoint bash \
-            tileops-runner:latest \
-            -c '
-              set -euo pipefail
-              pip install --no-deps -e . 2>/dev/null
-              export PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}"
+          set -euo pipefail
+          pip install --no-deps -e . 2>/dev/null
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
 
-              HISTORY_FLAG=""
-              if [ -f .perf_history/perf_history.json ]; then
-                HISTORY_FLAG="--history .perf_history/perf_history.json"
-              fi
+          HISTORY_FLAG=""
+          if [ -f .perf_history/perf_history.json ]; then
+            HISTORY_FLAG="--history .perf_history/perf_history.json"
+          fi
 
-              python scripts/nightly_report.py \
-                --test-xml test_results.xml \
-                --bench-xml bench_results.xml \
-                ${HISTORY_FLAG} \
-                --output nightly_report.md \
-                --history-out perf_history.json \
-                || echo "::warning::nightly_report.py failed"
-            '
+          python scripts/nightly_report.py \
+            --test-xml test_results.xml \
+            --bench-xml bench_results.xml \
+            ${HISTORY_FLAG} \
+            --output nightly_report.md \
+            --history-out perf_history.json \
+            || echo "::warning::nightly_report.py failed"
         shell: bash
 
       - name: Post nightly report to step summary
@@ -363,73 +295,55 @@ jobs:
       contents: write
     runs-on: [self-hosted, tile-ops, nightly]
     steps:
-      - name: Fix workspace ownership
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE":/workspace \
-            --entrypoint chown \
-            tileops-runner:latest \
-            -R "$(id -u):$(id -g)" /workspace
-
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify nightly runner environment
+        run: scripts/ci/verify_nightly_runner.sh
+        shell: bash
+
       - name: Build and test wheel package
         run: |
-          docker run --rm \
-            --gpus '"device=1"' \
-            -v "$GITHUB_WORKSPACE":/workspace \
-            -v /data/ci-cache/tilelang:/cache/tilelang \
-            -v /data/ci-cache/triton:/cache/triton \
-            -e TILELANG_CACHE_DIR=/cache/tilelang \
-            -e TILELANG_TMP_DIR=/cache/tilelang/tmp \
-            -e TRITON_CACHE_DIR=/cache/triton \
-            -w /workspace \
-            --entrypoint bash \
-            tileops-runner:latest \
-            -c '
-              set -euo pipefail
-              mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}"
+          set -euo pipefail
+          exec > >(tee packaging.log) 2>&1
 
-              # Validate GPU frequency
-              TARGET_CLOCK_MHZ=1830
-              RETRIES=5
-              nvidia-smi -L
-              for i in $(seq 1 $RETRIES); do
-                gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
-                echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
-                if [ "$gpu_clock" = "$TARGET_CLOCK_MHZ" ]; then break; fi
-                if [ "$i" -eq "$RETRIES" ]; then
-                  echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
-                  exit 1
-                fi
-                sleep 2
-              done
+          # Validate GPU frequency
+          TARGET_CLOCK_MHZ=1830
+          RETRIES=5
+          for i in $(seq 1 "${RETRIES}"); do
+            gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
+            echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
+            if [ "${gpu_clock}" = "${TARGET_CLOCK_MHZ}" ]; then break; fi
+            if [ "${i}" -eq "${RETRIES}" ]; then
+              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz."
+              exit 1
+            fi
+            sleep 2
+          done
 
-              pip install build pytest
+          pip install build pytest
 
-              echo "=== Build wheel package ==="
-              python -m build --wheel
-              echo "=== Build artifacts ==="
-              ls -lh dist/*.whl
+          echo "=== Build wheel package ==="
+          python -m build --wheel
+          echo "=== Build artifacts ==="
+          ls -lh dist/*.whl
 
-              echo "=== Install built wheel ==="
-              pip install dist/*.whl
+          echo "=== Install built wheel ==="
+          pip install dist/*.whl
 
-              TMP_TEST_DIR="$(mktemp -d)"
-              cp -r tests "${TMP_TEST_DIR}/tests"
-              cp pyproject.toml "${TMP_TEST_DIR}/"
-              cd "${TMP_TEST_DIR}"
+          TMP_TEST_DIR="$(mktemp -d)"
+          cp -r tests "${TMP_TEST_DIR}/tests"
+          cp pyproject.toml "${TMP_TEST_DIR}/"
+          cd "${TMP_TEST_DIR}"
 
-              echo "=== Runtime cache env ==="
-              echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
-              echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
-              echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
+          echo "=== Runtime cache env ==="
+          echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
+          echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
+          echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
-              echo "=== Run pytest packaging ==="
-              python -m pytest -q tests/ops -m "packaging" \
-                --junit-xml=/workspace/packaging_smoke.xml
-            ' 2>&1 | tee packaging.log
+          echo "=== Run pytest packaging ==="
+          python -m pytest -q tests/ops -m "packaging" \
+            --junit-xml="${GITHUB_WORKSPACE}/packaging_smoke.xml"
         shell: bash
 
       - name: Upload wheel artifact
