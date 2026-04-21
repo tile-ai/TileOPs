@@ -19,7 +19,7 @@ _EMPTY_STATIC_DIMS_WARNED: set = set()
 # Python (3.8+) — AC-4's back-compat requirement for ``ast.Num`` is satisfied
 # by accepting ``ast.Constant``, since any legacy ``ast.Num`` node instance is
 # also an ``ast.Constant``. We intentionally omit ``ast.Num`` from the tuple
-# to avoid the Python 3.12+ DeprecationWarning that firing at isinstance()
+# to avoid the Python 3.12+ DeprecationWarning that would fire at isinstance()
 # time; the whitelist is evaluated on the recursive AST walk hot path.
 #
 # ``ast.Pow`` is intentionally excluded: roofline formulas are integer
