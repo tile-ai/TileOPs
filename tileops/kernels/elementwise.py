@@ -46,82 +46,82 @@ __all__ = [
     "FusedGatedKernel",
     "UnaryKernel",
     # --- unary: existing ---
-    "ReluKernel",
+    "ReluFwdKernel",
     # --- unary: math (17) ---
-    "AbsKernel",
-    "CeilKernel",
-    "CosKernel",
-    "ErfKernel",
-    "ExpKernel",
-    "Expm1Kernel",
-    "FloorKernel",
-    "Log1pKernel",
-    "LogKernel",
-    "NegKernel",
-    "ReciprocalKernel",
-    "RoundKernel",
-    "RsqrtKernel",
-    "SignKernel",
-    "SinKernel",
-    "SqrtKernel",
-    "TruncKernel",
+    "AbsFwdKernel",
+    "CeilFwdKernel",
+    "CosFwdKernel",
+    "ErfFwdKernel",
+    "ExpFwdKernel",
+    "Expm1FwdKernel",
+    "FloorFwdKernel",
+    "Log1pFwdKernel",
+    "LogFwdKernel",
+    "NegFwdKernel",
+    "ReciprocalFwdKernel",
+    "RoundFwdKernel",
+    "RsqrtFwdKernel",
+    "SignFwdKernel",
+    "SinFwdKernel",
+    "SqrtFwdKernel",
+    "TruncFwdKernel",
     # --- unary: activations (8) ---
-    "GeluKernel",
-    "HardsigmoidKernel",
-    "HardswishKernel",
-    "MishKernel",
-    "SeluKernel",
-    "SigmoidKernel",
-    "SiluKernel",
-    "TanhKernel",
+    "GeluFwdKernel",
+    "HardsigmoidFwdKernel",
+    "HardswishFwdKernel",
+    "MishFwdKernel",
+    "SeluFwdKernel",
+    "SigmoidFwdKernel",
+    "SiluFwdKernel",
+    "TanhFwdKernel",
     # --- unary: logical / bitwise (2) ---
-    "BitwiseNotKernel",
-    "LogicalNotKernel",
+    "BitwiseNotFwdKernel",
+    "LogicalNotFwdKernel",
     # --- unary: special predicates (3) ---
-    "IsfiniteKernel",
-    "IsinfKernel",
-    "IsnanKernel",
+    "IsfiniteFwdKernel",
+    "IsinfFwdKernel",
+    "IsnanFwdKernel",
     # --- binary arithmetic ---
-    "AddKernel",
-    "SubKernel",
-    "MulKernel",
-    "DivKernel",
-    "RemainderKernel",
-    "PowKernel",
-    "FloorDivideKernel",
-    "LerpKernel",
-    "MaximumKernel",
-    "MinimumKernel",
+    "AddFwdKernel",
+    "SubFwdKernel",
+    "MulFwdKernel",
+    "DivFwdKernel",
+    "RemainderFwdKernel",
+    "PowFwdKernel",
+    "FloorDivideFwdKernel",
+    "LerpFwdKernel",
+    "MaximumFwdKernel",
+    "MinimumFwdKernel",
     # --- comparison (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
-    "EqKernel",
-    "NeKernel",
-    "GtKernel",
-    "LtKernel",
-    "GeKernel",
-    "LeKernel",
+    "EqFwdKernel",
+    "NeFwdKernel",
+    "GtFwdKernel",
+    "LtFwdKernel",
+    "GeFwdKernel",
+    "LeFwdKernel",
     # --- logical (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
-    "LogicalAndKernel",
-    "LogicalOrKernel",
+    "LogicalAndFwdKernel",
+    "LogicalOrFwdKernel",
     # --- bitwise ---
-    "BitwiseAndKernel",
-    "BitwiseOrKernel",
-    "BitwiseXorKernel",
+    "BitwiseAndFwdKernel",
+    "BitwiseOrFwdKernel",
+    "BitwiseXorFwdKernel",
     # --- fused gated ---
-    "SiluAndMulKernel",
-    "GeluAndMulKernel",
-    "GeluTanhAndMulKernel",
+    "SiluAndMulFwdKernel",
+    "GeluAndMulFwdKernel",
+    "GeluTanhAndMulFwdKernel",
     # --- independent (custom-signature) ---
-    "LeakyReluKernel",
-    "EluKernel",
-    "HardtanhKernel",
-    "SoftplusKernel",
-    "PreluKernel",
-    "WhereKernel",
-    "ClampKernel",
-    "MaskedFillKernel",
-    "NanToNumKernel",
-    "AlibiKernel",
-    "SinusoidalKernel",
+    "LeakyReluFwdKernel",
+    "EluFwdKernel",
+    "HardtanhFwdKernel",
+    "SoftplusFwdKernel",
+    "PreluFwdKernel",
+    "WhereFwdKernel",
+    "ClampFwdKernel",
+    "MaskedFillFwdKernel",
+    "NanToNumFwdKernel",
+    "AlibiFwdKernel",
+    "SinusoidalFwdKernel",
 ]
 
 _BITWISE_DTYPES = (
@@ -1132,7 +1132,7 @@ class LogicalUnaryKernel(UnaryKernel):
     OUTPUT_DTYPE = torch.bool
 
 
-class ReluKernel(FloatUnaryKernel):
+class ReluFwdKernel(FloatUnaryKernel):
     """ReLU: y = max(x, 0)."""
 
     @staticmethod
@@ -1140,7 +1140,7 @@ class ReluKernel(FloatUnaryKernel):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
 
-class AddKernel(BinaryKernel):
+class AddFwdKernel(BinaryKernel):
     """Element-wise addition: y = a + b."""
 
     @staticmethod
@@ -1148,7 +1148,7 @@ class AddKernel(BinaryKernel):
         return a + b
 
 
-class SubKernel(BinaryKernel):
+class SubFwdKernel(BinaryKernel):
     """Element-wise subtraction: y = a - b."""
 
     @staticmethod
@@ -1156,7 +1156,7 @@ class SubKernel(BinaryKernel):
         return a - b
 
 
-class MulKernel(BinaryKernel):
+class MulFwdKernel(BinaryKernel):
     """Element-wise multiplication: y = a * b."""
 
     @staticmethod
@@ -1164,7 +1164,7 @@ class MulKernel(BinaryKernel):
         return a * b
 
 
-class DivKernel(BinaryKernel):
+class DivFwdKernel(BinaryKernel):
     """Element-wise division: y = a / b."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1174,7 +1174,7 @@ class DivKernel(BinaryKernel):
         return a / b
 
 
-class RemainderKernel(BinaryKernel):
+class RemainderFwdKernel(BinaryKernel):
     """Element-wise remainder: y = a - floor(a / b) * b.
 
     Matches PyTorch remainder semantics for floating-point inputs.
@@ -1198,7 +1198,7 @@ class RemainderKernel(BinaryKernel):
         return a - floored * b
 
 
-class PowKernel(BinaryKernel):
+class PowFwdKernel(BinaryKernel):
     """Element-wise power: y = a ** b."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1210,7 +1210,7 @@ class PowKernel(BinaryKernel):
         return T.Cast(a.dtype, T.pow(a_f32, b_f32))
 
 
-class FloorDivideKernel(BinaryKernel):
+class FloorDivideFwdKernel(BinaryKernel):
     """Element-wise floor division: y = floor(a / b).
 
     Division and floor are computed in fp32 to avoid two sources of error:
@@ -1228,7 +1228,7 @@ class FloorDivideKernel(BinaryKernel):
         return T.Cast(a.dtype, T.floor(a_f32 / b_f32))
 
 
-class LerpKernel(BinaryKernel):
+class LerpFwdKernel(BinaryKernel):
     """Element-wise lerp: y = a + weight * (b - a).
 
     PyTorch lerp is ternary (a, b, weight). Here weight is a compile-time
@@ -1299,7 +1299,7 @@ class LerpKernel(BinaryKernel):
             raise ValueError(f"Unknown strategy: {strategy}")
 
 
-class MaximumKernel(BinaryKernel):
+class MaximumFwdKernel(BinaryKernel):
     """Element-wise maximum: y = max(a, b) with NaN propagation.
 
     Matches torch.maximum semantics:
@@ -1326,7 +1326,7 @@ class MaximumKernel(BinaryKernel):
         return result
 
 
-class MinimumKernel(BinaryKernel):
+class MinimumFwdKernel(BinaryKernel):
     """Element-wise minimum: y = min(a, b) with NaN propagation.
 
     Matches torch.minimum semantics:
@@ -1335,7 +1335,7 @@ class MinimumKernel(BinaryKernel):
 
     Performance: uses T.min for the fast path (correct signed-zero on CUDA
     -- fminf returns -0 for min(-0,+0)) plus two isnan guards for NaN
-    propagation. See MaximumKernel for full rationale.
+    propagation. See MaximumFwdKernel for full rationale.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1358,7 +1358,7 @@ class MinimumKernel(BinaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class EqKernel(BinaryKernel):
+class EqFwdKernel(BinaryKernel):
     """Element-wise equality: y = (a == b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1371,7 +1371,7 @@ class EqKernel(BinaryKernel):
         return T.if_then_else(a == b, one, zero)
 
 
-class NeKernel(BinaryKernel):
+class NeFwdKernel(BinaryKernel):
     """Element-wise not-equal: y = (a != b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1384,7 +1384,7 @@ class NeKernel(BinaryKernel):
         return T.if_then_else(a != b, one, zero)
 
 
-class GtKernel(BinaryKernel):
+class GtFwdKernel(BinaryKernel):
     """Element-wise greater-than: y = (a > b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1397,7 +1397,7 @@ class GtKernel(BinaryKernel):
         return T.if_then_else(a > b, one, zero)
 
 
-class LtKernel(BinaryKernel):
+class LtFwdKernel(BinaryKernel):
     """Element-wise less-than: y = (a < b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1410,7 +1410,7 @@ class LtKernel(BinaryKernel):
         return T.if_then_else(a < b, one, zero)
 
 
-class GeKernel(BinaryKernel):
+class GeFwdKernel(BinaryKernel):
     """Element-wise greater-equal: y = (a >= b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1423,7 +1423,7 @@ class GeKernel(BinaryKernel):
         return T.if_then_else(a >= b, one, zero)
 
 
-class LeKernel(BinaryKernel):
+class LeFwdKernel(BinaryKernel):
     """Element-wise less-equal: y = (a <= b), stored as int8 (1/0)."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1441,7 +1441,7 @@ class LeKernel(BinaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class LogicalAndKernel(BinaryKernel):
+class LogicalAndFwdKernel(BinaryKernel):
     """Element-wise logical AND with non-zero truthiness, stored as int8."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
@@ -1456,7 +1456,7 @@ class LogicalAndKernel(BinaryKernel):
         return T.if_then_else(a_nonzero & b_nonzero, one, zero)
 
 
-class LogicalOrKernel(BinaryKernel):
+class LogicalOrFwdKernel(BinaryKernel):
     """Element-wise logical OR with non-zero truthiness, stored as int8."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
@@ -1476,7 +1476,7 @@ class LogicalOrKernel(BinaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class BitwiseAndKernel(BinaryKernel):
+class BitwiseAndFwdKernel(BinaryKernel):
     """Element-wise bitwise AND: y = a & b (integer inputs)."""
 
     SUPPORTED_DTYPES = _BITWISE_DTYPES
@@ -1486,7 +1486,7 @@ class BitwiseAndKernel(BinaryKernel):
         return a & b
 
 
-class BitwiseOrKernel(BinaryKernel):
+class BitwiseOrFwdKernel(BinaryKernel):
     """Element-wise bitwise OR: y = a | b (integer inputs)."""
 
     SUPPORTED_DTYPES = _BITWISE_DTYPES
@@ -1496,7 +1496,7 @@ class BitwiseOrKernel(BinaryKernel):
         return a | b
 
 
-class BitwiseXorKernel(BinaryKernel):
+class BitwiseXorFwdKernel(BinaryKernel):
     """Element-wise bitwise XOR: y = a ^ b (integer inputs)."""
 
     SUPPORTED_DTYPES = _BITWISE_DTYPES
@@ -1511,7 +1511,7 @@ class BitwiseXorKernel(BinaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class SiluAndMulKernel(FusedGatedKernel):
+class SiluAndMulFwdKernel(FusedGatedKernel):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1521,7 +1521,7 @@ class SiluAndMulKernel(FusedGatedKernel):
         return x * T.sigmoid(x)
 
 
-class GeluAndMulKernel(FusedGatedKernel):
+class GeluAndMulFwdKernel(FusedGatedKernel):
     """GELU-and-Mul: y = gelu(gate) * value.
 
     Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
@@ -1540,7 +1540,7 @@ class GeluAndMulKernel(FusedGatedKernel):
         return x * half * (one + erf_val)
 
 
-class GeluTanhAndMulKernel(FusedGatedKernel):
+class GeluTanhAndMulFwdKernel(FusedGatedKernel):
     """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value.
 
     Uses tanh approximation: gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
@@ -1565,7 +1565,7 @@ class GeluTanhAndMulKernel(FusedGatedKernel):
 # ---------------------------------------------------------------------------
 
 
-class ExpKernel(FloatUnaryKernel):
+class ExpFwdKernel(FloatUnaryKernel):
     """Element-wise exp(x)."""
 
     @staticmethod
@@ -1573,7 +1573,7 @@ class ExpKernel(FloatUnaryKernel):
         return T.exp(T.cast(x, "float32"))
 
 
-class LogKernel(FloatUnaryKernel):
+class LogFwdKernel(FloatUnaryKernel):
     """Element-wise log(x)."""
 
     @staticmethod
@@ -1581,7 +1581,7 @@ class LogKernel(FloatUnaryKernel):
         return T.log(T.cast(x, "float32"))
 
 
-class SqrtKernel(FloatUnaryKernel):
+class SqrtFwdKernel(FloatUnaryKernel):
     """Element-wise sqrt(x)."""
 
     @staticmethod
@@ -1589,7 +1589,7 @@ class SqrtKernel(FloatUnaryKernel):
         return T.sqrt(T.cast(x, "float32"))
 
 
-class RsqrtKernel(FloatUnaryKernel):
+class RsqrtFwdKernel(FloatUnaryKernel):
     """Element-wise 1/sqrt(x)."""
 
     @staticmethod
@@ -1597,7 +1597,7 @@ class RsqrtKernel(FloatUnaryKernel):
         return T.rsqrt(T.cast(x, "float32"))
 
 
-class AbsKernel(FloatUnaryKernel):
+class AbsFwdKernel(FloatUnaryKernel):
     """Element-wise |x|."""
 
     @staticmethod
@@ -1605,7 +1605,7 @@ class AbsKernel(FloatUnaryKernel):
         return T.abs(x)
 
 
-class NegKernel(FloatUnaryKernel):
+class NegFwdKernel(FloatUnaryKernel):
     """Element-wise -x."""
 
     @staticmethod
@@ -1613,7 +1613,7 @@ class NegKernel(FloatUnaryKernel):
         return -x
 
 
-class ReciprocalKernel(FloatUnaryKernel):
+class ReciprocalFwdKernel(FloatUnaryKernel):
     """Element-wise 1/x."""
 
     @staticmethod
@@ -1621,7 +1621,7 @@ class ReciprocalKernel(FloatUnaryKernel):
         return T.cast(1.0, "float32") / x
 
 
-class SignKernel(FloatUnaryKernel):
+class SignFwdKernel(FloatUnaryKernel):
     """Element-wise sign(x): -1, 0, or +1."""
 
     @staticmethod
@@ -1636,7 +1636,7 @@ class SignKernel(FloatUnaryKernel):
         )
 
 
-class SinKernel(FloatUnaryKernel):
+class SinFwdKernel(FloatUnaryKernel):
     """Element-wise sin(x)."""
 
     @staticmethod
@@ -1644,7 +1644,7 @@ class SinKernel(FloatUnaryKernel):
         return T.sin(T.cast(x, "float32"))
 
 
-class CosKernel(FloatUnaryKernel):
+class CosFwdKernel(FloatUnaryKernel):
     """Element-wise cos(x)."""
 
     @staticmethod
@@ -1652,7 +1652,7 @@ class CosKernel(FloatUnaryKernel):
         return T.cos(T.cast(x, "float32"))
 
 
-class FloorKernel(FloatUnaryKernel):
+class FloorFwdKernel(FloatUnaryKernel):
     """Element-wise floor(x).
 
     Casts to fp32 before calling ``T.floor`` because ``hfloor`` is not
@@ -1664,7 +1664,7 @@ class FloorKernel(FloatUnaryKernel):
         return T.floor(T.cast(x, "float32"))
 
 
-class CeilKernel(FloatUnaryKernel):
+class CeilFwdKernel(FloatUnaryKernel):
     """Element-wise ceil(x).
 
     Casts to fp32 before calling ``T.ceil`` because ``hceil`` is not
@@ -1676,7 +1676,7 @@ class CeilKernel(FloatUnaryKernel):
         return T.ceil(T.cast(x, "float32"))
 
 
-class RoundKernel(FloatUnaryKernel):
+class RoundFwdKernel(FloatUnaryKernel):
     """Element-wise round(x) with banker's rounding (round-to-nearest-even).
 
     Uses ``T.nearbyint`` (maps to ``nearbyintf`` in CUDA) to match
@@ -1689,7 +1689,7 @@ class RoundKernel(FloatUnaryKernel):
         return T.nearbyint(T.cast(x, "float32"))
 
 
-class TruncKernel(FloatUnaryKernel):
+class TruncFwdKernel(FloatUnaryKernel):
     """Element-wise trunc(x) -- integer part toward zero.
 
     Casts to fp32 before calling ``T.trunc`` because ``htrunc`` is not
@@ -1701,7 +1701,7 @@ class TruncKernel(FloatUnaryKernel):
         return T.trunc(T.cast(x, "float32"))
 
 
-class ErfKernel(FloatUnaryKernel):
+class ErfFwdKernel(FloatUnaryKernel):
     """Element-wise erf(x).
 
     Casts to fp32 before calling ``T.erf`` because the half-precision
@@ -1713,7 +1713,7 @@ class ErfKernel(FloatUnaryKernel):
         return T.erf(T.cast(x, "float32"))
 
 
-class Log1pKernel(FloatUnaryKernel):
+class Log1pFwdKernel(FloatUnaryKernel):
     """Element-wise log(1 + x).
 
     Uses composite ``log(1 + x)`` because ``T.log1p`` is not lowered
@@ -1725,7 +1725,7 @@ class Log1pKernel(FloatUnaryKernel):
         return T.log(T.cast(1.0, "float32") + x)
 
 
-class Expm1Kernel(FloatUnaryKernel):
+class Expm1FwdKernel(FloatUnaryKernel):
     """Element-wise exp(x) - 1."""
 
     @staticmethod
@@ -1738,7 +1738,7 @@ class Expm1Kernel(FloatUnaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class GeluKernel(FloatUnaryKernel):
+class GeluFwdKernel(FloatUnaryKernel):
     """Element-wise GELU using the standard erf formulation."""
 
     @staticmethod
@@ -1749,7 +1749,7 @@ class GeluKernel(FloatUnaryKernel):
         return half * x * (one + T.erf(T.cast(x, "float32") * inv_sqrt_2))
 
 
-class SiluKernel(FloatUnaryKernel):
+class SiluFwdKernel(FloatUnaryKernel):
     """Element-wise SiLU (Swish): x * sigmoid(x)."""
 
     @staticmethod
@@ -1757,7 +1757,7 @@ class SiluKernel(FloatUnaryKernel):
         return x * T.sigmoid(x)
 
 
-class SigmoidKernel(FloatUnaryKernel):
+class SigmoidFwdKernel(FloatUnaryKernel):
     """Element-wise sigmoid(x)."""
 
     @staticmethod
@@ -1765,7 +1765,7 @@ class SigmoidKernel(FloatUnaryKernel):
         return T.sigmoid(x)
 
 
-class TanhKernel(FloatUnaryKernel):
+class TanhFwdKernel(FloatUnaryKernel):
     """Element-wise tanh(x)."""
 
     @staticmethod
@@ -1773,7 +1773,7 @@ class TanhKernel(FloatUnaryKernel):
         return T.tanh(T.cast(x, "float32"))
 
 
-class HardswishKernel(FloatUnaryKernel):
+class HardswishFwdKernel(FloatUnaryKernel):
     """Element-wise HardSwish: x * clamp(x + 3, 0, 6) / 6."""
 
     @staticmethod
@@ -1785,7 +1785,7 @@ class HardswishKernel(FloatUnaryKernel):
         return x * clamped / six
 
 
-class HardsigmoidKernel(FloatUnaryKernel):
+class HardsigmoidFwdKernel(FloatUnaryKernel):
     """Element-wise HardSigmoid: clamp(x + 3, 0, 6) / 6."""
 
     @staticmethod
@@ -1796,7 +1796,7 @@ class HardsigmoidKernel(FloatUnaryKernel):
         return T.min(T.max(x + three, zero), six) / six
 
 
-class MishKernel(FloatUnaryKernel):
+class MishFwdKernel(FloatUnaryKernel):
     """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
 
     @staticmethod
@@ -1805,7 +1805,7 @@ class MishKernel(FloatUnaryKernel):
         return x * T.tanh(T.log(one + T.exp(x)))
 
 
-class SeluKernel(FloatUnaryKernel):
+class SeluFwdKernel(FloatUnaryKernel):
     """Element-wise SELU: scale * (max(0,x) + min(0, alpha*(exp(x)-1))).
 
     alpha = 1.6732632423543772, scale = 1.0507009873554805
@@ -1826,7 +1826,7 @@ class SeluKernel(FloatUnaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class LogicalNotKernel(LogicalUnaryKernel):
+class LogicalNotFwdKernel(LogicalUnaryKernel):
     """Element-wise logical NOT with torch-style bool output."""
 
     @staticmethod
@@ -1834,7 +1834,7 @@ class LogicalNotKernel(LogicalUnaryKernel):
         return x == T.cast(0, x.dtype)
 
 
-class BitwiseNotKernel(UnaryKernel):
+class BitwiseNotFwdKernel(UnaryKernel):
     """Element-wise bitwise NOT (~x) for bool/integer inputs.
 
     Uses XOR with ``-1`` (all-ones) because ``T.bitwise_not`` fails on
@@ -1858,7 +1858,7 @@ class BitwiseNotKernel(UnaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class IsnanKernel(FloatPredicateKernel):
+class IsnanFwdKernel(FloatPredicateKernel):
     """Element-wise isnan with torch-style bool output."""
 
     @staticmethod
@@ -1866,7 +1866,7 @@ class IsnanKernel(FloatPredicateKernel):
         return T.isnan(T.cast(x, "float32"))
 
 
-class IsinfKernel(FloatPredicateKernel):
+class IsinfFwdKernel(FloatPredicateKernel):
     """Element-wise isinf with torch-style bool output."""
 
     @staticmethod
@@ -1874,7 +1874,7 @@ class IsinfKernel(FloatPredicateKernel):
         return T.isinf(T.cast(x, "float32"))
 
 
-class IsfiniteKernel(FloatPredicateKernel):
+class IsfiniteFwdKernel(FloatPredicateKernel):
     """Element-wise isfinite with torch-style bool output."""
 
     @staticmethod
@@ -2046,7 +2046,7 @@ def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None,
     return kernel
 
 
-class LeakyReluKernel(ParametricUnaryKernel):
+class LeakyReluFwdKernel(ParametricUnaryKernel):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
     def __init__(self, N_total, dtype, negative_slope=0.01, config=None, tune=False):
@@ -2119,7 +2119,7 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
     return kernel
 
 
-class EluKernel(ParametricUnaryKernel):
+class EluFwdKernel(ParametricUnaryKernel):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
     def __init__(self, N_total, dtype, alpha=1.0, config=None, tune=False):
@@ -2188,7 +2188,7 @@ def _make_hardtanh_kernel(N, dtype, min_val, max_val, output_dtype=None,
     return kernel
 
 
-class HardtanhKernel(ParametricUnaryKernel):
+class HardtanhFwdKernel(ParametricUnaryKernel):
     """Hardtanh: y = clamp(x, min_val, max_val)."""
 
     def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None, tune=False):
@@ -2266,7 +2266,7 @@ def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
     return kernel
 
 
-class SoftplusKernel(ParametricUnaryKernel):
+class SoftplusFwdKernel(ParametricUnaryKernel):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
 
     def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None, tune=False):
@@ -2354,7 +2354,7 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
     return kernel
 
 
-class PreluKernel(ParametricUnaryKernel):
+class PreluFwdKernel(ParametricUnaryKernel):
     """PReLU: y = x if x > 0 else weight[channel] * x."""
 
     def __init__(self, N_total, C, inner_size, dtype, config=None, tune=False):
@@ -2441,7 +2441,7 @@ def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
     return kernel
 
 
-class WhereKernel(ParametricUnaryKernel):
+class WhereFwdKernel(ParametricUnaryKernel):
     """Where: out = cond ? x : y."""
 
     _DEFAULT_THREADS = 512
@@ -2517,7 +2517,7 @@ def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
     return kernel
 
 
-class ClampKernel(ParametricUnaryKernel):
+class ClampFwdKernel(ParametricUnaryKernel):
     """Clamp: y = clamp(x, min, max) with optional bounds."""
 
     def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None, tune=False):
@@ -2608,7 +2608,7 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
     return kernel
 
 
-class MaskedFillKernel(ParametricUnaryKernel):
+class MaskedFillFwdKernel(ParametricUnaryKernel):
     """MaskedFill: out = mask ? fill_value : x."""
 
     _DEFAULT_THREADS = 512
@@ -2707,7 +2707,7 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
     return kernel
 
 
-class NanToNumKernel(ParametricUnaryKernel):
+class NanToNumFwdKernel(ParametricUnaryKernel):
     """NanToNum: replace NaN, +Inf, -Inf with specified values."""
 
     def __init__(self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4,
@@ -2767,7 +2767,7 @@ def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
     return kernel
 
 
-class AlibiKernel(Kernel):
+class AlibiFwdKernel(Kernel):
     """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|.
 
     Generates the full (num_heads, seq_len, seq_len) bias tensor.
@@ -2856,7 +2856,7 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
     return kernel
 
 
-class SinusoidalKernel(Kernel):
+class SinusoidalFwdKernel(Kernel):
     """Sinusoidal positional encoding from "Attention Is All You Need".
 
     PE(pos, 2i) = sin(pos / 10000^(2i/d_model))

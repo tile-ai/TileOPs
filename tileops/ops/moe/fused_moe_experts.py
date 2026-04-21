@@ -25,7 +25,7 @@ import torch
 
 from tileops.kernels.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
 from tileops.kernels.kernel_base import Kernel
-from tileops.ops.elementwise import SiluAndMulOp
+from tileops.ops.elementwise import SiluAndMulFwdOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
 from tileops.ops.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
 from tileops.ops.moe.permute_nopad import MoePermuteNopadFwdOp
@@ -101,7 +101,7 @@ class FusedMoeExpertsFwdOp(Op):
             k=hidden_size,
             dtype=dtype,
         )
-        self._silu_and_mul = SiluAndMulOp(
+        self._silu_and_mul = SiluAndMulFwdOp(
             M=numel,
             N=ffn_size,
             dtype=dtype,
@@ -220,7 +220,7 @@ class FusedMoeExpertsPaddedFwdOp(Op):
             k=hidden_size,
             dtype=dtype,
         )
-        self._silu_and_mul = SiluAndMulOp(
+        self._silu_and_mul = SiluAndMulFwdOp(
             M=_padded_batch_sum,
             N=ffn_size,
             dtype=dtype,

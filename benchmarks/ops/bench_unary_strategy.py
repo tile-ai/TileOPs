@@ -22,7 +22,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops.elementwise import ReluOp
+from tileops.ops.elementwise import ReluFwdOp
 from workloads.workload_base import FixtureBase
 
 # DNN-realistic 2D shapes flattened to 1D total element counts
@@ -201,7 +201,7 @@ def test_unary_strategy_bench(
     bm = UnaryStrategyBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = ReluOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "unary_strategy",

@@ -6,7 +6,7 @@ Three Op template base classes:
 - FusedGatedOp: wraps FusedGatedKernel with (M, 2N) layout
 
 torch.compile support:
-- All 55 concrete ops are registered via @torch.library.custom_op at module load time
+- All 66 concrete ops are registered via @torch.library.custom_op at module load time
 - Three factory functions (_register_unary_custom_op, _register_binary_custom_op,
   _register_fused_gated_custom_op) register every op; instances are looked up at
   runtime via _OP_REGISTRY keyed by id(instance)
@@ -23,72 +23,72 @@ from typing import Dict, List, Optional
 import torch
 
 from tileops.kernels.elementwise import (
-    AbsKernel,
-    AddKernel,
-    AlibiKernel,
-    BitwiseAndKernel,
-    BitwiseNotKernel,
-    BitwiseOrKernel,
-    BitwiseXorKernel,
-    CeilKernel,
-    ClampKernel,
-    CosKernel,
-    DivKernel,
-    EluKernel,
-    EqKernel,
-    ErfKernel,
-    ExpKernel,
-    Expm1Kernel,
-    FloorDivideKernel,
-    FloorKernel,
-    GeKernel,
-    GeluAndMulKernel,
-    GeluKernel,
-    GeluTanhAndMulKernel,
-    GtKernel,
-    HardsigmoidKernel,
-    HardswishKernel,
-    HardtanhKernel,
-    IsfiniteKernel,
-    IsinfKernel,
-    IsnanKernel,
-    LeakyReluKernel,
-    LeKernel,
-    LerpKernel,
-    Log1pKernel,
-    LogicalAndKernel,
-    LogicalNotKernel,
-    LogicalOrKernel,
-    LogKernel,
-    LtKernel,
-    MaskedFillKernel,
-    MaximumKernel,
-    MinimumKernel,
-    MishKernel,
-    MulKernel,
-    NanToNumKernel,
-    NegKernel,
-    NeKernel,
-    PowKernel,
-    PreluKernel,
-    ReciprocalKernel,
-    ReluKernel,
-    RemainderKernel,
-    RoundKernel,
-    RsqrtKernel,
-    SeluKernel,
-    SigmoidKernel,
-    SignKernel,
-    SiluAndMulKernel,
-    SiluKernel,
-    SinKernel,
-    SinusoidalKernel,
-    SoftplusKernel,
-    SqrtKernel,
-    SubKernel,
-    TanhKernel,
-    TruncKernel,
-    WhereKernel,
+    AbsFwdKernel,
+    AddFwdKernel,
+    AlibiFwdKernel,
+    BitwiseAndFwdKernel,
+    BitwiseNotFwdKernel,
+    BitwiseOrFwdKernel,
+    BitwiseXorFwdKernel,
+    CeilFwdKernel,
+    ClampFwdKernel,
+    CosFwdKernel,
+    DivFwdKernel,
+    EluFwdKernel,
+    EqFwdKernel,
+    ErfFwdKernel,
+    ExpFwdKernel,
+    Expm1FwdKernel,
+    FloorDivideFwdKernel,
+    FloorFwdKernel,
+    GeFwdKernel,
+    GeluAndMulFwdKernel,
+    GeluFwdKernel,
+    GeluTanhAndMulFwdKernel,
+    GtFwdKernel,
+    HardsigmoidFwdKernel,
+    HardswishFwdKernel,
+    HardtanhFwdKernel,
+    IsfiniteFwdKernel,
+    IsinfFwdKernel,
+    IsnanFwdKernel,
+    LeakyReluFwdKernel,
+    LeFwdKernel,
+    LerpFwdKernel,
+    Log1pFwdKernel,
+    LogFwdKernel,
+    LogicalAndFwdKernel,
+    LogicalNotFwdKernel,
+    LogicalOrFwdKernel,
+    LtFwdKernel,
+    MaskedFillFwdKernel,
+    MaximumFwdKernel,
+    MinimumFwdKernel,
+    MishFwdKernel,
+    MulFwdKernel,
+    NanToNumFwdKernel,
+    NeFwdKernel,
+    NegFwdKernel,
+    PowFwdKernel,
+    PreluFwdKernel,
+    ReciprocalFwdKernel,
+    ReluFwdKernel,
+    RemainderFwdKernel,
+    RoundFwdKernel,
+    RsqrtFwdKernel,
+    SeluFwdKernel,
+    SigmoidFwdKernel,
+    SignFwdKernel,
+    SiluAndMulFwdKernel,
+    SiluFwdKernel,
+    SinFwdKernel,
+    SinusoidalFwdKernel,
+    SoftplusFwdKernel,
+    SqrtFwdKernel,
+    SubFwdKernel,
+    TanhFwdKernel,
+    TruncFwdKernel,
+    WhereFwdKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 
@@ -341,83 +341,83 @@ __all__ = [
     "BinaryOp",
     "FusedGatedOp",
     # Unary
-    "ReluOp",
+    "ReluFwdOp",
     # Binary arithmetic
-    "AddOp",
-    "SubOp",
-    "MulOp",
-    "DivOp",
-    "RemainderOp",
-    "PowOp",
-    "FloorDivideOp",
-    "LerpOp",
-    "MaximumOp",
-    "MinimumOp",
+    "AddFwdOp",
+    "SubFwdOp",
+    "MulFwdOp",
+    "DivFwdOp",
+    "RemainderFwdOp",
+    "PowFwdOp",
+    "FloorDivideFwdOp",
+    "LerpFwdOp",
+    "MaximumFwdOp",
+    "MinimumFwdOp",
     # Comparison (output bool)
-    "EqOp",
-    "NeOp",
-    "GtOp",
-    "LtOp",
-    "GeOp",
-    "LeOp",
+    "EqFwdOp",
+    "NeFwdOp",
+    "GtFwdOp",
+    "LtFwdOp",
+    "GeFwdOp",
+    "LeFwdOp",
     # Logical (output bool)
-    "LogicalAndOp",
-    "LogicalOrOp",
+    "LogicalAndFwdOp",
+    "LogicalOrFwdOp",
     # Bitwise
-    "BitwiseAndOp",
-    "BitwiseOrOp",
-    "BitwiseXorOp",
+    "BitwiseAndFwdOp",
+    "BitwiseOrFwdOp",
+    "BitwiseXorFwdOp",
     # Fused gated
-    "SiluAndMulOp",
-    "GeluAndMulOp",
-    "GeluTanhAndMulOp",
+    "SiluAndMulFwdOp",
+    "GeluAndMulFwdOp",
+    "GeluTanhAndMulFwdOp",
     # --- math (17) ---
-    "AbsOp",
-    "CeilOp",
-    "CosOp",
-    "ErfOp",
-    "ExpOp",
-    "Expm1Op",
-    "FloorOp",
-    "Log1pOp",
-    "LogOp",
-    "NegOp",
-    "ReciprocalOp",
-    "RoundOp",
-    "RsqrtOp",
-    "SignOp",
-    "SinOp",
-    "SqrtOp",
-    "TruncOp",
+    "AbsFwdOp",
+    "CeilFwdOp",
+    "CosFwdOp",
+    "ErfFwdOp",
+    "ExpFwdOp",
+    "Expm1FwdOp",
+    "FloorFwdOp",
+    "Log1pFwdOp",
+    "LogFwdOp",
+    "NegFwdOp",
+    "ReciprocalFwdOp",
+    "RoundFwdOp",
+    "RsqrtFwdOp",
+    "SignFwdOp",
+    "SinFwdOp",
+    "SqrtFwdOp",
+    "TruncFwdOp",
     # --- activations (8) ---
-    "GeluOp",
-    "HardsigmoidOp",
-    "HardswishOp",
-    "MishOp",
-    "SeluOp",
-    "SigmoidOp",
-    "SiluOp",
-    "TanhOp",
+    "GeluFwdOp",
+    "HardsigmoidFwdOp",
+    "HardswishFwdOp",
+    "MishFwdOp",
+    "SeluFwdOp",
+    "SigmoidFwdOp",
+    "SiluFwdOp",
+    "TanhFwdOp",
     # --- logical (1) ---
-    "LogicalNotOp",
+    "LogicalNotFwdOp",
     # --- bitwise (1) ---
-    "BitwiseNotOp",
+    "BitwiseNotFwdOp",
     # --- special predicates (3) ---
-    "IsfiniteOp",
-    "IsinfOp",
-    "IsnanOp",
+    "IsfiniteFwdOp",
+    "IsinfFwdOp",
+    "IsnanFwdOp",
     # --- independent (custom-signature, 11) ---
-    "LeakyReluOp",
-    "EluOp",
-    "HardtanhOp",
-    "SoftplusOp",
-    "PreluOp",
-    "WhereOp",
-    "ClampOp",
-    "MaskedFillOp",
-    "NanToNumOp",
-    "AlibiOp",
-    "SinusoidalOp",
+    "LeakyReluFwdOp",
+    "EluFwdOp",
+    "HardtanhFwdOp",
+    "SoftplusFwdOp",
+    "PreluFwdOp",
+    "WhereFwdOp",
+    "ClampFwdOp",
+    "MaskedFillFwdOp",
+    "NanToNumFwdOp",
+    "AlibiFwdOp",
+    "SinusoidalFwdOp",
 ]
 
 
@@ -756,63 +756,63 @@ class FusedGatedOp(Op):
 # ---------------------------------------------------------------------------
 
 
-class ReluOp(UnaryOp):
+class ReluFwdOp(UnaryOp):
     """ReLU activation: y = max(x, 0)."""
 
     _op_name = "relu"
-    kernel_cls = ReluKernel
+    kernel_cls = ReluFwdKernel
 
 
-class AddOp(BinaryOp):
+class AddFwdOp(BinaryOp):
     """Element-wise addition with broadcast: y = a + b."""
 
     _op_name = "add"
-    kernel_cls = AddKernel
+    kernel_cls = AddFwdKernel
 
 
-class SubOp(BinaryOp):
+class SubFwdOp(BinaryOp):
     """Element-wise subtraction with broadcast: y = a - b."""
 
     _op_name = "sub"
-    kernel_cls = SubKernel
+    kernel_cls = SubFwdKernel
 
 
-class MulOp(BinaryOp):
+class MulFwdOp(BinaryOp):
     """Element-wise multiplication with broadcast: y = a * b."""
 
     _op_name = "mul"
-    kernel_cls = MulKernel
+    kernel_cls = MulFwdKernel
 
 
-class DivOp(BinaryOp):
+class DivFwdOp(BinaryOp):
     """Element-wise division with broadcast: y = a / b."""
 
     _op_name = "div"
-    kernel_cls = DivKernel
+    kernel_cls = DivFwdKernel
 
 
-class RemainderOp(BinaryOp):
+class RemainderFwdOp(BinaryOp):
     """Element-wise remainder with broadcast: y = a % b."""
 
     _op_name = "remainder"
-    kernel_cls = RemainderKernel
+    kernel_cls = RemainderFwdKernel
 
 
-class PowOp(BinaryOp):
+class PowFwdOp(BinaryOp):
     """Element-wise power with broadcast: y = a ** b."""
 
     _op_name = "pow"
-    kernel_cls = PowKernel
+    kernel_cls = PowFwdKernel
 
 
-class FloorDivideOp(BinaryOp):
+class FloorDivideFwdOp(BinaryOp):
     """Element-wise floor division with broadcast: y = floor(a / b)."""
 
     _op_name = "floor_divide"
-    kernel_cls = FloorDivideKernel
+    kernel_cls = FloorDivideFwdKernel
 
 
-class LerpOp(BinaryOp):
+class LerpFwdOp(BinaryOp):
     """Element-wise lerp with broadcast: y = a + weight * (b - a).
 
     Unlike ``torch.lerp(a, b, weight)`` where weight is a runtime parameter,
@@ -831,7 +831,7 @@ class LerpOp(BinaryOp):
     """
 
     _op_name = "lerp"
-    kernel_cls = LerpKernel
+    kernel_cls = LerpFwdKernel
 
     def __init__(
         self,
@@ -874,18 +874,18 @@ class LerpOp(BinaryOp):
         _OP_REGISTRY[self._instance_key] = self
 
 
-class MaximumOp(BinaryOp):
+class MaximumFwdOp(BinaryOp):
     """Element-wise maximum with broadcast: y = max(a, b)."""
 
     _op_name = "maximum"
-    kernel_cls = MaximumKernel
+    kernel_cls = MaximumFwdKernel
 
 
-class MinimumOp(BinaryOp):
+class MinimumFwdOp(BinaryOp):
     """Element-wise minimum with broadcast: y = min(a, b)."""
 
     _op_name = "minimum"
-    kernel_cls = MinimumKernel
+    kernel_cls = MinimumFwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -911,46 +911,46 @@ class _BoolOutputBinaryOp(BinaryOp):
         return result.to(torch.bool)
 
 
-class EqOp(_BoolOutputBinaryOp):
+class EqFwdOp(_BoolOutputBinaryOp):
     """Element-wise equality with broadcast: y = (a == b)."""
 
     _op_name = "eq"
-    kernel_cls = EqKernel
+    kernel_cls = EqFwdKernel
 
 
-class NeOp(_BoolOutputBinaryOp):
+class NeFwdOp(_BoolOutputBinaryOp):
     """Element-wise not-equal with broadcast: y = (a != b)."""
 
     _op_name = "ne"
-    kernel_cls = NeKernel
+    kernel_cls = NeFwdKernel
 
 
-class GtOp(_BoolOutputBinaryOp):
+class GtFwdOp(_BoolOutputBinaryOp):
     """Element-wise greater-than with broadcast: y = (a > b)."""
 
     _op_name = "gt"
-    kernel_cls = GtKernel
+    kernel_cls = GtFwdKernel
 
 
-class LtOp(_BoolOutputBinaryOp):
+class LtFwdOp(_BoolOutputBinaryOp):
     """Element-wise less-than with broadcast: y = (a < b)."""
 
     _op_name = "lt"
-    kernel_cls = LtKernel
+    kernel_cls = LtFwdKernel
 
 
-class GeOp(_BoolOutputBinaryOp):
+class GeFwdOp(_BoolOutputBinaryOp):
     """Element-wise greater-equal with broadcast: y = (a >= b)."""
 
     _op_name = "ge"
-    kernel_cls = GeKernel
+    kernel_cls = GeFwdKernel
 
 
-class LeOp(_BoolOutputBinaryOp):
+class LeFwdOp(_BoolOutputBinaryOp):
     """Element-wise less-equal with broadcast: y = (a <= b)."""
 
     _op_name = "le"
-    kernel_cls = LeKernel
+    kernel_cls = LeFwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -958,18 +958,18 @@ class LeOp(_BoolOutputBinaryOp):
 # ---------------------------------------------------------------------------
 
 
-class LogicalAndOp(_BoolOutputBinaryOp):
+class LogicalAndFwdOp(_BoolOutputBinaryOp):
     """Element-wise logical AND with broadcast using non-zero truthiness."""
 
     _op_name = "logical_and"
-    kernel_cls = LogicalAndKernel
+    kernel_cls = LogicalAndFwdKernel
 
 
-class LogicalOrOp(_BoolOutputBinaryOp):
+class LogicalOrFwdOp(_BoolOutputBinaryOp):
     """Element-wise logical OR with broadcast using non-zero truthiness."""
 
     _op_name = "logical_or"
-    kernel_cls = LogicalOrKernel
+    kernel_cls = LogicalOrFwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -977,25 +977,25 @@ class LogicalOrOp(_BoolOutputBinaryOp):
 # ---------------------------------------------------------------------------
 
 
-class BitwiseAndOp(BinaryOp):
+class BitwiseAndFwdOp(BinaryOp):
     """Element-wise bitwise AND with broadcast: y = a & b."""
 
     _op_name = "bitwise_and"
-    kernel_cls = BitwiseAndKernel
+    kernel_cls = BitwiseAndFwdKernel
 
 
-class BitwiseOrOp(BinaryOp):
+class BitwiseOrFwdOp(BinaryOp):
     """Element-wise bitwise OR with broadcast: y = a | b."""
 
     _op_name = "bitwise_or"
-    kernel_cls = BitwiseOrKernel
+    kernel_cls = BitwiseOrFwdKernel
 
 
-class BitwiseXorOp(BinaryOp):
+class BitwiseXorFwdOp(BinaryOp):
     """Element-wise bitwise XOR with broadcast: y = a ^ b."""
 
     _op_name = "bitwise_xor"
-    kernel_cls = BitwiseXorKernel
+    kernel_cls = BitwiseXorFwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -1003,25 +1003,25 @@ class BitwiseXorOp(BinaryOp):
 # ---------------------------------------------------------------------------
 
 
-class SiluAndMulOp(FusedGatedOp):
+class SiluAndMulFwdOp(FusedGatedOp):
     """SiLU-and-Mul: y = silu(gate) * value."""
 
     _op_name = "silu_and_mul"
-    kernel_cls = SiluAndMulKernel
+    kernel_cls = SiluAndMulFwdKernel
 
 
-class GeluAndMulOp(FusedGatedOp):
+class GeluAndMulFwdOp(FusedGatedOp):
     """GELU-and-Mul: y = gelu(gate) * value (exact GELU)."""
 
     _op_name = "gelu_and_mul"
-    kernel_cls = GeluAndMulKernel
+    kernel_cls = GeluAndMulFwdKernel
 
 
-class GeluTanhAndMulOp(FusedGatedOp):
+class GeluTanhAndMulFwdOp(FusedGatedOp):
     """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value (tanh approximation)."""
 
     _op_name = "gelu_tanh_and_mul"
-    kernel_cls = GeluTanhAndMulKernel
+    kernel_cls = GeluTanhAndMulFwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -1029,123 +1029,123 @@ class GeluTanhAndMulOp(FusedGatedOp):
 # ---------------------------------------------------------------------------
 
 
-class ExpOp(UnaryOp):
+class ExpFwdOp(UnaryOp):
     """Element-wise exp(x)."""
 
     _op_name = "exp"
-    kernel_cls = ExpKernel
+    kernel_cls = ExpFwdKernel
 
 
-class LogOp(UnaryOp):
+class LogFwdOp(UnaryOp):
     """Element-wise log(x)."""
 
     _op_name = "log"
-    kernel_cls = LogKernel
+    kernel_cls = LogFwdKernel
 
 
-class SqrtOp(UnaryOp):
+class SqrtFwdOp(UnaryOp):
     """Element-wise sqrt(x)."""
 
     _op_name = "sqrt"
-    kernel_cls = SqrtKernel
+    kernel_cls = SqrtFwdKernel
 
 
-class RsqrtOp(UnaryOp):
+class RsqrtFwdOp(UnaryOp):
     """Element-wise 1/sqrt(x)."""
 
     _op_name = "rsqrt"
-    kernel_cls = RsqrtKernel
+    kernel_cls = RsqrtFwdKernel
 
 
-class AbsOp(UnaryOp):
+class AbsFwdOp(UnaryOp):
     """Element-wise |x|."""
 
     _op_name = "abs"
-    kernel_cls = AbsKernel
+    kernel_cls = AbsFwdKernel
 
 
-class NegOp(UnaryOp):
+class NegFwdOp(UnaryOp):
     """Element-wise -x."""
 
     _op_name = "neg"
-    kernel_cls = NegKernel
+    kernel_cls = NegFwdKernel
 
 
-class ReciprocalOp(UnaryOp):
+class ReciprocalFwdOp(UnaryOp):
     """Element-wise 1/x."""
 
     _op_name = "reciprocal"
-    kernel_cls = ReciprocalKernel
+    kernel_cls = ReciprocalFwdKernel
 
 
-class SignOp(UnaryOp):
+class SignFwdOp(UnaryOp):
     """Element-wise sign(x): -1, 0, or +1."""
 
     _op_name = "sign"
-    kernel_cls = SignKernel
+    kernel_cls = SignFwdKernel
 
 
-class SinOp(UnaryOp):
+class SinFwdOp(UnaryOp):
     """Element-wise sin(x)."""
 
     _op_name = "sin"
-    kernel_cls = SinKernel
+    kernel_cls = SinFwdKernel
 
 
-class CosOp(UnaryOp):
+class CosFwdOp(UnaryOp):
     """Element-wise cos(x)."""
 
     _op_name = "cos"
-    kernel_cls = CosKernel
+    kernel_cls = CosFwdKernel
 
 
-class FloorOp(UnaryOp):
+class FloorFwdOp(UnaryOp):
     """Element-wise floor(x)."""
 
     _op_name = "floor"
-    kernel_cls = FloorKernel
+    kernel_cls = FloorFwdKernel
 
 
-class CeilOp(UnaryOp):
+class CeilFwdOp(UnaryOp):
     """Element-wise ceil(x)."""
 
     _op_name = "ceil"
-    kernel_cls = CeilKernel
+    kernel_cls = CeilFwdKernel
 
 
-class RoundOp(UnaryOp):
+class RoundFwdOp(UnaryOp):
     """Element-wise round(x)."""
 
     _op_name = "round"
-    kernel_cls = RoundKernel
+    kernel_cls = RoundFwdKernel
 
 
-class TruncOp(UnaryOp):
+class TruncFwdOp(UnaryOp):
     """Element-wise trunc(x)."""
 
     _op_name = "trunc"
-    kernel_cls = TruncKernel
+    kernel_cls = TruncFwdKernel
 
 
-class ErfOp(UnaryOp):
+class ErfFwdOp(UnaryOp):
     """Element-wise erf(x)."""
 
     _op_name = "erf"
-    kernel_cls = ErfKernel
+    kernel_cls = ErfFwdKernel
 
 
-class Log1pOp(UnaryOp):
+class Log1pFwdOp(UnaryOp):
     """Element-wise log(1 + x)."""
 
     _op_name = "log1p"
-    kernel_cls = Log1pKernel
+    kernel_cls = Log1pFwdKernel
 
 
-class Expm1Op(UnaryOp):
+class Expm1FwdOp(UnaryOp):
     """Element-wise exp(x) - 1."""
 
     _op_name = "expm1"
-    kernel_cls = Expm1Kernel
+    kernel_cls = Expm1FwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -1153,60 +1153,60 @@ class Expm1Op(UnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class GeluOp(UnaryOp):
+class GeluFwdOp(UnaryOp):
     """Element-wise GELU using the standard erf formulation."""
 
     _op_name = "gelu"
-    kernel_cls = GeluKernel
+    kernel_cls = GeluFwdKernel
 
 
-class SiluOp(UnaryOp):
+class SiluFwdOp(UnaryOp):
     """Element-wise SiLU (Swish): x * sigmoid(x)."""
 
     _op_name = "silu"
-    kernel_cls = SiluKernel
+    kernel_cls = SiluFwdKernel
 
 
-class SigmoidOp(UnaryOp):
+class SigmoidFwdOp(UnaryOp):
     """Element-wise sigmoid(x)."""
 
     _op_name = "sigmoid"
-    kernel_cls = SigmoidKernel
+    kernel_cls = SigmoidFwdKernel
 
 
-class TanhOp(UnaryOp):
+class TanhFwdOp(UnaryOp):
     """Element-wise tanh(x)."""
 
     _op_name = "tanh"
-    kernel_cls = TanhKernel
+    kernel_cls = TanhFwdKernel
 
 
-class HardswishOp(UnaryOp):
+class HardswishFwdOp(UnaryOp):
     """Element-wise HardSwish: x * clamp(x + 3, 0, 6) / 6."""
 
     _op_name = "hardswish"
-    kernel_cls = HardswishKernel
+    kernel_cls = HardswishFwdKernel
 
 
-class HardsigmoidOp(UnaryOp):
+class HardsigmoidFwdOp(UnaryOp):
     """Element-wise HardSigmoid: clamp(x + 3, 0, 6) / 6."""
 
     _op_name = "hardsigmoid"
-    kernel_cls = HardsigmoidKernel
+    kernel_cls = HardsigmoidFwdKernel
 
 
-class MishOp(UnaryOp):
+class MishFwdOp(UnaryOp):
     """Element-wise Mish: x * tanh(softplus(x))."""
 
     _op_name = "mish"
-    kernel_cls = MishKernel
+    kernel_cls = MishFwdKernel
 
 
-class SeluOp(UnaryOp):
+class SeluFwdOp(UnaryOp):
     """Element-wise SELU."""
 
     _op_name = "selu"
-    kernel_cls = SeluKernel
+    kernel_cls = SeluFwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -1214,11 +1214,11 @@ class SeluOp(UnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class LogicalNotOp(UnaryOp):
+class LogicalNotFwdOp(UnaryOp):
     """Element-wise logical NOT with bool output."""
 
     _op_name = "logical_not"
-    kernel_cls = LogicalNotKernel
+    kernel_cls = LogicalNotFwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -1226,11 +1226,11 @@ class LogicalNotOp(UnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class BitwiseNotOp(UnaryOp):
+class BitwiseNotFwdOp(UnaryOp):
     """Element-wise bitwise NOT (~x) for bool/integer inputs."""
 
     _op_name = "bitwise_not"
-    kernel_cls = BitwiseNotKernel
+    kernel_cls = BitwiseNotFwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -1238,25 +1238,25 @@ class BitwiseNotOp(UnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class IsnanOp(UnaryOp):
+class IsnanFwdOp(UnaryOp):
     """Element-wise isnan with bool output."""
 
     _op_name = "isnan"
-    kernel_cls = IsnanKernel
+    kernel_cls = IsnanFwdKernel
 
 
-class IsinfOp(UnaryOp):
+class IsinfFwdOp(UnaryOp):
     """Element-wise isinf with bool output."""
 
     _op_name = "isinf"
-    kernel_cls = IsinfKernel
+    kernel_cls = IsinfFwdKernel
 
 
-class IsfiniteOp(UnaryOp):
+class IsfiniteFwdOp(UnaryOp):
     """Element-wise isfinite with bool output."""
 
     _op_name = "isfinite"
-    kernel_cls = IsfiniteKernel
+    kernel_cls = IsfiniteFwdKernel
 
 
 # ---------------------------------------------------------------------------
@@ -1264,7 +1264,7 @@ class IsfiniteOp(UnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class LeakyReluOp(Op):
+class LeakyReluFwdOp(Op):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x.
 
     Args:
@@ -1281,13 +1281,13 @@ class LeakyReluOp(Op):
         self.N_total = N_total
         self.dtype = dtype
         self.negative_slope = negative_slope
-        self.kernel = LeakyReluKernel(N_total, dtype, negative_slope=negative_slope)
+        self.kernel = LeakyReluFwdKernel(N_total, dtype, negative_slope=negative_slope)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {"leaky_relu": LeakyReluKernel}
+        return {"leaky_relu": LeakyReluFwdKernel}
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1307,7 +1307,7 @@ class LeakyReluOp(Op):
         return self._eager_forward(x)
 
 
-class EluOp(Op):
+class EluFwdOp(Op):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1).
 
     Args:
@@ -1324,13 +1324,13 @@ class EluOp(Op):
         self.N_total = N_total
         self.dtype = dtype
         self.alpha = alpha
-        self.kernel = EluKernel(N_total, dtype, alpha=alpha)
+        self.kernel = EluFwdKernel(N_total, dtype, alpha=alpha)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {"elu": EluKernel}
+        return {"elu": EluFwdKernel}
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1350,7 +1350,7 @@ class EluOp(Op):
         return self._eager_forward(x)
 
 
-class HardtanhOp(Op):
+class HardtanhFwdOp(Op):
     """Hardtanh: y = clamp(x, min_val, max_val).
 
     Args:
@@ -1371,13 +1371,13 @@ class HardtanhOp(Op):
         self.dtype = dtype
         self.min_val = min_val
         self.max_val = max_val
-        self.kernel = HardtanhKernel(N_total, dtype, min_val=min_val, max_val=max_val)
+        self.kernel = HardtanhFwdKernel(N_total, dtype, min_val=min_val, max_val=max_val)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {"hardtanh": HardtanhKernel}
+        return {"hardtanh": HardtanhFwdKernel}
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1397,7 +1397,7 @@ class HardtanhOp(Op):
         return self._eager_forward(x)
 
 
-class SoftplusOp(Op):
+class SoftplusFwdOp(Op):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
 
     Args:
@@ -1418,13 +1418,13 @@ class SoftplusOp(Op):
         self.dtype = dtype
         self.beta = beta
         self.threshold = threshold
-        self.kernel = SoftplusKernel(N_total, dtype, beta=beta, threshold=threshold)
+        self.kernel = SoftplusFwdKernel(N_total, dtype, beta=beta, threshold=threshold)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {"softplus": SoftplusKernel}
+        return {"softplus": SoftplusFwdKernel}
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1444,7 +1444,7 @@ class SoftplusOp(Op):
         return self._eager_forward(x)
 
 
-class PreluOp(Op):
+class PreluFwdOp(Op):
     """PReLU: y = x if x > 0 else weight[channel] * x.
 
     Channel dimension follows PyTorch convention: dimension 1 for inputs
@@ -1468,13 +1468,13 @@ class PreluOp(Op):
         # PyTorch PReLU: channel dim is 1 for ndim>=2, else 0
         inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
         self.inner_size = inner_size
-        self.kernel = PreluKernel(N_total, num_channels, inner_size, dtype)
+        self.kernel = PreluFwdKernel(N_total, num_channels, inner_size, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {"prelu": PreluKernel}
+        return {"prelu": PreluFwdKernel}
 
     def _eager_forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1496,7 +1496,7 @@ class PreluOp(Op):
         return self._eager_forward(x, weight)
 
 
-class WhereOp(Op):
+class WhereFwdOp(Op):
     """Where: out = cond ? x : y.
 
     Args:
@@ -1510,13 +1510,13 @@ class WhereOp(Op):
     def __init__(self, N_total: int, dtype: torch.dtype):
         self.N_total = N_total
         self.dtype = dtype
-        self.kernel = WhereKernel(N_total, dtype)
+        self.kernel = WhereFwdKernel(N_total, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {"where": WhereKernel}
+        return {"where": WhereFwdKernel}
 
     def _eager_forward(
         self, cond: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
@@ -1544,7 +1544,7 @@ class WhereOp(Op):
         return self._eager_forward(cond, x, y)
 
 
-class ClampOp(Op):
+class ClampFwdOp(Op):
     """Clamp: y = clamp(x, min, max) with optional bounds.
 
     Args:
@@ -1567,13 +1567,13 @@ class ClampOp(Op):
         self.dtype = dtype
         self.min_val = min_val
         self.max_val = max_val
-        self.kernel = ClampKernel(N_total, dtype, min_val=min_val, max_val=max_val)
+        self.kernel = ClampFwdKernel(N_total, dtype, min_val=min_val, max_val=max_val)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {"clamp": ClampKernel}
+        return {"clamp": ClampFwdKernel}
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1593,7 +1593,7 @@ class ClampOp(Op):
         return self._eager_forward(x)
 
 
-class MaskedFillOp(Op):
+class MaskedFillFwdOp(Op):
     """MaskedFill: out = mask ? fill_value : x.
 
     Args:
@@ -1610,13 +1610,13 @@ class MaskedFillOp(Op):
         self.N_total = N_total
         self.dtype = dtype
         self.fill_value = fill_value
-        self.kernel = MaskedFillKernel(N_total, dtype, fill_value)
+        self.kernel = MaskedFillFwdKernel(N_total, dtype, fill_value)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {"masked_fill": MaskedFillKernel}
+        return {"masked_fill": MaskedFillFwdKernel}
 
     def _eager_forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1648,7 +1648,7 @@ class MaskedFillOp(Op):
         return self._eager_forward(x, mask)
 
 
-class NanToNumOp(Op):
+class NanToNumFwdOp(Op):
     """NanToNum: replace NaN, +Inf, -Inf with specified values.
 
     Args:
@@ -1672,7 +1672,7 @@ class NanToNumOp(Op):
         self.nan_val = nan_val
         self.posinf_val = posinf_val
         self.neginf_val = neginf_val
-        self.kernel = NanToNumKernel(
+        self.kernel = NanToNumFwdKernel(
             N_total, dtype, nan_val=nan_val, posinf_val=posinf_val, neginf_val=neginf_val,
         )
         self._instance_key = id(self)
@@ -1680,7 +1680,7 @@ class NanToNumOp(Op):
 
     @property
     def default_kernel_map(self):
-        return {"nan_to_num": NanToNumKernel}
+        return {"nan_to_num": NanToNumFwdKernel}
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1700,7 +1700,7 @@ class NanToNumOp(Op):
         return self._eager_forward(x)
 
 
-class AlibiOp(Op):
+class AlibiFwdOp(Op):
     """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|.
 
     Generates the full (num_heads, seq_len, seq_len) bias tensor.
@@ -1718,7 +1718,7 @@ class AlibiOp(Op):
         self.seq_len = seq_len
         self.num_heads = num_heads
         self.dtype = dtype
-        self.kernel = AlibiKernel(seq_len, num_heads, dtype)
+        self.kernel = AlibiFwdKernel(seq_len, num_heads, dtype)
         # Scalar tensor used as device/dtype carrier for torch.compile tracing
         self._device_carrier = torch.empty((), dtype=dtype, device="cuda")
         self._instance_key = id(self)
@@ -1726,7 +1726,7 @@ class AlibiOp(Op):
 
     @property
     def default_kernel_map(self):
-        return {"alibi": AlibiKernel}
+        return {"alibi": AlibiFwdKernel}
 
     def _eager_forward(self) -> torch.Tensor:
         out = self.kernel()
@@ -1744,7 +1744,7 @@ class AlibiOp(Op):
         return self._eager_forward()
 
 
-class SinusoidalOp(Op):
+class SinusoidalFwdOp(Op):
     """Sinusoidal positional encoding from "Attention Is All You Need".
 
     Generates the full (seq_len, d_model) encoding tensor.
@@ -1762,7 +1762,7 @@ class SinusoidalOp(Op):
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype
-        self.kernel = SinusoidalKernel(seq_len, d_model, dtype)
+        self.kernel = SinusoidalFwdKernel(seq_len, d_model, dtype)
         # Scalar tensor used as device/dtype carrier for torch.compile tracing
         self._device_carrier = torch.empty((), dtype=dtype, device="cuda")
         self._instance_key = id(self)
@@ -1770,7 +1770,7 @@ class SinusoidalOp(Op):
 
     @property
     def default_kernel_map(self):
-        return {"sinusoidal": SinusoidalKernel}
+        return {"sinusoidal": SinusoidalFwdKernel}
 
     def _eager_forward(self) -> torch.Tensor:
         out = self.kernel()
@@ -1789,71 +1789,71 @@ class SinusoidalOp(Op):
 
 
 # ---------------------------------------------------------------------------
-# torch.compile registration for all 55 concrete ops
+# torch.compile registration for all 66 concrete ops
 # ---------------------------------------------------------------------------
 
 # --- Unary ops: float-preserving output (1 + 17 + 8 + 1 = 27 ops) ---
 for _cls in [
-    ReluOp,
+    ReluFwdOp,
     # math (17)
-    ExpOp, LogOp, SqrtOp, RsqrtOp, AbsOp, NegOp, ReciprocalOp, SignOp,
-    SinOp, CosOp, FloorOp, CeilOp, RoundOp, TruncOp, ErfOp, Log1pOp, Expm1Op,
+    ExpFwdOp, LogFwdOp, SqrtFwdOp, RsqrtFwdOp, AbsFwdOp, NegFwdOp, ReciprocalFwdOp, SignFwdOp,
+    SinFwdOp, CosFwdOp, FloorFwdOp, CeilFwdOp, RoundFwdOp, TruncFwdOp, ErfFwdOp, Log1pFwdOp, Expm1FwdOp,
     # activations (8)
-    GeluOp, SiluOp, SigmoidOp, TanhOp, HardswishOp, HardsigmoidOp, MishOp, SeluOp,
+    GeluFwdOp, SiluFwdOp, SigmoidFwdOp, TanhFwdOp, HardswishFwdOp, HardsigmoidFwdOp, MishFwdOp, SeluFwdOp,
     # bitwise (1) -- output same dtype as input
-    BitwiseNotOp,
+    BitwiseNotFwdOp,
 ]:
     _register_unary_custom_op(_cls)
 
 # --- Unary ops: bool output (4 ops) ---
-for _cls in [LogicalNotOp, IsnanOp, IsinfOp, IsfiniteOp]:
+for _cls in [LogicalNotFwdOp, IsnanFwdOp, IsinfFwdOp, IsfiniteFwdOp]:
     _register_unary_custom_op(_cls, output_dtype_override=torch.bool)
 
 # --- Binary ops: same-dtype output (10 + 3 = 13 ops) ---
 for _cls in [
     # arithmetic (10)
-    AddOp, SubOp, MulOp, DivOp, RemainderOp, PowOp, FloorDivideOp,
-    LerpOp, MaximumOp, MinimumOp,
+    AddFwdOp, SubFwdOp, MulFwdOp, DivFwdOp, RemainderFwdOp, PowFwdOp, FloorDivideFwdOp,
+    LerpFwdOp, MaximumFwdOp, MinimumFwdOp,
     # bitwise (3)
-    BitwiseAndOp, BitwiseOrOp, BitwiseXorOp,
+    BitwiseAndFwdOp, BitwiseOrFwdOp, BitwiseXorFwdOp,
 ]:
     _register_binary_custom_op(_cls)
 
 # --- Binary ops: bool output (comparison 6 + logical 2 = 8 ops) ---
 for _cls in [
-    EqOp, NeOp, GtOp, LtOp, GeOp, LeOp,
-    LogicalAndOp, LogicalOrOp,
+    EqFwdOp, NeFwdOp, GtFwdOp, LtFwdOp, GeFwdOp, LeFwdOp,
+    LogicalAndFwdOp, LogicalOrFwdOp,
 ]:
     _register_binary_custom_op(_cls, output_bool=True)
 
 # --- Fused gated ops (3 ops) ---
-for _cls in [SiluAndMulOp, GeluAndMulOp, GeluTanhAndMulOp]:
+for _cls in [SiluAndMulFwdOp, GeluAndMulFwdOp, GeluTanhAndMulFwdOp]:
     _register_fused_gated_custom_op(_cls)
 
 # --- Independent unary-like ops (6 ops: x -> y with baked params) ---
 for _cls in [
-    LeakyReluOp, EluOp, HardtanhOp, SoftplusOp, ClampOp, NanToNumOp,
+    LeakyReluFwdOp, EluFwdOp, HardtanhFwdOp, SoftplusFwdOp, ClampFwdOp, NanToNumFwdOp,
 ]:
     _register_unary_custom_op(_cls)
 
 # --- PReLU op (1 op: x, weight -> y) ---
-_register_prelu_custom_op(PreluOp)
+_register_prelu_custom_op(PreluFwdOp)
 
 # --- Where op (1 op: cond, x, y -> out) ---
-_register_where_custom_op(WhereOp)
+_register_where_custom_op(WhereFwdOp)
 
 # --- MaskedFill op (1 op: x, mask -> y) ---
-_register_masked_fill_custom_op(MaskedFillOp)
+_register_masked_fill_custom_op(MaskedFillFwdOp)
 
 # --- Generative ops (2 ops: no tensor input -> out) ---
 _register_generative_custom_op(
-    AlibiOp,
+    AlibiFwdOp,
     out_shape_fn=lambda carrier, num_heads, seq_len: carrier.new_empty(
         (num_heads, seq_len, seq_len),
     ),
 )
 _register_generative_custom_op(
-    SinusoidalOp,
+    SinusoidalFwdOp,
     out_shape_fn=lambda carrier, seq_len, d_model: carrier.new_empty(
         (seq_len, d_model),
     ),

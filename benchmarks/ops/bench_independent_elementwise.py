@@ -13,17 +13,17 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import (
-    AlibiOp,
-    ClampOp,
-    EluOp,
-    HardtanhOp,
-    LeakyReluOp,
-    MaskedFillOp,
-    NanToNumOp,
-    PreluOp,
-    SinusoidalOp,
-    SoftplusOp,
-    WhereOp,
+    AlibiFwdOp,
+    ClampFwdOp,
+    EluFwdOp,
+    HardtanhFwdOp,
+    LeakyReluFwdOp,
+    MaskedFillFwdOp,
+    NanToNumFwdOp,
+    PreluFwdOp,
+    SinusoidalFwdOp,
+    SoftplusFwdOp,
+    WhereFwdOp,
 )
 from workloads.workload_base import FixtureBase
 
@@ -74,12 +74,12 @@ class UnaryIndependentBenchFixture(FixtureBase):
 
 
 _UNARY_OPS = {
-    "leaky_relu": (LeakyReluOp, lambda x: F.leaky_relu(x, 0.01), {}),
-    "elu": (EluOp, lambda x: F.elu(x, 1.0), {}),
-    "hardtanh": (HardtanhOp, lambda x: F.hardtanh(x, -1.0, 1.0), {"min_val": -1.0, "max_val": 1.0}),
-    "softplus": (SoftplusOp, lambda x: F.softplus(x, 1.0, 20.0), {}),
-    "clamp": (ClampOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
-    "nan_to_num": (NanToNumOp, lambda x: torch.nan_to_num(x, 0.0, 1e4, -1e4), {}),
+    "leaky_relu": (LeakyReluFwdOp, lambda x: F.leaky_relu(x, 0.01), {}),
+    "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
+    "hardtanh": (HardtanhFwdOp, lambda x: F.hardtanh(x, -1.0, 1.0), {"min_val": -1.0, "max_val": 1.0}),
+    "softplus": (SoftplusFwdOp, lambda x: F.softplus(x, 1.0, 20.0), {}),
+    "clamp": (ClampFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
+    "nan_to_num": (NanToNumFwdOp, lambda x: torch.nan_to_num(x, 0.0, 1e4, -1e4), {}),
 }
 
 
@@ -150,7 +150,7 @@ def test_prelu_bench(shape: tuple, num_channels: int, dtype: torch.dtype) -> Non
     # PReLU shape convention: (batch, channels, spatial)
     prelu_shape = (1, num_channels, shape[0])
     n_total = prod(shape)
-    op = PreluOp(shape=prelu_shape, dtype=dtype, num_channels=num_channels)
+    op = PreluFwdOp(shape=prelu_shape, dtype=dtype, num_channels=num_channels)
     result = bm.profile(op, x.reshape(prelu_shape), weight)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -204,7 +204,7 @@ def test_where_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = WhereBenchmark(test)
     cond, x, y = test.gen_inputs()
 
-    op = WhereOp(N_total=n_total, dtype=dtype)
+    op = WhereFwdOp(N_total=n_total, dtype=dtype)
     result = bm.profile(op, cond, x, y)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -248,7 +248,7 @@ def test_masked_fill_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = MaskedFillBenchmark(test)
     x, mask = test.gen_inputs()
 
-    op = MaskedFillOp(N_total=n_total, dtype=dtype, fill_value=-65000.0)
+    op = MaskedFillFwdOp(N_total=n_total, dtype=dtype, fill_value=-65000.0)
     result = bm.profile(op, x, mask)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -327,12 +327,12 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
     if op_name == "alibi":
         # ALiBi outputs (num_heads, seq_len, seq_len); override n_total
         test.n_total = dim * seq_len * seq_len
-        op = AlibiOp(seq_len=seq_len, num_heads=dim, dtype=dtype)
+        op = AlibiFwdOp(seq_len=seq_len, num_heads=dim, dtype=dtype)
 
         def baseline_fn():
             return _alibi_reference(seq_len, dim, dtype)
     else:
-        op = SinusoidalOp(seq_len=seq_len, d_model=dim, dtype=dtype)
+        op = SinusoidalFwdOp(seq_len=seq_len, d_model=dim, dtype=dtype)
 
         def baseline_fn():
             return _sinusoidal_reference(seq_len, dim, dtype)
@@ -374,9 +374,9 @@ class Fp8UnaryBenchmark(BenchmarkBase[Fp8UnaryBenchCase]):
 
 
 _FP8_UNARY_OPS = {
-    "leaky_relu": (LeakyReluOp, lambda x: F.leaky_relu(x, 0.01), {}),
-    "elu": (EluOp, lambda x: F.elu(x, 1.0), {}),
-    "clamp": (ClampOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
+    "leaky_relu": (LeakyReluFwdOp, lambda x: F.leaky_relu(x, 0.01), {}),
+    "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
+    "clamp": (ClampFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
 }
 
 
@@ -503,7 +503,7 @@ def test_fp8_selection_bench(
         bm = Fp8WhereBenchmark(test)
         cond, x, y = test.gen_inputs()
 
-        op = WhereOp(N_total=n_total, dtype=dtype)
+        op = WhereFwdOp(N_total=n_total, dtype=dtype)
         result = bm.profile(op, cond, x, y)
         BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -518,7 +518,7 @@ def test_fp8_selection_bench(
         bm = Fp8MaskedFillBenchmark(test)
         x, mask = test.gen_inputs()
 
-        op = MaskedFillOp(N_total=n_total, dtype=dtype, fill_value=-100.0)
+        op = MaskedFillFwdOp(N_total=n_total, dtype=dtype, fill_value=-100.0)
         result = bm.profile(op, x, mask)
         BenchmarkReport.record(op, locals(), result, tag="tileops")
 
