@@ -21,6 +21,7 @@ The --levels flag selects which checks to run. When omitted, all are enabled.
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib
 import inspect
 import itertools
@@ -930,16 +931,43 @@ def _extract_shape_tuple_literals(rules: list) -> dict[str, int]:
     return ranks
 
 
+_SHAPE_DECL_RE = re.compile(r"^\s*\[([^\]]*)\]\s*$")
+
+
+def _parse_shape_decl(shape_str: str) -> list[str] | None:
+    """Parse a ``signature.inputs[*].shape`` declaration like ``"[N, C, L]"``.
+
+    Returns the list of dimension identifiers if the declaration is a bare
+    comma-separated identifier list; returns None otherwise (e.g. contains
+    arithmetic, literals, or other expressions that cannot be bound as
+    mock dim names by this tool).
+    """
+    if not isinstance(shape_str, str):
+        return None
+    m = _SHAPE_DECL_RE.match(shape_str)
+    if m is None:
+        return None
+    body = m.group(1)
+    parts = [p.strip() for p in body.split(",") if p.strip()]
+    if not parts:
+        return None
+    if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p) for p in parts):
+        return None
+    return parts
+
+
 def _mock_input_shapes(
     sig: dict,
 ) -> tuple[dict[str, _MockShape], dict[str, int]] | None:
     """Derive concrete mock input shapes for every declared input.
 
     Uses rank hints from ``shape_rules`` (literal ``tensor.shape == (...)``
-    forms). Falls back to a default 2D shape when the rank is unknown.
-    Returns (shapes, dim_sizes) where ``dim_sizes`` maps each symbolic
-    dimension name (e.g. ``B``, ``S``, ``H``, ``D``) to the integer size
-    used in the mock shapes, so callers can bind those names into a
+    forms) and from ``signature.inputs[*].shape`` declarations (e.g.
+    ``"[N, C_in, L_in]"``). Falls back to a default 2D shape when the
+    rank is unknown. Returns (shapes, dim_sizes) where ``dim_sizes`` maps
+    each symbolic dimension name (e.g. ``B``, ``S``, ``H``, ``D``, or
+    ``N``, ``C_in``, ``L_in`` from shape declarations) to the integer
+    size used in the mock shapes, so callers can bind those names into a
     shape_rules evaluation context. Returns None only if
     ``signature.inputs`` is malformed.
     """
@@ -948,6 +976,16 @@ def _mock_input_shapes(
         return None
     rules = sig.get("shape_rules") or []
     ranks = _extract_shape_tuple_literals(rules)
+
+    # Extra rank hints from per-tensor shape declarations.
+    shape_decls: dict[str, list[str]] = {}
+    for name, attrs in inputs.items():
+        if not isinstance(attrs, dict):
+            continue
+        parts = _parse_shape_decl(attrs.get("shape", ""))
+        if parts is not None:
+            shape_decls[name] = parts
+            ranks.setdefault(name, len(parts))
 
     shapes: dict[str, _MockShape] = {}
     # Assign dim-name → size map shared across tensors for consistent rules.
@@ -975,6 +1013,28 @@ def _mock_input_shapes(
             ):
                 dim_sizes[p] = _MOCK_DIM_SIZE + len(dim_sizes)
 
+    # Also bind symbolic dim names from per-tensor shape declarations so
+    # downstream rule/shape-decl checks resolve them against the same mock
+    # sizes used to build the input tensors.
+    for parts in shape_decls.values():
+        for p in parts:
+            if p not in dim_sizes:
+                dim_sizes[p] = _MOCK_DIM_SIZE + len(dim_sizes)
+    # Also bind symbolic dim names from declared output shapes, so rules
+    # referencing output dim names (via signature.outputs[*].shape) can be
+    # evaluated when shape_rules are absent.
+    outputs_map = sig.get("outputs") or {}
+    if isinstance(outputs_map, dict):
+        for attrs in outputs_map.values():
+            if not isinstance(attrs, dict):
+                continue
+            out_parts = _parse_shape_decl(attrs.get("shape", ""))
+            if out_parts is None:
+                continue
+            for p in out_parts:
+                if p not in dim_sizes:
+                    dim_sizes[p] = _MOCK_DIM_SIZE + len(dim_sizes)
+
     for name in inputs:
         if name in ranks:
             parts = None
@@ -995,6 +1055,12 @@ def _mock_input_shapes(
                     dim_sizes.get(p, _MOCK_DIM_SIZE) for p in parts
                 )
                 continue
+        # Fallback: per-tensor shape declaration from signature.inputs.
+        if name in shape_decls:
+            shapes[name] = _MockShape(
+                dim_sizes.get(p, _MOCK_DIM_SIZE) for p in shape_decls[name]
+            )
+            continue
         # Fallback: 2D shape
         shapes[name] = _MockShape(
             (_MOCK_DIM_SIZE, _MOCK_DIM_SIZE)
@@ -1113,6 +1179,12 @@ def _eval_shape_rule(
     # globals. Merge ctx into globals while keeping locals=ctx so plain
     # (non-comprehension) lookups behave identically.
     eval_globals.update(ctx)
+    # Defense-in-depth: a manifest identifier literally named
+    # ``__builtins__`` (via a rule context key) would otherwise overwrite
+    # the sandboxed builtins mapping installed above and re-expose the
+    # full unrestricted builtins set. Reinstate the sandbox after the
+    # update so ctx cannot escape it.
+    eval_globals["__builtins__"] = _SHAPE_RULE_BUILTINS
     try:
         result = eval(  # noqa: S307 — manifest-controlled
             rule, eval_globals, ctx,
@@ -1123,6 +1195,39 @@ def _eval_shape_rule(
         return bool(result), None
     except Exception as exc:  # noqa: BLE001
         return False, f"non-boolean result: {exc}"
+
+
+def _build_mock_self(cls: type, param_defaults: dict) -> object:
+    """Build a mock ``self`` instance without running ``__init__``.
+
+    Uses ``cls.__new__(cls)`` so that methods bound to ``cls`` (and any
+    helpers defined on its MRO) remain accessible as ``self.method(...)``
+    calls — a plain :class:`types.SimpleNamespace` cannot satisfy methods
+    that read attributes defined on the class or reach for class helpers
+    during a parity probe.
+
+    ``param_defaults`` is the manifest-derived params map (from
+    ``signature.params``). Each default is installed as an instance
+    attribute so ``self.<param>`` lookups resolve without running any
+    initialization logic. Callers may install additional manifest-derived
+    attributes (e.g. ``dtype``) on the returned object before invoking
+    the target method.
+
+    Falls back to :class:`types.SimpleNamespace` if ``cls.__new__``
+    raises (defensive; Python ``type`` subclasses can override ``__new__``
+    with required positional arguments).
+    """
+    try:
+        instance = cls.__new__(cls)
+    except Exception:  # noqa: BLE001
+        return types.SimpleNamespace(**param_defaults)
+    for k, v in param_defaults.items():
+        # __slots__ or read-only descriptors may reject setattr; ignore
+        # — parity check will surface any resulting AttributeError as a
+        # skip when the target method actually reads ``self.<k>``.
+        with contextlib.suppress(AttributeError, TypeError):
+            setattr(instance, k, v)
+    return instance
 
 
 def check_l2_infer_parity(
@@ -1160,7 +1265,19 @@ def check_l2_infer_parity(
 
     sig = entry.get("signature", {})
     rules = sig.get("shape_rules") or []
-    if not isinstance(rules, list) or not rules:
+    if not isinstance(rules, list):
+        rules = []
+    outputs_map = sig.get("outputs") or {}
+    declared_output_shapes: dict[str, list[str]] = {}
+    if isinstance(outputs_map, dict):
+        for oname, oattrs in outputs_map.items():
+            if not isinstance(oattrs, dict):
+                continue
+            parts = _parse_shape_decl(oattrs.get("shape", ""))
+            if parts is not None:
+                declared_output_shapes[oname] = parts
+    # Nothing to check: neither rules nor declared output shapes.
+    if not rules and not declared_output_shapes:
         return errors
 
     if not _class_overrides_method(cls, "_infer_output_shapes"):
@@ -1186,8 +1303,12 @@ def check_l2_infer_parity(
     params = sig.get("params") or {}
     param_defaults = _param_defaults(params)
 
-    # Build a mock ``self`` carrying param attributes; no __init__ invoked.
-    mock_self = types.SimpleNamespace(**param_defaults)
+    # Build a mock ``self`` via ``cls.__new__(cls)`` so class-defined
+    # helpers and attribute descriptors remain reachable, then install
+    # manifest-derived params as instance attributes without running
+    # __init__. A plain SimpleNamespace would raise AttributeError when
+    # _infer_output_shapes consults an unrelated ``self.<attr>`` helper.
+    mock_self = _build_mock_self(cls, param_defaults)
 
     shape_kwargs = {f"{name}_shape": tuple(shape) for name, shape in mock_shapes.items()}
     # First, validate the callable signature independently of the body: a
@@ -1307,6 +1428,37 @@ def check_l2_infer_parity(
                 f"shape_rules[{i}] {rule!r} under mock inputs "
                 f"{shape_kwargs} -> {result}"
             )
+
+    # Compare inferred outputs against per-tensor declared shapes in
+    # signature.outputs[*].shape, independently of shape_rules. This
+    # catches ops whose outputs are only specified via declared shape
+    # fields (no equivalent shape_rule). Expected dim sizes come from
+    # ``dim_sizes``, which was populated from all available symbolic
+    # names (rule literals + input/output shape declarations).
+    for out_name, decl_parts in declared_output_shapes.items():
+        if out_name not in result:
+            continue
+        try:
+            inferred = tuple(result[out_name])
+        except TypeError:
+            continue  # already reported above
+        expected = tuple(
+            dim_sizes.get(p, _MOCK_DIM_SIZE) for p in decl_parts
+        )
+        if len(inferred) != len(expected):
+            errors.append(
+                f"[shape] {op_name}: _infer_output_shapes output "
+                f"{out_name!r} rank {len(inferred)} disagrees with "
+                f"declared shape {decl_parts} (rank {len(expected)}) "
+                f"under mock inputs {shape_kwargs} -> {inferred}"
+            )
+            continue
+        if inferred != expected:
+            errors.append(
+                f"[shape] {op_name}: _infer_output_shapes output "
+                f"{out_name!r}={inferred} disagrees with declared shape "
+                f"{decl_parts}={expected} under mock inputs {shape_kwargs}"
+            )
     return errors
 
 
@@ -1420,7 +1572,10 @@ def _combo_accepted(
             return False, f"cannot build mock tensor for dtype {dtype_name!r}"
         tensors[name] = t
 
-    mock_self = types.SimpleNamespace(**param_defaults)
+    # Build mock self via ``cls.__new__(cls)`` so _validate_dtypes
+    # methods that consult other class helpers or instance attributes
+    # (beyond manifest params) do not falsely raise AttributeError.
+    mock_self = _build_mock_self(cls, param_defaults)
     # Pre-bind the callable signature so only genuine signature mismatches
     # surface as ``TypeError: ...``. TypeError raised from inside the body
     # (e.g. comparing incompatible torch dtypes) is a legitimate rejection
@@ -1520,6 +1675,23 @@ def check_l3_validate_dtypes_parity(
                         f"for dtype_combos[{i}] — {reason}"
                     )
                 continue
+            if reason and reason.startswith("cannot build mock tensor"):
+                # Validator limitation (no torch dtype for this name) — emit
+                # a parity-skip warning rather than reporting a rejection.
+                if warnings is not None:
+                    warnings.append(
+                        f"[dtype] {op_name}: _validate_dtypes parity skipped "
+                        f"for dtype_combos[{i}] — {reason}"
+                    )
+                continue
+            if reason and reason.startswith("combo missing input"):
+                # Manifest error: combo doesn't specify a dtype for every
+                # declared input. Surface as parity error but not a reject.
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}] {combo!r} "
+                    f"{reason}"
+                )
+                continue
             if not accepted:
                 errors.append(
                     f"[dtype] {op_name}: _validate_dtypes rejects "
@@ -1572,6 +1744,61 @@ def check_l3_validate_dtypes_parity(
                 f"[dtype] {op_name}: _validate_dtypes accepts non-listed "
                 f"combo {candidate!r} (not in dtype_combos)"
             )
+
+        # --- Out-of-union negative probe (AC-3 rejection side) ---------
+        # Mirrors the probe in the no-dtype_combos branch. Picks a listed
+        # combo as a baseline (known to be accepted) and substitutes an
+        # out-of-union sentinel for each non-same_as-bound input in turn.
+        # Each resulting candidate must be rejected. Bounded by
+        # _MAX_DTYPE_COMBOS to preserve the Cartesian safety bound.
+        baseline_combo: dict[str, str] | None = None
+        for c in dtype_combos:
+            if isinstance(c, dict) and all(
+                n in c for n in forward_inputs
+            ):
+                baseline_combo = dict(c)
+                break
+        if baseline_combo is not None:
+            same_as_refs = _same_as_refs(sig)
+            probe_budget = _MAX_DTYPE_COMBOS
+            probed = 0
+            for target in forward_inputs:
+                # Skip same_as(ref)-bound tensors: their dtype is
+                # controlled by ``ref``. Mutate the ref instead and let
+                # same_as propagation carry the out-of-union dtype.
+                if target in same_as_refs:
+                    continue
+                declared = set(dtype_options.get(target, []))
+                out_of_union = [
+                    d for d in _DTYPE_SENTINELS if d not in declared
+                ]
+                for bad_dtype in out_of_union:
+                    if probed >= probe_budget:
+                        break
+                    probed += 1
+                    candidate = dict(baseline_combo)
+                    candidate[target] = bad_dtype
+                    for tname, ref in same_as_refs.items():
+                        if ref == target and tname in candidate:
+                            candidate[tname] = bad_dtype
+                    accepted, reason = _combo_accepted(
+                        cls, forward_inputs, candidate, param_defaults,
+                    )
+                    if reason and reason.startswith(
+                        ("unexpected", "TypeError", "cannot build",
+                         "combo missing")
+                    ):
+                        continue
+                    if accepted:
+                        errors.append(
+                            f"[dtype] {op_name}: _validate_dtypes "
+                            f"accepts out-of-union dtype "
+                            f"{candidate!r} (input {target!r} declared "
+                            f"{sorted(declared)})"
+                        )
+                if probed >= probe_budget:
+                    break
+
         if not errors and warnings is not None:
             if not checked_any:
                 # No non-listed combo exists in the Cartesian product —
