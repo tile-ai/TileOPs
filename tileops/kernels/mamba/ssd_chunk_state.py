@@ -159,13 +159,14 @@ def _ssd_chunk_state_fwd_kernel(
                 # --------------------------------------------------------
                 # 4. Allocate tiles once outside the reduction loop
                 #
-                #    x_scaled_tile[l, p] = x[l, p] * w[l]   (row-scaled x)
-                #    b_tile[l, n]         = B[l, n]           (unscaled)
+                #    x_scaled[l, p] = x[l, p] * w(l)   (row-scaled x, dtype)
+                #    b_tile[l, n]   = B[l, n]            (unscaled, dtype)
                 #
-                #    w_tile       -- per-position scalar weight (shared, size block_l)
-                #    x_scaled_f32 -- float32 scratch for the row-scale step
-                #    x_scaled     -- dtype version passed to T.gemm
-                #    b_tile       -- dtype shared tile for B
+                #    w_tile[block_l] holds the per-position scalar weight in shared
+                #    memory. It is filled by T.Parallel(block_l) — one load of
+                #    dA_cumsum[l] and dt[l] per l — then T.sync_threads() makes it
+                #    visible to the subsequent T.Parallel(block_l, block_p) loop,
+                #    avoiding block_p redundant global loads per l.
                 #
                 #    GEMM:  acc[p, n] += x_scaled^T @ b_tile
                 #           i.e. (block_l x block_p)^T @ (block_l x block_n)
@@ -182,9 +183,8 @@ def _ssd_chunk_state_fwd_kernel(
                 for l_blk in T.Serial(T.ceildiv(Q, block_l)):
                     l0 = l_blk * block_l
 
-                    # 5.0 Compute w_tile[ll] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
-                    #     w depends only on ll, so compute once and share across the
-                    #     2D x-scaling loop, avoiding block_p redundant T.exp calls.
+                    # 5.0 Fill w_tile[ll] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
+                    #     One global load of dA_cumsum[l] and dt[l] per l.
                     for ll in T.Parallel(block_l):
                         l_idx = l0 + ll
                         dA_l = T.if_then_else(
@@ -213,7 +213,7 @@ def _ssd_chunk_state_fwd_kernel(
                     T.sync_threads()
 
                     # 5.1 Compute x_scaled[ll, pp] = x[ll, pp] * w_tile[ll]
-                    #     Done in float32, then cast to dtype for GEMM.
+                    #     w_tile[ll] is read from shared — one value reused block_p times.
                     for ll, pp in T.Parallel(block_l, block_p):
                         l_idx = l0 + ll
                         p_idx = p0 + pp
