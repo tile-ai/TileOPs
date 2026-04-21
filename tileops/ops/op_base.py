@@ -1,7 +1,8 @@
 import ast
+import math
 import warnings
 from abc import ABC, abstractmethod
-from typing import Dict, FrozenSet, Hashable, List, Optional, Tuple, Union
+from typing import Hashable, Optional, Union
 
 import torch
 
@@ -20,27 +21,34 @@ _EMPTY_STATIC_DIMS_WARNED: set = set()
 # also an ``ast.Constant``. We intentionally omit ``ast.Num`` from the tuple
 # to avoid the Python 3.12+ DeprecationWarning that firing at isinstance()
 # time; the whitelist is evaluated on the recursive AST walk hot path.
-_SAFE_AST_NODES: Tuple[type, ...] = (
+#
+# ``ast.Pow`` is intentionally excluded: roofline formulas are integer
+# polynomials in the static dimensions, so exponentiation is never needed,
+# and permitting it exposes the safe evaluator to unbounded CPU/memory (e.g.
+# ``10 ** 10 ** N``) and to complex results (e.g. ``(-1) ** 0.5``). If a
+# future op genuinely needs a power, it should compute it in Python and
+# pass the result in via ``_roofline_vars`` rather than encoded in the
+# expression string.
+_SAFE_AST_NODES: tuple[type, ...] = (
     ast.Expression,
     ast.BinOp,
     ast.UnaryOp,
     ast.Constant,  # covers legacy ast.Num (alias on Python 3.8+)
     ast.Name,
-    # Arithmetic operators
+    # Arithmetic operators (Pow deliberately omitted; see comment above).
     ast.Add,
     ast.Sub,
     ast.Mult,
     ast.Div,
     ast.FloorDiv,
     ast.Mod,
-    ast.Pow,
     # Unary operators
     ast.UAdd,
     ast.USub,
 )
 
 
-def _safe_eval(expr: str, ctx: Dict[str, Union[int, float]]) -> Union[int, float]:
+def _safe_eval(expr: str, ctx: dict[str, Union[int, float]]) -> Union[int, float]:
     """Evaluate an arithmetic expression against ``ctx`` using a whitelist AST walker.
 
     Only binary/unary arithmetic on numeric constants and names resolved from
@@ -120,8 +128,6 @@ def _safe_eval(expr: str, ctx: Dict[str, Union[int, float]]) -> Union[int, float
                 return left // right
             if isinstance(op, ast.Mod):
                 return left % right
-            if isinstance(op, ast.Pow):
-                return left**right
             raise ValueError(
                 f"forbidden binary operator {type(op).__name__} in "
                 f"roofline expression {expr!r}")
@@ -130,6 +136,40 @@ def _safe_eval(expr: str, ctx: Dict[str, Union[int, float]]) -> Union[int, float
             f"unhandled AST node {type(node).__name__} in roofline expression {expr!r}")
 
     return _walk(tree)
+
+
+def _coerce_roofline_result(kind: str, expr: str, value: Union[int, float]) -> int:
+    """Validate that a roofline expression result is a finite, non-negative integer.
+
+    ``_safe_eval`` returns ``int`` or ``float`` depending on the operators used
+    in the expression (``/`` promotes to ``float``). FLOPs and bytes counts
+    are inherently non-negative integers, so we refuse to silently truncate
+    fractional values or accept ``inf``/``nan`` via ``int()``. A mismatch
+    typically indicates a bug in the expression (e.g. ``3 * M / 2`` where
+    ``M`` is odd).
+    """
+    if isinstance(value, bool):  # defense in depth; _safe_eval already rejects
+        raise ValueError(
+            f"roofline {kind} expression {expr!r} evaluated to a bool, expected int")
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(
+                f"roofline {kind} expression {expr!r} evaluated to non-finite "
+                f"{value!r}, expected a finite integer")
+        if not value.is_integer():
+            raise ValueError(
+                f"roofline {kind} expression {expr!r} evaluated to non-integral "
+                f"{value!r}; use // or integer-valued subexpressions instead of /")
+        value = int(value)
+    if not isinstance(value, int):  # pragma: no cover - defensive
+        raise ValueError(
+            f"roofline {kind} expression {expr!r} evaluated to unexpected type "
+            f"{type(value).__name__}")
+    if value < 0:
+        raise ValueError(
+            f"roofline {kind} expression {expr!r} evaluated to negative value "
+            f"{value!r}; flops and bytes counts must be non-negative")
+    return value
 
 
 class Op(ABC):
@@ -163,7 +203,7 @@ class Op(ABC):
     """
 
     kernel: Kernel
-    kernel_map: Optional[Dict[str, Kernel]] = None
+    kernel_map: Optional[dict[str, Kernel]] = None
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
@@ -172,22 +212,22 @@ class Op(ABC):
     # `input_index` is the position in *input_shapes; `axis` is a non-negative
     # axis index within that shape. Subclasses set this to reflect their
     # manifest `static_dims`. Default empty = no committed axes.
-    _static_axes: FrozenSet[Tuple[int, int]] = frozenset()
+    _static_axes: frozenset[tuple[int, int]] = frozenset()
 
     # Roofline evaluation slots (see docs/ops-design.md §`eval_roofline`).
     # Concrete ops override these as class-level declarations; `eval_roofline`
     # reads them and evaluates the expressions via `_safe_eval`. Defaults
     # produce `(0, 0)` — a transitional escape hatch for ops not yet migrated.
-    _roofline_vars: List[str] = []
+    _roofline_vars: list[str] = []
     _flops_expr: str = "0"
     _bytes_expr: str = "0"
 
     @property
     @abstractmethod
-    def default_kernel_map(self) -> Dict[str, Kernel]:
+    def default_kernel_map(self) -> dict[str, Kernel]:
         raise NotImplementedError("Op must implement default_kernel_map")
 
-    def _infer_output_shapes(self, **shape_kwargs: Tuple[int, ...]) -> Dict[str, tuple]:
+    def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Infer output tensor shapes from input shapes.
 
         Concrete ops override this with a signature matching the named input
@@ -237,7 +277,7 @@ class Op(ABC):
             "_validate_dtypes must be implemented by the concrete Op subclass; "
             "see docs/ops-design.md §`_validate_dtypes` (codegen)")
 
-    def eval_roofline(self) -> Tuple[int, int]:
+    def eval_roofline(self) -> tuple[int, int]:
         """Evaluate (flops, bytes) from class-level roofline slots.
 
         Reads ``_roofline_vars`` (list of attribute names on ``self``) plus a
@@ -245,22 +285,32 @@ class Op(ABC):
         ``_flops_expr`` and ``_bytes_expr`` via the whitelist AST evaluator
         :func:`_safe_eval`. Returns integer ``(flops, bytes)``.
 
+        Results must be finite, non-negative, and integer-valued; a non-
+        integral or non-finite value (e.g. from a stray ``/`` that does not
+        divide evenly) raises :class:`ValueError` instead of being silently
+        truncated by ``int()``.
+
         When the class-level slots are at defaults, returns ``(0, 0)`` — a
         transitional default for ops not yet migrated. See
         docs/ops-design.md §``eval_roofline``.
         """
-        ctx: Dict[str, Union[int, float]] = {}
+        ctx: dict[str, Union[int, float]] = {}
         for name in self._roofline_vars:
             ctx[name] = getattr(self, name)
         if self.dtype is not None:
-            ctx["elem_bytes"] = torch.tensor([], dtype=self.dtype).element_size()
+            # ``torch.dtype.itemsize`` is the byte width of a scalar element
+            # and matches ``torch.tensor([], dtype=self.dtype).element_size()``
+            # without allocating an empty tensor on every eval_roofline call.
+            ctx["elem_bytes"] = self.dtype.itemsize
         else:
             ctx["elem_bytes"] = 0
-        flops = _safe_eval(self._flops_expr, ctx)
-        nbytes = _safe_eval(self._bytes_expr, ctx)
-        return int(flops), int(nbytes)
+        flops = _coerce_roofline_result("flops", self._flops_expr,
+                                        _safe_eval(self._flops_expr, ctx))
+        nbytes = _coerce_roofline_result("bytes", self._bytes_expr,
+                                         _safe_eval(self._bytes_expr, ctx))
+        return flops, nbytes
 
-    def dispatch_kernel(self, kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
+    def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         if self.default_kernel_map is None or len(self.default_kernel_map) == 0:
             raise ValueError("default_kernel_map must be non-empty")
         self.kernel_map = {}
@@ -283,14 +333,14 @@ class Op(ABC):
                 attr.autotune()
 
     @abstractmethod
-    def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, Tuple]:
+    def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
         raise NotImplementedError("forward method is not implemented")
 
-    def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, Tuple]:
+    def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
         """Make the op callable - delegates to forward()"""
         return self.forward(*args, **kwargs)
 
-    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+    def _cache_key(self, *input_shapes: tuple[int, ...]) -> Hashable:
         """Return a cache key for kernel dispatch given forward-time input shapes.
 
         Default implementation returns the tuple of non-static-axis sizes across

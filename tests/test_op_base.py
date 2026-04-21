@@ -194,6 +194,69 @@ class TestEvalRoofline:
         assert isinstance(flops, int)
         assert isinstance(nbytes, int)
 
+    def test_rejects_non_integral_flops(self):
+        """A fractional result from ``/`` must raise rather than be silently
+        truncated by ``int()``."""
+
+        class _FractionalFlopsOp(_MinimalOp):
+            _flops_expr = "3 / 2"
+            _bytes_expr = "0"
+
+        op = _FractionalFlopsOp(dtype=torch.float16)
+        with pytest.raises(ValueError) as excinfo:
+            op.eval_roofline()
+        assert "non-integral" in str(excinfo.value)
+        assert "flops" in str(excinfo.value)
+
+    def test_rejects_non_integral_bytes(self):
+        class _FractionalBytesOp(_MinimalOp):
+            _flops_expr = "0"
+            _bytes_expr = "5 / 2"
+
+        op = _FractionalBytesOp(dtype=torch.float16)
+        with pytest.raises(ValueError) as excinfo:
+            op.eval_roofline()
+        assert "non-integral" in str(excinfo.value)
+        assert "bytes" in str(excinfo.value)
+
+    def test_accepts_integral_true_division(self):
+        """``/`` is permitted as long as the result is integer-valued."""
+
+        class _IntegralDivOp(_MinimalOp):
+            _flops_expr = "6 / 2"  # -> 3.0, coerced to 3
+            _bytes_expr = "0"
+
+        op = _IntegralDivOp(dtype=torch.float16)
+        flops, nbytes = op.eval_roofline()
+        assert flops == 3
+        assert isinstance(flops, int)
+        assert nbytes == 0
+
+    def test_rejects_negative_result(self):
+        class _NegativeOp(_MinimalOp):
+            _flops_expr = "-1"
+            _bytes_expr = "0"
+
+        op = _NegativeOp(dtype=torch.float16)
+        with pytest.raises(ValueError) as excinfo:
+            op.eval_roofline()
+        assert "negative" in str(excinfo.value)
+
+    def test_elem_bytes_uses_dtype_itemsize_no_tensor_alloc(self, monkeypatch):
+        """``eval_roofline`` derives ``elem_bytes`` from ``dtype.itemsize``
+        and must not allocate a tensor each call."""
+        calls: list[object] = []
+        real_tensor = torch.tensor
+
+        def _spy_tensor(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real_tensor(*args, **kwargs)
+
+        monkeypatch.setattr(torch, "tensor", _spy_tensor)
+        op = _RooflineOp(M=128, N=256, dtype=torch.float16)
+        op.eval_roofline()
+        assert calls == []
+
 
 class TestSafeEval:
     def test_rejects_call(self):
@@ -219,7 +282,24 @@ class TestSafeEval:
     def test_accepts_basic_arithmetic(self):
         assert _safe_eval("2 + 3 * 4", {}) == 14
         assert _safe_eval("-a + b", {"a": 5, "b": 7}) == 2
-        assert _safe_eval("2 ** 10", {}) == 1024
+        # Integer floor-division and modulus are permitted; true division
+        # stays in the whitelist so eval_roofline can surface non-integral
+        # results as a ValueError (see TestEvalRoofline).
+        assert _safe_eval("10 // 3", {}) == 3
+        assert _safe_eval("10 % 3", {}) == 1
+
+    def test_rejects_pow(self):
+        """``**`` is excluded from the whitelist: it permits unbounded
+        allocation (``10 ** 10 ** N``) and complex results
+        (``(-1) ** 0.5``) in what is advertised as a *safe* evaluator."""
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("2 ** 10", {})
+        assert "Pow" in str(excinfo.value)
+
+    def test_rejects_pow_even_with_name(self):
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("(-1) ** 0.5", {})
+        assert "Pow" in str(excinfo.value)
 
     def test_rejects_bool_literal_true(self):
         """``bool`` subclasses ``int`` in Python; ensure a bare ``True``
