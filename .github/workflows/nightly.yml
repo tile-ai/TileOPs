@@ -240,15 +240,15 @@ jobs:
           pip install --no-deps -e . 2>/dev/null
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
 
-          HISTORY_FLAG=""
+          HISTORY_ARGS=()
           if [ -f .perf_history/perf_history.json ]; then
-            HISTORY_FLAG="--history .perf_history/perf_history.json"
+            HISTORY_ARGS=(--history .perf_history/perf_history.json)
           fi
 
           python scripts/nightly_report.py \
             --test-xml test_results.xml \
             --bench-xml bench_results.xml \
-            ${HISTORY_FLAG} \
+            "${HISTORY_ARGS[@]}" \
             --output nightly_report.md \
             --history-out perf_history.json \
             || echo "::warning::nightly_report.py failed"
