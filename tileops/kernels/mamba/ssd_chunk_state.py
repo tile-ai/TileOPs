@@ -71,7 +71,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["SSDChunkStateFwdKernel"]
 
@@ -210,7 +210,7 @@ def _ssd_chunk_state_fwd_kernel(
                             )
                         else:
                             w_tile[ll] = T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l
-                    T.block_barrier()
+                    T.sync_threads()
 
                     # 5.1 Compute x_scaled[ll, pp] = x[ll, pp] * w_tile[ll]
                     #     Done in float32, then cast to dtype for GEMM.

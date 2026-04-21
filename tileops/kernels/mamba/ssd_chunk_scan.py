@@ -145,7 +145,7 @@ def _ssd_chunk_scan_fwd_kernel(
                         dA_cumsum[bz, bh, bc, l_abs],
                         T.float32(0.0),
                     )
-                T.block_barrier()
+                T.sync_threads()
 
                 # =====================================================
                 # PART 1: history path
@@ -238,7 +238,7 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
                             T.float32(0.0),
                         )
-                    T.block_barrier()
+                    T.sync_threads()
 
                     # lcb[l,s] = cb[l,s] * exp(dA_l[l] - dA_s[s]) * dt[s]  if s<=l else 0
                     for ll, ss in T.Parallel(block_l, block_s):
