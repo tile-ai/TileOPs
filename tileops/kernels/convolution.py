@@ -31,7 +31,8 @@ def conv_shared_memory_bytes(
 ) -> int:
     dtype_bytes = torch.tensor([], dtype=dtype).element_size()
     per_stage_bytes = (block_m * block_k + block_k * block_n) * dtype_bytes
-    return per_stage_bytes * max(1, num_stages)
+    out_shared_bytes = block_m * block_n * dtype_bytes
+    return per_stage_bytes * max(1, num_stages) + out_shared_bytes
 
 
 # ---------------------------------------------------------------------------
