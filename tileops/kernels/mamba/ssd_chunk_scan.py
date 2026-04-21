@@ -136,7 +136,8 @@ def _ssd_chunk_scan_fwd_kernel(
                 T.clear(acc)
 
                 # load target-side dA_cumsum[b,h,c,l] for this l-tile
-                dA_l = T.alloc_fragment((block_l,), accum_dtype)
+                # alloc_shared so it is visible across all thread-parallel loops
+                dA_l = T.alloc_shared((block_l,), accum_dtype)
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
                     dA_l[ll] = T.if_then_else(
@@ -144,6 +145,7 @@ def _ssd_chunk_scan_fwd_kernel(
                         dA_cumsum[bz, bh, bc, l_abs],
                         T.float32(0.0),
                     )
+                T.block_barrier()
 
                 # =====================================================
                 # PART 1: history path
@@ -195,8 +197,8 @@ def _ssd_chunk_scan_fwd_kernel(
                 # =====================================================
                 cb_tile  = T.alloc_shared((block_l, block_s), dtype)
                 x_tile   = T.alloc_shared((block_s, block_p), dtype)
-                dA_s     = T.alloc_fragment((block_s,), accum_dtype)
-                dt_s     = T.alloc_fragment((block_s,), accum_dtype)
+                dA_s     = T.alloc_shared((block_s,), accum_dtype)
+                dt_s     = T.alloc_shared((block_s,), accum_dtype)
                 lcb      = T.alloc_fragment((block_l, block_s), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
 
@@ -236,6 +238,7 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
                             T.float32(0.0),
                         )
+                    T.block_barrier()
 
                     # lcb[l,s] = cb[l,s] * exp(dA_l[l] - dA_s[s]) * dt[s]  if s<=l else 0
                     for ll, ss in T.Parallel(block_l, block_s):

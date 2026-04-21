@@ -162,14 +162,16 @@ def _ssd_chunk_state_fwd_kernel(
                 #    x_scaled_tile[l, p] = x[l, p] * w[l]   (row-scaled x)
                 #    b_tile[l, n]         = B[l, n]           (unscaled)
                 #
-                #    x_scaled_f32  -- float32 scratch for the row-scale step
-                #    x_scaled      -- dtype version passed to T.gemm
-                #    b_tile        -- dtype shared tile for B
+                #    w_tile       -- per-position scalar weight (shared, size block_l)
+                #    x_scaled_f32 -- float32 scratch for the row-scale step
+                #    x_scaled     -- dtype version passed to T.gemm
+                #    b_tile       -- dtype shared tile for B
                 #
                 #    GEMM:  acc[p, n] += x_scaled^T @ b_tile
                 #           i.e. (block_l x block_p)^T @ (block_l x block_n)
                 #                = (block_p x block_l) @ (block_l x block_n)
                 # --------------------------------------------------------
+                w_tile       = T.alloc_shared((block_l,), accum_dtype)
                 x_scaled_f32 = T.alloc_fragment((block_l, block_p), accum_dtype)
                 x_scaled     = T.alloc_shared((block_l, block_p), dtype)
                 b_tile       = T.alloc_shared((block_l, block_n), dtype)
@@ -180,14 +182,11 @@ def _ssd_chunk_state_fwd_kernel(
                 for l_blk in T.Serial(T.ceildiv(Q, block_l)):
                     l0 = l_blk * block_l
 
-                    # 5.1 Compute x_scaled[ll, pp] = x[ll, pp] * w[ll]
-                    #     where w[ll] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
-                    #                   * seq_mask[l]
-                    #     Done in float32, then cast to dtype for GEMM.
-                    for ll, pp in T.Parallel(block_l, block_p):
+                    # 5.0 Compute w_tile[ll] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
+                    #     w depends only on ll, so compute once and share across the
+                    #     2D x-scaling loop, avoiding block_p redundant T.exp calls.
+                    for ll in T.Parallel(block_l):
                         l_idx = l0 + ll
-                        p_idx = p0 + pp
-                        in_bounds = (l_idx < Q) and (p_idx < P)
                         dA_l = T.if_then_else(
                             l_idx < Q,
                             dA_cumsum[bz, bh, bc, l_idx],
@@ -198,25 +197,32 @@ def _ssd_chunk_state_fwd_kernel(
                             dt[bz, bh, bc, l_idx],
                             T.float32(0.0),
                         )
-                        x_val = T.if_then_else(
-                            in_bounds,
-                            T.cast(x[bz, chunk_start + l_idx, bh, p_idx], accum_dtype),
-                            T.float32(0.0),
-                        )
                         if has_seq_idx:
                             same_seq = T.if_then_else(
                                 l_idx < Q,
                                 seq_idx[bz, chunk_start + l_idx] == seq_end,
                                 T.bool(False),
                             )
-                            w = T.if_then_else(
+                            w_tile[ll] = T.if_then_else(
                                 same_seq,
                                 T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l,
                                 T.float32(0.0),
                             )
                         else:
-                            w = T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l
-                        x_scaled_f32[ll, pp] = x_val * w
+                            w_tile[ll] = T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l
+                    T.block_barrier()
+
+                    # 5.1 Compute x_scaled[ll, pp] = x[ll, pp] * w_tile[ll]
+                    #     Done in float32, then cast to dtype for GEMM.
+                    for ll, pp in T.Parallel(block_l, block_p):
+                        l_idx = l0 + ll
+                        p_idx = p0 + pp
+                        x_val = T.if_then_else(
+                            (l_idx < Q) and (p_idx < P),
+                            T.cast(x[bz, chunk_start + l_idx, bh, p_idx], accum_dtype),
+                            T.float32(0.0),
+                        )
+                        x_scaled_f32[ll, pp] = x_val * w_tile[ll]
 
                     # Cast scaled-x to kernel dtype for tensor-core GEMM
                     T.copy(x_scaled_f32, x_scaled)
