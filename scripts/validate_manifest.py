@@ -1490,12 +1490,59 @@ def check_l2_infer_parity(
     ctx.update(param_defaults)
     for name, shape in mock_shapes.items():
         ctx[name] = _MockShape(shape)
-    # Input-only context (no inferred outputs) is used to detect rules
-    # that already fail on the mock inputs themselves — such rules
-    # encode input-only preconditions (e.g. ``weight.shape ==
-    # (x.shape[dim],)``) that mock inputs may violate. A correct
-    # ``_infer_output_shapes`` must not be blamed in that case.
-    input_only_ctx: dict = dict(ctx)
+    # Identify output-only symbols (symbols that appear only in declared
+    # output shapes, not in any input shape). Their concrete sizes are
+    # derived by ``_infer_output_shapes`` (possibly via a ``shape_rules``
+    # formula such as ``L_out == L_in - kW + 1``). For classification
+    # and rule evaluation, rebind these from the inferred ``result`` so
+    # a rule defining them is checked against the actual computed value
+    # rather than a synthetic mock size — otherwise a wrong
+    # _infer_output_shapes would silently pass, because the synthetic
+    # size pre-bound in ``dim_sizes`` would make the rule fail in both
+    # ctx and input_only_ctx and be misclassified as an input-only
+    # precondition to skip.
+    input_bound = _input_bound_symbols(sig)
+    output_only_symbols: set[str] = set()
+    # Rebind output-only symbols from the inferred ``result`` tuple
+    # positions. When the same symbol appears in multiple output
+    # positions that yield differing sizes, prefer the first and leave
+    # the consistency check below to flag the mismatch.
+    output_only_rebindings: dict[str, int] = {}
+    for out_name, decl_parts in declared_output_shapes.items():
+        for p in decl_parts:
+            if p not in input_bound:
+                output_only_symbols.add(p)
+        if out_name not in result:
+            continue
+        try:
+            inferred_tuple = tuple(result[out_name])
+        except TypeError:
+            continue
+        if len(inferred_tuple) != len(decl_parts):
+            continue
+        for p, got in zip(decl_parts, inferred_tuple, strict=True):
+            if p in input_bound:
+                continue
+            if not isinstance(got, int):
+                continue
+            if p not in output_only_rebindings:
+                output_only_rebindings[p] = got
+    # Apply output-only rebindings before rule evaluation. These replace
+    # the synthetic sizes that ``_mock_input_shapes`` seeded via the
+    # declared-output-shape pass in ``dim_sizes``.
+    for p, v in output_only_rebindings.items():
+        ctx[p] = v
+    # Input-only context (no inferred outputs, no output-only symbols)
+    # is used to detect rules that already fail on the mock inputs
+    # themselves — such rules encode input-only preconditions (e.g.
+    # ``weight.shape == (x.shape[dim],)``) that mock inputs may violate.
+    # A correct ``_infer_output_shapes`` must not be blamed in that
+    # case. Strip output-only symbols so a rule like
+    # ``L_out == L_in - kW + 1`` is never reachable via this path (it is
+    # output-dependent by construction).
+    input_only_ctx: dict = {
+        k: v for k, v in ctx.items() if k not in output_only_symbols
+    }
     for out_name, out_shape in result.items():
         try:
             ctx[out_name] = _MockShape(tuple(out_shape))
@@ -1522,11 +1569,15 @@ def check_l2_infer_parity(
         if not ok:
             # Distinguish a genuine parity mismatch from a mock-input
             # precondition violation: if the rule already fails with
-            # inputs only (and does not reference any declared output),
-            # the mock input shapes themselves violate the rule — skip
-            # with a warning instead of blaming _infer_output_shapes.
+            # inputs only (and does not reference any declared output
+            # tensor name *or* any output-only symbol), the mock input
+            # shapes themselves violate the rule — skip with a warning
+            # instead of blaming _infer_output_shapes.
             mentions_output = any(
                 re.search(rf"\b{re.escape(o)}\b", rule) for o in output_names
+            ) or any(
+                re.search(rf"\b{re.escape(s)}\b", rule)
+                for s in output_only_symbols
             )
             if not mentions_output:
                 ok_inputs, reason_inputs = _eval_shape_rule(
@@ -1564,7 +1615,8 @@ def check_l2_infer_parity(
     # For such symbols we enforce rank + per-symbol consistency instead
     # (same symbol must map to the same concrete size across every
     # position it appears in any declared output shape).
-    input_bound = _input_bound_symbols(sig)
+    # ``input_bound`` is already computed above (reused for the
+    # output-only rebinding pass before rule evaluation).
     output_only_seen: dict[str, int] = {}
     for out_name, decl_parts in declared_output_shapes.items():
         if out_name not in result:
@@ -1873,6 +1925,46 @@ def check_l3_validate_dtypes_parity(
 
     dtype_combos = sig.get("dtype_combos")
     if isinstance(dtype_combos, list) and dtype_combos:
+        # Upfront validation of dtype_combos values: every entry must be
+        # a concrete torch dtype (in ``_TORCH_DTYPES``) or a resolvable
+        # ``same_as(ref)`` expression that itself resolves to concrete
+        # torch dtypes. Invalid values are manifest data errors — surface
+        # as hard L3 errors rather than letting them fall through to a
+        # parity-skip warning (which would silently disable the check).
+        # The ``cannot build mock tensor`` warning path is reserved for
+        # valid dtype names that the local torch build cannot materialize
+        # (a validator-environment limitation, not a manifest defect).
+        combo_validation_errors: list[str] = []
+        for i, combo in enumerate(dtype_combos):
+            if not isinstance(combo, dict):
+                continue
+            for key, val in combo.items():
+                if not isinstance(val, str):
+                    combo_validation_errors.append(
+                        f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                        f"{val!r} is not a string"
+                    )
+                    continue
+                opts = _dtype_options_for_tensor(key, val, dtype_options)
+                if opts is None:
+                    combo_validation_errors.append(
+                        f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                        f"{val!r} is not a valid dtype (unresolved "
+                        f"same_as reference or not in torch dtype set)"
+                    )
+                elif not all(t in _TORCH_DTYPES for t in opts):
+                    bad = [t for t in opts if t not in _TORCH_DTYPES]
+                    combo_validation_errors.append(
+                        f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                        f"{val!r} resolves to unknown dtype(s) {bad!r}"
+                    )
+        if combo_validation_errors:
+            # Surface the data errors and stop before any parity probing:
+            # invalid combo entries would otherwise generate a cascade
+            # of misleading "rejects" / "skipped" diagnostics.
+            errors.extend(combo_validation_errors)
+            return errors
+
         # Each listed combo should be accepted.
         for i, combo in enumerate(dtype_combos):
             if not isinstance(combo, dict):
