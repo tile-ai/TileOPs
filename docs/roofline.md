@@ -49,41 +49,73 @@ Benchmark (M4) produces raw time (JSON/CSV). Roofline (M5) is a separate tool th
 
 ## Roofline Formulas
 
-Defined per-op in `ops_manifest.yaml` (see [manifest.md](manifest.md)). Simple ops use inline expressions; complex ops reference functions in `tileops/perf/formulas.py` that return `{"flops": int, "bytes": int}`.
+Defined per-op in `ops_manifest.yaml` (see [manifest.md](manifest.md)).
+Complex ops reference functions in `tileops/perf/formulas.py` that return
+`{"flops": int, "bytes": int}`. Inline formulas follow the project
+decisions below.
 
-### Design Gap: Formula Semantics
+### Consumers of Manifest Roofline Metadata
 
-The current manifest stores simple `flops` / `bytes` formulas as strings:
+`ops_manifest.yaml` is the source of truth for roofline metadata. Its
+consumers are:
+
+- **Validator / CI** — checks the `roofline` schema, validates inline
+  formula syntax, evaluates formulas with sample bindings, and rejects
+  formulas that cannot produce finite non-negative numeric results.
+- **Benchmark layer** — `ManifestBenchmark` and bespoke benchmark modules
+  use `tileops.manifest.resolve_roofline_vars()` and
+  `tileops.manifest.eval_roofline()` to report FLOPs and bytes for
+  concrete benchmark workloads.
+- **Roofline analysis tools** — M5 tooling combines benchmark raw latency,
+  manifest FLOPs/bytes, and GPU profile data to compute SOL efficiency
+  and bound type.
+- **Op codegen** — generated Op code derives runtime `eval_roofline()`
+  behavior from manifest formulas after all required variables are known.
+
+Tests and workloads are not roofline formula consumers. They may provide
+shapes and dtypes that benchmark consumers use, but they must not define
+or reinterpret roofline formulas.
+
+### Manifest Roofline Modes
+
+Manifest entries use one of three roofline modes:
+
+| Mode          | Format                   | When                         |
+| ------------- | ------------------------ | ---------------------------- |
+| Inline        | `flops`/`bytes` only     | Fixed-rank ops with `shape`. |
+| Inline + vars | `vars` + `flops`/`bytes` | Arbitrary-rank ops.          |
+| Func          | `func: "module.path"`    | Complex formulas.            |
+
+`elem_bytes` is the byte size of the first input's dtype and is available
+to all inline formulas. Fixed-rank `shape` dimension names auto-bind as
+roofline variables.
 
 ```yaml
+# Fixed rank - shape names auto-bind.
 roofline:
+  flops: "2 * M * N * K"
+  bytes: "(M * K + K * N + M * N) * elem_bytes"
+
+# Arbitrary rank - explicit variable resolution.
+roofline:
+  vars:
+    M: "product(x.shape[:dim])"
+    N: "x.shape[dim]"
   flops: "4 * M * N"
   bytes: "(2 * M * N + N) * elem_bytes"
 ```
 
-Those strings are not free-form Python, but the supported expression
-language is not currently defined as a single contract. This has created
-multiple evaluator surfaces with different behavior:
+### Separate Variable Resolution from Arithmetic
 
-- manifest inline `roofline.flops` / `roofline.bytes`
-- manifest `roofline.vars` expressions
-- generated Op-level `eval_roofline()` proposals
-
-These surfaces must not grow independent expression languages. A formula
-that the manifest accepts must either lower to generated Op code without
-semantic changes or be rejected before codegen. Conversely, generated Op
-code must not accept formulas that the manifest validator cannot reason
-about.
-
-### Two Distinct Expression Layers
-
-Roofline metadata has two different expression problems and they should
-remain separate.
+Roofline metadata has two expression layers. Agents must keep them
+separate.
 
 **Variable resolution** derives named roofline variables from runtime
-inputs, shapes, and manifest params. This layer is manifest-analysis
-only. It may need shape access, slicing, `product()`, `range()`, and small
-comprehensions:
+inputs, shapes, and manifest params. This layer belongs to manifest
+analysis only. Its evaluation context contains all `signature.inputs`
+tensor names with a `.shape` accessor, all `signature.params` names, and
+`elem_bytes`. It may use shape access, slicing, `product()`, `range()`,
+and small comprehensions:
 
 ```yaml
 roofline:
@@ -98,8 +130,18 @@ The result of variable resolution is ordinary data:
 {"M": 1024, "N": 4096, "elem_bytes": 2}
 ```
 
+The `roofline.vars` evaluator exposes `product`, `isinstance`, `len`,
+`set`, `tuple`, `list`, `range`, `int`, `float`, `bool`, `min`, `max`,
+`sum`, `abs`, `log2`, `ceil`, and `floor`. Expressions run with
+`__builtins__` stripped.
+
+When `roofline.vars` uses a reduction `dim`, it follows the manifest
+`shape_rules` contract: validate range first, then normalize negative
+axes with `% x.ndim`, then reject duplicate axes for sequence dims. A
+roofline expression must not silently normalize an invalid axis.
+
 **Arithmetic formulas** compute final `flops` and `bytes` from resolved
-variables:
+variables only:
 
 ```yaml
 roofline:
@@ -107,135 +149,184 @@ roofline:
   bytes: "(2 * M * N + N) * elem_bytes"
 ```
 
-This layer should be much smaller than the variable-resolution language.
-It should not contain tensor access, shape slicing, comprehensions,
-attributes, or arbitrary calls. It is the only expression layer that
-generated Op code should consume.
+Arithmetic formulas must not contain tensor access, shape slicing,
+comprehensions, attributes, or arbitrary calls. Generated Op code may
+consume only this arithmetic layer.
 
-### Target Model
+### Evaluator Surfaces and Their Boundaries
 
-The target design is a single roofline arithmetic expression model with
-multiple frontends and shared backends:
+The project has two legitimate expression-evaluator surfaces, plus a
+third that was considered and explicitly rejected. Future work must
+respect these boundaries so roofline semantics do not grow a second
+parser or a second DSL.
 
-```text
-manifest string formula ─┐
-                         ├─> RooflineExpr IR ─> validate
-structured YAML formula ─┘                    ├─> evaluate
-                                              └─> emit Python code
+**Surface 1 — `tileops.manifest._safe_eval`.** Pre-existing manifest-side
+safe evaluator used for manifest-level expression checks (e.g. validating
+manifest fields that contain expressions). Its scope is narrow and
+already fixed; it must not be extended to interpret roofline formulas.
+
+**Surface 2 — `roofline.vars` evaluator.** Used by
+`resolve_roofline_vars()` to derive named roofline variables from runtime
+inputs. It is deliberately more capable than inline arithmetic because
+it must handle shape-derived logic: tensor shape access, slicing,
+`product(...)`, `range(...)`, small comprehensions, and reduction-dim
+normalization. Its namespace is the one listed under **Variable
+resolution** above.
+
+**Surface 3 (rejected) — Op-local `eval_roofline()` evaluator.** Earlier
+drafts proposed a base-class AST-based safe evaluator that would
+re-interpret `roofline.flops` / `roofline.bytes` at Op runtime
+(class-level `_roofline_vars` / `_flops_expr` / `_bytes_expr`, AST
+lowering in a base class). This is **not** how roofline is implemented.
+Codegen does not introduce a third evaluator — it copies
+validator-approved expression strings into generated Python (see
+[Codegen Copies Validated Expressions](#codegen-copies-validated-expressions)).
+
+Boundary rules:
+
+- `roofline.vars` may be complex (shape access, slicing, comprehensions).
+  `roofline.flops` / `roofline.bytes` must remain pure Python arithmetic
+  over resolved variables, `elem_bytes`, and approved helpers. They are
+  never promoted into a second DSL.
+- `tileops.manifest._safe_eval` and the `roofline.vars` evaluator must
+  not both interpret the same class of expression. `_safe_eval` stays in
+  its current manifest-field role; `roofline.vars` owns shape-derived
+  variable resolution for roofline.
+- If a roofline formula is too complex for simple arithmetic — needs
+  conditionals, shape traversal, or helpers outside the approved set —
+  move it to [`roofline.func`](#complex-formulas-use-func). Do not
+  extend inline formulas into a mini-language.
+- No Op-local parser or AST evaluator for roofline expressions. Op
+  runtime consumes generated `eval_roofline()` that was produced by
+  copying a validator-approved expression.
+
+### Inline Formulas Are Python Expressions
+
+`roofline.flops` and `roofline.bytes` are Python expression source
+strings. They are not a custom DSL and must not be parsed into a separate
+IR.
+
+Validator checks are the syntax and execution gate:
+
+1. Compile each formula with Python `compile(expr, filename, "eval")`.
+1. Evaluate it in CI with validator-provided sample bindings.
+1. Require the result to be finite, non-negative, and numeric.
+
+Invalid syntax, unknown names, unsupported helper usage, non-numeric
+results, and runtime errors are CI failures.
+
+### Validator and Codegen Share One Namespace
+
+The expression namespace is fixed and shared by validator evaluation and
+generated Op code. Formula strings may reference only:
+
+- resolved roofline variable names
+- `elem_bytes`
+- approved math helpers: `ceil`, `floor`, `log2`
+
+Agents must update validator and codegen together when adding or removing
+helper names. A formula accepted by validator must run in generated Op
+code without semantic changes.
+
+### Codegen Copies Validated Expressions
+
+Codegen does not interpret, transform, or partially parse
+`roofline.flops` / `roofline.bytes`. It copies validated expression
+strings into generated Python `eval_roofline()` code.
+
+Example generated shape:
+
+```python
+def eval_roofline(self) -> tuple[int, int]:
+    M = self.M
+    N = self.N
+    elem_bytes = self.dtype.itemsize
+    return (
+        4 * M * N,
+        (2 * M * N + N) * elem_bytes,
+    )
 ```
 
-The IR is a small algebraic tree, not a general Python AST. It should
-support only the operations required by roofline cost formulas:
+Generated code must expose the same local names and helper functions used
+by validator. It must not call an Op-local expression parser.
 
-- constants: integer / float literals
-- variables: names from resolved roofline variables plus `elem_bytes`
-- arithmetic: `add`, `sub`, `mul`, `div`, `floor_div`, `mod`
-- domain primitives when needed: `ceil_div`, `ceil`, `floor`, `log2`
+### Op Runtime Timing
 
-The exact primitive set must be explicit. Adding a primitive is a schema
-and codegen decision, not a local evaluator tweak.
+Generated `eval_roofline()` follows the same timing rule as shape
+inference: run it at the first moment all required variables are known,
+cache the result, and do not recompute for identical inputs.
 
-### Structured Formula Syntax
+| Op category    | When variables are known                                           | `eval_roofline()` behavior                                            |
+| -------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| Fixed-rank     | `__init__` (all dimensions provided)                               | Called once during init; result may be stored on the Op.              |
+| Arbitrary-rank | `__init__` for `static_dims`; `forward` for remaining dynamic dims | Called in `forward()` when dynamic vars are resolved; cache by input. |
 
-New manifest entries should be able to express formulas without embedding
-Python-like strings. A structured expression avoids parser ambiguity and
-can be validated directly from YAML:
+Non-runtime consumers should use `tileops.manifest.eval_roofline()`
+directly. Dynamic-rank Op methods require `self.*` variables that may not
+exist until `forward()` has seen concrete inputs.
+
+### Complex Formulas Use `func`
+
+If an op's roofline cannot be expressed as a small Python expression over
+resolved variables and approved helpers, use:
 
 ```yaml
 roofline:
-  flops:
-    expr:
-      mul:
-        - 4
-        - var: M
-        - var: N
-  bytes:
-    expr:
-      mul:
-        - add:
-            - mul:
-                - 2
-                - var: M
-                - var: N
-            - var: N
-        - var: elem_bytes
+  func: "tileops.perf.formulas.my_op_roofline"
 ```
 
-Common roofline patterns should use explicit domain primitives rather than
-spelling them as arbitrary function calls. For example, prefer `ceil_div`
-over `ceil(x / y)` when the intent is integer block rounding:
+Do not extend inline formulas with new mini-language features when the
+formula is better represented as Python code in `tileops/perf/formulas.py`.
 
-```yaml
-roofline:
-  bytes:
-    expr:
-      mul:
-        - ceil_div:
-            - var: tokens
-            - var: block_size
-        - var: elem_bytes
+### Benchmark Consumption
+
+Benchmarks consume roofline metadata through `tileops.manifest`, not by
+reimplementing formulas locally.
+
+```python
+from tileops.manifest import eval_roofline, load_workloads
+
+_OP_NAME = "RMSNormFwdOp"
+
+
+def _manifest_params():
+    params = []
+    for w in load_workloads(_OP_NAME):
+        m, n = w["x_shape"]
+        label = w.get("label", f"{m}x{n}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}"))
+    return params
+
+
+@pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
+def test_rms_norm_bench(m, n, dtype, tune): ...
+
+
+flops, mem_bytes = eval_roofline(_OP_NAME, M=m, N=n, elem_bytes=elem_bytes)
 ```
 
-This is more verbose than `"ceil(tokens / block_size) * elem_bytes"`, but
-it gives the validator and code generator an exact, typed operation.
+`ManifestBenchmark` evaluates `roofline.vars` against the concrete
+workload shape and op params so non-last-axis and multi-axis reductions
+use the same `M` / `N` bindings as the actual op call:
 
-### Codegen Contract
+```python
+from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 
-Generated Op code must not invent or reinterpret formula semantics. It
-has two valid lowering strategies:
 
-1. Emit Python arithmetic directly from `RooflineExpr`:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params", workloads_to_params("SumFwdOp", include_extra=True)
+)
+def test_sum_bench(shape, dtype, op_params):
+    test = SumTest(shape, dtype)
+    bm = ManifestBenchmark("SumFwdOp", test, op_params=op_params)
+    ...
+```
 
-   ```python
-   def eval_roofline(self) -> tuple[int, int]:
-       return (
-           4 * self.M * self.N,
-           (2 * self.M * self.N + self.N) * self.elem_bytes,
-       )
-   ```
+For entries driven by `workloads_to_params(..., include_extra=True)`,
+workload keys other than `x_shape`, `dtypes`, and `label` are treated as
+op-call params and are forwarded to `resolve_roofline_vars()`.
 
-1. Store structured class-level declarations and let the base class
-   evaluate the same `RooflineExpr` model:
-
-   ```python
-   _flops_expr = {"mul": [4, {"var": "M"}, {"var": "N"}]}
-   _bytes_expr = {
-       "mul": [
-           {
-               "add": [
-                   {"mul": [2, {"var": "M"}, {"var": "N"}]},
-                   {"var": "N"},
-               ]
-           },
-           {"var": "elem_bytes"},
-       ]
-   }
-   ```
-
-In both cases, the accepted language is defined by `RooflineExpr`, not by
-an Op-local string parser.
-
-### Migration Rules
-
-Existing string formulas remain supported during migration, but they are a
-compatibility frontend. They must parse into the same `RooflineExpr` IR
-used by structured formulas.
-
-Migration should proceed in this order:
-
-1. Factor manifest inline formula evaluation into a shared
-   `RooflineExpr` parser/evaluator.
-1. Keep `roofline.vars` resolution separate because it has a broader,
-   manifest-only language.
-1. Add structured YAML formula support for new or migrated entries.
-1. Make validator checks compare both string and structured formulas by
-   lowering them to the same IR.
-1. Make Op codegen consume only the IR, either by emitting Python
-   arithmetic or by storing structured declarations.
-1. Deprecate string formulas only after all existing entries have a
-   structured equivalent and codegen no longer depends on string parsing.
-
-Until this migration exists, new Op-base `eval_roofline()` work should
-reuse the shared manifest inline evaluator or be limited to a documented
-temporary path. It should not introduce another independent formula
-language.
+Manifest validation must ensure implemented benchmark files use the
+manifest roofline helpers rather than hardcoded formulas.

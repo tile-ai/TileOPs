@@ -27,14 +27,16 @@ See [Development Path](ops-design-reference.md#development-path) for when to cre
 
 ## Execution Timing
 
-Kernel construction, shape inference, and roofline evaluation follow one principle: **do it at the first moment all required information is known, do it once, cache the result. Same inputs never trigger recomputation.**
+Kernel construction and shape inference follow one principle: **do it at the first moment all required information is known, do it once, cache the result. Same inputs never trigger recomputation.**
 
-| Op category    | When all info is known                                             | Behavior                                                                                                                                              |
-| -------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fixed-rank     | `__init__` (all dimensions provided)                               | Everything runs once at init.                                                                                                                         |
-| Arbitrary-rank | `__init__` for `static_dims` values; `forward` for everything else | Values committed in `static_dims` are stored at init; remaining shape information triggers kernel/shape/roofline on first encounter, cached by value. |
+| Op category    | When all info is known                                             | Behavior                                                                                                                                     |
+| -------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fixed-rank     | `__init__` (all dimensions provided)                               | Everything runs once at init.                                                                                                                |
+| Arbitrary-rank | `__init__` for `static_dims` values; `forward` for everything else | Values committed in `static_dims` are stored at init; remaining shape information triggers kernel/shape on first encounter, cached by value. |
 
-This applies uniformly to kernel construction, `_infer_output_shapes`, and `eval_roofline`. Cache key granularity is determined by the Op author via `_cache_key` (see [`_cache_key`](#_cache_key) below) — the default is correct for any op; an override buys efficiency when the kernel's math permits coarser keying.
+This applies uniformly to kernel construction and `_infer_output_shapes`.
+Roofline timing and formula semantics are defined in [roofline.md](roofline.md).
+Cache key granularity is determined by the Op author via `_cache_key` (see [`_cache_key`](#_cache_key) below) — the default is correct for any op; an override buys efficiency when the kernel's math permits coarser keying.
 
 **Exception:** `_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes.
 
@@ -139,7 +141,7 @@ def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
             f"static_dim mismatch: expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}"
         )
     self.M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
-    M = self.M  # stored on self for eval_roofline()
+    M = self.M
     # kernel cached by _cache_key (overridden to return (M,) — see _cache_key section)
     key = self._cache_key(x.shape)
     if key not in self._kernel_cache:
@@ -196,25 +198,10 @@ Supersedes `SUPPORTED_DTYPES` as a standalone class variable.
 
 ### `eval_roofline` (codegen)
 
-Generated from manifest `roofline` section. Uses `self.*` attributes populated at init (fixed-rank) or forward (arbitrary-rank). Follows the [Execution Timing](#execution-timing) principle.
-
-```python
-# generated class-level declarations
-_roofline_vars = ["M", "N"]
-_flops_expr = "4 * M * N"
-_bytes_expr = "(2 * M * N + N) * elem_bytes"
-```
-
-Base class provides the evaluation method using an AST-based safe evaluator:
-
-```python
-def eval_roofline(self) -> Tuple[int, int]:
-    ctx = {name: getattr(self, name) for name in self._roofline_vars}
-    ctx["elem_bytes"] = torch.tensor([], dtype=self.dtype).element_size()
-    return _safe_eval(self._flops_expr, ctx), _safe_eval(self._bytes_expr, ctx)
-```
-
-Roofline variable names, `__init__` keyword names, and `shape` dimension names share the same namespace — defined once in the manifest, consumed uniformly.
+Generated from the manifest `roofline` section. The source of truth for
+formula syntax, variable binding, runtime timing, validator behavior, and
+codegen lowering is [roofline.md](roofline.md). Do not define an Op-local
+roofline expression parser in `Op` or family bases.
 
 ### `default_kernel_map`
 
