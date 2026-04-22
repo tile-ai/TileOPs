@@ -17,7 +17,26 @@ import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
-from tileops.manifest import eval_roofline, load_workloads
+from tileops.manifest import (
+    eval_roofline,
+    has_roofline_vars,
+    load_workloads,
+    resolve_roofline_vars,
+)
+
+# Workload dict keys reserved by the benchmark harness. Everything else on
+# a workload entry (e.g. ``dim``, ``keepdim``, ``correction``) is treated
+# as an op-call parameter and forwarded to ``resolve_roofline_vars``.
+#
+# The current harness is explicitly scoped to **single-input ops whose
+# sole tensor input is named ``x``**. Multi-input ops (e.g. attention
+# families that declare ``q_shape`` / ``kv_shape``) are not supported:
+# :func:`workloads_to_params` will raise ``KeyError`` if ``x_shape`` is
+# absent. Extending to signature-aware tensor binding is tracked as a
+# follow-up and must also update ``docs/manifest.md``.
+_WORKLOAD_META_KEYS: frozenset[str] = frozenset(
+    {"x_shape", "dtypes", "label"}
+)
 
 # ---------------------------------------------------------------------------
 # Benchmark capability protocols
@@ -343,23 +362,66 @@ def roofline_vars(workload: ShapeDtypeWorkload) -> dict[str, int | float]:
     return dict(M=M, N=N, elem_bytes=elem_bytes)
 
 
-def workloads_to_params(op_name: str) -> list:
-    """Convert manifest workload dicts for *op_name* to pytest params: (shape, dtype).
+def _workload_extra_params(w: dict) -> dict[str, Any]:
+    """Return op-specific params attached to a manifest workload entry.
 
-    Returns a list of ``pytest.param(shape, dtype, id=...)`` suitable for
-    ``@pytest.mark.parametrize("shape, dtype", ...)``.
+    A workload entry may carry optional op-call parameter values beyond
+    ``x_shape`` / ``dtypes`` / ``label`` (e.g. ``dim``, ``keepdim``,
+    ``correction``). These are forwarded to ``resolve_roofline_vars`` so
+    the manifest's ``roofline.vars`` expressions see the same bindings the
+    op would be called with.
+
+    Only the reserved meta keys (``x_shape``, ``dtypes``, ``label``) and
+    dunder-style metadata keys are stripped; everything else — including
+    any other ``*_shape`` keys — is surfaced as an op param. This matches
+    the single-input ``x_shape``-only harness contract documented in
+    :data:`_WORKLOAD_META_KEYS`; multi-input ops with ``q_shape`` /
+    ``kv_shape`` are out of scope and would need a dedicated harness.
+    """
+    return {
+        k: v
+        for k, v in w.items()
+        if k not in _WORKLOAD_META_KEYS and not k.startswith("__")
+    }
+
+
+def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
+    """Convert manifest workload dicts for *op_name* to pytest params.
+
+    By default (``include_extra=False``) each entry becomes
+    ``pytest.param(shape, dtype, id=...)`` — compatible with existing bench
+    files that use ``@pytest.mark.parametrize("shape, dtype", ...)``.
+
+    With ``include_extra=True`` each entry becomes
+    ``pytest.param(shape, dtype, extra_params, id=...)`` where
+    ``extra_params`` is a dict of op-call params declared on the workload
+    entry (e.g. ``{"dim": 0, "keepdim": False}``). Use this when the
+    benchmark needs to drive op calls from manifest-declared workload params.
     """
     workloads = load_workloads(op_name)
     params = []
     for w in workloads:
+        if "x_shape" not in w:
+            raise KeyError(
+                f"workloads_to_params({op_name!r}) only supports single-input "
+                "ops whose tensor input is named 'x' (workload must declare "
+                "'x_shape'); multi-input ops with q_shape/kv_shape/... are "
+                "out of scope for this harness."
+            )
         shape = tuple(w["x_shape"])
         label = w.get("label", "x".join(str(s) for s in shape))
+        extra = _workload_extra_params(w) if include_extra else {}
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(
-                shape, dtype,
-                id=f"{label}-{dtype_str}",
-            ))
+            # Copy ``extra`` per parametrization so accidental mutation in
+            # one test case cannot leak into later parametrized cases that
+            # share the same workload entry.
+            param_args = (
+                (shape, dtype, dict(extra))
+                if include_extra
+                else (shape, dtype)
+            )
+            params.append(pytest.param(*param_args, id=f"{label}-{dtype_str}"))
     return params
 
 
@@ -370,27 +432,60 @@ class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
     (i.e. any object with ``shape`` and ``dtype``).  Calls ``eval_roofline()``
     with auto-extracted roofline vars and caches the result.
 
+    When the manifest entry declares ``roofline.vars`` expressions, the
+    bindings are produced by evaluating those expressions against
+    ``workload.shape`` and ``op_params`` — so M/N for non-last-axis
+    reductions (or multi-axis reductions) match what the op is actually
+    called with. For entries without ``roofline.vars`` the legacy
+    last-axis fallback (``roofline_vars``) is used.
+
     Subclass and override ``_roofline_vars()`` for ops with non-standard
     variable extraction.
 
     Usage::
 
-        bm = ManifestBenchmark("SoftmaxFwdOp", workload)
+        bm = ManifestBenchmark("SumFwdOp", workload, op_params={"dim": 0})
         result = bm.profile(op, *inputs)
     """
 
-    def __init__(self, op_name: str, workload: ShapeDtypeWorkload):
+    def __init__(
+        self,
+        op_name: str,
+        workload: ShapeDtypeWorkload,
+        op_params: Optional[dict[str, Any]] = None,
+    ):
         super().__init__(workload)
         self._op_name = op_name
+        self._op_params: dict[str, Any] = dict(op_params) if op_params else {}
         self._roofline_cache: Optional[tuple[float, float]] = None
 
     def _roofline_vars(self) -> dict:
         """Extract roofline variable bindings from the workload.
 
+        If the manifest declares ``roofline.vars`` for this op, evaluate
+        those expressions against ``(workload.shape, op_params)``.
+        Otherwise fall back to the last-axis heuristic in
+        :func:`roofline_vars`.
+
         Override this for ops whose manifest roofline expressions require
-        variables beyond the standard ``M``, ``N``, ``elem_bytes``.
+        variables beyond those derivable from the workload shape + op
+        params (e.g. ops whose vars reference multiple input tensors).
         """
-        return roofline_vars(self.workload)
+        # Fall back to the legacy last-axis heuristic only when the manifest
+        # has nothing to resolve for this op (missing entry or missing/empty
+        # ``roofline.vars``). If ``roofline.vars`` is declared but evaluation
+        # raises, propagate the error so bad manifest expressions cannot
+        # silently degrade to legacy M/N.
+        if not has_roofline_vars(self._op_name):
+            return roofline_vars(self.workload)
+        elem_bytes = torch.tensor([], dtype=self.workload.dtype).element_size()
+        resolved = resolve_roofline_vars(
+            self._op_name,
+            tensor_shapes={"x": tuple(self.workload.shape)},
+            params=self._op_params,
+        )
+        resolved.setdefault("elem_bytes", elem_bytes)
+        return resolved
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:

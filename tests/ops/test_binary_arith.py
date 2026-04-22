@@ -10,16 +10,16 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import (
-    AddOp,
-    DivOp,
-    FloorDivideOp,
-    LerpOp,
-    MaximumOp,
-    MinimumOp,
-    MulOp,
-    PowOp,
-    RemainderOp,
-    SubOp,
+    AddFwdOp,
+    DivFwdOp,
+    FloorDivideFwdOp,
+    LerpFwdOp,
+    MaximumFwdOp,
+    MinimumFwdOp,
+    MulFwdOp,
+    PowFwdOp,
+    RemainderFwdOp,
+    SubFwdOp,
     coalesce_broadcast_dims,
 )
 from workloads.binary_arith import AddSameShapeTest as _AddSameShapeTestWorkload
@@ -109,7 +109,7 @@ class AddSameShapeFixture(FixtureBase):
 def test_add_same_shape(n_total: int, dtype: torch.dtype) -> None:
     test = AddSameShapeTest(n_total, dtype)
     shape = (n_total,)
-    op = AddOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -157,7 +157,7 @@ class AddBroadcastTest(TestBase):
 @AddBroadcastFixture
 def test_add_broadcast(a_shape, b_shape, dtype: torch.dtype) -> None:
     test = AddBroadcastTest(a_shape, b_shape, dtype)
-    op = AddOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
+    op = AddFwdOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -178,33 +178,33 @@ _BROADCAST_PATTERNS = [
 
 # (op_name, op_cls, ref_fn, gen_a, gen_b)
 _ARITH_BROADCAST_OPS = [
-    ("sub", SubOp, lambda a, b: (a.float() - b.float()).to(a.dtype),
+    ("sub", SubFwdOp, lambda a, b: (a.float() - b.float()).to(a.dtype),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
-    ("mul", MulOp, lambda a, b: (a.float() * b.float()).to(a.dtype),
+    ("mul", MulFwdOp, lambda a, b: (a.float() * b.float()).to(a.dtype),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
-    ("div", DivOp, lambda a, b: (a.float() / b.float()).to(a.dtype),
+    ("div", DivFwdOp, lambda a, b: (a.float() / b.float()).to(a.dtype),
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
-    ("remainder", RemainderOp,
+    ("remainder", RemainderFwdOp,
      lambda a, b: a - torch.floor(a.float() / b.float()).to(a.dtype) * b,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
-    ("pow", PowOp, lambda a, b: torch.pow(a.float(), b.float()).to(a.dtype),
+    ("pow", PowFwdOp, lambda a, b: torch.pow(a.float(), b.float()).to(a.dtype),
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.5,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") * 2.0),
-    ("floor_divide", FloorDivideOp,
+    ("floor_divide", FloorDivideFwdOp,
      lambda a, b: torch.floor(a.float() / b.float()).to(a.dtype),
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
      lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
-    ("lerp", LerpOp, lambda a, b: torch.lerp(a.float(), b.float(), 0.5).to(a.dtype),
+    ("lerp", LerpFwdOp, lambda a, b: torch.lerp(a.float(), b.float(), 0.5).to(a.dtype),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
-    ("maximum", MaximumOp, lambda a, b: torch.maximum(a.float(), b.float()).to(a.dtype),
+    ("maximum", MaximumFwdOp, lambda a, b: torch.maximum(a.float(), b.float()).to(a.dtype),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
-    ("minimum", MinimumOp, lambda a, b: torch.minimum(a.float(), b.float()).to(a.dtype),
+    ("minimum", MinimumFwdOp, lambda a, b: torch.minimum(a.float(), b.float()).to(a.dtype),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
      lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
 ]
@@ -253,7 +253,7 @@ def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None
     """Verify both binary strategies produce correct results."""
     test = AddSameShapeTest(n_total, dtype)
     shape = (n_total,)
-    op = AddOp(a_shape=shape, b_shape=shape, dtype=dtype, strategy=strategy)
+    op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=dtype, strategy=strategy)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -316,7 +316,7 @@ class SubFixture(FixtureBase):
 def test_sub_op(n_total: int, dtype: torch.dtype) -> None:
     test = BinarySameShapeTest(n_total, dtype, lambda a, b: a - b)
     shape = (n_total,)
-    op = SubOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = SubFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -340,7 +340,7 @@ class MulFixture(FixtureBase):
 def test_mul_op(n_total: int, dtype: torch.dtype) -> None:
     test = BinarySameShapeTest(n_total, dtype, lambda a, b: a * b)
     shape = (n_total,)
-    op = MulOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MulFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -364,7 +364,7 @@ class DivFixture(FixtureBase):
 def test_div_op(n_total: int, dtype: torch.dtype) -> None:
     test = BinaryPositiveTest(n_total, dtype, lambda a, b: a / b)
     shape = (n_total,)
-    op = DivOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = DivFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -406,7 +406,7 @@ class RemainderTest(TestBase):
 def test_remainder_op(n_total: int, dtype: torch.dtype) -> None:
     test = RemainderTest(n_total, dtype)
     shape = (n_total,)
-    op = RemainderOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = RemainderFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -446,7 +446,7 @@ class PowPositiveTest(TestBase):
 def test_pow_op(n_total: int, dtype: torch.dtype) -> None:
     test = PowPositiveTest(n_total, dtype)
     shape = (n_total,)
-    op = PowOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = PowFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -487,7 +487,7 @@ class FloorDivideTest(TestBase):
 def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
     test = FloorDivideTest(n_total, dtype)
     shape = (n_total,)
-    op = FloorDivideOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = FloorDivideFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     # Floor divide in reduced precision can differ by 1; use atol=1.0
     atol = 1.0 if dtype != torch.float32 else 1e-5
     test.check(op, *test.gen_inputs(), atol=atol, rtol=0.0)
@@ -538,7 +538,7 @@ def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
     for weight in [0.0, 0.3, 0.5, 0.7, 1.0]:
         test = LerpTest(n_total, dtype, weight=weight)
         shape = (n_total,)
-        op = LerpOp(a_shape=shape, b_shape=shape, dtype=dtype, weight=weight)
+        op = LerpFwdOp(a_shape=shape, b_shape=shape, dtype=dtype, weight=weight)
         test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
@@ -561,7 +561,7 @@ class MaximumFixture(FixtureBase):
 def test_maximum_op(n_total: int, dtype: torch.dtype) -> None:
     test = BinarySameShapeTest(n_total, dtype, lambda a, b: torch.maximum(a, b))
     shape = (n_total,)
-    op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -585,7 +585,7 @@ class MinimumFixture(FixtureBase):
 def test_minimum_op(n_total: int, dtype: torch.dtype) -> None:
     test = BinarySameShapeTest(n_total, dtype, lambda a, b: torch.minimum(a, b))
     shape = (n_total,)
-    op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -612,7 +612,7 @@ def test_maximum_nan_propagation(dtype: torch.dtype) -> None:
     a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device="cuda")
     b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device="cuda")
     shape = (4,)
-    op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.maximum(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -634,7 +634,7 @@ def test_minimum_nan_propagation(dtype: torch.dtype) -> None:
     a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device="cuda")
     b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device="cuda")
     shape = (4,)
-    op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.minimum(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -674,7 +674,7 @@ def test_maximum_signed_zero(dtype: torch.dtype) -> None:
     a = torch.stack([pos_zero, neg_zero, pos_zero, neg_zero])
     b = torch.stack([neg_zero, pos_zero, pos_zero, neg_zero])
     shape = (4,)
-    op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.maximum(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -699,7 +699,7 @@ def test_minimum_signed_zero(dtype: torch.dtype) -> None:
     a = torch.stack([neg_zero, pos_zero, neg_zero, pos_zero])
     b = torch.stack([pos_zero, neg_zero, neg_zero, pos_zero])
     shape = (4,)
-    op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.minimum(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -722,7 +722,7 @@ def test_maximum_signed_zero_with_nan(dtype: torch.dtype) -> None:
     a = torch.tensor([nan, 1.0, -0.0, 0.0, nan, 3.0], dtype=dtype, device="cuda")
     b = torch.tensor([1.0, nan, 0.0, -0.0, -0.0, 2.0], dtype=dtype, device="cuda")
     shape = (6,)
-    op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.maximum(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -748,7 +748,7 @@ def test_minimum_signed_zero_with_nan(dtype: torch.dtype) -> None:
     a = torch.tensor([nan, -0.0, 0.0, 1.0, nan, 2.0], dtype=dtype, device="cuda")
     b = torch.tensor([1.0, nan, -0.0, 0.0, 0.0, 3.0], dtype=dtype, device="cuda")
     shape = (6,)
-    op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.minimum(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -776,7 +776,7 @@ class EdgeCaseFixture(FixtureBase):
         ("op_cls, ref_fn, gen_fn", [
             # div: avoid div-by-zero
             pytest.param(
-                DivOp,
+                DivFwdOp,
                 lambda a, b: a / b,
                 lambda n, d: (
                     torch.randn(n, dtype=d, device="cuda"),
@@ -786,7 +786,7 @@ class EdgeCaseFixture(FixtureBase):
             ),
             # remainder: positive inputs
             pytest.param(
-                RemainderOp,
+                RemainderFwdOp,
                 lambda a, b: a % b,
                 lambda n, d: (
                     torch.rand(n, dtype=d, device="cuda") + 0.1,
@@ -796,7 +796,7 @@ class EdgeCaseFixture(FixtureBase):
             ),
             # floor_divide: positive inputs
             pytest.param(
-                FloorDivideOp,
+                FloorDivideFwdOp,
                 lambda a, b: torch.floor(a / b),
                 lambda n, d: (
                     torch.rand(n, dtype=d, device="cuda") + 0.1,
@@ -806,7 +806,7 @@ class EdgeCaseFixture(FixtureBase):
             ),
             # pow: positive base, small exponent
             pytest.param(
-                PowOp,
+                PowFwdOp,
                 lambda a, b: torch.pow(a, b),
                 lambda n, d: (
                     torch.rand(n, dtype=d, device="cuda") + 0.5,
@@ -816,7 +816,7 @@ class EdgeCaseFixture(FixtureBase):
             ),
             # maximum: mixed sign
             pytest.param(
-                MaximumOp,
+                MaximumFwdOp,
                 lambda a, b: torch.maximum(a, b),
                 lambda n, d: (
                     torch.randn(n, dtype=d, device="cuda"),
@@ -850,13 +850,13 @@ def test_binary_arith_edge_cases(op_cls, ref_fn, gen_fn) -> None:
 class FloatOnlyBinaryRejectFixture(FixtureBase):
     PARAMS = [
         ("op_cls, dtype", [
-            pytest.param(DivOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(RemainderOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(PowOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(FloorDivideOp, torch.int64, marks=pytest.mark.smoke),
-            pytest.param(LerpOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(MaximumOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(MinimumOp, torch.int64, marks=pytest.mark.smoke),
+            pytest.param(DivFwdOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(RemainderFwdOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(PowFwdOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(FloorDivideFwdOp, torch.int64, marks=pytest.mark.smoke),
+            pytest.param(LerpFwdOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(MaximumFwdOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(MinimumFwdOp, torch.int64, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -872,7 +872,7 @@ def test_float_only_binary_ops_reject_integer_dtype(op_cls, dtype: torch.dtype) 
 @pytest.mark.smoke
 def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
     """Runtime inputs should fail fast instead of reaching backend lowering."""
-    op = SubOp(a_shape=(16,), b_shape=(16,), dtype=torch.float16)
+    op = SubFwdOp(a_shape=(16,), b_shape=(16,), dtype=torch.float16)
     a = torch.randn(16, device="cuda", dtype=torch.float32)
     b = torch.randn(16, device="cuda", dtype=torch.float16)
     with pytest.raises(ValueError, match="Expected a.dtype"):
@@ -889,7 +889,7 @@ def test_binary_kernel_has_autotune_configs() -> None:
     """BinaryKernel subclasses must expose autotune_configs with >= 3 entries."""
 
     shape = (4096,)
-    for op_cls in (MaximumOp, MinimumOp, AddOp, SubOp, MulOp):
+    for op_cls in (MaximumFwdOp, MinimumFwdOp, AddFwdOp, SubFwdOp, MulFwdOp):
         op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.float16)
         # Access autotune_configs from the underlying kernel object
         kernel = op.kernel
@@ -910,7 +910,7 @@ def test_binary_kernel_has_autotune_configs() -> None:
 def test_binary_kernel_autotune_configs_distinct() -> None:
     """autotune_configs entries must be distinct (no duplicates)."""
     shape = (4096,)
-    op = AddOp(a_shape=shape, b_shape=shape, dtype=torch.float16)
+    op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=torch.float16)
     configs = op.kernel.autotune_configs
     config_tuples = [(c["threads"], c["num_per_thread"]) for c in configs]
     assert len(config_tuples) == len(set(config_tuples)), (
@@ -939,7 +939,7 @@ def test_maximum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
     shape = (n_total,)
     a = torch.randn(*shape, device="cuda", dtype=dtype)
     b = torch.randn(*shape, device="cuda", dtype=dtype)
-    op = MaximumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.maximum(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -952,7 +952,7 @@ def test_minimum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
     shape = (n_total,)
     a = torch.randn(*shape, device="cuda", dtype=dtype)
     b = torch.randn(*shape, device="cuda", dtype=dtype)
-    op = MinimumOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.minimum(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -977,8 +977,8 @@ def test_register_copy_downgrades_on_broadcast() -> None:
     dtype = torch.float16
 
     for op_cls, ref_fn in [
-        (AddOp, lambda a, b: a + b),
-        (MaximumOp, lambda a, b: torch.maximum(a, b)),
+        (AddFwdOp, lambda a, b: a + b),
+        (MaximumFwdOp, lambda a, b: torch.maximum(a, b)),
     ]:
         op = op_cls(
             a_shape=a_shape, b_shape=b_shape, dtype=dtype,
@@ -1013,7 +1013,7 @@ def test_binary_tune_true_does_not_crash() -> None:
     shape = (4096,)
     dtype = torch.float16
 
-    for op_cls in (AddOp, MaximumOp, MinimumOp):
+    for op_cls in (AddFwdOp, MaximumFwdOp, MinimumFwdOp):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype, tune=True)

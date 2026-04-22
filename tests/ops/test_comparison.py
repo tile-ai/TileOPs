@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.elementwise import EqOp, GeOp, GtOp, LeOp, LtOp, NeOp
+from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -59,7 +59,7 @@ class EqFixture(FixtureBase):
 def test_eq_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.eq)
     shape = (n_total,)
-    op = EqOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = EqFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -82,7 +82,7 @@ class NeFixture(FixtureBase):
 def test_ne_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ne)
     shape = (n_total,)
-    op = NeOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = NeFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -105,7 +105,7 @@ class GtFixture(FixtureBase):
 def test_gt_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.gt)
     shape = (n_total,)
-    op = GtOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = GtFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -128,7 +128,7 @@ class LtFixture(FixtureBase):
 def test_lt_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.lt)
     shape = (n_total,)
-    op = LtOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LtFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -151,7 +151,7 @@ class GeFixture(FixtureBase):
 def test_ge_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ge)
     shape = (n_total,)
-    op = GeOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = GeFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -174,7 +174,7 @@ class LeFixture(FixtureBase):
 def test_le_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.le)
     shape = (n_total,)
-    op = LeOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LeFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -189,12 +189,12 @@ _BROADCAST_PATTERNS = [
 ]
 
 _CMP_OPS = [
-    ("eq", EqOp, torch.eq),
-    ("ne", NeOp, torch.ne),
-    ("gt", GtOp, torch.gt),
-    ("lt", LtOp, torch.lt),
-    ("ge", GeOp, torch.ge),
-    ("le", LeOp, torch.le),
+    ("eq", EqFwdOp, torch.eq),
+    ("ne", NeFwdOp, torch.ne),
+    ("gt", GtFwdOp, torch.gt),
+    ("lt", LtFwdOp, torch.lt),
+    ("ge", GeFwdOp, torch.ge),
+    ("le", LeFwdOp, torch.le),
 ]
 
 
@@ -245,7 +245,7 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
     # Make some elements differ
     b[::2] = torch.randn(n_total // 2, dtype=dtype, device="cuda")
     shape = (n_total,)
-    op = EqOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = EqFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.eq(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -261,13 +261,13 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
 class ComparisonRejectFixture(FixtureBase):
     PARAMS = [
         ("op_cls, dtype", [
-            pytest.param(EqOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(EqOp, torch.int64, marks=pytest.mark.smoke),
-            pytest.param(NeOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(GtOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(LtOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(GeOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(LeOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(EqFwdOp, torch.int32, marks=pytest.mark.smoke),
+            pytest.param(EqFwdOp, torch.int64, marks=pytest.mark.smoke),
+            pytest.param(NeFwdOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(GtFwdOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(LtFwdOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(GeFwdOp, torch.int32, marks=pytest.mark.full),
+            pytest.param(LeFwdOp, torch.int32, marks=pytest.mark.full),
         ]),
     ]
 

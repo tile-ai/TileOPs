@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops.elementwise import AddOp, WhereOp
+from tileops.ops.elementwise import AddFwdOp, WhereFwdOp
 from workloads.binary_arith import AddSameShapeTest
 from workloads.workload_base import FixtureBase
 
@@ -180,7 +180,7 @@ def test_r1_vectorization(
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = AddOp(
+    op = AddFwdOp(
         a_shape=a_shape, b_shape=b_shape, dtype=dtype,
         strategy="explicit_parallel",
     )
@@ -236,7 +236,7 @@ def test_r2_small_tensor_binary(
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = AddOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
+    op = AddFwdOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r2_small_tensor_binary",
@@ -309,7 +309,7 @@ def test_r4_default_strategy_binary(
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = AddOp(
+    op = AddFwdOp(
         a_shape=a_shape, b_shape=b_shape, dtype=dtype, strategy=strategy,
     )
     result = bm.profile(op, *inputs)
@@ -359,7 +359,7 @@ def test_r4_where_bench(
     bm = WhereBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = WhereOp(N_total=n_total, dtype=dtype)
+    op = WhereFwdOp(N_total=n_total, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_where",
@@ -401,7 +401,7 @@ def test_add_bench(n_total: int, dtype: torch.dtype) -> None:
     inputs = test.gen_inputs()
 
     shape = (n_total,)
-    op = AddOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

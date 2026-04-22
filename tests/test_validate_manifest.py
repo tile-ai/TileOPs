@@ -237,6 +237,102 @@ class TestSchema:
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected schema errors: {errors}"
 
+    def test_static_dims_dict_passes(self, validator):
+        """Valid static_dims mapping passes schema check (R20)."""
+        entry = _make_entry()
+        entry["signature"]["static_dims"] = {"N": "x.shape[-1]"}
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_static_dims_list_fails(self, validator):
+        """Non-dict static_dims (e.g. list) is rejected at L0 (R20)."""
+        entry = _make_entry()
+        entry["signature"]["static_dims"] = ["N"]  # list, not mapping
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims" in e and "must be a mapping" in e for e in errors
+        ), f"Expected static_dims mapping error, got: {errors}"
+
+    def test_static_dims_non_string_value_fails(self, validator):
+        """static_dims entries must map to string expressions (R20)."""
+        entry = _make_entry()
+        entry["signature"]["static_dims"] = {"N": {"from": "x.shape[-1]"}}
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims.N" in e and "string expression" in e for e in errors
+        ), f"Expected static_dims value-type error, got: {errors}"
+
+    def test_static_dims_single_axis_integer_passes(self, validator):
+        """Single-axis reference with integer literal passes R20 parser."""
+        entry = _make_entry()
+        entry["signature"]["static_dims"] = {"N": "x.shape[-1]"}
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected errors: {errors}"
+
+    def test_static_dims_single_axis_param_passes(self, validator):
+        """Axis reference via a declared param passes R20 parser."""
+        entry = _make_entry(params={"dim": {"type": "int", "default": -1}})
+        entry["signature"]["static_dims"] = {"N": "x.shape[dim]"}
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected errors: {errors}"
+
+    def test_static_dims_multi_axis_product_fails(self, validator):
+        """Multi-axis product forms are rejected at L0 (R20 single-axis rule)."""
+        entry = _make_entry(params={"dim": {"type": "int | None", "default": -1}})
+        entry["signature"]["static_dims"] = {
+            "N": "product(x.shape[i] for i in range(x.ndim))"
+        }
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims.N" in e and "single-axis reference" in e for e in errors
+        ), f"Expected single-axis rule rejection, got: {errors}"
+
+    def test_static_dims_unknown_tensor_fails(self, validator):
+        """Referenced tensor must be in signature.inputs."""
+        entry = _make_entry()  # inputs = {'x': ...}
+        entry["signature"]["static_dims"] = {"N": "weight.shape[0]"}
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims.N" in e and "'weight'" in e and "inputs" in e
+            for e in errors
+        ), f"Expected unknown-tensor error, got: {errors}"
+
+    def test_static_dims_unknown_param_axis_fails(self, validator):
+        """Non-int axis reference must be a declared param name."""
+        entry = _make_entry()  # no params
+        entry["signature"]["static_dims"] = {"N": "x.shape[dim]"}
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "static_dims.N" in e and "'dim'" in e and "param" in e
+            for e in errors
+        ), f"Expected unknown-param error, got: {errors}"
+
+    def test_init_dims_deprecated_key_fails(self, validator):
+        """Deprecated `init_dims` key must be flagged with a migration error (R20)."""
+        entry = _make_entry()
+        entry["signature"]["init_dims"] = {"N": {"from": "x.shape[-1]"}}
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "init_dims" in e and "deprecated" in e and "static_dims" in e
+            for e in errors
+        ), f"Expected init_dims deprecation error, got: {errors}"
+
+    def test_static_dims_multi_input_non_primary_tensor_passes(self, validator):
+        """Expression may reference any tensor in signature.inputs
+        (LinearFwdOp-style: out_features binds to weight.shape[0])."""
+        entry = _make_entry(
+            inputs={
+                "input": {"dtype": "float16"},
+                "weight": {"dtype": "float16"},
+            },
+        )
+        entry["signature"]["static_dims"] = {
+            "in_features": "input.shape[-1]",
+            "out_features": "weight.shape[0]",
+        }
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected errors: {errors}"
+
     def test_dtype_combos_valid_passes(self, validator):
         """Valid dtype_combos list passes schema check (R4)."""
         entry = _make_entry(
@@ -347,7 +443,7 @@ class TestSchema:
 
 
 # ---------------------------------------------------------------------------
-# variant_of: cross-entry consistency (R16-R18)
+# variant_of: cross-entry consistency (R16)
 # ---------------------------------------------------------------------------
 
 class TestVariantOf:
@@ -383,7 +479,7 @@ class TestVariantOf:
         assert errors == []
 
     def test_variant_chaining_fails(self, validator):
-        """Chained variant_of fails (R17)."""
+        """Chained variant_of fails (R16 single-level)."""
         ops = {
             "primary": _make_entry(),
             "variant_a": {**_make_entry(), "variant_of": "primary"},
@@ -393,7 +489,7 @@ class TestVariantOf:
         assert any("chaining" in e.lower() for e in errors)
 
     def test_variant_mismatched_kernel_fails(self, validator):
-        """Variant with different source.kernel fails (R18)."""
+        """Variant with different source.kernel fails (R16)."""
         ops = {
             "primary": _make_entry(source_kernel="shared.py"),
             "variant": {
@@ -402,17 +498,17 @@ class TestVariantOf:
             },
         }
         errors = validator.check_variant_of_consistency(ops)
-        assert any("source.kernel" in e and "R18" in e for e in errors)
+        assert any("source.kernel" in e and "R16" in e for e in errors)
 
     def test_variant_mismatched_op_fails(self, validator):
-        """Variant with different source.op fails (R18)."""
+        """Variant with different source.op fails (R16)."""
         primary = _make_entry()
         variant = _make_entry()
         variant["source"]["op"] = "different_op.py"
         variant["variant_of"] = "primary"
         ops = {"primary": primary, "variant": variant}
         errors = validator.check_variant_of_consistency(ops)
-        assert any("source.op" in e and "R18" in e for e in errors)
+        assert any("source.op" in e and "R16" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +621,62 @@ class TestSignature:
         assert any("eps" in e for e in errors), (
             f"Expected error about 'eps' not found, got: {errors}"
         )
+
+    def test_static_dims_key_in_init_accepted(self, validator):
+        """static_dims key that appears in __init__() is valid (R20)."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = {"dim": {"type": "int", "default": -1}}
+        manifest_static_dims = {"N": "x.shape[dim]"}
+        forward_params = ["x"]
+        init_params = ["N", "dtype", "dim"]
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+            init_params=init_params,
+            manifest_static_dims=manifest_static_dims,
+        )
+        assert errors == []
+
+    def test_static_dims_key_missing_from_init_fails(self, validator):
+        """static_dims key not in __init__() must fail (R20)."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = {"dim": {"type": "int", "default": -1}}
+        manifest_static_dims = {"N": "x.shape[dim]"}
+        forward_params = ["x"]
+        init_params = ["dtype", "dim"]  # N missing
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+            init_params=init_params,
+            manifest_static_dims=manifest_static_dims,
+        )
+        assert any("static_dims" in e and "'N'" in e for e in errors), (
+            f"Expected error about static_dims 'N' missing from __init__, got: {errors}"
+        )
+
+    def test_static_dims_absent_ignored(self, validator):
+        """When manifest has no static_dims, no related error is raised."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = {}
+        forward_params = ["x"]
+        init_params = ["dtype"]
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+            init_params=init_params,
+            manifest_static_dims=None,
+        )
+        assert errors == []
+
+    def test_static_dims_non_dict_fails(self, validator):
+        """static_dims must be a mapping; non-dict values are reported."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = {}
+        forward_params = ["x"]
+        init_params = ["dtype"]
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+            init_params=init_params,
+            manifest_static_dims=["N"],  # list, not dict
+        )
+        assert any("static_dims" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -914,9 +1066,9 @@ class TestCheckOp:
     def test_check_op_validates_variant_family(self, validator, tmp_path):
         """--check-op on a primary also validates its immediate variants.
 
-        Regression: an agent could modify a variant to break R17/R18 rules,
-        and --check-op <primary> would still pass because variants were
-        excluded from the validation scope.
+        Regression: an agent could modify a variant to break R16 variant
+        rules, and --check-op <primary> would still pass because variants
+        were excluded from the validation scope.
         """
         import yaml
 
@@ -925,7 +1077,7 @@ class TestCheckOp:
         valid_variant = _make_entry(source_kernel="shared_kernel.py")
         valid_variant["variant_of"] = "primary_op"
 
-        # Broken variant: different source.kernel violates R18
+        # Broken variant: different source.kernel violates R16
         broken_variant = _make_entry(source_kernel="different_kernel.py")
         broken_variant["variant_of"] = "primary_op"
 
@@ -936,22 +1088,22 @@ class TestCheckOp:
             "bad_variant": broken_variant,
         }}))
 
-        # check_op="primary_op" must catch the R18 violation on bad_variant
+        # check_op="primary_op" must catch the R16 violation on bad_variant
         errors, _ = validator.validate_manifest(
             manifest_path=manifest_file,
             repo_root=tmp_path,
             check_op="primary_op",
         )
-        r18_errors = [e for e in errors if "bad_variant" in e and "R18" in e]
-        assert len(r18_errors) > 0, (
-            f"--check-op on primary must catch R18 violation in variant, "
+        r16_errors = [e for e in errors if "bad_variant" in e and "R16" in e]
+        assert len(r16_errors) > 0, (
+            f"--check-op on primary must catch R16 violation in variant, "
             f"got errors: {errors}"
         )
 
-        # good_variant should NOT have R18 errors
-        good_r18 = [e for e in errors if "good_variant" in e and "R18" in e]
-        assert good_r18 == [], (
-            f"good_variant should pass R18, got: {good_r18}"
+        # good_variant should NOT have R16 errors
+        good_r16 = [e for e in errors if "good_variant" in e and "R16" in e]
+        assert good_r16 == [], (
+            f"good_variant should pass R16, got: {good_r16}"
         )
 
     def test_check_op_variant_family_runs_schema_on_variants(self, validator, tmp_path):

@@ -55,6 +55,8 @@ ops:
       params:
         dim: {type: int, default: -1}
         eps: {type: float, default: 1.0e-6}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
         - "weight.shape == (x.shape[dim],)"
 
@@ -71,8 +73,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim])"
-        N: "x.shape[dim]"
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
       # Per row: N squares + (N-1) adds + div + add + rsqrt + N muls (normalize) + N muls (weight) ≈ 4N
       flops: "4 * M * N"
       # Read x (M*N) + read weight (N) + write y (M*N), x elem_size
@@ -87,7 +89,7 @@ ops:
   LayerNormFwdOp:
     ref_api: "torch.nn.functional.layer_norm"
     family: normalization
-    status: implemented
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -98,6 +100,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "weight.shape == (x.shape[-1],)"
         - "bias.shape == (x.shape[-1],)"
@@ -134,7 +138,7 @@ ops:
   AdaLayerNormFwdOp:
     ref_api: "none"
     family: normalization
-    status: implemented
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -145,6 +149,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "scale.shape == x.shape"
         - "shift.shape == x.shape"
@@ -177,7 +183,7 @@ ops:
   AdaLayerNormZeroFwdOp:
     ref_api: "none"
     family: normalization
-    status: implemented
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -189,6 +195,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "scale.shape == x.shape"
         - "shift.shape == x.shape"
@@ -222,7 +230,7 @@ ops:
   FusedAddLayerNormFwdOp:
     ref_api: "none"
     family: normalization
-    status: implemented
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -235,6 +243,8 @@ ops:
         residual_out: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "residual.shape == x.shape"
         - "weight.shape == (x.shape[-1],)"
@@ -270,7 +280,7 @@ ops:
   FusedAddRMSNormFwdOp:
     ref_api: "none"
     family: normalization
-    status: implemented
+    status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -282,6 +292,8 @@ ops:
         residual_out: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-6}
+      static_dims:
+        N: "x.shape[-1]"
       shape_rules:
         - "residual.shape == x.shape"
         - "weight.shape == (x.shape[-1],)"
@@ -323,7 +335,7 @@ ops:
   BatchNormFwdOp:
     ref_api: "torch.nn.functional.batch_norm"
     family: normalization
-    status: implemented
+    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -340,6 +352,8 @@ ops:
         training: {type: bool, default: true}
         eps: {type: float, default: 1.0e-5}
         momentum: {type: float, default: 0.1}
+      static_dims:
+        C: "x.shape[1]"
       shape_rules:
         - "weight.shape == (x.shape[1],)"
         - "bias.shape == (x.shape[1],)"
@@ -379,7 +393,7 @@ ops:
   BatchNormBwdOp:
     ref_api: "torch.nn.functional.batch_norm"
     family: normalization
-    status: implemented
+    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -393,6 +407,8 @@ ops:
         grad_weight: {dtype: "float32"}
         grad_bias: {dtype: "float32"}
       params: {}
+      static_dims:
+        C: "grad_out.shape[1]"
       shape_rules:
         - "x.shape == grad_out.shape"
         - "weight.shape == (grad_out.shape[1],)"
@@ -443,6 +459,8 @@ ops:
       params:
         groups: {type: int}
         eps: {type: float, default: 1.0e-5}
+      static_dims:
+        C: "x.shape[1]"
       shape_rules:
         - "weight.shape == (x.shape[1],)"
         - "bias.shape == (x.shape[1],)"
@@ -474,7 +492,7 @@ ops:
   InstanceNormFwdOp:
     ref_api: "torch.nn.functional.instance_norm"
     family: normalization
-    status: implemented
+    status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -485,6 +503,8 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         eps: {type: float, default: 1.0e-5}
+      static_dims:
+        C: "x.shape[1]"
       shape_rules:
         - "weight.shape == (x.shape[1],)"
         - "bias.shape == (x.shape[1],)"
@@ -1404,7 +1424,7 @@ ops:
   SoftmaxFwdOp:
     ref_api: "torch.nn.functional.softmax"
     family: reduction
-    status: implemented
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1413,7 +1433,10 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
+        - "-x.ndim <= dim < x.ndim"
         - "y.shape == x.shape"
 
     workloads:
@@ -1444,7 +1467,7 @@ ops:
   LogSoftmaxFwdOp:
     ref_api: "torch.nn.functional.log_softmax"
     family: reduction
-    status: implemented
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1453,7 +1476,10 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
+        - "-x.ndim <= dim < x.ndim"
         - "y.shape == x.shape"
 
     workloads:
@@ -1484,7 +1510,7 @@ ops:
   LogSumExpFwdOp:
     ref_api: "torch.logsumexp"
     family: reduction
-    status: implemented
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1492,11 +1518,14 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int]", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...]", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - len([dim] if isinstance(dim, int) else dim)"
-        - "y.shape[i] == (1 if i in ([dim] if isinstance(dim, int) else dim) and keepdim else x.shape[i])"
+        - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - (1 if isinstance(dim, int) else len({d % x.ndim for d in dim}))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}) and keepdim else x.shape[i])"
+        - "isinstance(dim, int) or len(dim) > 0"
+        - "isinstance(dim, int) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Attention weight matrices
@@ -1507,8 +1536,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-        N: "x.shape[dim % x.ndim]"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}))"
       # Per row: max (N), subtract+exp (2N), sum (N), log+add (2) = 4N + 2
       flops: "4 * M * N"
       # Read x (M*N) + write y (M)
@@ -1538,22 +1567,28 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
       - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
       # Long sequence reduction
       - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+      # Non-last-axis reduction (exercises dim=0 path)
+      - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: 0, label: "hidden-state-reduce-dim0"}
+      # Keepdim variant (exercises keepdim forwarding through the baseline)
+      - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: -1, keepdim: true, label: "hidden-state-reduce-keepdim"}
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # N-1 additions per output element
       flops: "M * N"
       # Read x + write y
@@ -1577,11 +1612,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1591,8 +1628,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # N additions + 1 division per output element
       flops: "M * (N + 1)"
       # Read x + write y
@@ -1616,11 +1653,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1630,8 +1669,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x + write y
@@ -1655,11 +1694,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1669,8 +1710,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x + write y
@@ -1696,6 +1737,7 @@ ops:
         dim: {type: "int | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
+        - "dim is None or -x.ndim <= dim < x.ndim"
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else 1)"
         - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else [dim % x.ndim]) and keepdim else x.shape[i])"
 
@@ -1736,12 +1778,14 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state variance (Llama-3.1-8B)
@@ -1751,8 +1795,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # Welford: mean update (2 ops) + variance update (3 ops) per element = 5N
       flops: "5 * M * N"
       # Read x + write y
@@ -1776,12 +1820,14 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state std (Llama-3.1-8B)
@@ -1791,8 +1837,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # Welford (5N) + sqrt per output element
       flops: "5 * M * N + M"
       # Read x + write y
@@ -1817,12 +1863,14 @@ ops:
         var: {dtype: "same_as(x)"}
         mean: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "var.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "var.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "var.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "var.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
         - "mean.ndim == var.ndim"
         - "mean.shape == var.shape"
 
@@ -1834,8 +1882,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # Welford: single pass computes both mean and variance
       flops: "5 * M * N"
       # Read x + write var + write mean
@@ -1855,7 +1903,7 @@ ops:
   ArgmaxFwdOp:
     ref_api: "torch.argmax"
     family: reduction
-    status: implemented
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1865,7 +1913,10 @@ ops:
       params:
         dim: {type: int, default: -1}
         keepdim: {type: bool, default: false}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
+        - "-x.ndim <= dim < x.ndim"
         - "y.ndim == x.ndim if keepdim else x.ndim - 1"
         - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
 
@@ -1895,7 +1946,7 @@ ops:
   ArgminFwdOp:
     ref_api: "torch.argmin"
     family: reduction
-    status: implemented
+    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
 
     signature:
       inputs:
@@ -1905,7 +1956,10 @@ ops:
       params:
         dim: {type: int, default: -1}
         keepdim: {type: bool, default: false}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
+        - "-x.ndim <= dim < x.ndim"
         - "y.ndim == x.ndim if keepdim else x.ndim - 1"
         - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
 
@@ -1947,11 +2001,13 @@ ops:
       outputs:
         y: {dtype: "bool"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Mask validation (batch, seq_len)
@@ -1960,8 +2016,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # N-1 logical AND per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (1 byte for bool)
@@ -1985,11 +2041,13 @@ ops:
       outputs:
         y: {dtype: "bool"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Mask validation (batch, seq_len)
@@ -1998,8 +2056,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # N-1 logical OR per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (1 byte for bool)
@@ -2023,10 +2081,12 @@ ops:
       outputs:
         y: {dtype: "int64"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
       shape_rules:
-        - "y.ndim == x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])))"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Sparsity analysis (batch, hidden_dim)
@@ -2036,8 +2096,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # Compare + conditional add per element
       flops: "2 * M * N"
       # Read x (elem_bytes) + write y (8 bytes for int64)
@@ -2065,11 +2125,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state L1 norm (Llama-3.1-8B)
@@ -2079,8 +2141,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # abs + add per element
       flops: "2 * M * N"
       # Read x + write y
@@ -2104,11 +2166,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state L2 norm (Llama-3.1-8B)
@@ -2118,8 +2182,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # square + add per element, then sqrt
       flops: "2 * M * N + M"
       # Read x + write y
@@ -2143,11 +2207,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else len([dim] if isinstance(dim, int) else dim))"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else ([dim % x.ndim] if isinstance(dim, int) else [d % x.ndim for d in dim])) and keepdim else x.shape[i])"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state inf norm (Llama-3.1-8B)
@@ -2157,8 +2223,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else ([d % x.ndim for d in dim] if isinstance(dim, list) else [dim % x.ndim]))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # abs + max per element
       flops: "2 * M * N"
       # Read x + write y
@@ -2187,7 +2253,10 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
+        - "-x.ndim <= dim < x.ndim"
         - "y.shape == x.shape"
 
     workloads:
@@ -2223,7 +2292,10 @@ ops:
         y: {dtype: "same_as(x)"}
       params:
         dim: {type: int, default: -1}
+      static_dims:
+        N: "x.shape[dim]"
       shape_rules:
+        - "-x.ndim <= dim < x.ndim"
         - "y.shape == x.shape"
 
     workloads:

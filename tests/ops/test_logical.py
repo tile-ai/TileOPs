@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, exact_compare
-from tileops.ops.elementwise import LogicalAndOp, LogicalNotOp, LogicalOrOp
+from tileops.ops.elementwise import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -61,7 +61,7 @@ class LogicalAndFixture(FixtureBase):
 def test_logical_and_op(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalTest(n_total, dtype, torch.logical_and)
     shape = (n_total,)
-    op = LogicalAndOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LogicalAndFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -83,7 +83,7 @@ class LogicalOrFixture(FixtureBase):
 def test_logical_or_op(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalTest(n_total, dtype, torch.logical_or)
     shape = (n_total,)
-    op = LogicalOrOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LogicalOrFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -98,8 +98,8 @@ _BROADCAST_PATTERNS = [
 ]
 
 _LOGICAL_OPS = [
-    ("logical_and", LogicalAndOp, torch.logical_and),
-    ("logical_or", LogicalOrOp, torch.logical_or),
+    ("logical_and", LogicalAndFwdOp, torch.logical_and),
+    ("logical_or", LogicalOrFwdOp, torch.logical_or),
 ]
 
 
@@ -182,7 +182,7 @@ class LogicalNotTest(TestBase):
 @LogicalFixture
 def test_logical_not(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalNotTest(n_total, dtype)
-    op = LogicalNotOp(N_total=n_total, dtype=dtype)
+    op = LogicalNotFwdOp(N_total=n_total, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=exact_compare)
 
 

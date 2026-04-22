@@ -1,0 +1,43 @@
+name: Runner Maintenance
+
+# Heavy disk reclamation for the self-hosted runner. Runs once per day at
+# 18:00 UTC (02:00 Asia/Shanghai) so it lands in an off-peak window. Per-PR
+# `gpu-smoke` jobs only attempt the heavier reclaim path when disk is under
+# pressure, and still rate-limit the expensive cache-trim pass via a
+# cooldown; this scheduled job forces the full cleanup pass on days with
+# little PR traffic.
+#
+# FIXME: The `nightly`-label runner has its own cache tree under
+# `/data/ci-cache/*` and is not wired up here. This PR intentionally defers
+# that work until #987 lands, which collapses nightly's cache layout into
+# `/home/ci-runner/.*/cache`; once that is merged, add a second job (or a
+# matrix entry) targeting the `nightly` runner with its own `cache-dirs`.
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-maintenance
+  cancel-in-progress: false
+
+jobs:
+  reclaim-disk:
+    if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    runs-on: [self-hosted, tile-ops, venv]
+    timeout-minutes: 60
+    steps:
+      # Invoke the action directly via owner/repo/path@ref so this workflow
+      # does not depend on `actions/checkout` succeeding first — in the
+      # disk-full scenarios this job is meant to remediate, a prior checkout
+      # could itself fail for lack of space and prevent reclaim from ever
+      # running. `@main` is trusted because this workflow only triggers on
+      # schedule / workflow_dispatch; no fork-PR code path reaches it.
+      - name: Reclaim runner disk
+        uses: tile-ai/TileOPs/.github/actions/reclaim-runner-disk@main
+        with:
+          force-reclaim: "true"
