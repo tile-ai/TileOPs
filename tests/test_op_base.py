@@ -3,14 +3,13 @@
 Covers:
 - ``Op._cache_key`` default behavior and runtime warnings for missing
   subclass overrides when ``_static_axes`` is empty.
-- ``Op.eval_roofline`` and the module-level whitelist AST evaluator
-  ``_safe_eval`` introduced to align the L1 base class with
-  docs/ops-design.md §``eval_roofline``.
-- Base-class stubs for ``_infer_output_shapes`` / ``_validate_dtypes`` that
-  raise :class:`NotImplementedError` pointing at the design doc.
+- L1 stubs for ``_infer_output_shapes`` / ``_validate_dtypes`` /
+  ``eval_roofline`` that raise :class:`NotImplementedError` pointing at the
+  design docs. Per docs/roofline.md §4.4.6, the L1 base deliberately does
+  not provide a generic roofline evaluator — each op's ``eval_roofline``
+  body is emitted by codegen as plain Python.
 """
 
-import math
 import warnings
 from typing import Dict
 
@@ -18,7 +17,7 @@ import pytest
 import torch
 
 from tileops.ops import op_base
-from tileops.ops.op_base import Op, _safe_eval
+from tileops.ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
 
@@ -157,234 +156,6 @@ class _MinimalOp(Op):
         return None
 
 
-class _RooflineOp(_MinimalOp):
-    """Op subclass that declares real roofline slots."""
-
-    _roofline_vars = ["M", "N"]
-    _flops_expr = "4 * M * N"
-    _bytes_expr = "(2 * M * N + N) * elem_bytes"
-
-    def __init__(self, *, M: int, N: int, dtype: torch.dtype):
-        super().__init__(dtype=dtype)
-        self.M = M
-        self.N = N
-
-
-class TestEvalRoofline:
-    def test_defaults_return_zero(self):
-        """Class-level slots at defaults -> eval_roofline returns (0, 0)."""
-        op = _MinimalOp(dtype=torch.float16)
-        assert op.eval_roofline() == (0, 0)
-
-    def test_real_expression(self):
-        """``4*M*N`` and ``(2*M*N + N)*elem_bytes`` with M=128, N=256, fp16."""
-        op = _RooflineOp(M=128, N=256, dtype=torch.float16)
-        flops, nbytes = op.eval_roofline()
-        # 4 * 128 * 256 = 131072
-        assert flops == 4 * 128 * 256
-        assert flops == 131072
-        # elem_bytes = 2 (fp16); (2*128*256 + 256) * 2 = 131584
-        elem_bytes = torch.tensor([], dtype=torch.float16).element_size()
-        assert elem_bytes == 2
-        assert nbytes == (2 * 128 * 256 + 256) * 2
-        assert nbytes == 131584
-
-    def test_returns_int_tuple(self):
-        op = _RooflineOp(M=4, N=8, dtype=torch.float32)
-        flops, nbytes = op.eval_roofline()
-        assert isinstance(flops, int)
-        assert isinstance(nbytes, int)
-
-    def test_rejects_non_integral_flops(self):
-        """A fractional result from ``/`` must raise rather than be silently
-        truncated by ``int()``."""
-
-        class _FractionalFlopsOp(_MinimalOp):
-            _flops_expr = "3 / 2"
-            _bytes_expr = "0"
-
-        op = _FractionalFlopsOp(dtype=torch.float16)
-        with pytest.raises(ValueError) as excinfo:
-            op.eval_roofline()
-        assert "non-integral" in str(excinfo.value)
-        assert "flops" in str(excinfo.value)
-
-    def test_rejects_non_integral_bytes(self):
-        class _FractionalBytesOp(_MinimalOp):
-            _flops_expr = "0"
-            _bytes_expr = "5 / 2"
-
-        op = _FractionalBytesOp(dtype=torch.float16)
-        with pytest.raises(ValueError) as excinfo:
-            op.eval_roofline()
-        assert "non-integral" in str(excinfo.value)
-        assert "bytes" in str(excinfo.value)
-
-    def test_accepts_integral_true_division(self):
-        """``/`` is permitted as long as the result is integer-valued."""
-
-        class _IntegralDivOp(_MinimalOp):
-            _flops_expr = "6 / 2"  # -> 3.0, coerced to 3
-            _bytes_expr = "0"
-
-        op = _IntegralDivOp(dtype=torch.float16)
-        flops, nbytes = op.eval_roofline()
-        assert flops == 3
-        assert isinstance(flops, int)
-        assert nbytes == 0
-
-    def test_rejects_negative_result(self):
-        class _NegativeOp(_MinimalOp):
-            _flops_expr = "-1"
-            _bytes_expr = "0"
-
-        op = _NegativeOp(dtype=torch.float16)
-        with pytest.raises(ValueError) as excinfo:
-            op.eval_roofline()
-        assert "negative" in str(excinfo.value)
-
-    def test_elem_bytes_uses_dtype_itemsize_no_tensor_alloc(self, monkeypatch):
-        """``eval_roofline`` derives ``elem_bytes`` from ``dtype.itemsize``
-        and must not allocate a tensor each call."""
-        calls: list[object] = []
-        real_tensor = torch.tensor
-
-        def _spy_tensor(*args, **kwargs):
-            calls.append((args, kwargs))
-            return real_tensor(*args, **kwargs)
-
-        monkeypatch.setattr(torch, "tensor", _spy_tensor)
-        op = _RooflineOp(M=128, N=256, dtype=torch.float16)
-        op.eval_roofline()
-        assert calls == []
-
-
-class TestSafeEval:
-    def test_rejects_non_whitelisted_call(self):
-        """Direct calls to names outside ``_ROOFLINE_SAFE_FUNCTIONS`` are
-        rejected even though ``ast.Call`` is now permitted for
-        ``ceil``/``floor``/``log2``."""
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("f(1)", {})
-        msg = str(excinfo.value)
-        assert "f" in msg and "forbidden call" in msg
-
-    def test_rejects_attribute_call(self):
-        """``math.ceil(x)`` is rejected because the call target is an
-        attribute access, not a bare name."""
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("math.ceil(1)", {})
-        assert "call target" in str(excinfo.value)
-
-    def test_rejects_keyword_argument_call(self):
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("ceil(x=1)", {})
-        assert "keyword arguments" in str(excinfo.value)
-
-    def test_accepts_ceil_floor_log2(self):
-        """Whitelisted numeric helpers mirror
-        ``tileops.manifest._safe_eval`` so manifest-side roofline expressions
-        can be spliced into ``_flops_expr`` / ``_bytes_expr`` without
-        translation."""
-        assert _safe_eval("ceil(10 / 3)", {}) == 4
-        assert _safe_eval("floor(10 / 3)", {}) == 3
-        assert _safe_eval("log2(N)", {"N": 8}) == 3.0
-
-    def test_accepts_moe_permute_align_style_expression(self):
-        """Regression test using the shape of
-        ``MoePermuteAlignFwdOp``'s manifest ``roofline.bytes`` expression,
-        which mixes ``ceil(...)``, ``/``, ``+``, and ``*``."""
-        ctx = {
-            "total_tokens": 16,
-            "top_k": 2,
-            "num_experts": 4,
-            "block_size": 8,
-        }
-        # total_tokens*top_k*4 + (total_tokens*top_k + (num_experts+1)*(block_size-1))*4 +
-        # ceil((total_tokens*top_k + (num_experts+1)*(block_size-1)) / block_size)*4 + 4
-        expr = (
-            "total_tokens * top_k * 4 + "
-            "(total_tokens * top_k + (num_experts + 1) * (block_size - 1)) * 4 + "
-            "ceil((total_tokens * top_k + (num_experts + 1) * (block_size - 1))"
-            " / block_size) * 4 + 4")
-        inner = ctx["total_tokens"] * ctx["top_k"] + (ctx["num_experts"] + 1) * (
-            ctx["block_size"] - 1)
-        expected = (ctx["total_tokens"] * ctx["top_k"] * 4 + inner * 4 +
-                    math.ceil(inner / ctx["block_size"]) * 4 + 4)
-        assert _safe_eval(expr, ctx) == expected
-
-    def test_rejects_attribute(self):
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("x.y", {"x": 1})
-        assert "Attribute" in str(excinfo.value)
-
-    def test_rejects_subscript(self):
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("x[0]", {"x": 1})
-        assert "Subscript" in str(excinfo.value)
-
-    def test_rejects_undefined_name(self):
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("missing + 1", {})
-        assert "missing" in str(excinfo.value)
-
-    def test_accepts_basic_arithmetic(self):
-        assert _safe_eval("2 + 3 * 4", {}) == 14
-        assert _safe_eval("-a + b", {"a": 5, "b": 7}) == 2
-        # Integer floor-division and modulus are permitted; true division
-        # stays in the whitelist so eval_roofline can surface non-integral
-        # results as a ValueError (see TestEvalRoofline).
-        assert _safe_eval("10 // 3", {}) == 3
-        assert _safe_eval("10 % 3", {}) == 1
-
-    def test_accepts_pow(self):
-        """``**`` is admitted to match the manifest evaluator. Pathological
-        inputs (fractional / complex / non-finite results) are rejected in
-        depth by ``_coerce_roofline_result`` at the roofline layer; see
-        :class:`TestEvalRoofline`. The raw evaluator just returns a number."""
-        assert _safe_eval("2 ** 10", {}) == 1024
-        assert _safe_eval("N ** 2", {"N": 5}) == 25
-
-    def test_rejects_bool_literal_true(self):
-        """``bool`` subclasses ``int`` in Python; ensure a bare ``True``
-        literal is rejected rather than silently treated as ``1``."""
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("True", {})
-        assert "bool" in str(excinfo.value)
-
-    def test_rejects_bool_in_binop_left(self):
-        """``False + 1`` must not evaluate to ``1``."""
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("False + 1", {})
-        assert "bool" in str(excinfo.value)
-
-    def test_rejects_bool_in_binop_right(self):
-        """``1 + True`` must not evaluate to ``2``."""
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("1 + True", {})
-        assert "bool" in str(excinfo.value)
-
-    def test_rejects_bool_name_binding(self):
-        """Name lookup must reject a ``bool`` ctx binding (subclass of int)."""
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("x", {"x": True})
-        assert "bool" in str(excinfo.value)
-        assert "'x'" in str(excinfo.value)
-
-    def test_rejects_bool_name_binding_in_binop(self):
-        """``x + 1`` with ``x=True`` must not evaluate to ``2``."""
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("x + 1", {"x": True})
-        assert "bool" in str(excinfo.value)
-
-    def test_rejects_str_name_binding(self):
-        """Name lookup must reject a non-numeric (e.g. ``str``) binding."""
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("x", {"x": "3"})
-        assert "str" in str(excinfo.value)
-        assert "'x'" in str(excinfo.value)
-
-
 class TestBaseClassStubs:
     def test_infer_output_shapes_raises_not_implemented(self):
         op = _MinimalOp()
@@ -400,3 +171,14 @@ class TestBaseClassStubs:
             op._validate_dtypes(x)
         assert "docs/ops-design.md" in str(excinfo.value)
         assert "_validate_dtypes" in str(excinfo.value)
+
+    def test_eval_roofline_raises_not_implemented(self):
+        """L1 eval_roofline is a stub; per docs/roofline.md §4.4.6 each
+        concrete op's body is emitted by codegen, not fed through a
+        generic L1 evaluator."""
+        op = _MinimalOp()
+        with pytest.raises(NotImplementedError) as excinfo:
+            op.eval_roofline()
+        msg = str(excinfo.value)
+        assert "docs/roofline.md" in msg
+        assert "eval_roofline" in msg

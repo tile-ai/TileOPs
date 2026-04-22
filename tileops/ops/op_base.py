@@ -1,8 +1,6 @@
-import ast
-import math
 import warnings
 from abc import ABC, abstractmethod
-from typing import Callable, Hashable, Optional, Union
+from typing import Hashable, Optional, Union
 
 import torch
 
@@ -11,202 +9,6 @@ from tileops.utils import get_sm_version
 
 # Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
 _EMPTY_STATIC_DIMS_WARNED: set = set()
-
-# Whitelist of AST nodes permitted in roofline expressions. This mirrors the
-# manifest-level evaluator in ``tileops.manifest._safe_eval`` so that any
-# expression accepted by the manifest schema (and therefore any expression
-# codegen may splice into ``_flops_expr`` / ``_bytes_expr``) is also accepted
-# here. Explicitly excludes Attribute, Subscript, Lambda, Comprehension, etc.
-#
-# ``ast.Num`` is a deprecated alias of ``ast.Constant`` on every supported
-# Python (3.8+) — AC-4's back-compat requirement for ``ast.Num`` is satisfied
-# by accepting ``ast.Constant``, since any legacy ``ast.Num`` node instance is
-# also an ``ast.Constant``. We intentionally omit ``ast.Num`` from the tuple
-# to avoid the Python 3.12+ DeprecationWarning that would fire at isinstance()
-# time; the whitelist is evaluated on the recursive AST walk hot path.
-#
-# ``ast.Call`` is accepted but constrained to a narrow whitelist of numeric
-# helpers (see ``_ROOFLINE_SAFE_FUNCTIONS``); attribute-call syntax
-# (``math.ceil(x)``) and keyword/star arguments are rejected in the Call
-# branch of ``_walk`` below.
-#
-# ``ast.Pow`` is accepted to match the manifest evaluator, which admits it for
-# the rare formula that needs an exponent. Unbounded inputs (``10 ** 10 ** N``)
-# and fractional/complex results (``(-1) ** 0.5``) are defended in depth by
-# ``_coerce_roofline_result`` which rejects non-finite / non-integral /
-# negative final outputs.
-_ROOFLINE_SAFE_FUNCTIONS: dict[str, Callable[..., Union[int, float]]] = {
-    "log2": math.log2,
-    "ceil": math.ceil,
-    "floor": math.floor,
-}
-
-_SAFE_AST_NODES: tuple[type, ...] = (
-    ast.Expression,
-    ast.BinOp,
-    ast.UnaryOp,
-    ast.Constant,  # covers legacy ast.Num (alias on Python 3.8+)
-    ast.Name,
-    ast.Call,  # restricted to _ROOFLINE_SAFE_FUNCTIONS in _walk
-    # Arithmetic operators
-    ast.Add,
-    ast.Sub,
-    ast.Mult,
-    ast.Div,
-    ast.FloorDiv,
-    ast.Mod,
-    ast.Pow,
-    # Unary operators
-    ast.UAdd,
-    ast.USub,
-)
-
-
-def _safe_eval(expr: str, ctx: dict[str, Union[int, float]]) -> Union[int, float]:
-    """Evaluate an arithmetic expression against ``ctx`` using a whitelist AST walker.
-
-    Only binary/unary arithmetic on numeric constants and names resolved from
-    ``ctx`` is permitted. Function calls, attribute access, subscripts, lambdas,
-    comprehensions, and any other node type raise :class:`ValueError` naming
-    the forbidden node.
-
-    This is the roofline evaluator referenced by :meth:`Op.eval_roofline`; it
-    intentionally avoids :func:`eval` / :func:`exec` and any third-party
-    expression evaluator.
-    """
-    try:
-        tree = ast.parse(expr, mode='eval')
-    except SyntaxError as e:
-        raise ValueError(f"invalid roofline expression {expr!r}: {e}") from e
-
-    def _walk(node: ast.AST) -> Union[int, float]:
-        # The whitelist is built once at module load (see _SAFE_AST_NODES).
-        # On supported Pythons, ast.Num is already an alias of ast.Constant,
-        # so the isinstance check here does not trigger a DeprecationWarning
-        # and needs no per-node suppression.
-        if not isinstance(node, _SAFE_AST_NODES):
-            raise ValueError(
-                f"forbidden AST node {type(node).__name__} in roofline expression "
-                f"{expr!r}; only arithmetic over Name/Constant is permitted")
-        if isinstance(node, ast.Expression):
-            return _walk(node.body)
-        if isinstance(node, ast.Constant):
-            # ``bool`` is a subclass of ``int`` in Python, so the int/float check
-            # below would accept ``True``/``False`` as numeric constants. Reject
-            # bool literals explicitly so boolean expressions (e.g. ``True``,
-            # ``False + 1``) cannot masquerade as valid roofline arithmetic.
-            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
-                raise ValueError(
-                    f"forbidden constant type {type(node.value).__name__} in "
-                    f"roofline expression {expr!r}")
-            return node.value
-        # Note: on Python 3.8+, ``ast.Num`` nodes are instances of
-        # ``ast.Constant`` and are handled by the Constant branch above.
-        if isinstance(node, ast.Name):
-            if node.id not in ctx:
-                raise ValueError(
-                    f"undefined name {node.id!r} in roofline expression {expr!r}")
-            value = ctx[node.id]
-            # Mirror the Constant branch: ``bool`` is a subclass of ``int``,
-            # so explicitly reject it, then require int/float. This prevents
-            # non-numeric ctx bindings from bypassing the numeric-only
-            # contract via Name lookup.
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError(
-                    f"forbidden binding type {type(value).__name__} for name "
-                    f"{node.id!r} in roofline expression {expr!r}; "
-                    f"only int/float bindings are permitted")
-            return value
-        if isinstance(node, ast.UnaryOp):
-            operand = _walk(node.operand)
-            if isinstance(node.op, ast.UAdd):
-                return +operand
-            if isinstance(node.op, ast.USub):
-                return -operand
-            raise ValueError(
-                f"forbidden unary operator {type(node.op).__name__} in "
-                f"roofline expression {expr!r}")
-        if isinstance(node, ast.BinOp):
-            left = _walk(node.left)
-            right = _walk(node.right)
-            op = node.op
-            if isinstance(op, ast.Add):
-                return left + right
-            if isinstance(op, ast.Sub):
-                return left - right
-            if isinstance(op, ast.Mult):
-                return left * right
-            if isinstance(op, ast.Div):
-                return left / right
-            if isinstance(op, ast.FloorDiv):
-                return left // right
-            if isinstance(op, ast.Mod):
-                return left % right
-            if isinstance(op, ast.Pow):
-                return left**right
-            raise ValueError(
-                f"forbidden binary operator {type(op).__name__} in "
-                f"roofline expression {expr!r}")
-        if isinstance(node, ast.Call):
-            # Only allow direct calls to whitelisted name callables, mirroring
-            # ``tileops.manifest._safe_eval``. Reject attribute-call syntax
-            # (``math.ceil(x)``) and any keyword / star arguments.
-            if not isinstance(node.func, ast.Name):
-                raise ValueError(
-                    f"forbidden call target in roofline expression {expr!r}; "
-                    f"only direct calls to whitelisted functions are permitted")
-            func_name = node.func.id
-            if func_name not in _ROOFLINE_SAFE_FUNCTIONS:
-                raise ValueError(
-                    f"forbidden call to {func_name!r} in roofline expression "
-                    f"{expr!r}; allowed functions: "
-                    f"{sorted(_ROOFLINE_SAFE_FUNCTIONS)}")
-            if node.keywords:
-                raise ValueError(
-                    f"keyword arguments are not permitted in roofline "
-                    f"expression {expr!r}")
-            args = [_walk(a) for a in node.args]
-            return _ROOFLINE_SAFE_FUNCTIONS[func_name](*args)
-        # Unreachable: _SAFE_AST_NODES gate above covers every handled type.
-        raise ValueError(  # pragma: no cover - defensive
-            f"unhandled AST node {type(node).__name__} in roofline expression {expr!r}")
-
-    return _walk(tree)
-
-
-def _coerce_roofline_result(kind: str, expr: str, value: Union[int, float]) -> int:
-    """Validate that a roofline expression result is a finite, non-negative integer.
-
-    ``_safe_eval`` returns ``int`` or ``float`` depending on the operators used
-    in the expression (``/`` promotes to ``float``). FLOPs and bytes counts
-    are inherently non-negative integers, so we refuse to silently truncate
-    fractional values or accept ``inf``/``nan`` via ``int()``. A mismatch
-    typically indicates a bug in the expression (e.g. ``3 * M / 2`` where
-    ``M`` is odd).
-    """
-    if isinstance(value, bool):  # defense in depth; _safe_eval already rejects
-        raise ValueError(
-            f"roofline {kind} expression {expr!r} evaluated to a bool, expected int")
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(
-                f"roofline {kind} expression {expr!r} evaluated to non-finite "
-                f"{value!r}, expected a finite integer")
-        if not value.is_integer():
-            raise ValueError(
-                f"roofline {kind} expression {expr!r} evaluated to non-integral "
-                f"{value!r}; use // or integer-valued subexpressions instead of /")
-        value = int(value)
-    if not isinstance(value, int):  # pragma: no cover - defensive
-        raise ValueError(
-            f"roofline {kind} expression {expr!r} evaluated to unexpected type "
-            f"{type(value).__name__}")
-    if value < 0:
-        raise ValueError(
-            f"roofline {kind} expression {expr!r} evaluated to negative value "
-            f"{value!r}; flops and bytes counts must be non-negative")
-    return value
-
 
 class Op(ABC):
     """Base class for TileOPs operations.
@@ -250,14 +52,6 @@ class Op(ABC):
     # manifest `static_dims`. Default empty = no committed axes.
     _static_axes: frozenset[tuple[int, int]] = frozenset()
 
-    # Roofline evaluation slots (see docs/ops-design.md §`eval_roofline`).
-    # Concrete ops override these as class-level declarations; `eval_roofline`
-    # reads them and evaluates the expressions via `_safe_eval`. Defaults
-    # produce `(0, 0)` — a transitional escape hatch for ops not yet migrated.
-    _roofline_vars: list[str] = []
-    _flops_expr: str = "0"
-    _bytes_expr: str = "0"
-
     @property
     @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
@@ -281,11 +75,9 @@ class Op(ABC):
         #     ops under tileops/ops/ that have not yet been migrated to the spec
         #     in docs/ops-design.md; the trust model requires a separate
         #     per-op migration PR.
-        # Cleanup: once all concrete ops under tileops/ops/ implement both
-        #     _infer_output_shapes and _validate_dtypes, convert this stub
-        #     (and _validate_dtypes below) to `@abstractmethod` and remove the
-        #     default class-level _roofline_vars/_flops_expr/_bytes_expr
-        #     transitional defaults.
+        # Cleanup: once all concrete ops under tileops/ops/ implement
+        #     _infer_output_shapes, _validate_dtypes, and eval_roofline,
+        #     convert this stub (and the two below) to `@abstractmethod`.
         raise NotImplementedError(
             "_infer_output_shapes must be implemented by the concrete Op subclass; "
             "see docs/ops-design.md §`_infer_output_shapes` (codegen)")
@@ -306,51 +98,42 @@ class Op(ABC):
         #     ops under tileops/ops/ that have not yet been migrated to the spec
         #     in docs/ops-design.md; the trust model requires a separate
         #     per-op migration PR.
-        # Cleanup: once all concrete ops under tileops/ops/ implement both
-        #     _infer_output_shapes and _validate_dtypes, convert this stub
-        #     (and _infer_output_shapes above) to `@abstractmethod`.
+        # Cleanup: once all concrete ops under tileops/ops/ implement
+        #     _infer_output_shapes, _validate_dtypes, and eval_roofline,
+        #     convert this stub (and the others) to `@abstractmethod`.
         raise NotImplementedError(
             "_validate_dtypes must be implemented by the concrete Op subclass; "
             "see docs/ops-design.md §`_validate_dtypes` (codegen)")
 
     def eval_roofline(self) -> tuple[int, int]:
-        """Evaluate (flops, bytes) from class-level roofline slots.
+        """Return ``(flops, bytes)`` for this op instance.
 
-        Reads ``_roofline_vars`` (list of attribute names on ``self``) plus a
-        derived ``elem_bytes`` from ``self.dtype``, then evaluates
-        ``_flops_expr`` and ``_bytes_expr`` via the whitelist AST evaluator
-        :func:`_safe_eval`. Returns integer ``(flops, bytes)``.
-
-        Results must be finite, non-negative, and integer-valued; a non-
-        integral or non-finite value (e.g. from a stray ``/`` that does not
-        divide evenly) raises :class:`ValueError` instead of being silently
-        truncated by ``int()``.
-
-        When the class-level slots are at defaults, returns ``(0, 0)`` — a
-        transitional default for ops not yet migrated. See
-        docs/ops-design.md §``eval_roofline``.
+        Per docs/roofline.md §4.4 and §4.4.6, each concrete op's
+        ``eval_roofline`` body is emitted by codegen as plain Python directly
+        over ``self.*`` attributes — there is no shared roofline expression
+        evaluator at L1, by design (§4.4.6 rejects "Op-local AST evaluator").
+        The L1 base only declares the contract; concrete ops supply the body.
         """
-        ctx: dict[str, Union[int, float]] = {}
-        for name in self._roofline_vars:
-            ctx[name] = getattr(self, name)
-        if self.dtype is not None:
-            # ``torch.dtype.itemsize`` is the byte width of a scalar element
-            # and matches ``torch.tensor([], dtype=self.dtype).element_size()``
-            # without allocating an empty tensor on every eval_roofline call.
-            ctx["elem_bytes"] = self.dtype.itemsize
-        else:
-            ctx["elem_bytes"] = 0
-        flops = _coerce_roofline_result(
-            "flops",
-            self._flops_expr,
-            _safe_eval(self._flops_expr, ctx),
-        )
-        nbytes = _coerce_roofline_result(
-            "bytes",
-            self._bytes_expr,
-            _safe_eval(self._bytes_expr, ctx),
-        )
-        return flops, nbytes
+        # FIXME(staged-rollout): L1 Op does not yet strictly enforce eval_roofline
+        # via @abstractmethod; base raises NotImplementedError instead.
+        #
+        # Broken invariant: L1 base does not strictly enforce implementation
+        #     of eval_roofline on every concrete Op subclass.
+        # Why: Introducing @abstractmethod now would break every existing
+        #     concrete op under tileops/ops/ (none of them ship an
+        #     eval_roofline yet). The op-scaffold codegen work that will
+        #     generate these bodies per docs/roofline.md §4.4 is pre-
+        #     requisite; the trust model requires a separate per-op migration
+        #     PR to flip any given op from stub to generated body.
+        # Cleanup: once all concrete ops under tileops/ops/ implement
+        #     eval_roofline (via codegen emission per docs/roofline.md §4.4),
+        #     convert this stub and the two stubs above (_infer_output_shapes,
+        #     _validate_dtypes) to `@abstractmethod`.
+        raise NotImplementedError(
+            "eval_roofline must be implemented by the concrete Op subclass, "
+            "emitted per docs/roofline.md §4.4 (codegen); the L1 base "
+            "intentionally does not provide a generic evaluator — see "
+            "docs/roofline.md §4.4.6 (Evaluator Surface Boundary)")
 
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         if self.default_kernel_map is None or len(self.default_kernel_map) == 0:
