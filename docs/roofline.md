@@ -150,17 +150,17 @@ Inline mode has two layers. Codegen emits them as two sequential blocks in the m
 - **vars layer** — shape-derived resolution. Allowed operations: tensor shape access, slicing, `product()`, `range()`, small comprehensions.
 - **arithmetic layer** — `flops` and `bytes` over resolved variables + `elem_bytes` + approved helpers only. Forbidden: tensor access, shape slicing, comprehensions, attributes, arbitrary calls.
 
-Codegen actions:
+Codegen actions emit two sequential blocks:
 
-1. **Block 1 — vars resolution.**
+**Block 1 — vars resolution.**
 
-   - Bind each `signature.inputs` tensor to a local: `x = self.x`. (Arbitrary-rank ops: `self.x` is bound in `forward()` before `eval_roofline()` runs.)
-   - Bind each `signature.params` name: `dim = self.dim`.
-   - Bind `elem_bytes` from whichever dtype source exists at the call site (§4.4.5): use `self.dtype.itemsize` when `eval_roofline()` runs at `__init__` (fixed-rank — no tensor yet), and `self.<first_input>.dtype.itemsize` when it runs in `forward()` (arbitrary-rank — the tensor is bound).
-   - If `vars:` is present, emit one assignment per entry in YAML declaration order: `<name> = <vars[name]>`, copying the expression string verbatim. Later entries may reference earlier locals.
-   - If `vars:` is absent and `shape` is fixed-rank, emit assignments from the `shape` declaration (tuple-unpack `self.x.shape`, or read `self.<dim>` if the Op stored dims at `__init__`).
+- Bind each `signature.inputs` tensor to a local: `x = self.x`. (Arbitrary-rank ops: `self.x` is bound in `forward()` before `eval_roofline()` runs.)
+- Bind each `signature.params` name: `dim = self.dim`.
+- Bind `elem_bytes` from whichever dtype source exists at the call site (§4.4.5): use `self.dtype.itemsize` when `eval_roofline()` runs at `__init__` (fixed-rank — no tensor yet), and `self.<first_input>.dtype.itemsize` when it runs in `forward()` (arbitrary-rank — the tensor is bound).
+- If `vars:` is present, emit one assignment per entry in YAML declaration order: `<name> = <vars[name]>`, copying the expression string verbatim. Later entries may reference earlier locals.
+- If `vars:` is absent and `shape` is fixed-rank, emit assignments from the `shape` declaration (tuple-unpack `self.x.shape`, or read `self.<dim>` if the Op stored dims at `__init__`).
 
-1. **Block 2 — arithmetic.** Return `(<flops>, <bytes>)` with both expression strings copied verbatim. They reference only Block 1 locals + `elem_bytes` + arithmetic-layer helpers (§4.4.4).
+**Block 2 — arithmetic.** Return `(<flops>, <bytes>)` with both expression strings copied verbatim. They reference only Block 1 locals + `elem_bytes` + arithmetic-layer helpers (§4.4.4).
 
 Do **not** inline a vars expression into the arithmetic expression (e.g. `return (4 * product(x.shape[:dim]) * x.shape[dim], ...)`). That collapses the two layers and violates arithmetic-layer restrictions.
 
@@ -259,7 +259,7 @@ Profiles are stored in `tileops/perf/profiles/`. Microbenchmarks for calibration
 
 ### 5.2 Benchmark–Roofline Decoupling
 
-Benchmark (M4) produces raw time (JSON/CSV). Roofline (M5) is a separate tool that reads raw time + manifest formulas + GPU profile to compute efficiency. This separation enables:
+Benchmark (M4) produces per-workload records containing raw time and the `(flops, bytes)` from `op.eval_roofline()`. Roofline (M5) is a separate tool that reads those records + GPU profile to compute efficiency. This separation enables:
 
 - Re-analyzing historical data when GPU profiles are updated
 - Multiple consumers of raw benchmark data (roofline, regression detection, dashboards)
