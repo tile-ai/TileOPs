@@ -863,6 +863,103 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     return errors
 
 
+def _diagnose_unresolvable_signature(op_name: str, sig: dict) -> list[str]:
+    """Emit hard L3 errors describing why a signature failed to resolve.
+
+    Called when ``_resolve_tensor_dtype_options(sig)`` returns None inside
+    combo validation. Walks the pure ``same_as`` edges to distinguish:
+
+      * dangling references (``same_as(ref)`` where ``ref`` is not a
+        declared tensor) — per-tensor error;
+      * ``same_as`` cycles (``x -> y -> ... -> x``) — one error per cycle
+        naming every participating tensor;
+      * an unknown-token / ``same_as`` in a mixed expression that resolves
+        to nothing — generic fallback, so callers are never left guessing.
+    """
+    errors: list[str] = []
+    inputs = sig.get("inputs") or {}
+    outputs = sig.get("outputs") or {}
+    all_tensors: dict[str, dict] = {}
+    if isinstance(inputs, dict):
+        all_tensors.update(inputs)
+    if isinstance(outputs, dict):
+        all_tensors.update(outputs)
+
+    # Pure ``same_as(ref)`` edges only — mixed expressions (``float16 |
+    # same_as(x)``) are not part of the cycle graph; a cycle in pure edges
+    # is what makes fixpoint resolution stall.
+    edges: dict[str, str] = {}
+    for tname, attrs in all_tensors.items():
+        if not isinstance(attrs, dict):
+            continue
+        tokens = _parse_dtype_expr(attrs.get("dtype", ""))
+        if len(tokens) == 1:
+            m = _SAME_AS_RE.match(tokens[0])
+            if m:
+                edges[tname] = m.group(1)
+
+    # Dangling references: ``same_as(ref)`` where ``ref`` is not declared.
+    dangling: set[str] = set()
+    for tname, ref in edges.items():
+        if ref not in all_tensors:
+            errors.append(
+                f"[dtype] {op_name}: signature.inputs/outputs — tensor "
+                f"{tname!r} declares dtype same_as({ref}) but {ref!r} is "
+                f"not a declared tensor (dangling reference; combo "
+                f"validation cannot proceed)"
+            )
+            dangling.add(tname)
+
+    # Cycle detection via DFS over pure same_as edges. Only tensors that
+    # have not already been reported as dangling are considered (a chain
+    # ending in a dangling ref is not a cycle).
+    reported_cycles: set[frozenset[str]] = set()
+    visited: set[str] = set()
+    for start in edges:
+        if start in visited or start in dangling:
+            continue
+        path: list[str] = []
+        seen_in_path: dict[str, int] = {}
+        node: str | None = start
+        while node is not None and node not in visited:
+            if node in seen_in_path:
+                cycle_nodes = path[seen_in_path[node]:]
+                key = frozenset(cycle_nodes)
+                if key not in reported_cycles:
+                    reported_cycles.add(key)
+                    errors.append(
+                        f"[dtype] {op_name}: same_as cycle detected "
+                        f"among tensors "
+                        f"{sorted(cycle_nodes)} — dtype options cannot "
+                        f"be resolved (combo validation skipped)"
+                    )
+                break
+            seen_in_path[node] = len(path)
+            path.append(node)
+            nxt = edges.get(node)
+            if nxt is None or nxt in dangling:
+                break
+            if nxt not in edges:
+                # Chain terminates at a concrete-dtype tensor — not a
+                # cycle. Stop walking.
+                break
+            node = nxt
+        visited.update(path)
+
+    if not errors:
+        # Fixpoint failed but we cannot pinpoint a cycle or dangling edge
+        # (e.g. a mixed expression containing an unknown token that did
+        # not trip per-token validation). Emit a generic hard error so
+        # combo validation is never silently skipped.
+        errors.append(
+            f"[dtype] {op_name}: could not resolve signature.inputs/outputs "
+            f"dtype options — combo validation cannot proceed. Check "
+            f"signature.inputs/outputs dtype declarations for unresolved "
+            f"same_as references or malformed expressions."
+        )
+    return errors
+
+
 def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
     """Validate ``dtype_combos`` entries resolve to concrete torch dtypes.
 
@@ -882,7 +979,15 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
         return errors
     dtype_options = _resolve_tensor_dtype_options(sig)
     if dtype_options is None:
-        # Tensor-level dtype errors already reported in ``check_l3``.
+        # Unresolvable signature. Previously this branch returned silently
+        # under the assumption that ``check_l3`` had already flagged the
+        # culprit, but a pure ``same_as`` cycle (e.g. ``x: same_as(y)`` and
+        # ``y: same_as(x)``) satisfies per-token validation *and* the R3
+        # identity check, so combo validation would be silently skipped and
+        # invalid combo data would pass. Emit a hard L3 error with a
+        # specific diagnosis when possible (cycle / dangling reference),
+        # falling back to a generic unresolved-signature error otherwise.
+        errors.extend(_diagnose_unresolvable_signature(op_name, sig))
         return errors
     inputs = sig.get("inputs") or {}
     declared_input_names: list[str] = (
@@ -959,17 +1064,29 @@ _MOCK_DIM_SIZE = 4
 # sampling, so validation output stays reproducible.
 _MAX_DTYPE_COMBOS = 4096
 
-# Sentinel pool used to probe out-of-union dtype rejection in the
-# no-dtype_combos branch of ``check_l3_validate_dtypes_parity``. Chosen to
-# be common, cheap-to-allocate torch dtypes that are unlikely to appear
-# in every manifest declared union simultaneously — giving the probe at
-# least one out-of-union candidate per input on realistic specs. Probes
-# are bounded by ``_MAX_DTYPE_COMBOS`` so wide unions still stay within
-# CI budget.
+# Sentinel pool used only by the same_as-identity negative probe, where
+# the goal is a dtype *different from the ref's baseline* (union membership
+# is irrelevant). The out-of-union probes in both branches of
+# ``check_l3_validate_dtypes_parity`` derive their candidate pool from
+# ``sorted(_TORCH_DTYPES - declared)`` instead — that guarantees a
+# non-empty probe whenever declared does not cover the entire torch dtype
+# universe, closing a prior engulfment gap where a fixed 8-dtype pool
+# could be fully absorbed by a wide union and leave the probe vacuous.
 _DTYPE_SENTINELS: tuple[str, ...] = (
     "float16", "bfloat16", "float32", "float64",
     "int8", "int16", "int32", "int64",
 )
+
+
+def _out_of_union_candidates(declared: set[str]) -> list[str]:
+    """Return torch dtypes that are outside ``declared``.
+
+    Deterministic (sorted) so validator output is reproducible; bounded
+    because ``_TORCH_DTYPES`` is a fixed small set. Callers should still
+    cap the iteration length via ``_MAX_DTYPE_COMBOS`` when combining
+    with other enumeration.
+    """
+    return sorted(_TORCH_DTYPES - declared)
 
 
 class _MockShape(tuple):
@@ -1448,10 +1565,18 @@ def check_l2_infer_parity(
         for documented GPU-only cases where the method cannot be called
         outside a GPU context. Opt-out suppresses the missing-method
         warning entirely.
-      - Skips ops whose ``_infer_output_shapes`` raises during the call
-        (e.g. method expects GPU-only state); emits a warning instead.
-      - Produces L2 errors only for concrete disagreement: the method
-        returns shapes that fail one or more ``shape_rules``.
+      - An exception raised from the body of ``_infer_output_shapes``
+        (i.e. after argument binding succeeds) is a hard L2 error unless
+        the manifest entry declares ``parity_opt_out: [shape_parity]``
+        (or a bare ``parity_opt_out: true``). This is a policy change
+        from earlier revisions, which downgraded body exceptions to
+        warnings and let real bugs pass silently. Opt-out is reserved
+        for documented GPU-only methods that cannot be exercised outside
+        a GPU context; an introspection-level failure (signature binding
+        mismatch) is still reported separately as a signature error.
+      - Produces L2 errors for concrete disagreement: the method returns
+        shapes that fail one or more ``shape_rules`` or disagree with a
+        declared ``signature.outputs[*].shape``.
     """
     errors: list[str] = []
     if cls is None:
@@ -1723,8 +1848,26 @@ def check_l2_infer_parity(
     # an output-only symbol with only rank/consistency enforcement.
     static_expected: dict[str, int] = {
         name: int(val) for name, val in extra_attrs.items()
-        if isinstance(val, int)
+        if isinstance(val, int) and not isinstance(val, bool)
     }
+    # Params with a concrete integer ``default`` are also compile-time
+    # known and should pin declared-output-shape dims with the same
+    # authority as ``static_dims``. Without this, a declared output
+    # ``shape: "[k]"`` where ``k`` is a param default would be
+    # classified as an output-only symbol, and a bad
+    # ``_infer_output_shapes`` returning an arbitrary integer for that
+    # position would only trip rank/consistency checks rather than exact
+    # value comparison. Edge cases: params without a default (supplied
+    # at op construction, unknown to the validator) are skipped; params
+    # whose default is not a single ``int`` (e.g. ``list[int]``) are
+    # skipped so they cannot pin a scalar dim position.
+    for pname, pdefault in param_defaults.items():
+        if pname in static_expected:
+            continue  # static_dims wins — it is the declared source of truth.
+        if isinstance(pdefault, bool):
+            continue
+        if isinstance(pdefault, int):
+            static_expected[pname] = int(pdefault)
     output_only_seen: dict[str, int] = {}
     for out_name, decl_parts in declared_output_shapes.items():
         if out_name not in result:
@@ -2271,9 +2414,22 @@ def check_l3_validate_dtypes_parity(
                 if target in same_as_refs:
                     continue
                 declared = set(dtype_options.get(target, []))
-                out_of_union = [
-                    d for d in _DTYPE_SENTINELS if d not in declared
-                ]
+                out_of_union = _out_of_union_candidates(declared)
+                if not out_of_union:
+                    # Declared union covers the entire torch dtype
+                    # universe for this input — no candidate exists to
+                    # probe rejection. Emit a parity-skip warning naming
+                    # the op/input so the gap is visible rather than a
+                    # vacuous pass. Only possible when declared ==
+                    # _TORCH_DTYPES (wildly permissive spec).
+                    if warnings is not None:
+                        warnings.append(
+                            f"[dtype] {op_name}: out-of-union probe "
+                            f"skipped for input {target!r} — declared "
+                            f"dtype union covers the entire torch dtype "
+                            f"set; rejection side cannot be exercised"
+                        )
+                    continue
                 for bad_dtype in out_of_union:
                     if probed >= probe_budget:
                         break
@@ -2429,9 +2585,19 @@ def check_l3_validate_dtypes_parity(
                 if target in same_as_refs:
                     continue
                 declared = set(dtype_options.get(target, []))
-                out_of_union = [
-                    d for d in _DTYPE_SENTINELS if d not in declared
-                ]
+                out_of_union = _out_of_union_candidates(declared)
+                if not out_of_union:
+                    # Declared union covers every torch dtype — cannot
+                    # produce a rejection candidate. Skip with a warning
+                    # rather than vacuously pass.
+                    if warnings is not None:
+                        warnings.append(
+                            f"[dtype] {op_name}: out-of-union probe "
+                            f"skipped for input {target!r} — declared "
+                            f"dtype union covers the entire torch dtype "
+                            f"set; rejection side cannot be exercised"
+                        )
+                    continue
                 for bad_dtype in out_of_union:
                     if probed >= probe_budget:
                         break

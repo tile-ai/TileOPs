@@ -2717,6 +2717,230 @@ class TestUnexpectedValidateDtypesException:
         ), f"expected hard L3 error, got errors={errors} warnings={warnings}"
 
 
+class TestSameAsCycleHardError:
+    """PR #1005 follow-up: pure ``same_as`` cycles must surface a hard L3 error.
+
+    Previously, ``check_l3_dtype_combos_data`` returned silently when
+    ``_resolve_tensor_dtype_options`` returned None, relying on
+    ``check_l3`` to have flagged the culprit. But a pure cycle like
+    ``x: same_as(y)`` / ``y: same_as(x)`` satisfies per-token validation
+    and the R3 identity check, so combo validation would be silently
+    skipped and invalid combo data passes.
+    """
+
+    def test_pure_same_as_cycle_emits_hard_error(self, validator):
+        """A 2-cycle between two inputs must surface a diagnosed L3 error."""
+        sig = {
+            "inputs": {
+                "x": {"dtype": "same_as(y)"},
+                "y": {"dtype": "same_as(x)"},
+            },
+            "outputs": {"z": {"dtype": "same_as(x)"}},
+            "dtype_combos": [
+                {"x": "float16", "y": "float16"},
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("CycleOp", sig)
+        assert any(
+            "same_as cycle" in e and "'x'" in e and "'y'" in e
+            for e in errors
+        ), f"expected cycle diagnosis naming x and y, got {errors}"
+
+    def test_dangling_same_as_emits_hard_error(self, validator):
+        """A ``same_as(missing)`` reference is reported as dangling.
+
+        The per-token ``_validate_dtype_token`` check already flags this
+        at L3, but combo validation must surface its own hard error so
+        callers never see a silent pass.
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "same_as(nope)"},
+            },
+            "outputs": {"z": {"dtype": "same_as(x)"}},
+            "dtype_combos": [
+                {"x": "float16"},
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("DanglingOp", sig)
+        assert any(
+            "dangling reference" in e and "same_as(nope)" in e
+            for e in errors
+        ), f"expected dangling diagnosis, got {errors}"
+
+
+class TestParamDefaultOutputShapePin:
+    """PR #1005 follow-up: param defaults must pin declared output-shape dims.
+
+    A param with a concrete integer default (e.g. ``params.k.default = 4``)
+    is a compile-time-known value just like ``static_dims``. Declared
+    output ``shape: "[k]"`` must compare against the default, so a bad
+    ``_infer_output_shapes`` returning ``(999,)`` is caught by exact-value
+    comparison rather than only rank/consistency.
+    """
+
+    def test_param_default_pins_output_dim(self, validator):
+        """Bad infer returning ``(999,)`` for declared ``[k]`` with
+        ``params.k.default = 4`` must produce a hard L2 error."""
+        def bad_infer(self, x_shape):
+            return {"y": (999,)}
+
+        cls = _make_op_cls_with_infer(bad_infer, name="ParamDefaultBadOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[M]"}},
+                "outputs": {
+                    "y": {"dtype": "same_as(x)", "shape": "[k]"},
+                },
+                "params": {"k": {"type": "int", "default": 4}},
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "ParamDefaultBadOp", entry, cls,
+        )
+        assert any(
+            "dim[0]=999" in e and "k=4" in e for e in errors
+        ), f"expected param-default parity error, got {errors}"
+
+    def test_param_default_pins_output_dim_pass(self, validator):
+        """Correct infer returning ``(4,)`` for declared ``[k]`` with
+        ``params.k.default = 4`` passes parity."""
+        def good_infer(self, x_shape):
+            return {"y": (4,)}
+
+        cls = _make_op_cls_with_infer(good_infer, name="ParamDefaultGoodOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[M]"}},
+                "outputs": {
+                    "y": {"dtype": "same_as(x)", "shape": "[k]"},
+                },
+                "params": {"k": {"type": "int", "default": 4}},
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "ParamDefaultGoodOp", entry, cls,
+        )
+        assert errors == [], (
+            f"expected no parity errors on correct impl, got {errors}"
+        )
+
+
+class TestOutOfUnionProbeEngulfment:
+    """PR #1005 follow-up: out-of-union probe must not be engulfed by wide unions.
+
+    A prior implementation used a fixed 8-dtype ``_DTYPE_SENTINELS`` pool.
+    An op declaring exactly those 8 dtypes for an input left the probe
+    with no candidate, so an over-permissive ``_validate_dtypes``
+    accepting e.g. ``uint8`` would go undetected. The probe now derives
+    candidates from ``sorted(_TORCH_DTYPES - declared)``, guaranteeing a
+    non-empty pool whenever declared does not cover the entire torch
+    dtype universe.
+    """
+
+    _ALL_EIGHT = (
+        "float16 | bfloat16 | float32 | float64 | "
+        "int8 | int16 | int32 | int64"
+    )
+
+    def test_eight_sentinel_coverage_still_probes_out_of_union(self, validator):
+        """Declared union covers all 8 legacy sentinels but not uint8.
+
+        An over-permissive ``_validate_dtypes`` accepting ``uint8`` must
+        surface a hard L3 error because ``uint8 ∈ _TORCH_DTYPES -
+        declared``.
+        """
+        def accept_all(self, x):
+            return True  # over-permissive: accepts any dtype
+
+        cls = _make_op_cls_with_validate(accept_all, name="WideEightDtypeOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": self._ALL_EIGHT}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "WideEightDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "accepts out-of-union dtype" in e for e in errors
+        ), (
+            f"expected out-of-union rejection error despite 8-dtype "
+            f"union; errors={errors} warnings={warnings}"
+        )
+
+    def test_eight_sentinel_coverage_probes_in_combos_branch(self, validator):
+        """Same gap in the dtype_combos branch: declared combos cover all
+        8 legacy sentinels but permissive impl still accepts uint8."""
+        def accept_all(self, x):
+            return True
+
+        cls = _make_op_cls_with_validate(
+            accept_all, name="WideEightCombosOp",
+        )
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": self._ALL_EIGHT}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16"}, {"x": "bfloat16"},
+                    {"x": "float32"}, {"x": "float64"},
+                    {"x": "int8"}, {"x": "int16"},
+                    {"x": "int32"}, {"x": "int64"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "WideEightCombosOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "accepts out-of-union dtype" in e for e in errors
+        ), (
+            f"expected out-of-union rejection in dtype_combos branch; "
+            f"errors={errors} warnings={warnings}"
+        )
+
+    def test_full_torch_coverage_emits_skip_warning(self, validator):
+        """Declared union == full torch dtype set → warning, no vacuous pass.
+
+        The probe cannot produce a candidate so it skips with a warning
+        naming the op/input. No hard error is emitted because the
+        ``_validate_dtypes`` impl is free to accept anything in this
+        (wildly permissive) spec.
+        """
+        full_union = " | ".join(sorted(validator._TORCH_DTYPES))
+
+        def accept_all(self, x):
+            return True
+
+        cls = _make_op_cls_with_validate(
+            accept_all, name="FullCoverageOp",
+        )
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": full_union}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FullCoverageOp", entry, cls, warnings=warnings,
+        )
+        assert not any("accepts out-of-union dtype" in e for e in errors), (
+            f"full-coverage spec must not produce a probe error; "
+            f"errors={errors}"
+        )
+        assert any(
+            "out-of-union probe skipped" in w and "'x'" in w
+            for w in warnings
+        ), (
+            f"expected skip warning naming input 'x'; warnings={warnings}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Bench checks
 # ---------------------------------------------------------------------------
