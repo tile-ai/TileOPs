@@ -43,16 +43,31 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
+      - name: Set up run-local venv
+        run: scripts/ci/setup_nightly_venv.sh
+        shell: bash
+
       - name: Warm kernel compilation cache
         continue-on-error: true
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
 
           PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
 
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
           echo "Starting kernel cache warmup..."
           python scripts/warmup_kernel_cache.py --max-workers 64 -n 16
+        shell: bash
+
+      - name: Cleanup run-local venv
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${RUNTIME_ROOT:-}" && "${RUNTIME_ROOT}" == "${RUNNER_TEMP}/nightly-"* ]]; then
+            rm -rf "${RUNTIME_ROOT}"
+          fi
         shell: bash
 
   # =========================================================================
@@ -73,11 +88,17 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
+      - name: Set up run-local venv
+        run: scripts/ci/setup_nightly_venv.sh
+        shell: bash
+
       - name: Run benchmark ops
         id: benchmark_tests
         continue-on-error: true
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
 
           # Validate GPU frequency
           TARGET_CLOCK_MHZ=1830
@@ -127,6 +148,15 @@ jobs:
         run: exit 1
         shell: bash
 
+      - name: Cleanup run-local venv
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${RUNTIME_ROOT:-}" && "${RUNTIME_ROOT}" == "${RUNNER_TEMP}/nightly-"* ]]; then
+            rm -rf "${RUNTIME_ROOT}"
+          fi
+        shell: bash
+
   # =========================================================================
   # Phase 3 — Op correctness tests (serial after benchmark for GPU exclusivity)
   # =========================================================================
@@ -145,11 +175,17 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
+      - name: Set up run-local venv
+        run: scripts/ci/setup_nightly_venv.sh
+        shell: bash
+
       - name: Run full op tests
         id: op_tests
         continue-on-error: true
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
 
           PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
 
@@ -237,6 +273,9 @@ jobs:
         if: ${{ always() }}
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
+
           pip install --no-deps -e . 2>/dev/null
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -285,6 +324,15 @@ jobs:
         run: exit 1
         shell: bash
 
+      - name: Cleanup run-local venv
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${RUNTIME_ROOT:-}" && "${RUNTIME_ROOT}" == "${RUNNER_TEMP}/nightly-"* ]]; then
+            rm -rf "${RUNTIME_ROOT}"
+          fi
+        shell: bash
+
   # =========================================================================
   # Phase 4 — Packaging and smoke test
   # =========================================================================
@@ -302,10 +350,16 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
+      - name: Set up run-local venv
+        run: scripts/ci/setup_nightly_venv.sh
+        shell: bash
+
       - name: Build and test wheel package
         run: |
           set -euo pipefail
           exec > >(tee packaging.log) 2>&1
+          # shellcheck source=/dev/null
+          source "${VENV_PATH}/bin/activate"
 
           # Validate GPU frequency
           TARGET_CLOCK_MHZ=1830
@@ -331,7 +385,7 @@ jobs:
           echo "=== Install built wheel ==="
           pip install dist/*.whl
 
-          TMP_TEST_DIR="$(mktemp -d)"
+          TMP_TEST_DIR="$(mktemp -d "${RUNTIME_ROOT}/packaging-test.XXXXXX")"
           cp -r tests "${TMP_TEST_DIR}/tests"
           cp pyproject.toml "${TMP_TEST_DIR}/"
           cd "${TMP_TEST_DIR}"
@@ -372,3 +426,12 @@ jobs:
         with:
           files: dist/*.whl
           fail_on_unmatched_files: true
+
+      - name: Cleanup run-local venv
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${RUNTIME_ROOT:-}" && "${RUNTIME_ROOT}" == "${RUNNER_TEMP}/nightly-"* ]]; then
+            rm -rf "${RUNTIME_ROOT}"
+          fi
+        shell: bash
