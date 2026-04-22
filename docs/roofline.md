@@ -40,9 +40,9 @@ An entry uses one of two modes:
 | Inline | `vars?` + `flops`/`bytes` | Formula fits a Python expression. |
 | Func   | `func: "module.path"`     | Formula needs real Python logic.  |
 
-**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the first input's dtype.
+**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the first input's dtype. **Ops whose `bytes` depend on multiple input dtypes (mixed-precision GEMM, Attention, etc.) cannot be expressed in inline mode** and must use `func`.
 
-**Func.** Point at `tileops.perf.formulas.<name>` returning `{"flops": int, "bytes": int}`. Use when inline arithmetic is insufficient (conditionals, shape traversal, data-dependent logic). **The callable is human-authored** — func mode is the escape hatch for roofline formulas complex enough that no inline expression captures them. Agent codegen does not introspect, regenerate, or validate the callable; it is trusted hand-written code.
+**Func.** Point at `tileops.perf.formulas.<name>`. The callable is human-authored and must match the agent-generated shape: signature `func(op) -> tuple[int, int]`, return `(flops, bytes)`. Use `func` when inline arithmetic is insufficient (mixed-precision byte accounting, conditionals, shape traversal, data-dependent logic). Agent codegen does not introspect or validate the callable; if its signature or return value is wrong, the human author fixes it.
 
 ```yaml
 # Inline — shape dim names cover all variables
@@ -117,6 +117,8 @@ Does not interpret formula strings at all. M5 reads pre-computed numbers from th
 
 ### 4.4 Op Codegen
 
+Codegen runs for `status: implemented` entries only. `spec-only` entries — where either the implementation does not exist or the Op interface does not yet match the manifest — are skipped; codegen re-evaluates them once the status flips.
+
 Codegen is the authoritative gate for name and form correctness. A formula referencing an unknown name or violating a layer's form constraints fails codegen; a manifest that fails codegen cannot land. Numeric correctness is exercised by tests, not codegen.
 
 #### 4.4.1 Method Template
@@ -139,7 +141,7 @@ def eval_roofline(self) -> tuple[int, int]:
 For each manifest entry, codegen reads one of:
 
 - **Inline** — `vars` (optional), `flops`, `bytes`. All are Python expression source strings. Codegen emits the method body per §4.4.3.
-- **Func** — `func` (dotted module path resolving to a human-authored callable returning `{"flops": int, "bytes": int}`). Codegen emits an `eval_roofline()` whose body is a direct call to the referenced callable. The callable is hand-written and trusted; its signature and internals are human responsibility and out of scope for codegen.
+- **Func** — `func` (dotted module path resolving to a human-authored callable). Codegen emits `return <func>(self)` as the method body — the callable is invoked with the Op instance, matching the agent-generated `eval_roofline(self) -> tuple[int, int]` shape. The callable must return `(flops, bytes)`. Signature and return shape are human responsibility; codegen does not validate. If the callable mismatches, the human author fixes it.
 
 #### 4.4.3 Expression Layers
 
