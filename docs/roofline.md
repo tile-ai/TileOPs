@@ -42,7 +42,7 @@ An entry uses one of two modes:
 
 **Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the first input's dtype. **Ops whose `bytes` depend on multiple input dtypes (mixed-precision GEMM, Attention, etc.) cannot be expressed in inline mode** and must use `func`.
 
-**Func.** Point at `tileops.perf.formulas.<name>`. The callable is human-authored and must match the agent-generated shape: signature `func(op) -> tuple[int, int]`, return `(flops, bytes)`. Use `func` when inline arithmetic is insufficient (mixed-precision byte accounting, conditionals, shape traversal, data-dependent logic). Agent codegen does not introspect or validate the callable; if its signature or return value is wrong, the human author fixes it.
+**Func.** Point at `tileops.perf.formulas.<name>`. The callable is human-authored and returns `(flops, bytes)`. **Recommended signature: `func(op)`** — matching the agent-generated `eval_roofline(self)` path, which is what codegen's emitted call assumes. A human author who prefers a different signature owns the resulting integration (e.g., a wrapper). Use `func` when inline arithmetic is insufficient (mixed-precision byte accounting, conditionals, shape traversal, data-dependent logic).
 
 ```yaml
 # Inline — shape dim names cover all variables
@@ -141,7 +141,7 @@ def eval_roofline(self) -> tuple[int, int]:
 For each manifest entry, codegen reads one of:
 
 - **Inline** — `vars` (optional), `flops`, `bytes`. All are Python expression source strings. Codegen emits the method body per §4.4.3.
-- **Func** — `func` (dotted module path resolving to a human-authored callable). Codegen emits `return <func>(self)` as the method body — the callable is invoked with the Op instance, matching the agent-generated `eval_roofline(self) -> tuple[int, int]` shape. The callable must return `(flops, bytes)`. Signature and return shape are human responsibility; codegen does not validate. If the callable mismatches, the human author fixes it.
+- **Func** — `func` (dotted module path resolving to a human-authored callable). Codegen emits `return <func>(self)` as the method body. This presumes the **recommended** signature `func(op) -> tuple[int, int]` (returning `(flops, bytes)`), aligned with the agent-generated `eval_roofline(self)` shape. The recommendation is a reference for authors, not a gate — codegen does not introspect or validate the callable. If the author wants a different signature, they take responsibility for making the callable work with the emitted call (e.g., by writing a thin wrapper at the dotted path).
 
 #### 4.4.3 Expression Layers
 
