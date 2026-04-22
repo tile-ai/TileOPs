@@ -210,15 +210,16 @@ The validator enforces `assert cls.__name__ == manifest_key` — the manifest ke
 
 ## Entry Structure
 
-| Field       | Required | Description                                                   |
-| ----------- | -------- | ------------------------------------------------------------- |
-| `family`    | yes      | Op family. See [below](#family).                              |
-| `ref_api`   | yes      | External API reference, or `"none"` if no direct counterpart. |
-| `status`    | yes      | `spec-only` or `implemented`.                                 |
-| `signature` | yes      | Op interface. See [Signature](#signature).                    |
-| `workloads` | yes      | Benchmark shapes/dtypes.                                      |
-| `roofline`  | yes      | Performance model.                                            |
-| `source`    | yes      | Implementation paths.                                         |
+| Field            | Required | Description                                                                                                                                                                                                                                                   |
+| ---------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `family`         | yes      | Op family. See [below](#family).                                                                                                                                                                                                                              |
+| `ref_api`        | yes      | External API reference, or `"none"` if no direct counterpart.                                                                                                                                                                                                 |
+| `status`         | yes      | `spec-only` or `implemented`.                                                                                                                                                                                                                                 |
+| `signature`      | yes      | Op interface. See [Signature](#signature).                                                                                                                                                                                                                    |
+| `workloads`      | yes      | Benchmark shapes/dtypes.                                                                                                                                                                                                                                      |
+| `roofline`       | yes      | Performance model.                                                                                                                                                                                                                                            |
+| `source`         | yes      | Implementation paths.                                                                                                                                                                                                                                         |
+| `parity_opt_out` | no       | Suppress validator shape/dtype parity warnings for ops whose method genuinely needs GPU execution. Values: `true` (both), or list subset of `[shape_parity, dtype_parity]`. See [ops-design-reference.md § Consistency Enforcement](ops-design-reference.md). |
 
 ### `family`
 
