@@ -35,7 +35,7 @@ The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step h
 
 ### Step 1: File header + imports
 
-**Input.** `kernel_map` values (Kernel classes to import).
+**Input.** `source.kernel_map` values (Kernel classes to import).
 
 **Output.**
 
@@ -46,6 +46,7 @@ Provides:
   - CumsumFwdOp: y = cumsum(x, dim=-1)
 """
 
+import math
 from typing import Dict, Optional
 
 import torch
@@ -57,7 +58,7 @@ from tileops.kernels.reduction.cumulative import CumulativeKernel
 from ..op_base import Op
 ```
 
-**Validation.** Every concrete-Kernel import matches one `kernel_map` value verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
+**Validation.** Every concrete-Kernel import matches one `source.kernel_map` value verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
 
 **Reference.** [Slot S1](ops-design-reference.md#slot-s1), [S2](ops-design-reference.md#slot-s2), [S3](ops-design-reference.md#slot-s3), [S4](ops-design-reference.md#slot-s4).
 
@@ -77,8 +78,8 @@ class CumsumFwdOp(Op):
     Output has the same shape and dtype as input.
 
     Args:
-        M: Number of rows (product of all dims except the reduction axis).
-        N: Hidden dimension (size along the reduction axis).
+        N: Hidden dimension (size along the reduction axis), committed
+            at ctor via ``static_dims: N: "x.shape[dim]"``.
         dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default -1).
         kernel_map: Optional override for kernel dispatch.
@@ -97,40 +98,40 @@ class CumsumFwdOp(Op):
 **Output.**
 
 ```python
-    # static_dims: N: "x.shape[dim]" — axis is parameter-dependent AND
-    # potentially negative (e.g. dim=-1), so the concrete (input_index,
+    # static_dims: N: "x.shape[dim]" — the axis is param-dependent
+    # (may be negative like dim=-1), so the concrete (input_index,
     # axis) pair cannot be resolved until x.ndim is known. Leave the
-    # class-level default empty and resolve at forward time (either by
-    # assigning self._static_axes inside forward() before the kernel
-    # call, or by overriding _cache_key to project the shape inline).
+    # class-level default empty; bind in forward() after normalizing
+    # dim against x.ndim (Op base requires a non-negative axis).
     _static_axes: frozenset[tuple[int, int]] = frozenset()
 
     def __init__(
         self,
         *,
-        M: int,
         N: int,
         dtype: torch.dtype,
         dim: int = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
         self.N = N
         self.dtype = dtype
         self.dim = dim
+        self.tune = tune
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["cumulative_fwd"](M, N, "sum", dtype, tune=tune)
+        # M is not a static_dim — deferred to forward() where x.ndim
+        # is known and M is derived from the non-reduction axes.
+        self._kernel_cache: Dict[tuple, Kernel] = {}
 ```
 
-**Validation.** Every `__init__` kwarg has a manifest source (`static_dims`, `signature.params`, or `dtype`); no extras except `kernel_map` / `tune`. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int → populated frozenset; param-dependent → empty class-level default, bound later).
+**Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params` or `dtype`); no extras except `kernel_map` / `tune`. In particular, `M` is NOT a ctor kwarg — `CumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
 
 **Reference.** [Slot S21](ops-design-reference.md#slot-s21), [S12](ops-design-reference.md#slot-s12), [S13](ops-design-reference.md#slot-s13).
 
 ### Step 4: `default_kernel_map` + `forward`
 
-**Input.** Manifest `kernel_map`; `signature.inputs`; `static_dims` (for the forward-time commitment check).
+**Input.** Manifest `source.kernel_map`; `signature.inputs`; `static_dims` (for the forward-time commitment check); `shape_rules` (for `dim` range validation).
 
 **Output.**
 
@@ -143,19 +144,38 @@ class CumsumFwdOp(Op):
         self._validate_dtypes(x)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if x.shape[-1] != self.N:
-            raise ValueError(f"Expected last dim {self.N}, got {x.shape[-1]}")
+        # Validate `dim` against shape_rule `-x.ndim <= dim < x.ndim`
+        # and normalize to a non-negative axis (Op._static_axes contract).
+        if not -x.ndim <= self.dim < x.ndim:
+            raise ValueError(
+                f"dim {self.dim} out of range for x.ndim={x.ndim}")
+        dim = self.dim % x.ndim
+        # Validate the static_dims commitment: x.shape[dim] == N
+        if x.shape[dim] != self.N:
+            raise ValueError(
+                f"static_dim mismatch: expected x.shape[{dim}] == {self.N}, "
+                f"got {x.shape[dim]}")
+        # Bind _static_axes now that the concrete axis is known.
+        self._static_axes = frozenset({(0, dim)})
+        # Derive M (product of non-reduction dims) and cache kernel by (M,).
+        M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
+        self.M = M  # stored for eval_roofline
+        key = (M,)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["cumulative_fwd"](
+                M, self.N, "sum", self.dtype, tune=self.tune)
+        kernel = self._kernel_cache[key]
+        # Move reduction axis to last, reshape to (M, N), compute, restore.
         orig_shape = x.shape
-        x = x.contiguous().reshape(-1, self.N)
-        if x.shape[0] != self.M:
-            raise ValueError(f"Expected M={self.M}, got {x.shape[0]}")
-        y = self.kernel(x)
+        x2 = x.movedim(dim, -1).contiguous().reshape(M, self.N)
+        y2 = kernel(x2)
         if self.N_padded != self.N:
-            y = y[:, : self.N]
-        return y.reshape(orig_shape)
+            y2 = y2[:, : self.N]
+        y = y2.reshape(*orig_shape[:dim], *orig_shape[dim + 1:], self.N)
+        return y.movedim(-1, dim)
 ```
 
-**Validation.** `default_kernel_map` keys / values match manifest `kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). Padding trim emitted iff the op caches `self.N_padded != self.N`. Every `static_dims` commitment is validated against the actual tensor shape before the kernel is called.
+**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the kernel cache lookup. Padding trim emitted iff the kernel operates on `align_up(N, DEFAULT_ALIGNMENT)` (`self.N_padded != self.N`).
 
 **Reference.** [Slot S14](ops-design-reference.md#slot-s14), [S15](ops-design-reference.md#slot-s15), [S16](ops-design-reference.md#slot-s16).
 
