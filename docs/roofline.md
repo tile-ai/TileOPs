@@ -40,9 +40,9 @@ An entry uses one of two modes:
 | Inline | `vars?` + `flops`/`bytes` | Formula fits a Python expression. |
 | Func   | `func: "module.path"`     | Formula needs real Python logic.  |
 
-**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§3.3). `elem_bytes` is the byte size of the first input's dtype.
+**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the first input's dtype.
 
-**Func.** Point at `tileops.perf.formulas.<name>` returning `{"flops": int, "bytes": int}`. Use when inline arithmetic is insufficient (conditionals, shape traversal, data-dependent logic). See §3.4.
+**Func.** Point at `tileops.perf.formulas.<name>` returning `{"flops": int, "bytes": int}`. Use when inline arithmetic is insufficient (conditionals, shape traversal, data-dependent logic).
 
 ```yaml
 # Inline — shape dim names cover all variables
