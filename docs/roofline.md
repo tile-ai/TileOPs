@@ -29,7 +29,7 @@ Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time 
 
 ### 2.1 Output Contract
 
-Per workload, the `roofline` field yields `(flops: int, bytes: int)`. Consumers read these integers via `tileops.manifest.eval_roofline()` (§4.1).
+Per workload, the `roofline` field yields `(flops: int, bytes: int)`. Consumers read these integers via `op.eval_roofline()` on an instantiated Op (§4.4).
 
 ### 2.2 Formula Modes
 
@@ -42,7 +42,7 @@ An entry uses one of two modes:
 
 **Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the first input's dtype.
 
-**Func.** Point at `tileops.perf.formulas.<name>` returning `{"flops": int, "bytes": int}`. Use when inline arithmetic is insufficient (conditionals, shape traversal, data-dependent logic).
+**Func.** Point at `tileops.perf.formulas.<name>` returning `{"flops": int, "bytes": int}`. Use when inline arithmetic is insufficient (conditionals, shape traversal, data-dependent logic). **The callable is human-authored** — func mode is the escape hatch for roofline formulas complex enough that no inline expression captures them. Agent codegen does not introspect, regenerate, or validate the callable; it is trusted hand-written code.
 
 ```yaml
 # Inline — shape dim names cover all variables
@@ -68,8 +68,8 @@ roofline:
 `ops_manifest.yaml` is the source of truth for the `roofline` field. Four modules read it:
 
 - **Schema validator / CI** — structural checks only (schema, mode exclusivity, `func` importability). Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
-- **Benchmark layer** — consumes `(flops, bytes)` exclusively via `tileops.manifest.eval_roofline()` / `resolve_roofline_vars()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
-- **Roofline tool (M5)** — combines manifest `(flops, bytes)`, benchmark latency, and GPU profile (§5.1) to compute SOL efficiency and bound type. Spec: §4.3.
+- **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
+- **Roofline tool (M5)** — reads `(flops, bytes)` from benchmark output (which was produced by `op.eval_roofline()`), combines with GPU profile (§5.1) to compute SOL efficiency and bound type. Spec: §4.3.
 - **Op codegen** — generates each op's `eval_roofline()` method; is the authoritative gate for name and form correctness. Spec: §4.4.
 
 Tests and workloads are not consumers: they may supply shapes and dtypes but must not define or reinterpret roofline formulas.
@@ -99,22 +99,21 @@ Validator holds no callables, no sample bindings, no `__builtins__` sandbox. Add
 
 Contract:
 
-- `(flops, bytes)` for a workload must come from `tileops.manifest.eval_roofline(op_name, **resolved_vars)`.
-- Variable resolution from concrete shapes comes from `tileops.manifest.resolve_roofline_vars(op_name, tensor_shapes={...}, params={...})`.
-- `ManifestBenchmark` and `workloads_to_params(..., include_extra=True)` are the canonical harnesses; non-reserved workload keys forward as op-call params and are consumed by `resolve_roofline_vars()`.
+- Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`. No manifest-level helper exists — roofline evaluation lives only inside each Op's generated method.
+- `ManifestBenchmark` and `workloads_to_params(..., include_extra=True)` are the canonical harnesses; non-reserved workload keys forward as op-call params passed to the Op's `__init__`.
 - A benchmark file that computes FLOPs or bytes locally is a CI failure.
+- Benchmark output must record the `(flops, bytes)` returned by `op.eval_roofline()` so downstream consumers (M5) can read the numbers without re-instantiating ops.
 
 ### 4.3 Roofline Tool (M5)
 
 Inputs:
 
-- Manifest `(flops, bytes)` per workload via `tileops.manifest.eval_roofline()`.
-- Benchmark latency (JSON/CSV) produced by M4.
+- Benchmark output (JSON/CSV) produced by M4, carrying per-workload latency and the `(flops, bytes)` that benchmark obtained from `op.eval_roofline()`.
 - GPU profile (§5.1).
 
 Outputs: SOL efficiency, bound type, per-workload reports.
 
-Does not interpret formula strings directly; always goes through the manifest helpers.
+Does not interpret formula strings at all. M5 reads pre-computed numbers from the benchmark output; it never instantiates Ops or runs roofline expressions.
 
 ### 4.4 Op Codegen
 
@@ -139,8 +138,8 @@ def eval_roofline(self) -> tuple[int, int]:
 
 For each manifest entry, codegen reads one of:
 
-- **Inline** — `vars` (optional), `flops`, `bytes`. All are Python expression source strings.
-- **Func** — `func` (dotted module path resolving to a callable returning `{"flops": int, "bytes": int}`).
+- **Inline** — `vars` (optional), `flops`, `bytes`. All are Python expression source strings. Codegen emits the method body per §4.4.3.
+- **Func** — `func` (dotted module path resolving to a human-authored callable returning `{"flops": int, "bytes": int}`). Codegen emits an `eval_roofline()` whose body is a direct call to the referenced callable. The callable is hand-written and trusted; its signature and internals are human responsibility and out of scope for codegen.
 
 #### 4.4.3 Expression Layers
 
@@ -218,22 +217,23 @@ Generated `eval_roofline()` follows shape-inference timing: resolve variables at
 | Fixed-rank     | `__init__` (all dimensions provided)                               | Called once during init; result may be stored on the Op.              |
 | Arbitrary-rank | `__init__` for `static_dims`; `forward` for remaining dynamic dims | Called in `forward()` when dynamic vars are resolved; cache by input. |
 
-Non-runtime consumers (benchmark layer, M5) must call `tileops.manifest.eval_roofline()` directly; dynamic-rank Op methods require `self.*` variables that may not exist until `forward()` has seen concrete inputs.
+Non-runtime consumers must instantiate the Op (or read pre-computed `(flops, bytes)` from benchmark output). No manifest-level roofline evaluator exists; every value flows through `op.eval_roofline()`.
 
 #### 4.4.6 Evaluator Surface Boundary
 
-Only two surfaces may interpret roofline-adjacent expressions; a third is explicitly rejected.
+Roofline expressions live in exactly one place at runtime: the plain Python body that codegen emits into each op's `eval_roofline()`. No standalone roofline evaluator exists.
 
-| Surface                       | Scope                             | Interprets roofline expressions? |
-| ----------------------------- | --------------------------------- | -------------------------------- |
-| `tileops.manifest._safe_eval` | Manifest field checks             | No                               |
-| `roofline.vars` evaluator     | Shape-derived variable resolution | vars layer only                  |
-| Op-local AST evaluator        | —                                 | **REJECTED** — must not be built |
+| Surface                           | Scope                 | Interprets roofline expressions? |
+| --------------------------------- | --------------------- | -------------------------------- |
+| `tileops.manifest._safe_eval`     | Manifest field checks | No                               |
+| Op-local AST evaluator            | —                     | **REJECTED** — must not be built |
+| Manifest-level roofline evaluator | —                     | **REJECTED** — must not be built |
 
 Rules:
 
-- `tileops.manifest._safe_eval` and the `roofline.vars` evaluator must not interpret the same class of expression. `_safe_eval` stays in its manifest-field role; `roofline.vars` owns shape-derived resolution.
-- Generated `eval_roofline()` must not parse, AST-analyze, or safe-eval its own formula strings. Codegen does that check at generation time (§4.4.3 / §4.4.4) and then copies expressions into plain Python.
+- `tileops.manifest._safe_eval` is scoped to manifest-field expression checks and must not be extended to interpret roofline expressions.
+- No `tileops.manifest.eval_roofline()` / `resolve_roofline_vars()` helper that evaluates roofline expressions exists in the target design. Any consumer wanting `(flops, bytes)` either calls `op.eval_roofline()` on an Op instance or reads pre-computed values from benchmark output.
+- Generated `eval_roofline()` must not parse, AST-analyze, or safe-eval its own formula strings. Codegen does the name/form check at generation time (§4.4.3 / §4.4.4) and then copies validated expressions into plain Python.
 - If a formula is too complex for inline arithmetic (conditionals, shape traversal, data-dependent logic), switch the entry to `func` mode (§2.2). Do not extend inline formulas into a mini-language.
 
 ## 5. Reference
