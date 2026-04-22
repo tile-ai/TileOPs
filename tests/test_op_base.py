@@ -10,6 +10,7 @@ Covers:
   raise :class:`NotImplementedError` pointing at the design doc.
 """
 
+import math
 import warnings
 from typing import Dict
 
@@ -259,10 +260,58 @@ class TestEvalRoofline:
 
 
 class TestSafeEval:
-    def test_rejects_call(self):
+    def test_rejects_non_whitelisted_call(self):
+        """Direct calls to names outside ``_ROOFLINE_SAFE_FUNCTIONS`` are
+        rejected even though ``ast.Call`` is now permitted for
+        ``ceil``/``floor``/``log2``."""
         with pytest.raises(ValueError) as excinfo:
             _safe_eval("f(1)", {})
-        assert "Call" in str(excinfo.value)
+        msg = str(excinfo.value)
+        assert "f" in msg and "forbidden call" in msg
+
+    def test_rejects_attribute_call(self):
+        """``math.ceil(x)`` is rejected because the call target is an
+        attribute access, not a bare name."""
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("math.ceil(1)", {})
+        assert "call target" in str(excinfo.value)
+
+    def test_rejects_keyword_argument_call(self):
+        with pytest.raises(ValueError) as excinfo:
+            _safe_eval("ceil(x=1)", {})
+        assert "keyword arguments" in str(excinfo.value)
+
+    def test_accepts_ceil_floor_log2(self):
+        """Whitelisted numeric helpers mirror
+        ``tileops.manifest._safe_eval`` so manifest-side roofline expressions
+        can be spliced into ``_flops_expr`` / ``_bytes_expr`` without
+        translation."""
+        assert _safe_eval("ceil(10 / 3)", {}) == 4
+        assert _safe_eval("floor(10 / 3)", {}) == 3
+        assert _safe_eval("log2(N)", {"N": 8}) == 3.0
+
+    def test_accepts_moe_permute_align_style_expression(self):
+        """Regression test using the shape of
+        ``MoePermuteAlignFwdOp``'s manifest ``roofline.bytes`` expression,
+        which mixes ``ceil(...)``, ``/``, ``+``, and ``*``."""
+        ctx = {
+            "total_tokens": 16,
+            "top_k": 2,
+            "num_experts": 4,
+            "block_size": 8,
+        }
+        # total_tokens*top_k*4 + (total_tokens*top_k + (num_experts+1)*(block_size-1))*4 +
+        # ceil((total_tokens*top_k + (num_experts+1)*(block_size-1)) / block_size)*4 + 4
+        expr = (
+            "total_tokens * top_k * 4 + "
+            "(total_tokens * top_k + (num_experts + 1) * (block_size - 1)) * 4 + "
+            "ceil((total_tokens * top_k + (num_experts + 1) * (block_size - 1))"
+            " / block_size) * 4 + 4")
+        inner = ctx["total_tokens"] * ctx["top_k"] + (ctx["num_experts"] + 1) * (
+            ctx["block_size"] - 1)
+        expected = (ctx["total_tokens"] * ctx["top_k"] * 4 + inner * 4 +
+                    math.ceil(inner / ctx["block_size"]) * 4 + 4)
+        assert _safe_eval(expr, ctx) == expected
 
     def test_rejects_attribute(self):
         with pytest.raises(ValueError) as excinfo:
@@ -288,18 +337,13 @@ class TestSafeEval:
         assert _safe_eval("10 // 3", {}) == 3
         assert _safe_eval("10 % 3", {}) == 1
 
-    def test_rejects_pow(self):
-        """``**`` is excluded from the whitelist: it permits unbounded
-        allocation (``10 ** 10 ** N``) and complex results
-        (``(-1) ** 0.5``) in what is advertised as a *safe* evaluator."""
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("2 ** 10", {})
-        assert "Pow" in str(excinfo.value)
-
-    def test_rejects_pow_even_with_name(self):
-        with pytest.raises(ValueError) as excinfo:
-            _safe_eval("(-1) ** 0.5", {})
-        assert "Pow" in str(excinfo.value)
+    def test_accepts_pow(self):
+        """``**`` is admitted to match the manifest evaluator. Pathological
+        inputs (fractional / complex / non-finite results) are rejected in
+        depth by ``_coerce_roofline_result`` at the roofline layer; see
+        :class:`TestEvalRoofline`. The raw evaluator just returns a number."""
+        assert _safe_eval("2 ** 10", {}) == 1024
+        assert _safe_eval("N ** 2", {"N": 5}) == 25
 
     def test_rejects_bool_literal_true(self):
         """``bool`` subclasses ``int`` in Python; ensure a bare ``True``

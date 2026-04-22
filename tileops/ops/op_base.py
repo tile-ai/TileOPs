@@ -2,7 +2,7 @@ import ast
 import math
 import warnings
 from abc import ABC, abstractmethod
-from typing import Hashable, Optional, Union
+from typing import Callable, Hashable, Optional, Union
 
 import torch
 
@@ -12,8 +12,11 @@ from tileops.utils import get_sm_version
 # Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
 _EMPTY_STATIC_DIMS_WARNED: set = set()
 
-# Whitelist of AST nodes permitted in roofline expressions.
-# Explicitly excludes Call, Attribute, Subscript, Lambda, Comprehension, etc.
+# Whitelist of AST nodes permitted in roofline expressions. This mirrors the
+# manifest-level evaluator in ``tileops.manifest._safe_eval`` so that any
+# expression accepted by the manifest schema (and therefore any expression
+# codegen may splice into ``_flops_expr`` / ``_bytes_expr``) is also accepted
+# here. Explicitly excludes Attribute, Subscript, Lambda, Comprehension, etc.
 #
 # ``ast.Num`` is a deprecated alias of ``ast.Constant`` on every supported
 # Python (3.8+) — AC-4's back-compat requirement for ``ast.Num`` is satisfied
@@ -22,26 +25,37 @@ _EMPTY_STATIC_DIMS_WARNED: set = set()
 # to avoid the Python 3.12+ DeprecationWarning that would fire at isinstance()
 # time; the whitelist is evaluated on the recursive AST walk hot path.
 #
-# ``ast.Pow`` is intentionally excluded: roofline formulas are integer
-# polynomials in the static dimensions, so exponentiation is never needed,
-# and permitting it exposes the safe evaluator to unbounded CPU/memory (e.g.
-# ``10 ** 10 ** N``) and to complex results (e.g. ``(-1) ** 0.5``). If a
-# future op genuinely needs a power, it should compute it in Python and
-# pass the result in via ``_roofline_vars`` rather than encoded in the
-# expression string.
+# ``ast.Call`` is accepted but constrained to a narrow whitelist of numeric
+# helpers (see ``_ROOFLINE_SAFE_FUNCTIONS``); attribute-call syntax
+# (``math.ceil(x)``) and keyword/star arguments are rejected in the Call
+# branch of ``_walk`` below.
+#
+# ``ast.Pow`` is accepted to match the manifest evaluator, which admits it for
+# the rare formula that needs an exponent. Unbounded inputs (``10 ** 10 ** N``)
+# and fractional/complex results (``(-1) ** 0.5``) are defended in depth by
+# ``_coerce_roofline_result`` which rejects non-finite / non-integral /
+# negative final outputs.
+_ROOFLINE_SAFE_FUNCTIONS: dict[str, Callable[..., Union[int, float]]] = {
+    "log2": math.log2,
+    "ceil": math.ceil,
+    "floor": math.floor,
+}
+
 _SAFE_AST_NODES: tuple[type, ...] = (
     ast.Expression,
     ast.BinOp,
     ast.UnaryOp,
     ast.Constant,  # covers legacy ast.Num (alias on Python 3.8+)
     ast.Name,
-    # Arithmetic operators (Pow deliberately omitted; see comment above).
+    ast.Call,  # restricted to _ROOFLINE_SAFE_FUNCTIONS in _walk
+    # Arithmetic operators
     ast.Add,
     ast.Sub,
     ast.Mult,
     ast.Div,
     ast.FloorDiv,
     ast.Mod,
+    ast.Pow,
     # Unary operators
     ast.UAdd,
     ast.USub,
@@ -128,9 +142,31 @@ def _safe_eval(expr: str, ctx: dict[str, Union[int, float]]) -> Union[int, float
                 return left // right
             if isinstance(op, ast.Mod):
                 return left % right
+            if isinstance(op, ast.Pow):
+                return left**right
             raise ValueError(
                 f"forbidden binary operator {type(op).__name__} in "
                 f"roofline expression {expr!r}")
+        if isinstance(node, ast.Call):
+            # Only allow direct calls to whitelisted name callables, mirroring
+            # ``tileops.manifest._safe_eval``. Reject attribute-call syntax
+            # (``math.ceil(x)``) and any keyword / star arguments.
+            if not isinstance(node.func, ast.Name):
+                raise ValueError(
+                    f"forbidden call target in roofline expression {expr!r}; "
+                    f"only direct calls to whitelisted functions are permitted")
+            func_name = node.func.id
+            if func_name not in _ROOFLINE_SAFE_FUNCTIONS:
+                raise ValueError(
+                    f"forbidden call to {func_name!r} in roofline expression "
+                    f"{expr!r}; allowed functions: "
+                    f"{sorted(_ROOFLINE_SAFE_FUNCTIONS)}")
+            if node.keywords:
+                raise ValueError(
+                    f"keyword arguments are not permitted in roofline "
+                    f"expression {expr!r}")
+            args = [_walk(a) for a in node.args]
+            return _ROOFLINE_SAFE_FUNCTIONS[func_name](*args)
         # Unreachable: _SAFE_AST_NODES gate above covers every handled type.
         raise ValueError(  # pragma: no cover - defensive
             f"unhandled AST node {type(node).__name__} in roofline expression {expr!r}")
@@ -304,10 +340,16 @@ class Op(ABC):
             ctx["elem_bytes"] = self.dtype.itemsize
         else:
             ctx["elem_bytes"] = 0
-        flops = _coerce_roofline_result("flops", self._flops_expr,
-                                        _safe_eval(self._flops_expr, ctx))
-        nbytes = _coerce_roofline_result("bytes", self._bytes_expr,
-                                         _safe_eval(self._bytes_expr, ctx))
+        flops = _coerce_roofline_result(
+            "flops",
+            self._flops_expr,
+            _safe_eval(self._flops_expr, ctx),
+        )
+        nbytes = _coerce_roofline_result(
+            "bytes",
+            self._bytes_expr,
+            _safe_eval(self._bytes_expr, ctx),
+        )
         return flops, nbytes
 
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
