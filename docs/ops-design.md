@@ -40,7 +40,7 @@ The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step h
 **Output.**
 
 ```python
-"""Cumulative sum operator (L2 Op layer).
+"""Cumulative sum operator (host-side Op layer).
 
 Provides:
   - CumsumFwdOp: y = cumsum(x, dim=-1)
