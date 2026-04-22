@@ -809,20 +809,20 @@ class TestDtype:
 # ---------------------------------------------------------------------------
 
 class TestBench:
-    """bench checks that bench files import from tileops.manifest."""
+    """bench checks that bench files use manifest workloads and op roofline."""
 
     def test_bench_with_load_workloads_passes(self, validator, tmp_path):
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(
-            "from tileops.manifest import load_workloads, eval_roofline\n"
+            "from tileops.manifest import load_workloads\n"
             "workloads = load_workloads('test_op')\n"
-            "eval_roofline('test_op')\n"
+            "op.eval_roofline()\n"
         )
         errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
         assert errors == []
 
     def test_bench_with_load_workloads_only_fails(self, validator, tmp_path):
-        """Bench using load_workloads but not eval_roofline fails bench validation."""
+        """Bench using load_workloads but not op eval_roofline fails bench validation."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(
             "from tileops.manifest import load_workloads\n"
@@ -846,13 +846,12 @@ class TestBench:
         """Calling manifest helpers with a different op name must fail."""
         bench_file = tmp_path / "bench_test.py"
         bench_file.write_text(textwrap.dedent("""\
-            from tileops.manifest import load_workloads, eval_roofline
+            from tileops.manifest import load_workloads
             workloads = load_workloads('wrong_op')
-            eval_roofline('wrong_op')
+            op.eval_roofline()
         """))
         errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
         assert any("load_workloads" in e for e in errors)
-        assert any("eval_roofline" in e for e in errors)
 
     def test_syntax_error_in_bench_file_fails_l4(self, validator, tmp_path):
         """A bench file with syntax errors produces an bench error."""
@@ -867,7 +866,7 @@ class TestBench:
         bench_file.write_text(textwrap.dedent("""\
             from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
             params = workloads_to_params('test_op')
-            ManifestBenchmark('test_op', params[0])
+            ManifestBenchmark('test_op', op, params[0])
         """))
         errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
         assert errors == []
@@ -878,7 +877,7 @@ class TestBench:
         bench_file.write_text(textwrap.dedent("""\
             from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
             params = workloads_to_params('wrong_op')
-            ManifestBenchmark('wrong_op', params[0])
+            ManifestBenchmark('wrong_op', op, params[0])
         """))
         errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
         assert any("load_workloads" in e for e in errors)

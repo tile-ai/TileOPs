@@ -86,6 +86,7 @@ class _ReduceOpBase(Op):
         self._validate_dim()
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, object] = {}
+        self._last_roofline_mn: tuple[int, int] | None = None
 
     # ------------------------------------------------------------------
     # Dim validation (subclasses may override)
@@ -168,6 +169,52 @@ class _ReduceOpBase(Op):
         y = self._post_kernel(y, ctx)
         return self._reshape_output(y, orig_shape, dim_info)
 
+    def eval_roofline(self) -> tuple[int, int]:
+        if self._last_roofline_mn is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior forward() "
+                "call to bind dynamic input shape"
+            )
+        M, N = self._last_roofline_mn
+        elem_bytes = self.dtype.itemsize
+        op_kind = self._op_kind
+
+        if op_kind == "mean":
+            flops = M * (N + 1)
+            mem_bytes = (M * N + M) * elem_bytes
+        elif op_kind == "std":
+            flops = 5 * M * N + M
+            mem_bytes = (M * N + M) * elem_bytes
+        elif op_kind == "var":
+            flops = 5 * M * N
+            mem_bytes = (M * N + M) * elem_bytes
+        elif op_kind == "var_mean":
+            flops = 5 * M * N
+            mem_bytes = (M * N + 2 * M) * elem_bytes
+        elif op_kind in {"argmax", "argmin"}:
+            flops = M * N
+            mem_bytes = M * N * elem_bytes + M * 8
+        elif op_kind in {"all", "any"}:
+            flops = M * N
+            mem_bytes = M * N * elem_bytes + M
+        elif op_kind == "count_nonzero":
+            flops = 2 * M * N
+            mem_bytes = M * N * elem_bytes + M * 8
+        elif op_kind == "l1":
+            flops = 2 * M * N
+            mem_bytes = (M * N + M) * elem_bytes
+        elif op_kind == "l2":
+            flops = 2 * M * N + M
+            mem_bytes = (M * N + M) * elem_bytes
+        elif op_kind == "inf":
+            flops = 2 * M * N
+            mem_bytes = (M * N + M) * elem_bytes
+        else:
+            flops = M * N
+            mem_bytes = (M * N + M) * elem_bytes
+
+        return flops, mem_bytes
+
     # ------------------------------------------------------------------
     # Kernel cache
     # ------------------------------------------------------------------
@@ -216,6 +263,7 @@ class _ReduceOpBase(Op):
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
             M = prod(x.shape[:-1])
+            self._last_roofline_mn = (M, N)
             x = x.reshape(M, N)
             kernel = self._get_or_create_kernel(M, N)
             if not self._kernel_handles_padding:
@@ -236,6 +284,7 @@ class _ReduceOpBase(Op):
 
         N = x.shape[dim]
         M = prod(s for i, s in enumerate(x.shape) if i != dim)
+        self._last_roofline_mn = (M, N)
 
         if dim != x.ndim - 1:
             x = x.movedim(dim, -1)

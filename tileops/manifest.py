@@ -3,11 +3,6 @@
 Public entry points:
 
 - :func:`load_workloads` — return the workloads list for an op.
-- :func:`eval_roofline` / :func:`resolve_roofline_vars` /
-  :func:`has_roofline_vars` — legacy roofline evaluator surface,
-  re-exported from :mod:`tileops.manifest_legacy_roofline` for
-  backward compatibility. Scheduled for removal once per-op codegen
-  emits each Op's own ``eval_roofline()``. Do not add new callers.
 """
 
 from __future__ import annotations
@@ -45,25 +40,7 @@ def load_workloads(op_name: str) -> list[dict[str, Any]]:
         raise KeyError(f"op '{op_name}' not found in ops_manifest.yaml")
     return ops[op_name]["workloads"]
 
-
-# Re-export the legacy roofline-evaluator surface for backward
-# compatibility. The implementation now lives in
-# ``tileops.manifest_legacy_roofline`` so the migration boundary is
-# visible to readers and the final deletion is surgical. The re-export
-# is below ``_load_manifest`` so the submodule's ``from .manifest
-# import _load_manifest`` resolves during its own module-load.
-from .manifest_legacy_roofline import (  # noqa: E402
-    _safe_eval,
-    eval_roofline,
-    has_roofline_vars,
-    resolve_roofline_vars,
-)
-
 __all__ = [
     "_load_manifest",
-    "_safe_eval",
-    "eval_roofline",
-    "has_roofline_vars",
     "load_workloads",
-    "resolve_roofline_vars",
 ]

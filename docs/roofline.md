@@ -225,15 +225,13 @@ Non-runtime consumers must instantiate the Op (or read pre-computed `(flops, byt
 
 Roofline expressions live in exactly one place at runtime: the plain Python body that codegen emits into each op's `eval_roofline()`. No standalone roofline evaluator exists.
 
-| Surface                           | Scope                 | Interprets roofline expressions? |
-| --------------------------------- | --------------------- | -------------------------------- |
-| `tileops.manifest._safe_eval`     | Manifest field checks | No                               |
-| Op-local AST evaluator            | —                     | **REJECTED** — must not be built |
-| Manifest-level roofline evaluator | —                     | **REJECTED** — must not be built |
+| Surface                           | Scope | Interprets roofline expressions? |
+| --------------------------------- | ----- | -------------------------------- |
+| Op-local AST evaluator            | —     | **REJECTED** — must not be built |
+| Manifest-level roofline evaluator | —     | **REJECTED** — must not be built |
 
 Rules:
 
-- `tileops.manifest._safe_eval` is scoped to manifest-field expression checks and must not be extended to interpret roofline expressions.
 - No `tileops.manifest.eval_roofline()` / `resolve_roofline_vars()` helper that evaluates roofline expressions exists in the target design. Any consumer wanting `(flops, bytes)` either calls `op.eval_roofline()` on an Op instance or reads pre-computed values from benchmark output.
 - Generated `eval_roofline()` must not parse, AST-analyze, or safe-eval its own formula strings. Codegen does the name/form check at generation time (§4.4.3 / §4.4.4) and then copies validated expressions into plain Python.
 - If a formula is too complex for inline arithmetic (conditionals, shape traversal, data-dependent logic), switch the entry to `func` mode (§2.2). Do not extend inline formulas into a mini-language.

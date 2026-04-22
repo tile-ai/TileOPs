@@ -30,10 +30,10 @@ _COUNT_NONZERO_OP = "CountNonzeroFwdOp"
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_ANY_OP))
 def test_any_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = AnyTest(shape, dtype)
-    bm = ManifestBenchmark(_ANY_OP, test)
     inputs = test.gen_inputs()
 
     op = AnyFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_ANY_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -57,10 +57,10 @@ def test_any_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_ALL_OP))
 def test_all_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = AllTest(shape, dtype)
-    bm = ManifestBenchmark(_ALL_OP, test)
     inputs = test.gen_inputs()
 
     op = AllFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_ALL_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -84,10 +84,10 @@ def test_all_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_COUNT_NONZERO_OP))
 def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = CountNonzeroTest(shape, dtype)
-    bm = ManifestBenchmark(_COUNT_NONZERO_OP, test)
     inputs = test.gen_inputs()
 
     op = CountNonzeroFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_COUNT_NONZERO_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:

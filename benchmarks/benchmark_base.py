@@ -17,16 +17,11 @@ import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
-from tileops.manifest import (
-    eval_roofline,
-    has_roofline_vars,
-    load_workloads,
-    resolve_roofline_vars,
-)
+from tileops.manifest import load_workloads
 
 # Workload dict keys reserved by the benchmark harness. Everything else on
 # a workload entry (e.g. ``dim``, ``keepdim``, ``correction``) is treated
-# as an op-call parameter and forwarded to ``resolve_roofline_vars``.
+# as an op-call parameter.
 #
 # The current harness is explicitly scoped to **single-input ops whose
 # sole tensor input is named ``x``**. Multi-input ops (e.g. attention
@@ -48,8 +43,8 @@ class ShapeDtypeWorkload(Protocol):
     """Structural type for workloads that carry shape and dtype metadata.
 
     Any object with ``shape`` and ``dtype`` satisfies this protocol.
-    Used by helper functions like ``roofline_vars()`` that only need
-    tensor metadata, not input generation capability.
+    Used by helpers that only need tensor metadata, not input generation
+    capability.
     """
 
     shape: tuple[int, ...]
@@ -346,30 +341,13 @@ class BenchmarkBase(Generic[W], ABC):
 # ---------------------------------------------------------------------------
 
 
-def roofline_vars(workload: ShapeDtypeWorkload) -> dict[str, int | float]:
-    """Extract roofline variables from a workload (shape + dtype -> M, N, elem_bytes).
-
-    Standard extraction for reduction-family ops where the manifest roofline
-    expressions use ``M``, ``N``, and ``elem_bytes``.  Ops with non-standard
-    variable requirements should override
-    :meth:`ManifestBenchmark._roofline_vars` instead of using this directly.
-    """
-    elem_bytes = torch.tensor([], dtype=workload.dtype).element_size()
-    N = workload.shape[-1]
-    M = 1
-    for s in workload.shape[:-1]:
-        M *= s
-    return dict(M=M, N=N, elem_bytes=elem_bytes)
-
-
 def _workload_extra_params(w: dict) -> dict[str, Any]:
     """Return op-specific params attached to a manifest workload entry.
 
     A workload entry may carry optional op-call parameter values beyond
     ``x_shape`` / ``dtypes`` / ``label`` (e.g. ``dim``, ``keepdim``,
-    ``correction``). These are forwarded to ``resolve_roofline_vars`` so
-    the manifest's ``roofline.vars`` expressions see the same bindings the
-    op would be called with.
+    ``correction``). These are forwarded to the op constructor by benchmark
+    files that opt into ``include_extra=True``.
 
     Only the reserved meta keys (``x_shape``, ``dtypes``, ``label``) and
     dunder-style metadata keys are stripped; everything else — including
@@ -426,71 +404,36 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
 
 
 class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
-    """Generic benchmark that derives FLOP/memory counts from ops_manifest.yaml.
+    """Generic benchmark that reads FLOP/memory counts from an Op instance.
 
-    Accepts an op name and any workload satisfying :class:`ShapeDtypeWorkload`
-    (i.e. any object with ``shape`` and ``dtype``).  Calls ``eval_roofline()``
-    with auto-extracted roofline vars and caches the result.
-
-    When the manifest entry declares ``roofline.vars`` expressions, the
-    bindings are produced by evaluating those expressions against
-    ``workload.shape`` and ``op_params`` — so M/N for non-last-axis
-    reductions (or multi-axis reductions) match what the op is actually
-    called with. For entries without ``roofline.vars`` the legacy
-    last-axis fallback (``roofline_vars``) is used.
-
-    Subclass and override ``_roofline_vars()`` for ops with non-standard
-    variable extraction.
+    Accepts an op name, an instantiated Op, and any workload satisfying
+    :class:`ShapeDtypeWorkload`.  The op must implement ``eval_roofline()``.
+    Dynamic-shape ops may bind roofline variables during ``forward()``, so
+    this helper calls ``op.eval_roofline()`` only while building a result
+    after profiling has executed the op.
 
     Usage::
 
-        bm = ManifestBenchmark("SumFwdOp", workload, op_params={"dim": 0})
+        op = SumFwdOp(dtype=dtype, dim=0)
+        bm = ManifestBenchmark("SumFwdOp", op, workload)
         result = bm.profile(op, *inputs)
     """
 
     def __init__(
         self,
         op_name: str,
+        op: Any,
         workload: ShapeDtypeWorkload,
-        op_params: Optional[dict[str, Any]] = None,
     ):
         super().__init__(workload)
         self._op_name = op_name
-        self._op_params: dict[str, Any] = dict(op_params) if op_params else {}
+        self._op = op
         self._roofline_cache: Optional[tuple[float, float]] = None
-
-    def _roofline_vars(self) -> dict:
-        """Extract roofline variable bindings from the workload.
-
-        If the manifest declares ``roofline.vars`` for this op, evaluate
-        those expressions against ``(workload.shape, op_params)``.
-        Otherwise fall back to the last-axis heuristic in
-        :func:`roofline_vars`.
-
-        Override this for ops whose manifest roofline expressions require
-        variables beyond those derivable from the workload shape + op
-        params (e.g. ops whose vars reference multiple input tensors).
-        """
-        # Fall back to the legacy last-axis heuristic only when the manifest
-        # has nothing to resolve for this op (missing entry or missing/empty
-        # ``roofline.vars``). If ``roofline.vars`` is declared but evaluation
-        # raises, propagate the error so bad manifest expressions cannot
-        # silently degrade to legacy M/N.
-        if not has_roofline_vars(self._op_name):
-            return roofline_vars(self.workload)
-        elem_bytes = torch.tensor([], dtype=self.workload.dtype).element_size()
-        resolved = resolve_roofline_vars(
-            self._op_name,
-            tensor_shapes={"x": tuple(self.workload.shape)},
-            params=self._op_params,
-        )
-        resolved.setdefault("elem_bytes", elem_bytes)
-        return resolved
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            self._roofline_cache = eval_roofline(
-                self._op_name, **self._roofline_vars())
+            flops, mem_bytes = self._op.eval_roofline()
+            self._roofline_cache = (float(flops), float(mem_bytes))
         return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:

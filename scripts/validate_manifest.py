@@ -6,7 +6,7 @@ Checks:
   signature — Op.forward() params match manifest inputs+params
   shape     — shape_rules are parseable Python expressions
   dtype     — dtype strings are valid torch dtype names or references
-  bench     — benchmark file uses load_workloads/eval_roofline with this op name
+  bench     — benchmark file uses load_workloads and op-local eval_roofline()
 
 Spec-only ops get schema only. Implemented ops get all checks.
 
@@ -894,12 +894,12 @@ def _ast_manifest_call_usage(
 
     Recognises three patterns:
 
-    1. **Direct** — ``from tileops.manifest import load_workloads`` /
-       ``eval_roofline`` called with the op name.
+    1. **Direct** — ``from tileops.manifest import load_workloads`` called
+       with the op name and ``op.eval_roofline()`` called on an Op instance.
     2. **Indirect via benchmarks.benchmark_base** — ``workloads_to_params``
        (wraps ``load_workloads``) and ``ManifestBenchmark`` (wraps
-       ``eval_roofline``) imported from ``benchmarks.benchmark_base`` and
-       called with the op name as the first argument.
+       op-local ``eval_roofline``) imported from ``benchmarks.benchmark_base``
+       and called with the op name as the first argument.
     """
     # Maps from the indirect helper name → the direct target it satisfies.
     _INDIRECT_EQUIV: dict[str, str] = {
@@ -925,7 +925,7 @@ def _ast_manifest_call_usage(
                         imported.add(equiv)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             func_name = node.func.id
-            # Direct call (load_workloads / eval_roofline).
+            # Direct call (load_workloads).
             if func_name in target_names and _call_uses_expected_op_name(
                 node, op_name, bindings,
             ):
@@ -936,13 +936,21 @@ def _ast_manifest_call_usage(
                 node, op_name, bindings,
             ):
                 matched_calls.add(equiv)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "eval_roofline"
+            and "eval_roofline" in target_names
+        ):
+            imported.add("eval_roofline")
+            matched_calls.add("eval_roofline")
     return {name: (name in imported and name in matched_calls) for name in target_names}
 
 
 def check_l4_benchmark(
     op_name: str, bench_path: str, repo_root: Path,
 ) -> list[str]:
-    """Check that the benchmark file imports and calls load_workloads/eval_roofline.
+    """Check that the benchmark file uses manifest workloads and op roofline.
 
     Uses Python AST parsing (no execution) to verify actual import and usage,
     rather than raw substring matching which can be fooled by comments.
@@ -978,8 +986,9 @@ def check_l4_benchmark(
         )
     if not usage["eval_roofline"]:
         errors.append(
-            f"[bench] {op_name}: bench file {bench_path} must import "
-            f"eval_roofline from tileops.manifest and call it with op name {op_name!r}"
+            f"[bench] {op_name}: bench file {bench_path} must call "
+            "eval_roofline() on an Op instance or use ManifestBenchmark "
+            f"with op name {op_name!r}"
         )
     return errors
 

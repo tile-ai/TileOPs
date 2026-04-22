@@ -52,6 +52,14 @@ class MoePermuteAlignFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"permute_align_kernel": MoePermuteAlignKernel}
 
+    def eval_roofline(self) -> tuple[int, int]:
+        max_padded = self.numel + (self.num_experts + 1) * (self.block_size - 1)
+        num_blocks = (max_padded + self.block_size - 1) // self.block_size
+        return (
+            0,
+            self.numel * 4 + max_padded * 4 + num_blocks * 4 + 4,
+        )
+
     def forward(
         self, topk_ids: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

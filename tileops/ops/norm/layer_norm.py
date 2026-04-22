@@ -70,6 +70,13 @@ class LayerNormFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"layer_norm": LayerNormKernel}
 
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        return (
+            5 * self.M * self.N,
+            (2 * self.M * self.N + 2 * self.N) * elem_bytes,
+        )
+
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         """Apply layer normalization.
 
