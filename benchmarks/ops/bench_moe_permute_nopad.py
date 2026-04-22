@@ -28,7 +28,7 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.manifest import eval_roofline, load_workloads
+from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteNopadFwdOp
 from workloads.workload_base import WorkloadBase
 
@@ -67,18 +67,13 @@ class MoePermuteNopadBenchmark(BenchmarkBase[MoePermuteNopadTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.workload
-            elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-            self._roofline_cache = eval_roofline(
-                _OP_NAME,
-                total_tokens=t.total_tokens,
-                top_k=t.top_k,
-                num_experts=t.num_experts,
-                hidden_size=t.hidden_size,
-                elem_bytes=elem_bytes,
-            )
+            self._roofline_cache = self._op.eval_roofline()
         return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
@@ -120,11 +115,11 @@ def test_moe_permute_nopad_bench(
 ) -> None:
     dtype = torch.bfloat16
     test = MoePermuteNopadTest(total_tokens, top_k, num_experts, hidden_size, dtype)
-    bm = MoePermuteNopadBenchmark(test)
     hidden_states, topk_ids = test.gen_inputs()
 
     # TileOPs
     op = MoePermuteNopadFwdOp(total_tokens, top_k, num_experts, hidden_size, dtype)
+    bm = MoePermuteNopadBenchmark(test, op)
     op(hidden_states, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()
 

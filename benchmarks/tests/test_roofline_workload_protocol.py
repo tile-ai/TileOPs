@@ -14,7 +14,6 @@ from benchmarks.benchmark_base import (
     InputGeneratingWorkload,
     ManifestBenchmark,
     ShapeDtypeWorkload,
-    roofline_vars,
 )
 
 # ---------------------------------------------------------------------------
@@ -62,29 +61,21 @@ class _MissingShape:
         self.dtype = dtype
 
 
+class _FakeRooflineOp:
+    """Minimal op-like object for ManifestBenchmark unit tests."""
+
+    def __init__(self, roofline: tuple[int, int] = (128, 256)):
+        self.calls = 0
+        self._roofline = roofline
+
+    def eval_roofline(self) -> tuple[int, int]:
+        self.calls += 1
+        return self._roofline
+
+
 # ---------------------------------------------------------------------------
 # ShapeDtypeWorkload protocol tests
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.smoke
-def test_roofline_vars_accepts_duck_typed_workload():
-    """roofline_vars should work with any object that has shape and dtype."""
-    w = _DuckShapeDtype((4, 8, 1024), torch.float16)
-    result = roofline_vars(w)
-    assert result["M"] == 4 * 8
-    assert result["N"] == 1024
-    assert result["elem_bytes"] == 2
-
-
-@pytest.mark.smoke
-def test_roofline_vars_with_1d_shape():
-    """Single-dimension shape: M should be 1, N should be that dimension."""
-    w = _DuckShapeDtype((512,), torch.bfloat16)
-    result = roofline_vars(w)
-    assert result["M"] == 1
-    assert result["N"] == 512
-    assert result["elem_bytes"] == 2
 
 
 @pytest.mark.smoke
@@ -144,9 +135,12 @@ def test_benchmark_workload_protocol():
 def test_manifest_benchmark_accepts_protocol_workload():
     """ManifestBenchmark should accept any ShapeDtypeWorkload."""
     w = _DuckShapeDtype((4, 8, 1024), torch.float16)
-    bm = ManifestBenchmark("TestOp", w)
+    op = _FakeRooflineOp((123, 456))
+    bm = ManifestBenchmark("TestOp", op, w)
     assert bm.workload is w
-    assert bm._roofline_vars() == {"M": 32, "N": 1024, "elem_bytes": 2}
+    assert bm.calculate_flops() == 123.0
+    assert bm.calculate_memory() == 456.0
+    assert op.calls == 1
 
 
 # ---------------------------------------------------------------------------
@@ -171,54 +165,26 @@ def test_workload_base_satisfies_benchmark_workload():
     assert isinstance(w, ShapeDtypeWorkload)
     assert isinstance(w, BenchmarkWorkload)
 
-    # Should also work with ManifestBenchmark
-    bm = ManifestBenchmark("TestOp", w)
-    assert bm._roofline_vars() == {"M": 4, "N": 8, "elem_bytes": 4}
+    # Should also work with ManifestBenchmark.
+    bm = ManifestBenchmark("TestOp", _FakeRooflineOp((4, 8)), w)
+    assert bm.calculate_flops() == 4.0
+    assert bm.calculate_memory() == 8.0
 
 
 # ---------------------------------------------------------------------------
-# Manifest-driven var resolution (roofline.vars)
+# ManifestBenchmark roofline contract
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
-def test_manifest_benchmark_uses_manifest_vars_for_default_dim():
-    """For an op with ``roofline.vars`` declared, ManifestBenchmark should
-    evaluate those expressions — default ``dim=-1`` matches legacy behaviour.
-    """
+def test_manifest_benchmark_reads_op_eval_roofline_once():
     w = _DuckShapeDtype((2048, 4096), torch.float16)
-    bm = ManifestBenchmark("SumFwdOp", w)
-    rv = bm._roofline_vars()
-    assert rv["M"] == 2048
-    assert rv["N"] == 4096
-    assert rv["elem_bytes"] == 2
-
-
-@pytest.mark.smoke
-def test_manifest_benchmark_respects_dim_zero():
-    """With ``op_params={"dim": 0}`` the vars must reduce the *first* axis,
-    producing M/N that differ from the hardcoded last-axis heuristic.
-    """
-    w = _DuckShapeDtype((2048, 4096), torch.float16)
-    bm = ManifestBenchmark("SumFwdOp", w, op_params={"dim": 0})
-    rv = bm._roofline_vars()
-    # dim=0 -> N = x.shape[0] = 2048, M = x.shape[1] = 4096
-    assert rv["N"] == 2048
-    assert rv["M"] == 4096
-    # Legacy heuristic would give M=2048, N=4096 — confirm we diverge.
-    legacy = roofline_vars(w)
-    assert (rv["M"], rv["N"]) != (legacy["M"], legacy["N"])
-
-
-@pytest.mark.smoke
-def test_manifest_benchmark_multi_axis_dim():
-    """Tuple ``dim`` collapses multiple axes — M/N reflect that."""
-    w = _DuckShapeDtype((4, 8, 16), torch.float32)
-    bm = ManifestBenchmark("SumFwdOp", w, op_params={"dim": (0, 2)})
-    rv = bm._roofline_vars()
-    assert rv["M"] == 8
-    assert rv["N"] == 4 * 16
-    assert rv["elem_bytes"] == 4
+    op = _FakeRooflineOp((2048, 4096))
+    bm = ManifestBenchmark("SumFwdOp", op, w)
+    assert bm.calculate_flops() == 2048.0
+    assert bm.calculate_memory() == 4096.0
+    assert bm.calculate_flops() == 2048.0
+    assert op.calls == 1
 
 
 @pytest.mark.smoke
@@ -255,55 +221,13 @@ def test_workloads_to_params_include_extra_propagates_dim():
 
 
 @pytest.mark.smoke
-def test_manifest_benchmark_falls_back_when_no_vars(monkeypatch):
-    """If the manifest entry has no ``roofline.vars``, ManifestBenchmark
-    must fall back to the legacy last-axis helper without raising.
-    """
-    from tileops.manifest import _load_manifest
-
-    _load_manifest.cache_clear()
-    real = _load_manifest()
-    patched = dict(real)
-    patched["_NoVarsOp"] = {
-        "roofline": {
-            "flops": "M * N",
-            "bytes": "(M * N + M) * elem_bytes",
-        }
-    }
-    monkeypatch.setattr("tileops.manifest._load_manifest", lambda: patched)
-
-    w = _DuckShapeDtype((4, 8), torch.float32)
-    bm = ManifestBenchmark("_NoVarsOp", w)
-    rv = bm._roofline_vars()
-    # Falls back to last-axis heuristic.
-    assert rv == {"M": 4, "N": 8, "elem_bytes": 4}
-
-
-@pytest.mark.smoke
-def test_manifest_benchmark_propagates_vars_eval_error(monkeypatch):
-    """If ``roofline.vars`` is declared but evaluation fails, ManifestBenchmark
-    must propagate the error rather than silently falling back to the legacy
-    last-axis heuristic — otherwise bad manifest expressions would mask as
-    plausible M/N bindings and feed the roofline calculator garbage.
-    """
-    from tileops.manifest import _load_manifest
-
-    _load_manifest.cache_clear()
-    real = _load_manifest()
-    patched = dict(real)
-    # Copy the SumFwdOp entry but poison its roofline.vars mapping so one
-    # expression references a name that is never bound.
-    base = dict(real["SumFwdOp"])
-    base_roofline = dict(base["roofline"])
-    base_roofline["vars"] = {
-        "M": "missing_name + 1",
-        "N": "x.shape[-1]",
-    }
-    base["roofline"] = base_roofline
-    patched["SumFwdOp"] = base
-    monkeypatch.setattr("tileops.manifest._load_manifest", lambda: patched)
-
+def test_manifest_benchmark_propagates_op_eval_error():
     w = _DuckShapeDtype((4, 8), torch.float16)
-    bm = ManifestBenchmark("SumFwdOp", w, op_params={"dim": 0})
-    with pytest.raises(ValueError, match="Failed to evaluate"):
-        bm._roofline_vars()
+
+    class _BrokenOp:
+        def eval_roofline(self):
+            raise RuntimeError("shape not bound")
+
+    bm = ManifestBenchmark("SumFwdOp", _BrokenOp(), w)
+    with pytest.raises(RuntimeError, match="shape not bound"):
+        bm.calculate_flops()

@@ -74,6 +74,13 @@ class RowNormOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._kernel_key: self._kernel_cls}
 
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        return (
+            4 * self.M * self.N,
+            (2 * self.M * self.N + self.N) * elem_bytes,
+        )
+
     # -- Validation helpers --------------------------------------------------
 
     def _validate_cuda_dtype(self, name: str, t: torch.Tensor) -> None:

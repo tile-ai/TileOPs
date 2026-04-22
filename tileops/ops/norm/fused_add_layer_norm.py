@@ -75,6 +75,13 @@ class FusedAddLayerNormFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"fused_add_layer_norm": FusedAddLayerNormKernel}
 
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        return (
+            6 * self.M * self.N,
+            (4 * self.M * self.N + 2 * self.N) * elem_bytes,
+        )
+
     def forward(
         self,
         x: torch.Tensor,

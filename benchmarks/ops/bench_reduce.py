@@ -56,14 +56,10 @@ def test_sum_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
     test = SumTest(shape, dtype)
-    # ``op_params`` carries any op-call kwargs declared on the workload
-    # entry (``dim``, ``keepdim``, …). Forwarding them to
-    # ``ManifestBenchmark`` makes M/N reflect the actual reduction axis set
-    # rather than a last-axis heuristic.
-    bm = ManifestBenchmark(_SUM_OP, test, op_params=op_params)
     inputs = test.gen_inputs()
 
     op = SumFwdOp(dtype=dtype, **op_params)
+    bm = ManifestBenchmark(_SUM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -90,10 +86,10 @@ def test_sum_bench(
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_MEAN_OP))
 def test_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = MeanTest(shape, dtype)
-    bm = ManifestBenchmark(_MEAN_OP, test)
     inputs = test.gen_inputs()
 
     op = MeanFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_MEAN_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -117,10 +113,10 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_AMAX_OP))
 def test_amax_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = AmaxTest(shape, dtype)
-    bm = ManifestBenchmark(_AMAX_OP, test)
     inputs = test.gen_inputs()
 
     op = AmaxFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_AMAX_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -144,10 +140,10 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_AMIN_OP))
 def test_amin_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = AminTest(shape, dtype)
-    bm = ManifestBenchmark(_AMIN_OP, test)
     inputs = test.gen_inputs()
 
     op = AminFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_AMIN_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -171,10 +167,10 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_PROD_OP))
 def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = ProdTest(shape, dtype)
-    bm = ManifestBenchmark(_PROD_OP, test)
     inputs = test.gen_inputs()
 
     op = ProdFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_PROD_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -198,10 +194,10 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_STD_OP))
 def test_std_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = StdTest(shape, dtype)
-    bm = ManifestBenchmark(_STD_OP, test)
     inputs = test.gen_inputs()
 
     op = StdFwdOp(dtype=dtype, correction=1)
+    bm = ManifestBenchmark(_STD_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -225,10 +221,10 @@ def test_std_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_VAR_OP))
 def test_var_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = VarTest(shape, dtype)
-    bm = ManifestBenchmark(_VAR_OP, test)
     inputs = test.gen_inputs()
 
     op = VarFwdOp(dtype=dtype, correction=1)
+    bm = ManifestBenchmark(_VAR_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -252,10 +248,10 @@ def test_var_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_VAR_MEAN_OP))
 def test_var_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = VarMeanTest(shape, dtype)
-    bm = ManifestBenchmark(_VAR_MEAN_OP, test)
     inputs = test.gen_inputs()
 
     op = VarMeanFwdOp(dtype=dtype, correction=1)
+    bm = ManifestBenchmark(_VAR_MEAN_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
