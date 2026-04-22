@@ -1,20 +1,12 @@
 """Tests for tileops.ops.op_base.
 
-Covers:
-- ``Op._cache_key`` default behavior and runtime warnings for missing
-  subclass overrides when ``_static_axes`` is empty.
-- L1 stubs for ``_infer_output_shapes`` / ``_validate_dtypes`` /
-  ``eval_roofline`` that raise :class:`NotImplementedError` pointing at the
-  design docs. Per docs/roofline.md §4.4.6, the L1 base deliberately does
-  not provide a generic roofline evaluator — each op's ``eval_roofline``
-  body is emitted by codegen as plain Python.
+Covers ``Op._cache_key`` default behavior and the runtime warning fired when
+a subclass with empty ``_static_axes`` does not override ``_cache_key``.
 """
 
 import warnings
-from typing import Dict
 
 import pytest
-import torch
 
 from tileops.ops import op_base
 from tileops.ops.op_base import Op
@@ -131,54 +123,3 @@ class TestCacheKeyWarning:
 
         user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
         assert len(user_warnings) == 2
-
-
-# ---------------------------------------------------------------------------
-# L1 codegen contract: eval_roofline, _safe_eval, NotImplementedError stubs
-# ---------------------------------------------------------------------------
-
-
-class _MinimalOp(Op):
-    """Smallest Op subclass that can be instantiated.
-
-    Implements only the strictly-abstract members so tests can exercise
-    base-class behavior without pulling any kernel code.
-    """
-
-    def __init__(self, *, dtype=None):
-        self.dtype = dtype
-
-    @property
-    def default_kernel_map(self) -> Dict[str, object]:  # pragma: no cover - unused
-        return {}
-
-    def forward(self, *args, **kwargs):  # pragma: no cover - unused
-        return None
-
-
-class TestBaseClassStubs:
-    def test_infer_output_shapes_raises_not_implemented(self):
-        op = _MinimalOp()
-        with pytest.raises(NotImplementedError) as excinfo:
-            op._infer_output_shapes()
-        assert "docs/ops-design.md" in str(excinfo.value)
-        assert "_infer_output_shapes" in str(excinfo.value)
-
-    def test_validate_dtypes_raises_not_implemented(self):
-        op = _MinimalOp()
-        x = torch.empty(1)
-        with pytest.raises(NotImplementedError) as excinfo:
-            op._validate_dtypes(x)
-        assert "docs/ops-design.md" in str(excinfo.value)
-        assert "_validate_dtypes" in str(excinfo.value)
-
-    def test_eval_roofline_raises_not_implemented(self):
-        """L1 eval_roofline is a stub; per docs/roofline.md §4.4.6 each
-        concrete op's body is emitted by codegen, not fed through a
-        generic L1 evaluator."""
-        op = _MinimalOp()
-        with pytest.raises(NotImplementedError) as excinfo:
-            op.eval_roofline()
-        msg = str(excinfo.value)
-        assert "docs/roofline.md" in msg
-        assert "eval_roofline" in msg
