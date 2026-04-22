@@ -1,65 +1,66 @@
 # Roofline
 
-TileOPs evaluates kernel performance against hardware-theoretical Speed-of-Light (SOL) bounds, not relative to PyTorch baselines. This document describes the `roofline` field in `ops_manifest.yaml`: what it is, how to author one, and who consumes it.
+This document describes the `roofline` field in `ops_manifest.yaml`: what it is, how to author one, and who consumes it.
 
 ## 1. Performance Model
 
-### 1.1 Efficiency Ratio
+### 1.1 Baseline Selection
 
-```
-efficiency = sol_bound / actual_time
-```
+Kernel performance is measured against hardware Speed-of-Light (SOL), not against PyTorch or vendor baselines. The `roofline` field supplies the per-op inputs this model needs (§2).
 
-Where `sol_bound` is the theoretical minimum execution time:
+### 1.2 Metric Definition
 
 ```
 memory_time  = bytes_moved / hbm_bandwidth
 compute_time = total_flops / peak_flops
-sol_bound    = max(memory_time, compute_time)
+sol_time     = max(memory_time, compute_time)
+efficiency   = sol_time / actual_time
 ```
 
-An efficiency of 90% means the kernel runs within 10% of the hardware theoretical limit.
+Inputs:
 
-### 1.2 Bound Type
+- `bytes_moved`, `total_flops` — manifest `roofline` (§2).
+- `hbm_bandwidth`, `peak_flops` — GPU profile (§5.1).
+- `actual_time` — benchmark output (§5.2).
 
-Whichever of `memory_time` or `compute_time` is larger determines the bound type (memory-bound vs compute-bound). This is **not** a static property of an op — it varies by shape (e.g., a small GEMM may be memory-bound while a large GEMM is compute-bound). Bound type is computed per-workload by the roofline tool and displayed in auto-generated documentation. It is **not** declared in the manifest.
+Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time > compute_time`, else compute-bound). It depends on shape, not on the op; the roofline tool computes it per-workload and the manifest does not declare it.
 
 ## 2. Field Specification
 
 ### 2.1 Output Contract
 
-Defined per-op in `ops_manifest.yaml` (see [manifest.md](manifest.md)).
-Complex ops reference functions in `tileops/perf/formulas.py` that return
-`{"flops": int, "bytes": int}`. Inline formulas follow the project
-decisions below.
+Per workload, the `roofline` field yields `(flops: int, bytes: int)`. Consumers read these integers via `tileops.manifest.eval_roofline()` (§4.1).
 
 ### 2.2 Formula Modes
 
-Manifest entries use one of three roofline modes:
+An entry uses one of two modes:
 
-| Mode          | Format                   | When                         |
-| ------------- | ------------------------ | ---------------------------- |
-| Inline        | `flops`/`bytes` only     | Fixed-rank ops with `shape`. |
-| Inline + vars | `vars` + `flops`/`bytes` | Arbitrary-rank ops.          |
-| Func          | `func: "module.path"`    | Complex formulas.            |
+| Mode   | Form                      | When                              |
+| ------ | ------------------------- | --------------------------------- |
+| Inline | `vars?` + `flops`/`bytes` | Formula fits a Python expression. |
+| Func   | `func: "module.path"`     | Formula needs real Python logic.  |
 
-`elem_bytes` is the byte size of the first input's dtype and is available
-to all inline formulas. Fixed-rank `shape` dimension names auto-bind as
-roofline variables.
+**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§3.3). `elem_bytes` is the byte size of the first input's dtype.
+
+**Func.** Point at `tileops.perf.formulas.<name>` returning `{"flops": int, "bytes": int}`. Use when inline arithmetic is insufficient (conditionals, shape traversal, data-dependent logic). See §3.4.
 
 ```yaml
-# Fixed rank - shape names auto-bind.
+# Inline — shape dim names cover all variables
 roofline:
   flops: "2 * M * N * K"
   bytes: "(M * K + K * N + M * N) * elem_bytes"
 
-# Arbitrary rank - explicit variable resolution.
+# Inline — shape cannot supply the variables; vars fills in
 roofline:
   vars:
     M: "product(x.shape[:dim])"
     N: "x.shape[dim]"
   flops: "4 * M * N"
   bytes: "(2 * M * N + N) * elem_bytes"
+
+# Func — complex formulas
+roofline:
+  func: "tileops.perf.formulas.my_op_roofline"
 ```
 
 ## 3. Authoring Rules
@@ -70,11 +71,12 @@ Roofline metadata has two expression layers. Agents must keep them
 separate.
 
 **Variable resolution** derives named roofline variables from runtime
-inputs, shapes, and manifest params. This layer belongs to manifest
-analysis only. Its evaluation context contains all `signature.inputs`
-tensor names with a `.shape` accessor, all `signature.params` names, and
-`elem_bytes`. It may use shape access, slicing, `product()`, `range()`,
-and small comprehensions:
+inputs. Two sources contribute: `shape` dim names auto-bind when `shape`
+is declared; any remaining variables are declared in `vars:`. This layer
+belongs to manifest analysis only. The `vars:` evaluation context
+contains all `signature.inputs` tensor names with a `.shape` accessor,
+all `signature.params` names, and `elem_bytes`. It may use shape access,
+slicing, `product()`, `range()`, and small comprehensions:
 
 ```yaml
 roofline:
