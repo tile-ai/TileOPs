@@ -31,7 +31,8 @@ def conv_shared_memory_bytes(
 ) -> int:
     dtype_bytes = torch.tensor([], dtype=dtype).element_size()
     per_stage_bytes = (block_m * block_k + block_k * block_n) * dtype_bytes
-    return per_stage_bytes * max(1, num_stages)
+    out_shared_bytes = block_m * block_n * dtype_bytes
+    return per_stage_bytes * max(1, num_stages) + out_shared_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +525,7 @@ def _conv2d_1x1_wrapped_kernel(
     h: int,
     w: int,
     c_out: int,
+    has_bias: bool,
     dtype: str,
     block_m: int,
     block_n: int,
@@ -536,7 +538,7 @@ def _conv2d_1x1_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv2d_1x1_kernel(
-        n, c_in, h, w, c_out, 1, 1, 0, 0, True, dtype
+        n, c_in, h, w, c_out, 1, 1, 0, 0, has_bias, dtype
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -547,6 +549,7 @@ def _(
     h: int,
     w: int,
     c_out: int,
+    has_bias: bool,
     dtype: str,
     block_m: int,
     block_n: int,
@@ -886,6 +889,7 @@ class Conv2d1x1Kernel(Kernel):
             self.h,
             self.w,
             self.c_out,
+            self.has_bias,
             self.dtype_str,
             self.config["block_m"],
             self.config["block_n"],
