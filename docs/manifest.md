@@ -467,16 +467,18 @@ consumption.
 
 ### Workload entry schema
 
-Each entry under `workloads:` is a mapping. Three keys — `x_shape`,
-`dtypes`, `label` — are reserved by the schema; any other key becomes
-an **op-call parameter** forwarded to the op's `__init__`.
+Each entry under `workloads:` is a mapping. Shape keys take the form
+`<tensor_name>_shape` (e.g. `x_shape`, `q_shape`, `kv_shape`) — one per
+tensor input in the workload. `dtypes` and `label` are also reserved.
+Any other key becomes an **op-call parameter** forwarded to the op's
+`__init__`.
 
-| Key             | Required | Meaning                                                                                                  |
-| --------------- | -------- | -------------------------------------------------------------------------------------------------------- |
-| `x_shape`       | yes      | Input tensor shape (list of ints).                                                                       |
-| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
-| `label`         | no       | Human-readable id used in the pytest param id and report tables.                                         |
-| *any other key* | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
+| Key                   | Required | Meaning                                                                                                  |
+| --------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `<tensor_name>_shape` | yes      | Shape for a tensor input (list of ints). Include one key per tensor input the workload exercises.        |
+| `dtypes`              | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
+| `label`               | no       | Human-readable id used in the pytest param id and report tables.                                         |
+| *any other key*       | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
 
 Example — parametrizing a reduction workload over a non-last `dim`:
 
@@ -490,13 +492,13 @@ workloads:
 
 [`scripts/validate_manifest.py`](../scripts/validate_manifest.py) runs five levels:
 
-| Level | Check     | Description                                                          |
-| ----- | --------- | -------------------------------------------------------------------- |
-| L0    | Schema    | Required fields exist, correct types                                 |
-| L1    | Signature | Params ⊆ `__init__()` ∪ `forward()` names; `forward()` order matches |
-| L2    | Shape     | `shape_rules` are valid Python expressions                           |
-| L3    | Dtype     | dtype strings are valid torch types or `same_as()` refs              |
-| L4    | Benchmark | Bench file uses manifest-driven workloads                            |
+| Level | Check     | Description                                                                                                                 |
+| ----- | --------- | --------------------------------------------------------------------------------------------------------------------------- |
+| L0    | Schema    | Required fields exist, correct types                                                                                        |
+| L1    | Signature | Params ⊆ `__init__()` ∪ `forward()` names; `forward()` order matches                                                        |
+| L2    | Shape     | `shape_rules` are valid Python expressions                                                                                  |
+| L3    | Dtype     | dtype strings are valid torch types or `same_as()` refs                                                                     |
+| L4    | Benchmark | Bench file imports/calls `load_workloads` and `eval_roofline` (directly or via `workloads_to_params` / `ManifestBenchmark`) |
 
 `spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on a targeted entry + its variants.
 

@@ -100,7 +100,7 @@ Validator holds no callables, no sample bindings, no `__builtins__` sandbox. Add
 Contract:
 
 - `(flops, bytes)` for a workload must come from `tileops.manifest.eval_roofline(op_name, **resolved_vars)`.
-- Variable resolution from a concrete input comes from `tileops.manifest.resolve_roofline_vars(op_name, *inputs, **op_params)`.
+- Variable resolution from concrete shapes comes from `tileops.manifest.resolve_roofline_vars(op_name, tensor_shapes={...}, params={...})`.
 - `ManifestBenchmark` and `workloads_to_params(..., include_extra=True)` are the canonical harnesses; non-reserved workload keys forward as op-call params and are consumed by `resolve_roofline_vars()`.
 - A benchmark file that computes FLOPs or bytes locally is a CI failure.
 
