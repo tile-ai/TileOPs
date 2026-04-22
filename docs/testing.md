@@ -121,11 +121,11 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 
 `BenchmarkBase[W]` is generic over workload type — different benchmarks depend on different workload capabilities, so the type parameter `W` is a capability protocol, not `WorkloadBase`. `WorkloadBase` remains the default in-repo implementation; the public benchmark API is defined by these protocols in `benchmarks/benchmark_base.py`:
 
-| Protocol                  | Requires          | Use when                                            |
-| ------------------------- | ----------------- | --------------------------------------------------- |
-| `ShapeDtypeWorkload`      | `shape`, `dtype`  | Helper only reads metadata (e.g. `roofline_vars()`) |
-| `InputGeneratingWorkload` | `gen_inputs()`    | Code only needs input generation                    |
-| `BenchmarkWorkload`       | Both of the above | Code needs metadata and input generation            |
+| Protocol                  | Requires          | Use when                                 |
+| ------------------------- | ----------------- | ---------------------------------------- |
+| `ShapeDtypeWorkload`      | `shape`, `dtype`  | Helper only reads workload metadata      |
+| `InputGeneratingWorkload` | `gen_inputs()`    | Code only needs input generation         |
+| `BenchmarkWorkload`       | Both of the above | Code needs metadata and input generation |
 
 For benchmark-specific metadata (e.g. `m/n/k` for GEMM), define a dedicated protocol for that benchmark family.
 
