@@ -77,16 +77,20 @@ Agent reads the manifest and generates code (codegen). [Validator](../scripts/va
 
 ### Consistency Enforcement
 
-| Check                                               | Mechanism                          |
-| --------------------------------------------------- | ---------------------------------- |
-| Manifest schema and declared fields are well-formed | Validator (CI), L0 checks          |
-| `__init__` params match manifest `params`           | Validator signature check (L1)     |
-| `static_dims` keys are `__init__` parameters        | Validator signature check (L1)     |
-| `shape_rules` syntax is valid                       | Validator shape_rules parsing (L2) |
-| `dtype`/`dtype_combos` strings are valid            | Validator dtype conformance (L3)   |
-| Empty `static_dims` without `_cache_key` override   | Op base class runtime warning      |
+| Check                                                    | Mechanism                          |
+| -------------------------------------------------------- | ---------------------------------- |
+| Manifest schema and declared fields are well-formed      | Validator (CI), L0 checks          |
+| `__init__` params match manifest `params`                | Validator signature check (L1)     |
+| `static_dims` keys are `__init__` parameters             | Validator signature check (L1)     |
+| `shape_rules` syntax is valid                            | Validator shape_rules parsing (L2) |
+| `_infer_output_shapes` output satisfies `shape_rules`    | Validator infer-shape parity (L2)  |
+| `dtype`/`dtype_combos` strings are valid                 | Validator dtype conformance (L3)   |
+| `_validate_dtypes` matches `dtype_combos` / dtype unions | Validator dtype parity (L3)        |
+| Empty `static_dims` without `_cache_key` override        | Op base class runtime warning      |
 
 Checks beyond this table are tracked as separate issues, not as spec status.
+
+**Parity check coverage.** Both parity checks compare the manifest spec against a concrete method that the op class must define. When the class has not yet been migrated to the codegen protocol (i.e. it does not define `_infer_output_shapes` / `_validate_dtypes`), the validator emits a **warning** naming the missing method — the check is live (the gap is surfaced, never silently passed) but non-fatal while the codegen rollout is in progress. A manifest entry may declare `parity_opt_out: [shape_parity, dtype_parity]` (or `parity_opt_out: true` for both) to suppress this warning for documented GPU-only ops whose method cannot be invoked in a CPU-only validator context. When the class does define the method, the parity check runs and any disagreement is reported as an L2 / L3 error.
 
 ## Naming Conventions
 

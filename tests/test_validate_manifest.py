@@ -803,11 +803,2147 @@ class TestDtype:
             f"Expected partial-combo error, got: {errors}"
         )
 
+    def test_dtype_combos_invalid_value_is_hard_l3_error(self, validator):
+        """Un-migrated op with invalid dtype_combos value still produces
+        a hard L3 error in ``check_l3`` — does not depend on
+        ``_validate_dtypes`` override.
+        """
+        entry = {
+            "status": "implemented",
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "not_a_real_dtype"},
+                ],
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("test_op", entry)
+        assert any(
+            "not_a_real_dtype" in e and "dtype_combos" in e for e in errors
+        ), f"Expected hard L3 error for invalid combo value, got: {errors}"
+
+    def test_resolve_dtype_options_forward_reference(self, validator):
+        """``_resolve_tensor_dtype_options`` resolves ``same_as(y)`` even
+        when ``y`` is declared later than ``x``. Declaration order must
+        not affect resolution (R3 is an identity constraint, not an
+        ordering rule).
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "same_as(y)"},
+                "y": {"dtype": "float16 | bfloat16"},
+            },
+            "outputs": {"z": {"dtype": "same_as(y)"}},
+        }
+        resolved = validator._resolve_tensor_dtype_options(sig)
+        assert resolved is not None, "Forward same_as reference must resolve"
+        assert resolved["x"] == ["float16", "bfloat16"]
+        assert resolved["y"] == ["float16", "bfloat16"]
+        assert resolved["z"] == ["float16", "bfloat16"]
+
+    def test_resolve_dtype_options_same_as_cycle_fails(self, validator):
+        """A pure ``same_as`` cycle (``x: same_as(y)``, ``y: same_as(x)``)
+        has no concrete dtype grounding — resolver returns None.
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "same_as(y)"},
+                "y": {"dtype": "same_as(x)"},
+            },
+            "outputs": {},
+        }
+        resolved = validator._resolve_tensor_dtype_options(sig)
+        assert resolved is None, (
+            "same_as cycle without concrete dtype must not resolve"
+        )
+
 
 # ---------------------------------------------------------------------------
-# bench: benchmark uses manifest workloads
+# L2 extension: _infer_output_shapes parity with shape_rules
 # ---------------------------------------------------------------------------
 
+
+
+def _make_op_cls_with_infer(infer_fn, *, name="FakeOp"):
+    """Build a minimal Op subclass whose ``_infer_output_shapes`` is *infer_fn*.
+
+    Uses the real :class:`tileops.ops.op_base.Op` so ``_class_overrides_method``
+    correctly treats the method as an override.
+    """
+    from tileops.ops.op_base import Op
+
+    attrs = {
+        "_infer_output_shapes": infer_fn,
+        "forward": lambda self, *a, **kw: None,
+        "default_kernel_map": property(lambda self: {}),
+    }
+    return type(name, (Op,), attrs)
+
+
+class TestInferShapeParity:
+    """L2 extension: ``_infer_output_shapes`` output must satisfy shape_rules."""
+
+    def test_no_override_skipped(self, validator):
+        """Ops without a ``_infer_output_shapes`` override produce no errors.
+
+        The check still surfaces the missing manifest-derived method as a
+        warning (see ``test_no_override_emits_missing_method_warning``);
+        this test pins the no-hard-error behaviour.
+        """
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):  # noqa: D401
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        assert validator.check_l2_infer_parity("BareOp", entry, BareOp) == []
+
+    def test_no_override_emits_missing_method_warning(self, validator):
+        """F002 regression: missing override must not pass silently.
+
+        Implemented ops whose class does not yet define
+        ``_infer_output_shapes`` must surface a warning naming the gap.
+        Silently skipping every such op would make the parity check
+        vacuous on the current manifest (no op currently overrides this
+        method).
+        """
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "BareOp", entry, BareOp, warnings=warnings,
+        )
+        assert errors == []
+        assert any(
+            "does not override _infer_output_shapes" in w for w in warnings
+        ), (
+            f"Expected missing-method warning when implemented op lacks "
+            f"the codegen-derived method, got: {warnings}"
+        )
+
+    def test_no_override_opt_out_suppresses_warning(self, validator):
+        """F002: parity_opt_out: [shape_parity] suppresses the warning.
+
+        Documented GPU-only ops can opt out of shape parity via a
+        manifest flag.
+        """
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "parity_opt_out": ["shape_parity"],
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "BareOp", entry, BareOp, warnings=warnings,
+        )
+        assert errors == []
+        assert not any(
+            "does not override _infer_output_shapes" in w for w in warnings
+        ), warnings
+
+    def test_symbolic_dim_rule_detects_wrong_output(self, validator):
+        """F001 regression: rules like ``o.shape == (B, S, H, D)`` must fire.
+
+        The MultiHeadAttentionFwdOp-style manifest rule references
+        symbolic dimension names (B, S, H, D) declared only via literal
+        ``tensor.shape == (...)`` rules. Without binding those names into
+        the evaluation context, the rule raised NameError and the
+        validator silently downgraded it to a warning — meaning a
+        genuinely wrong ``_infer_output_shapes`` (e.g. returning a 1-D
+        shape instead of a 4-D shape) could pass parity.
+        """
+        def infer(self, q_shape, k_shape, v_shape):
+            # Wrong: returns a 1-D shape instead of a 4-D shape.
+            return {"o": (999,)}
+
+        cls = _make_op_cls_with_infer(infer, name="BadMHA")
+        entry = {
+            "signature": {
+                "inputs": {
+                    "q": {"dtype": "float16"},
+                    "k": {"dtype": "float16"},
+                    "v": {"dtype": "float16"},
+                },
+                "outputs": {"o": {"dtype": "float16"}},
+                "shape_rules": [
+                    "q.shape == (B, S, H, D)",
+                    "k.shape == (B, S, H, D)",
+                    "v.shape == (B, S, H, D)",
+                    "o.shape == (B, S, H, D)",
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "BadMHA", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "_infer_output_shapes output violates" in e and "o.shape" in e
+            for e in errors
+        ), (
+            f"Expected symbolic-dim rule to evaluate and flag mismatch, "
+            f"got errors={errors} warnings={warnings}"
+        )
+        assert not any(
+            "could not be evaluated" in w for w in warnings
+        ), (
+            f"Symbolic dim names must be bound into ctx, not reported as "
+            f"NameError: {warnings}"
+        )
+
+    def test_no_cls_skipped(self, validator):
+        entry = {"signature": {"shape_rules": ["y.shape == x.shape"]}}
+        assert validator.check_l2_infer_parity("Foo", entry, None) == []
+
+    def test_correct_infer_passes(self, validator):
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        assert validator.check_l2_infer_parity("FakeOp", entry, cls) == []
+
+    def test_incorrect_infer_fails(self, validator):
+        """AC-2: parity error when _infer_output_shapes disagrees with shape_rules."""
+        def infer(self, x_shape):
+            # Wrong: drops a dim.
+            return {"y": x_shape[:-1]}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        errors = validator.check_l2_infer_parity("FakeOp", entry, cls)
+        assert any("_infer_output_shapes output violates" in e for e in errors), (
+            f"Expected parity error, got: {errors}"
+        )
+
+    def test_missing_output_fails(self, validator):
+        def infer(self, x_shape):
+            return {}  # missing y
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        errors = validator.check_l2_infer_parity("FakeOp", entry, cls)
+        assert any("missing output" in e for e in errors), errors
+
+    def test_signature_mismatch_reports(self, validator):
+        def infer(self, a_shape):
+            return {"y": a_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        errors = validator.check_l2_infer_parity("FakeOp", entry, cls)
+        assert any("signature does not match" in e for e in errors), errors
+
+    def test_tuple_literal_rule_rank(self, validator):
+        """tensor.shape == (A, B) rules inform the mock input rank."""
+        seen_rank: list[int] = []
+
+        def infer(self, x_shape):
+            seen_rank.append(len(x_shape))
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": [
+                    "x.shape == (B, S, H, D)",
+                    "y.shape == x.shape",
+                ],
+            },
+        }
+        assert validator.check_l2_infer_parity("FakeOp", entry, cls) == []
+        assert seen_rank == [4], seen_rank
+
+    def test_r11_style_rule_uses_len_helper(self, validator):
+        """R11 / R11a rules that call ``len`` must be evaluable.
+
+        Regression: previously the eval context stripped ``__builtins__`` so
+        every rule using ``len`` / ``isinstance`` / ``set`` raised NameError
+        and was silently downgraded to a warning, causing real parity
+        mismatches to slip through.
+        """
+        # Wrong: reduction op declares dim=-1, keepdim=False so y should drop
+        # a rank, but _infer_output_shapes returns x_shape verbatim.
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "params": {
+                    "dim": {"default": -1},
+                    "keepdim": {"default": False},
+                },
+                "shape_rules": [
+                    "y.ndim == x.ndim - len({dim % x.ndim})",
+                ],
+            },
+        }
+        errors = validator.check_l2_infer_parity("FakeOp", entry, cls)
+        assert any("_infer_output_shapes output violates" in e for e in errors), (
+            f"Expected R11-style rule to evaluate and flag mismatch, got: {errors}"
+        )
+
+    def test_r11a_comprehension_rule_evaluates(self, validator):
+        """R11a rules using generator / set comprehensions must be evaluable.
+
+        Regression: ``eval(rule, globals, locals)`` scopes comprehension
+        bodies against globals only, so passing ctx names only as locals
+        made every comprehension-shaped rule raise ``NameError`` and get
+        silently downgraded to a warning. An infer-shape mismatch could
+        pass because no rule ever evaluated to False.
+        """
+        # Wrong infer: keeps input rank even though dim reduction + keepdim=False
+        # must drop a rank.
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "params": {
+                    "dim": {"default": [-1]},
+                    "keepdim": {"default": False},
+                },
+                "shape_rules": [
+                    # Generator expression inside all(...): comprehension scope.
+                    "all(d % x.ndim in range(x.ndim) for d in dim)",
+                    # Set comprehension: also its own scope.
+                    "len({d % x.ndim for d in dim}) == len(dim)",
+                    # Actual parity rule we expect to catch the mismatch:
+                    # y.ndim must shrink by len(dim) when keepdim is False.
+                    "y.ndim == x.ndim - len(dim)",
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        # No rule should be skipped with a NameError from a comprehension.
+        assert not any(
+            "could not be evaluated" in w for w in warnings
+        ), f"Comprehension rule skipped via warning: {warnings}"
+        # The parity mismatch on y.ndim must surface as an error.
+        assert any(
+            "_infer_output_shapes output violates" in e and "y.ndim" in e
+            for e in errors
+        ), f"Expected ndim parity mismatch, got: {errors}"
+
+    def test_input_only_precondition_not_blamed_on_infer(self, validator):
+        """Mock-input precondition violations must not become parity errors.
+
+        When ``shape_rules`` encode an input-only precondition (e.g.
+        ``weight.shape == (x.shape[dim],)``) that the synthesised mock
+        inputs happen to violate, a correct ``_infer_output_shapes`` must
+        not be blamed. The rule must be reported as skipped via warning
+        rather than an error.
+        """
+        def infer(self, x_shape, weight_shape):
+            # Correct: y has the same shape as x.
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16"},
+                    "weight": {"dtype": "float16"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "params": {"dim": {"default": -1}},
+                "shape_rules": [
+                    # Input-only precondition the mock (4,4) vs (4,4)
+                    # arrangement would naively satisfy; use a form that
+                    # the mock synthesis will not satisfy to trigger the
+                    # precondition-violation path.
+                    "weight.shape == (x.shape[dim] + 1,)",
+                    "y.shape == x.shape",
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        assert not any(
+            "_infer_output_shapes output violates" in e for e in errors
+        ), (
+            "Correct _infer_output_shapes should not be blamed for an "
+            f"input-only precondition violation on mock inputs: {errors}"
+        )
+        assert any(
+            "input-only precondition" in w for w in warnings
+        ), f"Expected precondition-skip warning, got: {warnings}"
+
+    def test_mock_input_shapes_cross_tensor_dims_distinct(self, validator):
+        """Distinct symbolic dims across rules must get distinct mock sizes.
+
+        Regression for a latent correctness bug where a per-rule index
+        caused different symbolic dims to collide (e.g. ``A`` in rule
+        ``x.shape == (A, B)`` and ``C`` in rule ``y.shape == (C, D)``
+        both got assigned ``_MOCK_DIM_SIZE + 0``). A downstream rule
+        comparing ``x.shape[0]`` to ``y.shape[0]`` would then get a
+        spurious True / False depending on direction.
+        """
+        sig = {
+            "inputs": {"x": {}, "y": {}},
+            "shape_rules": [
+                "x.shape == (A, B)",
+                "y.shape == (C, D)",
+            ],
+        }
+        result = validator._mock_input_shapes(sig)
+        assert result is not None
+        shapes, dim_sizes = result
+        # Four distinct symbolic dims → four distinct mock sizes.
+        assert len({dim_sizes[k] for k in ("A", "B", "C", "D")}) == 4
+        # Corollary: the mock shapes of x and y disagree on the first
+        # dim, so a ``x.shape[0] == y.shape[0]`` rule would correctly
+        # evaluate False on mock inputs.
+        assert tuple(shapes["x"])[0] != tuple(shapes["y"])[0]
+
+    def test_eval_shape_rule_rejects_dunder_attr(self, validator):
+        """Shape-rule evaluator must reject dunder attribute access.
+
+        Defense-in-depth: manifest content is trusted (PR-gated), but
+        a classic sandbox-escape expression such as
+        ``().__class__.__mro__[1].__subclasses__()`` would bypass the
+        restricted builtins. The evaluator runs an AST filter that
+        rejects any attribute whose name starts or ends with ``__``.
+        """
+        ok, reason = validator._eval_shape_rule(
+            "().__class__ is None", {},
+        )
+        assert ok is False
+        assert reason is not None
+        assert "dunder attribute access not permitted" in reason
+
+    def test_body_typeerror_not_reported_as_signature_mismatch(self, validator):
+        """TypeError raised inside _infer_output_shapes body must not be
+        misreported as a signature mismatch.
+
+        The signature is pre-bound via ``inspect.signature().bind`` so a
+        TypeError from the body is distinguished from a signature
+        mismatch. The body-raise is surfaced as a hard L2 parity error
+        (policy tightened in PR #1005: previously a warning, which let
+        genuine bugs silently pass).
+        """
+        def infer(self, x_shape):
+            # Signature matches; the body itself raises TypeError.
+            raise TypeError("simulated implementation bug")
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        assert not any(
+            "signature does not match manifest inputs" in e for e in errors
+        ), (
+            "Body TypeError must not be misreported as signature mismatch; "
+            f"errors={errors}"
+        )
+        assert any(
+            "raised TypeError" in e for e in errors
+        ), (
+            "Body TypeError must surface as a hard L2 parity error; "
+            f"errors={errors}"
+        )
+
+    def test_body_raise_opt_out_downgrades_to_warning(self, validator):
+        """``parity_opt_out: [shape_parity]`` downgrades a body-raise to
+        a warning for documented GPU-only ops.
+        """
+        def infer(self, x_shape):
+            raise RuntimeError("needs GPU-only state")
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+            "parity_opt_out": ["shape_parity"],
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == []
+        assert any(
+            "parity skipped (opt-out)" in w and "RuntimeError" in w
+            for w in warnings
+        )
+
+    def test_body_runtime_error_is_hard_l2_error(self, validator):
+        """Finding #2 regression: a body raising ``RuntimeError('not ready')``
+        must become a hard L2 parity error unless the entry opts out.
+        """
+        def infer(self, x_shape):
+            raise RuntimeError("not ready")
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "raised RuntimeError" in e and "not ready" in e for e in errors
+        ), f"expected hard L2 error, got errors={errors} warnings={warnings}"
+
+    def test_declared_output_shape_catches_wrong_infer(self, validator):
+        """Op with shape-declared-only outputs (no shape_rules) whose
+        ``_infer_output_shapes`` returns the wrong shape must produce a
+        parity error.
+
+        Regression: previously ``check_l2_infer_parity`` short-circuited
+        on empty ``shape_rules``, so a manifest that specified output
+        shape only via ``signature.outputs[*].shape`` (e.g. conv ops'
+        ``"[N, C_out, L_out]"``) could not catch a broken
+        ``_infer_output_shapes``. The validator now also compares
+        inferred outputs against declared output shape fields.
+        """
+        def infer(self, x_shape, w_shape):
+            # Wrong: returns x_shape verbatim instead of
+            # ``[N, C_out, L_out]`` implied by the declared output shape.
+            return {"y": tuple(x_shape)}
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
+                    "w": {
+                        "dtype": "float16",
+                        "shape": "[C_out, C_in, kW]",
+                    },
+                },
+                "outputs": {
+                    "y": {
+                        "dtype": "float16",
+                        "shape": "[N, C_out, L_out]",
+                    },
+                },
+                # No shape_rules; declared shape fields alone must drive
+                # the parity check.
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "disagrees with declared" in e for e in errors
+        ), (
+            "Wrong _infer_output_shapes against declared output shape "
+            f"must surface as a parity error; errors={errors}"
+        )
+
+    def test_infer_reads_self_attr_uses_cls_new(self, validator):
+        """``_infer_output_shapes`` that reads an instance attribute set
+        outside manifest params must not falsely skip.
+
+        Regression: when the mock ``self`` was a
+        :class:`types.SimpleNamespace`, the call raised AttributeError
+        and the parity check silently skipped. After switching to
+        ``cls.__new__(cls)`` + setattr for manifest params, the mock
+        ``self`` carries class-defined helpers (here a class attribute),
+        and the parity check proceeds end-to-end.
+        """
+        from tileops.ops.op_base import Op
+
+        class SelfAttrOp(Op):
+            # Class attribute accessible via ``self.some_attr`` even when
+            # ``__init__`` was not run.
+            some_attr = 7
+
+            def forward(self, x):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+            def _infer_output_shapes(self, x_shape):
+                # Read an attribute that must be reachable through self.
+                _ = self.some_attr
+                return {"y": tuple(x_shape)}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "SelfAttrOp", entry, SelfAttrOp, warnings=warnings,
+        )
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert not any(
+            "parity skipped" in w and "AttributeError" in w
+            for w in warnings
+        ), (
+            "self.<class_attr> lookup must not cause a parity skip; "
+            f"warnings={warnings}"
+        )
+
+    def test_infer_reads_static_dim_attr_populated(self, validator):
+        """``_infer_output_shapes`` reading ``self.<static_dim>`` must
+        exercise parity, not skip with AttributeError.
+
+        Regression (review thread 1): ``_build_mock_self`` previously
+        installed only ``signature.params`` defaults, so a generated
+        ``_infer_output_shapes`` that consults ``self.N`` (a
+        ``static_dims`` key) raised AttributeError and the check was
+        silently skipped. With static_dims now resolved against mock
+        inputs and installed on mock_self, the method runs and its
+        output is compared end-to-end.
+        """
+        from tileops.ops.op_base import Op
+
+        class StaticDimOp(Op):
+
+            def forward(self, x):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+            def _infer_output_shapes(self, x_shape):
+                # Reads a static_dims attribute: N = x.shape[-1]
+                return {"y": (self.N, self.N)}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[B, N]"}},
+                "outputs": {"y": {"dtype": "float16", "shape": "[N, N]"}},
+                "static_dims": {"N": "x.shape[-1]"},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "StaticDimOp", entry, StaticDimOp, warnings=warnings,
+        )
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert not any(
+            "AttributeError" in w for w in warnings
+        ), f"static_dims lookup must not AttributeError-skip; warnings={warnings}"
+
+    def test_conv_like_output_only_symbol_not_blamed(self, validator):
+        """Conv-like op with output-only ``L_out`` derived by shape_rules
+        must pass parity when ``_infer_output_shapes`` is correct.
+
+        Regression (review thread 2): previously the declared
+        output-shape comparison pulled an arbitrary concrete size for
+        ``L_out`` from ``dim_sizes`` and flagged the correct
+        ``_infer_output_shapes`` as a mismatch. Output-only symbols must
+        only be checked for rank + per-symbol consistency across
+        outputs.
+        """
+        def infer(self, x_shape, w_shape):
+            # x: [N, C_in, L_in]; w: [C_out, C_in, kW]
+            # y: [N, C_out, L_in - kW + 1]
+            return {"y": (x_shape[0], w_shape[0], x_shape[2] - w_shape[2] + 1)}
+
+        cls = _make_op_cls_with_infer(infer, name="ConvLikeOp")
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
+                    "w": {"dtype": "float16", "shape": "[C_out, C_in, kW]"},
+                },
+                "outputs": {
+                    "y": {"dtype": "float16", "shape": "[N, C_out, L_out]"},
+                },
+                "shape_rules": ["L_out == L_in - kW + 1"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "ConvLikeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            f"Correct conv-like infer must not be flagged for output-only "
+            f"symbol L_out; errors={errors}"
+        )
+
+    def test_conv_like_wrong_output_only_value_reported(self, validator):
+        """Wrong output-only symbol value must be flagged as a parity
+        error via the shape_rules defining that symbol.
+
+        Regression: previously ``check_l2_infer_parity`` classified the
+        rule ``L_out == L_in - kW + 1`` as an input-only precondition
+        (the rule does not mention any output tensor name), so an
+        incorrect ``_infer_output_shapes`` that returned a bogus
+        ``L_out`` silently slipped past: the rule failed in both the
+        full and input-only contexts and was skipped. Output-only
+        symbols appearing in declared output shapes now trigger
+        mentions_output classification and are rebound from the
+        inferred result before rule evaluation.
+        """
+        def infer(self, x_shape, w_shape):
+            # Deliberately wrong output-only L_out value (999).
+            return {"y": (x_shape[0], w_shape[0], 999)}
+
+        cls = _make_op_cls_with_infer(infer, name="ConvLikeWrongOutOnlyOp")
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
+                    "w": {"dtype": "float16", "shape": "[C_out, C_in, kW]"},
+                },
+                "outputs": {
+                    "y": {"dtype": "float16", "shape": "[N, C_out, L_out]"},
+                },
+                "shape_rules": ["L_out == L_in - kW + 1"],
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "ConvLikeWrongOutOnlyOp", entry, cls,
+        )
+        assert any(
+            "L_out == L_in - kW + 1" in e and "violates shape_rules" in e
+            for e in errors
+        ), (
+            "Wrong L_out value must produce a shape_rules parity error; "
+            f"errors={errors}"
+        )
+
+    def test_conv_like_wrong_rank_still_caught(self, validator):
+        """Rank disagreement against declared output shape is still an
+        error, even for an op with an output-only ``L_out`` symbol.
+
+        Pins the positive side of the thread 2 fix: loosening the
+        output-only value check must not weaken the rank check.
+        """
+        def infer(self, x_shape, w_shape):
+            # Wrong rank: drops the spatial dim entirely.
+            return {"y": (x_shape[0], w_shape[0])}
+
+        cls = _make_op_cls_with_infer(infer, name="ConvLikeBadOp")
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
+                    "w": {"dtype": "float16", "shape": "[C_out, C_in, kW]"},
+                },
+                "outputs": {
+                    "y": {"dtype": "float16", "shape": "[N, C_out, L_out]"},
+                },
+                "shape_rules": ["L_out == L_in - kW + 1"],
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "ConvLikeBadOp", entry, cls,
+        )
+        assert any(
+            "rank" in e and "disagrees" in e for e in errors
+        ), f"Expected rank error; got: {errors}"
+
+    def test_conv_like_output_only_inconsistent_across_outputs(self, validator):
+        """Output-only symbol reused across multiple outputs must be
+        consistent; otherwise the parity check flags the disagreement.
+        """
+        def infer(self, x_shape):
+            # Two outputs that both claim ``L_out`` but produce different
+            # concrete sizes — this is an internal inconsistency even
+            # though L_out is output-only.
+            return {
+                "y1": (x_shape[0], x_shape[1] - 1),
+                "y2": (x_shape[0], x_shape[1] - 2),
+            }
+
+        cls = _make_op_cls_with_infer(infer, name="InconsistentOutOnlyOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[N, L_in]"}},
+                "outputs": {
+                    "y1": {"dtype": "float16", "shape": "[N, L_out]"},
+                    "y2": {"dtype": "float16", "shape": "[N, L_out]"},
+                },
+                "shape_rules": ["L_out == L_in - 1"],
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "InconsistentOutOnlyOp", entry, cls,
+        )
+        assert any(
+            "output-only symbol" in e and "L_out" in e for e in errors
+        ), f"Expected output-only consistency error; got: {errors}"
+
+
+class TestDtypeOptionsHelper:
+    """Unit tests for ``_dtype_options_for_tensor`` unresolved-ref contract."""
+
+    def test_pure_same_as_unresolved_returns_none(self, validator):
+        """same_as(ref) with ref missing from ``resolved`` returns None.
+
+        Regression: previously returned [] which silently disabled
+        downstream dtype parity (``_resolve_tensor_dtype_options`` only
+        bails on None, and an empty list yields an empty Cartesian
+        product).
+        """
+        out = validator._dtype_options_for_tensor(
+            "y", "same_as(x)", resolved={},
+        )
+        assert out is None, (
+            f"Pure same_as(unresolved) must return None, got {out!r}"
+        )
+
+    def test_mixed_token_unresolved_returns_none(self, validator):
+        """``same_as(ref) | float32`` with unresolved ref returns None."""
+        out = validator._dtype_options_for_tensor(
+            "y", "same_as(x) | float32", resolved={},
+        )
+        assert out is None, (
+            f"Mixed same_as(unresolved) must return None, got {out!r}"
+        )
+
+    def test_pure_same_as_resolved_inherits_options(self, validator):
+        out = validator._dtype_options_for_tensor(
+            "y", "same_as(x)", resolved={"x": ["float16", "bfloat16"]},
+        )
+        assert out == ["float16", "bfloat16"]
+
+
+# ---------------------------------------------------------------------------
+# L3 extension: _validate_dtypes parity with dtype_combos / unions
+# ---------------------------------------------------------------------------
+
+
+def _make_op_cls_with_validate(validate_fn, *, name="FakeDtypeOp"):
+    from tileops.ops.op_base import Op
+
+    attrs = {
+        "_validate_dtypes": validate_fn,
+        "forward": lambda self, *a, **kw: None,
+        "default_kernel_map": property(lambda self: {}),
+    }
+    return type(name, (Op,), attrs)
+
+
+class TestValidateDtypesParity:
+    """L3 extension: ``_validate_dtypes`` matches manifest dtype_combos/unions."""
+
+    def test_no_override_skipped(self, validator):
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        assert validator.check_l3_validate_dtypes_parity("Bare", entry, BareOp) == []
+
+    def test_no_override_emits_missing_method_warning(self, validator):
+        """F002 regression: missing override must not pass silently on L3."""
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "BareOp", entry, BareOp, warnings=warnings,
+        )
+        assert errors == []
+        assert any(
+            "does not override _validate_dtypes" in w for w in warnings
+        ), warnings
+
+    def test_no_override_opt_out_suppresses_warning(self, validator):
+        """F002: parity_opt_out: [dtype_parity] suppresses the warning."""
+        from tileops.ops.op_base import Op
+
+        class BareOp(Op):
+            def forward(self):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        entry = {
+            "parity_opt_out": ["dtype_parity"],
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "BareOp", entry, BareOp, warnings=warnings,
+        )
+        assert errors == []
+        assert not any(
+            "does not override _validate_dtypes" in w for w in warnings
+        ), warnings
+
+    def test_union_accept_all_passes(self, validator):
+        import torch
+
+        def validate(self, x):
+            if x.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError(f"bad dtype {x.dtype}")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        assert validator.check_l3_validate_dtypes_parity("FakeDtypeOp", entry, cls) == []
+
+    def test_union_reject_declared_fails(self, validator):
+        """AC-3: rejects a dtype in the declared union -> parity error."""
+        import torch
+
+        def validate(self, x):
+            if x.dtype != torch.float16:
+                raise ValueError("only fp16")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity("FakeDtypeOp", entry, cls)
+        assert any("rejects valid combo" in e for e in errors), errors
+
+    def test_dtype_combos_accept_listed_pass(self, validator):
+        import torch
+
+        def validate(self, x, w):
+            allowed = {(torch.float16, torch.float16), (torch.bfloat16, torch.bfloat16)}
+            if (x.dtype, w.dtype) not in allowed:
+                raise ValueError("unlisted")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+        }
+        assert validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        ) == []
+
+    def test_dtype_combos_rejects_listed_fails(self, validator):
+        import torch
+
+        def validate(self, x, w):
+            # Rejects the listed (bfloat16, bfloat16) combo.
+            if x.dtype != torch.float16:
+                raise ValueError("unlisted")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        )
+        assert any("rejects dtype_combos" in e for e in errors), errors
+
+    def test_dtype_combos_accepts_unlisted_fails(self, validator):
+        """AC-3: accepts a non-listed combo -> parity error."""
+        def validate(self, x, w):
+            return None  # accepts everything
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "float16 | bfloat16"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                ],
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        )
+        assert any("accepts non-listed combo" in e for e in errors), errors
+
+    def test_dtype_combos_first_rejected_later_accepted_fails(self, validator):
+        """Regression: non-listed combos must all be checked, not just first.
+
+        Previously the loop broke on the first rejection, letting a later
+        accepted non-listed combo escape detection. Enumerate every
+        non-listed combination and report each acceptance.
+        """
+        import torch
+
+        def validate(self, x, w):
+            # Reject the first non-listed combo (fp16, bf16) but accept a
+            # later non-listed combo (bf16, fp16). Listed (fp16, fp16) is
+            # also accepted.
+            if x.dtype == torch.float16 and w.dtype == torch.bfloat16:
+                raise ValueError("rejected early non-listed combo")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "float16 | bfloat16"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                ],
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        )
+        # Must flag the later accepted non-listed combo (bf16, fp16) and
+        # may also flag (bf16, bf16). At minimum one 'accepts non-listed'
+        # error must be present.
+        assert any("accepts non-listed combo" in e for e in errors), (
+            f"Expected later non-listed acceptance to be flagged, got: {errors}"
+        )
+        # Stronger check: the (bfloat16, float16) combo specifically is
+        # surfaced — proves the loop did not stop at the first rejection.
+        assert any(
+            "'x': 'bfloat16'" in e and "'w': 'float16'" in e
+            for e in errors
+        ), (
+            f"Expected (bfloat16, float16) combo in errors, got: {errors}"
+        )
+
+    def test_signature_mismatch_union_fails(self, validator):
+        """AC-3 regression: _validate_dtypes with a wrong kwarg name must fail.
+
+        Previously TypeError from a signature mismatch was silently
+        downgraded to a warning, letting an unusable _validate_dtypes
+        satisfy parity. The validator must surface this as a hard error.
+        """
+        def validate(self, wrong_name):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "signature does not match manifest inputs" in e for e in errors
+        ), (
+            "Signature mismatch in _validate_dtypes must surface as a "
+            f"parity error, got errors={errors} warnings={warnings}"
+        )
+
+    def test_signature_mismatch_dtype_combos_fails(self, validator):
+        """Same signature-mismatch hard-fail on the dtype_combos branch."""
+        def validate(self, wrong_name, other_wrong):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "signature does not match manifest inputs" in e for e in errors
+        ), (
+            "Signature mismatch must surface on dtype_combos branch too, "
+            f"got errors={errors} warnings={warnings}"
+        )
+
+    def test_cartesian_product_over_bound_skipped_with_warning(
+        self, validator, monkeypatch,
+    ):
+        """Enumerating every combo must stay within a configurable bound.
+
+        Guards against future ops that declare many inputs × wide dtype
+        unions from exploding CI wall-time. When the product exceeds
+        ``_MAX_DTYPE_COMBOS`` the op is skipped deterministically with
+        a warning naming input count × option sizes.
+        """
+        monkeypatch.setattr(validator, "_MAX_DTYPE_COMBOS", 4)
+
+        def _accept_all(self, **kwargs):
+            return None
+
+        cls = _make_op_cls_with_validate(_accept_all, name="WideDtypeOp")
+        entry = {
+            "signature": {
+                "inputs": {
+                    "a": {"dtype": "float16 | bfloat16 | float32"},
+                    "b": {"dtype": "float16 | bfloat16 | float32"},
+                },
+                "outputs": {"y": {"dtype": "same_as(a)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "WideDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            f"Over-bound enumeration should skip, not error: {errors}"
+        )
+        assert any(
+            "exceeds _MAX_DTYPE_COMBOS" in w for w in warnings
+        ), f"Expected over-bound skip warning, got: {warnings}"
+
+    def test_body_typeerror_is_rejection_not_signature_mismatch(self, validator):
+        """TypeError raised inside _validate_dtypes body is a legitimate
+        rejection, not a signature mismatch.
+
+        Regression: previously a bare ``except (ValueError, TypeError)``
+        could not distinguish between a kwarg-name mismatch (signature
+        error) and a TypeError raised inside the body (legitimate
+        rejection). The validator must pre-bind the signature and only
+        flag the former as a signature mismatch.
+        """
+        # Signature matches (``x`` kwarg), but the body raises TypeError
+        # on every call. This should be treated as a rejection of every
+        # combo drawn from the union, not a signature mismatch — which in
+        # turn means each Cartesian combo is reported as rejected.
+        def validate(self, x):
+            raise TypeError("dtype comparison not supported")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        # No signature-mismatch error.
+        assert not any(
+            "signature does not match manifest inputs" in e for e in errors
+        ), (
+            "Body-level TypeError must not be misreported as signature "
+            f"mismatch; errors={errors}"
+        )
+        # The body rejects every combo drawn from the union, so the
+        # no-dtype_combos branch reports each as a parity violation.
+        assert any(
+            "rejects valid combo" in e for e in errors
+        ), (
+            "Body TypeError should surface as a rejection of declared "
+            f"union combos; errors={errors}"
+        )
+
+    def test_dtype_combos_exhausts_union_emits_warning(self, validator):
+        """When dtype_combos covers every Cartesian tuple, the validator
+        emits the 'exhausts the union' warning even though no non-listed
+        combo was checked.
+
+        Regression: previously the warning fired only when
+        ``checked_any and not rejected_at_least_one`` — which is
+        impossible in the exhaustive case because every tuple hits the
+        ``listed_combo_keys`` continue path and ``checked_any`` stays
+        False.
+        """
+        import torch
+
+        allowed = {torch.float16, torch.bfloat16}
+
+        def validate(self, x, w):
+            # Reject dtypes outside the declared union so the new
+            # out-of-union probe does not produce parity errors.
+            if x.dtype not in allowed or w.dtype not in allowed:
+                raise ValueError("dtype out of union")
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "float16"},
+                    {"x": "float16", "w": "bfloat16"},
+                    {"x": "bfloat16", "w": "float16"},
+                    {"x": "bfloat16", "w": "bfloat16"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert any(
+            "exhausts the union" in w for w in warnings
+        ), (
+            "Validator must warn when dtype_combos covers every "
+            f"Cartesian combo; warnings={warnings}"
+        )
+
+    def test_no_combos_accepts_out_of_union_fails(self, validator):
+        """AC-3 rejection side: when the op has no ``dtype_combos`` and
+        ``_validate_dtypes`` accepts a dtype outside the declared union,
+        the no-combos branch must emit a parity error.
+
+        Regression for F010: previously the no-combos branch iterated
+        only the union's Cartesian product and so could not detect an
+        overly-permissive ``_validate_dtypes``.
+        """
+        # Overly-permissive implementation: accepts any dtype.
+        def validate(self, x):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "out-of-union" in e for e in errors
+        ), (
+            "Out-of-union dtype must surface as parity error when "
+            f"_validate_dtypes accepts it; errors={errors}"
+        )
+
+    def test_no_combos_rejects_out_of_union_pass(self, validator):
+        """Well-behaved op that rejects out-of-union dtypes produces no
+        parity error.
+        """
+        import torch
+
+        def validate(self, x):
+            if x.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError(f"unsupported dtype {x.dtype}")
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            "Conforming op must not emit a parity error; "
+            f"errors={errors}"
+        )
+
+    def test_no_combos_out_of_union_probe_respects_max(
+        self, validator, monkeypatch,
+    ):
+        """Out-of-union probe must stay within ``_MAX_DTYPE_COMBOS``.
+
+        With the cap tightened to 2, at most 2 out-of-union probes fire
+        even though the sentinel pool contains 6 out-of-union dtypes
+        for a {float16, bfloat16} union.
+        """
+        # Product size for a single-input {float16, bfloat16} union is 2,
+        # so _MAX_DTYPE_COMBOS=2 keeps the Cartesian enumeration alive.
+        monkeypatch.setattr(validator, "_MAX_DTYPE_COMBOS", 2)
+
+        def validate(self, x):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        out_of_union_errs = [e for e in errors if "out-of-union" in e]
+        # Sentinel pool has 6 out-of-union entries but probe budget is 2.
+        assert len(out_of_union_errs) == 2, (
+            "Out-of-union probe must be bounded by _MAX_DTYPE_COMBOS; "
+            f"got {len(out_of_union_errs)} errors: {out_of_union_errs}"
+        )
+
+    def test_no_combos_accepts_same_as_violation_fails(self, validator):
+        """AC-3 / R3: when ``_validate_dtypes`` accepts a same_as
+        identity violation, the no-combos branch must surface it.
+
+        Regression for F011: the union-iteration loop skips every
+        same_as-violating candidate via ``_honours_same_as``, so a
+        permissive op that fails to enforce same_as would go unflagged
+        without a dedicated probe.
+        """
+        # Overly-permissive: does not check x.dtype == w.dtype.
+        def validate(self, x, w):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "same_as violation" in e for e in errors
+        ), (
+            "same_as identity violation must surface as parity error "
+            f"when _validate_dtypes accepts it; errors={errors}"
+        )
+
+    def test_no_combos_rejects_same_as_violation_pass(self, validator):
+        """Well-behaved op that enforces same_as produces no parity
+        error on the same_as probe.
+        """
+        import torch
+
+        allowed = (torch.float16, torch.bfloat16)
+
+        def validate(self, x, w):
+            if x.dtype not in allowed or w.dtype not in allowed:
+                raise ValueError(
+                    f"unsupported dtype: x.dtype={x.dtype} "
+                    f"w.dtype={w.dtype}"
+                )
+            if x.dtype != w.dtype:
+                raise ValueError(
+                    f"same_as violated: x.dtype={x.dtype} "
+                    f"w.dtype={w.dtype}"
+                )
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            "Conforming op must not emit a parity error; "
+            f"errors={errors}"
+        )
+
+    def test_combos_branch_out_of_union_probe(self, validator):
+        """Dtype_combos branch must fire the out-of-union probe.
+
+        Regression: previously the out-of-union negative probe only ran
+        in the no-dtype_combos branch, so a permissive ``_validate_dtypes``
+        that accepts every dtype could pass parity as long as every
+        listed combo was accepted. The probe now exercises the same
+        rejection invariant in the dtype_combos branch.
+        """
+        # Overly-permissive implementation: accepts any dtype combo.
+        def validate(self, x):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16"},
+                    {"x": "bfloat16"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "out-of-union" in e for e in errors
+        ), (
+            "Out-of-union probe must fire in the dtype_combos branch; "
+            f"errors={errors}"
+        )
+
+    def test_invalid_dtype_combo_value_is_hard_error(self, validator):
+        """A ``dtype_combos`` entry naming a non-existent dtype must be
+        surfaced as a hard L3 error, not downgraded to a parity-skip
+        warning.
+
+        Regression: previously an invalid dtype name reached the
+        ``cannot build mock tensor`` warning branch inside the parity
+        loop, which silently disabled the check and hid a manifest data
+        bug. The upfront validation pass now rejects entries that are
+        neither in ``_TORCH_DTYPES`` nor a resolvable ``same_as`` ref.
+        """
+        def validate(self, x, w):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "not_a_real_dtype", "w": "not_a_real_dtype"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "not a valid dtype" in e and "not_a_real_dtype" in e
+            for e in errors
+        ), (
+            "Invalid dtype in dtype_combos must produce a hard error "
+            f"mentioning the invalid dtype name; errors={errors}"
+        )
+        # Must not appear as a parity-skip warning either.
+        assert not any(
+            "cannot build mock tensor" in w for w in warnings
+        ), (
+            "Invalid dtype name must not be downgraded to "
+            f"'cannot build mock tensor' warning; warnings={warnings}"
+        )
+
+    def test_unresolved_same_as_in_dtype_combo_is_hard_error(self, validator):
+        """``dtype_combos`` entry with ``same_as(unknown_ref)`` must be
+        a hard L3 error.
+
+        Regression: previously unresolved ``same_as`` references inside
+        combo values silently skipped parity. The upfront validation now
+        routes them through ``_dtype_options_for_tensor`` — unresolved
+        references return None and become an error.
+        """
+        def validate(self, x, w):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "float16 | bfloat16"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16", "w": "same_as(unknown_ref)"},
+                ],
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        )
+        assert any(
+            "not a valid dtype" in e and "unknown_ref" in e
+            for e in errors
+        ), (
+            "Unresolved same_as ref in dtype_combos must produce a hard "
+            f"error mentioning the ref name; errors={errors}"
+        )
+
+    def test_valid_dtype_combo_reaches_build_mock_tensor(
+        self, validator, monkeypatch,
+    ):
+        """Valid dtype names continue to reach the build-mock-tensor
+        branch; the ``cannot build mock tensor`` warning is still
+        reserved for valid names that the local torch build genuinely
+        cannot materialize.
+
+        Simulates a torch build lacking support for a declared dtype by
+        monkeypatching ``_make_mock_tensor`` to return None for
+        ``float8_e4m3fn`` while the combo itself is valid.
+        """
+        def validate(self, x):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | float8_e4m3fn"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float8_e4m3fn"},
+                ],
+            },
+        }
+        original = validator._make_mock_tensor
+
+        def fake(name):
+            if name == "float8_e4m3fn":
+                return None
+            return original(name)
+
+        monkeypatch.setattr(validator, "_make_mock_tensor", fake)
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        # Valid dtype that the local build can't materialize: no hard
+        # error, but the parity-skip warning path still fires.
+        assert not any(
+            "not a valid dtype" in e for e in errors
+        ), (
+            "Valid dtype name must not be flagged as invalid by the "
+            f"upfront validation pass; errors={errors}"
+        )
+        assert any(
+            "cannot build mock tensor" in w for w in warnings
+        ), (
+            "Valid-name-but-unmaterializable dtype must still reach the "
+            f"'cannot build mock tensor' warning path; warnings={warnings}"
+        )
+
+    def test_combo_missing_input_is_manifest_error(self, validator):
+        """A combo that omits an input entry remains a manifest error
+        surfaced via the parity loop (not a rejection, not a skip).
+        """
+        def validate(self, x, w):
+            return None
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "float16 | bfloat16"},
+                    "w": {"dtype": "same_as(x)"},
+                },
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16"},  # missing 'w'
+                ],
+            },
+        }
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls,
+        )
+        assert any(
+            "is missing declared input" in e or "combo missing input" in e
+            for e in errors
+        ), (
+            "Combo missing an input entry must be reported as a "
+            f"manifest error; errors={errors}"
+        )
+        assert not any(
+            "rejects dtype_combos[0]" in e for e in errors
+        ), (
+            "missing-input skip must not be reported as rejection; "
+            f"errors={errors}"
+        )
+
+    def test_validate_dtypes_reads_self_dtype_attr(self, validator):
+        """``_validate_dtypes`` that compares ``x.dtype != self.dtype``
+        must accept every listed combo when mock_self.dtype is populated.
+
+        Regression (review thread 1): ``_build_mock_self`` previously
+        installed only ``signature.params`` defaults, so
+        ``self.dtype`` fell through to the base-class ``Op.dtype = None``
+        and the comparison always raised — causing the parity check to
+        mark every listed combo as rejected. With the dtype axis now
+        populated from the candidate combo, listed combos are accepted
+        end-to-end.
+        """
+        def validate(self, x):
+            # The generated pattern under test: compare the input dtype
+            # against ``self.dtype`` (set in __init__ via a dtype param).
+            if x.dtype != self.dtype:
+                raise ValueError(
+                    f"x.dtype {x.dtype} does not match self.dtype {self.dtype}"
+                )
+
+        cls = _make_op_cls_with_validate(validate)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FakeDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == [], (
+            "With self.dtype populated from the combo, listed combos "
+            f"must be accepted; errors={errors} warnings={warnings}"
+        )
+
+
+class TestDtypeCombosDataHardening:
+    """Hardening regressions for ``check_l3_dtype_combos_data``.
+
+    Covers PR #1005 review findings #1 (combo-row completeness) and #5
+    (reject union dtype expressions in combo values).
+    """
+
+    def test_combo_missing_input_is_hard_error(self, validator):
+        """Finding #1: every combo row must cover every declared input.
+
+        Omitting a declared input from a combo row used to silently pass
+        when the op had no ``_validate_dtypes`` override — the parity
+        loop never ran, so the omission was invisible. The data-level
+        check must flag it independently.
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "w": {"dtype": "float16 | bfloat16"},
+            },
+            "outputs": {"y": {"dtype": "same_as(x)"}},
+            "dtype_combos": [
+                {"x": "float16", "w": "float16"},
+                {"x": "bfloat16"},  # missing 'w'
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("FakeOp", sig)
+        assert any(
+            "dtype_combos[1]" in e and "missing declared input 'w'" in e
+            for e in errors
+        ), f"expected completeness error, got {errors}"
+
+    def test_combo_value_union_is_hard_error(self, validator):
+        """Finding #5: a union expression in a combo value is rejected.
+
+        Per manifest.md R4, ``dtype_combos[i].<key>`` must be a single
+        concrete dtype token (or a ``same_as(ref)`` resolving to one);
+        ``"float16 | bfloat16"`` is a union and must fail the data
+        check rather than silently expanding to multiple dtypes.
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+            },
+            "outputs": {"y": {"dtype": "same_as(x)"}},
+            "dtype_combos": [
+                {"x": "float16 | bfloat16"},
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("FakeOp", sig)
+        assert any(
+            "combo values must be a single concrete dtype" in e for e in errors
+        ), f"expected union rejection, got {errors}"
+
+
+class TestStaticDimShapeParity:
+    """Finding #3 regression: static_dims values must pin expected output sizes."""
+
+    def test_static_dim_output_shape_catches_bad_infer(self, validator):
+        """A generated _infer_output_shapes returning arbitrary integers
+        for a static-dim-bound output position must fail parity.
+
+        Previously the declared-output-shape comparison only checked
+        input-bound symbols — ``static_dims`` keys were reclassified as
+        output-only, so only rank/consistency was enforced. A bad impl
+        returning e.g. ``(999, 999)`` for a declared ``[N, N]`` output
+        with ``static_dims: {N: "x.shape[-1]"}`` would pass.
+        """
+        def bad_infer(self, x_shape):
+            # Declared output shape is [N, N]; static_dims says N =
+            # x.shape[-1] (=4 under mock). A correct impl would return
+            # (4, 4); the bug returns (999, 999), which the old code
+            # failed to catch because N was treated as output-only.
+            return {"y": (999, 999)}
+
+        cls = _make_op_cls_with_infer(bad_infer, name="StaticDimBadOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[M, N]"}},
+                "outputs": {
+                    "y": {"dtype": "same_as(x)", "shape": "[N, N]"},
+                },
+                "static_dims": {"N": "x.shape[-1]"},
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "StaticDimBadOp", entry, cls,
+        )
+        assert any(
+            "dim[0]=999" in e or "dim[1]=999" in e for e in errors
+        ), f"expected static-dim parity error, got {errors}"
+
+
+class TestUnexpectedValidateDtypesException:
+    """Finding #4 regression: body-level unexpected exceptions become hard L3 errors."""
+
+    def test_runtime_error_from_validate_body_is_hard_error(self, validator):
+        """_validate_dtypes raising RuntimeError for every valid combo
+        must produce a hard L3 parity error, not a warning.
+        """
+        def bad_validate(self, x):
+            raise RuntimeError("simulated bug")
+
+        cls = _make_op_cls_with_validate(bad_validate, name="BadValidateOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16"},
+                    {"x": "bfloat16"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "BadValidateOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "raised unexpected exception" in e and "RuntimeError" in e
+            for e in errors
+        ), f"expected hard L3 error, got errors={errors} warnings={warnings}"
+
+    def test_runtime_error_opt_out_downgrades_to_skip(self, validator):
+        """``parity_opt_out: [dtype_parity]`` downgrades the body-raise
+        to a silent skip for documented GPU-only cases.
+        """
+        def bad_validate(self, x):
+            raise RuntimeError("needs GPU state")
+
+        cls = _make_op_cls_with_validate(bad_validate, name="OptOutValidateOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16"},
+                    {"x": "bfloat16"},
+                ],
+            },
+            "parity_opt_out": ["dtype_parity"],
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "OptOutValidateOp", entry, cls, warnings=warnings,
+        )
+        assert not any(
+            "raised unexpected exception" in e for e in errors
+        ), f"opt-out must suppress hard error; errors={errors}"
+
+    def test_runtime_error_no_combos_is_hard_error(self, validator):
+        """Same policy in the no-dtype_combos Cartesian branch."""
+        def bad_validate(self, x):
+            raise RuntimeError("simulated bug")
+
+        cls = _make_op_cls_with_validate(
+            bad_validate, name="BadValidateNoCombosOp",
+        )
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "BadValidateNoCombosOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "raised unexpected exception" in e and "RuntimeError" in e
+            for e in errors
+        ), f"expected hard L3 error, got errors={errors} warnings={warnings}"
+
+
+class TestSameAsCycleHardError:
+    """PR #1005 follow-up: pure ``same_as`` cycles must surface a hard L3 error.
+
+    Previously, ``check_l3_dtype_combos_data`` returned silently when
+    ``_resolve_tensor_dtype_options`` returned None, relying on
+    ``check_l3`` to have flagged the culprit. But a pure cycle like
+    ``x: same_as(y)`` / ``y: same_as(x)`` satisfies per-token validation
+    and the R3 identity check, so combo validation would be silently
+    skipped and invalid combo data passes.
+    """
+
+    def test_pure_same_as_cycle_emits_hard_error(self, validator):
+        """A 2-cycle between two inputs must surface a diagnosed L3 error."""
+        sig = {
+            "inputs": {
+                "x": {"dtype": "same_as(y)"},
+                "y": {"dtype": "same_as(x)"},
+            },
+            "outputs": {"z": {"dtype": "same_as(x)"}},
+            "dtype_combos": [
+                {"x": "float16", "y": "float16"},
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("CycleOp", sig)
+        assert any(
+            "same_as cycle" in e and "'x'" in e and "'y'" in e
+            for e in errors
+        ), f"expected cycle diagnosis naming x and y, got {errors}"
+
+    def test_dangling_same_as_emits_hard_error(self, validator):
+        """A ``same_as(missing)`` reference is reported as dangling.
+
+        The per-token ``_validate_dtype_token`` check already flags this
+        at L3, but combo validation must surface its own hard error so
+        callers never see a silent pass.
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "same_as(nope)"},
+            },
+            "outputs": {"z": {"dtype": "same_as(x)"}},
+            "dtype_combos": [
+                {"x": "float16"},
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("DanglingOp", sig)
+        assert any(
+            "dangling reference" in e and "same_as(nope)" in e
+            for e in errors
+        ), f"expected dangling diagnosis, got {errors}"
+
+
+class TestParamDefaultOutputShapePin:
+    """PR #1005 follow-up: param defaults must pin declared output-shape dims.
+
+    A param with a concrete integer default (e.g. ``params.k.default = 4``)
+    is a compile-time-known value just like ``static_dims``. Declared
+    output ``shape: "[k]"`` must compare against the default, so a bad
+    ``_infer_output_shapes`` returning ``(999,)`` is caught by exact-value
+    comparison rather than only rank/consistency.
+    """
+
+    def test_param_default_pins_output_dim(self, validator):
+        """Bad infer returning ``(999,)`` for declared ``[k]`` with
+        ``params.k.default = 4`` must produce a hard L2 error."""
+        def bad_infer(self, x_shape):
+            return {"y": (999,)}
+
+        cls = _make_op_cls_with_infer(bad_infer, name="ParamDefaultBadOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[M]"}},
+                "outputs": {
+                    "y": {"dtype": "same_as(x)", "shape": "[k]"},
+                },
+                "params": {"k": {"type": "int", "default": 4}},
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "ParamDefaultBadOp", entry, cls,
+        )
+        assert any(
+            "dim[0]=999" in e and "k=4" in e for e in errors
+        ), f"expected param-default parity error, got {errors}"
+
+    def test_param_default_pins_output_dim_pass(self, validator):
+        """Correct infer returning ``(4,)`` for declared ``[k]`` with
+        ``params.k.default = 4`` passes parity."""
+        def good_infer(self, x_shape):
+            return {"y": (4,)}
+
+        cls = _make_op_cls_with_infer(good_infer, name="ParamDefaultGoodOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[M]"}},
+                "outputs": {
+                    "y": {"dtype": "same_as(x)", "shape": "[k]"},
+                },
+                "params": {"k": {"type": "int", "default": 4}},
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "ParamDefaultGoodOp", entry, cls,
+        )
+        assert errors == [], (
+            f"expected no parity errors on correct impl, got {errors}"
+        )
+
+
+class TestOutOfUnionProbeEngulfment:
+    """PR #1005 follow-up: out-of-union probe must not be engulfed by wide unions.
+
+    A prior implementation used a fixed 8-dtype ``_DTYPE_SENTINELS`` pool.
+    An op declaring exactly those 8 dtypes for an input left the probe
+    with no candidate, so an over-permissive ``_validate_dtypes``
+    accepting e.g. ``uint8`` would go undetected. The probe now derives
+    candidates from ``sorted(_TORCH_DTYPES - declared)``, guaranteeing a
+    non-empty pool whenever declared does not cover the entire torch
+    dtype universe.
+    """
+
+    _ALL_EIGHT = (
+        "float16 | bfloat16 | float32 | float64 | "
+        "int8 | int16 | int32 | int64"
+    )
+
+    def test_eight_sentinel_coverage_still_probes_out_of_union(self, validator):
+        """Declared union covers all 8 legacy sentinels but not uint8.
+
+        An over-permissive ``_validate_dtypes`` accepting ``uint8`` must
+        surface a hard L3 error because ``uint8 ∈ _TORCH_DTYPES -
+        declared``.
+        """
+        def accept_all(self, x):
+            return True  # over-permissive: accepts any dtype
+
+        cls = _make_op_cls_with_validate(accept_all, name="WideEightDtypeOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": self._ALL_EIGHT}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "WideEightDtypeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "accepts out-of-union dtype" in e for e in errors
+        ), (
+            f"expected out-of-union rejection error despite 8-dtype "
+            f"union; errors={errors} warnings={warnings}"
+        )
+
+    def test_eight_sentinel_coverage_probes_in_combos_branch(self, validator):
+        """Same gap in the dtype_combos branch: declared combos cover all
+        8 legacy sentinels but permissive impl still accepts uint8."""
+        def accept_all(self, x):
+            return True
+
+        cls = _make_op_cls_with_validate(
+            accept_all, name="WideEightCombosOp",
+        )
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": self._ALL_EIGHT}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16"}, {"x": "bfloat16"},
+                    {"x": "float32"}, {"x": "float64"},
+                    {"x": "int8"}, {"x": "int16"},
+                    {"x": "int32"}, {"x": "int64"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "WideEightCombosOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "accepts out-of-union dtype" in e for e in errors
+        ), (
+            f"expected out-of-union rejection in dtype_combos branch; "
+            f"errors={errors} warnings={warnings}"
+        )
+
+    def test_full_torch_coverage_emits_skip_warning(self, validator):
+        """Declared union == full torch dtype set → warning, no vacuous pass.
+
+        The probe cannot produce a candidate so it skips with a warning
+        naming the op/input. No hard error is emitted because the
+        ``_validate_dtypes`` impl is free to accept anything in this
+        (wildly permissive) spec.
+        """
+        full_union = " | ".join(sorted(validator._TORCH_DTYPES))
+
+        def accept_all(self, x):
+            return True
+
+        cls = _make_op_cls_with_validate(
+            accept_all, name="FullCoverageOp",
+        )
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": full_union}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "FullCoverageOp", entry, cls, warnings=warnings,
+        )
+        assert not any("accepts out-of-union dtype" in e for e in errors), (
+            f"full-coverage spec must not produce a probe error; "
+            f"errors={errors}"
+        )
+        assert any(
+            "out-of-union probe skipped" in w and "'x'" in w
+            for w in warnings
+        ), (
+            f"expected skip warning naming input 'x'; warnings={warnings}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bench checks
+# ---------------------------------------------------------------------------
 class TestBench:
     """bench checks that bench files use manifest workloads and op roofline."""
 
