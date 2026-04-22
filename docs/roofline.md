@@ -152,9 +152,9 @@ Codegen actions:
 
 1. **Block 1 — vars resolution.**
 
-   - Bind each `signature.inputs` tensor to a local: `x = self.x`.
+   - Bind each `signature.inputs` tensor to a local: `x = self.x`. (Arbitrary-rank ops: `self.x` is bound in `forward()` before `eval_roofline()` runs.)
    - Bind each `signature.params` name: `dim = self.dim`.
-   - Bind `elem_bytes = self.<first_input>.dtype.itemsize`.
+   - Bind `elem_bytes` from whichever dtype source exists at the call site (§4.4.5): use `self.dtype.itemsize` when `eval_roofline()` runs at `__init__` (fixed-rank — no tensor yet), and `self.<first_input>.dtype.itemsize` when it runs in `forward()` (arbitrary-rank — the tensor is bound).
    - If `vars:` is present, emit one assignment per entry in YAML declaration order: `<name> = <vars[name]>`, copying the expression string verbatim. Later entries may reference earlier locals.
    - If `vars:` is absent and `shape` is fixed-rank, emit assignments from the `shape` declaration (tuple-unpack `self.x.shape`, or read `self.<dim>` if the Op stored dims at `__init__`).
 
