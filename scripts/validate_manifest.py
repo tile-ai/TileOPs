@@ -884,14 +884,43 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
     if dtype_options is None:
         # Tensor-level dtype errors already reported in ``check_l3``.
         return errors
+    inputs = sig.get("inputs") or {}
+    declared_input_names: list[str] = (
+        list(inputs.keys()) if isinstance(inputs, dict) else []
+    )
     for i, combo in enumerate(dtype_combos):
         if not isinstance(combo, dict):
             continue
+        # Combo-row completeness: every declared signature.inputs tensor
+        # must be assigned a dtype in every combo row. Otherwise a combo
+        # row that silently omits an input would pass L3 when no
+        # ``_validate_dtypes`` override exists, since ``_combo_accepted``
+        # is never exercised for omitted inputs.
+        for input_name in declared_input_names:
+            if input_name not in combo:
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}] is missing "
+                    f"declared input {input_name!r} (every combo row "
+                    f"must cover every signature.inputs tensor)"
+                )
         for key, val in combo.items():
             if not isinstance(val, str):
                 errors.append(
                     f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
                     f"{val!r} is not a string"
+                )
+                continue
+            # Per manifest.md R4, each combo value must be a single
+            # concrete dtype token (or a ``same_as(ref)`` naming one
+            # sibling in the same combo row). Reject union expressions
+            # like ``"float16 | bfloat16"`` outright — a union in a
+            # combo row would let an implementation silently widen the
+            # accepted-dtype set beyond what the manifest authored.
+            if "|" in val:
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                    f"{val!r} — combo values must be a single concrete "
+                    f"dtype, not a union"
                 )
                 continue
             opts = _dtype_options_for_tensor(key, val, dtype_options)
@@ -1509,14 +1538,26 @@ def check_l2_infer_parity(
     try:
         result = infer_fn(mock_self, **shape_kwargs)
     except Exception as exc:  # noqa: BLE001
-        # Signature is valid but the body raised. Treat as an
-        # implementation issue surfaced via warning (parity skipped) rather
-        # than a signature mismatch.
-        if warnings is not None:
-            warnings.append(
-                f"[shape] {op_name}: _infer_output_shapes parity skipped — "
-                f"call raised {exc.__class__.__name__}: {exc}"
-            )
+        # Signature is valid but the body raised. This is a genuine
+        # implementation bug: a correct manifest-derived
+        # ``_infer_output_shapes`` must succeed on manifest-compatible
+        # mock inputs. Surface as a hard L2 parity error unless the
+        # entry explicitly opts out via ``parity_opt_out: [shape_parity]``
+        # (documented GPU-only cases). Previously downgraded to a
+        # warning — that let real bugs pass L2.
+        if _parity_opted_out(entry, "shape_parity"):
+            if warnings is not None:
+                warnings.append(
+                    f"[shape] {op_name}: _infer_output_shapes parity "
+                    f"skipped (opt-out) — call raised "
+                    f"{exc.__class__.__name__}: {exc}"
+                )
+            return errors
+        errors.append(
+            f"[shape] {op_name}: _infer_output_shapes raised "
+            f"{exc.__class__.__name__} under mock inputs "
+            f"{shape_kwargs}: {exc}"
+        )
         return errors
 
     if not isinstance(result, dict):
@@ -1671,6 +1712,19 @@ def check_l2_infer_parity(
     # position it appears in any declared output shape).
     # ``input_bound`` is already computed above (reused for the
     # output-only rebinding pass before rule evaluation).
+    #
+    # Static-dim resolution: symbols declared in ``signature.static_dims``
+    # (e.g. ``static_dims: {N: "x.shape[-1]"}``) are resolved to concrete
+    # integer sizes against the mock inputs via ``_static_dim_values``
+    # (already stored in ``extra_attrs`` above). Treat those as pinned
+    # expected sizes for the declared-output-shape comparison — a bad
+    # ``_infer_output_shapes`` returning arbitrary integers for a
+    # static-dim position must be caught, not mistakenly reclassified as
+    # an output-only symbol with only rank/consistency enforcement.
+    static_expected: dict[str, int] = {
+        name: int(val) for name, val in extra_attrs.items()
+        if isinstance(val, int)
+    }
     output_only_seen: dict[str, int] = {}
     for out_name, decl_parts in declared_output_shapes.items():
         if out_name not in result:
@@ -1688,10 +1742,14 @@ def check_l2_infer_parity(
             )
             continue
         for idx, (p, got) in enumerate(zip(decl_parts, inferred, strict=True)):
-            if p in input_bound:
-                # Input-bound symbol: concrete size is pinned by mock
-                # inputs and must match exactly.
-                expected = dim_sizes.get(p, _MOCK_DIM_SIZE)
+            if p in input_bound or p in static_expected:
+                # Input-bound or static-dim symbol: concrete size is
+                # pinned by mock inputs (or by the static_dims
+                # expression resolved against them) and must match
+                # exactly.
+                expected = static_expected.get(
+                    p, dim_sizes.get(p, _MOCK_DIM_SIZE)
+                )
                 if got != expected:
                     errors.append(
                         f"[shape] {op_name}: _infer_output_shapes output "
@@ -1728,8 +1786,14 @@ def _dtype_options_for_tensor(
 ) -> list[str] | None:
     """Expand a dtype expression into concrete torch dtype names.
 
-    ``same_as(ref)`` resolves to whatever *ref* was resolved to (must
-    appear earlier). Returns None if the expression cannot be resolved.
+    ``same_as(ref)`` resolves to whatever *ref* has already been resolved
+    to in the *resolved* map. Declaration order is irrelevant: callers
+    (``_resolve_tensor_dtype_options``) iterate to a fixpoint, retrying
+    tensors whose ``same_as(ref)`` targets unresolved refs until every
+    tensor resolves or no progress is made. Returns None when the
+    expression cannot be resolved in the current pass (caller decides
+    whether that is a temporary state inside the fixpoint loop or a
+    permanent failure).
     """
     tokens = _parse_dtype_expr(dtype_str)
     # Pure same_as(ref): inherits ref's options.
@@ -1931,8 +1995,11 @@ def _combo_accepted(
     except TypeError as exc:
         return False, f"TypeError: {exc}"
     except Exception as exc:  # noqa: BLE001
-        # inspect.signature failed to introspect — treat as a skip.
-        return False, f"unexpected {exc.__class__.__name__}: {exc}"
+        # inspect.signature itself failed to introspect — treat as a
+        # validator-side skip (not an op-side bug). Tagged distinctly
+        # from body-level unexpected exceptions so callers can enforce
+        # policy differences.
+        return False, f"introspect-failed {exc.__class__.__name__}: {exc}"
 
     try:
         validate_fn(mock_self, **tensors)
@@ -1942,6 +2009,12 @@ def _combo_accepted(
         # rejections once the signature has been validated above.
         return False, None
     except Exception as exc:  # noqa: BLE001
+        # Body raised a non-ValueError/TypeError exception. This is a
+        # genuine implementation bug (a correct manifest-derived
+        # ``_validate_dtypes`` must either accept or raise
+        # ValueError/TypeError, never e.g. RuntimeError). Callers
+        # enforce this as a hard L3 parity error unless the entry opts
+        # out via ``parity_opt_out: [dtype_parity]``.
         return False, f"unexpected {exc.__class__.__name__}: {exc}"
     return True, None
 
@@ -2051,12 +2124,35 @@ def check_l3_validate_dtypes_parity(
                     f"{sorted(forward_inputs)}): {reason}"
                 )
                 return errors
-            if reason and reason.startswith("unexpected"):
+            if reason and reason.startswith("introspect-failed"):
+                # Validator-side introspection failure (inspect.signature
+                # could not parse the method). Not an op-side bug —
+                # skip with warning.
                 if warnings is not None:
                     warnings.append(
                         f"[dtype] {op_name}: _validate_dtypes parity skipped "
                         f"for dtype_combos[{i}] — {reason}"
                     )
+                continue
+            if reason and reason.startswith("unexpected"):
+                # Body-level exception that is not ValueError / TypeError
+                # — a real implementation bug. Surface as a hard L3
+                # parity error unless the entry opts out. Previously
+                # downgraded to warning, which let broken implementations
+                # pass.
+                if _parity_opted_out(entry, "dtype_parity"):
+                    if warnings is not None:
+                        warnings.append(
+                            f"[dtype] {op_name}: _validate_dtypes parity "
+                            f"skipped (opt-out) for dtype_combos[{i}] — "
+                            f"{reason}"
+                        )
+                    continue
+                errors.append(
+                    f"[dtype] {op_name}: _validate_dtypes raised "
+                    f"unexpected exception on dtype_combos[{i}] "
+                    f"{combo!r} — {reason}"
+                )
                 continue
             if reason and reason.startswith("cannot build mock tensor"):
                 # Validator limitation (no torch dtype for this name) — emit
@@ -2116,7 +2212,20 @@ def check_l3_validate_dtypes_parity(
             accepted, reason = _combo_accepted(
                 cls, forward_inputs, candidate, param_defaults, sig=sig,
             )
-            if reason and reason.startswith(("unexpected", "TypeError")):
+            if reason and reason.startswith(
+                ("introspect-failed", "TypeError")
+            ):
+                continue
+            if reason and reason.startswith("unexpected"):
+                # Body-level unexpected exception — hard error unless
+                # opt-out (parity policy tightened).
+                if _parity_opted_out(entry, "dtype_parity"):
+                    continue
+                errors.append(
+                    f"[dtype] {op_name}: _validate_dtypes raised "
+                    f"unexpected exception on non-listed combo "
+                    f"{candidate!r} — {reason}"
+                )
                 continue
             if not accepted:
                 rejected_at_least_one = True
@@ -2179,9 +2288,18 @@ def check_l3_validate_dtypes_parity(
                         sig=sig, self_dtype_name=baseline_self_dtype,
                     )
                     if reason and reason.startswith(
-                        ("unexpected", "TypeError", "cannot build",
-                         "combo missing")
+                        ("introspect-failed", "TypeError",
+                         "cannot build", "combo missing")
                     ):
+                        continue
+                    if reason and reason.startswith("unexpected"):
+                        if _parity_opted_out(entry, "dtype_parity"):
+                            continue
+                        errors.append(
+                            f"[dtype] {op_name}: _validate_dtypes raised "
+                            f"unexpected exception on out-of-union probe "
+                            f"{candidate!r} — {reason}"
+                        )
                         continue
                     if accepted:
                         errors.append(
@@ -2250,12 +2368,29 @@ def check_l3_validate_dtypes_parity(
                     f"{sorted(forward_inputs)}): {reason}"
                 )
                 return errors
-            if reason and reason.startswith("unexpected"):
+            if reason and reason.startswith("introspect-failed"):
                 if warnings is not None:
                     warnings.append(
                         f"[dtype] {op_name}: _validate_dtypes parity skipped "
                         f"for combo {candidate!r} — {reason}"
                     )
+                continue
+            if reason and reason.startswith("unexpected"):
+                # Body-level unexpected exception — hard error unless
+                # opt-out. See ``_combo_accepted`` docstring.
+                if _parity_opted_out(entry, "dtype_parity"):
+                    if warnings is not None:
+                        warnings.append(
+                            f"[dtype] {op_name}: _validate_dtypes parity "
+                            f"skipped (opt-out) for combo {candidate!r} — "
+                            f"{reason}"
+                        )
+                    continue
+                errors.append(
+                    f"[dtype] {op_name}: _validate_dtypes raised "
+                    f"unexpected exception on combo {candidate!r} — "
+                    f"{reason}"
+                )
                 continue
             if not accepted:
                 errors.append(
@@ -2313,8 +2448,17 @@ def check_l3_validate_dtypes_parity(
                         sig=sig, self_dtype_name=baseline_self_dtype,
                     )
                     if reason and reason.startswith(
-                        ("unexpected", "TypeError")
+                        ("introspect-failed", "TypeError")
                     ):
+                        continue
+                    if reason and reason.startswith("unexpected"):
+                        if _parity_opted_out(entry, "dtype_parity"):
+                            continue
+                        errors.append(
+                            f"[dtype] {op_name}: _validate_dtypes raised "
+                            f"unexpected exception on out-of-union probe "
+                            f"{candidate!r} — {reason}"
+                        )
                         continue
                     if accepted:
                         errors.append(
@@ -2357,8 +2501,17 @@ def check_l3_validate_dtypes_parity(
                         cls, forward_inputs, candidate, param_defaults, sig=sig,
                     )
                     if reason and reason.startswith(
-                        ("unexpected", "TypeError")
+                        ("introspect-failed", "TypeError")
                     ):
+                        continue
+                    if reason and reason.startswith("unexpected"):
+                        if _parity_opted_out(entry, "dtype_parity"):
+                            continue
+                        errors.append(
+                            f"[dtype] {op_name}: _validate_dtypes raised "
+                            f"unexpected exception on same_as probe "
+                            f"{candidate!r} — {reason}"
+                        )
                         continue
                     if accepted:
                         errors.append(

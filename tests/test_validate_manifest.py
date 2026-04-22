@@ -1294,12 +1294,11 @@ class TestInferShapeParity:
         """TypeError raised inside _infer_output_shapes body must not be
         misreported as a signature mismatch.
 
-        Regression: previously any TypeError from infer_fn — including
-        those raised by a buggy body (e.g. arithmetic on None) — was
-        labeled as ``signature does not match manifest inputs``. After
-        pre-binding the signature via ``inspect.signature().bind``, a
-        TypeError from the body surfaces as a parity-skip warning
-        instead.
+        The signature is pre-bound via ``inspect.signature().bind`` so a
+        TypeError from the body is distinguished from a signature
+        mismatch. The body-raise is surfaced as a hard L2 parity error
+        (policy tightened in PR #1005: previously a warning, which let
+        genuine bugs silently pass).
         """
         def infer(self, x_shape):
             # Signature matches; the body itself raises TypeError.
@@ -1324,11 +1323,60 @@ class TestInferShapeParity:
             f"errors={errors}"
         )
         assert any(
-            "parity skipped" in w and "TypeError" in w for w in warnings
+            "raised TypeError" in e for e in errors
         ), (
-            "Body TypeError should surface as a parity-skip warning; "
-            f"warnings={warnings}"
+            "Body TypeError must surface as a hard L2 parity error; "
+            f"errors={errors}"
         )
+
+    def test_body_raise_opt_out_downgrades_to_warning(self, validator):
+        """``parity_opt_out: [shape_parity]`` downgrades a body-raise to
+        a warning for documented GPU-only ops.
+        """
+        def infer(self, x_shape):
+            raise RuntimeError("needs GPU-only state")
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+            "parity_opt_out": ["shape_parity"],
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        assert errors == []
+        assert any(
+            "parity skipped (opt-out)" in w and "RuntimeError" in w
+            for w in warnings
+        )
+
+    def test_body_runtime_error_is_hard_l2_error(self, validator):
+        """Finding #2 regression: a body raising ``RuntimeError('not ready')``
+        must become a hard L2 parity error unless the entry opts out.
+        """
+        def infer(self, x_shape):
+            raise RuntimeError("not ready")
+
+        cls = _make_op_cls_with_infer(infer)
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "shape_rules": ["y.shape == x.shape"],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "FakeOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "raised RuntimeError" in e and "not ready" in e for e in errors
+        ), f"expected hard L2 error, got errors={errors} warnings={warnings}"
 
     def test_declared_output_shape_catches_wrong_infer(self, validator):
         """Op with shape-declared-only outputs (no shape_rules) whose
@@ -2445,7 +2493,8 @@ class TestValidateDtypesParity:
             "FakeDtypeOp", entry, cls,
         )
         assert any(
-            "combo missing input" in e for e in errors
+            "is missing declared input" in e or "combo missing input" in e
+            for e in errors
         ), (
             "Combo missing an input entry must be reported as a "
             f"manifest error; errors={errors}"
@@ -2492,6 +2541,180 @@ class TestValidateDtypesParity:
             "With self.dtype populated from the combo, listed combos "
             f"must be accepted; errors={errors} warnings={warnings}"
         )
+
+
+class TestDtypeCombosDataHardening:
+    """Hardening regressions for ``check_l3_dtype_combos_data``.
+
+    Covers PR #1005 review findings #1 (combo-row completeness) and #5
+    (reject union dtype expressions in combo values).
+    """
+
+    def test_combo_missing_input_is_hard_error(self, validator):
+        """Finding #1: every combo row must cover every declared input.
+
+        Omitting a declared input from a combo row used to silently pass
+        when the op had no ``_validate_dtypes`` override — the parity
+        loop never ran, so the omission was invisible. The data-level
+        check must flag it independently.
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "w": {"dtype": "float16 | bfloat16"},
+            },
+            "outputs": {"y": {"dtype": "same_as(x)"}},
+            "dtype_combos": [
+                {"x": "float16", "w": "float16"},
+                {"x": "bfloat16"},  # missing 'w'
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("FakeOp", sig)
+        assert any(
+            "dtype_combos[1]" in e and "missing declared input 'w'" in e
+            for e in errors
+        ), f"expected completeness error, got {errors}"
+
+    def test_combo_value_union_is_hard_error(self, validator):
+        """Finding #5: a union expression in a combo value is rejected.
+
+        Per manifest.md R4, ``dtype_combos[i].<key>`` must be a single
+        concrete dtype token (or a ``same_as(ref)`` resolving to one);
+        ``"float16 | bfloat16"`` is a union and must fail the data
+        check rather than silently expanding to multiple dtypes.
+        """
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+            },
+            "outputs": {"y": {"dtype": "same_as(x)"}},
+            "dtype_combos": [
+                {"x": "float16 | bfloat16"},
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("FakeOp", sig)
+        assert any(
+            "combo values must be a single concrete dtype" in e for e in errors
+        ), f"expected union rejection, got {errors}"
+
+
+class TestStaticDimShapeParity:
+    """Finding #3 regression: static_dims values must pin expected output sizes."""
+
+    def test_static_dim_output_shape_catches_bad_infer(self, validator):
+        """A generated _infer_output_shapes returning arbitrary integers
+        for a static-dim-bound output position must fail parity.
+
+        Previously the declared-output-shape comparison only checked
+        input-bound symbols — ``static_dims`` keys were reclassified as
+        output-only, so only rank/consistency was enforced. A bad impl
+        returning e.g. ``(999, 999)`` for a declared ``[N, N]`` output
+        with ``static_dims: {N: "x.shape[-1]"}`` would pass.
+        """
+        def bad_infer(self, x_shape):
+            # Declared output shape is [N, N]; static_dims says N =
+            # x.shape[-1] (=4 under mock). A correct impl would return
+            # (4, 4); the bug returns (999, 999), which the old code
+            # failed to catch because N was treated as output-only.
+            return {"y": (999, 999)}
+
+        cls = _make_op_cls_with_infer(bad_infer, name="StaticDimBadOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[M, N]"}},
+                "outputs": {
+                    "y": {"dtype": "same_as(x)", "shape": "[N, N]"},
+                },
+                "static_dims": {"N": "x.shape[-1]"},
+            },
+        }
+        errors = validator.check_l2_infer_parity(
+            "StaticDimBadOp", entry, cls,
+        )
+        assert any(
+            "dim[0]=999" in e or "dim[1]=999" in e for e in errors
+        ), f"expected static-dim parity error, got {errors}"
+
+
+class TestUnexpectedValidateDtypesException:
+    """Finding #4 regression: body-level unexpected exceptions become hard L3 errors."""
+
+    def test_runtime_error_from_validate_body_is_hard_error(self, validator):
+        """_validate_dtypes raising RuntimeError for every valid combo
+        must produce a hard L3 parity error, not a warning.
+        """
+        def bad_validate(self, x):
+            raise RuntimeError("simulated bug")
+
+        cls = _make_op_cls_with_validate(bad_validate, name="BadValidateOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16"},
+                    {"x": "bfloat16"},
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "BadValidateOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "raised unexpected exception" in e and "RuntimeError" in e
+            for e in errors
+        ), f"expected hard L3 error, got errors={errors} warnings={warnings}"
+
+    def test_runtime_error_opt_out_downgrades_to_skip(self, validator):
+        """``parity_opt_out: [dtype_parity]`` downgrades the body-raise
+        to a silent skip for documented GPU-only cases.
+        """
+        def bad_validate(self, x):
+            raise RuntimeError("needs GPU state")
+
+        cls = _make_op_cls_with_validate(bad_validate, name="OptOutValidateOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "dtype_combos": [
+                    {"x": "float16"},
+                    {"x": "bfloat16"},
+                ],
+            },
+            "parity_opt_out": ["dtype_parity"],
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "OptOutValidateOp", entry, cls, warnings=warnings,
+        )
+        assert not any(
+            "raised unexpected exception" in e for e in errors
+        ), f"opt-out must suppress hard error; errors={errors}"
+
+    def test_runtime_error_no_combos_is_hard_error(self, validator):
+        """Same policy in the no-dtype_combos Cartesian branch."""
+        def bad_validate(self, x):
+            raise RuntimeError("simulated bug")
+
+        cls = _make_op_cls_with_validate(
+            bad_validate, name="BadValidateNoCombosOp",
+        )
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity(
+            "BadValidateNoCombosOp", entry, cls, warnings=warnings,
+        )
+        assert any(
+            "raised unexpected exception" in e and "RuntimeError" in e
+            for e in errors
+        ), f"expected hard L3 error, got errors={errors} warnings={warnings}"
 
 
 # ---------------------------------------------------------------------------
