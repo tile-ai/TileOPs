@@ -51,6 +51,7 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.cumulative import CumulativeKernel
 
 from ..op_base import Op
@@ -96,9 +97,12 @@ class CumsumFwdOp(Op):
 **Output.**
 
 ```python
-    # static_dims: N: "x.shape[dim]" — axis is parameter-dependent,
-    # so the class-level default is empty; bind in __init__ once `dim`
-    # is known against a concrete input rank.
+    # static_dims: N: "x.shape[dim]" — axis is parameter-dependent AND
+    # potentially negative (e.g. dim=-1), so the concrete (input_index,
+    # axis) pair cannot be resolved until x.ndim is known. Leave the
+    # class-level default empty and resolve at forward time (either by
+    # assigning self._static_axes inside forward() before the kernel
+    # call, or by overriding _cache_key to project the shape inline).
     _static_axes: frozenset[tuple[int, int]] = frozenset()
 
     def __init__(
@@ -162,13 +166,15 @@ class CumsumFwdOp(Op):
 **Output.**
 
 ```python
-def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
-    return {"y": x_shape}
+class CumsumFwdOp(Op):
+    ...
 
+    def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
+        return {"y": x_shape}
 
-def _validate_dtypes(self, x: torch.Tensor) -> None:
-    if x.dtype not in {torch.float32, torch.float16, torch.bfloat16}:
-        raise ValueError(f"x.dtype must be float32/float16/bfloat16, got {x.dtype}")
+    def _validate_dtypes(self, x: torch.Tensor) -> None:
+        if x.dtype not in {torch.float32, torch.float16, torch.bfloat16}:
+            raise ValueError(f"x.dtype must be float32/float16/bfloat16, got {x.dtype}")
 ```
 
 **Validation.** `python scripts/validate_manifest.py` exercises both methods at CI (PR #1005). **L2 parity:** `_infer_output_shapes(mock_inputs)` must agree with `shape_rules`. **L3 parity:** `_validate_dtypes` must accept exactly the declared `dtype` union / `dtype_combos` and reject everything else — disagreement is a hard error. Opting out (for GPU-only ops whose methods cannot be invoked in a CPU-only validator context) requires the manifest entry to declare `parity_opt_out: [shape_parity, dtype_parity]`; do not use it to silence a real disagreement.
@@ -182,10 +188,13 @@ def _validate_dtypes(self, x: torch.Tensor) -> None:
 **Output.**
 
 ```python
-def eval_roofline(self) -> tuple[int, int]:
-    flops = 4 * self.M * self.N
-    bytes_ = (2 * self.M * self.N + self.N) * self.dtype.itemsize
-    return flops, bytes_
+class CumsumFwdOp(Op):
+    ...
+
+    def eval_roofline(self) -> tuple[int, int]:
+        flops = self.M * self.N
+        bytes_ = 2 * self.M * self.N * self.dtype.itemsize
+        return flops, bytes_
 ```
 
 **Validation.** The body is **plain Python** reading `self.*` attributes. No class-level roofline expression strings, no `ast.parse`, no shared L1 evaluator — prohibited by [`roofline.md §4.4.6` Evaluator Surface Boundary](roofline.md#446-evaluator-surface-boundary). Return type is `tuple[int, int]`, not `float` or `numpy`. Expressions derive directly from `roofline.vars` bindings + `roofline.flops` + `roofline.bytes`; see [`roofline.md §4.4` Op Codegen](roofline.md#44-op-codegen).
