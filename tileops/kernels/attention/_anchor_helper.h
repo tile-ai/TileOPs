@@ -12,6 +12,11 @@
 
 namespace tl {
 
+__device__ __forceinline__ void tileops_barrier_arrive_named(int barrier_id,
+                                                             int thread_count) {
+  asm volatile("bar.arrive %0, %1;" : : "r"(barrier_id), "r"(thread_count));
+}
+
 template <int N>
 __device__ __forceinline__ void wait_wgmma_anchor(int* sink_smem_ptr,
                                                    int cond) {
