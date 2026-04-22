@@ -6,8 +6,8 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S1: <a id="slot-s1"></a> Module docstring
 
-- **Rule.** File begins with a triple-quoted docstring: one-line `<ClassName>: <purpose>` summary followed by a short behaviour paragraph.
-- **Derivation.** Class name from S6; purpose templated from `signature` semantics.
+- **Rule.** File begins with a triple-quoted docstring. First paragraph is a short module-level summary (e.g., "Cumulative sum operator (L2 Op layer)."). Optionally followed by a `Provides:` bullet block listing the concrete op classes with one-line semantics per class (`<ClassName>: <one-line semantics>`).
+- **Derivation.** Class name from S6; semantics templated from manifest `ref_api` and `signature`.
 - **Example.**
   ```python
   """Cumulative sum operator (L2 Op layer).
@@ -80,9 +80,10 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
       Output has the same shape and dtype as input.
 
       Args:
-          M: Number of rows (product of all dims except last).
-          N: Hidden dimension (last dim).
+          M: Number of rows (product of all dims except the reduction axis).
+          N: Hidden dimension (size along the reduction axis).
           dtype: Data type (float32, float16, or bfloat16).
+          dim: Reduction dimension (default -1).
           kernel_map: Optional override for kernel dispatch.
           tune: Whether to autotune (default False).
       """
@@ -101,6 +102,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
       M: int,
       N: int,
       dtype: torch.dtype,
+      dim: int = -1,
       kernel_map: Optional[Dict[str, Kernel]] = None,
       tune: bool = False,
   ):
@@ -146,22 +148,25 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S16: <a id="slot-s16"></a> `forward` body
 
-- **Rule.** Body sequence: (a) `self._validate_dtypes(...)`; (b) `.contiguous()` + reshape to the kernel layout; (c) validate each `static_dims` commitment against the actual tensor shape; (d) call the kernel; (e) restore the original shape.
-- **Derivation.** Validation expressions come from each `static_dims` entry's `<tensor>.shape[<axis>]` RHS.
+- **Rule.** Body sequence: (a) `self._validate_dtypes(...)`; (b) `.contiguous()` + reshape to the kernel layout; (c) validate each `static_dims` commitment and any ctor-committed non-`static_dims` size (e.g. `M` when kept in ctor for legacy layouts) against the actual tensor shape; (d) call the kernel; (e) trim alignment padding (if any) and restore the original shape.
+- **Derivation.** Validation expressions come from each `static_dims` entry's `<tensor>.shape[<axis>]` RHS; padding trim applies when the kernel operates on `align_up(N, DEFAULT_ALIGNMENT)` (compare `self.N_padded` vs `self.N`).
 - **Example.**
   ```python
+  self._validate_dtypes(x)
   if not x.is_cuda:
       raise ValueError("x must be a CUDA tensor")
-  if x.dtype != self.dtype:
-      raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
   if x.shape[-1] != self.N:
       raise ValueError(f"Expected last dim {self.N}, got {x.shape[-1]}")
   orig_shape = x.shape
   x = x.contiguous().reshape(-1, self.N)
+  if x.shape[0] != self.M:
+      raise ValueError(f"Expected M={self.M}, got {x.shape[0]}")
   y = self.kernel(x)
+  if self.N_padded != self.N:
+      y = y[:, : self.N]
   return y.reshape(orig_shape)
   ```
-- **Common mistakes.** Skipping `_validate_dtypes`; reshape before `.contiguous()`; not restoring the original shape.
+- **Common mistakes.** Skipping `_validate_dtypes`; reshape before `.contiguous()`; forgetting the padding trim when `self.N_padded != self.N` (causes `reshape(orig_shape)` to raise on size mismatch); not restoring the original shape.
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 
@@ -188,8 +193,8 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S19: <a id="slot-s19"></a> `eval_roofline` method body
 
-- **Rule.** Codegen emits a complete plain-Python body reading `self.*` attributes. Per [`roofline.md` §4.4.6](roofline.md#446-evaluator-surface-boundary) (Evaluator Surface Boundary) there is NO shared AST evaluator on L1 and NO class-level `_flops_expr` / `_bytes_expr` / `_roofline_vars` strings. L1 stub raises `NotImplementedError` (FIXME staged-rollout).
-- **Derivation.** Manifest `roofline.vars`, `roofline.flops_expr`, `roofline.bytes_expr`; see [`roofline.md` §4.4](roofline.md#44-op-codegen).
+- **Rule.** Codegen emits a complete plain-Python body reading `self.*` attributes. Per [`roofline.md` §4.4.6](roofline.md#446-evaluator-surface-boundary) (Evaluator Surface Boundary) there is NO shared AST evaluator on L1 and NO class-level roofline expression strings (e.g. `_flops_str`, `_bytes_str`, `_roofline_vars`) that would be parsed at runtime. L1 stub raises `NotImplementedError` (FIXME staged-rollout).
+- **Derivation.** Manifest `roofline.vars`, `roofline.flops`, `roofline.bytes`; see [`roofline.md` §4.4](roofline.md#44-op-codegen).
 - **Example.**
   ```python
   def eval_roofline(self) -> tuple[int, int]:
@@ -197,7 +202,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
       bytes_ = (2 * self.M * self.N + self.N) * self.dtype.itemsize
       return flops, bytes_
   ```
-- **Common mistakes.** Class-level `_flops_expr` / `_bytes_expr` / `_roofline_vars` strings (prohibited by §4.4.6); any `ast.parse` or shared `_safe_eval` path; returning `float` or `numpy` types (contract is `tuple[int, int]`).
+- **Common mistakes.** Class-level roofline expression strings parsed at runtime (prohibited by §4.4.6); any `ast.parse` or shared `_safe_eval` path; returning `float` or `numpy` types (contract is `tuple[int, int]`).
 
 ### Slot S20: <a id="slot-s20"></a> Package `__init__.py` registration
 
@@ -212,14 +217,17 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S21: <a id="slot-s21"></a> `_static_axes` class attribute
 
-- **Rule.** Each concrete op declares `_static_axes: frozenset[tuple[int, int]]` of `(input_index, axis)` pairs committed at constructor time. `input_index` is the positional index in `signature.inputs`; `axis` is non-negative. Empty frozenset is legal (means "no axes committed at ctor").
-- **Derivation.** Manifest `static_dims`; for each entry `<kwarg>: <tensor>.shape[<axis>]`, emit `(input_index_of_<tensor>, <axis>)`. PyTorch-aligned reductions with `dim=None` → empty frozenset (see [manifest.md § Empty static_dims](manifest.md#empty-static_dims)).
+- **Rule.** Each concrete op declares `_static_axes: frozenset[tuple[int, int]]` of `(input_index, axis)` pairs committed at constructor time. `input_index` is the positional index in `signature.inputs`; `axis` is a non-negative integer within that input's shape. Empty frozenset is legal (means "no axes committed at ctor"). When the manifest expresses the axis via a ctor param (e.g., `static_dims: N: "x.shape[dim]"` where `dim` is a param), the axis is not known at class-definition time — the scaffold emits an empty class-level default and the concrete op binds `self._static_axes` inside `__init__` after resolving the param.
+- **Derivation.** Manifest `static_dims`; for each entry `<kwarg>: <tensor>.shape[<axis>]`: if `<axis>` is an integer literal, emit a class-level pair `(input_index_of_<tensor>, <axis>)`; if `<axis>` is a ctor param name, emit `_static_axes = frozenset()` at class level and `self._static_axes = frozenset({(i, <param> % ndim_at_forward)})` inside `__init__`. PyTorch-aligned reductions with `dim=None` → empty frozenset (see [manifest.md § Empty static_dims](manifest.md#empty-static_dims)).
 - **Example.**
   ```python
   class CumsumFwdOp(Op):
-      _static_axes = frozenset({(0, 1)})  # x.shape[1] is committed as N
+      # static_dims: N: "x.shape[dim]" — axis is parameter-dependent,
+      # so the class-level default is empty; bind in __init__ once `dim`
+      # is resolved against a concrete input rank.
+      _static_axes: frozenset[tuple[int, int]] = frozenset()
   ```
-- **Common mistakes.** Omitting `_static_axes` when `static_dims` is non-empty (default `frozenset()` silently disables static-axis projection in `_cache_key`); negative axis indices (must be non-negative per [`op_base.py`](../tileops/ops/op_base.py)); empty `_static_axes` without overriding `_cache_key` (emits a once-per-type `UserWarning` — see [Optional Hooks (Appendix)](#optional-hooks-appendix)).
+- **Common mistakes.** Omitting `_static_axes` entirely when `static_dims` is non-empty (relies on `Op`'s empty default, silently disables static-axis projection in `_cache_key`); emitting a literal `(input_index, axis)` pair when `axis` is actually a ctor param (produces a wrong axis under arbitrary rank); negative axis indices (must be non-negative per [`op_base.py`](../tileops/ops/op_base.py)); empty `_static_axes` without overriding `_cache_key` (emits a once-per-type `UserWarning` — see [Optional Hooks (Appendix)](#optional-hooks-appendix)).
 
 ## Family-Base Protocol (Appendix) <a id="base-class-protocol"></a>
 
@@ -238,14 +246,14 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 ### `Op` base class attributes ([`tileops/ops/op_base.py`](../tileops/ops/op_base.py))
 
-| Attribute        | Type                          | Purpose                                                                                      |
-| ---------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
-| `kernel`         | `Kernel`                      | Kernel instance used by `forward()`                                                          |
-| `kernel_map`     | `Optional[Dict[str, Kernel]]` | Dispatched kernels keyed by name                                                             |
-| `dtype`          | `Optional[torch.dtype]`       | Computation dtype                                                                            |
-| `device`         | `Optional[str]`               | Device (default `'cuda'`)                                                                    |
-| `_output_shapes` | `Optional[Dict[str, tuple]]`  | Inferred output shapes (populated at init or forward)                                        |
-| `_static_axes`   | `frozenset[tuple[int, int]]`  | Static axes as `(input_index, axis)` pairs (default `frozenset()`); consumed by `_cache_key` |
+| Attribute      | Type                                 | Purpose                                                                                      |
+| -------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `kernel`       | `Kernel`                             | Kernel instance used by `forward()`                                                          |
+| `kernel_map`   | `Optional[Dict[str, Kernel]]`        | Dispatched kernels keyed by name                                                             |
+| `dtype`        | `Optional[torch.dtype]`              | Computation dtype                                                                            |
+| `device`       | `Optional[Union[torch.device, str]]` | Device (default `'cuda'`)                                                                    |
+| `input_shapes` | `Optional[list[tuple]]`              | Expected input tensor shapes (for introspection and non-runtime consumers)                   |
+| `_static_axes` | `frozenset[tuple[int, int]]`         | Static axes as `(input_index, axis)` pairs (default `frozenset()`); consumed by `_cache_key` |
 
 Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-driven methods (codegen-emitted by concrete ops): `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
 
