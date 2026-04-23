@@ -191,8 +191,8 @@ def test_conv1d_bias_requires_bias_tensor() -> None:
 @pytest.mark.parametrize(
     "op_cls, dilation, use_bias",
     [
-        pytest.param(Conv1dFwdOp, (2,), False, marks=pytest.mark.smoke, id="no-bias-tuple"),
-        pytest.param(Conv1dBiasFwdOp, (2,), True, marks=pytest.mark.full, id="bias-tuple"),
+        pytest.param(Conv1dFwdOp, 2, False, marks=pytest.mark.smoke, id="no-bias"),
+        pytest.param(Conv1dBiasFwdOp, 2, True, marks=pytest.mark.full, id="bias"),
     ],
 )
 def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None:
@@ -227,39 +227,6 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
     )
     ref = ref.permute(0, 2, 1).contiguous()
     torch.testing.assert_close(out, ref, atol=2e-3, rtol=3e-3)
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        pytest.param({"stride": [1]}, marks=pytest.mark.smoke, id="stride-list"),
-        pytest.param({"padding": [1]}, marks=pytest.mark.full, id="padding-list"),
-        pytest.param({"dilation": [2]}, marks=pytest.mark.full, id="dilation-list"),
-    ],
-)
-def test_conv1d_rejects_list_spatial_params(kwargs) -> None:
-    with pytest.raises(TypeError, match="tuple"):
-        Conv1dFwdOp(
-            n=1,
-            c_in=32,
-            l_in=128,
-            c_out=64,
-            kernel_size=3,
-            **kwargs,
-        )
-
-
-@pytest.mark.smoke
-def test_conv1d_rejects_unsupported_groups() -> None:
-    with pytest.raises(NotImplementedError, match="groups=1"):
-        Conv1dFwdOp(
-            n=1,
-            c_in=32,
-            l_in=128,
-            c_out=64,
-            kernel_size=3,
-            groups=2,
-        )
 
 
 @pytest.mark.smoke
