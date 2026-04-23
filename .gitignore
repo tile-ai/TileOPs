@@ -65,6 +65,7 @@ docs/plans/
 .humanize*
 .foundry/runs/
 .foundry/migrations/
+.foundry/plan/
 .foundry/config.local.json
 
 CLAUDE.local.md
