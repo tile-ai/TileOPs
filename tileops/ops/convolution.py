@@ -34,20 +34,27 @@ def _conv_padding_to_tuple(
     stride: Tuple[int, ...],
     kernel_size: Tuple[int, ...],
     op_name: str,
+    dilation: Optional[Tuple[int, ...]] = None,
 ) -> Tuple[int, ...]:
     dims = len(kernel_size)
+    if dilation is None:
+        dilation = (1,) * dims
     if isinstance(padding, str):
         if padding == "valid":
             return (0,) * dims
         if padding == "same":
             if any(axis_stride != 1 for axis_stride in stride):
                 raise ValueError(f"{op_name} padding='same' requires stride == 1")
-            if any(axis_kernel % 2 == 0 for axis_kernel in kernel_size):
+            effective_kernel = tuple(
+                axis_dilation * (axis_kernel - 1) + 1
+                for axis_kernel, axis_dilation in zip(kernel_size, dilation, strict=True)
+            )
+            if any(axis_kernel % 2 == 0 for axis_kernel in effective_kernel):
                 raise ValueError(
-                    f"{op_name} padding='same' requires odd kernel_size values "
+                    f"{op_name} padding='same' requires odd effective kernel_size values "
                     "with the current symmetric padding kernel"
                 )
-            return tuple(axis_kernel // 2 for axis_kernel in kernel_size)
+            return tuple(axis_kernel // 2 for axis_kernel in effective_kernel)
         raise ValueError(
             f"{op_name} padding must be an int, {dims}-element tuple, 'valid', or 'same'"
         )
@@ -61,6 +68,14 @@ def _validate_positive_int(name: str, value: int, op_name: str) -> None:
         raise ValueError(f"{op_name} {name} must be greater than zero")
 
 
+def _validate_conv_groups(op_name: str, c_in: int, c_out: int, groups: int) -> None:
+    _validate_positive_int("groups", groups, op_name)
+    if c_in % groups != 0:
+        raise ValueError(f"{op_name} c_in must be divisible by groups")
+    if c_out % groups != 0:
+        raise ValueError(f"{op_name} c_out must be divisible by groups")
+
+
 def _validate_conv_params(
     *,
     op_name: str,
@@ -68,16 +83,27 @@ def _validate_conv_params(
     kernel_size: Tuple[int, ...],
     stride: Tuple[int, ...],
     padding: Tuple[int, ...],
+    dilation: Optional[Tuple[int, ...]] = None,
 ) -> None:
     ndim = len(input_size)
-    if len(kernel_size) != ndim or len(stride) != ndim or len(padding) != ndim:
-        raise ValueError(f"{op_name} kernel_size, stride, and padding must match dimensionality")
+    if dilation is None:
+        dilation = (1,) * ndim
+    if (
+        len(kernel_size) != ndim
+        or len(stride) != ndim
+        or len(padding) != ndim
+        or len(dilation) != ndim
+    ):
+        raise ValueError(
+            f"{op_name} kernel_size, stride, padding, and dilation must match dimensionality"
+        )
 
     for name, values in (
         ("input_size", input_size),
         ("kernel_size", kernel_size),
         ("stride", stride),
         ("padding", padding),
+        ("dilation", dilation),
     ):
         if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
             raise TypeError(f"{op_name} {name} must contain only ints")
@@ -90,11 +116,13 @@ def _validate_conv_params(
         raise ValueError(f"{op_name} stride must be greater than zero")
     if any(v < 0 for v in padding):
         raise ValueError(f"{op_name} padding must be non-negative")
+    if any(v <= 0 for v in dilation):
+        raise ValueError(f"{op_name} dilation must be greater than zero")
 
     output_size = tuple(
-        (input_dim + 2 * pad - kernel_dim) // stride_dim + 1
-        for input_dim, kernel_dim, stride_dim, pad in zip(
-            input_size, kernel_size, stride, padding, strict=True
+        (input_dim + 2 * pad - dilation_dim * (kernel_dim - 1) - 1) // stride_dim + 1
+        for input_dim, kernel_dim, stride_dim, pad, dilation_dim in zip(
+            input_size, kernel_size, stride, padding, dilation, strict=True
         )
     )
     if any(v <= 0 for v in output_size):
@@ -118,6 +146,8 @@ class Conv1dFwdOp(Op):
         kernel_size: int | Tuple[int],
         stride: int | Tuple[int] = 1,
         padding: int | Tuple[int] | str = 0,
+        dilation: int | Tuple[int] = 1,
+        groups: int = 1,
         bias: bool = False,
         dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -127,23 +157,32 @@ class Conv1dFwdOp(Op):
         _validate_positive_int("c_in", c_in, "Conv1d")
         _validate_positive_int("l_in", l_in, "Conv1d")
         _validate_positive_int("c_out", c_out, "Conv1d")
+        _validate_conv_groups("Conv1d", c_in, c_out, groups)
+        if groups != 1:
+            raise NotImplementedError("Conv1d currently supports groups=1 only")
         self.n = n
         self.c_in = c_in
         self.l_in = l_in
         self.c_out = c_out
         kernel_size_tuple = _conv_tuple(kernel_size, 1, "kernel_size", "Conv1d")
         stride_tuple = _conv_tuple(stride, 1, "stride", "Conv1d")
-        padding_tuple = _conv_padding_to_tuple(padding, stride_tuple, kernel_size_tuple, "Conv1d")
+        dilation_tuple = _conv_tuple(dilation, 1, "dilation", "Conv1d")
+        padding_tuple = _conv_padding_to_tuple(
+            padding, stride_tuple, kernel_size_tuple, "Conv1d", dilation_tuple
+        )
         _validate_conv_params(
             op_name="Conv1d",
             input_size=(l_in,),
             kernel_size=kernel_size_tuple,
             stride=stride_tuple,
             padding=padding_tuple,
+            dilation=dilation_tuple,
         )
         self.kernel_size = kernel_size_tuple[0]
         self.stride = stride_tuple[0]
         self.padding = padding_tuple[0]
+        self.dilation = dilation_tuple[0]
+        self.groups = groups
         self.has_bias = bias
         self.dtype = dtype
 
@@ -158,6 +197,7 @@ class Conv1dFwdOp(Op):
             kernel_l=self.kernel_size,
             stride_l=self.stride,
             pad_l=self.padding,
+            dilation_l=self.dilation,
             dtype=dtype,
             has_bias=bias,
             tune=tune,
@@ -201,6 +241,8 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
         kernel_size: int | Tuple[int],
         stride: int | Tuple[int] = 1,
         padding: int | Tuple[int] | str = 0,
+        dilation: int | Tuple[int] = 1,
+        groups: int = 1,
         bias: bool = True,
         dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -213,7 +255,8 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
             )
         super().__init__(
             n=n, c_in=c_in, l_in=l_in, c_out=c_out,
-            kernel_size=kernel_size, stride=stride, padding=padding,
+            kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation,
+            groups=groups,
             bias=bias, dtype=dtype, kernel_map=kernel_map, tune=tune,
         )
 
