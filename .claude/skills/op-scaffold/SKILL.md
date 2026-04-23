@@ -47,7 +47,7 @@ Explicitly **out of scope** — leave empty, do not invent:
 
 - **Family-specific protocol variables** (e.g. `_op_kind` for reduction, `_op_name` for elementwise). Kernel-dispatch-convention-dependent; cannot be derived from the manifest. See [Family-Base Protocol (Appendix)](../../../docs/ops-design-reference.md#base-class-protocol).
 - **Optional hooks** (`_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`). Op-specific business logic; no manifest derivation.
-- **`_cache_key` override**. Required when `_static_axes` is empty, but the override logic depends on kernel math.
+- **`_cache_key` override**. Recommended for cache efficiency under dynamic shapes when `_static_axes` is empty — the `Op._cache_key` default is correctness-preserving (it keys by all non-static axis sizes) but may over-fragment under dynamic shapes and emits a once-per-type `UserWarning` to surface the missing override. The override logic depends on kernel math and is out of scope for scaffolding.
 - **Kernel implementations**. The scaffold only references the Kernel classes named in `source.kernel_map`; their implementation is out of scope.
 - **Tests and benchmarks**. Downstream skills (`spec-test`, `spec-bench`) own these.
 
@@ -59,14 +59,19 @@ These gaps are expected and acceptable. The resulting scaffold will raise `NotIm
 
 Load the manifest entry for `op_name`:
 
+Before running the snippet, substitute `<op_name>` with the requested manifest key (the skill's positional argument — agent literal substitution, not shell interpolation):
+
 ```bash
-python -c "
+python - "<op_name>" <<'PY'
+import sys
 import yaml
+
+op_name = sys.argv[1]
 with open('tileops/ops_manifest.yaml') as f:
     m = yaml.safe_load(f)
-entry = m['ops']['$op_name']
+entry = m['ops'][op_name]
 print(entry)
-"
+PY
 ```
 
 Extract: `family`, `status`, `signature.inputs`, `signature.outputs`, `signature.params`, `signature.static_dims`, `signature.shape_rules`, `source.kernel_map`, `source.op`, `source.kernel`, `roofline.vars`, `roofline.flops`, `roofline.bytes`.
@@ -198,8 +203,10 @@ If a slot's rule is ambiguous for the given manifest entry (e.g. multi-kernel `k
 
 Append to the package `__init__.py` at the parent directory of `source.op` (e.g., `tileops/ops/reduction/__init__.py`):
 
-1. One `from .<module> import <ClassName>` line placed under the grouping comment for this op's kernel. The comment header form is `# --- <KernelClassName> ops ---`, where `<KernelClassName>` is the primary Kernel class name from `source.kernel_map` (the single value for single-kernel ops; for multi-kernel ops, the value shared with other ops already grouped in the file). If no existing block references the kernel, create a new `# --- <KernelClassName> ops ---` block at the natural position (keep groups in kernel-name alphabetical order, or follow any existing convention in the file).
-1. A matching `<ClassName>` entry added to the module-level `__all__` list, preserving grouping order if `__all__` is commented into sections.
+1. One `from .<module> import <ClassName>` line, matching the file's existing style. Inspect the current `__init__.py` first:
+   - **File uses grouping comments `# --- <KernelClassName> ops ---`** (e.g., `tileops/ops/reduction/__init__.py`): place the import under the matching kernel block, where `<KernelClassName>` is the primary Kernel class name from `source.kernel_map` (the single value for single-kernel ops; for multi-kernel ops, the value shared with already-grouped siblings). If no existing block references the kernel, create a new `# --- <KernelClassName> ops ---` block at the natural position (keep groups in kernel-name alphabetical order, or follow any existing convention in the file).
+   - **File uses flat imports with no grouping comments** (e.g., `tileops/ops/norm/__init__.py`, `tileops/ops/attention/__init__.py`): append the import alongside the existing package imports following the current ordering convention (alphabetical by filename is common). Do NOT introduce new block comments — match the file's existing style.
+1. A matching `<ClassName>` entry added to the module-level `__all__` list. If `__all__` is commented into sections, preserve grouping order. If `__all__` is a flat list, update it flat — do not introduce new commented sections or other grouping scaffolding.
 
 ### 6. VALIDATE
 
@@ -207,11 +214,13 @@ Two checks in order. The first catches skill-bugs; the second catches spec disag
 
 **(a) §1 post-check (plan vs emitted)** — mechanical diff between `plan.json.locked_facts` and the facts extracted from the emitted file:
 
-Mechanical diff across **both** emitted artefacts (the new op file and the updated package `__init__.py`):
+Mechanical diff across **both** emitted artefacts (the new op file and the updated package `__init__.py`), using syntax-aware and text-aware checks as appropriate:
 
 - Parse the new file at `source.op` with `ast`. Extract class name, base class, import list, `__all__`, `__init__` kwarg names / defaults / types in order, `forward` parameter names, `default_kernel_map` dict, `_static_axes` class attribute.
-- Parse the updated `dirname(source.op)/__init__.py` with `ast`. Verify the exact `from .<module> import <ClassName>` line exists under the correct `# --- <KernelClassName> ops ---` block (or in a newly created, correctly-ordered block), and that `__all__` contains a matching `<ClassName>` entry in the right grouping / order when `__all__` is sectioned.
-- For each field in `locked_facts`, compare against the applicable artefact (op file for class-level facts; `__init__.py` for registration facts). Any mismatch is a skill bug — BLOCKED with a `§1 drift: <field>` row. The agent deviated from its own frozen contract during EMIT. Do NOT rationalize; do NOT edit the plan to match. Fix the emitted op file or `__init__.py`, or if the plan itself was wrong, revert and restart DRY_RUN.
+- For `dirname(source.op)/__init__.py`: use **both** `ast` and raw-source text.
+  - `ast`: verify the exact `from .<module> import <ClassName>` import exists and that `__all__` contains a matching `<ClassName>` entry.
+  - Raw source text / token-level inspection: verify the import sits under the correct `# --- <KernelClassName> ops ---` block when the file uses grouping comments, or that a newly created block was inserted in the correct order; verify `__all__` section placement when `__all__` is sectioned. Comment-delimited placement cannot be asserted from `ast` alone because comments are not preserved in the AST. When the file is flat-style (no grouping comments), skip the block-placement check — only presence + ordering matter.
+- For each field in `locked_facts`, compare against the applicable artefact using the appropriate extraction method (op-file facts from the `source.op` AST; `__init__.py` registration facts from AST plus raw-source / token inspection for comment-delimited placement). Any mismatch is a skill bug — BLOCKED with a `§1 drift: <field>` row. The agent deviated from its own frozen contract during EMIT. Do NOT rationalize; do NOT edit the plan to match. Fix the emitted op file or `__init__.py`, or if the plan itself was wrong, revert and restart DRY_RUN.
 
 **(b) Manifest validator** — scoped to this op via `--check-op` so that L0-L4 checks run even on a freshly scaffolded `status: spec-only` entry (the default run skips L1-L4 for `spec-only`):
 
@@ -257,7 +266,7 @@ Not filled (out of scope; hand-off to downstream):
   - Kernel implementation: <source.kernel>
   - Optional hooks: <list hook names if the family-base appendix documents any for this family>
   - Family protocol variables: <list if this family uses any, e.g. reduction's _op_kind>
-  - _cache_key override: required if _static_axes is empty
+  - _cache_key override: recommended for cache efficiency under dynamic shapes / empty _static_axes; the default is correctness-preserving but may over-fragment
 ```
 
 On SUCCESS, commit the new file + `__init__.py` update with message `[Feat][OPS] scaffold <op_name>`. On BLOCKED, leave the working tree dirty and return without committing — caller inspects and decides. In both cases, `plan.json` remains under `.foundry/plan/<op_name>/` for post-mortem / follow-up action.

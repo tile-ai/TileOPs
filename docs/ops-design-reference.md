@@ -113,7 +113,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 - **Rule.** Body sequence: (a) `self.<name> = <name>` per kwarg; (b) `self.dispatch_kernel(kernel_map)`; then branch by op shape:
   - **Fully-static op** (all non-static axes committed at ctor): (c-static) `self.kernel = self.kernel_map[<key>](...)` — kernel built once at init; (d-static) optionally precompute `self._infer_output_shapes(<input>_shape=(...))` eagerly if a caller needs the output shapes before `forward()`. The `Op` base class does not currently consume an `_output_shapes` attribute — do not introduce one unless a concrete consumer requires it.
-  - **Arbitrary-rank op** (at least one axis unknown until forward): (c-dyn) initialise `self._kernel_cache: Dict[tuple, Kernel] = {}` and defer kernel construction to `forward()` keyed by `_cache_key(*input_shapes)`; (d-dyn) defer `_infer_output_shapes` to `forward()` per unique input shape.
+  - **Arbitrary-rank op** (at least one axis unknown until forward): (c-dyn) initialise `self._kernel_cache: Dict[Hashable, Kernel] = {}` (the cache key follows `Op._cache_key`'s `Hashable` return type — often a tuple, but overrides may return `int` or other hashables) and defer kernel construction to `forward()` keyed by `self._cache_key(*input_shapes)`; (d-dyn) defer `_infer_output_shapes` to `forward()` per unique input shape.
 - **Derivation.** Each `self.*` assignment mirrors one S12 kwarg. Kernel-build positional args follow the kernel class's ctor (kernel author's API). "Fully-static" iff every `signature.inputs` shape axis is either a manifest `shape` dim name or a `static_dims` key resolvable at ctor; otherwise arbitrary-rank and the deferred branch applies.
 - **Example (arbitrary-rank; `CumsumFwdOp`).**
   ```python
@@ -125,7 +125,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   self.dispatch_kernel(kernel_map)
   # M unknown at init (only N committed via static_dims); kernel
   # is built lazily in forward() once M is derived.
-  self._kernel_cache: Dict[tuple, Kernel] = {}
+  self._kernel_cache: Dict[Hashable, Kernel] = {}
   ```
 - **Common mistakes.** `_infer_output_shapes` called before `dispatch_kernel`; hard-coding the kernel class instead of routing through `self.kernel_map`; building the kernel in `__init__` for an arbitrary-rank op (fails when a non-static axis value is required by the kernel ctor); omitting `self._kernel_cache` initialisation for the deferred branch (first forward-time cache lookup raises `AttributeError`).
 
