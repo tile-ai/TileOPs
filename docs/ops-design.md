@@ -93,7 +93,7 @@ class CumsumFwdOp(Op):
 
 ### Step 3: `_static_axes` + `__init__` signature and body
 
-**Input.** `static_dims` (literal-axis → class-level `_static_axes` frozenset; param-axis → empty default, bind in `__init__`); `signature.params`; `dtype`.
+**Input.** `static_dims` (literal-axis → class-level `_static_axes` frozenset; param-axis → empty class-level default, bind at `forward()` after `dim % x.ndim` normalization); `signature.params`; `dtype`.
 
 **Output.**
 

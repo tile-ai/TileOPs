@@ -217,17 +217,18 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S21: <a id="slot-s21"></a> `_static_axes` class attribute
 
-- **Rule.** Each concrete op declares `_static_axes: frozenset[tuple[int, int]]` of `(input_index, axis)` pairs committed at constructor time. `input_index` is the positional index in `signature.inputs`; `axis` is a non-negative integer within that input's shape. Empty frozenset is legal (means "no axes committed at ctor"). When the manifest expresses the axis via a ctor param (e.g., `static_dims: N: "x.shape[dim]"` where `dim` is a param), the axis is not known at class-definition time — the scaffold emits an empty class-level default and the concrete op binds `self._static_axes` inside `__init__` after resolving the param.
-- **Derivation.** Manifest `static_dims`; for each entry `<kwarg>: <tensor>.shape[<axis>]`: if `<axis>` is an integer literal, emit a class-level pair `(input_index_of_<tensor>, <axis>)`; if `<axis>` is a ctor param name, emit `_static_axes = frozenset()` at class level and `self._static_axes = frozenset({(i, <param> % ndim_at_forward)})` inside `__init__`. PyTorch-aligned reductions with `dim=None` → empty frozenset (see [manifest.md § Empty static_dims](manifest.md#empty-static_dims)).
+- **Rule.** Each concrete op declares `_static_axes: frozenset[tuple[int, int]]` of `(input_index, axis)` pairs committed at constructor time. `input_index` is the positional index in `signature.inputs`; `axis` is a non-negative integer within that input's shape. Empty frozenset is legal (means "no axes committed at ctor"). When the manifest expresses the axis via a ctor param (e.g., `static_dims: N: "x.shape[dim]"` where `dim` is a param and may be negative), the concrete `(input_index, axis)` pair cannot be resolved at `__init__` — `x.ndim` is unknown until a tensor is passed. The scaffold emits an empty class-level default; the concrete op binds `self._static_axes` inside `forward()` after normalizing the axis via `dim % x.ndim` (or equivalently inside a `_cache_key` override that projects the shape inline).
+- **Derivation.** Manifest `static_dims`; for each entry `<kwarg>: <tensor>.shape[<axis>]`: if `<axis>` is an integer literal, emit a class-level pair `(input_index_of_<tensor>, <axis>)`; if `<axis>` is a ctor param name, emit `_static_axes = frozenset()` at class level and assign `self._static_axes = frozenset({(i, <param> % x.ndim)})` inside `forward()` (after the `static_dims` commitment check), or override `_cache_key` to compute the same projection inline. PyTorch-aligned reductions with `dim=None` → empty frozenset (see [manifest.md § Empty static_dims](manifest.md#empty-static_dims)).
 - **Example.**
   ```python
   class CumsumFwdOp(Op):
-      # static_dims: N: "x.shape[dim]" — axis is parameter-dependent,
-      # so the class-level default is empty; bind in __init__ once `dim`
-      # is resolved against a concrete input rank.
+      # static_dims: N: "x.shape[dim]" — axis is parameter-dependent
+      # (and dim may be negative), so the concrete (input_index, axis)
+      # pair is resolved at forward() time after dim % x.ndim
+      # normalization. Class-level default is empty.
       _static_axes: frozenset[tuple[int, int]] = frozenset()
   ```
-- **Common mistakes.** Omitting `_static_axes` entirely when `static_dims` is non-empty (relies on `Op`'s empty default, silently disables static-axis projection in `_cache_key`); emitting a literal `(input_index, axis)` pair when `axis` is actually a ctor param (produces a wrong axis under arbitrary rank); negative axis indices (must be non-negative per [`op_base.py`](../tileops/ops/op_base.py)); empty `_static_axes` without overriding `_cache_key` (emits a once-per-type `UserWarning` — see [Optional Hooks (Appendix)](#optional-hooks-appendix)).
+- **Common mistakes.** Omitting `_static_axes` entirely when `static_dims` is non-empty (relies on `Op`'s empty default, silently disables static-axis projection in `_cache_key`); emitting a literal `(input_index, axis)` pair when `axis` is actually a ctor param (produces a wrong axis under arbitrary rank); binding `self._static_axes` inside `__init__` when the axis comes from a param — `x.ndim` is not known yet, so a negative `dim` cannot be normalized (bind at `forward()` instead); storing a negative axis (must be non-negative per [`op_base.py`](../tileops/ops/op_base.py)); empty `_static_axes` without overriding `_cache_key` (emits a once-per-type `UserWarning` — see [Optional Hooks (Appendix)](#optional-hooks-appendix)).
 
 ## Family-Base Protocol (Appendix) <a id="base-class-protocol"></a>
 
