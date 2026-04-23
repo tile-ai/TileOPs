@@ -9,7 +9,7 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.y
 
 ## Contract
 
-- **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml).
+- **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml) with `status: spec-only` and a non-empty `source.kernel_map`. `source.kernel_map` is manifest-level source of truth for Op→Kernel dispatch and cannot be derived by the scaffold (dispatch keys are kernel-internal conventions); adding it for a spec-only entry is a prerequisite manifest PR.
 - **Output**: new file at the exact path declared by manifest `source.op` (e.g., `tileops/ops/reduction/cumsum.py`), containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to the package `__init__.py` at that path's parent directory (e.g., `tileops/ops/reduction/__init__.py`) with a matching `__all__` entry. Note: the filesystem package directory (parent of `source.op`) is not always the same as the manifest `family` field — for example, `CumsumFwdOp` has `family: scan` but lives under `tileops/ops/reduction/`. Always key paths off `source.op`, never off `family`. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports **no errors** for this op. Warnings are allowed and passed through to the final summary.
 - **Termination (blocked)**: any validator error for `op_name` that the scaffold cannot fix by re-reading the playbook's slot rules. Do NOT commit; report with the failing rows from the validator.
@@ -77,8 +77,9 @@ Derive the target file path from `source.op` (e.g. `tileops/ops/reduction/cumsum
 
 - `op_name` present in `ops_manifest.yaml` → proceed; otherwise BLOCKED ("op not in manifest").
 - `status` field explicitly set to `spec-only` → proceed; `status: implemented` → BLOCKED ("op already implemented; use spec-implement to migrate"); missing `status` or any other value → BLOCKED ("manifest entry must declare a valid top-level `status`; the validator treats `status` as required").
-- Target file `source.op` does NOT exist → proceed; exists → BLOCKED ("target file already present; scaffold would overwrite").
+- `source.kernel_map` declared and non-empty → proceed; missing or empty → BLOCKED ("manifest entry needs `source.kernel_map` before scaffolding — add the dispatch map in a separate manifest PR per the trust model; the scaffold cannot invent dispatch keys because they are kernel-internal conventions"). Note: per `docs/manifest.md`, `source.kernel_map` is only required when `status: implemented`, so many existing `spec-only` entries lack it — these are the cases that need the manifest-PR prerequisite before scaffolding can run.
 - Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path").
+- Target file `source.op` does NOT exist → proceed; exists → BLOCKED ("target file already present; scaffold would overwrite").
 
 BLOCKED terminations return without writing any file.
 
