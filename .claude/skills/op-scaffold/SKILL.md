@@ -98,7 +98,7 @@ Verbatim extraction from the manifest entry. If the emitted file disagrees with 
   "locked_facts": {
     "op_name": "CumsumFwdOp",
     "class_name": "CumsumFwdOp",
-    "family": "reduction",
+    "family": "scan",
     "module_path": "tileops/ops/reduction/cumsum.py",
     "parent_class": "Op",
     "kernel_imports": [

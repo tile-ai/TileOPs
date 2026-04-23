@@ -112,7 +112,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 ### Slot S13: <a id="slot-s13"></a> `__init__` body
 
 - **Rule.** Body sequence: (a) `self.<name> = <name>` per kwarg; (b) `self.dispatch_kernel(kernel_map)`; then branch by op shape:
-  - **Fully-static op** (all non-static axes committed at ctor): (c-static) `self.kernel = self.kernel_map[<key>](...)` — kernel built once at init; (d-static) `self._output_shapes = self._infer_output_shapes(<input>_shape=(...))` — output shapes resolved at init.
+  - **Fully-static op** (all non-static axes committed at ctor): (c-static) `self.kernel = self.kernel_map[<key>](...)` — kernel built once at init; (d-static) optionally precompute `self._infer_output_shapes(<input>_shape=(...))` eagerly if a caller needs the output shapes before `forward()`. The `Op` base class does not currently consume an `_output_shapes` attribute — do not introduce one unless a concrete consumer requires it.
   - **Arbitrary-rank op** (at least one axis unknown until forward): (c-dyn) initialise `self._kernel_cache: Dict[tuple, Kernel] = {}` and defer kernel construction to `forward()` keyed by `_cache_key(*input_shapes)`; (d-dyn) defer `_infer_output_shapes` to `forward()` per unique input shape.
 - **Derivation.** Each `self.*` assignment mirrors one S12 kwarg. Kernel-build positional args follow the kernel class's ctor (kernel author's API). "Fully-static" iff every `signature.inputs` shape axis is either a manifest `shape` dim name or a `static_dims` key resolvable at ctor; otherwise arbitrary-rank and the deferred branch applies.
 - **Example (arbitrary-rank; `CumsumFwdOp`).**
@@ -171,7 +171,9 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   self._static_axes = frozenset({(0, dim)})
   M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
   self.M = M
-  key = (M,)
+  # default _cache_key projects non-static axes; override for coarser
+  # keying when kernel math permits (see Optional Hooks appendix).
+  key = self._cache_key(x.shape)
   if key not in self._kernel_cache:
       self._kernel_cache[key] = self.kernel_map["cumulative_fwd"](
           M, self.N, "sum", self.dtype, tune=self.tune
