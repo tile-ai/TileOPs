@@ -133,7 +133,7 @@ def test_conv1d(
     tune: bool,
 ) -> None:
     test = Conv1dTest(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, dtype)
-    op = Conv1dFwdOp(
+    op = Conv1dBiasFwdOp(
         n=n,
         c_in=c_in,
         l_in=l_in,
@@ -142,7 +142,6 @@ def test_conv1d(
         stride=stride,
         padding=padding,
         dilation=dilation,
-        bias=True,
         dtype=dtype,
         tune=tune,
     )
@@ -151,7 +150,7 @@ def test_conv1d(
 
 
 @pytest.mark.smoke
-def test_conv1d_accepts_zero_bias() -> None:
+def test_conv1d_no_bias_matches_torch() -> None:
     op = Conv1dFwdOp(
         n=1,
         c_in=32,
@@ -160,7 +159,25 @@ def test_conv1d_accepts_zero_bias() -> None:
         kernel_size=5,
         stride=2,
         padding=2,
-        bias=True,
+    )
+    x = torch.randn(1, 256, 32, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
+    out = op(x, weight)
+    ref = F.conv1d(x.permute(0, 2, 1).contiguous(), weight, bias=None, stride=2, padding=2)
+    ref = ref.permute(0, 2, 1).contiguous()
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_conv1d_bias_requires_bias_tensor() -> None:
+    op = Conv1dBiasFwdOp(
+        n=1,
+        c_in=32,
+        l_in=256,
+        c_out=64,
+        kernel_size=5,
+        stride=2,
+        padding=2,
     )
     x = torch.randn(1, 256, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
@@ -181,6 +198,7 @@ def test_conv1d_accepts_zero_bias() -> None:
 def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None:
     n, c_in, l_in, c_out, kernel_size = 1, 32, 128, 64, 3
     stride, padding = 1, 2
+    op_kwargs = {"bias": use_bias} if op_cls is Conv1dBiasFwdOp else {}
     op = op_cls(
         n=n,
         c_in=c_in,
@@ -190,7 +208,7 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
         stride=stride,
         padding=padding,
         dilation=dilation,
-        bias=use_bias,
+        **op_kwargs,
     )
     x = torch.randn(n, l_in, c_in, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(c_out, c_in, kernel_size, device="cuda", dtype=torch.float16).contiguous()
@@ -198,7 +216,7 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
         torch.randn(c_out, device="cuda", dtype=torch.float16).contiguous()
         if use_bias else None
     )
-    out = op(x, weight, bias)
+    out = op(x, weight, bias) if use_bias else op(x, weight)
     ref = F.conv1d(
         x.permute(0, 2, 1).contiguous(),
         weight,
@@ -254,7 +272,6 @@ def test_conv1d_dispatches_kernel() -> None:
         kernel_size=3,
         stride=1,
         padding=1,
-        bias=True,
     )
     assert isinstance(op.kernel, Conv1dKernel)
 

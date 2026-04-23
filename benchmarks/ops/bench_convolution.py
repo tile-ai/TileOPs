@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops import Conv1dFwdOp, Conv2dOp, Conv3dOp
+from tileops.ops import Conv1dBiasFwdOp, Conv2dOp, Conv3dOp
 
 
 class Conv1dBenchCase:
@@ -108,7 +108,7 @@ def test_conv1d_bench(
     x, weight, bias = inputs
     x_ncl = x.permute(0, 2, 1).contiguous()
 
-    op = Conv1dFwdOp(
+    op = Conv1dBiasFwdOp(
         n=n,
         c_in=c_in,
         l_in=l_in,
@@ -117,7 +117,6 @@ def test_conv1d_bench(
         stride=stride,
         padding=padding,
         dilation=dilation,
-        bias=True,
         dtype=dtype,
         tune=tune,
     )

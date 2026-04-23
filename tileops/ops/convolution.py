@@ -148,7 +148,6 @@ class Conv1dFwdOp(Op):
         padding: int | Tuple[int] | str = 0,
         dilation: int | Tuple[int] = 1,
         groups: int = 1,
-        bias: bool = False,
         dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -183,7 +182,7 @@ class Conv1dFwdOp(Op):
         self.padding = padding_tuple[0]
         self.dilation = dilation_tuple[0]
         self.groups = groups
-        self.has_bias = bias
+        self.has_bias = False
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
@@ -199,7 +198,7 @@ class Conv1dFwdOp(Op):
             pad_l=self.padding,
             dilation_l=self.dilation,
             dtype=dtype,
-            has_bias=bias,
+            has_bias=False,
             tune=tune,
         )
 
@@ -211,7 +210,6 @@ class Conv1dFwdOp(Op):
         self,
         input: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         _validate_tensor_shape("Conv1d", "input", input, (self.n, self.l_in, self.c_in))
         _validate_tensor_shape(
@@ -220,9 +218,7 @@ class Conv1dFwdOp(Op):
             weight,
             (self.c_out, self.c_in, self.kernel_size),
         )
-        if bias is not None:
-            _validate_tensor_shape("Conv1d", "bias", bias, (self.c_out,))
-        return self.kernel(input, weight, bias)
+        return self.kernel(input, weight, None)
 
 
 class Conv1dBiasFwdOp(Conv1dFwdOp):
@@ -253,12 +249,71 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
                 "Conv1dBiasFwdOp requires bias=True. "
                 "Use Conv1dFwdOp for the no-bias variant."
             )
-        super().__init__(
-            n=n, c_in=c_in, l_in=l_in, c_out=c_out,
-            kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation,
-            groups=groups,
-            bias=bias, dtype=dtype, kernel_map=kernel_map, tune=tune,
+        _validate_positive_int("n", n, "Conv1d")
+        _validate_positive_int("c_in", c_in, "Conv1d")
+        _validate_positive_int("l_in", l_in, "Conv1d")
+        _validate_positive_int("c_out", c_out, "Conv1d")
+        _validate_conv_groups("Conv1d", c_in, c_out, groups)
+        if groups != 1:
+            raise NotImplementedError("Conv1d currently supports groups=1 only")
+        self.n = n
+        self.c_in = c_in
+        self.l_in = l_in
+        self.c_out = c_out
+        kernel_size_tuple = _conv_tuple(kernel_size, 1, "kernel_size", "Conv1d")
+        stride_tuple = _conv_tuple(stride, 1, "stride", "Conv1d")
+        dilation_tuple = _conv_tuple(dilation, 1, "dilation", "Conv1d")
+        padding_tuple = _conv_padding_to_tuple(
+            padding, stride_tuple, kernel_size_tuple, "Conv1d", dilation_tuple
         )
+        _validate_conv_params(
+            op_name="Conv1d",
+            input_size=(l_in,),
+            kernel_size=kernel_size_tuple,
+            stride=stride_tuple,
+            padding=padding_tuple,
+            dilation=dilation_tuple,
+        )
+        self.kernel_size = kernel_size_tuple[0]
+        self.stride = stride_tuple[0]
+        self.padding = padding_tuple[0]
+        self.dilation = dilation_tuple[0]
+        self.groups = groups
+        self.has_bias = True
+        self.dtype = dtype
+
+        self.dispatch_kernel(kernel_map)
+        if "conv1d_kernel" not in self.kernel_map:
+            raise NotImplementedError("Conv1dBiasFwdOp requires 'conv1d_kernel' in kernel_map")
+        self.kernel = self.kernel_map["conv1d_kernel"](
+            n=n,
+            c_in=c_in,
+            l_in=l_in,
+            c_out=c_out,
+            kernel_l=self.kernel_size,
+            stride_l=self.stride,
+            pad_l=self.padding,
+            dilation_l=self.dilation,
+            dtype=dtype,
+            has_bias=True,
+            tune=tune,
+        )
+
+    def forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> torch.Tensor:
+        _validate_tensor_shape("Conv1d", "input", input, (self.n, self.l_in, self.c_in))
+        _validate_tensor_shape(
+            "Conv1d",
+            "weight",
+            weight,
+            (self.c_out, self.c_in, self.kernel_size),
+        )
+        _validate_tensor_shape("Conv1d", "bias", bias, (self.c_out,))
+        return self.kernel(input, weight, bias)
 
 
 def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
