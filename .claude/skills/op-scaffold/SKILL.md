@@ -10,8 +10,8 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.y
 ## Contract
 
 - **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml).
-- **Output**: new file at `tileops/ops/{family}/{snake_case_name}.py` containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to `tileops/ops/{family}/__init__.py` with a matching `__all__` entry. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
-- **Termination (success)**: `python scripts/validate_manifest.py` reports **no new errors** attributable to this op. Warnings are allowed and passed through to the final summary.
+- **Output**: new file at the exact path declared by manifest `source.op` (e.g., `tileops/ops/reduction/cumsum.py`), containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to the package `__init__.py` at that path's parent directory (e.g., `tileops/ops/reduction/__init__.py`) with a matching `__all__` entry. Note: the filesystem package directory (parent of `source.op`) is not always the same as the manifest `family` field — for example, `CumsumFwdOp` has `family: scan` but lives under `tileops/ops/reduction/`. Always key paths off `source.op`, never off `family`. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
+- **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports **no errors** for this op. Warnings are allowed and passed through to the final summary.
 - **Termination (blocked)**: any validator error for `op_name` that the scaffold cannot fix by re-reading the playbook's slot rules. Do NOT commit; report with the failing rows from the validator.
 - **Constraints**:
   - MUST NOT emit family-specific protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, `_kernel_handles_padding`, `_op_name`, `kernel_cls`).
@@ -71,12 +71,12 @@ print(entry)
 
 Extract: `family`, `status`, `signature.inputs`, `signature.outputs`, `signature.params`, `signature.static_dims`, `signature.shape_rules`, `source.kernel_map`, `source.op`, `source.kernel`, `roofline.vars`, `roofline.flops`, `roofline.bytes`.
 
-Derive the target file path from `source.op` (e.g. `tileops/ops/reduction/cumsum.py`). Family is `source.op`'s parent directory name. Module filename is `source.op`'s basename without `.py`.
+Derive the target file path from `source.op` (e.g. `tileops/ops/reduction/cumsum.py`). The **filesystem package directory** is `source.op`'s parent (e.g. `tileops/ops/reduction/`). Do not use the manifest `family` field to compute paths — it is a semantic label, and some ops have `family` distinct from their filesystem parent (e.g., `CumsumFwdOp` has `family: scan` but lives under `reduction/`). Module filename is `source.op`'s basename without `.py`.
 
 ### 2. PRE_CHECK
 
 - `op_name` present in `ops_manifest.yaml` → proceed; otherwise BLOCKED ("op not in manifest").
-- `status` is `spec-only` or absent → proceed; `status: implemented` → BLOCKED ("op already implemented; use spec-implement to migrate").
+- `status` field explicitly set to `spec-only` → proceed; `status: implemented` → BLOCKED ("op already implemented; use spec-implement to migrate"); missing `status` or any other value → BLOCKED ("manifest entry must declare a valid top-level `status`; the validator treats `status` as required").
 - Target file `source.op` does NOT exist → proceed; exists → BLOCKED ("target file already present; scaffold would overwrite").
 - Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path").
 
@@ -195,9 +195,9 @@ If a slot's rule is ambiguous for the given manifest entry (e.g. multi-kernel `k
 
 ### 5. REGISTER
 
-Append to `tileops/ops/{family}/__init__.py`:
+Append to the package `__init__.py` at the parent directory of `source.op` (e.g., `tileops/ops/reduction/__init__.py`):
 
-1. One `from .<module> import <ClassName>` line placed under the family's grouping comment (`# --- <KernelName> ops ---`). Create the comment block if the family doesn't have one yet.
+1. One `from .<module> import <ClassName>` line placed under the grouping comment for this op's kernel. The comment header form is `# --- <KernelClassName> ops ---`, where `<KernelClassName>` is the primary Kernel class name from `source.kernel_map` (the single value for single-kernel ops; for multi-kernel ops, the value shared with other ops already grouped in the file). If no existing block references the kernel, create a new `# --- <KernelClassName> ops ---` block at the natural position (keep groups in kernel-name alphabetical order, or follow any existing convention in the file).
 1. A matching `<ClassName>` entry added to the module-level `__all__` list, preserving grouping order if `__all__` is commented into sections.
 
 ### 6. VALIDATE
@@ -206,21 +206,20 @@ Two checks in order. The first catches skill-bugs; the second catches spec disag
 
 **(a) §1 post-check (plan vs emitted)** — mechanical diff between `plan.json.locked_facts` and the facts extracted from the emitted file:
 
-- Parse the new `tileops/ops/{family}/{name}.py` with `ast`.
+- Parse the new file at `source.op` with `ast`.
 - Extract class name, base class, import list, `__all__`, `__init__` kwarg names/defaults/types in order, `forward` parameter names, `default_kernel_map` dict, `_static_axes` class attribute.
 - For each field in `locked_facts`, compare. Any mismatch is a skill bug — BLOCKED with a `§1 drift: <field>` row. The agent deviated from its own frozen contract during EMIT. Do NOT rationalize; do NOT edit the plan to match. Fix the emitted file, or if the plan itself was wrong, revert and restart DRY_RUN.
 
-**(b) Manifest validator**:
+**(b) Manifest validator** — scoped to this op via `--check-op` so that L0-L4 checks run even on a freshly scaffolded `status: spec-only` entry (the default run skips L1-L4 for `spec-only`):
 
 ```bash
-python scripts/validate_manifest.py
+python scripts/validate_manifest.py --check-op <op_name>
 ```
 
-Classify every line in the output that mentions `op_name`:
+Classify every line in the output:
 
-- **ERROR** attributable to `op_name` → BLOCKED. Do not commit. Copy the full error row into the report. If the error is a parity failure (L2 or L3 per PR #1005), re-check the emitted `_infer_output_shapes` or `_validate_dtypes` against the manifest's `shape_rules` / `dtype` / `dtype_combos` before classifying as BLOCKED — the scaffold may have mis-emitted.
-- **ERROR** not attributable to `op_name` (pre-existing, other ops) → ignore, not blocking.
-- **WARNING** attributable to `op_name` → pass through to the report unchanged.
+- **ERROR** → BLOCKED. Do not commit. Copy the full error row into the report. If the error is a parity failure (L2 or L3 per PR #1005), re-check the emitted `_infer_output_shapes` or `_validate_dtypes` against the manifest's `shape_rules` / `dtype` / `dtype_combos` before classifying as BLOCKED — the scaffold may have mis-emitted.
+- **WARNING** → pass through to the report unchanged.
 
 Do NOT edit the manifest to silence an error. Do NOT set `parity_opt_out` to silence a parity error. If the scaffold cannot produce a body that satisfies the manifest, BLOCKED is the correct outcome.
 
@@ -232,7 +231,7 @@ Print a concise summary in this format. The REPORT is the single surface where p
 Status: SUCCESS | BLOCKED
 Op: <op_name>
 File: <path> (<lines>)
-Package registration: tileops/ops/<family>/__init__.py (+1 import, +1 __all__)
+Package registration: <parent-of-source.op>/__init__.py (+1 import, +1 __all__)
 Plan: .foundry/plan/<op_name>/plan.json
 
 §1 drift: <none, or list of <field>: <plan value> vs <emitted value>>
