@@ -30,7 +30,7 @@ stateDiagram-v2
     PRE_CHECK --> BLOCKED: precondition failed
     DRY_RUN --> EMIT: plan.json written
     EMIT --> REGISTER: file written per plan §1 facts
-    REGISTER --> VALIDATE: family __init__.py updated
+    REGISTER --> VALIDATE: package __init__.py (parent of source.op) updated
     VALIDATE --> REPORT: validator + §1 post-check classified
     VALIDATE --> BLOCKED: validator errors attributable to this op, or §1 drift
     REPORT --> [*]
@@ -207,9 +207,11 @@ Two checks in order. The first catches skill-bugs; the second catches spec disag
 
 **(a) §1 post-check (plan vs emitted)** — mechanical diff between `plan.json.locked_facts` and the facts extracted from the emitted file:
 
-- Parse the new file at `source.op` with `ast`.
-- Extract class name, base class, import list, `__all__`, `__init__` kwarg names/defaults/types in order, `forward` parameter names, `default_kernel_map` dict, `_static_axes` class attribute.
-- For each field in `locked_facts`, compare. Any mismatch is a skill bug — BLOCKED with a `§1 drift: <field>` row. The agent deviated from its own frozen contract during EMIT. Do NOT rationalize; do NOT edit the plan to match. Fix the emitted file, or if the plan itself was wrong, revert and restart DRY_RUN.
+Mechanical diff across **both** emitted artefacts (the new op file and the updated package `__init__.py`):
+
+- Parse the new file at `source.op` with `ast`. Extract class name, base class, import list, `__all__`, `__init__` kwarg names / defaults / types in order, `forward` parameter names, `default_kernel_map` dict, `_static_axes` class attribute.
+- Parse the updated `dirname(source.op)/__init__.py` with `ast`. Verify the exact `from .<module> import <ClassName>` line exists under the correct `# --- <KernelClassName> ops ---` block (or in a newly created, correctly-ordered block), and that `__all__` contains a matching `<ClassName>` entry in the right grouping / order when `__all__` is sectioned.
+- For each field in `locked_facts`, compare against the applicable artefact (op file for class-level facts; `__init__.py` for registration facts). Any mismatch is a skill bug — BLOCKED with a `§1 drift: <field>` row. The agent deviated from its own frozen contract during EMIT. Do NOT rationalize; do NOT edit the plan to match. Fix the emitted op file or `__init__.py`, or if the plan itself was wrong, revert and restart DRY_RUN.
 
 **(b) Manifest validator** — scoped to this op via `--check-op` so that L0-L4 checks run even on a freshly scaffolded `status: spec-only` entry (the default run skips L1-L4 for `spec-only`):
 
