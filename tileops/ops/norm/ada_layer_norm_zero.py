@@ -74,6 +74,10 @@ class AdaLayerNormZeroFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"ada_layer_norm": AdaLayerNormKernel}
 
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        return 6 * self.M * self.N, 5 * self.M * self.N * elem_bytes
+
     def forward(
         self,
         x: torch.Tensor,

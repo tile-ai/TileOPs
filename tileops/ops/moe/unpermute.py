@@ -57,6 +57,18 @@ class MoeUnpermuteFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"unpermute_kernel": MoeUnpermuteKernel}
 
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        flops = 2 * self.num_tokens * self.top_k * self.hidden_size
+        mem_bytes = (
+            (self.num_tokens * self.top_k * self.hidden_size
+             + self.num_tokens * self.hidden_size)
+            * elem_bytes
+            + self.num_tokens * self.top_k * 4
+            + self.num_tokens * self.top_k * 4
+        )
+        return flops, mem_bytes
+
     def forward(
         self,
         mm2_pad: torch.Tensor,

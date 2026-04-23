@@ -24,10 +24,10 @@ _ARGMIN_OP = "ArgminFwdOp"
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_ARGMAX_OP))
 def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     workload = ArgmaxTest(shape, dtype)
-    bm = ManifestBenchmark(_ARGMAX_OP, workload)
     inputs = workload.gen_inputs()
 
     op = ArgmaxFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_ARGMAX_OP, op, workload)
     # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
     #
     # Broken invariant: benchmark must execute all manifest workload shapes
@@ -57,10 +57,10 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_ARGMIN_OP))
 def test_argmin_bench(shape: tuple, dtype: torch.dtype) -> None:
     workload = ArgminTest(shape, dtype)
-    bm = ManifestBenchmark(_ARGMIN_OP, workload)
     inputs = workload.gen_inputs()
 
     op = ArgminFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_ARGMIN_OP, op, workload)
     # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
     #
     # Broken invariant: benchmark must execute all manifest workload shapes

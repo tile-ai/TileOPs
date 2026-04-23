@@ -1,4 +1,8 @@
-"""Tests for tileops.ops.op_base Op._cache_key default + runtime warnings."""
+"""Tests for tileops.ops.op_base.
+
+Covers ``Op._cache_key`` default behavior and the runtime warning fired when
+a subclass with empty ``_static_axes`` does not override ``_cache_key``.
+"""
 
 import warnings
 

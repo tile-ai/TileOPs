@@ -31,7 +31,7 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.manifest import eval_roofline, load_workloads
+from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeUnpermuteFwdOp
 from workloads.moe import MoeUnpermuteTest
 
@@ -46,17 +46,13 @@ class MoeUnpermuteBenchmark(BenchmarkBase[MoeUnpermuteTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.workload
-            elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-            self._roofline_cache = eval_roofline(
-                _OP_NAME,
-                total_tokens=t.total_tokens,
-                top_k=t.top_k,
-                hidden_size=t.hidden_size,
-                elem_bytes=elem_bytes,
-            )
+            self._roofline_cache = self._op.eval_roofline()
         return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
@@ -96,11 +92,11 @@ def _manifest_params():
 def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) -> None:
     dtype = torch.bfloat16
     test = MoeUnpermuteTest(total_tokens, top_k, hidden_size, dtype)
-    bm = MoeUnpermuteBenchmark(test)
     mm2_pad, fwd_idx, topk_weights = test.gen_inputs()
 
     # TileOPs
     op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden_size, dtype)
+    bm = MoeUnpermuteBenchmark(test, op)
     op(mm2_pad, fwd_idx, topk_weights)  # warmup / JIT compile
     torch.cuda.synchronize()
 

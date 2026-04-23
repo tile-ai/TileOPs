@@ -1,6 +1,6 @@
 import warnings
 from abc import ABC, abstractmethod
-from typing import Dict, FrozenSet, Hashable, Optional, Tuple, Union
+from typing import Hashable, Optional, Union
 
 import torch
 
@@ -9,7 +9,6 @@ from tileops.utils import get_sm_version
 
 # Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
 _EMPTY_STATIC_DIMS_WARNED: set = set()
-
 
 class Op(ABC):
     """Base class for TileOPs operations.
@@ -42,7 +41,7 @@ class Op(ABC):
     """
 
     kernel: Kernel
-    kernel_map: Optional[Dict[str, Kernel]] = None
+    kernel_map: Optional[dict[str, Kernel]] = None
     dtype: Optional[torch.dtype] = None
     device: Optional[Union[torch.device, str]] = 'cuda'
     input_shapes: Optional[list[tuple]] = None
@@ -51,14 +50,92 @@ class Op(ABC):
     # `input_index` is the position in *input_shapes; `axis` is a non-negative
     # axis index within that shape. Subclasses set this to reflect their
     # manifest `static_dims`. Default empty = no committed axes.
-    _static_axes: FrozenSet[Tuple[int, int]] = frozenset()
+    _static_axes: frozenset[tuple[int, int]] = frozenset()
 
     @property
     @abstractmethod
-    def default_kernel_map(self) -> Dict[str, Kernel]:
+    def default_kernel_map(self) -> dict[str, Kernel]:
         raise NotImplementedError("Op must implement default_kernel_map")
 
-    def dispatch_kernel(self, kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
+    def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        """Infer output tensor shapes from input shapes.
+
+        Concrete ops override this with a signature matching the named input
+        shapes declared in their manifest ``shape_rules`` section (e.g.
+        ``_infer_output_shapes(self, x_shape, weight_shape)``). The uniform
+        ``**shape_kwargs`` base signature exists only to make the L1 contract
+        grepable and discoverable; see docs/ops-design.md §``_infer_output_shapes``.
+        """
+        # FIXME(staged-rollout): L1 Op does not yet strictly enforce _infer_output_shapes
+        # via @abstractmethod; base raises NotImplementedError instead.
+        #
+        # Broken invariant: L1 base does not strictly enforce implementation
+        #     of _infer_output_shapes on every concrete Op subclass.
+        # Why: Introducing @abstractmethod now would break all existing concrete
+        #     ops under tileops/ops/ that have not yet been migrated to the spec
+        #     in docs/ops-design.md; the trust model requires a separate
+        #     per-op migration PR.
+        # Cleanup: once all concrete ops under tileops/ops/ implement
+        #     _infer_output_shapes, _validate_dtypes, and eval_roofline,
+        #     convert this stub (and the two below) to `@abstractmethod`.
+        raise NotImplementedError(
+            "_infer_output_shapes must be implemented by the concrete Op subclass; "
+            "see docs/ops-design.md §`_infer_output_shapes` (codegen)")
+
+    def _validate_dtypes(self, *args: torch.Tensor) -> None:
+        """Validate dtypes of input tensors passed to ``forward``.
+
+        Concrete ops override this with a signature matching their manifest
+        ``signature.inputs`` (e.g. ``_validate_dtypes(self, x, weight)``).
+        See docs/ops-design.md §``_validate_dtypes``.
+        """
+        # FIXME(staged-rollout): L1 Op does not yet strictly enforce _validate_dtypes
+        # via @abstractmethod; base raises NotImplementedError instead.
+        #
+        # Broken invariant: L1 base does not strictly enforce implementation
+        #     of _validate_dtypes on every concrete Op subclass.
+        # Why: Introducing @abstractmethod now would break all existing concrete
+        #     ops under tileops/ops/ that have not yet been migrated to the spec
+        #     in docs/ops-design.md; the trust model requires a separate
+        #     per-op migration PR.
+        # Cleanup: once all concrete ops under tileops/ops/ implement
+        #     _infer_output_shapes, _validate_dtypes, and eval_roofline,
+        #     convert this stub (and the others) to `@abstractmethod`.
+        raise NotImplementedError(
+            "_validate_dtypes must be implemented by the concrete Op subclass; "
+            "see docs/ops-design.md §`_validate_dtypes` (codegen)")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance.
+
+        Per docs/roofline.md §4.4 and §4.4.6, each concrete op's
+        ``eval_roofline`` body is emitted by codegen as plain Python directly
+        over ``self.*`` attributes — there is no shared roofline expression
+        evaluator at L1, by design (§4.4.6 rejects "Op-local AST evaluator").
+        The L1 base only declares the contract; concrete ops supply the body.
+        """
+        # FIXME(staged-rollout): L1 Op does not yet strictly enforce eval_roofline
+        # via @abstractmethod; base raises NotImplementedError instead.
+        #
+        # Broken invariant: L1 base does not strictly enforce implementation
+        #     of eval_roofline on every concrete Op subclass.
+        # Why: Introducing @abstractmethod now would break every existing
+        #     concrete op under tileops/ops/ (none of them ship an
+        #     eval_roofline yet). The op-scaffold codegen work that will
+        #     generate these bodies per docs/roofline.md §4.4 is pre-
+        #     requisite; the trust model requires a separate per-op migration
+        #     PR to flip any given op from stub to generated body.
+        # Cleanup: once all concrete ops under tileops/ops/ implement
+        #     eval_roofline (via codegen emission per docs/roofline.md §4.4),
+        #     convert this stub and the two stubs above (_infer_output_shapes,
+        #     _validate_dtypes) to `@abstractmethod`.
+        raise NotImplementedError(
+            "eval_roofline must be implemented by the concrete Op subclass, "
+            "emitted per docs/roofline.md §4.4 (codegen); the L1 base "
+            "intentionally does not provide a generic evaluator — see "
+            "docs/roofline.md §4.4.6 (Evaluator Surface Boundary)")
+
+    def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         if self.default_kernel_map is None or len(self.default_kernel_map) == 0:
             raise ValueError("default_kernel_map must be non-empty")
         self.kernel_map = {}
@@ -81,14 +158,14 @@ class Op(ABC):
                 attr.autotune()
 
     @abstractmethod
-    def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, Tuple]:
+    def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
         raise NotImplementedError("forward method is not implemented")
 
-    def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, Tuple]:
+    def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
         """Make the op callable - delegates to forward()"""
         return self.forward(*args, **kwargs)
 
-    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
+    def _cache_key(self, *input_shapes: tuple[int, ...]) -> Hashable:
         """Return a cache key for kernel dispatch given forward-time input shapes.
 
         Default implementation returns the tuple of non-static-axis sizes across

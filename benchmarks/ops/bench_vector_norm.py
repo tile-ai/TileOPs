@@ -30,10 +30,10 @@ _INF_NORM_OP = "InfNormFwdOp"
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_L1_NORM_OP))
 def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = L1NormTest(shape, dtype)
-    bm = ManifestBenchmark(_L1_NORM_OP, test)
     inputs = test.gen_inputs()
 
     op = L1NormFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_L1_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -57,10 +57,10 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_L2_NORM_OP))
 def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = L2NormTest(shape, dtype)
-    bm = ManifestBenchmark(_L2_NORM_OP, test)
     inputs = test.gen_inputs()
 
     op = L2NormFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_L2_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:
@@ -84,10 +84,10 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_INF_NORM_OP))
 def test_inf_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = InfNormTest(shape, dtype)
-    bm = ManifestBenchmark(_INF_NORM_OP, test)
     inputs = test.gen_inputs()
 
     op = InfNormFwdOp(dtype=dtype)
+    bm = ManifestBenchmark(_INF_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
     except ValueError as exc:

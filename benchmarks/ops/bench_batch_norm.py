@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.manifest import eval_roofline, load_workloads
+from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.batch_norm import BatchNormBwdTest, BatchNormFwdTest
 
@@ -28,18 +28,13 @@ class BatchNormFwdBenchmark(BenchmarkBase[BatchNormFwdTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
-    def __init__(self, test, N, C, spatial):
+    def __init__(self, test, op):
         super().__init__(test)
-        self.N = N
-        self.C = C
-        self.spatial = spatial
+        self._op = op
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            L = self.N * math.prod(self.spatial) if self.spatial else self.N
-            elem_bytes = torch.tensor([], dtype=self.workload.dtype).element_size()
-            self._roofline_cache = eval_roofline(
-                _FWD_OP_NAME, C=self.C, L=L, elem_bytes=elem_bytes)
+            self._roofline_cache = self._op.eval_roofline()
         return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
@@ -53,18 +48,13 @@ class BatchNormBwdBenchmark(BenchmarkBase[BatchNormBwdTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
-    def __init__(self, test, N, C, spatial):
+    def __init__(self, test, op):
         super().__init__(test)
-        self.N = N
-        self.C = C
-        self.spatial = spatial
+        self._op = op
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            L = self.N * math.prod(self.spatial) if self.spatial else self.N
-            elem_bytes = torch.tensor([], dtype=self.workload.dtype).element_size()
-            self._roofline_cache = eval_roofline(
-                _BWD_OP_NAME, C=self.C, L=L, elem_bytes=elem_bytes)
+            self._roofline_cache = self._op.eval_roofline()
         return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
@@ -160,7 +150,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, tune=tune)
 
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
-    bm = BatchNormFwdBenchmark(test, N, C, spatial)
+    bm = BatchNormFwdBenchmark(test, op)
 
     result = bm.profile(lambda *a: op(*a, training=training), *inputs)
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
@@ -177,7 +167,7 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     op = BatchNormBwdOp(N, C, *spatial, dtype=dtype)
 
     test = BatchNormBwdTest(N, C, spatial, dtype)
-    bm = BatchNormBwdBenchmark(test, N, C, spatial)
+    bm = BatchNormBwdBenchmark(test, op)
 
     result = bm.profile(op, *inputs)
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
