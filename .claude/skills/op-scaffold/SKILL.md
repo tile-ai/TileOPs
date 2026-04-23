@@ -10,7 +10,7 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.y
 ## Contract
 
 - **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml).
-- **Output**: new file at `tileops/ops/{family}/{snake_case_name}.py` containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to `tileops/ops/{family}/__init__.py` with a matching `__all__` entry.
+- **Output**: new file at `tileops/ops/{family}/{snake_case_name}.py` containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to `tileops/ops/{family}/__init__.py` with a matching `__all__` entry. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
 - **Termination (success)**: `python scripts/validate_manifest.py` reports **no new errors** attributable to this op. Warnings are allowed and passed through to the final summary.
 - **Termination (blocked)**: any validator error for `op_name` that the scaffold cannot fix by re-reading the playbook's slot rules. Do NOT commit; report with the failing rows from the validator.
 - **Constraints**:
@@ -26,15 +26,18 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.y
 stateDiagram-v2
     [*] --> READ
     READ --> PRE_CHECK: manifest entry loaded
-    PRE_CHECK --> EMIT: preconditions satisfied
+    PRE_CHECK --> DRY_RUN: preconditions satisfied
     PRE_CHECK --> BLOCKED: precondition failed
-    EMIT --> REGISTER: file written
+    DRY_RUN --> EMIT: plan.json written
+    EMIT --> REGISTER: file written per plan §1 facts
     REGISTER --> VALIDATE: family __init__.py updated
-    VALIDATE --> REPORT: validator returns (errors + warnings classified)
-    VALIDATE --> BLOCKED: validator errors attributable to this op
+    VALIDATE --> REPORT: validator + §1 post-check classified
+    VALIDATE --> BLOCKED: validator errors attributable to this op, or §1 drift
     REPORT --> [*]
     BLOCKED --> [*]: return to caller with reason
 ```
+
+`DRY_RUN` is the skill's self-audit before codegen: agent freezes manifest-sourced facts as a JSON contract (`plan.json` §1), records its own judgement calls (§2), and tags open questions (§3). `VALIDATE` re-parses the emitted file and diffs it against §1 — any drift means the skill (agent) deviated from its own frozen contract, not that the manifest or docs are wrong.
 
 ## Scope boundary
 
@@ -79,7 +82,100 @@ Derive the target file path from `source.op` (e.g. `tileops/ops/reduction/cumsum
 
 BLOCKED terminations return without writing any file.
 
-### 3. EMIT
+### 3. DRY_RUN
+
+Before any code is emitted, produce a self-audit plan at `.foundry/plan/<op_name>/plan.json`. This is the skill's own contract — it freezes manifest-sourced facts so that later EMIT cannot silently drift, and it lets the agent record its own judgement calls and observations.
+
+The file has three top-level keys: `locked_facts`, `agent_notes`, `open_questions`.
+
+**`locked_facts` (§1) — non-negotiable, machine-diffed at VALIDATE**
+
+Verbatim extraction from the manifest entry. If the emitted file disagrees with any field here, VALIDATE raises a hard error (skill bug, not a manifest or doc issue).
+
+```json
+{
+  "locked_facts": {
+    "op_name": "CumsumFwdOp",
+    "class_name": "CumsumFwdOp",
+    "family": "reduction",
+    "module_path": "tileops/ops/reduction/cumsum.py",
+    "parent_class": "Op",
+    "kernel_imports": [
+      {"module": "tileops.kernels.reduction.cumulative", "symbol": "CumulativeKernel"}
+    ],
+    "kernel_map": {"cumulative_fwd": "CumulativeKernel"},
+    "init_kwargs": [
+      {"name": "N", "source": "static_dims", "type": "int", "default": null},
+      {"name": "dtype", "source": "dtype", "type": "torch.dtype", "default": null},
+      {"name": "dim", "source": "signature.params.dim", "type": "int", "default": -1}
+    ],
+    "forward_inputs": ["x"],
+    "forward_outputs": ["y"],
+    "dtype_unions": {"x": ["float32", "float16", "bfloat16"]},
+    "dtype_combos": null,
+    "shape_rules": ["-x.ndim <= dim < x.ndim", "y.shape == x.shape"],
+    "static_dims": {"N": "x.shape[dim]"},
+    "roofline": {
+      "vars": {
+        "M": "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])",
+        "N": "x.shape[dim % x.ndim]"
+      },
+      "flops": "M * N",
+      "bytes": "2 * M * N * elem_bytes"
+    }
+  }
+}
+```
+
+**`agent_notes` (§2) — agent discretion, NOT diffed at VALIDATE**
+
+Judgement calls and codebase observations that inform EMIT without being locked. Record them so the reasoning is auditable but not brittle.
+
+```json
+{
+  "agent_notes": {
+    "docstring_summary": "Cumulative sum operator: y = cumsum(x, dim=-1).",
+    "kernel_ctor_signature_observed": "CumulativeKernel(M, N, op_kind, dtype, tune=False)",
+    "helper_state_on_self": ["N_padded = align_up(N, DEFAULT_ALIGNMENT)", "_kernel_cache = {}"],
+    "forward_reshape_strategy": "movedim(dim, -1) + reshape to (M, N); restore via movedim(-1, dim)",
+    "codebase_references_consulted": [
+      "tileops/ops/reduction/cumsum.py (for helper-var names like N_padded)",
+      "tileops/kernels/reduction/cumulative.py (kernel ctor signature)"
+    ]
+  }
+}
+```
+
+**`open_questions` (§3) — tagged observations for post-run iteration, NOT blocking**
+
+Ambiguities the agent had to judgement-call through, plus anything that smells like it needs human or doc attention. This section does NOT block DRY_RUN or EMIT — the skill proceeds with the agent's best judgement. These items are surfaced in the final REPORT for follow-up.
+
+Each item carries a tag driving the follow-up action:
+
+- `needs_doc_fix` — design docs (`ops-design.md`, `ops-design-reference.md`, `roofline.md`, `manifest.md`) don't cover the case encountered. Follow-up: file a doc issue.
+- `needs_manifest_fix` — the op's manifest entry is missing or ambiguous (not a general-doc gap, this specific entry). Follow-up: file a manifest-PR.
+- `needs_human_decision` — a legitimate design call that's neither doc nor manifest's fault; this op needs a human to look at it. Follow-up: route to reviewer.
+
+```json
+{
+  "open_questions": [
+    {
+      "tag": "needs_human_decision",
+      "topic": "multi-kernel dispatch selection",
+      "detail": "kernel_map has 3 entries; chose 'mha_bwd' as primary. Confirm?"
+    },
+    {
+      "tag": "needs_doc_fix",
+      "topic": "fixed-rank vs arbitrary-rank in Step 3",
+      "detail": "playbook Step 3 Example is arbitrary-rank; fixed-rank branching is not spelled out in ops-design-reference.md"
+    }
+  ]
+}
+```
+
+DRY_RUN terminates by writing `plan.json` and proceeding to EMIT unconditionally. Empty `open_questions` is fine. Non-empty is fine. Only the validator and §1-drift checks in VALIDATE can BLOCK.
+
+### 4. EMIT
 
 Follow [`docs/ops-design.md` § Scaffolding an Op from a Manifest Entry](../../../docs/ops-design.md#scaffolding-an-op-from-a-manifest-entry) Steps 1-7 in order. For each scaffold slot, read the authoritative rule at `docs/ops-design-reference.md#slot-sN` before emitting.
 
@@ -97,16 +193,24 @@ Key slot pointers (follow the reference, do not re-derive):
 
 If a slot's rule is ambiguous for the given manifest entry (e.g. multi-kernel `kernel_map`, multiple independent dtype axes, fixed-rank vs arbitrary-rank branching), STOP and surface the ambiguity in the final report instead of guessing. Do not expand scope.
 
-### 4. REGISTER
+### 5. REGISTER
 
 Append to `tileops/ops/{family}/__init__.py`:
 
 1. One `from .<module> import <ClassName>` line placed under the family's grouping comment (`# --- <KernelName> ops ---`). Create the comment block if the family doesn't have one yet.
 1. A matching `<ClassName>` entry added to the module-level `__all__` list, preserving grouping order if `__all__` is commented into sections.
 
-### 5. VALIDATE
+### 6. VALIDATE
 
-Run the manifest validator on the full manifest (the validator filters by op internally):
+Two checks in order. The first catches skill-bugs; the second catches spec disagreements.
+
+**(a) §1 post-check (plan vs emitted)** — mechanical diff between `plan.json.locked_facts` and the facts extracted from the emitted file:
+
+- Parse the new `tileops/ops/{family}/{name}.py` with `ast`.
+- Extract class name, base class, import list, `__all__`, `__init__` kwarg names/defaults/types in order, `forward` parameter names, `default_kernel_map` dict, `_static_axes` class attribute.
+- For each field in `locked_facts`, compare. Any mismatch is a skill bug — BLOCKED with a `§1 drift: <field>` row. The agent deviated from its own frozen contract during EMIT. Do NOT rationalize; do NOT edit the plan to match. Fix the emitted file, or if the plan itself was wrong, revert and restart DRY_RUN.
+
+**(b) Manifest validator**:
 
 ```bash
 python scripts/validate_manifest.py
@@ -120,22 +224,32 @@ Classify every line in the output that mentions `op_name`:
 
 Do NOT edit the manifest to silence an error. Do NOT set `parity_opt_out` to silence a parity error. If the scaffold cannot produce a body that satisfies the manifest, BLOCKED is the correct outcome.
 
-### 6. REPORT
+### 7. REPORT
 
-Print a concise summary in this format:
+Print a concise summary in this format. The REPORT is the single surface where post-run iteration feedback leaves the skill — it is the only channel for `open_questions` to reach the caller.
 
 ```
 Status: SUCCESS | BLOCKED
 Op: <op_name>
 File: <path> (<lines>)
 Package registration: tileops/ops/<family>/__init__.py (+1 import, +1 __all__)
+Plan: .foundry/plan/<op_name>/plan.json
 
+§1 drift: <none, or list of <field>: <plan value> vs <emitted value>>
 Validator: <N errors, M warnings>
 <if BLOCKED, list each blocking error row verbatim>
 
 Warnings (not blocking):
   - <warning 1>
   - <warning 2>
+
+Open questions (post-run iteration; from plan.json §3):
+  needs_doc_fix:
+    - <topic>: <detail>
+  needs_manifest_fix:
+    - <topic>: <detail>
+  needs_human_decision:
+    - <topic>: <detail>
 
 Not filled (out of scope; hand-off to downstream):
   - Kernel implementation: <source.kernel>
@@ -144,7 +258,7 @@ Not filled (out of scope; hand-off to downstream):
   - _cache_key override: required if _static_axes is empty
 ```
 
-On SUCCESS, commit the new file + `__init__.py` update with message `[Feat][OPS] scaffold <op_name>`. On BLOCKED, leave the working tree dirty and return without committing — caller inspects and decides.
+On SUCCESS, commit the new file + `__init__.py` update with message `[Feat][OPS] scaffold <op_name>`. On BLOCKED, leave the working tree dirty and return without committing — caller inspects and decides. In both cases, `plan.json` remains under `.foundry/plan/<op_name>/` for post-mortem / follow-up action.
 
 ## Calibration against the playbook
 
