@@ -26,7 +26,7 @@ except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.manifest import eval_roofline, load_workloads
+from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteAlignFwdOp
 from workloads.moe import MoePermuteAlignTest
 
@@ -149,16 +149,13 @@ class MoePermuteAlignBenchmark(BenchmarkBase[MoePermuteAlignTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.workload
-            self._roofline_cache = eval_roofline(
-                _OP_NAME,
-                total_tokens=t.total_tokens,
-                top_k=t.top_k,
-                num_experts=t.num_experts,
-                block_size=t.block_size,
-            )
+            self._roofline_cache = self._op.eval_roofline()
         return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
@@ -200,11 +197,11 @@ def test_permute_align_bench(
 ) -> None:
     numel = total_tokens * top_k
     test = MoePermuteAlignTest(total_tokens, top_k, num_experts, block_size)
-    bm = MoePermuteAlignBenchmark(test)
     inputs = test.gen_inputs()
 
     # TileOPs
     op = MoePermuteAlignFwdOp(numel, num_experts, block_size)
+    bm = MoePermuteAlignBenchmark(test, op)
 
     # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)

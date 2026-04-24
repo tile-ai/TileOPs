@@ -56,6 +56,7 @@ class _SoftmaxBaseOp(Op):
         self._tune = tune
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, object] = {}
+        self._last_roofline_mn: tuple[int, int] | None = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -98,6 +99,7 @@ class _SoftmaxBaseOp(Op):
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
             M = prod(x.shape[:-1])
+            self._last_roofline_mn = (M, N)
             x = x.reshape(M, N)
             kernel = self._get_or_create_kernel(M, N, device_index=x.device.index)
             # Alignment padding is handled by the kernel's forward().
@@ -119,6 +121,7 @@ class _SoftmaxBaseOp(Op):
         # N = size along reduction dim, M = product of all other dims.
         N = x.shape[dim]
         M = prod(s for i, s in enumerate(x.shape) if i != dim)
+        self._last_roofline_mn = (M, N)
 
         # If reduction dim is not the last, move it to the end.
         needs_transpose = dim != x.ndim - 1
@@ -139,6 +142,24 @@ class _SoftmaxBaseOp(Op):
             y = y[:, :N] if y.ndim == 2 else y
 
         return self._reshape_output(y, orig_shape, dim, needs_transpose)
+
+    def eval_roofline(self) -> tuple[int, int]:
+        if self._last_roofline_mn is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior forward() "
+                "call to bind dynamic input shape"
+            )
+        M, N = self._last_roofline_mn
+        elem_bytes = self.dtype.itemsize
+        if self._op_kind == "softmax":
+            return 5 * M * N, 2 * M * N * elem_bytes
+        if self._op_kind == "log_softmax":
+            return 6 * M * N, 2 * M * N * elem_bytes
+        if self._op_kind == "logsumexp":
+            return 4 * M * N, (M * N + M) * elem_bytes
+        raise NotImplementedError(
+            f"{type(self).__name__} has unknown roofline op kind {self._op_kind!r}"
+        )
 
     def _get_or_create_kernel(self, M: int, N: int, device_index: int | None = None) -> object:
         """Return a cached kernel for (M, N, device_index), creating one if needed."""

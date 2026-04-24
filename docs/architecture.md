@@ -140,7 +140,7 @@ TileOPs/
 │   ├── ops/                          # L2: User-facing Op classes
 │   ├── utils/
 │   └── perf/                         # Roofline evaluation
-│       ├── roofline.py               # efficiency = sol_bound / actual
+│       ├── roofline.py               # efficiency = sol_time / actual_time
 │       ├── formulas.py               # Complex op roofline functions
 │       └── profiles/                 # GPU hardware parameters
 │           ├── h100.yaml

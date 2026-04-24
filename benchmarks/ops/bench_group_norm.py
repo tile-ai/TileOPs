@@ -1,4 +1,3 @@
-import math
 from typing import Optional
 
 import pytest
@@ -6,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.manifest import eval_roofline, load_workloads
+from tileops.manifest import load_workloads
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.group_norm import GroupNormTest
 
@@ -17,14 +16,13 @@ class GroupNormBenchmark(BenchmarkBase[GroupNormTest]):
 
     _roofline_cache: Optional[tuple[float, float]] = None
 
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
-            t = self.workload
-            spatial_size = math.prod(t.spatial)
-            elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-            self._roofline_cache = eval_roofline(
-                _OP_NAME, N=t.n, C=t.c,
-                spatial_size=spatial_size, elem_bytes=elem_bytes)
+            self._roofline_cache = self._op.eval_roofline()
         return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
@@ -52,10 +50,10 @@ def _manifest_params():
 def test_group_norm_bench(n: int, c: int, spatial: tuple, g: int,
                           dtype: torch.dtype, tune: bool) -> None:
     test = GroupNormTest(n, c, spatial, g, dtype)
-    bm = GroupNormBenchmark(test)
     inputs = test.gen_inputs()
 
     op = GroupNormFwdOp(N=n, C=c, spatial=spatial, G=g, dtype=dtype, tune=tune)
+    bm = GroupNormBenchmark(test, op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

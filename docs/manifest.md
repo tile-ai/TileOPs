@@ -53,7 +53,7 @@ dtype_combos:
 
 **R5. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R7).
 
-**R6. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). Names become roofline variables. No ellipsis or wildcards.
+**R6. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). No ellipsis or wildcards. Roofline variable binding is defined in [roofline.md](roofline.md).
 
 **R7. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `static_dims` declares values the user commits to at Op construction time (R20).
 
@@ -67,7 +67,7 @@ dtype_combos:
 
 **R13. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
 
-**R14. Roofline variable binding.** See [Roofline](#roofline).
+**R14. Roofline metadata.** See [roofline.md](roofline.md). That document is the source of truth for roofline modes, variable binding, formula syntax, consumers, and codegen behavior.
 
 **R15. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
 
@@ -121,7 +121,7 @@ def forward(self, x: torch.Tensor):
 
 ### Evaluation context
 
-Shared with `shape_rules` and `roofline.vars`: all `signature.inputs` tensor names (with `.shape` accessor) and all `signature.params` names.
+Shared with `shape_rules`: all `signature.inputs` tensor names (with `.shape` accessor) and all `signature.params` names.
 
 ### Multi-input example — LinearFwdOp
 
@@ -210,15 +210,16 @@ The validator enforces `assert cls.__name__ == manifest_key` — the manifest ke
 
 ## Entry Structure
 
-| Field       | Required | Description                                                   |
-| ----------- | -------- | ------------------------------------------------------------- |
-| `family`    | yes      | Op family. See [below](#family).                              |
-| `ref_api`   | yes      | External API reference, or `"none"` if no direct counterpart. |
-| `status`    | yes      | `spec-only` or `implemented`.                                 |
-| `signature` | yes      | Op interface. See [Signature](#signature).                    |
-| `workloads` | yes      | Benchmark shapes/dtypes.                                      |
-| `roofline`  | yes      | Performance model.                                            |
-| `source`    | yes      | Implementation paths.                                         |
+| Field            | Required | Description                                                                                                                                                                                                                                                   |
+| ---------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `family`         | yes      | Op family. See [below](#family).                                                                                                                                                                                                                              |
+| `ref_api`        | yes      | External API reference, or `"none"` if no direct counterpart.                                                                                                                                                                                                 |
+| `status`         | yes      | `spec-only` or `implemented`.                                                                                                                                                                                                                                 |
+| `signature`      | yes      | Op interface. See [Signature](#signature).                                                                                                                                                                                                                    |
+| `workloads`      | yes      | Benchmark shapes/dtypes.                                                                                                                                                                                                                                      |
+| `roofline`       | yes      | Performance model.                                                                                                                                                                                                                                            |
+| `source`         | yes      | Implementation paths.                                                                                                                                                                                                                                         |
+| `parity_opt_out` | no       | Suppress validator shape/dtype parity warnings for ops whose method genuinely needs GPU execution. Values: `true` (both), or list subset of `[shape_parity, dtype_parity]`. See [ops-design-reference.md § Consistency Enforcement](ops-design-reference.md). |
 
 ### `family`
 
@@ -301,32 +302,9 @@ Shape keys use `<tensor_name>_shape`. Op-specific parameters can be added per en
 
 ### Roofline
 
-| Mode          | Format                   | When                         |
-| ------------- | ------------------------ | ---------------------------- |
-| Inline        | `flops`/`bytes` only     | Fixed-rank ops with `shape`. |
-| Inline + vars | `vars` + `flops`/`bytes` | Arbitrary-rank ops.          |
-| Func          | `func: "module.path"`    | Complex formulas.            |
-
-**Variable binding (R14):**
-
-- `elem_bytes` — byte size of first input's dtype (built-in).
-- `shape` dimension names auto-bind as roofline variables.
-- `vars` — explicit mappings for arbitrary-rank ops. Evaluation context: tensor shapes, params, `product()`, arithmetic, `range()`, comprehensions.
-
-```yaml
-# Fixed rank — shape names auto-bind
-roofline:
-  flops: "2 * M * N * K"
-  bytes: "(M * K + K * N + M * N) * elem_bytes"
-
-# Arbitrary rank — explicit vars
-roofline:
-  vars:
-    M: "product(x.shape[:dim])"
-    N: "x.shape[dim]"
-  flops: "4 * M * N"
-  bytes: "(2 * M * N + N) * elem_bytes"
-```
+Roofline metadata is required on every manifest entry. Its modes,
+variable binding rules, formula syntax, consumers, and codegen behavior
+are defined in [roofline.md](roofline.md).
 
 ### Source
 
@@ -429,7 +407,7 @@ All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax 
 
 1. **Range validity.** Every axis must satisfy `-x.ndim <= d < x.ndim`. Out-of-range indices are invalid in PyTorch; the manifest must not silently wrap them with `% x.ndim`. Declare:
    `"dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"` (for ops accepting `None`), or drop the `dim is None or` prefix for ops that do not.
-1. **Normalize negatives.** Downstream shape_rules and `roofline.vars` apply `% x.ndim` only after step 1 has validated range, producing a canonical non-negative axis set `{d % x.ndim for d in dim}`.
+1. **Normalize negatives.** Downstream expressions apply `% x.ndim` only after step 1 has validated range, producing a canonical non-negative axis set `{d % x.ndim for d in dim}`.
 1. **Uniqueness (sequence only).** After normalization, entries must be pairwise distinct. PyTorch rejects duplicates. Declare:
    `"isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"`.
 
@@ -484,51 +462,24 @@ ops:
 
 ## Benchmark Pattern
 
-Benchmarks must use manifest-driven workloads:
-
-```python
-from tileops.manifest import eval_roofline, load_workloads
-
-_OP_NAME = "RMSNormFwdOp"
-
-
-def _manifest_params():
-    params = []
-    for w in load_workloads(_OP_NAME):
-        m, n = w["x_shape"]
-        label = w.get("label", f"{m}x{n}")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(m, n, dtype, True, id=f"{label}-{dtype_str}"))
-    return params
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
-def test_rms_norm_bench(m, n, dtype, tune): ...
-
-
-# Roofline
-flops, mem_bytes = eval_roofline(_OP_NAME, M=m, N=n, elem_bytes=elem_bytes)
-```
+Benchmarks must use manifest-driven workloads. See [testing.md](testing.md)
+for benchmark structure and [roofline.md](roofline.md) for roofline
+consumption.
 
 ### Workload entry schema
 
-Each entry under `workloads:` is a mapping. Three keys are reserved by the
-benchmark harness; everything else is treated as an **op-call parameter**
-and forwarded to `resolve_roofline_vars()` when the entry drives a
-benchmark. The `ManifestBenchmark` + `workloads_to_params` harness is
-scoped to **single-input ops whose sole tensor input is named `x`**, so
-`x_shape` is mandatory for manifest-driven benchmarks. Multi-input ops
-(attention families declaring `q_shape` / `kv_shape`, etc.) are out of
-scope for the current harness and must either ship a bespoke benchmark
-helper or wait for signature-aware tensor binding.
+Each entry under `workloads:` is a mapping. Shape keys take the form
+`<tensor_name>_shape` (e.g. `x_shape`, `q_shape`, `kv_shape`) — one per
+tensor input in the workload. `dtypes` and `label` are also reserved.
+Any other key becomes an **op-call parameter** forwarded to the op's
+`__init__`.
 
-| Key             | Required                             | Meaning                                                                                                  |
-| --------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| `x_shape`       | yes (for manifest-driven benchmarks) | Input tensor shape (list of ints). Required by `workloads_to_params`; missing keys raise `KeyError`.     |
-| `dtypes`        | yes                                  | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
-| `label`         | no                                   | Human-readable id used in the pytest param id and report tables.                                         |
-| *any other key* | no                                   | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
+| Key                   | Required | Meaning                                                                                                  |
+| --------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `<tensor_name>_shape` | yes      | Shape for a tensor input (list of ints). Include one key per tensor input the workload exercises.        |
+| `dtypes`              | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
+| `label`               | no       | Human-readable id used in the pytest param id and report tables.                                         |
+| *any other key*       | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
 
 Example — parametrizing a reduction workload over a non-last `dim`:
 
@@ -538,48 +489,17 @@ workloads:
   - {x_shape: [2048, 4096], dtypes: [bfloat16], dim:  0, label: "reduce-first"}
 ```
 
-### Manifest-driven roofline variables
-
-`ManifestBenchmark` evaluates the op's declared `roofline.vars` expressions
-against the concrete workload shape and op params, so M/N for non-last-axis
-or multi-axis reductions match what the op is actually called with (instead
-of a last-axis heuristic):
-
-```python
-from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
-
-
-# include_extra=True yields (shape, dtype, op_params) triples where
-# op_params carries any extra keys declared on the workload entry.
-@pytest.mark.parametrize(
-    "shape, dtype, op_params", workloads_to_params("SumFwdOp", include_extra=True)
-)
-def test_sum_bench(shape, dtype, op_params):
-    test = SumTest(shape, dtype)
-    bm = ManifestBenchmark("SumFwdOp", test, op_params=op_params)
-    # bm._roofline_vars() now resolves M/N from manifest.roofline.vars
-    # using op_params["dim"], op_params.get("keepdim"), etc.
-    ...
-```
-
-The expression evaluator exposes `product`, `isinstance`, `len`, `set`,
-`tuple`, `list`, `range`, `int`, `float`, `bool`, `min`, `max`, `sum`,
-`abs`, `log2`, `ceil`, `floor` — sufficient for the set/dict
-comprehensions used in reduction `vars`. Expressions run with
-`__builtins__` stripped, so `__import__` and similar escapes are
-unavailable.
-
 ## Manifest Validation
 
 [`scripts/validate_manifest.py`](../scripts/validate_manifest.py) runs five levels:
 
-| Level | Check     | Description                                                          |
-| ----- | --------- | -------------------------------------------------------------------- |
-| L0    | Schema    | Required fields exist, correct types                                 |
-| L1    | Signature | Params ⊆ `__init__()` ∪ `forward()` names; `forward()` order matches |
-| L2    | Shape     | `shape_rules` are valid Python expressions                           |
-| L3    | Dtype     | dtype strings are valid torch types or `same_as()` refs              |
-| L4    | Benchmark | Bench file imports `load_workloads` / `eval_roofline`                |
+| Level | Check     | Description                                                                                                                 |
+| ----- | --------- | --------------------------------------------------------------------------------------------------------------------------- |
+| L0    | Schema    | Required fields exist, correct types                                                                                        |
+| L1    | Signature | Params ⊆ `__init__()` ∪ `forward()` names; `forward()` order matches                                                        |
+| L2    | Shape     | `shape_rules` are valid Python expressions                                                                                  |
+| L3    | Dtype     | dtype strings are valid torch types or `same_as()` refs                                                                     |
+| L4    | Benchmark | Bench file imports/calls `load_workloads` and `eval_roofline` (directly or via `workloads_to_params` / `ManifestBenchmark`) |
 
 `spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on a targeted entry + its variants.
 

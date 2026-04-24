@@ -120,6 +120,13 @@ class BatchNormFwdOp(Op):
             "fwd_infer_kernel": BatchNormFwdInferKernel,
         }
 
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        return (
+            10 * self.C * self.L,
+            2 * self.C * self.L * elem_bytes + 4 * self.C * 4,
+        )
+
     def _prepare(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple]:
         """Reshape x to (C, L)."""
         return _reshape_to_CL(x)
@@ -238,6 +245,13 @@ class BatchNormBwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"bwd_kernel": BatchNormBwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        return (
+            8 * self.C * self.L,
+            3 * self.C * self.L * elem_bytes + 3 * self.C * 4,
+        )
 
     def _prepare(self, t: torch.Tensor) -> torch.Tensor:
         t_cl, _ = _reshape_to_CL(t)

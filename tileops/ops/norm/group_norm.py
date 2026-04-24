@@ -96,6 +96,13 @@ class GroupNormFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"group_norm": GroupNormKernel}
 
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        return (
+            5 * self.N * self.C * self.spatial_size,
+            (2 * self.N * self.C * self.spatial_size + 2 * self.C) * elem_bytes,
+        )
+
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         """Apply group normalization.
 

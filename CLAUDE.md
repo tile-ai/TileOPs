@@ -20,7 +20,7 @@ This project follows **design-first, spec-driven** development: design docs and 
 - [ops-design.md](docs/ops-design.md) — Op interface execution guide (how to add a new op)
 - [ops-design-reference.md](docs/ops-design-reference.md) — Op interface detail reference (interface tables, codegen, naming, protocol)
 - [manifest.md](docs/manifest.md) — `ops_manifest.yaml` spec format (signature, workloads, roofline, source)
-- [roofline.md](docs/roofline.md) — performance evaluation methodology (SOL bound, efficiency ratio, GPU profiles)
+- [roofline.md](docs/roofline.md) — `ops_manifest.yaml` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator / benchmark / M5 / codegen)
 
 ### Process
 

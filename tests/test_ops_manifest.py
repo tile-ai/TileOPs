@@ -229,59 +229,16 @@ class TestManifestAPI:
         with pytest.raises(KeyError, match="NonexistentOp"):
             load_workloads("NonexistentOp")
 
-    def test_eval_roofline_returns_tuple(self):
-        from tileops.manifest import eval_roofline
+    def test_manifest_does_not_expose_roofline_evaluator(self):
+        import tileops.manifest as manifest
 
-        flops, mem_bytes = eval_roofline("RMSNormFwdOp", M=2048, N=4096, elem_bytes=2)
-        assert isinstance(flops, float)
-        assert isinstance(mem_bytes, float)
-        assert flops > 0
-        assert mem_bytes > 0
-
-    def test_eval_roofline_rejects_object_traversal(self):
-        """Verify the AST evaluator blocks __class__/__mro__ attacks."""
-        from tileops.manifest import _safe_eval
-
-        with pytest.raises(ValueError):
-            _safe_eval("().__class__.__mro__[1].__subclasses__()", {})
-
-    def test_eval_roofline_rejects_import(self):
-        """Verify the AST evaluator blocks __import__ calls."""
-        from tileops.manifest import _safe_eval
-
-        with pytest.raises(ValueError):
-            _safe_eval("__import__('os').system('echo pwned')", {})
-
-    def test_safe_eval_arithmetic(self):
-        """Verify basic arithmetic works in the safe evaluator."""
-        from tileops.manifest import _safe_eval
-
-        assert _safe_eval("2 * M * N", {"M": 1024, "N": 4096}) == 2 * 1024 * 4096
-        assert _safe_eval("M + N - 1", {"M": 10, "N": 3}) == 12
-        assert _safe_eval("M ** 2", {"M": 4}) == 16
-        assert _safe_eval("-M", {"M": 5}) == -5
-
-    def test_eval_roofline_func_mode(self):
-        """Verify func-mode roofline dispatch resolves and calls the function."""
-        from tileops.manifest import eval_roofline
-
-        # Stubs raise NotImplementedError — dispatch succeeds if it reaches them
-        with pytest.raises(NotImplementedError):
-            eval_roofline("MultiHeadAttentionFwdOp")
-
-    def test_eval_roofline_func_mode_bad_module_raises(self):
-        """Verify func-mode raises ValueError for non-importable module."""
-
-        from tileops.manifest import _load_manifest, eval_roofline
-
-        ops = _load_manifest()
-        original = ops["MultiHeadAttentionFwdOp"]["roofline"]["func"]
-        try:
-            ops["MultiHeadAttentionFwdOp"]["roofline"]["func"] = "nonexistent.module.fn"
-            with pytest.raises(ValueError, match="Failed to import"):
-                eval_roofline("MultiHeadAttentionFwdOp")
-        finally:
-            ops["MultiHeadAttentionFwdOp"]["roofline"]["func"] = original
+        for name in (
+            "_safe_eval",
+            "eval_roofline",
+            "has_roofline_vars",
+            "resolve_roofline_vars",
+        ):
+            assert not hasattr(manifest, name)
 
 
 class TestCanonicalKeyResolution:
