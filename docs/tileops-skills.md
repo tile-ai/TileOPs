@@ -94,14 +94,19 @@ align-family <family>                    ← per-family orchestrator
 └─ [orchestrator] CLEANUP_GATE + CLEANUP + CREATE_PR
 
 align-op <op_name>                       ← per-op orchestrator
+├─ [orchestrator] PRE_CHECK
 ├─ [orchestrator] CLASSIFY
-├─ green:     scaffold-op
-├─ redesign:  [orchestrator] ARCHIVE + CLEAR → scaffold-op → PORT → KERNEL_CHECK
-├─ minor:     implement-op
+├─ [orchestrator] DISPATCH
+│   ├─ green:    scaffold-op
+│   ├─ redesign: [orchestrator] ARCHIVE + CLEAR → scaffold-op → PORT → KERNEL_CHECK
+│   └─ minor:    implement-op
 └─ shared downstream:
     ├─ test-op
     ├─ bench-op
-    └─ [orchestrator] FLIP_STATUS        ← only manifest writer
+    ├─ [orchestrator] REVALIDATE
+    ├─ [orchestrator] FLIP_STATUS        ← only manifest writer
+    ├─ [orchestrator] CLEANUP
+    └─ [orchestrator] REPORT
 ```
 
 `align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest; `align-op`'s FLIP_STATUS is the sole manifest-write site.
