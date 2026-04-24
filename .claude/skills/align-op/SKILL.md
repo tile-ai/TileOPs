@@ -12,7 +12,7 @@ description: Per-op orchestrator that brings a single op into alignment with its
 ## Contract
 
 - **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as scaffold-op; see [PRE_CHECK](#pre_check)).
-- **Path and data bindings used throughout this skill** (resolved by the orchestrator once at `READ`, then passed into every sub-skill invocation):
+- **Path and data bindings used throughout this skill** (resolved by the orchestrator once at `PRE_CHECK` when the manifest entry is first loaded, then passed into every sub-skill invocation):
   - `<source_op>` — manifest `source.op` path (e.g., `tileops/ops/reduction/cumsum.py`).
   - `<source_test>` — manifest `source.test` path (e.g., `tests/ops/test_cumulative.py`).
   - `<source_bench>` — manifest `source.bench` path.
@@ -158,13 +158,13 @@ implement-op(
 )
 ```
 
-Sub-skill does ANALYZE → DIAGNOSE → IMPLEMENT → VALIDATE → MARK_DONE → COMMIT. Op-align waits for SUCCESS or BLOCKED.
+Sub-skill does ANALYZE → DIAGNOSE → IMPLEMENT → VALIDATE → MARK_DONE → COMMIT. align-op waits for SUCCESS or BLOCKED.
 
 ### 4. Skipped anchor (reserved)
 
 ### <a id="kernel_check"></a>5. KERNEL_CHECK (redesign path only)
 
-Determine whether the kernel layer also needs work. Op-align does **not** modify kernel code; it surfaces the question.
+Determine whether the kernel layer also needs work. align-op does **not** modify kernel code; it surfaces the question.
 
 For each Kernel class referenced in `source.kernel_map`:
 
@@ -199,7 +199,7 @@ Write `.foundry/plan/<op_name>/kernel-check.json`:
 }
 ```
 
-Non-`aligned` entries surface in REPORT as `needs_kernel_work` follow-ups. Op-align itself continues to TEST — the downstream path may still pass if the kernel drift only affects performance (not correctness), or fail fast if the kernel mismatch causes runtime errors, which REVALIDATE will catch.
+Non-`aligned` entries surface in REPORT as `needs_kernel_work` follow-ups. align-op itself continues to TEST — the downstream path may still pass if the kernel drift only affects performance (not correctness), or fail fast if the kernel mismatch causes runtime errors, which REVALIDATE will catch.
 
 ### 6. TEST
 
@@ -234,7 +234,7 @@ Closes the gap between the emitted op file and the tests from Step 6. Applies to
 - **Redesign path**: the `PORT` sub-step in Step 3b did a first pass; `implement-op` closes residual gaps surfaced by the tests.
 - **Minor path**: **skipped** — `implement-op` already ran as the minor-case main stage in Step 3c. If TEST didn't DONE_SKIP here, that signals spec-drift beyond the minor-case scope and becomes BLOCKED.
 
-BLOCKED if the gap requires kernel-layer changes (op-align is op-layer only; kernel work surfaces via `kernel-check.json` from KERNEL_CHECK or as a `blocked` return from `implement-op`).
+BLOCKED if the gap requires kernel-layer changes (align-op is op-layer only; kernel work surfaces via `kernel-check.json` from KERNEL_CHECK or as a `blocked` return from `implement-op`).
 
 ### 8. BENCH
 
@@ -321,7 +321,7 @@ They do not conflict. `align-op` never manages cross-op cleanup gates; that rema
 
 ## Non-goals
 
-- **Kernel scaffolding / kernel-layer edits.** Op-align surfaces kernel work as a follow-up via `kernel-check.json`; a separate (future) `kernel-scaffold` / `kernel-align` skill will own that layer.
+- **Kernel scaffolding / kernel-layer edits.** align-op surfaces kernel work as a follow-up via `kernel-check.json`; a separate (future) `kernel-scaffold` / `kernel-align` skill will own that layer.
 - **Family-level cleanup.** Cross-op dual-path removal lives in `align-family` and is not a concern of per-op alignment.
 - **Auto-detecting "redesign vs minor."** The distinction is a design judgement; align-op prompts or accepts `--mode`.
 - **Manifest changes (other than FLIP_STATUS).** Per the trust model, manifest changes live in separate manifest PRs.
