@@ -10,6 +10,103 @@ from .op_base import Op
 __all__ = ["Conv1dBiasFwdOp", "Conv1dFwdOp", "Conv2dOp", "Conv3dOp"]
 
 
+def _conv_tuple(
+    value: int | Tuple[int, ...],
+    dims: int,
+    name: str,
+    op_name: str,
+) -> Tuple[int, ...]:
+    if isinstance(value, bool):
+        raise TypeError(f"{op_name} {name} must be an int or a {dims}-element tuple")
+    if isinstance(value, int):
+        return (value,) * dims
+    if isinstance(value, tuple):
+        if len(value) != dims:
+            raise ValueError(f"{op_name} {name} must be an int or a {dims}-element tuple")
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in value):
+            raise TypeError(f"{op_name} {name} must contain only ints")
+        return value
+    raise TypeError(f"{op_name} {name} must be an int or a {dims}-element tuple")
+
+
+def _conv_padding_to_tuple(
+    padding: int | Tuple[int, ...] | str,
+    stride: Tuple[int, ...],
+    kernel_size: Tuple[int, ...],
+    op_name: str,
+) -> Tuple[int, ...]:
+    dims = len(kernel_size)
+    if isinstance(padding, str):
+        if padding == "valid":
+            return (0,) * dims
+        if padding == "same":
+            if any(axis_stride != 1 for axis_stride in stride):
+                raise ValueError(f"{op_name} padding='same' requires stride == 1")
+            if any(axis_kernel % 2 == 0 for axis_kernel in kernel_size):
+                raise ValueError(
+                    f"{op_name} padding='same' requires odd kernel_size values "
+                    "with the current symmetric padding kernel"
+                )
+            return tuple(axis_kernel // 2 for axis_kernel in kernel_size)
+        raise ValueError(
+            f"{op_name} padding must be an int, {dims}-element tuple, 'valid', or 'same'"
+        )
+    return _conv_tuple(padding, dims, "padding", op_name)
+
+
+def _validate_positive_int(name: str, value: int, op_name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{op_name} {name} must be an int")
+    if value <= 0:
+        raise ValueError(f"{op_name} {name} must be greater than zero")
+
+
+def _validate_conv_params(
+    *,
+    op_name: str,
+    input_size: Tuple[int, ...],
+    kernel_size: Tuple[int, ...],
+    stride: Tuple[int, ...],
+    padding: Tuple[int, ...],
+) -> None:
+    ndim = len(input_size)
+    if len(kernel_size) != ndim or len(stride) != ndim or len(padding) != ndim:
+        raise ValueError(f"{op_name} kernel_size, stride, and padding must match dimensionality")
+
+    for name, values in (
+        ("input_size", input_size),
+        ("kernel_size", kernel_size),
+        ("stride", stride),
+        ("padding", padding),
+    ):
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+            raise TypeError(f"{op_name} {name} must contain only ints")
+
+    if any(v <= 0 for v in input_size):
+        raise ValueError(f"{op_name} input spatial dimensions must be greater than zero")
+    if any(v <= 0 for v in kernel_size):
+        raise ValueError(f"{op_name} kernel_size must be greater than zero")
+    if any(v <= 0 for v in stride):
+        raise ValueError(f"{op_name} stride must be greater than zero")
+    if any(v < 0 for v in padding):
+        raise ValueError(f"{op_name} padding must be non-negative")
+
+    output_size = tuple(
+        (input_dim + 2 * pad - kernel_dim) // stride_dim + 1
+        for input_dim, kernel_dim, stride_dim, pad in zip(
+            input_size, kernel_size, stride, padding, strict=True
+        )
+    )
+    if any(v <= 0 for v in output_size):
+        raise ValueError(f"{op_name} output spatial dimensions must be greater than zero")
+
+
+def _validate_tensor_shape(op_name: str, name: str, tensor: torch.Tensor, expected_shape: Tuple[int, ...]) -> None:
+    actual_shape = tuple(tensor.shape)
+    if actual_shape != expected_shape:
+        raise ValueError(f"{op_name} expects {name} shape {expected_shape}, but got {actual_shape}")
+
+
 class Conv1dFwdOp(Op):
 
     def __init__(
@@ -18,21 +115,35 @@ class Conv1dFwdOp(Op):
         c_in: int,
         l_in: int,
         c_out: int,
-        kernel_size: int,
-        stride: int = 1,
-        padding: int = 0,
+        kernel_size: int | Tuple[int],
+        stride: int | Tuple[int] = 1,
+        padding: int | Tuple[int] | str = 0,
         bias: bool = False,
         dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        _validate_positive_int("n", n, "Conv1d")
+        _validate_positive_int("c_in", c_in, "Conv1d")
+        _validate_positive_int("l_in", l_in, "Conv1d")
+        _validate_positive_int("c_out", c_out, "Conv1d")
         self.n = n
         self.c_in = c_in
         self.l_in = l_in
         self.c_out = c_out
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
+        kernel_size_tuple = _conv_tuple(kernel_size, 1, "kernel_size", "Conv1d")
+        stride_tuple = _conv_tuple(stride, 1, "stride", "Conv1d")
+        padding_tuple = _conv_padding_to_tuple(padding, stride_tuple, kernel_size_tuple, "Conv1d")
+        _validate_conv_params(
+            op_name="Conv1d",
+            input_size=(l_in,),
+            kernel_size=kernel_size_tuple,
+            stride=stride_tuple,
+            padding=padding_tuple,
+        )
+        self.kernel_size = kernel_size_tuple[0]
+        self.stride = stride_tuple[0]
+        self.padding = padding_tuple[0]
         self.has_bias = bias
         self.dtype = dtype
 
@@ -44,9 +155,9 @@ class Conv1dFwdOp(Op):
             c_in=c_in,
             l_in=l_in,
             c_out=c_out,
-            kernel_l=kernel_size,
-            stride_l=stride,
-            pad_l=padding,
+            kernel_l=self.kernel_size,
+            stride_l=self.stride,
+            pad_l=self.padding,
             dtype=dtype,
             has_bias=bias,
             tune=tune,
@@ -58,11 +169,20 @@ class Conv1dFwdOp(Op):
 
     def forward(
         self,
-        x: torch.Tensor,
+        input: torch.Tensor,
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return self.kernel(x, weight, bias)
+        _validate_tensor_shape("Conv1d", "input", input, (self.n, self.l_in, self.c_in))
+        _validate_tensor_shape(
+            "Conv1d",
+            "weight",
+            weight,
+            (self.c_out, self.c_in, self.kernel_size),
+        )
+        if bias is not None:
+            _validate_tensor_shape("Conv1d", "bias", bias, (self.c_out,))
+        return self.kernel(input, weight, bias)
 
 
 class Conv1dBiasFwdOp(Conv1dFwdOp):
@@ -78,9 +198,9 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
         c_in: int,
         l_in: int,
         c_out: int,
-        kernel_size: int,
-        stride: int = 1,
-        padding: int = 0,
+        kernel_size: int | Tuple[int],
+        stride: int | Tuple[int] = 1,
+        padding: int | Tuple[int] | str = 0,
         bias: bool = True,
         dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -99,9 +219,7 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
 
 
 def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
-    if isinstance(value, tuple):
-        return value
-    return (value, value)
+    return _conv_tuple(value, 2, "value", "Conv2d")  # type: ignore[return-value]
 
 
 class Conv2dOp(Op):
@@ -115,12 +233,17 @@ class Conv2dOp(Op):
         c_out: int,
         kernel_size: int | Tuple[int, int],
         stride: int | Tuple[int, int] = 1,
-        padding: int | Tuple[int, int] = 0,
+        padding: int | Tuple[int, int] | str = 0,
         bias: bool = False,
         dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        _validate_positive_int("n", n, "Conv2d")
+        _validate_positive_int("c_in", c_in, "Conv2d")
+        _validate_positive_int("h", h, "Conv2d")
+        _validate_positive_int("w", w, "Conv2d")
+        _validate_positive_int("c_out", c_out, "Conv2d")
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -128,7 +251,14 @@ class Conv2dOp(Op):
         self.c_out = c_out
         self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
-        self.padding = _pair(padding)
+        self.padding = _conv_padding_to_tuple(padding, self.stride, self.kernel_size, "Conv2d")
+        _validate_conv_params(
+            op_name="Conv2d",
+            input_size=(h, w),
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+        )
         self.has_bias = bias
         self.dtype = dtype
 
@@ -178,13 +308,20 @@ class Conv2dOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        _validate_tensor_shape("Conv2d", "x", x, (self.n, self.h, self.w, self.c_in))
+        _validate_tensor_shape(
+            "Conv2d",
+            "weight",
+            weight,
+            (self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1]),
+        )
+        if bias is not None:
+            _validate_tensor_shape("Conv2d", "bias", bias, (self.c_out,))
         return self.kernel(x, weight, bias)
 
 
 def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
-    if isinstance(value, tuple):
-        return value
-    return (value, value, value)
+    return _conv_tuple(value, 3, "value", "Conv3d")  # type: ignore[return-value]
 
 
 class Conv3dOp(Op):
@@ -199,12 +336,18 @@ class Conv3dOp(Op):
         c_out: int,
         kernel_size: int | Tuple[int, int, int],
         stride: int | Tuple[int, int, int] = 1,
-        padding: int | Tuple[int, int, int] = 0,
+        padding: int | Tuple[int, int, int] | str = 0,
         bias: bool = False,
         dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        _validate_positive_int("n", n, "Conv3d")
+        _validate_positive_int("c_in", c_in, "Conv3d")
+        _validate_positive_int("d_in", d_in, "Conv3d")
+        _validate_positive_int("h_in", h_in, "Conv3d")
+        _validate_positive_int("w_in", w_in, "Conv3d")
+        _validate_positive_int("c_out", c_out, "Conv3d")
         self.n = n
         self.c_in = c_in
         self.d_in = d_in
@@ -213,7 +356,14 @@ class Conv3dOp(Op):
         self.c_out = c_out
         self.kernel_size = _triple(kernel_size)
         self.stride = _triple(stride)
-        self.padding = _triple(padding)
+        self.padding = _conv_padding_to_tuple(padding, self.stride, self.kernel_size, "Conv3d")
+        _validate_conv_params(
+            op_name="Conv3d",
+            input_size=(d_in, h_in, w_in),
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+        )
         self.has_bias = bias
         self.dtype = dtype
 
@@ -251,4 +401,24 @@ class Conv3dOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        _validate_tensor_shape(
+            "Conv3d",
+            "x",
+            x,
+            (self.n, self.d_in, self.h_in, self.w_in, self.c_in),
+        )
+        _validate_tensor_shape(
+            "Conv3d",
+            "weight",
+            weight,
+            (
+                self.c_out,
+                self.c_in,
+                self.kernel_size[0],
+                self.kernel_size[1],
+                self.kernel_size[2],
+            ),
+        )
+        if bias is not None:
+            _validate_tensor_shape("Conv3d", "bias", bias, (self.c_out,))
         return self.kernel(x, weight, bias)
