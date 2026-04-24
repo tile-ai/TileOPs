@@ -10,12 +10,14 @@ Family name from `ops_manifest.yaml` (e.g., `reduction`, `norm`, `attention`).
 ## Contract
 
 - **Input**: `family` name
-- **Output**: PR URL + final report
-- **Termination**: all ops promoted or blocked (via `align-op`), PR created
+- **Output** (two terminal outcomes):
+  - **SUCCESS**: PR URL + final report — all ops processed via `align-op` (promoted or blocked), cleanup succeeds, PR opens.
+  - **BLOCKED**: blocked report (no PR) — reached when CLEANUP detects a regression in a promoted op's tests after dual-path removal; see `REPORT_BLOCKED` terminal in the state diagram.
+- **Termination**: all ops processed (promoted or blocked via `align-op`) and either (a) CLEANUP + CREATE_PR succeed, or (b) CLEANUP fails and the run exits via `REPORT_BLOCKED` with the regression recorded.
 
 ## Trust Model
 
-- `align-family` delegates every per-op stage to `align-op`, invoked as a **separate sub-agent** per op. The family orchestrator never runs `test-op`, `implement-op`, or `bench-op` directly — those are inside `align-op`'s contract.
+- `align-family` delegates every per-op stage to `align-op`, invoked as a **separate sub-agent** per op. The family orchestrator never runs any atomic per-op skill directly — those live inside `align-op`'s contract.
 
 - `align-family` does **not** write `ops_manifest.yaml`. After the refactor, `align-op` is the sole manifest writer (at its own FLIP_STATUS step); `align-family` observes status transitions via `align-op`'s SUCCESS return. No `align-family` stage edits, modifies, or flips the manifest.
 
@@ -60,7 +62,7 @@ This catches tracked changes, staged changes, AND untracked files. If not clean:
 
 ### Dual-path is acceptable during migration
 
-When `align-op` (via its internal `implement-op` stage) rewrites a base class, it may create a dual-path `__init__` (legacy + spec) to keep unmigrated sibling tests passing. This is correct temporary debt — the cleanup gate removes it.
+When `align-op` rewrites a base class during its per-op pipeline, it may create a dual-path `__init__` (legacy + spec) to keep unmigrated sibling tests passing. This is correct temporary debt — the cleanup gate removes it.
 
 **Dual-path definition**: a class `__init__` with runtime branching to support two incompatible construction interfaces, and `forward` dispatching to two execution paths. Not polymorphism — same semantics, temporary interface coexistence.
 
@@ -90,7 +92,7 @@ For each op in the current group, invoke `align-op` as a **separate sub-agent**:
 align-op <op_name>
 ```
 
-`align-op` owns the entire per-op pipeline internally: PRE_CHECK → CLASSIFY → DISPATCH (green / redesign / minor) → TEST → [IMPLEMENT] → BENCH → REVALIDATE → FLIP_STATUS → CLEANUP → REPORT. IMPLEMENT is conditional — skipped when TEST returns DONE_SKIP (tests already pass), and skipped on the minor path because `implement-op` already ran as the main stage in DISPATCH. `align-family` does not manage these stages and does not run `test-op` / `implement-op` / `bench-op` itself.
+`align-op` owns the entire per-op pipeline internally — its internal stages (classify, dispatch on case, test / implement / bench, revalidate, flip status, cleanup, report) are `align-op`'s contract, not `align-family`'s. See [`align-op/SKILL.md`](../align-op/SKILL.md) for the authoritative stage list and the conditional-IMPLEMENT rule. `align-family` does not manage or observe `align-op`'s internal stages; the only interface between them is `align-op`'s SUCCESS / BLOCKED return.
 
 Per-op outcome:
 
