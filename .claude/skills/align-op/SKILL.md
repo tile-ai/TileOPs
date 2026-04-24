@@ -66,7 +66,7 @@ stateDiagram-v2
     REVALIDATE --> FLIP_STATUS: --check-op + pytest pass
     REVALIDATE --> BLOCKED: regression
     FLIP_STATUS --> CLEANUP: manifest status flipped
-    CLEANUP --> REPORT: archives dropped
+    CLEANUP --> REPORT: pre-rewrite/ dropped (redesign only); mode/plan/kernel-check kept
     REPORT --> [*]
     CLASSIFY_ONLY_EXIT --> [*]
     GREEN_PATH --> BLOCKED: scaffold failed (§1 drift or validator error)
