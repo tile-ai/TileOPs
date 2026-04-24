@@ -12,11 +12,13 @@ description: Per-op orchestrator that brings a single op into alignment with its
 ## Contract
 
 - **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as scaffold-op; see [PRE_CHECK](#pre_check)).
-- **Path bindings used throughout this skill** (resolved by the orchestrator once at `READ`):
-  - `<source_op>` — the op's manifest `source.op` path.
-  - `<source_test>` — the op's manifest `source.test` path.
-  - `<source_bench>` — the op's manifest `source.bench` path.
-  - `<source_kernel>` — the op's manifest `source.kernel` path.
+- **Path and data bindings used throughout this skill** (resolved by the orchestrator once at `READ`, then passed into every sub-skill invocation):
+  - `<source_op>` — manifest `source.op` path (e.g., `tileops/ops/reduction/cumsum.py`).
+  - `<source_test>` — manifest `source.test` path (e.g., `tests/ops/test_cumulative.py`).
+  - `<source_bench>` — manifest `source.bench` path.
+  - `<source_kernel>` — manifest `source.kernel` path (the primary kernel implementation file).
+  - `<manifest_signature>` — the `signature` sub-tree from the op's manifest entry, passed verbatim to test-op / implement-op.
+  - `<pytorch_equivalent>` — manifest `ref_api` value (e.g., `"torch.cumsum"`) or `null` if the op has no PyTorch reference. Required by test-op.
 - **Output** (SUCCESS path): op file at `source.op` aligned with the manifest; test file `source.test` aligned; `__init__.py` registrations consistent; `status` flipped `spec-only → implemented` (single commit). Side-artefacts in `.foundry/plan/<op_name>/`: `mode.json` (classification), `plan.json` (scaffold-op's §1/§2/§3 when that skill ran), `kernel-check.json` (redesign case only), `pre-rewrite/source.py` (redesign case, removed at CLEANUP on SUCCESS).
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports no errors + `python -m pytest <source_test> -v` passes + benchmark produces numbers + manifest status flipped.
 - **Termination (blocked)**: any sub-skill (scaffold-op / test-op / implement-op / bench-op) returns blocked; or scaffold-op §1 drift; or REVALIDATE fails. Kernel-layer mismatches surfaced by `KERNEL_CHECK` are **informational only** and never cause BLOCKED by themselves — BLOCKED is reached only if a kernel drift propagates into a downstream sub-skill failure (e.g., bench-op runtime error, REVALIDATE regression). Archives are kept for post-mortem.
@@ -148,7 +150,12 @@ Sequence:
 #### 3c. MINOR path (`case = minor`)
 
 ```
-implement-op <op_name>
+implement-op(
+  op_name=<op_name>,
+  manifest_signature=<manifest_signature>,
+  source_op=<source_op>,
+  source_test=<source_test>
+)
 ```
 
 Sub-skill does ANALYZE → DIAGNOSE → IMPLEMENT → VALIDATE → MARK_DONE → COMMIT. Op-align waits for SUCCESS or BLOCKED.
@@ -197,7 +204,12 @@ Non-`aligned` entries surface in REPORT as `needs_kernel_work` follow-ups. Op-al
 ### 6. TEST
 
 ```
-test-op <op_name>
+test-op(
+  op_name=<op_name>,
+  manifest_signature=<manifest_signature>,
+  pytorch_equivalent=<pytorch_equivalent>,
+  source_test=<source_test>
+)
 ```
 
 Sub-skill writes tests against the new spec. Termination:
@@ -208,7 +220,12 @@ Sub-skill writes tests against the new spec. Termination:
 ### 7. IMPLEMENT
 
 ```
-implement-op <op_name>
+implement-op(
+  op_name=<op_name>,
+  manifest_signature=<manifest_signature>,
+  source_op=<source_op>,
+  source_test=<source_test>
+)
 ```
 
 Closes the gap between the emitted op file and the tests from Step 6. Applies to:
@@ -222,7 +239,11 @@ BLOCKED if the gap requires kernel-layer changes (op-align is op-layer only; ker
 ### 8. BENCH
 
 ```
-bench-op <op_name>
+bench-op(
+  op_name=<op_name>,
+  source_bench=<source_bench>,
+  source_op=<source_op>
+)
 ```
 
 Produces numbers. Sub-skill unchanged. If BLOCKED and reason is not kernel-related, propagate blocked.
