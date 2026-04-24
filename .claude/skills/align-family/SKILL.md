@@ -1,5 +1,5 @@
 ---
-name: spec-pipeline
+name: align-family
 description: Drive the full migration for an op family — audit, test, implement, bench, flip status, create PR.
 ---
 
@@ -15,9 +15,9 @@ Family name from `ops_manifest.yaml` (e.g., `reduction`, `norm`, `attention`).
 
 ## Trust Model
 
-- spec-test agent ≠ spec-implement agent (separate invocations)
+- test-op agent ≠ implement-op agent (separate invocations)
 - Only the orchestrator modifies `ops_manifest.yaml` status
-- spec-implement must not modify tests; spec-bench must not modify Op code
+- implement-op must not modify tests; bench-op must not modify Op code
 
 ## Workflow
 
@@ -59,7 +59,7 @@ This catches tracked changes, staged changes, AND untracked files. If not clean:
 
 ### Dual-path is acceptable during migration
 
-When spec-implement rewrites a base class, it may create a dual-path `__init__` (legacy + spec) to keep unmigrated sibling tests passing. This is correct temporary debt — the cleanup gate removes it.
+When implement-op rewrites a base class, it may create a dual-path `__init__` (legacy + spec) to keep unmigrated sibling tests passing. This is correct temporary debt — the cleanup gate removes it.
 
 **Dual-path definition**: a class `__init__` with runtime branching to support two incompatible construction interfaces, and `forward` dispatching to two execution paths. Not polymorphism — same semantics, temporary interface coexistence.
 
@@ -68,7 +68,7 @@ When spec-implement rewrites a base class, it may create a dual-path `__init__` 
 ### 1. AUDIT
 
 ```
-/spec-audit <family>
+/audit-family <family>
 ```
 
 Gap report written to `.foundry/migrations/<family>.json`.
@@ -77,7 +77,7 @@ Gap report written to `.foundry/migrations/<family>.json`.
 
 Group ops by `base_class` from the gap report. Each group is a set of sibling ops sharing a base class. Process groups in order; within each group, process ops in order (first op likely fixes the base class, subsequent ops validate).
 
-`base_class` is a required field in the gap report. spec-audit must populate it for every op entry. If an op inherits `Op` directly (no intermediate base class), its `base_class` is `"Op"` — these ops form a single group but are independent (no shared base class to rewrite, so cleanup gate is a no-op for this group).
+`base_class` is a required field in the gap report. audit-family must populate it for every op entry. If an op inherits `Op` directly (no intermediate base class), its `base_class` is `"Op"` — these ops form a single group but are independent (no shared base class to rewrite, so cleanup gate is a no-op for this group).
 
 Track group completion: a group is complete when all its ops are `promoted` or `blocked`.
 
@@ -93,28 +93,28 @@ Read gap report. For each op, extract params from the entry and dispatch:
 
 ### 4. TEST (per op)
 
-Invoke spec-test as a **separate agent** (trust model):
+Invoke test-op as a **separate agent** (trust model):
 
 ```
-spec-test(op_name, manifest_signature, pytorch_equivalent, source_test)
+test-op(op_name, manifest_signature, pytorch_equivalent, source_test)
 ```
 
 ### 5. IMPLEMENT (per op)
 
-Invoke spec-implement as a **separate agent** (trust model):
+Invoke implement-op as a **separate agent** (trust model):
 
 ```
-spec-implement(op_name, manifest_signature, source_op, source_test)
+implement-op(op_name, manifest_signature, source_op, source_test)
 ```
 
 Collect `observations` from return.
 
 ### 6. BENCH (per op)
 
-Invoke spec-bench:
+Invoke bench-op:
 
 ```
-spec-bench(op_name, source_bench, source_op)
+bench-op(op_name, source_bench, source_op)
 ```
 
 Requires local GPU.
@@ -165,7 +165,7 @@ If any promoted op's test fails after cleanup → REPORT_BLOCKED (cleanup regres
 
 After all ops processed:
 
-- Collect all observations from spec-implement calls
+- Collect all observations from implement-op calls
 - Create PR with:
   - Migration summary (promoted / blocked counts)
   - Per-op change table

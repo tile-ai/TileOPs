@@ -263,7 +263,7 @@ This playbook emits exactly the 17 slots above. The following are **not** produc
 
 ## Implementing a Kernel
 
-Brief reference surface for the device-side class that a scaffolded Op depends on. Kernel implementation is not covered by the op-scaffold skill.
+Brief reference surface for the device-side class that a scaffolded Op depends on. Kernel implementation is not covered by the scaffold-op skill.
 
 | Interface             | Required | Description                                                   |
 | --------------------- | -------- | ------------------------------------------------------------- |
@@ -278,7 +278,7 @@ See [Kernel base class attributes](ops-design-reference.md#base-class-protocol) 
 
 ## Family-Base Refactoring (Future Work)
 
-The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sharing an identical `forward()` flow, extract an L2 family base via refactoring; concrete ops then become T1 thin wrappers declaring family protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, …). This transformation is driven by a separate family-specific skill, not the op-scaffold. See [Development Path](ops-design-reference.md#development-path) for when to extract an L2 base and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the step-by-step process.
+The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sharing an identical `forward()` flow, extract an L2 family base via refactoring; concrete ops then become T1 thin wrappers declaring family protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, …). This transformation is driven by a separate family-specific skill, not the scaffold-op. See [Development Path](ops-design-reference.md#development-path) for when to extract an L2 base and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the step-by-step process.
 
 ## Further Reference
 

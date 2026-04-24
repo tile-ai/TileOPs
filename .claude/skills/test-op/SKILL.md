@@ -1,18 +1,18 @@
 ---
-name: spec-test
+name: test-op
 description: Write tests for the target spec using PyTorch as ground truth, verify they fail on current code.
 ---
 
 ## Arguments
 
-`op_name`, `manifest_signature`, `pytorch_equivalent`, `source_test` — passed by spec-pipeline orchestrator.
+`op_name`, `manifest_signature`, `pytorch_equivalent`, `source_test` — passed by align-family orchestrator.
 
 ## Contract
 
 - **Input**: `op_name`, `manifest_signature`, `pytorch_equivalent`, `source_test`
 - **Output**: updated test file + commit
 - **Constraint**: must NOT modify op implementation. Test-only.
-- **Trust model**: this agent must be a different invocation from spec-implement.
+- **Trust model**: this agent must be a different invocation from implement-op.
 
 ## Workflow
 
@@ -71,4 +71,4 @@ python -m pytest <source_test> -v
 
 New tests must **fail** on current code. Construction-time error counts (e.g., current `__init__` doesn't accept `dim`).
 
-**DONE_SKIP**: if tests already pass (base class fixed by a previous op's migration), this is valid. Proceed to spec-implement.
+**DONE_SKIP**: if tests already pass (base class fixed by a previous op's migration), this is valid. Proceed to implement-op.
