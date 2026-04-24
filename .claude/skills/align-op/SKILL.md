@@ -60,15 +60,15 @@ stateDiagram-v2
     REDESIGN_PATH --> KERNEL_CHECK: rescaffold + port done
     KERNEL_CHECK --> TEST: kernel-check.json written
     MINOR_PATH --> TEST: implement-op succeeded (minor-case main stage ran here)
-    TEST --> IMPLEMENT: tests fail on current code (expected; gap to close)
-    TEST --> BENCH: tests already pass (DONE_SKIP) — typically minor path where implement-op already ran
+    TEST --> IMPLEMENT: tests fail on current code (expected gap to close)
+    TEST --> BENCH: tests already pass (DONE_SKIP), usually minor path
     IMPLEMENT --> BENCH: implementation closes the gap, tests pass
-    IMPLEMENT --> BLOCKED: gap beyond op-layer (e.g., kernel rewrite required)
+    IMPLEMENT --> BLOCKED: gap beyond op-layer (e.g. kernel rewrite required)
     BENCH --> REVALIDATE: benchmark produces numbers
-    REVALIDATE --> FLIP_STATUS: --check-op + pytest pass
+    REVALIDATE --> FLIP_STATUS: check-op and pytest both pass
     REVALIDATE --> BLOCKED: regression
     FLIP_STATUS --> CLEANUP: manifest status flipped
-    CLEANUP --> REPORT: pre-rewrite/ dropped (redesign only); mode/plan/kernel-check kept
+    CLEANUP --> REPORT: pre-rewrite dropped on redesign, plan artefacts kept
     REPORT --> [*]
     CLASSIFY_ONLY_EXIT --> [*]
     GREEN_PATH --> BLOCKED: scaffold failed (§1 drift or validator error)
