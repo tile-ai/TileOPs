@@ -12,9 +12,14 @@ description: Per-op orchestrator that brings a single op into alignment with its
 ## Contract
 
 - **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as scaffold-op; see [PRE_CHECK](#pre_check)).
+- **Path bindings used throughout this skill** (resolved by the orchestrator once at `READ`):
+  - `<source_op>` — the op's manifest `source.op` path.
+  - `<source_test>` — the op's manifest `source.test` path.
+  - `<source_bench>` — the op's manifest `source.bench` path.
+  - `<source_kernel>` — the op's manifest `source.kernel` path.
 - **Output** (SUCCESS path): op file at `source.op` aligned with the manifest; test file `source.test` aligned; `__init__.py` registrations consistent; `status` flipped `spec-only → implemented` (single commit). Side-artefacts in `.foundry/plan/<op_name>/`: `mode.json` (classification), `plan.json` (scaffold-op's §1/§2/§3 when that skill ran), `kernel-check.json` (redesign case only), `pre-rewrite/source.py` (redesign case, removed at CLEANUP on SUCCESS).
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports no errors + `python -m pytest <source_test> -v` passes + benchmark produces numbers + manifest status flipped.
-- **Termination (blocked)**: any sub-skill returns blocked, or §1 drift in scaffold-op, or kernel mismatch discovered in redesign path that align-op cannot resolve at the op layer. Report with concrete reason. Archives are kept for post-mortem.
+- **Termination (blocked)**: any sub-skill (scaffold-op / test-op / implement-op / bench-op) returns blocked; or scaffold-op §1 drift; or REVALIDATE fails. Kernel-layer mismatches surfaced by `KERNEL_CHECK` are **informational only** and never cause BLOCKED by themselves — BLOCKED is reached only if a kernel drift propagates into a downstream sub-skill failure (e.g., bench-op runtime error, REVALIDATE regression). Archives are kept for post-mortem.
 - **Constraints**:
   - Only align-op (and only at FLIP_STATUS) may modify `ops_manifest.yaml`. Sub-skills never touch the manifest.
   - MUST NOT modify kernel code. Kernel-layer work, if needed, is surfaced via `kernel-check.json` as a separate follow-up.
@@ -24,13 +29,14 @@ description: Per-op orchestrator that brings a single op into alignment with its
 
 - `CLASSIFY`, `DISPATCH`, `FLIP_STATUS`, `CLEANUP`, `REPORT` are orchestrator stages (align-op itself). Every other stage delegates to an atomic skill as a **separate sub-agent invocation**:
 
-  | Stage         | Sub-skill                             |
-  | ------------- | ------------------------------------- |
-  | GREEN path    | `scaffold-op`                         |
-  | REDESIGN path | `scaffold-op` (after ARCHIVE + CLEAR) |
-  | MINOR path    | `implement-op`                        |
-  | TEST          | `test-op`                             |
-  | BENCH         | `bench-op`                            |
+  | Stage         | Sub-skill                                                    |
+  | ------------- | ------------------------------------------------------------ |
+  | GREEN path    | `scaffold-op`                                                |
+  | REDESIGN path | `scaffold-op` (after ARCHIVE + CLEAR)                        |
+  | MINOR path    | `implement-op`                                               |
+  | TEST          | `test-op`                                                    |
+  | IMPLEMENT     | `implement-op` (green / redesign only; minor already did it) |
+  | BENCH         | `bench-op`                                                   |
 
   Separate invocations preserve the per-skill contracts (e.g., scaffold-op's §1 fact-freeze; implement-op's no-test-modification rule).
 
@@ -51,8 +57,11 @@ stateDiagram-v2
     GREEN_PATH --> TEST: scaffold-op succeeded
     REDESIGN_PATH --> KERNEL_CHECK: rescaffold + port done
     KERNEL_CHECK --> TEST: kernel-check.json written
-    MINOR_PATH --> TEST: implement-op succeeded
-    TEST --> BENCH: tests written, failing as expected (or DONE_SKIP)
+    MINOR_PATH --> TEST: implement-op succeeded (minor-case main stage ran here)
+    TEST --> IMPLEMENT: tests fail on current code (expected; gap to close)
+    TEST --> BENCH: tests already pass (DONE_SKIP) — typically minor path where implement-op already ran
+    IMPLEMENT --> BENCH: implementation closes the gap, tests pass
+    IMPLEMENT --> BLOCKED: gap beyond op-layer (e.g., kernel rewrite required)
     BENCH --> REVALIDATE: benchmark produces numbers
     REVALIDATE --> FLIP_STATUS: --check-op + pytest pass
     REVALIDATE --> BLOCKED: regression
@@ -86,7 +95,10 @@ Decide which case applies. Machine-decidable input: does `source.op` exist?
 | `source.op` does not exist | `green`   | no                                                          |
 | `source.op` exists         | (unknown) | yes — "redesign (rewrite + port) or minor (in-place edit)?" |
 
-`--mode=<case>` overrides prompting. `--mode=green` is rejected if `source.op` exists (would silently delete existing code); use `--mode=redesign` instead.
+`--mode=<case>` overrides prompting only when consistent with file presence. The orchestrator validates this during CLASSIFY and BLOCKs immediately on invalid combinations so sub-skills never see contradictory input:
+
+- `source.op` **missing** → only `green` is valid. `--mode=minor` → BLOCKED ("`source.op` is missing; cannot edit a non-existent op file; use `--mode=green` or omit `--mode`"). `--mode=redesign` → BLOCKED ("`source.op` is missing; no archive source to rewrite; use `--mode=green` or omit `--mode`").
+- `source.op` **exists** → `--mode=green` → BLOCKED ("`source.op` already exists; green-field scaffold would silently overwrite; use `--mode=redesign` for rewrite+port or `--mode=minor` for in-place edit").
 
 Write `.foundry/plan/<op_name>/mode.json`:
 
@@ -98,7 +110,7 @@ Write `.foundry/plan/<op_name>/mode.json`:
   "kernel_class_importable": true,
   "decided_by": "user_prompt",
   "reason": "User declared: manifest _static_axes shape rewritten; structural redesign.",
-  "classified_at": "2026-04-24T..."
+  "classified_at": "YYYY-MM-DDTHH:MM:SSZ"
 }
 ```
 
@@ -165,7 +177,7 @@ Write `.foundry/plan/<op_name>/kernel-check.json`:
 ```json
 {
   "op_name": "CumsumFwdOp",
-  "checked_at": "2026-04-24T...",
+  "checked_at": "YYYY-MM-DDTHH:MM:SSZ",
   "kernels": [
     {
       "dispatch_key": "cumulative_fwd",
@@ -188,9 +200,26 @@ Non-`aligned` entries surface in REPORT as `needs_kernel_work` follow-ups. Op-al
 test-op <op_name>
 ```
 
-Sub-skill writes tests against the new spec, confirms they fail (or DONE_SKIP if base class fix from a sibling already handles them). Reuses existing test-op contract unchanged.
+Sub-skill writes tests against the new spec. Termination:
 
-### 7. BENCH
+- **tests fail on current code** (expected TDD seed) → proceed to IMPLEMENT.
+- **DONE_SKIP** (tests already pass, e.g. a sibling migration fixed the base class, or minor-path `implement-op` already closed the gap in Step 3c) → skip IMPLEMENT, proceed to BENCH.
+
+### 7. IMPLEMENT
+
+```
+implement-op <op_name>
+```
+
+Closes the gap between the emitted op file and the tests from Step 6. Applies to:
+
+- **Green path**: `scaffold-op` produced the 17 mechanical slots, but not optional hooks or family protocol vars; `implement-op` fills any that are required for the tests to pass.
+- **Redesign path**: the `PORT` sub-step in Step 3b did a first pass; `implement-op` closes residual gaps surfaced by the tests.
+- **Minor path**: **skipped** — `implement-op` already ran as the minor-case main stage in Step 3c. If TEST didn't DONE_SKIP here, that signals spec-drift beyond the minor-case scope and becomes BLOCKED.
+
+BLOCKED if the gap requires kernel-layer changes (op-align is op-layer only; kernel work surfaces via `kernel-check.json` from KERNEL_CHECK or as a `blocked` return from `implement-op`).
+
+### 8. BENCH
 
 ```
 bench-op <op_name>
@@ -198,7 +227,7 @@ bench-op <op_name>
 
 Produces numbers. Sub-skill unchanged. If BLOCKED and reason is not kernel-related, propagate blocked.
 
-### 8. REVALIDATE
+### 9. REVALIDATE
 
 ```bash
 python scripts/validate_manifest.py --check-op <op_name>
@@ -207,7 +236,7 @@ python -m pytest <source_test> -v
 
 Both must pass. Regression after benchmark changes → BLOCKED.
 
-### 9. FLIP_STATUS
+### 10. FLIP_STATUS
 
 Orchestrator (not a sub-skill) edits the manifest:
 
@@ -216,7 +245,7 @@ Orchestrator (not a sub-skill) edits the manifest:
 
 This is the only manifest write in the entire workflow.
 
-### 10. CLEANUP
+### 11. CLEANUP
 
 On SUCCESS path:
 
@@ -225,7 +254,7 @@ On SUCCESS path:
 
 On BLOCKED path: keep all artefacts for post-mortem.
 
-### 11. REPORT
+### 12. REPORT
 
 Single-page summary printed to stdout. Always includes:
 
