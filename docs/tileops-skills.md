@@ -90,12 +90,8 @@ How orchestrators delegate to atomic skills.
 ```text
 align-family <family>                    ← per-family orchestrator
 ├─ audit-family
-├─ per op:
-│   ├─ test-op
-│   ├─ implement-op
-│   ├─ bench-op
-│   └─ [orchestrator] FLIP_STATUS
-└─ [orchestrator] CLEANUP + CREATE_PR
+├─ per op: align-op <op_name>            ← full per-op pipeline delegated
+└─ [orchestrator] CLEANUP_GATE + CLEANUP + CREATE_PR
 
 align-op <op_name>                       ← per-op orchestrator
 ├─ [orchestrator] CLASSIFY
@@ -108,7 +104,7 @@ align-op <op_name>                       ← per-op orchestrator
     └─ [orchestrator] FLIP_STATUS        ← only manifest writer
 ```
 
-A follow-up may refactor `align-family`'s per-op loop to delegate to `align-op`, removing duplication.
+`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest; `align-op`'s FLIP_STATUS is the sole manifest-write site.
 
 ## Trust model  ·  who may write what
 

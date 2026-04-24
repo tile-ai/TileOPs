@@ -1,6 +1,6 @@
 ---
 name: align-family
-description: Drive the full migration for an op family — audit, test, implement, bench, flip status, create PR.
+description: Drive the full migration for an op family — audit, delegate per-op alignment to align-op, run cross-op cleanup, create PR.
 ---
 
 ## Arguments
@@ -11,13 +11,20 @@ Family name from `ops_manifest.yaml` (e.g., `reduction`, `norm`, `attention`).
 
 - **Input**: `family` name
 - **Output**: PR URL + final report
-- **Termination**: all ops promoted or blocked, PR created
+- **Termination**: all ops promoted or blocked (via `align-op`), PR created
 
 ## Trust Model
 
-- test-op agent ≠ implement-op agent (separate invocations)
-- Only the orchestrator modifies `ops_manifest.yaml` status
-- implement-op must not modify tests; bench-op must not modify Op code
+- `align-family` delegates every per-op stage to `align-op`, invoked as a **separate sub-agent** per op. The family orchestrator never runs `test-op`, `implement-op`, or `bench-op` directly — those are inside `align-op`'s contract.
+
+- `align-family` does **not** write `ops_manifest.yaml`. After the refactor, `align-op` is the sole manifest writer (at its own FLIP_STATUS step); `align-family` observes status transitions via `align-op`'s SUCCESS return. No `align-family` stage edits, modifies, or flips the manifest.
+
+- Directly-invoked sub-skills of `align-family` are exactly two: `audit-family` (in AUDIT) and `align-op` (per op).
+
+  | Stage    | Sub-skill      |
+  | -------- | -------------- |
+  | AUDIT    | `audit-family` |
+  | ALIGN_OP | `align-op`     |
 
 ## Workflow
 
@@ -26,18 +33,10 @@ stateDiagram-v2
     [*] --> AUDIT
     AUDIT --> GROUP_BY_BASE: gap report generated
     GROUP_BY_BASE --> ROUTE: ops grouped by base class
-    ROUTE --> TEST: semantic_gap op
-    ROUTE --> FLIP_STATUS: ready op
-    ROUTE --> REPORT_BLOCKED: blocked op
-    TEST --> IMPLEMENT: tests written
-    IMPLEMENT --> BENCH: implementation done, collect observations
-    IMPLEMENT --> REPORT_BLOCKED: blocked
-    BENCH --> REVALIDATE: benchmark passes
-    BENCH --> REPORT_BLOCKED: benchmark blocked
-    REVALIDATE --> FLIP_STATUS: --check-op + tests pass
-    REVALIDATE --> REPORT_BLOCKED: regression detected
-    FLIP_STATUS --> CLEANUP_GATE: check group completion
-    REPORT_BLOCKED --> CLEANUP_GATE: check group completion
+    ROUTE --> ALIGN_OP: next op in current group
+    ALIGN_OP --> CLEANUP_GATE: align-op SUCCESS
+    ALIGN_OP --> REPORT_BLOCKED: align-op BLOCKED
+    REPORT_BLOCKED --> CLEANUP_GATE: record blocked reason
     CLEANUP_GATE --> ROUTE: group incomplete, next op
     CLEANUP_GATE --> CLEANUP: all siblings promoted or blocked
     CLEANUP --> ROUTE: legacy path removed, next group
@@ -59,7 +58,7 @@ This catches tracked changes, staged changes, AND untracked files. If not clean:
 
 ### Dual-path is acceptable during migration
 
-When implement-op rewrites a base class, it may create a dual-path `__init__` (legacy + spec) to keep unmigrated sibling tests passing. This is correct temporary debt — the cleanup gate removes it.
+When `align-op` (via its internal `implement-op` stage) rewrites a base class, it may create a dual-path `__init__` (legacy + spec) to keep unmigrated sibling tests passing. This is correct temporary debt — the cleanup gate removes it.
 
 **Dual-path definition**: a class `__init__` with runtime branching to support two incompatible construction interfaces, and `forward` dispatching to two execution paths. Not polymorphism — same semantics, temporary interface coexistence.
 
@@ -81,73 +80,33 @@ Group ops by `base_class` from the gap report. Each group is a set of sibling op
 
 Track group completion: a group is complete when all its ops are `promoted` or `blocked`.
 
-### 3. ROUTE
+### 3. ALIGN_OP (per op)
 
-Read gap report. For each op, extract params from the entry and dispatch:
-
-| Classification | Action                                                |
-| -------------- | ----------------------------------------------------- |
-| `ready`        | → FLIP_STATUS                                         |
-| `semantic_gap` | → TEST → IMPLEMENT → BENCH → REVALIDATE → FLIP_STATUS |
-| `blocked`      | → REPORT_BLOCKED                                      |
-
-### 4. TEST (per op)
-
-Invoke test-op as a **separate agent** (trust model):
+For each op in the current group, invoke `align-op` as a **separate sub-agent**:
 
 ```
-test-op(op_name, manifest_signature, pytorch_equivalent, source_test)
+align-op <op_name>
 ```
 
-### 5. IMPLEMENT (per op)
+`align-op` owns the entire per-op pipeline internally: PRE_CHECK → CLASSIFY → DISPATCH (green / redesign / minor) → TEST → IMPLEMENT → BENCH → REVALIDATE → FLIP_STATUS → CLEANUP → REPORT. `align-family` does not manage these stages and does not run `test-op` / `implement-op` / `bench-op` itself.
 
-Invoke implement-op as a **separate agent** (trust model):
+Per-op outcome:
 
-```
-implement-op(op_name, manifest_signature, source_op, source_test)
-```
+- `align-op` returns SUCCESS → op is `promoted` (manifest status already flipped by `align-op`'s FLIP_STATUS). Record the returned report. Proceed to CLEANUP_GATE.
+- `align-op` returns BLOCKED → op is `blocked`. Capture `align-op`'s BLOCKED reason verbatim as the per-op result. Proceed to CLEANUP_GATE.
 
-Collect `observations` from return.
+`align-family` MUST NOT re-flip manifest status or re-run per-op validation on its own; `align-op`'s SUCCESS return is the single source of truth that the manifest was flipped.
 
-### 6. BENCH (per op)
+### 4. CLEANUP_GATE
 
-Invoke bench-op:
-
-```
-bench-op(op_name, source_bench, source_op)
-```
-
-Requires local GPU.
-
-### 7. REVALIDATE (per op)
-
-Final gate after benchmark edits. Re-run validation to confirm no regressions:
-
-```bash
-python scripts/validate_manifest.py --check-op <op_name>
-python -m pytest <source_test> -v
-```
-
-Both must pass. If not → REPORT_BLOCKED (benchmark change introduced regression).
-
-### 8. FLIP_STATUS
-
-Orchestrator (not a sub-skill) changes manifest:
-
-- `status: spec-only` → `status: implemented`
-- Commit the manifest change
-- Update gap report: add `promoted_at` timestamp (keep `classification` unchanged)
-
-### 9. CLEANUP_GATE
-
-After each terminal per-op outcome (FLIP_STATUS or REPORT_BLOCKED), check group completion:
+After each `align-op` invocation returns (SUCCESS or BLOCKED), check group completion:
 
 - All siblings in the current base-class group are `promoted` or `blocked`? → trigger CLEANUP
-- Otherwise → continue to next op (ROUTE)
+- Otherwise → continue to next op (ROUTE → ALIGN_OP)
 
-### 10. CLEANUP
+### 5. CLEANUP
 
-Remove dual-path legacy code from the base class. This step fires once per base-class group, after all siblings are done.
+Remove dual-path legacy code from the base class. This step fires once per base-class group, after all siblings have gone through `align-op` (SUCCESS or BLOCKED).
 
 Actions:
 
@@ -157,17 +116,17 @@ Actions:
 1. Run tests and `--check-op` for **promoted ops only** (blocked ops' tests may legitimately fail)
 1. Commit cleanup changes
 
-If any promoted op's test fails after cleanup → REPORT_BLOCKED (cleanup regression). Do not proceed with broken state.
+If any promoted op's test fails after cleanup → record as a cleanup regression in the final report. Do not proceed with broken state.
 
-**Timeout policy for blocked ops**: if a group has blocked ops that prevent cleanup gate from firing for an extended period, the orchestrator may force cleanup — remove legacy path and mark blocked ops' tests as `xfail`. This is a human decision, not automatic.
+**Timeout policy for blocked ops**: if a group has blocked ops that prevent the cleanup gate from firing for an extended period, the orchestrator may force cleanup — remove legacy path and mark blocked ops' tests as `xfail`. This is a human decision, not automatic.
 
-### 11. CREATE_PR
+### 6. CREATE_PR
 
 After all ops processed:
 
-- Collect all observations from implement-op calls
+- Collect all per-op reports returned by `align-op`
 - Create PR with:
   - Migration summary (promoted / blocked counts)
-  - Per-op change table
-  - Observations for human doc review
-  - Blocked ops with reasons
+  - Per-op change table (derived from `align-op` reports)
+  - Observations surfaced by `align-op` (e.g., `needs_kernel_work`, `needs_human_decision`) for human doc review
+  - Blocked ops with `align-op`'s BLOCKED reasons
