@@ -41,6 +41,8 @@ stateDiagram-v2
     CLEANUP_GATE --> CLEANUP: all siblings promoted or blocked
     CLEANUP --> ROUTE: legacy path removed, next group
     ROUTE --> CREATE_PR: all ops processed
+    CLEANUP --> REPORT_BLOCKED: cleanup regression (promoted op test fails)
+    REPORT_BLOCKED --> [*]: terminal blocked (cleanup regression, no PR)
     CREATE_PR --> [*]
 ```
 
@@ -116,7 +118,12 @@ Actions:
 1. Run tests and `--check-op` for **promoted ops only** (blocked ops' tests may legitimately fail)
 1. Commit cleanup changes
 
-If any promoted op's test fails after cleanup → record as a cleanup regression in the final report. Do not proceed with broken state.
+If any promoted op's test fails after cleanup → transition to `REPORT_BLOCKED` as a terminal outcome: record the regression, skip `CREATE_PR`, and exit with `blocked` status. Do not proceed with a broken state.
+
+**`REPORT_BLOCKED` has two distinct uses:**
+
+- **Per-op blocked** (ALIGN_OP BLOCKED): records the blocked reason, returns to `CLEANUP_GATE`, continues processing other siblings. Non-terminal.
+- **Cleanup regression** (CLEANUP fails): terminal — the family migration exits without opening a PR. The blocked report becomes the run's final artefact.
 
 **Timeout policy for blocked ops**: if a group has blocked ops that prevent the cleanup gate from firing for an extended period, the orchestrator may force cleanup — remove legacy path and mark blocked ops' tests as `xfail`. This is a human decision, not automatic.
 
