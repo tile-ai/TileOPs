@@ -39,7 +39,7 @@ Brings a single op into alignment with its manifest entry. Classifies into one o
 
 ### `align-family`  ·  per-family orchestrator
 
-Drives the historical migration of an entire op family. Audits, then pipelines every spec-only op through test → implement → bench → flip status; handles cross-op cleanup (dual-path removal); creates the PR.
+Drives the historical migration of an entire op family. Audits, delegates each per-op alignment to `align-op`, then handles family-scoped concerns: cross-op cleanup (dual-path removal) and PR creation. The family orchestrator never calls `test-op` / `implement-op` / `bench-op` directly and never writes `ops_manifest.yaml`.
 
 - **Use when.** You have a whole family of spec-only ops to migrate.
 - **Don't use when.** Only one op needs attention — use `align-op`.
@@ -110,7 +110,7 @@ align-op <op_name>                       ← per-op orchestrator
 
 | Resource                          | Writer                                                                                                                                                             |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ops_manifest.yaml`               | Only `align-op` / `align-family` at `FLIP_STATUS`. No atomic skill writes the manifest.                                                                            |
+| `ops_manifest.yaml`               | Only `align-op` at `FLIP_STATUS`. No atomic skill writes the manifest; `align-family` delegates to `align-op` and never writes it directly.                        |
 | `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                       |
 | `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work. |
 | `tests/ops/**`                    | `test-op`.                                                                                                                                                         |
