@@ -14,10 +14,11 @@ Design-first, spec-driven documentation for TileOPs. [`ops_manifest.yaml`](../ti
 
 ## Process
 
-| Document                         | Scope                                                                                            |
-| -------------------------------- | ------------------------------------------------------------------------------------------------ |
-| [trust-model.md](trust-model.md) | Trust boundaries between manifest → test → implementation → benchmark; workloads layer contract. |
-| [testing.md](testing.md)         | Test and benchmark framework: core abstractions, tolerances, reporting rules.                    |
+| Document                               | Scope                                                                                                |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| [trust-model.md](trust-model.md)       | Trust boundaries between manifest → test → implementation → benchmark; workloads layer contract.     |
+| [testing.md](testing.md)               | Test and benchmark framework: core abstractions, tolerances, reporting rules.                        |
+| [tileops-skills.md](tileops-skills.md) | Developer decision guide: which repo-provided skill to use for which task, with composition diagram. |
 
 ## Performance Guides
 
