@@ -102,6 +102,7 @@ align-op <op_name>                       ← per-op orchestrator
 │   └─ minor:    implement-op
 └─ shared downstream:
     ├─ test-op
+    ├─ implement-op                      ← conditional: green/redesign only; skipped on minor (already ran in DISPATCH) and on TEST DONE_SKIP
     ├─ bench-op
     ├─ [orchestrator] REVALIDATE
     ├─ [orchestrator] FLIP_STATUS        ← only manifest writer

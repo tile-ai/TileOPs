@@ -88,7 +88,7 @@ For each op in the current group, invoke `align-op` as a **separate sub-agent**:
 align-op <op_name>
 ```
 
-`align-op` owns the entire per-op pipeline internally: PRE_CHECK → CLASSIFY → DISPATCH (green / redesign / minor) → TEST → IMPLEMENT → BENCH → REVALIDATE → FLIP_STATUS → CLEANUP → REPORT. `align-family` does not manage these stages and does not run `test-op` / `implement-op` / `bench-op` itself.
+`align-op` owns the entire per-op pipeline internally: PRE_CHECK → CLASSIFY → DISPATCH (green / redesign / minor) → TEST → [IMPLEMENT] → BENCH → REVALIDATE → FLIP_STATUS → CLEANUP → REPORT. IMPLEMENT is conditional — skipped when TEST returns DONE_SKIP (tests already pass), and skipped on the minor path because `implement-op` already ran as the main stage in DISPATCH. `align-family` does not manage these stages and does not run `test-op` / `implement-op` / `bench-op` itself.
 
 Per-op outcome:
 
