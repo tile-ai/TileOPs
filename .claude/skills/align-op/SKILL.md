@@ -1,6 +1,6 @@
 ---
-name: op-align
-description: Per-op orchestrator that brings a single op into alignment with its manifest entry. Classifies the op into one of three cases (green field / interface redesign / minor delta), dispatches to the right path (op-scaffold for new, archive+rescaffold+port for redesign, spec-implement for minor), then runs the shared downstream (test → bench → validate → flip status → report). Complements the family-scoped `spec-pipeline`; per-op entry when you know the op you want to touch.
+name: align-op
+description: Per-op orchestrator that brings a single op into alignment with its manifest entry. Classifies the op into one of three cases (green field / interface redesign / minor delta), dispatches to the right path (scaffold-op for new, archive+rescaffold+port for redesign, implement-op for minor), then runs the shared downstream (test → bench → validate → flip status → report). Complements the family-scoped `align-family`; per-op entry when you know the op you want to touch.
 ---
 
 ## Arguments
@@ -11,30 +11,30 @@ description: Per-op orchestrator that brings a single op into alignment with its
 
 ## Contract
 
-- **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as op-scaffold; see [PRE_CHECK](#pre_check)).
-- **Output** (SUCCESS path): op file at `source.op` aligned with the manifest; test file `source.test` aligned; `__init__.py` registrations consistent; `status` flipped `spec-only → implemented` (single commit). Side-artefacts in `.foundry/plan/<op_name>/`: `mode.json` (classification), `plan.json` (op-scaffold's §1/§2/§3 when that skill ran), `kernel-check.json` (redesign case only), `pre-rewrite/source.py` (redesign case, removed at CLEANUP on SUCCESS).
+- **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as scaffold-op; see [PRE_CHECK](#pre_check)).
+- **Output** (SUCCESS path): op file at `source.op` aligned with the manifest; test file `source.test` aligned; `__init__.py` registrations consistent; `status` flipped `spec-only → implemented` (single commit). Side-artefacts in `.foundry/plan/<op_name>/`: `mode.json` (classification), `plan.json` (scaffold-op's §1/§2/§3 when that skill ran), `kernel-check.json` (redesign case only), `pre-rewrite/source.py` (redesign case, removed at CLEANUP on SUCCESS).
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports no errors + `python -m pytest <source_test> -v` passes + benchmark produces numbers + manifest status flipped.
-- **Termination (blocked)**: any sub-skill returns blocked, or §1 drift in op-scaffold, or kernel mismatch discovered in redesign path that op-align cannot resolve at the op layer. Report with concrete reason. Archives are kept for post-mortem.
+- **Termination (blocked)**: any sub-skill returns blocked, or §1 drift in scaffold-op, or kernel mismatch discovered in redesign path that align-op cannot resolve at the op layer. Report with concrete reason. Archives are kept for post-mortem.
 - **Constraints**:
-  - Only op-align (and only at FLIP_STATUS) may modify `ops_manifest.yaml`. Sub-skills never touch the manifest.
+  - Only align-op (and only at FLIP_STATUS) may modify `ops_manifest.yaml`. Sub-skills never touch the manifest.
   - MUST NOT modify kernel code. Kernel-layer work, if needed, is surfaced via `kernel-check.json` as a separate follow-up.
-  - MUST NOT expand to multi-op scope; that is `spec-pipeline`'s role.
+  - MUST NOT expand to multi-op scope; that is `align-family`'s role.
 
 ## Trust model
 
-- `CLASSIFY`, `DISPATCH`, `FLIP_STATUS`, `CLEANUP`, `REPORT` are orchestrator stages (op-align itself). Every other stage delegates to an atomic skill as a **separate sub-agent invocation**:
+- `CLASSIFY`, `DISPATCH`, `FLIP_STATUS`, `CLEANUP`, `REPORT` are orchestrator stages (align-op itself). Every other stage delegates to an atomic skill as a **separate sub-agent invocation**:
 
   | Stage         | Sub-skill                             |
   | ------------- | ------------------------------------- |
-  | GREEN path    | `op-scaffold`                         |
-  | REDESIGN path | `op-scaffold` (after ARCHIVE + CLEAR) |
-  | MINOR path    | `spec-implement`                      |
-  | TEST          | `spec-test`                           |
-  | BENCH         | `spec-bench`                          |
+  | GREEN path    | `scaffold-op`                         |
+  | REDESIGN path | `scaffold-op` (after ARCHIVE + CLEAR) |
+  | MINOR path    | `implement-op`                        |
+  | TEST          | `test-op`                             |
+  | BENCH         | `bench-op`                            |
 
-  Separate invocations preserve the per-skill contracts (e.g., op-scaffold's §1 fact-freeze; spec-implement's no-test-modification rule).
+  Separate invocations preserve the per-skill contracts (e.g., scaffold-op's §1 fact-freeze; implement-op's no-test-modification rule).
 
-- After each sub-skill returns, op-align verifies `git status --porcelain` is empty before dispatching the next. If a sub-skill left an uncommitted change, op-align commits on its behalf with `Sub-skill [name]: [summary]` before proceeding.
+- After each sub-skill returns, align-op verifies `git status --porcelain` is empty before dispatching the next. If a sub-skill left an uncommitted change, align-op commits on its behalf with `Sub-skill [name]: [summary]` before proceeding.
 
 ## Workflow
 
@@ -48,10 +48,10 @@ stateDiagram-v2
     DISPATCH --> GREEN_PATH: case = green
     DISPATCH --> REDESIGN_PATH: case = redesign
     DISPATCH --> MINOR_PATH: case = minor
-    GREEN_PATH --> TEST: op-scaffold succeeded
+    GREEN_PATH --> TEST: scaffold-op succeeded
     REDESIGN_PATH --> KERNEL_CHECK: rescaffold + port done
     KERNEL_CHECK --> TEST: kernel-check.json written
-    MINOR_PATH --> TEST: spec-implement succeeded
+    MINOR_PATH --> TEST: implement-op succeeded
     TEST --> BENCH: tests written, failing as expected (or DONE_SKIP)
     BENCH --> REVALIDATE: benchmark produces numbers
     REVALIDATE --> FLIP_STATUS: --check-op + pytest pass
@@ -62,7 +62,7 @@ stateDiagram-v2
     CLASSIFY_ONLY_EXIT --> [*]
     GREEN_PATH --> BLOCKED: scaffold failed (§1 drift or validator error)
     REDESIGN_PATH --> BLOCKED: scaffold or port failed
-    MINOR_PATH --> BLOCKED: spec-implement failed
+    MINOR_PATH --> BLOCKED: implement-op failed
     BLOCKED --> [*]: return to caller with reason
 ```
 
@@ -70,11 +70,11 @@ stateDiagram-v2
 
 ### <a id="pre_check"></a>1. PRE_CHECK
 
-Preconditions identical to `op-scaffold`'s — orchestrator enforces them up front so sub-skills never see ill-formed input:
+Preconditions identical to `scaffold-op`'s — orchestrator enforces them up front so sub-skills never see ill-formed input:
 
 - `op_name` in `ops_manifest.yaml` → proceed; otherwise BLOCKED ("op not in manifest").
 - `status: spec-only` → proceed; `implemented` → BLOCKED ("already aligned; flip status to spec-only in a manifest PR first if you intend to re-align"); missing/other → BLOCKED.
-- `source.kernel_map` declared and non-empty → proceed; missing → BLOCKED with the same guidance op-scaffold uses (add in a prerequisite manifest PR).
+- `source.kernel_map` declared and non-empty → proceed; missing → BLOCKED with the same guidance scaffold-op uses (add in a prerequisite manifest PR).
 - Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path" — kernel must exist for op layer to align, regardless of case).
 
 ### 2. CLASSIFY
@@ -113,30 +113,30 @@ Each path produces the aligned op file under `source.op` plus whatever artefacts
 #### 3a. GREEN path (`case = green`)
 
 ```
-op-scaffold <op_name>
+scaffold-op <op_name>
 ```
 
-Sub-skill does PRE_CHECK → DRY_RUN (plan.json) → EMIT → REGISTER → VALIDATE → REPORT. op-align waits for SUCCESS or BLOCKED; on BLOCKED, surface the row and terminate.
+Sub-skill does PRE_CHECK → DRY_RUN (plan.json) → EMIT → REGISTER → VALIDATE → REPORT. align-op waits for SUCCESS or BLOCKED; on BLOCKED, surface the row and terminate.
 
 #### 3b. REDESIGN path (`case = redesign`)
 
 Sequence:
 
 1. **ARCHIVE** — `mkdir -p .foundry/plan/<op_name>/pre-rewrite/`, copy `source.op` there as `source.py` (rename: strip family path, keep basename). The archive is the source of truth for manual porting. It persists until CLEANUP.
-1. **CLEAR** — remove `source.op` from the tree; remove the op's `from .<module> import <ClassName>` line and its `__all__` entry from the package `__init__.py`. Commit as `[Chore] op-align: archive <op_name> before rescaffold`.
-1. **SCAFFOLD** — `op-scaffold <op_name>`. Target now absent, PRE_CHECK passes, emits the 17 mechanical slots.
+1. **CLEAR** — remove `source.op` from the tree; remove the op's `from .<module> import <ClassName>` line and its `__all__` entry from the package `__init__.py`. Commit as `[Chore] align-op: archive <op_name> before rescaffold`.
+1. **SCAFFOLD** — `scaffold-op <op_name>`. Target now absent, PRE_CHECK passes, emits the 17 mechanical slots.
 1. **PORT** — read `pre-rewrite/source.py` and port op-specific content that the scaffold cannot produce:
    - Optional hooks (`_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`, `_cache_key` override).
    - Family-specific protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, etc.) if the op was a T1 thin wrapper.
    - Any `forward` body specifics beyond the universal pattern (kernel-specific reshape/movedim choreography).
    - Any class-level non-slot attributes the old file had that still make sense under the new spec.
-     Commit as `[Feat] op-align: port business logic for <op_name> from pre-rewrite`. If the agent is uncertain whether a specific override should be ported, record an `open_questions` item in plan.json §3 (`needs_human_decision`) and port conservatively.
+     Commit as `[Feat] align-op: port business logic for <op_name> from pre-rewrite`. If the agent is uncertain whether a specific override should be ported, record an `open_questions` item in plan.json §3 (`needs_human_decision`) and port conservatively.
 1. **KERNEL_CHECK** — see §5 below.
 
 #### 3c. MINOR path (`case = minor`)
 
 ```
-spec-implement <op_name>
+implement-op <op_name>
 ```
 
 Sub-skill does ANALYZE → DIAGNOSE → IMPLEMENT → VALIDATE → MARK_DONE → COMMIT. Op-align waits for SUCCESS or BLOCKED.
@@ -150,7 +150,7 @@ Determine whether the kernel layer also needs work. Op-align does **not** modify
 For each Kernel class referenced in `source.kernel_map`:
 
 1. Inspect the kernel's `__init__` / `forward` / `_build_program` signatures (wherever applicable) in its source file.
-1. Compare against the new op's kernel-build call emitted by op-scaffold (`self.kernel_map[<key>](<args>)`). Specifically check:
+1. Compare against the new op's kernel-build call emitted by scaffold-op (`self.kernel_map[<key>](<args>)`). Specifically check:
    - Argument names and positional order.
    - Argument types.
    - Any layout / dtype expectations the kernel documents.
@@ -185,15 +185,15 @@ Non-`aligned` entries surface in REPORT as `needs_kernel_work` follow-ups. Op-al
 ### 6. TEST
 
 ```
-spec-test <op_name>
+test-op <op_name>
 ```
 
-Sub-skill writes tests against the new spec, confirms they fail (or DONE_SKIP if base class fix from a sibling already handles them). Reuses existing spec-test contract unchanged.
+Sub-skill writes tests against the new spec, confirms they fail (or DONE_SKIP if base class fix from a sibling already handles them). Reuses existing test-op contract unchanged.
 
 ### 7. BENCH
 
 ```
-spec-bench <op_name>
+bench-op <op_name>
 ```
 
 Produces numbers. Sub-skill unchanged. If BLOCKED and reason is not kernel-related, propagate blocked.
@@ -237,14 +237,14 @@ Mode decided by: auto | user_prompt | flag_override
 File: <source.op> (<lines>)
 
 Sub-skills run:
-  - op-scaffold: <SUCCESS|BLOCKED|skipped>
-  - spec-implement: <...>
-  - spec-test: <...>
-  - spec-bench: <...>
+  - scaffold-op: <SUCCESS|BLOCKED|skipped>
+  - implement-op: <...>
+  - test-op: <...>
+  - bench-op: <...>
 
 Plan artefacts (.foundry/plan/<op_name>/):
   - mode.json
-  - plan.json (if op-scaffold ran)
+  - plan.json (if scaffold-op ran)
   - kernel-check.json (if redesign path)
   - pre-rewrite/ (redesign path, cleaned on SUCCESS)
 
@@ -258,20 +258,20 @@ Follow-ups:
 
 On BLOCKED, replace "Status flipped" line with the blocking error and list remaining follow-ups.
 
-## Interaction with `spec-pipeline`
+## Interaction with `align-family`
 
-`spec-pipeline` remains the family-scoped orchestrator. Its per-op inner loop (`TEST → IMPLEMENT → BENCH → REVALIDATE → FLIP_STATUS`) can be refactored to call `op-align` instead of managing the per-op stages itself. That refactor is out of scope for this PR — current spec-pipeline stays functional; a follow-up can consolidate.
+`align-family` remains the family-scoped orchestrator. Its per-op inner loop (`TEST → IMPLEMENT → BENCH → REVALIDATE → FLIP_STATUS`) can be refactored to call `align-op` instead of managing the per-op stages itself. That refactor is out of scope for this PR — current align-family stays functional; a follow-up can consolidate.
 
 Until consolidated:
 
-- Use `op-align <op>` for per-op work (redesign or minor delta, or green field when a manifest PR added a new entry).
-- Use `spec-pipeline <family>` for family-scoped historical migration of many ops at once.
+- Use `align-op <op>` for per-op work (redesign or minor delta, or green field when a manifest PR added a new entry).
+- Use `align-family <family>` for family-scoped historical migration of many ops at once.
 
-They do not conflict. `op-align` never manages cross-op cleanup gates; that remains `spec-pipeline`'s.
+They do not conflict. `align-op` never manages cross-op cleanup gates; that remains `align-family`'s.
 
 ## Non-goals
 
 - **Kernel scaffolding / kernel-layer edits.** Op-align surfaces kernel work as a follow-up via `kernel-check.json`; a separate (future) `kernel-scaffold` / `kernel-align` skill will own that layer.
-- **Family-level cleanup.** Cross-op dual-path removal lives in `spec-pipeline` and is not a concern of per-op alignment.
-- **Auto-detecting "redesign vs minor."** The distinction is a design judgement; op-align prompts or accepts `--mode`.
+- **Family-level cleanup.** Cross-op dual-path removal lives in `align-family` and is not a concern of per-op alignment.
+- **Auto-detecting "redesign vs minor."** The distinction is a design judgement; align-op prompts or accepts `--mode`.
 - **Manifest changes (other than FLIP_STATUS).** Per the trust model, manifest changes live in separate manifest PRs.

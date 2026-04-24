@@ -26,6 +26,7 @@ This project follows **design-first, spec-driven** development: design docs and 
 
 - [trust-model.md](docs/trust-model.md) — trust boundaries (manifest → test → implementation → benchmark), workloads layer contract
 - [testing.md](docs/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
+- [tileops-skills.md](docs/tileops-skills.md) — developer decision guide: which repo-provided skill to use for which task
 
 ### External
 

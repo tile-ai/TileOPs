@@ -1,5 +1,5 @@
 ---
-name: op-scaffold
+name: scaffold-op
 description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.yaml` entry by following the 7-step playbook in docs/ops-design.md. Emits the 17 scaffold slots (S1-S7, S12-S21); leaves family-specific protocol variables, optional hooks, and kernel implementations to downstream skills.
 ---
 
@@ -49,9 +49,9 @@ Explicitly **out of scope** — leave empty, do not invent:
 - **Optional hooks** (`_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`). Op-specific business logic; no manifest derivation.
 - **`_cache_key` override**. Recommended for cache efficiency under dynamic shapes when `_static_axes` is empty — the `Op._cache_key` default is correctness-preserving (it keys by all non-static axis sizes) but may over-fragment under dynamic shapes and emits a once-per-type `UserWarning` to surface the missing override. The override logic depends on kernel math and is out of scope for scaffolding.
 - **Kernel implementations**. The scaffold only references the Kernel classes named in `source.kernel_map`; their implementation is out of scope.
-- **Tests and benchmarks**. Downstream skills (`spec-test`, `spec-bench`) own these.
+- **Tests and benchmarks**. Downstream skills (`test-op`, `bench-op`) own these.
 
-These gaps are expected and acceptable. The resulting scaffold will raise `NotImplementedError` or trigger validator warnings when invoked beyond the 17 slots' coverage; that is the intended hand-off to `spec-implement` and the family-refactoring skill.
+These gaps are expected and acceptable. The resulting scaffold will raise `NotImplementedError` or trigger validator warnings when invoked beyond the 17 slots' coverage; that is the intended hand-off to `implement-op` and the family-refactoring skill.
 
 ## Steps
 
@@ -81,7 +81,7 @@ Derive the target file path from `source.op` (e.g. `tileops/ops/reduction/cumsum
 ### 2. PRE_CHECK
 
 - `op_name` present in `ops_manifest.yaml` → proceed; otherwise BLOCKED ("op not in manifest").
-- `status` field explicitly set to `spec-only` → proceed; `status: implemented` → BLOCKED ("op already implemented; use spec-implement to migrate"); missing `status` or any other value → BLOCKED ("manifest entry must declare a valid top-level `status`; the validator treats `status` as required").
+- `status` field explicitly set to `spec-only` → proceed; `status: implemented` → BLOCKED ("op already implemented; use implement-op to migrate"); missing `status` or any other value → BLOCKED ("manifest entry must declare a valid top-level `status`; the validator treats `status` as required").
 - `source.kernel_map` declared and non-empty → proceed; missing or empty → BLOCKED ("manifest entry needs `source.kernel_map` before scaffolding — add the dispatch map in a separate manifest PR per the trust model; the scaffold cannot invent dispatch keys because they are kernel-internal conventions"). Note: per `docs/manifest.md`, `source.kernel_map` is only required when `status: implemented`, so many existing `spec-only` entries lack it — these are the cases that need the manifest-PR prerequisite before scaffolding can run.
 - Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path").
 - Target file `source.op` does NOT exist → proceed; exists → BLOCKED ("target file already present; scaffold would overwrite").
@@ -278,5 +278,5 @@ The scaffold's behaviour must stay in sync with `docs/ops-design.md` and `docs/o
 ## Non-goals
 
 - Not a codegen engine. This skill is an agent-executable procedure. A future real codegen script can replace the EMIT step; the skill's input/output contract is designed to be codegen-compatible.
-- Not a migration driver. If `op_name` already exists with `status: implemented`, use `spec-implement` (or `spec-pipeline`) instead.
+- Not a migration driver. If `op_name` already exists with `status: implemented`, use `implement-op` (or `align-family`) instead.
 - Not a kernel scaffold. Kernel-side scaffolding is a separate concern.
