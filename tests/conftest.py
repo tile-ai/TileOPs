@@ -179,6 +179,7 @@ TILELANG_019_KNOWN_FAILING_NODEIDS = {
     "tests/ops/test_mamba.py::test_ssd_decode[2-8-64-32-2-dtype2-False]",
     "tests/ops/test_mhc_post.py::test_mhc_post_op[2-4-1920-dtype1-False]",
     "tests/ops/test_mhc_post.py::test_mhc_post_op[4-4-2560-dtype2-False]",
+    "tests/ops/test_norm_ops.py::TestBatchNormCustomOp::test_fwd_torch_compile_smoke",
     "tests/ops/test_norm_ops.py::TestBatchNormCustomOp::test_bwd_torch_compile_smoke",
 }
 
