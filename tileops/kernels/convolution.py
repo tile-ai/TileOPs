@@ -48,11 +48,12 @@ def _conv1d_kernel(
     kernel_l: int,
     stride_l: int,
     pad_l: int,
+    dilation_l: int,
     has_bias: bool,
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    out_l = (l_in + 2 * pad_l - kernel_l) // stride_l + 1
+    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     k_total = kernel_l * c_in
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -95,7 +96,7 @@ def _conv1d_kernel(
                         ci = k_idx % c_in
                         batch = m_idx // out_l
                         ol = m_idx % out_l
-                        il = ol * stride_l + kw - pad_l
+                        il = ol * stride_l + kw * dilation_l - pad_l
                         in_bound = (
                             (m_idx < n * out_l)
                             & (k_idx < k_total)
@@ -147,6 +148,7 @@ def _conv1d_wrapped_kernel(
     kernel_l: int,
     stride_l: int,
     pad_l: int,
+    dilation_l: int,
     has_bias: bool,
     dtype: str,
     block_m: int,
@@ -160,7 +162,7 @@ def _conv1d_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv1d_kernel(
-        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, has_bias, dtype
+        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, dilation_l, has_bias, dtype
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -173,6 +175,7 @@ def _(
     kernel_l: int,
     stride_l: int,
     pad_l: int,
+    dilation_l: int,
     has_bias: bool,
     dtype: str,
     block_m: int,
@@ -183,7 +186,7 @@ def _(
     enable_rasterization: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    out_l = (l_in + 2 * pad_l - kernel_l) // stride_l + 1
+    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     return torch.empty((n, out_l, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
@@ -200,6 +203,7 @@ class Conv1dKernel(Kernel):
         stride_l: int,
         pad_l: int,
         dtype: torch.dtype,
+        dilation_l: int = 1,
         has_bias: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
@@ -212,9 +216,10 @@ class Conv1dKernel(Kernel):
         self.kernel_l = kernel_l
         self.stride_l = stride_l
         self.pad_l = pad_l
+        self.dilation_l = dilation_l
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_l = (l_in + 2 * pad_l - kernel_l) // stride_l + 1
+        self.out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
         self.m = n * self.out_l
         self.k_total = c_in * kernel_l
 
@@ -226,6 +231,7 @@ class Conv1dKernel(Kernel):
             kernel_l,
             stride_l,
             pad_l,
+            dilation_l,
             has_bias,
             self.dtype_str,
         )
@@ -297,6 +303,7 @@ class Conv1dKernel(Kernel):
             self.kernel_l,
             self.stride_l,
             self.pad_l,
+            self.dilation_l,
             self.has_bias,
             self.dtype_str,
             self.config["block_m"],

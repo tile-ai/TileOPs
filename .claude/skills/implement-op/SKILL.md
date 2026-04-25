@@ -1,11 +1,11 @@
 ---
-name: spec-implement
+name: implement-op
 description: Modify op code to match the manifest-declared interface, making spec tests pass.
 ---
 
 ## Arguments
 
-`op_name`, `manifest_signature`, `source_op`, `source_test` — passed by spec-pipeline orchestrator.
+`op_name`, `manifest_signature`, `source_op`, `source_test` — passed by align-family orchestrator.
 
 ## Contract
 
@@ -13,7 +13,7 @@ description: Modify op code to match the manifest-declared interface, making spe
 - **Output**: modified op code + commit + `observations` list (returned to orchestrator)
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <name>` all levels pass + new tests pass.
 - **Termination (blocked)**: fix requires changes beyond Op layer. Return `blocked` with reason.
-- **Constraint**: must NOT modify `ops_manifest.yaml` (orchestrator's responsibility). Must NOT modify tests from spec-test.
+- **Constraint**: must NOT modify `ops_manifest.yaml` (orchestrator's responsibility). Must NOT modify tests from test-op.
 - **Behavioral compatibility**: default param values (from manifest) must produce identical results to the old implementation. The old API shape (e.g., `__init__(M, N)`) is NOT preserved — the manifest defines the target interface.
 
 ## Workflow

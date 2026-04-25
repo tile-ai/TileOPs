@@ -1,11 +1,11 @@
 ---
-name: spec-bench
+name: bench-op
 description: Fix benchmark file to work with the new Op interface. Run benchmark, fix errors, repeat until it produces numbers.
 ---
 
 ## Arguments
 
-`op_name`, `source_bench`, `source_op` — passed by spec-pipeline orchestrator.
+`op_name`, `source_bench`, `source_op` — passed by align-family orchestrator.
 
 ## Contract
 
