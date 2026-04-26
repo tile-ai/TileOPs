@@ -310,7 +310,7 @@ On BLOCKED, replace "Status flipped" line with the blocking error and list remai
 
 ## Interaction with `align-family`
 
-`align-family` is the family-scoped orchestrator and delegates every per-op stage to `align-op`. Its workflow is `AUDIT → GROUP_BY_BASE → ROUTE → (per op: ALIGN_OP) → CLEANUP_GATE → CLEANUP → CREATE_PR`; the family orchestrator never invokes the atomic per-op skills (test-op / implement-op / bench-op) directly — every per-op stage runs inside `align-op`'s contract.
+`align-family` is the family-scoped orchestrator and delegates every per-op stage to `align-op`. Its workflow is `AUDIT → GROUP_BY_BASE → ROUTE → (per op: ALIGN_OP) → CLEANUP_GATE → CLEANUP → CREATE_PR`; the family orchestrator never invokes the atomic per-op skills (`scaffold-op` / `test-op` / `implement-op` / `bench-op`) directly — every per-op stage runs inside `align-op`'s contract.
 
 - Use `align-op <op>` for per-op work (green field, redesign, or minor delta).
 - Use `align-family <family>` for family-scoped historical migration of many ops at once.
