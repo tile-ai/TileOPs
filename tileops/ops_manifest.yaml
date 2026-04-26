@@ -2276,7 +2276,7 @@ ops:
   CumsumFwdOp:
     ref_api: "torch.cumsum"
     family: scan
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:
@@ -2317,7 +2317,7 @@ ops:
   CumprodFwdOp:
     ref_api: "torch.cumprod"
     family: scan
-    status: spec-only
+    status: implemented
 
     signature:
       inputs:

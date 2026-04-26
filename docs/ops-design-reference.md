@@ -269,14 +269,14 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
-| Variable                  | Family          | Purpose                                                   |
-| ------------------------- | --------------- | --------------------------------------------------------- |
-| `_kernel_key`             | norm, reduction | Kernel-map lookup key                                     |
-| `_kernel_cls`             | norm, reduction | Kernel class reference                                    |
-| `_op_kind`                | reduction       | Reduction kind string (`"sum"`, `"mean"`, `"std"`, etc.)  |
-| `_kernel_handles_padding` | reduction       | `True` → kernel uses masked loads, skip host-side padding |
-| `_op_name`                | elementwise     | `torch.library.custom_op` registration key                |
-| `kernel_cls`              | elementwise     | Kernel class reference                                    |
+| Variable                  | Family          | Purpose                                                                                                          |
+| ------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `_kernel_key`             | norm, reduction | Kernel-map lookup key                                                                                            |
+| `_kernel_cls`             | norm, reduction | Kernel class reference                                                                                           |
+| `_op_kind`                | reduction, scan | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
+| `_kernel_handles_padding` | reduction       | `True` → kernel uses masked loads, skip host-side padding                                                        |
+| `_op_name`                | elementwise     | `torch.library.custom_op` registration key                                                                       |
+| `kernel_cls`              | elementwise     | Kernel class reference                                                                                           |
 
 **The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); filled in during family-specific refactoring (future skill). Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
