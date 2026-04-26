@@ -2,7 +2,7 @@
 
 Skills this repo provides for TileOPs op development: what each does, when to use it, when not to. Authoritative per-skill contracts live in each `SKILL.md`; this page is the human-facing map.
 
-Naming is **verb-noun**. The verb is the action; the noun (`op` or `family`) is the scope.
+Naming is **verb-noun**. The verb is the action; the noun is the scope (`op`, `family`, or `manifest`).
 
 ## At a glance
 
@@ -125,22 +125,22 @@ align-op <op_name>                       ← per-op orchestrator
     ├─ implement-op                      ← conditional: green/redesign only; skipped on minor (already ran in DISPATCH) and on TEST DONE_SKIP
     ├─ bench-op
     ├─ [orchestrator] REVALIDATE
-    ├─ [orchestrator] FLIP_STATUS        ← only manifest writer
+    ├─ [orchestrator] FLIP_STATUS        ← writes status field only (one of three manifest writers)
     ├─ [orchestrator] CLEANUP
     └─ [orchestrator] REPORT
 ```
 
-`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest; `align-op`'s FLIP_STATUS is the sole manifest-write site.
+`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest. Among the op- and family-scoped skills, `align-op`'s `FLIP_STATUS` is the only manifest writer (and writes only the `status` field). Manifest-scoped skills (`add-manifest`, `fix-manifest`) write disjoint slices — see the trust-model table below.
 
 ## Trust model  ·  who may write what
 
-| Resource                          | Writer                                                                                                                                                                                                                                                             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ops_manifest.yaml`               | Three writers, disjoint slices: `add-manifest` (new entries), `fix-manifest` (one structural field on an existing entry, never `signature.*` or `status`), `align-op` at `FLIP_STATUS` (the `status` field only). No op-layer or family skill writes the manifest. |
-| `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                                                                                                                       |
-| `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work.                                                                                                 |
-| `tests/ops/**`                    | `test-op`.                                                                                                                                                                                                                                                         |
-| `benchmarks/ops/**`               | `bench-op`.                                                                                                                                                                                                                                                        |
+| Resource                          | Writer                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ops_manifest.yaml`               | Three writers, disjoint slices: `add-manifest` creates new entries; `fix-manifest` patches one structural field on an existing entry (allowed: `kernel_map`, `static_dims`, `shape_rules`, `roofline.vars`, `dtype_combos`; never `signature.{inputs,outputs,params}` or `status`); `align-op` at `FLIP_STATUS` writes only the `status` field. No other skill writes the manifest. |
+| `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                                                                                                                                                                                                                                        |
+| `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work.                                                                                                                                                                                                                  |
+| `tests/ops/**`                    | `test-op`.                                                                                                                                                                                                                                                                                                                                                                          |
+| `benchmarks/ops/**`               | `bench-op`.                                                                                                                                                                                                                                                                                                                                                                         |
 
 ## Maintenance
 

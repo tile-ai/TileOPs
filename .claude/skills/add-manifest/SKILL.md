@@ -40,7 +40,7 @@ stateDiagram-v2
 
 ### 1. VALIDATE_INPUT
 
-`torch_api` must match `https://docs.pytorch.org/docs/stable/generated/*.html`. Else abort.
+`torch_api` must match `https://(docs\.)?pytorch\.org/docs/stable/generated/*.html` (both host forms are canonical PyTorch docs). Else abort.
 
 ### 2. RESOLVE_SOURCES
 
@@ -53,7 +53,21 @@ Locate from `op_path`:
 | test   | `tests/ops/test_<name>.py`                            |
 | bench  | `benchmarks/ops/bench_<name>.py`                      |
 
-Set `family` = kernel parent dir name. Missing files: record absent, continue.
+Set `family` from kernel parent dir name with this mapping (manifest uses a closed family vocabulary, not raw dir names):
+
+| Kernel dir                     | Manifest `family` |
+| ------------------------------ | ----------------- |
+| `tileops/kernels/norm/`        | `normalization`   |
+| `tileops/kernels/conv/`        | `convolution`     |
+| `tileops/kernels/reduction/`   | `reduction`       |
+| `tileops/kernels/scan/`        | `scan`            |
+| `tileops/kernels/moe/`         | `moe`             |
+| `tileops/kernels/elementwise/` | `elementwise`     |
+| `tileops/kernels/attention/`   | `attention`       |
+
+If the dir is not in this table, scan `tileops/ops_manifest.yaml` for the convention used by an existing op under that dir. If still ambiguous, STOP.
+
+Missing files: record absent, continue.
 
 ### 3. READ_PYTORCH
 
@@ -86,14 +100,14 @@ Multiple `Optional[Tensor]`: follow decision tree in `docs/manifest.md`.
 Per entry, fill these fields:
 
 - `family`: from RESOLVE_SOURCES.
-- `status`: `spec-only`. Flip to `implemented` only if VALIDATE passes L0–L4.
-- `signature.inputs`: ordered dict, PyTorch positional order. Per input: `dtype` is the supported set joined with `|`; `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
+- `status`: always `spec-only`. **Never** set `implemented` from this skill — that is `align-op@FLIP_STATUS`'s exclusive write.
+- `signature.inputs`: ordered dict, PyTorch positional order. Per input: `dtype` is the supported set (PyTorch dtypes minus `float64` and complex types `complex32/64/128`) joined with `|`; `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
 - `signature.outputs`: same shape as inputs. Use `same_as(<ref>)` where applicable.
 - `signature.params`: ordered dict, each `{type, default}`.
 - `signature.shape_rules`: Python expressions for derived dims and inter-tensor constraints.
 - `signature.dtype_combos`: only if supported set ⊂ Cartesian product; else omit.
-- `workloads`: `null` (human decision).
-- `roofline`: fill for well-known ops (conv / pool / matmul) with standard formulas; `null` otherwise. **Never guess.** Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: use `vars` mapping.
+- `workloads`: `[]` (empty list — schema requires a list; human fills shapes in a follow-up).
+- `roofline`: required by L0 schema (cannot be `null` or empty). For well-known ops (conv / pool / matmul / norm / reduction): emit standard formulas. Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: use `vars` mapping. **If the formula is not derivable from PyTorch docs alone, BLOCKED with `evidence_needed: roofline.flops|bytes for <op>`** — do not guess.
 - `source`: paths from RESOLVE_SOURCES; `bench_manifest_driven: false`.
 
 ### 6. VALIDATE
@@ -102,9 +116,7 @@ Per entry, fill these fields:
 python scripts/validate_manifest.py --check-op <op_name>
 ```
 
-L0 must pass. On fail: edit entry, rerun. Do not advance until L0 passes.
-
-After L0 passes, run again without `--level`. If L1–L4 all pass, set `status: implemented`.
+L0 must pass. On fail: edit entry, rerun. Do not advance until L0 passes. Higher-level (L1–L4) failures are surfaced as gap items in the follow-up issue, not blocking.
 
 ### 7. RUN_AUDIT
 
@@ -145,6 +157,6 @@ Title and branch must match `.claude/conventions/types.sh`.
 - Non-URL `torch_api` → abort.
 - Never edit op / kernel / test / bench files.
 - Never invent params outside PyTorch API.
-- `status: implemented` only when L0–L4 all pass. Otherwise `spec-only`.
+- `status` is always `spec-only`. Never set `implemented` (that is `align-op@FLIP_STATUS`).
 - Ambiguous PyTorch mapping → STOP, ask user.
 - Mapping clearly wrong → STOP, explain.
