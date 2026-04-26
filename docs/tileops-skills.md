@@ -2,7 +2,7 @@
 
 Skills this repo provides for TileOPs op development: what each does, when to use it, when not to. Authoritative per-skill contracts live in each `SKILL.md`; this page is the human-facing map.
 
-Naming is **verb-noun**. The verb is the action; the noun (`op` or `family`) is the scope.
+Naming is **verb-noun**. The verb is the action; the noun is the scope (`op`, `family`, or `manifest`).
 
 ## At a glance
 
@@ -10,8 +10,9 @@ Naming is **verb-noun**. The verb is the action; the noun (`op` or `family`) is 
 | -------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **per op**     | [`align-op`](../.claude/skills/align-op/SKILL.md)         | [`scaffold-op`](../.claude/skills/scaffold-op/SKILL.md) · [`test-op`](../.claude/skills/test-op/SKILL.md) · [`implement-op`](../.claude/skills/implement-op/SKILL.md) · [`bench-op`](../.claude/skills/bench-op/SKILL.md) |
 | **per family** | [`align-family`](../.claude/skills/align-family/SKILL.md) | [`audit-family`](../.claude/skills/audit-family/SKILL.md)                                                                                                                                                                 |
+| **manifest**   | —                                                         | [`add-manifest`](../.claude/skills/add-manifest/SKILL.md) · [`fix-manifest`](../.claude/skills/fix-manifest/SKILL.md)                                                                                                     |
 
-Orchestrators are the day-to-day entry points. Atomics are their sub-skills — standalone invocation is for debugging.
+Orchestrators are the day-to-day entry points. Atomics are their sub-skills — standalone invocation is for debugging. Manifest skills are standalone editors of `ops_manifest.yaml` and have no orchestrator: they precede op-layer work, not contain it.
 
 ## What do I want to do?
 
@@ -21,6 +22,8 @@ Orchestrators are the day-to-day entry points. Atomics are their sub-skills — 
 | Find out which case an op is in, without touching anything        | `/align-op <op_name> --classify-only`      |
 | Migrate every spec-only op in a whole family (historical backlog) | `/align-family <family>`                   |
 | Read-only audit of a family's spec gaps                           | `/audit-family <family>`                   |
+| Add a new manifest entry from a PyTorch docs URL                  | `/add-manifest <op_path> <torch_api>`      |
+| Patch a single missing field in an existing manifest entry        | `/fix-manifest <op_name>`                  |
 | Scaffold a fresh op file, bypassing the orchestrator              | `/scaffold-op <op_name>`                   |
 | Debug one atomic phase by hand                                    | `/test-op` · `/implement-op` · `/bench-op` |
 
@@ -83,6 +86,23 @@ Compares each op's code signature against its manifest spec, classifies gaps (`r
 - **Use when.** You want read-only inspection of a family's current conformance. Also called internally by `align-family`.
 - **Contract:** [SKILL.md](../.claude/skills/audit-family/SKILL.md)
 
+### `add-manifest` · manifest atomic
+
+Generates a fresh `ops_manifest.yaml` entry for a legacy op from its PyTorch reference. Reads the PyTorch docs URL as the sole source of truth, drafts `signature` / `shape_rules` / `roofline`, validates, and opens a draft PR with a follow-up issue capturing semantic-gap analysis.
+
+- **Use when.** A code-side op exists but has no manifest entry yet. Greenfield path.
+- **Don't use when.** The entry already exists — use `fix-manifest` for surgical patches, or open a manifest-review issue if the change touches `signature`.
+- **Contract:** [SKILL.md](../.claude/skills/add-manifest/SKILL.md)
+
+### `fix-manifest` · manifest atomic
+
+Surgical patch of an existing manifest entry. Diagnoses one missing structural field via the validator, infers the patch from on-disk evidence (op source, kernel class, PyTorch reference), writes a single-field change, and opens a manifest PR.
+
+- **Allowed fields.** `kernel_map`, `static_dims`, `shape_rules`, `roofline.vars`, `dtype_combos`. Everything else (signature, status, sources) is out of scope by design.
+- **Use when.** The validator rejects an existing entry for a missing structural field — most commonly `kernel_map`, which `align-op`'s PRE_CHECK requires.
+- **Don't use when.** The entry doesn't exist (`add-manifest`), the gap is in `signature.*` (open a manifest-review issue), or you want to flip `status: spec-only → implemented` (that is `align-op`'s `FLIP_STATUS`).
+- **Contract:** [SKILL.md](../.claude/skills/fix-manifest/SKILL.md)
+
 ## Composition
 
 How orchestrators delegate. Note that orchestrators may delegate to other orchestrators (e.g., `align-family` → `align-op`) as well as to atomic skills.
@@ -105,22 +125,22 @@ align-op <op_name>                       ← per-op orchestrator
     ├─ implement-op                      ← conditional: green/redesign only; skipped on minor (already ran in DISPATCH) and on TEST DONE_SKIP
     ├─ bench-op
     ├─ [orchestrator] REVALIDATE
-    ├─ [orchestrator] FLIP_STATUS        ← only manifest writer
+    ├─ [orchestrator] FLIP_STATUS        ← writes status field only (one of three manifest writers)
     ├─ [orchestrator] CLEANUP
     └─ [orchestrator] REPORT
 ```
 
-`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest; `align-op`'s FLIP_STATUS is the sole manifest-write site.
+`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest. Among the op- and family-scoped skills, `align-op`'s `FLIP_STATUS` is the only manifest writer (and writes only the `status` field). Manifest-scoped skills (`add-manifest`, `fix-manifest`) write disjoint slices — see the trust-model table below.
 
 ## Trust model  ·  who may write what
 
-| Resource                          | Writer                                                                                                                                                             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ops_manifest.yaml`               | Only `align-op` at `FLIP_STATUS`. No atomic skill writes the manifest; `align-family` delegates to `align-op` and never writes it directly.                        |
-| `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                       |
-| `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work. |
-| `tests/ops/**`                    | `test-op`.                                                                                                                                                         |
-| `benchmarks/ops/**`               | `bench-op`.                                                                                                                                                        |
+| Resource                          | Writer                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ops_manifest.yaml`               | Three writers, disjoint slices: `add-manifest` creates new entries; `fix-manifest` patches one structural field on an existing entry (allowed: `kernel_map`, `static_dims`, `shape_rules`, `roofline.vars`, `dtype_combos`; never `signature.{inputs,outputs,params}` or `status`); `align-op` at `FLIP_STATUS` writes only the `status` field. No other skill writes the manifest. |
+| `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                                                                                                                                                                                                                                        |
+| `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work.                                                                                                                                                                                                                  |
+| `tests/ops/**`                    | `test-op`.                                                                                                                                                                                                                                                                                                                                                                          |
+| `benchmarks/ops/**`               | `bench-op`.                                                                                                                                                                                                                                                                                                                                                                         |
 
 ## Maintenance
 
