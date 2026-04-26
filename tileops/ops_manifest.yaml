@@ -2308,6 +2308,8 @@ ops:
 
     source:
       kernel: tileops/kernels/reduction/cumulative.py
+      kernel_map:
+        cumulative_fwd: CumulativeKernel
       op: tileops/ops/reduction/cumsum.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
@@ -2347,6 +2349,8 @@ ops:
 
     source:
       kernel: tileops/kernels/reduction/cumulative.py
+      kernel_map:
+        cumulative_fwd: CumulativeKernel
       op: tileops/ops/reduction/cumprod.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
@@ -2410,6 +2414,8 @@ ops:
 
     source:
       kernel: tileops/kernels/convolution.py
+      kernel_map:
+        conv1d_kernel: Conv1dKernel
       op: tileops/ops/convolution.py
       test: tests/ops/test_convolution.py
       bench: benchmarks/ops/bench_convolution.py
@@ -2459,6 +2465,8 @@ ops:
 
     source:
       kernel: tileops/kernels/convolution.py
+      kernel_map:
+        conv1d_kernel: Conv1dKernel
       op: tileops/ops/convolution.py
       test: tests/ops/test_convolution.py
       bench: benchmarks/ops/bench_convolution.py
