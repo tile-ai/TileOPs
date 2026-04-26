@@ -220,8 +220,8 @@ jobs:
         run: gitleaks dir . --redact --no-banner
 
   validate-manifest:
-    needs: [validate-pr-title, detect-changes]
-    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.detect-changes.outputs.manifest == 'true' }}
+    needs: [validate-pr-title, ci-gate, detect-changes]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' && needs.detect-changes.outputs.manifest == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
