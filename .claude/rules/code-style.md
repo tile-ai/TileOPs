@@ -24,6 +24,8 @@
 
 - **Abbreviation casing in filenames**: Filenames use all-lowercase with underscores. Multi-word abbreviations keep all letters lowercase — `rms_norm.py`, `ssd_decode.py`. Do not capitalize a single letter (e.g. `Ssd_decode.py` is wrong).
 
+- **Docstring style: Google**. All Python docstrings (modules, classes, public functions / methods) follow Google style: one-sentence summary on the opening line, blank line, then optional sections `Args:`, `Returns:`, `Raises:`, `Example:`. Internal helpers may use a single-line summary docstring. Do NOT mix Sphinx-style (`:param x:`) or NumPy-style (separate header lines for each param) into the same file.
+
 - **Expand abbreviations on first use in docstrings**: When SSM, SSD, or other domain abbreviations first appear in a module or class docstring, write the full form followed by the abbreviation in parentheses. Subsequent uses in the same file can use the abbreviation alone.
 
   - SSM → State Space Model (SSM)
