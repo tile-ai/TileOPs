@@ -399,6 +399,14 @@ jobs:
         with:
           reclaim-below-gib: "10"
           cache-trim-cooldown-minutes: "120"
+          cache-dirs: |
+            /data7/shared/ci-cache/triton
+            /data7/shared/ci-cache/pip
+            /data7/shared/ci-cache/wheels
+            /data7/shared/ci-cache/tilelang/tmp
+          atomic-cache-dirs: |
+            /data7/shared/ci-cache/tilelang/autotuner
+          df-paths: "/data7 /data7/shared/ci-cache"
           # Daily runner-maintenance.yml owns the destructive autotuner
           # age-trim; per-PR runs only need sentinel-repair (still
           # unconditional) so they don't evict tuning artefacts the next
@@ -441,6 +449,7 @@ jobs:
           VENV_PREFIX="tileops_ci_venv"
           VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
           TRUSTED_VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
+          TRUSTED_CACHE_ROOT="/data7/shared/ci-cache"
           FORK_CAN_COPY_TRUSTED_VENV="false"
 
           if [[ "$IS_FORK" == "true" ]]; then
@@ -478,19 +487,19 @@ jobs:
 
             # Copy trusted compile caches into the isolated per-run dir.
             # rsync is fast for warm caches (<5s); fork state is fully disposable.
-            TRUSTED_WHEEL_DIR="/home/ci-runner/.wheel-cache"
+            TRUSTED_WHEEL_DIR="${TRUSTED_CACHE_ROOT}/wheels"
             copy_start=$SECONDS
             if command -v rsync >/dev/null 2>&1; then
-              rsync -a /home/ci-runner/.tilelang/cache/ "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
-              rsync -a /home/ci-runner/.triton/cache/ "${TRITON_CACHE_DIR}/" 2>/dev/null || true
-              rsync -a /home/ci-runner/.cache/pip/ "${PIP_CACHE_DIR}/" 2>/dev/null || true
+              rsync -a "${TRUSTED_CACHE_ROOT}/tilelang/" "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
+              rsync -a "${TRUSTED_CACHE_ROOT}/triton/" "${TRITON_CACHE_DIR}/" 2>/dev/null || true
+              rsync -a "${TRUSTED_CACHE_ROOT}/pip/" "${PIP_CACHE_DIR}/" 2>/dev/null || true
               if [[ -d "${TRUSTED_WHEEL_DIR}" ]]; then
                 rsync -a "${TRUSTED_WHEEL_DIR}/" "${WHEEL_DIR}/" 2>/dev/null || true
               fi
             else
-              cp -a /home/ci-runner/.tilelang/cache/. "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
-              cp -a /home/ci-runner/.triton/cache/. "${TRITON_CACHE_DIR}/" 2>/dev/null || true
-              cp -a /home/ci-runner/.cache/pip/. "${PIP_CACHE_DIR}/" 2>/dev/null || true
+              cp -a "${TRUSTED_CACHE_ROOT}/tilelang/." "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
+              cp -a "${TRUSTED_CACHE_ROOT}/triton/." "${TRITON_CACHE_DIR}/" 2>/dev/null || true
+              cp -a "${TRUSTED_CACHE_ROOT}/pip/." "${PIP_CACHE_DIR}/" 2>/dev/null || true
               if [[ -d "${TRUSTED_WHEEL_DIR}" ]]; then
                 cp -a "${TRUSTED_WHEEL_DIR}/." "${WHEEL_DIR}/" 2>/dev/null || true
               fi
@@ -499,13 +508,13 @@ jobs:
             echo "Cache copy completed in ${copy_elapsed}s"
           else
             RUNTIME_ROOT="/home/ci-runner"
-            TILELANG_CACHE_DIR="/home/ci-runner/.tilelang/cache"
+            TILELANG_CACHE_DIR="${TRUSTED_CACHE_ROOT}/tilelang"
             TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-            TRITON_CACHE_DIR="/home/ci-runner/.triton/cache"
-            PIP_CACHE_DIR=""
-            WHEEL_DIR="/home/ci-runner/.wheel-cache"
+            TRITON_CACHE_DIR="${TRUSTED_CACHE_ROOT}/triton"
+            PIP_CACHE_DIR="${TRUSTED_CACHE_ROOT}/pip"
+            WHEEL_DIR="${TRUSTED_CACHE_ROOT}/wheels"
 
-            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${WHEEL_DIR}"
+            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
 
             VENV_PATH="${TRUSTED_VENV_PATH}"
             if [[ -x "${VENV_PATH}/bin/python" ]]; then
@@ -524,6 +533,7 @@ jobs:
             echo "WHEEL_DIR=${WHEEL_DIR}"
             echo "VENV_PATH=${VENV_PATH}"
             echo "TRUSTED_VENV_PATH=${TRUSTED_VENV_PATH}"
+            echo "TRUSTED_CACHE_ROOT=${TRUSTED_CACHE_ROOT}"
             echo "FORK_CAN_COPY_TRUSTED_VENV=${FORK_CAN_COPY_TRUSTED_VENV}"
             echo "VENV_REUSED=${VENV_REUSED}"
           } >> "$GITHUB_ENV"

@@ -49,17 +49,16 @@ inputs:
     description: >
       Newline-separated list of cache directory roots whose files older than
       cache-age-days should be trimmed at file granularity. Defaults target
-      the `venv`-label runner layout. Nightly's `nightly`-label runner stores
-      caches under /data/ci-cache/* — pass that layout explicitly.
+      the shared /data7-backed runner cache layout.
       Do NOT include atomic cache roots here (see atomic-cache-dirs); file-
       level trim on an atomic root can produce a half-dead "directory exists
       but sentinel missing" state that crashes downstream consumers.
     required: false
     default: |
-      /home/ci-runner/.triton/cache
-      /home/ci-runner/.cache/pip
-      /home/ci-runner/.wheel-cache
-      /home/ci-runner/.tilelang/cache/tmp
+      /data7/shared/ci-cache/triton
+      /data7/shared/ci-cache/pip
+      /data7/shared/ci-cache/wheels
+      /data7/shared/ci-cache/tilelang/tmp
   atomic-cache-dirs:
     description: >
       Newline-separated list of cache directory roots whose first-level
@@ -76,7 +75,7 @@ inputs:
       tuning artefacts alongside a best_config.json sentinel.
     required: false
     default: |
-      /home/ci-runner/.tilelang/cache/autotuner
+      /data7/shared/ci-cache/tilelang/autotuner
   prune-tool-cache:
     description: >
       Whether to prune old tileops_ci_venv_* directories under runner.tool_cache.
