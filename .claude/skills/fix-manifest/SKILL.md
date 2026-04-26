@@ -85,15 +85,15 @@ Build the patch payload from on-disk evidence. **Never guess** — if inference 
 
 ### 4. PATCH
 
-Before writing, capture the **before** validator baseline (used in step 5):
+First capture the validator baseline — **before any file mutation**:
 
 ```bash
 python scripts/validate_manifest.py --check-op <op_name> > /tmp/fix-manifest-<op>-before.txt
 ```
 
-Do NOT use `git stash` to derive the baseline — it is unsafe on a dirty working tree (would stash unrelated user changes and make the comparison ambiguous). Capture before mutating any file.
+Do NOT use `git stash` for this — unsafe on a dirty tree (pulls in unrelated user changes).
 
-Then insert each new key as a **sibling** of the existing keys in its parent block, at this exact position (verifiable from any sibling entry):
+Then insert each new key as a **sibling** of existing keys in its parent block, at this exact position (verifiable from any sibling entry):
 
 | Field           | YAML path                | Position                                                                                              |
 | --------------- | ------------------------ | ----------------------------------------------------------------------------------------------------- |
@@ -107,14 +107,14 @@ Preserve adjacent comments. Do not reorder unrelated keys. If the existing entry
 
 ### 5. VALIDATE
 
-Capture the **after** baseline and compare to the **before** baseline saved in PATCH:
+Capture after-baseline and diff:
 
 ```bash
 python scripts/validate_manifest.py --check-op <op_name> > /tmp/fix-manifest-<op>-after.txt
 diff /tmp/fix-manifest-<op>-before.txt /tmp/fix-manifest-<op>-after.txt
 ```
 
-Acceptable iff the set of error messages **after** is a subset of the set **before** (monotonic). New error → revert that op's patch and BLOCKED.
+Acceptable iff after's errors are a subset of before's (monotonic). Any new error → revert that op's patch and BLOCKED.
 
 For multi-op runs: per-op independent. One op's regression reverts only that op's patch; siblings proceed.
 
