@@ -310,12 +310,14 @@ On BLOCKED, replace "Status flipped" line with the blocking error and list remai
 
 ## Interaction with `align-family`
 
-`align-family` is the family-scoped orchestrator and delegates every per-op stage to `align-op` — its workflow is `AUDIT → GROUP_BY_BASE → (per op: align-op) → CLEANUP_GATE → CLEANUP → CREATE_PR`. The family orchestrator never calls atomic per-op skills directly; everything per-op runs inside `align-op`'s contract.
+`align-family` remains the family-scoped orchestrator. Its per-op inner loop (`TEST → IMPLEMENT → BENCH → REVALIDATE → FLIP_STATUS`) can be refactored to call `align-op` instead of managing the per-op stages itself. That refactor is out of scope for this PR — current align-family stays functional; a follow-up can consolidate.
 
-- Use `align-op <op>` for per-op work (green field, redesign, or minor delta).
+Until consolidated:
+
+- Use `align-op <op>` for per-op work (redesign or minor delta, or green field when a manifest PR added a new entry).
 - Use `align-family <family>` for family-scoped historical migration of many ops at once.
 
-They do not conflict. `align-op` never manages cross-op cleanup gates; that remains `align-family`'s. `align-op`'s `FLIP_STATUS` is the sole manifest-write site, observed by `align-family` via `align-op`'s SUCCESS return.
+They do not conflict. `align-op` never manages cross-op cleanup gates; that remains `align-family`'s.
 
 ## Non-goals
 
