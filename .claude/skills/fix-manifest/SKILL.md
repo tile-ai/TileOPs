@@ -1,6 +1,6 @@
 ---
 name: fix-manifest
-description: Patch one missing structural field (kernel_map, static_dims, shape_rules, roofline.vars, dtype_combos) on an existing ops_manifest.yaml entry. Auto-detects the field via the validator or takes --field=. Refuses signature.{inputs,outputs,params}, status, and new entries.
+description: Patch one missing structural field (kernel_map, static_dims, shape_rules, roofline.vars, dtype_combos) on an existing ops_manifest.yaml entry. Auto-detects the field via the validator or takes `--field=<name>`. Refuses signature.{inputs,outputs,params}, status, and new entries.
 ---
 
 ## Arguments
@@ -49,11 +49,15 @@ Resolve `op_name` in `tileops/ops_manifest.yaml`. Missing → BLOCKED with messa
 
 Decide the target field. The validator does NOT flag every missing allowed field for spec-only entries (e.g., `source.kernel_map` is only warned when `status == implemented`). Therefore DIAGNOSE runs **two checks** when `--field=` is omitted:
 
-1. **Explicit presence checks** for each allowed field. Order:
+1. **Explicit presence check** for `kernel_map` only. The validator only warns on missing `kernel_map` when `status == implemented`, so a `spec-only` entry can be missing it without an error:
+
    - `source.kernel_map` missing or empty → target = `kernel_map`.
-   - `signature.static_dims` missing → target = `static_dims`.
    - else fall through to validator.
+
+   Do NOT presence-check `static_dims`, `shape_rules`, `dtype_combos`, or `roofline.vars` — `docs/manifest.md` (R7, R20) explicitly allows `static_dims` to be absent on fixed-rank ops, and the other fields are conditionally required. Patching them based on absence alone would manufacture changes for valid entries (e.g., reduction-style ops). Target these fields only when the validator emits an error or the user passes `--field=`.
+
 1. **Validator output**: run `python scripts/validate_manifest.py --check-op <op_name>`. Parse first error.
+
    - Field in allowed list → that field.
    - Field forbidden (e.g., `signature.params.dim`) → BLOCKED. Message must name the field, why it is out of scope, and the owning workflow (`add-manifest` for new entries; manifest-review issue for `signature.{inputs,outputs,params}`).
    - No errors and no missing presence → no-op; print `nothing to fix` and exit 0.

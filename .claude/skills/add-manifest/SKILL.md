@@ -1,14 +1,14 @@
 ---
 name: add-manifest
-description: Generate a spec-only ops_manifest.yaml entry for a legacy op from its PyTorch docs URL. Validates, runs spec-audit, opens a draft PR linked to a follow-up issue.
+description: Generate a spec-only ops_manifest.yaml entry for a legacy op from its PyTorch docs URL. Validates, runs audit-family, opens a draft PR linked to a follow-up issue.
 ---
 
 ## Arguments
 
-| Argument    | Required | Description                                                                       |
-| ----------- | -------- | --------------------------------------------------------------------------------- |
-| `op_path`   | Yes      | Op file path relative to project root (e.g., `tileops/ops/conv1d.py`)             |
-| `torch_api` | Yes      | PyTorch docs URL matching `https://docs.pytorch.org/docs/stable/generated/*.html` |
+| Argument    | Required | Description                                                                                          |
+| ----------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `op_path`   | Yes      | Op file path relative to project root (e.g., `tileops/ops/conv1d.py`)                                |
+| `torch_api` | Yes      | PyTorch docs URL matching the regex `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$` |
 
 ## Contract
 
@@ -40,7 +40,7 @@ stateDiagram-v2
 
 ### 1. VALIDATE_INPUT
 
-`torch_api` must match `https://(docs\.)?pytorch\.org/docs/stable/generated/*.html` (both host forms are canonical PyTorch docs). Else abort.
+`torch_api` must match the regex `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$` (both host forms are canonical PyTorch docs). Else abort.
 
 ### 2. RESOLVE_SOURCES
 
@@ -120,7 +120,7 @@ L0 must pass. On fail: edit entry, rerun. Do not advance until L0 passes. Higher
 
 ### 7. RUN_AUDIT
 
-Invoke `spec-audit` for the op's family → writes `.foundry/migrations/<family>.json`.
+Invoke `audit-family` for the op's family → writes `.foundry/migrations/<family>.json`.
 
 ### 8. CREATE_ISSUE
 

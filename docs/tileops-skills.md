@@ -22,7 +22,7 @@ Orchestrators are the day-to-day entry points. Atomics are their sub-skills — 
 | Find out which case an op is in, without touching anything        | `/align-op <op_name> --classify-only`      |
 | Migrate every spec-only op in a whole family (historical backlog) | `/align-family <family>`                   |
 | Read-only audit of a family's spec gaps                           | `/audit-family <family>`                   |
-| Add a new manifest entry from a PyTorch docs URL                  | `/add-manifest <op_path> <torch_url>`      |
+| Add a new manifest entry from a PyTorch docs URL                  | `/add-manifest <op_path> <torch_api>`      |
 | Patch a single missing field in an existing manifest entry        | `/fix-manifest <op_name>`                  |
 | Scaffold a fresh op file, bypassing the orchestrator              | `/scaffold-op <op_name>`                   |
 | Debug one atomic phase by hand                                    | `/test-op` · `/implement-op` · `/bench-op` |
