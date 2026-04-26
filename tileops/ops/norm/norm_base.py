@@ -12,7 +12,8 @@ BatchNorm uses spatial reduction (not a single axis), so it does NOT inherit
 from this.
 """
 
-from typing import Dict, Optional, Tuple
+from abc import abstractmethod
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -124,16 +125,19 @@ class RowNormOp(Op):
                 f"got {tuple(weight.shape)}"
             )
         ndim = x.ndim
-        dim_norm = self.dim if self.dim >= 0 else self.dim + ndim
-        if not (0 <= dim_norm < ndim):
+        if not (-ndim <= self.dim < ndim):
             raise ValueError(
                 f"dim={self.dim} out of range for {ndim}-D input"
             )
+        dim_norm = self.dim % ndim
         if x.shape[dim_norm] != self.N:
             raise ValueError(
                 f"Expected x.shape[{self.dim}]={self.N}, "
                 f"got {x.shape[dim_norm]}"
             )
+        # Bind the dynamic static-axis (param-dependent N axis) so
+        # Op-layer cache-key/introspection consumers see the committed axis.
+        self._static_axes = frozenset({(0, dim_norm)})
         return dim_norm
 
     def _flatten_to_2d(
@@ -173,5 +177,9 @@ class RowNormOp(Op):
             y = y.movedim(-1, dim_norm)
         return y
 
-    def forward(self, *args, **kwargs):
+    @abstractmethod
+    def forward(
+        self, *args: object, **kwargs: object
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
+        """Subclasses must implement their own forward with concrete args."""
         raise NotImplementedError("Subclasses must implement forward()")
