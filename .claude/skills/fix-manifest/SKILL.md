@@ -7,9 +7,11 @@ description: Patch one missing structural field (kernel_map, static_dims, shape_
 
 | Argument         | Required | Description                                                                                                             |
 | ---------------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `op_name`        | Yes      | Manifest key (e.g., `RMSNormFwdOp`)                                                                                     |
+| `op_name`        | Yes      | One manifest key, or a comma-separated list (e.g., `RMSNormFwdOp` or `SumFwdOp,MeanFwdOp,VarFwdOp`).                    |
 | `--field=<name>` | No       | One of `kernel_map`, `static_dims`, `shape_rules`, `roofline.vars`, `dtype_combos`. Omit to auto-detect from validator. |
 | `--dry-run`      | No       | Print diff and exit; no write, no PR                                                                                    |
+
+When `op_name` is a list, the same `--field=<name>` is applied to every op (DIAGNOSE / INFER / PATCH / VALIDATE run per op). Mixing fields requires separate invocations. Use this when N sibling ops share the same gap (e.g., a family migration adding `kernel_map` to every spec-only entry); the resulting commit groups them together for a single review.
 
 ## Contract
 
@@ -18,8 +20,8 @@ description: Patch one missing structural field (kernel_map, static_dims, shape_
 - **MUST NOT** create new entries (use `add-manifest`).
 - **MUST NOT** flip `status` (that is `align-op@FLIP_STATUS`).
 - **MUST NOT** edit op / kernel / test / bench code.
-- **One field per invocation.** To fix two fields, run twice.
-- **Termination**: validator passes the level for the patched field, or BLOCKED.
+- **One field per invocation.** Multi-op is allowed (same field across many ops); multi-field is not.
+- **Termination**: every patched op's validator output is **monotonic** — no error category is added by the patch — or BLOCKED. Pre-existing errors on `spec-only` entries (the common case) are not blockers; that is precisely why those entries are `spec-only`.
 
 ## Workflow
 
@@ -67,62 +69,58 @@ Write `.foundry/plan/<op_name>/fix-diagnosis.json`: `{op_name, target_field, val
 
 Build the patch payload from on-disk evidence. Source per field:
 
-| Field           | Inference source                                                                                                                                                                                                                                                                                                                                                                 |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kernel_map`    | The op's runtime kernel dispatch. T2 (L1-direct): `default_kernel_map()` returns the dict verbatim. T1 (thin wrapper, see `docs/ops-design.md` §"Family-specific protocol variables"): combine the op's `_kernel_key` / `_kernel_cls` (or equivalent class-level protocol vars) with the family base's kernel-dispatch logic. Output: `{<key>: <fully-qualified Kernel class>}`. |
-| `static_dims`   | `signature.inputs` shape names that the op binds at construction time (each entry in the op's `__init__` kwarg block, excluding `dtype` / `kernel_map` / `tune` / `signature.params` entries — see `docs/ops-design.md` §"Step 3"). Cross-check with `roofline.vars` if present.                                                                                                 |
-| `shape_rules`   | `signature.inputs/outputs` shape relationships. PyTorch docs (`ref_api`) is tiebreaker.                                                                                                                                                                                                                                                                                          |
-| `roofline.vars` | `static_dims` keys + any extra dims referenced in `roofline.flops` / `roofline.bytes`.                                                                                                                                                                                                                                                                                           |
-| `dtype_combos`  | `source.test`: dtypes the tests parametrize over.                                                                                                                                                                                                                                                                                                                                |
+| Field           | Inference source                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kernel_map`    | The op's runtime kernel dispatch, read directly from the op file. **T2 (L1-direct)**: read `default_kernel_map()` and copy its return dict verbatim. **T1 (thin wrapper, see `docs/ops-design.md` §"Family-specific protocol variables")**: T1 family bases (e.g., `RowNormOp`, `_ReduceOpBase`) typically expose `default_kernel_map()` returning `{self._kernel_key: self._kernel_cls}` — read the family base's `default_kernel_map()` and substitute the subclass's `_kernel_key` / `_kernel_cls`. Output format per `docs/manifest.md` § kernel_map: `{<dispatch_key>: <BareKernelClassName>}` — bare class name, NOT fully-qualified. |
+| `static_dims`   | `signature.inputs` shape names that the op binds at construction time (each entry in the op's `__init__` kwarg block, excluding `dtype` / `kernel_map` / `tune` / `signature.params` entries — see `docs/ops-design.md` §"Step 3"). Cross-check with `roofline.vars` if present.                                                                                                                                                                                                                                                                                                                                                            |
+| `shape_rules`   | `signature.inputs/outputs` shape relationships. PyTorch docs (`ref_api`) is tiebreaker.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `roofline.vars` | `static_dims` keys + any extra dims referenced in `roofline.flops` / `roofline.bytes`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `dtype_combos`  | `source.test`: dtypes the tests parametrize over.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 If inference impossible, BLOCKED with an `evidence_needed` report listing what the human must decide. **Do not guess.**
 
 ### 4. PATCH
 
-Apply the payload to the entry. The target keys live at these exact YAML paths (see `docs/manifest.md`):
+Apply the payload to the entry. The target keys live at these exact YAML paths and exact relative positions (verifiable by inspecting any existing entry in `tileops/ops_manifest.yaml`):
 
-| Field           | YAML path                                                |
-| --------------- | -------------------------------------------------------- |
-| `kernel_map`    | `source.kernel_map` (sibling of `source.kernel`)         |
-| `static_dims`   | `signature.static_dims` (sibling of `signature.params`)  |
-| `shape_rules`   | `signature.shape_rules` (sibling of `signature.params`)  |
-| `dtype_combos`  | `signature.dtype_combos` (sibling of `signature.params`) |
-| `roofline.vars` | `roofline.vars` (sibling of `roofline.flops`)            |
+| Field           | YAML path                | Insert location                                                                                                                  |
+| --------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `kernel_map`    | `source.kernel_map`      | Between `source.kernel` and `source.op` (sibling of both)                                                                        |
+| `static_dims`   | `signature.static_dims`  | Between `signature.params` and `signature.shape_rules` (sibling of both); if `params` is absent, place after `signature.outputs` |
+| `shape_rules`   | `signature.shape_rules`  | After `signature.static_dims` (or after `signature.params` if no `static_dims`)                                                  |
+| `dtype_combos`  | `signature.dtype_combos` | After `signature.shape_rules`                                                                                                    |
+| `roofline.vars` | `roofline.vars`          | First key inside `roofline:` (before `flops` / `bytes` / `func`)                                                                 |
 
 Insertion rules:
 
 - Insert each new key as a **sibling** of the existing keys in its parent block (NOT nested under another sibling).
-- Order within parent block: per `docs/manifest.md` canonical order. When unsure, place the new key just before the first existing key (top of block).
+- Use the canonical relative position above. If the existing entry is unusually formatted, fall back to the order documented in `docs/manifest.md`.
 - Preserve adjacent comments.
 - Do not reorder unrelated keys.
 
 ### 5. VALIDATE
 
+For each patched op, capture validator output **before** the patch (from `git stash`) and **after** the patch:
+
 ```bash
 python scripts/validate_manifest.py --check-op <op_name>
 ```
 
-Required passing level:
+The patch is acceptable iff the set of error messages **after** is a (non-strict) subset of the set **before** — i.e., the patch is **monotonic**. If any new error category appears, revert the patch for that op and BLOCKED.
 
-| Patched field   | Level |
-| --------------- | ----- |
-| `kernel_map`    | L0    |
-| `static_dims`   | L1    |
-| `shape_rules`   | L2    |
-| `roofline.vars` | L0    |
-| `dtype_combos`  | L3    |
+Why monotonic-only, not "validator clean": `spec-only` entries typically already have unrelated errors (the reason they are `spec-only` — e.g., `[signature]` mismatches between manifest and code). Those are out of scope for `fix-manifest`; `align-op` will close them later. Requiring a clean validator run would block this skill on every spec-only op, which is exactly the case it most often runs against.
 
-If validator emits any error not present before the patch, revert the patch and BLOCKED. Patch must be monotonic.
+For multi-op invocations: run the monotonic check per op independently. A single op's regression must not block patches on its siblings — revert that op's patch only.
 
 ### 6. CREATE_PR
 
 If `--dry-run`, print the diff and exit 0. Otherwise invoke `foundry:creating-pull-request`:
 
-| Element | Value                                                                                                         |
-| ------- | ------------------------------------------------------------------------------------------------------------- |
-| title   | `[Maintain][Manifest] fix <field> for <op_name>` (use `[Fix][Manifest]` if validator was actively rejecting)  |
-| branch  | `maintain/manifest/fix-<op-slug>-<field>`                                                                     |
-| body    | which field, evidence used to infer; validator output before vs. after; explicit list of what was NOT touched |
+| Element | Single-op value                                                                                               | Multi-op value                                                             |
+| ------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| title   | `[Maintain][Manifest] fix <field> for <op_name>` (use `[Fix][Manifest]` if validator was actively rejecting)  | `[Maintain][Manifest] add <field> for <family> spec-only ops`              |
+| branch  | `maintain/manifest/fix-<op-slug>-<field>`                                                                     | `maintain/manifest/fix-<family>-<field>`                                   |
+| body    | which field, evidence used to infer; validator output before vs. after; explicit list of what was NOT touched | per-op evidence table; per-op monotonic-check result; explicit scope guard |
 
 ## Guardrails
 
