@@ -44,7 +44,7 @@ ENV MAX_JOBS=64 \
 # ── Python dependencies ──────────────────────────────────────────────────────
 RUN pip install --no-cache-dir \
         "torch>=2.1.0,<2.11.0" \
-        "tilelang==0.1.8" \
+        "tilelang==0.1.9" \
         einops numpy "tqdm>=4.62.3" "typing_extensions>=4.10.0" \
         cloudpickle ml_dtypes psutil Cython \
         setuptools wheel ninja
