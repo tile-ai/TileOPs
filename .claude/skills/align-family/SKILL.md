@@ -1,6 +1,6 @@
 ---
 name: align-family
-description: Drive the full migration for an op family — audit, delegate per-op alignment to align-op, run cross-op cleanup, create PR.
+description: Drive the full migration for an op family — audit, delegate per-op alignment to align-op, run cross-op cleanup. Two terminal outcomes: SUCCESS opens a PR; CLEANUP_REGRESSION exits blocked without a PR when post-cleanup tests fail.
 ---
 
 ## Arguments
@@ -13,7 +13,7 @@ Family name from `ops_manifest.yaml` (e.g., `reduction`, `norm`, `attention`).
 - **Output** (two terminal outcomes):
   - **SUCCESS**: PR URL + final report — all ops processed via `align-op` (promoted or blocked), cleanup succeeds, PR opens.
   - **BLOCKED**: blocked report (no PR) — reached when CLEANUP detects a regression in a promoted op's tests after dual-path removal; see `CLEANUP_REGRESSION` terminal in the state diagram. Distinct from the non-terminal per-op `REPORT_BLOCKED` state.
-- **Termination**: all ops processed (promoted or blocked via `align-op`) and either (a) CLEANUP + CREATE_PR succeed, or (b) CLEANUP fails and the run exits via `CLEANUP_REGRESSION` with the regression recorded. (`REPORT_BLOCKED` is the non-terminal per-op blocked state and never terminates the run.)
+- **Termination**: all ops processed (promoted or blocked via `align-op`) and either (a) CLEANUP + CREATE_PR succeed, or (b) a promoted op's tests fail after CLEANUP's dual-path removal, causing the run to exit via `CLEANUP_REGRESSION` with the regression recorded. (`REPORT_BLOCKED` is the non-terminal per-op blocked state and never terminates the run.)
 
 ## Trust Model
 
