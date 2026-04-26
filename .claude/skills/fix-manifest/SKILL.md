@@ -85,7 +85,15 @@ Build the patch payload from on-disk evidence. **Never guess** — if inference 
 
 ### 4. PATCH
 
-Insert each new key as a **sibling** of the existing keys in its parent block, at this exact position (verifiable from any sibling entry):
+Before writing, capture the **before** validator baseline (used in step 5):
+
+```bash
+python scripts/validate_manifest.py --check-op <op_name> > /tmp/fix-manifest-<op>-before.txt
+```
+
+Do NOT use `git stash` to derive the baseline — it is unsafe on a dirty working tree (would stash unrelated user changes and make the comparison ambiguous). Capture before mutating any file.
+
+Then insert each new key as a **sibling** of the existing keys in its parent block, at this exact position (verifiable from any sibling entry):
 
 | Field           | YAML path                | Position                                                                                              |
 | --------------- | ------------------------ | ----------------------------------------------------------------------------------------------------- |
@@ -99,10 +107,11 @@ Preserve adjacent comments. Do not reorder unrelated keys. If the existing entry
 
 ### 5. VALIDATE
 
-For each patched op, capture validator output **before** (from `git stash`) and **after**:
+Capture the **after** baseline and compare to the **before** baseline saved in PATCH:
 
 ```bash
-python scripts/validate_manifest.py --check-op <op_name>
+python scripts/validate_manifest.py --check-op <op_name> > /tmp/fix-manifest-<op>-after.txt
+diff /tmp/fix-manifest-<op>-before.txt /tmp/fix-manifest-<op>-after.txt
 ```
 
 Acceptable iff the set of error messages **after** is a subset of the set **before** (monotonic). New error → revert that op's patch and BLOCKED.
