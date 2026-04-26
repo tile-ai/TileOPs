@@ -44,7 +44,7 @@ ops:
   RMSNormFwdOp:
     ref_api: "torch.nn.functional.rms_norm"
     family: normalization
-    status: spec-only  # impl lacks dim param; fix in follow-up PR
+    status: implemented
 
     signature:
       inputs:
