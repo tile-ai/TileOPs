@@ -280,6 +280,26 @@ See [Kernel base class attributes](ops-design-reference.md#base-class-protocol) 
 
 The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sharing an identical `forward()` flow, extract an L2 family base via refactoring; concrete ops then become T1 thin wrappers declaring family protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, …). This transformation is driven by a separate family-specific skill, not the scaffold-op. See [Development Path](ops-design-reference.md#development-path) for when to extract an L2 base and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the step-by-step process.
 
+### Canonical L2 family-base shape
+
+Family bases that follow the canonical static_dims pattern (Step 3) share the same skeleton regardless of family. Examples in tree:
+
+| Base class                                                    | Family        | Subclasses                    |
+| ------------------------------------------------------------- | ------------- | ----------------------------- |
+| [`RowNormOp`](../tileops/ops/norm/norm_base.py)               | normalization | `RMSNormFwdOp`                |
+| [`CumulativeOp`](../tileops/ops/reduction/cumulative_base.py) | scan          | `CumsumFwdOp`, `CumprodFwdOp` |
+
+Each canonical L2 base provides:
+
+- **Kw-only ctor** binding `static_dims` (e.g., `N`) + `signature.params` (e.g., `dim`, `eps`); never binds `M` (derived at forward).
+- **Lazy kernel cache** keyed by `M` (`self._kernel_cache: Dict[int, Kernel]`).
+- **`_run(x[, ...])` helper** that performs the shared pipeline `validate → movedim(dim → -1) → reshape (M, N) → kernel → trim → reshape → movedim(-1 → dim)`. Subclasses' `forward()` is typically a one-liner that calls `_run`.
+- **`_validate_and_normalize_dim()`** that asserts shape / dtype / range, then sets `self._static_axes = frozenset({(0, dim_norm)})` so `Op._cache_key` consumers see the committed axis (param-dependent `static_dims` per R20).
+- **`eval_roofline()`** that reads `self._last_roofline_mn` (set inside `_run`); raises `RuntimeError` if forward has not run yet (same convention as `_ReduceOpBase`).
+- **Subclass-only protocol variables** that pick the kernel branch (e.g., `_op_kind = "sum" | "prod"` for `CumulativeOp`; `_kernel_key` + `_kernel_cls` for `RowNormOp`). See [Family-Base Protocol](ops-design-reference.md#base-class-protocol).
+
+When introducing a new canonical L2 base, mirror this skeleton and add a row to the protocol table in the reference appendix.
+
 ## Further Reference
 
 - [Slot Rules](ops-design-reference.md#slot-rules) — full Rule / Derivation / Example / Common mistakes per slot

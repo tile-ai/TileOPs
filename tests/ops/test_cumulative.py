@@ -262,5 +262,47 @@ def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
     assert torch.allclose(y, ref, **tol), f"1D cumprod max err: {(y - ref).abs().max()}"
 
 
+class CumulativeDimAxis1Fixture(FixtureBase):
+    PARAMS = [
+        ("batch, hidden, seq, dtype", [
+            pytest.param(2, 512, 256, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 512, 256, torch.bfloat16, marks=pytest.mark.smoke),
+        ]),
+    ]
+
+
+@CumulativeDimAxis1Fixture
+def test_cumsum_dim_axis1(
+    batch: int, hidden: int, seq: int, dtype: torch.dtype
+) -> None:
+    """Cumsum along dim=1 (3D) — exercises movedim choreography in `_run`."""
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
+
+    x = torch.randn(batch, hidden, seq, dtype=dtype, device="cuda")
+    op = CumsumFwdOp(N=hidden, dtype=dtype, dim=1)
+    ref = x.float().cumsum(dim=1).to(dtype)
+    y = op(x)
+    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
+    assert torch.allclose(y, ref, atol=atol, rtol=atol), \
+        f"cumsum dim=1 max err: {(y - ref).abs().max()}"
+
+
+@CumulativeDimAxis1Fixture
+def test_cumprod_dim_axis1(
+    batch: int, hidden: int, seq: int, dtype: torch.dtype
+) -> None:
+    """Cumprod along dim=1 (3D) — exercises movedim choreography in `_run`."""
+    from tileops.ops.reduction.cumprod import CumprodFwdOp
+
+    # Values close to 1 to avoid over/underflow in cumprod over hidden dim.
+    x = torch.rand(batch, hidden, seq, dtype=dtype, device="cuda") * 0.01 + 0.99
+    op = CumprodFwdOp(N=hidden, dtype=dtype, dim=1)
+    ref = x.float().cumprod(dim=1).to(dtype)
+    y = op(x)
+    tol = _cumprod_tol(dtype)
+    assert torch.allclose(y, ref, **tol), \
+        f"cumprod dim=1 max err: {(y - ref).abs().max()}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
