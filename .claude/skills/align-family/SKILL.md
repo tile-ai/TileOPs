@@ -89,11 +89,11 @@ Track group completion: a group is complete when all its ops are `promoted` or `
 
 Read the gap report from AUDIT. For each op in the current group, route by `classification` (the field `audit-family` populates):
 
-| Gap-report `classification` | Action                                                 | Why                                                                                                                                          |
-| --------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ready`                     | → ALIGN_OP with `--mode=minor`                         | Existing code already conforms; align-op's minor path runs the spec tests (DONE_SKIP since they pass), then the shared downstream + flip.    |
-| `semantic_gap`              | → ALIGN_OP with `--mode=redesign`                      | Legacy code structurally diverges from the spec; align-op archives it, rescaffolds, and ports — full per-op pipeline.                        |
-| `blocked`                   | → REPORT_BLOCKED with audit's `reason`. Skip align-op. | Audit determined the op cannot be migrated autonomously (no `pytorch_equivalent`, kernel-layer change required, etc.). No per-op work to do. |
+| Gap-report `classification` | Action                                                 | Why                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`                     | → ALIGN_OP with `--mode=minor`                         | Existing code already conforms; align-op's minor path runs the spec tests (DONE_SKIP since they pass), then the shared downstream + flip.                                                                                                                                                                                                                                                     |
+| `semantic_gap`              | → ALIGN_OP with `--mode=redesign`                      | Family-scoped historical migration treats every `semantic_gap` op as a structural redesign by default — legacy code is being replaced wholesale. For per-op `semantic_gap` cases that are actually minor manifest deltas, use single-op `align-op <op> --mode=minor` directly instead of `align-family`. A future `recommended_mode` gap-report field could refine the routing automatically. |
+| `blocked`                   | → REPORT_BLOCKED with audit's `reason`. Skip align-op. | Audit determined the op cannot be migrated autonomously (no `pytorch_equivalent`, kernel-layer change required, etc.). No per-op work to do.                                                                                                                                                                                                                                                  |
 
 The mapping is deterministic — `align-family` MUST pass `--mode=` explicitly so `align-op` never falls into its interactive prompt branch in a batch family migration.
 
@@ -116,7 +116,7 @@ Per-op outcome:
 
 ### 5. CLEANUP_GATE
 
-After each `align-op` invocation returns (SUCCESS or BLOCKED), check group completion:
+After each per-op outcome — whether `align-op` returned SUCCESS / BLOCKED or ROUTE recorded an audit-classified `blocked` op directly to `REPORT_BLOCKED` — check group completion:
 
 - All siblings in the current base-class group are `promoted` or `blocked`? → trigger CLEANUP
 - Otherwise → continue to next op (ROUTE → ALIGN_OP)

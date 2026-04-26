@@ -85,7 +85,7 @@ Compares each op's code signature against its manifest spec, classifies gaps (`r
 
 ## Composition
 
-How orchestrators delegate to atomic skills.
+How orchestrators delegate. Note that orchestrators may delegate to other orchestrators (e.g., `align-family` → `align-op`) as well as to atomic skills.
 
 ```text
 align-family <family>                    ← per-family orchestrator
