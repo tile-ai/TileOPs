@@ -1,13 +1,18 @@
 """RowNormOp base class for row-wise normalization operators.
 
-Encapsulates the shared validate -> reshape -> pad -> kernel -> trim -> reshape
-pattern used by RMSNormFwdOp, LayerNormFwdOp, and similar dim=-1 normalization ops.
+Implements the canonical static_dims pattern from docs/ops-design.md: ctor
+binds only what the manifest declares as `static_dims` (`N`) plus
+signature.params (`dim`, `eps`); `M` (the leading-dims product) is derived
+at forward time and used to lazily build / cache kernels keyed by `M`.
 
-BatchNorm uses spatial reduction (not dim=-1), so it does NOT inherit from this.
+Forward pipeline: validate -> movedim(dim → -1) -> reshape (M, N) -> pad ->
+kernel -> trim -> reshape -> movedim(-1 → dim).
+
+BatchNorm uses spatial reduction (not a single axis), so it does NOT inherit
+from this.
 """
 
-from abc import abstractmethod
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -22,22 +27,19 @@ ALIGNMENT = 256
 
 
 class RowNormOp(Op):
-    """Abstract base class for row-wise (dim=-1) normalization operators.
-
-    Handles shared constructor logic (M, N, dtype, eps, alignment, kernel
-    dispatch) and provides helpers for the validate/reshape/pad/trim/reshape
-    pipeline.  Subclasses implement ``forward()`` themselves (preserving their
-    own positional-arg signatures) and call the helpers.
+    """Abstract base class for row-wise normalization operators with a
+    user-selectable reduction axis.
 
     Subclasses must override:
-    - ``_kernel_key`` (class attribute or property): kernel-map key string.
-    - ``_kernel_cls`` (class attribute or property): kernel class.
-    - ``forward()``: the user-facing call.
+    - ``_kernel_key`` (class attribute): kernel-map key string.
+    - ``_kernel_cls`` (class attribute): kernel class.
+    - ``forward()``: the user-facing call (use the helpers below).
 
     Args:
-        M: Number of rows (product of all dims except last).
-        N: Hidden dimension (last dim).
+        N: Hidden / reduction dimension size (statically committed at ctor).
         dtype: Data type (float16 or bfloat16).
+        dim: Reduction axis (default -1). Negative values are normalized at
+            forward time (``dim % x.ndim``).
         eps: Epsilon for numerical stability.
         kernel_map: Optional kernel override dict.
         tune: If True, autotune tile configs.
@@ -46,24 +48,30 @@ class RowNormOp(Op):
     _kernel_key: str
     _kernel_cls: type
 
+    # `static_dims.N = x.shape[dim]` is param-dependent (depends on `dim`),
+    # so the static-axis frozenset is bound at forward time after dim
+    # normalization, not at the class level (per docs/ops-design.md § Step 3).
+    _static_axes: frozenset = frozenset()
+
     def __init__(
         self,
-        M: int,
+        *,
         N: int,
         dtype: torch.dtype,
+        dim: int = -1,
         eps: float = 1e-6,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.M = M
         self.N = N
         self.dtype = dtype
+        self.dim = dim
         self.eps = eps
+        self.tune = tune
         self.N_padded = self._align_up(N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._kernel_key](
-            M, N, eps, dtype, tune=tune,
-        )
+        self._kernel_cache: Dict[int, Kernel] = {}
+        self._last_roofline_mn: Optional[Tuple[int, int]] = None
 
     @staticmethod
     def _align_up(n: int, alignment: int) -> int:
@@ -74,50 +82,73 @@ class RowNormOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._kernel_key: self._kernel_cls}
 
-    def eval_roofline(self) -> tuple[int, int]:
+    def eval_roofline(self) -> Tuple[int, int]:
+        if self._last_roofline_mn is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior "
+                "forward() call to bind dynamic input shape (M)"
+            )
+        M, N = self._last_roofline_mn
         elem_bytes = self.dtype.itemsize
-        return (
-            4 * self.M * self.N,
-            (2 * self.M * self.N + self.N) * elem_bytes,
-        )
+        return (4 * M * N, (2 * M * N + N) * elem_bytes)
 
-    # -- Validation helpers --------------------------------------------------
+    @property
+    def _needs_pad(self) -> bool:
+        return self.N_padded != self.N
 
-    def _validate_cuda_dtype(self, name: str, t: torch.Tensor) -> None:
-        """Raise ValueError if *t* is not on CUDA or has wrong dtype."""
-        if not t.is_cuda:
-            raise ValueError(f"{name} must be a CUDA tensor")
-        if t.dtype != self.dtype:
-            raise ValueError(
-                f"Expected {name}.dtype {self.dtype}, got {t.dtype}"
+    def _get_kernel(self, M: int) -> Kernel:
+        """Return a kernel built for (M, self.N), caching by M."""
+        if M not in self._kernel_cache:
+            self._kernel_cache[M] = self.kernel_map[self._kernel_key](
+                M, self.N, self.eps, self.dtype, tune=self.tune,
             )
+        return self._kernel_cache[M]
 
-    def _validate_1d(self, name: str, t: torch.Tensor) -> None:
-        """Raise ValueError if *t* is not 1-D with size N."""
-        if t.ndim != 1:
-            raise ValueError(f"Expected {name} to be 1D, got {t.ndim}D")
-        if t.shape[0] != self.N:
+    # -- Forward pipeline helpers --------------------------------------------
+
+    def _validate_and_normalize_dim(
+        self, x: torch.Tensor, weight: torch.Tensor
+    ) -> int:
+        """Validate input/weight, return the non-negative reduction axis."""
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if not weight.is_cuda or weight.dtype != self.dtype:
             raise ValueError(
-                f"Expected {name} dim {self.N}, got {t.shape[0]}"
+                f"weight must be a CUDA tensor of dtype {self.dtype}"
             )
-
-    def _validate_hidden_dim(self, x: torch.Tensor) -> None:
-        """Raise ValueError if x's last dim != N."""
-        if x.shape[-1] != self.N:
+        if weight.ndim != 1 or weight.shape[0] != self.N:
             raise ValueError(
-                f"Expected hidden dim {self.N}, got {x.shape[-1]}"
+                f"weight must be 1-D with shape ({self.N},), "
+                f"got {tuple(weight.shape)}"
             )
+        ndim = x.ndim
+        dim_norm = self.dim if self.dim >= 0 else self.dim + ndim
+        if not (0 <= dim_norm < ndim):
+            raise ValueError(
+                f"dim={self.dim} out of range for {ndim}-D input"
+            )
+        if x.shape[dim_norm] != self.N:
+            raise ValueError(
+                f"Expected x.shape[{self.dim}]={self.N}, "
+                f"got {x.shape[dim_norm]}"
+            )
+        return dim_norm
 
-    # -- Reshape / pad helpers -----------------------------------------------
+    def _flatten_to_2d(
+        self, x: torch.Tensor, dim_norm: int
+    ) -> Tuple[torch.Tensor, Tuple[int, ...]]:
+        """Move target axis to last, flatten leading dims to (M, N).
 
-    def _flatten_and_check_M(self, x: torch.Tensor) -> torch.Tensor:
-        """Flatten leading dims to (M, N), validate M, return contiguous 2-D."""
+        Returns (2-D x, shape after movedim) so the caller can restore
+        leading dims after the kernel.
+        """
+        if dim_norm != x.ndim - 1:
+            x = x.movedim(dim_norm, -1)
+        post_move_shape = tuple(x.shape)
         x = x.contiguous().reshape(-1, self.N)
-        if x.shape[0] != self.M:
-            raise ValueError(
-                f"Expected M={self.M} (product of leading dims), got {x.shape[0]}"
-            )
-        return x
+        return x, post_move_shape
 
     def _pad_row(self, t: torch.Tensor) -> torch.Tensor:
         """Pad a 2-D row tensor along dim=-1 to N_padded."""
@@ -127,18 +158,20 @@ class RowNormOp(Op):
         """Pad a 1-D vector to N_padded."""
         return F.pad(t, (0, self.N_padded - self.N))
 
-    @property
-    def _needs_pad(self) -> bool:
-        return self.N_padded != self.N
-
-    def _trim_and_reshape(
-        self, y: torch.Tensor, orig_shape: tuple
+    def _trim_and_unflatten(
+        self,
+        y: torch.Tensor,
+        post_move_shape: Tuple[int, ...],
+        dim_norm: int,
+        ndim: int,
     ) -> torch.Tensor:
-        """Trim padding from dim=-1 and restore *orig_shape*."""
+        """Inverse of `_flatten_to_2d`: trim padding, restore shape, move axis back."""
         if self._needs_pad:
             y = y[:, : self.N]
-        return y.reshape(orig_shape)
+        y = y.reshape(post_move_shape)
+        if dim_norm != ndim - 1:
+            y = y.movedim(-1, dim_norm)
+        return y
 
-    @abstractmethod
-    def forward(self, *args: object, **kwargs: object) -> object:
-        """Subclasses must implement their own forward with concrete args."""
+    def forward(self, *args, **kwargs):
+        raise NotImplementedError("Subclasses must implement forward()")

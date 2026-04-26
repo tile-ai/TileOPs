@@ -38,7 +38,7 @@ class RMSNormFixture(FixtureBase):
 @RMSNormFixture
 def test_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = RMSNormTest(m, n, dtype)
-    op = RMSNormFwdOp(M=m, N=n, dtype=dtype)
+    op = RMSNormFwdOp(N=n, dtype=dtype)
     atol = 1e-2 if dtype == torch.float16 else 1.6e-2
     rtol = atol
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
@@ -60,7 +60,7 @@ def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     x = x_full[:, :n]  # non-contiguous slice
     weight = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = RMSNormFwdOp(M=m, N=n, dtype=dtype)
+    op = RMSNormFwdOp(N=n, dtype=dtype)
 
     # Reference on contiguous copy
     eps = 1e-6
@@ -90,8 +90,7 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
     weight = torch.randn(hidden, dtype=dtype, device="cuda")
 
-    M = batch * seq
-    op = RMSNormFwdOp(M=M, N=hidden, dtype=dtype)
+    op = RMSNormFwdOp(N=hidden, dtype=dtype)
 
     # Reference
     eps = 1e-6
