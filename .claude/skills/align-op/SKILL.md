@@ -102,6 +102,8 @@ Decide which case applies. Machine-decidable input: does `source.op` exist?
 - `source.op` **missing** → only `green` is valid. `--mode=minor` → BLOCKED ("`source.op` is missing; cannot edit a non-existent op file; use `--mode=green` or omit `--mode`"). `--mode=redesign` → BLOCKED ("`source.op` is missing; no archive source to rewrite; use `--mode=green` or omit `--mode`").
 - `source.op` **exists** → `--mode=green` → BLOCKED ("`source.op` already exists; green-field scaffold would silently overwrite; use `--mode=redesign` for rewrite+port or `--mode=minor` for in-place edit").
 
+**First-op bias.** If no op in the same `family` has `status: implemented` and follows the canonical pattern (`docs/ops-design.md` § Step 3), set `auto-case = redesign` (skip the prompt). mode.json: `decided_by: "auto"`, `reason: "no canonical-pattern precedent in family <name>"`. User may override with `--mode=minor`.
+
 Write `.foundry/plan/<op_name>/mode.json`:
 
 ```json
@@ -321,5 +323,5 @@ They do not conflict. `align-op` never manages cross-op cleanup gates; that rema
 
 - **Kernel scaffolding / kernel-layer edits.** align-op surfaces kernel work as a follow-up via `kernel-check.json`; a separate (future) `kernel-scaffold` / `kernel-align` skill will own that layer.
 - **Family-level cleanup.** Cross-op dual-path removal lives in `align-family` and is not a concern of per-op alignment.
-- **Auto-detecting "redesign vs minor."** The distinction is a design judgement; align-op prompts or accepts `--mode`.
+- **General auto-detection of "redesign vs minor."** The distinction is a design judgement; align-op prompts or accepts `--mode`. The one exception is the **first-op bias** in CLASSIFY (no canonical-pattern precedent in the family → auto `redesign`). Beyond that one case, no auto-detection.
 - **Manifest changes (other than FLIP_STATUS).** Per the trust model, manifest changes live in separate manifest PRs.
