@@ -39,7 +39,7 @@ Brings a single op into alignment with its manifest entry. Classifies into one o
 
 ### `align-family`  ·  per-family orchestrator
 
-Drives the historical migration of an entire op family. Audits, then pipelines every spec-only op through test → implement → bench → flip status; handles cross-op cleanup (dual-path removal); creates the PR.
+Drives the historical migration of an entire op family. Audits, delegates each per-op alignment to `align-op`, then handles family-scoped concerns: cross-op cleanup (dual-path removal) and PR creation. The family orchestrator never calls `test-op` / `implement-op` / `bench-op` directly and never writes `ops_manifest.yaml`.
 
 - **Use when.** You have a whole family of spec-only ops to migrate.
 - **Don't use when.** Only one op needs attention — use `align-op`.
@@ -85,36 +85,38 @@ Compares each op's code signature against its manifest spec, classifies gaps (`r
 
 ## Composition
 
-How orchestrators delegate to atomic skills.
+How orchestrators delegate. Note that orchestrators may delegate to other orchestrators (e.g., `align-family` → `align-op`) as well as to atomic skills.
 
 ```text
 align-family <family>                    ← per-family orchestrator
 ├─ audit-family
-├─ per op:
-│   ├─ test-op
-│   ├─ implement-op
-│   ├─ bench-op
-│   └─ [orchestrator] FLIP_STATUS
-└─ [orchestrator] CLEANUP + CREATE_PR
+├─ per op: align-op <op_name>            ← full per-op pipeline delegated
+└─ [orchestrator] CLEANUP_GATE + CLEANUP + CREATE_PR
 
 align-op <op_name>                       ← per-op orchestrator
+├─ [orchestrator] PRE_CHECK
 ├─ [orchestrator] CLASSIFY
-├─ green:     scaffold-op
-├─ redesign:  [orchestrator] ARCHIVE + CLEAR → scaffold-op → PORT → KERNEL_CHECK
-├─ minor:     implement-op
+├─ [orchestrator] DISPATCH
+│   ├─ green:    scaffold-op
+│   ├─ redesign: [orchestrator] ARCHIVE + CLEAR → scaffold-op → PORT → KERNEL_CHECK
+│   └─ minor:    implement-op
 └─ shared downstream:
     ├─ test-op
+    ├─ implement-op                      ← conditional: green/redesign only; skipped on minor (already ran in DISPATCH) and on TEST DONE_SKIP
     ├─ bench-op
-    └─ [orchestrator] FLIP_STATUS        ← only manifest writer
+    ├─ [orchestrator] REVALIDATE
+    ├─ [orchestrator] FLIP_STATUS        ← only manifest writer
+    ├─ [orchestrator] CLEANUP
+    └─ [orchestrator] REPORT
 ```
 
-A follow-up may refactor `align-family`'s per-op loop to delegate to `align-op`, removing duplication.
+`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest; `align-op`'s FLIP_STATUS is the sole manifest-write site.
 
 ## Trust model  ·  who may write what
 
 | Resource                          | Writer                                                                                                                                                             |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ops_manifest.yaml`               | Only `align-op` / `align-family` at `FLIP_STATUS`. No atomic skill writes the manifest.                                                                            |
+| `ops_manifest.yaml`               | Only `align-op` at `FLIP_STATUS`. No atomic skill writes the manifest; `align-family` delegates to `align-op` and never writes it directly.                        |
 | `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                       |
 | `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work. |
 | `tests/ops/**`                    | `test-op`.                                                                                                                                                         |

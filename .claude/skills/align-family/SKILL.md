@@ -1,6 +1,6 @@
 ---
 name: align-family
-description: Drive the full migration for an op family — audit, test, implement, bench, flip status, create PR.
+description: Drive the full migration for an op family — audit, delegate per-op alignment to align-op, run cross-op cleanup. Two terminal outcomes: SUCCESS opens a PR; CLEANUP_REGRESSION exits blocked without a PR when post-cleanup tests fail.
 ---
 
 ## Arguments
@@ -10,14 +10,23 @@ Family name from `ops_manifest.yaml` (e.g., `reduction`, `norm`, `attention`).
 ## Contract
 
 - **Input**: `family` name
-- **Output**: PR URL + final report
-- **Termination**: all ops promoted or blocked, PR created
+- **Output** (two terminal outcomes):
+  - **SUCCESS**: PR URL + final report — all ops processed via `align-op` (promoted or blocked), cleanup succeeds, PR opens.
+  - **BLOCKED**: blocked report (no PR) — reached when CLEANUP detects a regression in a promoted op's tests after dual-path removal; see `CLEANUP_REGRESSION` terminal in the state diagram. Distinct from the non-terminal per-op `REPORT_BLOCKED` state.
+- **Termination**: all ops processed (promoted or blocked via `align-op`) and either (a) CLEANUP + CREATE_PR succeed, or (b) a promoted op's tests fail after CLEANUP's dual-path removal, causing the run to exit via `CLEANUP_REGRESSION` with the regression recorded. (`REPORT_BLOCKED` is the non-terminal per-op blocked state and never terminates the run.)
 
 ## Trust Model
 
-- test-op agent ≠ implement-op agent (separate invocations)
-- Only the orchestrator modifies `ops_manifest.yaml` status
-- implement-op must not modify tests; bench-op must not modify Op code
+- `align-family` delegates every per-op stage to `align-op`, invoked as a **separate sub-agent** per op. The family orchestrator never runs any atomic per-op skill directly — those live inside `align-op`'s contract.
+
+- `align-family` does **not** write `ops_manifest.yaml`. After the refactor, `align-op` is the sole manifest writer (at its own FLIP_STATUS step); `align-family` observes status transitions via `align-op`'s SUCCESS return. No `align-family` stage edits, modifies, or flips the manifest.
+
+- Directly-invoked sub-skills of `align-family` are exactly two: `audit-family` (in AUDIT) and `align-op` (per op).
+
+  | Stage    | Sub-skill      |
+  | -------- | -------------- |
+  | AUDIT    | `audit-family` |
+  | ALIGN_OP | `align-op`     |
 
 ## Workflow
 
@@ -26,22 +35,17 @@ stateDiagram-v2
     [*] --> AUDIT
     AUDIT --> GROUP_BY_BASE: gap report generated
     GROUP_BY_BASE --> ROUTE: ops grouped by base class
-    ROUTE --> TEST: semantic_gap op
-    ROUTE --> FLIP_STATUS: ready op
-    ROUTE --> REPORT_BLOCKED: blocked op
-    TEST --> IMPLEMENT: tests written
-    IMPLEMENT --> BENCH: implementation done, collect observations
-    IMPLEMENT --> REPORT_BLOCKED: blocked
-    BENCH --> REVALIDATE: benchmark passes
-    BENCH --> REPORT_BLOCKED: benchmark blocked
-    REVALIDATE --> FLIP_STATUS: --check-op + tests pass
-    REVALIDATE --> REPORT_BLOCKED: regression detected
-    FLIP_STATUS --> CLEANUP_GATE: check group completion
-    REPORT_BLOCKED --> CLEANUP_GATE: check group completion
+    ROUTE --> ALIGN_OP: ready (mode=minor) or semantic_gap (mode=redesign)
+    ROUTE --> REPORT_BLOCKED: classification=blocked (audit-family)
+    ALIGN_OP --> CLEANUP_GATE: align-op SUCCESS
+    ALIGN_OP --> REPORT_BLOCKED: align-op BLOCKED
+    REPORT_BLOCKED --> CLEANUP_GATE: record blocked reason
     CLEANUP_GATE --> ROUTE: group incomplete, next op
     CLEANUP_GATE --> CLEANUP: all siblings promoted or blocked
     CLEANUP --> ROUTE: legacy path removed, next group
     ROUTE --> CREATE_PR: all ops processed
+    CLEANUP --> CLEANUP_REGRESSION: promoted op test fails after cleanup
+    CLEANUP_REGRESSION --> [*]: terminal blocked, no PR
     CREATE_PR --> [*]
 ```
 
@@ -59,7 +63,7 @@ This catches tracked changes, staged changes, AND untracked files. If not clean:
 
 ### Dual-path is acceptable during migration
 
-When implement-op rewrites a base class, it may create a dual-path `__init__` (legacy + spec) to keep unmigrated sibling tests passing. This is correct temporary debt — the cleanup gate removes it.
+When `align-op` rewrites a base class during its per-op pipeline, it may create a dual-path `__init__` (legacy + spec) to keep unmigrated sibling tests passing. This is correct temporary debt — the cleanup gate removes it.
 
 **Dual-path definition**: a class `__init__` with runtime branching to support two incompatible construction interfaces, and `forward` dispatching to two execution paths. Not polymorphism — same semantics, temporary interface coexistence.
 
@@ -83,71 +87,43 @@ Track group completion: a group is complete when all its ops are `promoted` or `
 
 ### 3. ROUTE
 
-Read gap report. For each op, extract params from the entry and dispatch:
+Read the gap report from AUDIT. For each op in the current group, route by `classification` (the field `audit-family` populates):
 
-| Classification | Action                                                |
-| -------------- | ----------------------------------------------------- |
-| `ready`        | → FLIP_STATUS                                         |
-| `semantic_gap` | → TEST → IMPLEMENT → BENCH → REVALIDATE → FLIP_STATUS |
-| `blocked`      | → REPORT_BLOCKED                                      |
+| Gap-report `classification` | Action                                                 | Why                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`                     | → ALIGN_OP with `--mode=minor`                         | Existing code already conforms; align-op's minor path runs the spec tests (DONE_SKIP since they pass), then the shared downstream + flip.                                                                                                                                                                                                                                                     |
+| `semantic_gap`              | → ALIGN_OP with `--mode=redesign`                      | Family-scoped historical migration treats every `semantic_gap` op as a structural redesign by default — legacy code is being replaced wholesale. For per-op `semantic_gap` cases that are actually minor manifest deltas, use single-op `align-op <op> --mode=minor` directly instead of `align-family`. A future `recommended_mode` gap-report field could refine the routing automatically. |
+| `blocked`                   | → REPORT_BLOCKED with audit's `reason`. Skip align-op. | Audit determined the op cannot be migrated autonomously (no `pytorch_equivalent`, kernel-layer change required, etc.). No per-op work to do.                                                                                                                                                                                                                                                  |
 
-### 4. TEST (per op)
+The mapping is deterministic — `align-family` MUST pass `--mode=` explicitly so `align-op` never falls into its interactive prompt branch in a batch family migration.
 
-Invoke test-op as a **separate agent** (trust model):
+### 4. ALIGN_OP (per op)
 
-```
-test-op(op_name, manifest_signature, pytorch_equivalent, source_test)
-```
-
-### 5. IMPLEMENT (per op)
-
-Invoke implement-op as a **separate agent** (trust model):
+For each op routed here, invoke `align-op` as a **separate sub-agent** with the mode determined in Step 3:
 
 ```
-implement-op(op_name, manifest_signature, source_op, source_test)
+align-op <op_name> --mode=<minor|redesign>
 ```
 
-Collect `observations` from return.
+`align-op` owns the entire per-op pipeline internally — its internal stages (classify, dispatch on case, test / implement / bench, revalidate, flip status, cleanup, report) are `align-op`'s contract, not `align-family`'s. See [`align-op/SKILL.md`](../align-op/SKILL.md) for the authoritative stage list and the conditional-IMPLEMENT rule. `align-family` does not manage or observe `align-op`'s internal stages; the only interface between them is `align-op`'s SUCCESS / BLOCKED return.
 
-### 6. BENCH (per op)
+Per-op outcome:
 
-Invoke bench-op:
+- `align-op` returns SUCCESS → op is `promoted` (manifest status already flipped by `align-op`'s FLIP_STATUS). Record the returned report. Proceed to CLEANUP_GATE.
+- `align-op` returns BLOCKED → op is `blocked`. Capture `align-op`'s BLOCKED reason verbatim as the per-op result. Proceed to CLEANUP_GATE.
 
-```
-bench-op(op_name, source_bench, source_op)
-```
+`align-family` MUST NOT re-flip manifest status or re-run per-op validation on its own; `align-op`'s SUCCESS return is the single source of truth that the manifest was flipped.
 
-Requires local GPU.
+### 5. CLEANUP_GATE
 
-### 7. REVALIDATE (per op)
-
-Final gate after benchmark edits. Re-run validation to confirm no regressions:
-
-```bash
-python scripts/validate_manifest.py --check-op <op_name>
-python -m pytest <source_test> -v
-```
-
-Both must pass. If not → REPORT_BLOCKED (benchmark change introduced regression).
-
-### 8. FLIP_STATUS
-
-Orchestrator (not a sub-skill) changes manifest:
-
-- `status: spec-only` → `status: implemented`
-- Commit the manifest change
-- Update gap report: add `promoted_at` timestamp (keep `classification` unchanged)
-
-### 9. CLEANUP_GATE
-
-After each terminal per-op outcome (FLIP_STATUS or REPORT_BLOCKED), check group completion:
+After each per-op outcome — whether `align-op` returned SUCCESS / BLOCKED or ROUTE recorded an audit-classified `blocked` op directly to `REPORT_BLOCKED` — check group completion:
 
 - All siblings in the current base-class group are `promoted` or `blocked`? → trigger CLEANUP
-- Otherwise → continue to next op (ROUTE)
+- Otherwise → continue to next op (ROUTE → ALIGN_OP)
 
-### 10. CLEANUP
+### 6. CLEANUP
 
-Remove dual-path legacy code from the base class. This step fires once per base-class group, after all siblings are done.
+Remove dual-path legacy code from the base class. This step fires once per base-class group, after all siblings have gone through `align-op` (SUCCESS or BLOCKED).
 
 Actions:
 
@@ -157,17 +133,22 @@ Actions:
 1. Run tests and `--check-op` for **promoted ops only** (blocked ops' tests may legitimately fail)
 1. Commit cleanup changes
 
-If any promoted op's test fails after cleanup → REPORT_BLOCKED (cleanup regression). Do not proceed with broken state.
+If any promoted op's test fails after cleanup → transition to `CLEANUP_REGRESSION` (terminal): record the regression, skip `CREATE_PR`, exit with `blocked` status. Do not proceed with a broken state.
 
-**Timeout policy for blocked ops**: if a group has blocked ops that prevent cleanup gate from firing for an extended period, the orchestrator may force cleanup — remove legacy path and mark blocked ops' tests as `xfail`. This is a human decision, not automatic.
+**Two distinct blocked states**, split so the diagram has one meaning per state:
 
-### 11. CREATE_PR
+- **`REPORT_BLOCKED`** — per-op `align-op` returned BLOCKED. Records the reason, returns to `CLEANUP_GATE`, continues with sibling ops. Non-terminal.
+- **`CLEANUP_REGRESSION`** — a promoted op's tests fail after CLEANUP's dual-path removal. Terminal: the family migration exits without opening a PR. The blocked report becomes the run's final artefact.
+
+**Timeout policy for blocked ops**: if a group has blocked ops that prevent the cleanup gate from firing for an extended period, the orchestrator may force cleanup — remove legacy path and mark blocked ops' tests as `xfail`. This is a human decision, not automatic.
+
+### 7. CREATE_PR
 
 After all ops processed:
 
-- Collect all observations from implement-op calls
+- Collect all per-op reports returned by `align-op`
 - Create PR with:
   - Migration summary (promoted / blocked counts)
-  - Per-op change table
-  - Observations for human doc review
-  - Blocked ops with reasons
+  - Per-op change table (derived from `align-op` reports)
+  - Observations surfaced by `align-op` (e.g., `needs_kernel_work`, `needs_human_decision`) for human doc review
+  - Blocked ops with `align-op`'s BLOCKED reasons
