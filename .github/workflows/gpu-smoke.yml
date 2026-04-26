@@ -449,8 +449,30 @@ jobs:
           VENV_PREFIX="tileops_ci_venv"
           VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
           TRUSTED_VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-          TRUSTED_CACHE_ROOT="/data7/shared/ci-cache"
+          TRUSTED_CACHE_ROOT_CANDIDATE="/data7/shared/ci-cache"
+          FALLBACK_TRUSTED_CACHE_ROOT="/home/ci-runner/.cache/tileops-ci"
           FORK_CAN_COPY_TRUSTED_VENV="false"
+
+          select_trusted_cache_root() {
+            local candidate="$1"
+            local fallback="$2"
+
+            if [[ -d "${candidate}" && -w "${candidate}" ]]; then
+              printf '%s\n' "${candidate}"
+              return
+            fi
+
+            if mkdir -p "${candidate}" 2>/dev/null && [[ -d "${candidate}" && -w "${candidate}" ]]; then
+              printf '%s\n' "${candidate}"
+              return
+            fi
+
+            echo "::warning::${candidate} is unavailable or not writable; using ${fallback} for this run." >&2
+            mkdir -p "${fallback}"
+            printf '%s\n' "${fallback}"
+          }
+
+          TRUSTED_CACHE_ROOT="$(select_trusted_cache_root "${TRUSTED_CACHE_ROOT_CANDIDATE}" "${FALLBACK_TRUSTED_CACHE_ROOT}")"
 
           if [[ "$IS_FORK" == "true" ]]; then
             RUNTIME_ROOT="${RUNNER_TEMP}/gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}"

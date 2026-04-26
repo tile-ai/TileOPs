@@ -153,6 +153,28 @@ def test_fork_divergent_pyproject_forces_fresh_install() -> None:
     )
 
 
+def test_data7_cache_root_has_local_fallback() -> None:
+    """The shared data7 cache is preferred, but some runner containers may
+    start without /data7 mounted or writable. Resolve runtime state must not
+    blindly mkdir /data7 as the unprivileged ci-runner user; it should probe
+    writability and fall back to a local cache root when data7 is unavailable.
+    """
+    wf = _load(GPU_SMOKE)
+    steps = wf["jobs"]["gpu-smoke"]["steps"]
+    resolve_step = next(
+        (s for s in steps if s.get("name") == "Resolve runtime state"), None
+    )
+    assert resolve_step is not None, "Resolve runtime state step must exist"
+    script = resolve_step["run"]
+
+    assert 'TRUSTED_CACHE_ROOT_CANDIDATE="/data7/shared/ci-cache"' in script
+    assert 'FALLBACK_TRUSTED_CACHE_ROOT="/home/ci-runner/.cache/tileops-ci"' in script
+    assert "select_trusted_cache_root()" in script
+    assert 'TRUSTED_CACHE_ROOT="$(select_trusted_cache_root' in script
+    assert 'echo "::warning::${candidate} is unavailable or not writable' in script
+    assert 'TRUSTED_CACHE_ROOT="/data7/shared/ci-cache"' not in script
+
+
 def test_reclaim_action_emits_opt_out_log_line() -> None:
     """When the opt-out is active, operators need a grep-able log line to
     confirm the destructive path was skipped. The AC explicitly names this
