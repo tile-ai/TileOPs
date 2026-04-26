@@ -35,7 +35,8 @@ stateDiagram-v2
     [*] --> AUDIT
     AUDIT --> GROUP_BY_BASE: gap report generated
     GROUP_BY_BASE --> ROUTE: ops grouped by base class
-    ROUTE --> ALIGN_OP: next op in current group
+    ROUTE --> ALIGN_OP: ready (mode=minor) or semantic_gap (mode=redesign)
+    ROUTE --> REPORT_BLOCKED: classification=blocked (audit-family)
     ALIGN_OP --> CLEANUP_GATE: align-op SUCCESS
     ALIGN_OP --> REPORT_BLOCKED: align-op BLOCKED
     REPORT_BLOCKED --> CLEANUP_GATE: record blocked reason
@@ -84,12 +85,24 @@ Group ops by `base_class` from the gap report. Each group is a set of sibling op
 
 Track group completion: a group is complete when all its ops are `promoted` or `blocked`.
 
-### 3. ALIGN_OP (per op)
+### 3. ROUTE
 
-For each op in the current group, invoke `align-op` as a **separate sub-agent**:
+Read the gap report from AUDIT. For each op in the current group, route by `classification` (the field `audit-family` populates):
+
+| Gap-report `classification` | Action                                                 | Why                                                                                                                                          |
+| --------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`                     | → ALIGN_OP with `--mode=minor`                         | Existing code already conforms; align-op's minor path runs the spec tests (DONE_SKIP since they pass), then the shared downstream + flip.    |
+| `semantic_gap`              | → ALIGN_OP with `--mode=redesign`                      | Legacy code structurally diverges from the spec; align-op archives it, rescaffolds, and ports — full per-op pipeline.                        |
+| `blocked`                   | → REPORT_BLOCKED with audit's `reason`. Skip align-op. | Audit determined the op cannot be migrated autonomously (no `pytorch_equivalent`, kernel-layer change required, etc.). No per-op work to do. |
+
+The mapping is deterministic — `align-family` MUST pass `--mode=` explicitly so `align-op` never falls into its interactive prompt branch in a batch family migration.
+
+### 4. ALIGN_OP (per op)
+
+For each op routed here, invoke `align-op` as a **separate sub-agent** with the mode determined in Step 3:
 
 ```
-align-op <op_name>
+align-op <op_name> --mode=<minor|redesign>
 ```
 
 `align-op` owns the entire per-op pipeline internally — its internal stages (classify, dispatch on case, test / implement / bench, revalidate, flip status, cleanup, report) are `align-op`'s contract, not `align-family`'s. See [`align-op/SKILL.md`](../align-op/SKILL.md) for the authoritative stage list and the conditional-IMPLEMENT rule. `align-family` does not manage or observe `align-op`'s internal stages; the only interface between them is `align-op`'s SUCCESS / BLOCKED return.
@@ -101,14 +114,14 @@ Per-op outcome:
 
 `align-family` MUST NOT re-flip manifest status or re-run per-op validation on its own; `align-op`'s SUCCESS return is the single source of truth that the manifest was flipped.
 
-### 4. CLEANUP_GATE
+### 5. CLEANUP_GATE
 
 After each `align-op` invocation returns (SUCCESS or BLOCKED), check group completion:
 
 - All siblings in the current base-class group are `promoted` or `blocked`? → trigger CLEANUP
 - Otherwise → continue to next op (ROUTE → ALIGN_OP)
 
-### 5. CLEANUP
+### 6. CLEANUP
 
 Remove dual-path legacy code from the base class. This step fires once per base-class group, after all siblings have gone through `align-op` (SUCCESS or BLOCKED).
 
@@ -129,7 +142,7 @@ If any promoted op's test fails after cleanup → transition to `CLEANUP_REGRESS
 
 **Timeout policy for blocked ops**: if a group has blocked ops that prevent the cleanup gate from firing for an extended period, the orchestrator may force cleanup — remove legacy path and mark blocked ops' tests as `xfail`. This is a human decision, not automatic.
 
-### 6. CREATE_PR
+### 7. CREATE_PR
 
 After all ops processed:
 
