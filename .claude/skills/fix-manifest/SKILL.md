@@ -47,22 +47,19 @@ Resolve `op_name` in `tileops/ops_manifest.yaml`. Missing → BLOCKED with messa
 
 ### 2. DIAGNOSE
 
-Decide the target field. The validator does NOT flag every missing allowed field for spec-only entries (e.g., `source.kernel_map` is only warned when `status == implemented`). Therefore DIAGNOSE runs **two checks** when `--field=` is omitted:
+Decide the target field. The validator does NOT flag every missing allowed field for spec-only entries (e.g., `source.kernel_map` is only warned when `status == implemented`). When `--field=` is omitted, run two checks in strict order — Check A first; only fall through to Check B if A finds nothing.
 
-1. **Explicit presence check** for `kernel_map` only. The validator only warns on missing `kernel_map` when `status == implemented`, so a `spec-only` entry can be missing it without an error:
+**Check A — `kernel_map` presence (single field only).** If `source.kernel_map` is missing or empty → target = `kernel_map`, jump to INFER. Otherwise fall through to Check B.
 
-   - `source.kernel_map` missing or empty → target = `kernel_map`.
-   - else fall through to validator.
+Do NOT extend Check A to `static_dims`, `shape_rules`, `dtype_combos`, or `roofline.vars`. `docs/manifest.md` R7 and R20 explicitly allow `static_dims` to be absent on fixed-rank ops; the other three fields are conditionally required. Patching them on absence alone would manufacture changes for valid entries (e.g., reduction-style ops).
 
-   Do NOT presence-check `static_dims`, `shape_rules`, `dtype_combos`, or `roofline.vars` — `docs/manifest.md` (R7, R20) explicitly allows `static_dims` to be absent on fixed-rank ops, and the other fields are conditionally required. Patching them based on absence alone would manufacture changes for valid entries (e.g., reduction-style ops). Target these fields only when the validator emits an error or the user passes `--field=`.
+**Check B — validator output.** Run `python scripts/validate_manifest.py --check-op <op_name>`. Parse the first error:
 
-1. **Validator output**: run `python scripts/validate_manifest.py --check-op <op_name>`. Parse first error.
+- Field in the allowed list above → target = that field, jump to INFER.
+- Field forbidden (e.g., `signature.params.dim`) → BLOCKED. Message must name the field, why it is out of scope, and the owning workflow (`add-manifest` for new entries; manifest-review issue for `signature.{inputs,outputs,params}`).
+- No errors and Check A also empty → no-op; print `nothing to fix` and exit 0.
 
-   - Field in allowed list → that field.
-   - Field forbidden (e.g., `signature.params.dim`) → BLOCKED. Message must name the field, why it is out of scope, and the owning workflow (`add-manifest` for new entries; manifest-review issue for `signature.{inputs,outputs,params}`).
-   - No errors and no missing presence → no-op; print `nothing to fix` and exit 0.
-
-`--field=` provided → must be in the allowed list; else BLOCKED. Skip the presence/validator dance.
+When `--field=` IS provided: must be in the allowed list; else BLOCKED. Skip both checks.
 
 Write `.foundry/plan/<op_name>/fix-diagnosis.json`: `{op_name, target_field, validator_excerpt, action}`.
 

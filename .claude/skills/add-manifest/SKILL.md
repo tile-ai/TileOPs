@@ -53,19 +53,15 @@ Locate from `op_path`:
 | test   | `tests/ops/test_<name>.py`                            |
 | bench  | `benchmarks/ops/bench_<name>.py`                      |
 
-Set `family` from kernel parent dir name with this mapping (manifest uses a closed family vocabulary, not raw dir names):
+Set `family` by **copying from the manifest itself**, not by inferring from kernel paths. Kernels live under both directories (`tileops/kernels/norm/`, `tileops/kernels/moe/`, `tileops/kernels/attention/`, …) and top-level files (`tileops/kernels/convolution.py`, `tileops/kernels/elementwise.py`, …), and the manifest uses a closed family vocabulary that does not match either layout 1:1 (e.g., kernel file `convolution.py` → family `convolution`; kernel dir `norm/` → family `normalization`).
 
-| Kernel dir                     | Manifest `family` |
-| ------------------------------ | ----------------- |
-| `tileops/kernels/norm/`        | `normalization`   |
-| `tileops/kernels/conv/`        | `convolution`     |
-| `tileops/kernels/reduction/`   | `reduction`       |
-| `tileops/kernels/scan/`        | `scan`            |
-| `tileops/kernels/moe/`         | `moe`             |
-| `tileops/kernels/elementwise/` | `elementwise`     |
-| `tileops/kernels/attention/`   | `attention`       |
+Procedure:
 
-If the dir is not in this table, scan `tileops/ops_manifest.yaml` for the convention used by an existing op under that dir. If still ambiguous, STOP.
+1. Find any existing entry in `tileops/ops_manifest.yaml` whose `source.kernel` equals the kernel path resolved above (or shares the parent dir / basename).
+1. Copy that entry's `family` value verbatim.
+1. If no neighbouring entry exists for that kernel, scan all `family` values currently used in the manifest and pick the one whose existing members most closely match the op's domain. If still ambiguous, STOP and ask the user.
+
+Never invent a new `family` value.
 
 Missing files: record absent, continue.
 
