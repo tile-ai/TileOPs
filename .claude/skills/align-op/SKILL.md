@@ -102,6 +102,8 @@ Decide which case applies. Machine-decidable input: does `source.op` exist?
 - `source.op` **missing** → only `green` is valid. `--mode=minor` → BLOCKED ("`source.op` is missing; cannot edit a non-existent op file; use `--mode=green` or omit `--mode`"). `--mode=redesign` → BLOCKED ("`source.op` is missing; no archive source to rewrite; use `--mode=green` or omit `--mode`").
 - `source.op` **exists** → `--mode=green` → BLOCKED ("`source.op` already exists; green-field scaffold would silently overwrite; use `--mode=redesign` for rewrite+port or `--mode=minor` for in-place edit").
 
+**First-op bias.** If no op in the same `family` has `status: implemented` and follows the canonical static_dims pattern (`docs/ops-design.md` § Step 3), set `auto-case = redesign` (skip the prompt). mode.json: `decided_by: "auto"`, `reason: "no canonical-pattern precedent in family <name>"`. User may override with `--mode=minor`.
+
 Write `.foundry/plan/<op_name>/mode.json`:
 
 ```json
