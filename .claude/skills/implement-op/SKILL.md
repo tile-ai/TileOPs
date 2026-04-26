@@ -38,7 +38,7 @@ stateDiagram-v2
 Before refactoring a base class, count its subclasses:
 
 ```bash
-grep -lE "class [A-Z][A-Za-z0-9]*\(<BaseName>\)" tileops/ops/
+grep -rlE "class\s+[A-Z][A-Za-z0-9]*\s*\(\s*<BaseName>\s*\)" tileops/ops/
 ```
 
 - **One subclass** (the op being migrated): refactor the base in place. No dual-path.
