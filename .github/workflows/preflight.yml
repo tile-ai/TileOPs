@@ -101,10 +101,12 @@ jobs:
                 ;;
             esac
             # `benchmark-contract-tests` runs `pytest benchmarks/tests`, which
-            # imports `workloads.workload_base` and `tileops.manifest`. Any of
-            # those layers can break the contract tests, so include them all.
+            # imports `workloads.workload_base`, `tileops.manifest`, and reads
+            # `tileops/ops_manifest.yaml` via `load_workloads()` /
+            # `workloads_to_params()`. Any of those layers can break the
+            # contract tests, so include them all.
             case "$f" in
-              benchmarks/*|workloads/*|tileops/manifest.py|"$WORKFLOW_PATH")
+              benchmarks/*|workloads/*|tileops/manifest.py|tileops/ops_manifest.yaml|"$WORKFLOW_PATH")
                 benchmark=true
                 ;;
             esac
