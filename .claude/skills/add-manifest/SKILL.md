@@ -5,17 +5,17 @@ description: Generate a spec-only ops_manifest.yaml entry for a legacy op from i
 
 ## Arguments
 
-| Argument    | Required | Description                                                                                          |
-| ----------- | -------- | ---------------------------------------------------------------------------------------------------- |
-| `op_path`   | Yes      | Op file path relative to project root (e.g., `tileops/ops/conv1d.py`)                                |
-| `torch_api` | Yes      | PyTorch docs URL matching the regex `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$` |
+| Argument    | Required | Description                                                                                 |
+| ----------- | -------- | ------------------------------------------------------------------------------------------- |
+| `op_path`   | Yes      | Op file path relative to project root (e.g., `tileops/ops/conv1d.py`).                      |
+| `torch_api` | Yes      | PyTorch docs URL matching `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$`. |
 
 ## Contract
 
 - **Output**: new entry in `ops_manifest.yaml` + follow-up issue + draft PR.
 - **MAY write**: `ops_manifest.yaml` (new entry only).
-- **MUST NOT write**: existing manifest entries, op / kernel / test / bench code.
-- **Termination**: draft PR created. BLOCKED on input or inference failure.
+- **MUST NOT write**: existing manifest entries; op / kernel / test / bench code.
+- **Termination**: draft PR created, or BLOCKED on input or inference failure.
 
 ## Workflow
 
@@ -40,7 +40,7 @@ stateDiagram-v2
 
 ### 1. VALIDATE_INPUT
 
-`torch_api` must match the regex `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$` (both host forms are canonical PyTorch docs). Else abort.
+`torch_api` must match `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$`. Else abort.
 
 ### 2. RESOLVE_SOURCES
 
@@ -53,17 +53,15 @@ Locate from `op_path`:
 | test   | `tests/ops/test_<name>.py`                            |
 | bench  | `benchmarks/ops/bench_<name>.py`                      |
 
-Set `family` by **copying from the manifest itself**, not by inferring from kernel paths. Kernels live under both directories (`tileops/kernels/norm/`, `tileops/kernels/moe/`, `tileops/kernels/attention/`, …) and top-level files (`tileops/kernels/convolution.py`, `tileops/kernels/elementwise.py`, …), and the manifest uses a closed family vocabulary that does not match either layout 1:1 (e.g., kernel file `convolution.py` → family `convolution`; kernel dir `norm/` → family `normalization`).
+Missing files: record absent, continue.
 
-Procedure:
+**Set `family` by copying from the manifest, not by inferring from kernel paths.** The manifest uses a closed family vocabulary that does not match the kernel layout 1:1 (e.g., `tileops/kernels/convolution.py` → family `convolution`; `tileops/kernels/norm/` → family `normalization`). Procedure:
 
-1. Find any existing entry in `tileops/ops_manifest.yaml` whose `source.kernel` equals the kernel path resolved above (or shares the parent dir / basename).
+1. Find any existing entry in `tileops/ops_manifest.yaml` whose `source.kernel` matches (same path, parent dir, or basename).
 1. Copy that entry's `family` value verbatim.
-1. If no neighbouring entry exists for that kernel, scan all `family` values currently used in the manifest and pick the one whose existing members most closely match the op's domain. If still ambiguous, STOP and ask the user.
+1. If nothing matches, scan all `family` values used in the manifest and pick the closest by domain. Still ambiguous → STOP, ask user.
 
 Never invent a new `family` value.
-
-Missing files: record absent, continue.
 
 ### 3. READ_PYTORCH
 
@@ -76,11 +74,11 @@ Missing files: record absent, continue.
 | non-Tensor         | `signature.params` (with `type`, `default`) |
 | return             | `signature.outputs`                         |
 
-Names must match PyTorch exactly. Include every PyTorch param even if the kernel ignores it. Exclude `float64`, `complex32/64/128` from dtypes.
+Names must match PyTorch exactly. Include every PyTorch param even if the kernel ignores it. Exclude `float64` and complex types (`complex32/64/128`) from dtypes.
 
 ### 4. SPLIT_VARIANTS
 
-Skip if no `Optional[Tensor]` input. Otherwise emit two entries (manifest keys are PascalCase per `docs/ops-design-reference.md`):
+Skip if no `Optional[Tensor]` input. Otherwise emit two entries (PascalCase per `docs/ops-design-reference.md`):
 
 | Entry   | Key                 | Inputs                | Extra                   |
 | ------- | ------------------- | --------------------- | ----------------------- |
@@ -93,17 +91,17 @@ Multiple `Optional[Tensor]`: follow decision tree in `docs/manifest.md`.
 
 ### 5. DRAFT_ENTRY
 
-Per entry, fill these fields:
+Per entry:
 
 - `family`: from RESOLVE_SOURCES.
-- `status`: always `spec-only`. **Never** set `implemented` from this skill — that is `align-op@FLIP_STATUS`'s exclusive write.
-- `signature.inputs`: ordered dict, PyTorch positional order. Per input: `dtype` is the supported set (PyTorch dtypes minus `float64` and complex types `complex32/64/128`) joined with `|`; `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
+- `status`: always `spec-only`. **Never** set `implemented` (that is `align-op@FLIP_STATUS`).
+- `signature.inputs`: ordered dict, PyTorch positional order. Per input: `dtype` is the supported set (PyTorch dtypes minus `float64` and `complex32/64/128`) joined with `|`; `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
 - `signature.outputs`: same shape as inputs. Use `same_as(<ref>)` where applicable.
 - `signature.params`: ordered dict, each `{type, default}`.
 - `signature.shape_rules`: Python expressions for derived dims and inter-tensor constraints.
 - `signature.dtype_combos`: only if supported set ⊂ Cartesian product; else omit.
-- `workloads`: `[]` (empty list — schema requires a list; human fills shapes in a follow-up).
-- `roofline`: required by L0 schema (cannot be `null` or empty). For well-known ops (conv / pool / matmul / norm / reduction): emit standard formulas. Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: use `vars` mapping. **If the formula is not derivable from PyTorch docs alone, BLOCKED with `evidence_needed: roofline.flops|bytes for <op>`** — do not guess.
+- `workloads`: `[]` (schema requires a list; human fills shapes in a follow-up).
+- `roofline`: required by L0 (cannot be `null` or empty). For well-known ops (conv / pool / matmul / norm / reduction): emit standard formulas. Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: use `vars` mapping. If the formula is not derivable from PyTorch docs alone → BLOCKED `evidence_needed: roofline.flops|bytes for <op>`. **Never guess.**
 - `source`: paths from RESOLVE_SOURCES; `bench_manifest_driven: false`.
 
 ### 6. VALIDATE
@@ -112,7 +110,7 @@ Per entry, fill these fields:
 python scripts/validate_manifest.py --check-op <op_name>
 ```
 
-L0 must pass. On fail: edit entry, rerun. Do not advance until L0 passes. Higher-level (L1–L4) failures are surfaced as gap items in the follow-up issue, not blocking.
+L0 must pass. On fail: edit entry, rerun. Higher-level (L1–L4) failures are surfaced as gap items in the follow-up issue, not blocking.
 
 ### 7. RUN_AUDIT
 
@@ -138,13 +136,13 @@ Record the issue URL.
 
 ### 9. CREATE_PR
 
-Invoke `foundry:creating-pull-request` (draft).
+Invoke `foundry:creating-pull-request` (draft):
 
-| Element | Value                                                                                                             |
-| ------- | ----------------------------------------------------------------------------------------------------------------- |
-| title   | `[Maintain][Manifest] Add <Op> manifest entries`                                                                  |
-| branch  | `maintain/manifest/<op-slug>-entries` (slug: kebab-case of `<Op>`)                                                |
-| body    | manifest entries added (name, family, status); validator results (levels passed); `Related: #<issue from step 8>` |
+| Element | Value                                                                                             |
+| ------- | ------------------------------------------------------------------------------------------------- |
+| title   | `[Maintain][Manifest] Add <Op> manifest entries`                                                  |
+| branch  | `maintain/manifest/<op-slug>-entries` (slug: kebab-case of `<Op>`)                                |
+| body    | manifest entries added (name, family, status); validator results; `Related: #<issue from step 8>` |
 
 Title and branch must match `.claude/conventions/types.sh`.
 
@@ -153,6 +151,6 @@ Title and branch must match `.claude/conventions/types.sh`.
 - Non-URL `torch_api` → abort.
 - Never edit op / kernel / test / bench files.
 - Never invent params outside PyTorch API.
-- `status` is always `spec-only`. Never set `implemented` (that is `align-op@FLIP_STATUS`).
+- `status` is always `spec-only`. Never set `implemented`.
 - Ambiguous PyTorch mapping → STOP, ask user.
 - Mapping clearly wrong → STOP, explain.
