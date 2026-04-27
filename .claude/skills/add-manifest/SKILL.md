@@ -57,7 +57,7 @@ Reject `ref_url` not matching the regex.
 
 ### 2. READ_EXISTING
 
-Look up `<op_name>` in `tileops/ops_manifest.yaml` (op_name derived from `op_path` + variant suffix from Step 4). If present, snapshot the human-curated fields listed in the Contract table. If absent, proceed to RESOLVE_SOURCES.
+Look up `<op_name>` in `tileops/ops_manifest.yaml` (op_name derived from `op_path` + variant suffix from Step 5 SPLIT_VARIANTS). If present, snapshot the human-curated fields listed in the Contract table. If absent, proceed to RESOLVE_SOURCES.
 
 ### 3. RESOLVE_SOURCES (only when entry absent)
 
