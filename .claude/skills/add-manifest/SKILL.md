@@ -35,8 +35,7 @@ stateDiagram-v2
     [*] --> VALIDATE_INPUT
     VALIDATE_INPUT --> [*]: URL malformed
     VALIDATE_INPUT --> READ_EXISTING
-    READ_EXISTING --> RESOLVE_SOURCES: snapshot map empty
-    READ_EXISTING --> READ_REFERENCE: snapshot map populated (≥1 matching entry)
+    READ_EXISTING --> RESOLVE_SOURCES
     RESOLVE_SOURCES --> READ_REFERENCE
     READ_REFERENCE --> SPLIT_VARIANTS: Optional[Tensor] present
     READ_REFERENCE --> DRAFT_ENTRY
@@ -57,13 +56,13 @@ Reject `ref_url` not matching the regex.
 
 ### 2. READ_EXISTING
 
-Scan `tileops/ops_manifest.yaml` for **every** entry whose `source.op == op_path`. Variants share `source.op` with their primary, so this captures the primary AND any variant entry in one pass without depending on Step 5's not-yet-known suffix.
+Scan `tileops/ops_manifest.yaml` for **every** entry whose `source.op == op_path`. Build a **candidate map** `entry_key → snapshot of human-curated fields`. This is just a candidate pool — `op_path` is not a unique identity (e.g., `tileops/ops/attention/mha.py` backs several manifest entries), so non-empty does NOT yet mean "regenerate".
 
-For each match, snapshot the human-curated fields listed in the Contract table. Build a map `entry_key → snapshot`. DRAFT_ENTRY (Step 6) consults this map per emitted key — found → preserve verbatim; not found → default.
+The greenfield-vs-regenerate decision is deferred to Step 6 (DRAFT_ENTRY) and Step 10 (CREATE_PR), where it is made per emitted key against the candidate map.
 
-If the map is empty, the op is greenfield. Proceed to RESOLVE_SOURCES.
+### 3. RESOLVE_SOURCES
 
-### 3. RESOLVE_SOURCES (greenfield only — map empty)
+Always runs. Resolves source paths from `op_path` (used as fallback in DRAFT_ENTRY for emitted keys absent from the candidate map):
 
 | Source | Path                                            |
 | ------ | ----------------------------------------------- |
@@ -100,7 +99,11 @@ Skip if no `Optional[Tensor]`. Otherwise emit two entries (PascalCase per `docs/
 
 ### 6. DRAFT_ENTRY
 
-For each entry emitted in Step 5 (primary, plus variant if any), look up the entry's key in the READ_EXISTING snapshot map. Found → use snapshot for the human-curated fields. Not found → use defaults from the Contract table (a partial-greenfield case is possible: e.g., primary already exists but variant is new).
+For each entry emitted in Step 5 (primary, plus variant if any), resolve the human-curated fields in this priority order:
+
+1. **Emitted key in candidate map** (re-align): use that snapshot verbatim.
+1. **Emitted key NOT in candidate map, but candidate map non-empty** (partial-greenfield — e.g., primary exists, new variant emitted): inherit shared fields from any candidate snapshot — `family`, `source.kernel`, `source.op`, `source.kernel_map`, `source.bench_manifest_driven` (variants share these per Step 5). Per-entry fields (`workloads`, `parity_opt_out`, `status`, `source.test`, `source.bench`) take Contract defaults.
+1. **Emitted key NOT in candidate map AND map empty** (full greenfield): all human-curated fields take Contract defaults (`family` and `source.*` from RESOLVE_SOURCES).
 
 Auto-derivable details:
 
@@ -131,9 +134,9 @@ Invoke `foundry:creating-issue`. Per `semantic_gap` op the body MUST contain: ke
 
 Invoke `foundry:creating-pull-request` (draft):
 
-| Snapshot map | Title                                                  | Branch                                   |
-| ------------ | ------------------------------------------------------ | ---------------------------------------- |
-| empty        | `[Maintain][Manifest] Add <Op> manifest entries`       | `maintain/manifest/<op-slug>-entries`    |
-| populated    | `[Refactor][Manifest] Re-align <Op> spec to <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
+| Emitted-key match against candidate map | Title                                                  | Branch                                   |
+| --------------------------------------- | ------------------------------------------------------ | ---------------------------------------- |
+| 0 emitted keys match                    | `[Maintain][Manifest] Add <Op> manifest entries`       | `maintain/manifest/<op-slug>-entries`    |
+| ≥1 emitted key matches                  | `[Refactor][Manifest] Re-align <Op> spec to <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
 
 Body: entries written, fields rewritten vs. preserved, validator results, `Related: #<issue from step 9>`. Title and branch must match `.claude/conventions/types.sh`.
