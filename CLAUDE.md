@@ -8,9 +8,7 @@ This project follows **design-first, spec-driven** development: design docs and 
 
 ## Development Environment
 
-1. Clone repository: `git clone https://github.com/tile-ai/TileOPs && cd TileOPs`
-1. Create and activate a virtual environment (venv, conda, etc.)
-1. Install dependencies and pre-commit hooks: `make install`
+Activate a virtual environment, then `make install` (deps + pre-commit hooks).
 
 ## Key References
 
@@ -28,20 +26,9 @@ This project follows **design-first, spec-driven** development: design docs and 
 - [testing.md](docs/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
 - [tileops-skills.md](docs/tileops-skills.md) — developer decision guide: which repo-provided skill to use for which task
 
-### External
+## Reading `ops_manifest.yaml`
 
-- [TileOPs.github.io](https://github.com/tile-ai/TileOPs.github.io) — auto-generated documentation site (API reference, perf tables, support matrix)
-
-## Collaboration Rules for Claude
-
-- Prefer minimal, targeted changes and avoid unrelated refactoring.
-- After code changes, run the most relevant tests first.
-- If unrelated failures appear, report them but do not fix them in the same task.
-- Add necessary docs and tests when introducing files/interfaces.
-- Response should include: change summary, affected paths, validation steps, and next suggestions.
-- No GitHub issue numbers or ad-hoc issue annotations in source/test files. Issue refs belong in commit messages and PR descriptions only.
-- When orchestrating sub-agents: verify clean worktree (`git diff --quiet && git diff --cached --quiet`) after each sub-agent returns. If dirty, commit on behalf using a descriptive message (e.g., `Sub-agent [name]: [task summary]`).
-- Write commit messages in `[Type] description` or `[Type][Scope] description` format per `COMMIT_MSG_PATTERN` in `.claude/conventions/types.sh` (scope is optional). Not CI-enforced, but expected for readability.
+This file is thousands of lines — never slurp it as text. To inspect an entry, parse it (`yaml.safe_load`) and index by op name. For edits, use a round-trip parser (`ruamel.yaml`) to preserve comments and key order. Reserve `Read`/`grep` for targeted line lookups, not structural reading.
 
 ## Domain Rules (load on demand)
 
