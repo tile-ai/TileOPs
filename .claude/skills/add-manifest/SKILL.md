@@ -58,7 +58,8 @@ stateDiagram-v2
 
 - Reject `ref_url` not matching the regex.
 - Reject `op_name` not matching `^[A-Z][A-Za-z0-9]+(Fwd|Bwd)Op$`.
-- **PyTorch-only sanity check** (skip otherwise). If `ref_url` host is `(docs.)?pytorch.org`: extract the last `.<word>.html` segment from the URL → `<ref_name>`; compute `<expected> = snake_case(op_name without Fwd/Bwd Op suffix)`. Require `<expected> == <ref_name>` OR `<expected>.startswith(<ref_name> + "_")` (the second branch covers variants whose op_name extends the primary's). Mismatch → BLOCKED with both names. For non-PyTorch URLs, no automatic check — caller is responsible.
+
+No automatic op_name ↔ ref_url alignment check. TileOPs `op_name` is a local manifest identity that may legitimately differ from any reference's naming (e.g., `MultiHeadAttentionFwdOp` paired with `torch.nn.functional.scaled_dot_product_attention`). Caller is responsible for the pairing — see "Caller responsibility" in the Contract.
 
 ### 2. READ_EXISTING
 
@@ -69,13 +70,15 @@ Look up `op_name` directly in `tileops/ops_manifest.yaml`.
 
 ### 3. RESOLVE_SOURCES (greenfield only)
 
-Derive source paths from `op_name`. The op file MUST exist on disk; if it doesn't, the caller is expected to scaffold it first.
+Derive source paths from `op_name`. The lookup is **class-based**, not filename-based — many TileOPs ops share a file (e.g., `SumFwdOp` and `MeanFwdOp` both live in `tileops/ops/reduction/reduce.py`).
 
-1. Convert `op_name` to snake_case `<name>`. Strip the trailing `FwdOp` / `BwdOp` first; PascalCase → snake_case via standard rules; uppercase abbreviations stay one cluster (e.g., `RMSNormFwdOp` → `rms_norm`, `Conv1dBiasFwdOp` → `conv1d_bias`).
-1. Search `tileops/ops/**/<name>.py`. Exactly one match → `source.op` is that path. Zero matches → BLOCKED `"op file <name>.py not found under tileops/ops/; scaffold the op file first or rename per convention"`. Multiple matches → BLOCKED with the list.
-1. From `source.op`'s parent dir (e.g., `tileops/ops/norm/`), search `tileops/kernels/<same-leaf-dir-or-file>/<name>.py` for `source.kernel`. Same one-match rule. Zero matches → record absent (kernel not yet implemented), continue.
-1. `source.test = tests/ops/test_<name>.py`; `source.bench = benchmarks/ops/bench_<name>.py`. Missing files: record absent, continue.
-1. `family`: copy verbatim from a sibling manifest entry whose `source.kernel` matches by path / parent dir / basename. Never invent.
+1. **Find the implementation file by class name.** Scan `tileops/ops/**/*.py` for a Python `class <op_name>(...)` declaration (AST or `grep -rlE "^class <op_name>\(" tileops/ops/`).
+   - Exactly one match → `source.op` is that file path.
+   - Zero matches → true greenfield. Default `source.op` to `tileops/ops/<snake_name>.py` (or under a family subdirectory if a sibling manifest entry has the same family — copy that entry's `source.op` parent dir). `<snake_name>` is `op_name` minus the trailing `FwdOp` / `BwdOp`, snake_cased (e.g., `RMSNormFwdOp` → `rms_norm`, `Conv1dBiasFwdOp` → `conv1d_bias`). The file may not exist yet — that is fine; the caller scaffolds afterward.
+   - Multiple matches → BLOCKED with the list of files; ask the caller to disambiguate.
+1. **Resolve `source.kernel`.** Record absent — the kernel-class identity isn't reliably derivable from `op_name` alone. `fix-manifest --field=kernel_map` fills it later from the op file's `_kernel_key` / `default_kernel_map` once the op exists.
+1. `source.test = tests/ops/test_<snake_name>.py`; `source.bench = benchmarks/ops/bench_<snake_name>.py`. Missing files: record absent, continue.
+1. `family`: copy verbatim from a sibling manifest entry whose `source.op` parent-dir or basename overlaps. If no sibling matches, leave `family` empty for human review. Never invent.
 
 ### 4. READ_REFERENCE
 
