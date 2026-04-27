@@ -1,5 +1,3 @@
-- No GitHub issue numbers or ad-hoc issue annotations in source/test files. Issue refs belong in commit messages and PR descriptions only.
-
 - Every `tileops/kernels/*` subpackage must have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
 
 - Relative imports for intra-package references (e.g. `from .op import Op`); absolute `tileops.*` imports for cross-package references.
