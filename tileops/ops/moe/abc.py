@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from torch import Tensor
 
 __all__ = [
+    "MoEExperts",
+    "MoEExpertsModular",
+    "MoEPrepareAndFinalize",
     "PrepareResult",
     "WeightedReduce",
     "WeightedReduceNoOp",
-    "MoEPrepareAndFinalize",
-    "MoEExperts",
-    "MoEExpertsModular",
 ]
 
 
