@@ -35,8 +35,8 @@ stateDiagram-v2
     [*] --> VALIDATE_INPUT
     VALIDATE_INPUT --> [*]: URL malformed
     VALIDATE_INPUT --> READ_EXISTING
-    READ_EXISTING --> RESOLVE_SOURCES: entry absent
-    READ_EXISTING --> READ_REFERENCE: entry present (snapshot saved)
+    READ_EXISTING --> RESOLVE_SOURCES: snapshot map empty
+    READ_EXISTING --> READ_REFERENCE: snapshot map populated (≥1 matching entry)
     RESOLVE_SOURCES --> READ_REFERENCE
     READ_REFERENCE --> SPLIT_VARIANTS: Optional[Tensor] present
     READ_REFERENCE --> DRAFT_ENTRY
@@ -57,9 +57,13 @@ Reject `ref_url` not matching the regex.
 
 ### 2. READ_EXISTING
 
-Look up `<op_name>` in `tileops/ops_manifest.yaml` (op_name derived from `op_path` + variant suffix from Step 5 SPLIT_VARIANTS). If present, snapshot the human-curated fields listed in the Contract table. If absent, proceed to RESOLVE_SOURCES.
+Scan `tileops/ops_manifest.yaml` for **every** entry whose `source.op == op_path`. Variants share `source.op` with their primary, so this captures the primary AND any variant entry in one pass without depending on Step 5's not-yet-known suffix.
 
-### 3. RESOLVE_SOURCES (only when entry absent)
+For each match, snapshot the human-curated fields listed in the Contract table. Build a map `entry_key → snapshot`. DRAFT_ENTRY (Step 6) consults this map per emitted key — found → preserve verbatim; not found → default.
+
+If the map is empty, the op is greenfield. Proceed to RESOLVE_SOURCES.
+
+### 3. RESOLVE_SOURCES (greenfield only — map empty)
 
 | Source | Path                                            |
 | ------ | ----------------------------------------------- |
@@ -96,7 +100,9 @@ Skip if no `Optional[Tensor]`. Otherwise emit two entries (PascalCase per `docs/
 
 ### 6. DRAFT_ENTRY
 
-Per the Contract table. Auto-derivable details:
+For each entry emitted in Step 5 (primary, plus variant if any), look up the entry's key in the READ_EXISTING snapshot map. Found → use snapshot for the human-curated fields. Not found → use defaults from the Contract table (a partial-greenfield case is possible: e.g., primary already exists but variant is new).
+
+Auto-derivable details:
 
 - `signature.inputs`: ordered dict in the reference's positional order. Per input: `dtype` = supported set joined with `|` (reference dtypes minus `float64` and complex types); `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
 - `signature.outputs`: same shape as inputs. Use `same_as(<ref>)` where applicable.
@@ -125,9 +131,9 @@ Invoke `foundry:creating-issue`. Per `semantic_gap` op the body MUST contain: ke
 
 Invoke `foundry:creating-pull-request` (draft):
 
-| Entry was | Title                                                  | Branch                                   |
-| --------- | ------------------------------------------------------ | ---------------------------------------- |
-| absent    | `[Maintain][Manifest] Add <Op> manifest entries`       | `maintain/manifest/<op-slug>-entries`    |
-| present   | `[Refactor][Manifest] Re-align <Op> spec to <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
+| Snapshot map | Title                                                  | Branch                                   |
+| ------------ | ------------------------------------------------------ | ---------------------------------------- |
+| empty        | `[Maintain][Manifest] Add <Op> manifest entries`       | `maintain/manifest/<op-slug>-entries`    |
+| populated    | `[Refactor][Manifest] Re-align <Op> spec to <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
 
 Body: entries written, fields rewritten vs. preserved, validator results, `Related: #<issue from step 9>`. Title and branch must match `.claude/conventions/types.sh`.
