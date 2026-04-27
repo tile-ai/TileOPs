@@ -30,11 +30,6 @@ TILELANG_019_SKIP_REASON = (
 
 TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = (
     "tests/ops/test_batch_norm.py",
-    "tests/ops/attention/test_deepseek_nsa.py",
-    "tests/ops/attention/test_gqa_decode.py",
-    "tests/ops/attention/test_gqa_decode_paged.py",
-    "tests/ops/attention/test_gqa_sliding_window.py",
-    "tests/ops/attention/test_gqa_sliding_window_varlen.py",
     "tests/ops/attention/test_mha_decode_paged.py",
 )
 
@@ -80,8 +75,8 @@ TILELANG_019_KNOWN_FAILING_NODEIDS = {
     "tests/ops/test_gla_chunkwise_bwd.py::test_gla_bwd[2-64-2-64-64-64-dtype0-False]",
     "tests/ops/test_gla_chunkwise_bwd.py::test_gla_bwd[2-64-2-64-64-64-dtype1-False]",
     "tests/ops/test_gla_chunkwise_bwd.py::test_gla_bwd[2-64-2-64-64-64-dtype2-False]",
-    "tests/ops/attention/test_deepseek_nsa_topk.py::test_nsa_topk_varlen_op[5-1024-32-128-16-1-16-32-32-128-dtype0-accum_dtype0-False]",
-    "tests/ops/attention/test_deepseek_nsa_topk.py::test_nsa_topk_varlen_op[3-512-32-128-16-1-16-32-32-128-dtype1-accum_dtype1-False]",
+    "tests/ops/attention/test_gqa_sliding_window_varlen.py::test_gqa_sliding_window_varlen_fwd_op[2-seqlens_q8-seqlens_k8-8-2-64-False-64-64-dtype8-False]",
+    "tests/ops/attention/test_gqa_sliding_window_varlen.py::test_gqa_sliding_window_varlen_fwd_op[2-seqlens_q13-seqlens_k13-8-2-64-True-0--1-dtype13-False]",
     "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[1-4-64-64-dtype1-False]",
     "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[1-4-64-64-dtype2-False]",
     "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[2-8-64-64-dtype5-False]",
@@ -90,7 +85,6 @@ TILELANG_019_KNOWN_FAILING_NODEIDS = {
     "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode_multi_step[1-4-64-64-dtype2-False]",
     "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode_multi_step[2-8-64-64-dtype5-False]",
     "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode_multi_step[2-8-64-64-dtype6-False]",
-    "tests/ops/attention/test_deepseek_nsa_cmp.py::test_nsa_cmp_fwd_varlen_op[9-8192-32-128-128-16-0.08838834764831845-32-32-128-128-dtype0-accum_dtype0-False]",
     "tests/ops/test_deltanet_chunkwise_bwd.py::test_deltanet_bwd[1-128-4-64-64-32-dtype3-False]",
     "tests/ops/test_deltanet_chunkwise_bwd.py::test_deltanet_bwd[1-128-4-64-64-32-dtype4-False]",
     "tests/ops/test_deltanet_chunkwise_bwd.py::test_deltanet_bwd[1-128-4-64-64-32-dtype5-False]",
