@@ -1,26 +1,12 @@
 """Unified routed MoE FFN operator — FusedMoe.
 
-Corresponds to vLLM's FusedMoE layer: combines FusedTopKOp (routing) and
-FusedMoeExpertsFwdOp (permute + GEMM + SwiGLU + GEMM + unpermute) into a single
-forward pass.
+Combines FusedTopKOp (routing) and MoEExpertsModular (permute + GEMM + unpermute)
+with MoEPrepareAndFinalize (quantization + EP communication) via the ABC protocol.
 
-Does NOT handle shared experts (handled by an upper SharedFusedMoe layer,
-analogous to vLLM's SharedFusedMoE).
+Backwards-compatible: existing callers pass num_tokens / num_experts / ... as before.
+When prepare_finalize / experts are None, defaults are created from the layout param.
 
-Supports both Qwen3-style (softmax) and Kimi K2-style (sigmoid + correction_bias)
-routing via constructor parameters, replacing the model-specific ops
-(Qwen3MoENopadOp, KimiMoENopadOp, etc.).
-
-Layout variants:
-    layout="nopad"   — tight T*K layout, GPU tile scheduler (default, fastest)
-    layout="padded"  — block_m-aligned padding (comparison baseline)
-
-EP note:
-    For single-GPU / TP-only usage pass expert_map=None (default).
-    For multi-GPU EP with local filtering, pass expert_map [E_global] int32.
-    All-to-All communication is NOT performed here; use an external framework
-    (vLLM / SGLang / Megatron) to handle dispatch/combine and call
-    FusedMoeExpertsFwdOp directly with pre-dispatched tokens.
+Does NOT handle shared experts (handled by SharedFusedMoe).
 """
 
 from typing import Dict, Optional
@@ -28,8 +14,11 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.ops.moe.fused_moe_experts import FusedMoeExpertsFwdOp, FusedMoeExpertsPaddedFwdOp
+from tileops.ops.moe.abc import MoEExpertsModular, MoEPrepareAndFinalize
+from tileops.ops.moe.experts.nopad import MoEExpertsNopad
+from tileops.ops.moe.experts.padded import MoEExpertsPadded
 from tileops.ops.moe.fused_topk import FusedTopKOp
+from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 
 from ..op_base import Op
 
@@ -43,27 +32,22 @@ class FusedMoe(Op):
     upper layer (SharedFusedMoe / model-specific MoE).
 
     Args:
-        num_tokens: Number of input tokens T.
-        num_experts: Total number of experts E (global count).
-        top_k: Experts selected per token K.
-        hidden_size: Model hidden dimension H.
-        ffn_size: Per-expert intermediate dimension F.
-        scoring_func: Router scoring function — "softmax" (Qwen3/Qwen2) or
-            "sigmoid" (Kimi K2 / DeepSeek-V3).  Default "softmax".
-        renormalize: Renormalize top-k weights to sum to 1 after selection.
-            Default False.
-        with_correction_bias: Whether the router uses a per-expert correction
-            bias (Kimi K2 style).  When True, forward() accepts correction_bias.
-            Default False.
-        routed_scaling_factor: Multiplier applied to the routed expert output
-            after unpermute (Kimi K2: 2.827; default 1.0 = no scaling).
-        layout: "nopad" (default, tight T*K layout) or "padded"
-            (block_m-aligned padding, comparison baseline).
-        dtype: Activation and weight dtype (bf16 or fp16).
-        expert_map: Optional [E_global] int32 tensor for local EP filtering.
-            Maps global expert ids to local ids (-1 = not on this rank).
-            All-to-All communication is NOT performed here.
-            Raises NotImplementedError for layout="padded" with non-None value.
+        num_tokens: T — number of input tokens.
+        num_experts: E — total number of experts (global count).
+        top_k: K — experts selected per token.
+        hidden_size: H — model hidden dimension.
+        ffn_size: F — per-expert intermediate dimension.
+        scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
+        renormalize: Renormalize top-k weights to sum to 1. Default False.
+        with_correction_bias: Accept correction_bias in forward(). Default False.
+        routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
+        layout: "nopad" (default) or "padded". Ignored when experts is provided.
+        dtype: Activation and weight dtype.
+        expert_map: [E_global] int32 for EP local filtering. None = no EP.
+        prepare_finalize: Override the PrepareAndFinalize implementation.
+            Default: MoEPrepareAndFinalizeNoDPEP (no EP, no quantization).
+        experts: Override the Experts implementation.
+            Default: MoEExpertsNopad (layout="nopad") or MoEExpertsPadded.
     """
 
     def __init__(
@@ -80,6 +64,8 @@ class FusedMoe(Op):
         layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
+        prepare_finalize: Optional[MoEPrepareAndFinalize] = None,
+        experts: Optional[MoEExpertsModular] = None,
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -102,20 +88,27 @@ class FusedMoe(Op):
             with_correction_bias=with_correction_bias,
         )
 
-        if layout not in ("nopad", "padded"):
-            raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
-
-        experts_cls = FusedMoeExpertsFwdOp if layout == "nopad" else FusedMoeExpertsPaddedFwdOp
-        self._experts = experts_cls(
-            num_tokens=num_tokens,
-            num_experts=num_experts,
-            top_k=top_k,
-            hidden_size=hidden_size,
-            ffn_size=ffn_size,
-            routed_scaling_factor=routed_scaling_factor,
-            dtype=dtype,
-            expert_map=expert_map,
+        self._prepare: MoEPrepareAndFinalize = (
+            prepare_finalize if prepare_finalize is not None
+            else MoEPrepareAndFinalizeNoDPEP()
         )
+
+        if experts is not None:
+            self._experts: MoEExpertsModular = experts
+        else:
+            if layout not in ("nopad", "padded"):
+                raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
+            experts_cls = MoEExpertsNopad if layout == "nopad" else MoEExpertsPadded
+            self._experts = experts_cls(
+                num_tokens=num_tokens,
+                num_experts=num_experts,
+                top_k=top_k,
+                hidden_size=hidden_size,
+                ffn_size=ffn_size,
+                routed_scaling_factor=routed_scaling_factor,
+                dtype=dtype,
+                expert_map=expert_map,
+            )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -123,25 +116,45 @@ class FusedMoe(Op):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,                    # [T, H]  bf16/fp16
-        gating_output: torch.Tensor,                    # [T, E]  bf16/fp16/fp32
+        hidden_states: torch.Tensor,                    # [T, H]
+        gating_output: torch.Tensor,                    # [T, E]
         w_gate_up: torch.Tensor,                        # [E, 2*F, H]
         w_down: torch.Tensor,                           # [E, H, F]
         correction_bias: Optional[torch.Tensor] = None, # [E] float32, or None
     ) -> torch.Tensor:                                  # [T, H]
-        """Run routed MoE FFN.
-
-        Args:
-            hidden_states: [T, H] input token activations.
-            gating_output: [T, E] router logits (pre-softmax/sigmoid scores).
-            w_gate_up: [E, 2*F, H] gate+up projection weights.
-            w_down: [E, H, F] down projection weights.
-            correction_bias: [E] float32 per-expert correction bias for top-k
-                selection (Kimi K2 style).  Required when with_correction_bias=True.
-
-        Returns:
-            output: [T, H] routed MoE FFN output, same dtype as hidden_states.
-                Does NOT include shared expert contributions.
-        """
+        # 1. Routing
         topk_weights, topk_ids = self._fused_topk(gating_output, correction_bias)
-        return self._experts(hidden_states, w_gate_up, w_down, topk_weights, topk_ids)
+
+        # 2. Prepare (quantization / EP dispatch)
+        r = self._prepare.prepare(
+            hidden_states, topk_weights, topk_ids,
+            self.num_experts, expert_map=None,
+        )
+
+        # 3. Expert GEMM
+        T_prime = r.hidden_q.shape[0]
+        ws1_shape, ws2_shape = self._experts.workspace_shapes(
+            T_prime, self.ffn_size, self.hidden_size,
+            self.top_k, self.num_experts,
+        )
+        ws1 = hidden_states.new_empty(ws1_shape) if ws1_shape != (0,) else hidden_states.new_empty(0)
+        ws2 = hidden_states.new_empty(ws2_shape) if ws2_shape != (0,) else hidden_states.new_empty(0)
+
+        expert_out = hidden_states.new_empty(
+            self._experts.output_shape(T_prime, self.hidden_size)
+        )
+        self._experts.apply(
+            expert_out, r.hidden_q, w_gate_up, w_down,
+            r.topk_weights, r.topk_ids,
+            self.num_experts, expert_map=None,
+            workspace1=ws1, workspace2=ws2,
+        )
+
+        # 4. Finalize (weighted reduction / EP gather)
+        output = hidden_states.new_empty(hidden_states.shape)
+        self._prepare.finalize(
+            output, expert_out,
+            r.topk_weights, r.topk_ids,
+            self._experts.make_weighted_reduce(),
+        )
+        return output
