@@ -1436,6 +1436,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
+        # NOTE: PyTorch also accepts dim=None (deprecated, emits a warning and
+        # picks an implicit axis) and dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
         dim: {type: int, default: -1}
       static_dims:
         N: "x.shape[dim]"
@@ -1479,6 +1484,11 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
+        # NOTE: PyTorch also accepts dim=None (deprecated, emits a warning and
+        # picks an implicit axis) and dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
         dim: {type: int, default: -1}
       static_dims:
         N: "x.shape[dim]"
@@ -1526,10 +1536,11 @@ ops:
         keepdim: {type: bool, default: false}
       shape_rules:
         - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - (1 if isinstance(dim, int) else len({d % x.ndim for d in dim}))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}) and keepdim else x.shape[i])"
         - "isinstance(dim, int) or len(dim) > 0"
         - "isinstance(dim, int) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - (1 if isinstance(dim, int) else len({d % x.ndim for d in dim})))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim})][k]] for k in range(y.ndim))"
 
     workloads:
       # Attention weight matrices
@@ -1571,13 +1582,18 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1618,13 +1634,18 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1661,13 +1682,14 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1704,13 +1726,14 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1739,19 +1762,31 @@ ops:
   ProdFwdOp:
     ref_api: "torch.prod"
     family: reduction
-    status: spec-only  # dim=None not yet implemented; update when impl lands
+    status: spec-only
+    # NOTE: torch.prod has two overloads -- prod(input) for full reduction (no
+    # dim arg) and prod(input, dim, keepdim=False) where dim is a required int.
+    # Unlike torch.sum, torch.prod's dim overload rejects dim=None at runtime
+    # ("Please look up dimensions by name, got: name = None"), so the manifest
+    # types dim as int only. Full-reduction support (the no-dim overload) is
+    # not expressed in the manifest signature; the op layer must handle it
+    # separately if/when implemented.
     signature:
       inputs:
         x: {dtype: "float16 | bfloat16 | float32"}
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | None", default: -1}
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
+        dim: {type: int, default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "dim is None or -x.ndim <= dim < x.ndim"
-        - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else 1)"
-        - "y.shape[i] == (1 if i in (range(x.ndim) if dim is None else [dim % x.ndim]) and keepdim else x.shape[i])"
+        - "-x.ndim <= dim < x.ndim"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - 1)"
+        - "not keepdim or all(y.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i != dim % x.ndim][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1761,8 +1796,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else [dim % x.ndim])))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else [dim % x.ndim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i != dim % x.ndim)"
+        N: "x.shape[dim % x.ndim]"
       # N-1 multiplications per output element
       flops: "M * N"
       # Read x + write y
@@ -1792,14 +1827,15 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state variance (Llama-3.1-8B)
@@ -1836,14 +1872,15 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state std (Llama-3.1-8B)
@@ -1881,14 +1918,15 @@ ops:
         var: {dtype: "same_as(x)"}
         mean: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         correction: {type: int, default: 1}
         keepdim: {type: bool, default: false}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "var.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "var.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "var.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(var.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(var.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(var.ndim))"
         - "mean.ndim == var.ndim"
         - "mean.shape == var.shape"
 
@@ -1931,14 +1969,14 @@ ops:
       outputs:
         y: {dtype: "int64"}
       params:
-        dim: {type: int, default: -1}
+        dim: {type: "int | None", default: null}
         keepdim: {type: bool, default: false}
-      static_dims:
-        N: "x.shape[dim]"
       shape_rules:
-        - "-x.ndim <= dim < x.ndim"
-        - "y.ndim == x.ndim if keepdim else x.ndim - 1"
-        - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
+        - "dim is None or -x.ndim <= dim < x.ndim"
+        - "y.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
+        - "dim is not None or not keepdim or all(y.shape[i] == 1 for i in range(x.ndim))"
+        - "dim is None or not keepdim or all(y.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
+        - "dim is None or keepdim or all(y.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(y.ndim))"
 
     workloads:
       # LM head argmax (batch, vocab_size) -- greedy decoding
@@ -1948,8 +1986,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-        N: "x.shape[dim % x.ndim]"
+        M: "1 if dim is None else product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "product(x.shape) if dim is None else x.shape[dim % x.ndim]"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (8 bytes for int64)
@@ -1974,14 +2012,14 @@ ops:
       outputs:
         y: {dtype: "int64"}
       params:
-        dim: {type: int, default: -1}
+        dim: {type: "int | None", default: null}
         keepdim: {type: bool, default: false}
-      static_dims:
-        N: "x.shape[dim]"
       shape_rules:
-        - "-x.ndim <= dim < x.ndim"
-        - "y.ndim == x.ndim if keepdim else x.ndim - 1"
-        - "y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i]"
+        - "dim is None or -x.ndim <= dim < x.ndim"
+        - "y.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
+        - "dim is not None or not keepdim or all(y.shape[i] == 1 for i in range(x.ndim))"
+        - "dim is None or not keepdim or all(y.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
+        - "dim is None or keepdim or all(y.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(y.ndim))"
 
     workloads:
       # LM head argmin
@@ -1991,8 +2029,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-        N: "x.shape[dim % x.ndim]"
+        M: "1 if dim is None else product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "product(x.shape) if dim is None else x.shape[dim % x.ndim]"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (8 bytes for int64)
@@ -2021,13 +2059,17 @@ ops:
       outputs:
         y: {dtype: "bool"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
+      # PyTorch: torch.all(x, dim=()) / dim=[] is a no-op (returns x.shape),
+      # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
+      # list/tuple yields an empty reduction set.
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Mask validation (batch, seq_len)
@@ -2036,8 +2078,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
       # N-1 logical AND per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (1 byte for bool)
@@ -2063,13 +2105,17 @@ ops:
       outputs:
         y: {dtype: "bool"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
+      # PyTorch: torch.any(x, dim=()) / dim=[] is a no-op (returns x.shape),
+      # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
+      # list/tuple yields an empty reduction set.
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Mask validation (batch, seq_len)
@@ -2078,8 +2124,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
       # N-1 logical OR per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (1 byte for bool)
@@ -2105,7 +2151,7 @@ ops:
       outputs:
         y: {dtype: "int64"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
         - "y.ndim == x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
@@ -2151,13 +2197,20 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (equivalent to
+        # x.to(dtype) before reduction; returns the requested dtype). The
+        # current manifest dtype DSL cannot express that conditional, so dtype
+        # is omitted here; tracked as BLOCKED on missing-manifest-capability.
+        ord: {type: "int | float", default: 1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
       shape_rules:
+        - "ord == 1"
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state L1 norm (Llama-3.1-8B)
@@ -2194,13 +2247,20 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (equivalent to
+        # x.to(dtype) before reduction; returns the requested dtype). The
+        # current manifest dtype DSL cannot express that conditional, so dtype
+        # is omitted here; tracked as BLOCKED on missing-manifest-capability.
+        ord: {type: "int | float", default: 2}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
       shape_rules:
+        - "ord == 2"
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state L2 norm (Llama-3.1-8B)
@@ -2237,13 +2297,20 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (equivalent to
+        # x.to(dtype) before reduction; returns the requested dtype). The
+        # current manifest dtype DSL cannot express that conditional, so dtype
+        # is omitted here; tracked as BLOCKED on missing-manifest-capability.
+        ord: {type: "int | float", default: .inf}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
       shape_rules:
+        - "ord == float('inf')"
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state inf norm (Llama-3.1-8B)
