@@ -1428,7 +1428,7 @@ ops:
   SoftmaxFwdOp:
     ref_api: "torch.nn.functional.softmax"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -1476,7 +1476,7 @@ ops:
   LogSoftmaxFwdOp:
     ref_api: "torch.nn.functional.log_softmax"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -1961,7 +1961,7 @@ ops:
   ArgmaxFwdOp:
     ref_api: "torch.argmax"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -2004,7 +2004,7 @@ ops:
   ArgminFwdOp:
     ref_api: "torch.argmin"
     family: reduction
-    status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+    status: implemented
 
     signature:
       inputs:
@@ -2189,7 +2189,7 @@ ops:
   L1NormFwdOp:
     ref_api: "torch.linalg.vector_norm"
     family: reduction
-    status: spec-only  # dim=None not yet implemented; update when impl lands
+    status: implemented
 
     signature:
       inputs:
@@ -2239,7 +2239,7 @@ ops:
   L2NormFwdOp:
     ref_api: "torch.linalg.vector_norm"
     family: reduction
-    status: spec-only  # dim=None not yet implemented; update when impl lands
+    status: implemented
 
     signature:
       inputs:
@@ -2289,7 +2289,7 @@ ops:
   InfNormFwdOp:
     ref_api: "torch.linalg.vector_norm"
     family: reduction
-    status: spec-only  # dim=None not yet implemented; update when impl lands
+    status: implemented
 
     signature:
       inputs:

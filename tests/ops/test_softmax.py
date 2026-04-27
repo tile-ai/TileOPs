@@ -8,8 +8,8 @@ Smoke tests (1 per function, first param) use small data for quick CI.
 Full tests use small data for config breadth + large data for stress.
 
 All operators use the spec-conformant interface:
-  SoftmaxFwdOp(dtype=dtype, dim=dim)
-  LogSoftmaxFwdOp(dtype=dtype, dim=dim)
+  SoftmaxFwdOp(N=N, dtype=dtype, dim=dim)
+  LogSoftmaxFwdOp(N=N, dtype=dtype, dim=dim)
   LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
 """
 
@@ -105,7 +105,7 @@ class SoftmaxTest(_SoftmaxTestWorkload, TestBase):
 @SoftmaxFixture
 def test_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = SoftmaxTest(shape, dtype, dim=dim)
-    op = SoftmaxFwdOp(dtype=dtype, dim=dim, tune=tune)
+    op = SoftmaxFwdOp(N=shape[dim], dtype=dtype, dim=dim, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -138,7 +138,7 @@ def test_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]  # non-contiguous slice
 
-    op = SoftmaxFwdOp(dtype=dtype, dim=-1)
+    op = SoftmaxFwdOp(N=n, dtype=dtype, dim=-1)
 
     y_ref = F.softmax(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
@@ -173,7 +173,7 @@ class Softmax1DFixture(FixtureBase):
 def test_softmax_1d(n: int, dtype: torch.dtype) -> None:
     """Test softmax with 1D input (single row)."""
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = SoftmaxFwdOp(dtype=dtype, dim=-1)
+    op = SoftmaxFwdOp(N=n, dtype=dtype, dim=-1)
 
     y_ref = F.softmax(x.float(), dim=-1).to(dtype)
     y = op(x)
@@ -249,7 +249,7 @@ class LogSoftmaxTest(_LogSoftmaxTestWorkload, TestBase):
 @LogSoftmaxFixture
 def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSoftmaxTest(shape, dtype, dim=dim)
-    op = LogSoftmaxFwdOp(dtype=dtype, dim=dim, tune=tune)
+    op = LogSoftmaxFwdOp(N=shape[dim], dtype=dtype, dim=dim, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -392,7 +392,7 @@ def test_log_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
 
-    op = LogSoftmaxFwdOp(dtype=dtype, dim=-1)
+    op = LogSoftmaxFwdOp(N=n, dtype=dtype, dim=-1)
 
     y_ref = F.log_softmax(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
@@ -460,7 +460,7 @@ class LogSoftmax1DFixture(FixtureBase):
 def test_log_softmax_1d(n: int, dtype: torch.dtype) -> None:
     """Test log_softmax with 1D input."""
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = LogSoftmaxFwdOp(dtype=dtype, dim=-1)
+    op = LogSoftmaxFwdOp(N=n, dtype=dtype, dim=-1)
 
     y_ref = F.log_softmax(x.float(), dim=-1).to(dtype)
     y = op(x)
@@ -511,7 +511,7 @@ def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
 def test_softmax_rejects_multidim_before_kernel() -> None:
     """SoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
     x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
-    op = SoftmaxFwdOp(dtype=torch.float32, dim=[-1, 0])
+    op = SoftmaxFwdOp(N=8, dtype=torch.float32, dim=[-1, 0])
     with pytest.raises(ValueError, match="does not support multi-dim"):
         op(x)
     # Verify no kernel was built (cache must remain empty).
@@ -522,7 +522,7 @@ def test_softmax_rejects_multidim_before_kernel() -> None:
 def test_log_softmax_rejects_multidim_before_kernel() -> None:
     """LogSoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
     x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
-    op = LogSoftmaxFwdOp(dtype=torch.float32, dim=[-1, 0])
+    op = LogSoftmaxFwdOp(N=8, dtype=torch.float32, dim=[-1, 0])
     with pytest.raises(ValueError, match="does not support multi-dim"):
         op(x)
     assert len(op._kernel_cache) == 0
