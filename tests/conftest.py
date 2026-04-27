@@ -35,7 +35,6 @@ TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = (
     "tests/ops/test_moe_permute_align.py",
     "tests/ops/test_topk_selector.py",
     "tests/ops/attention/test_deepseek_nsa.py",
-    "tests/ops/attention/test_gqa.py",
     "tests/ops/attention/test_gqa_decode.py",
     "tests/ops/attention/test_gqa_decode_paged.py",
     "tests/ops/attention/test_gqa_sliding_window.py",

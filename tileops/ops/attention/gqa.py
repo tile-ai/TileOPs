@@ -1,4 +1,5 @@
-from typing import Dict, Optional
+import math
+from typing import Dict, Optional, Type
 
 import torch
 import torch.nn.functional as F
@@ -12,13 +13,15 @@ from tileops.kernels.attention import (
     GQADecodePagedKernel,
     GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
+    GQAFwdWsPersistentCausalKernel,
+    GQAFwdWsPersistentKernel,
     GQASlidingWindowFwdKernel,
     GQASlidingWindowFwdWgmmaPipelinedKernel,
     GQASlidingWindowVarlenFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import is_hopper
+from tileops.utils import is_h200, is_hopper
 
 from ..op_base import Op
 
@@ -30,6 +33,83 @@ __all__ = [
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
 ]
+
+_WS_BLOCK_M = 128
+_H200_SMS = 132
+
+
+def _gqa_ws_noncausal_total_work_items(batch: int, heads: int, heads_kv: int, seq_len: int) -> int:
+    groups = heads // heads_kv
+    m_blocks = math.ceil(seq_len / _WS_BLOCK_M)
+    return batch * heads_kv * m_blocks * groups
+
+
+def _gqa_ws_causal_total_work_items(batch: int, heads: int, heads_kv: int, seq_len: int) -> int:
+    groups = heads // heads_kv
+    m_blocks = math.ceil(seq_len / _WS_BLOCK_M)
+    return batch * heads_kv * (m_blocks // 2) * groups
+
+
+def _supports_gqa_ws_noncausal(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len: int,
+    dim: int,
+    dtype: torch.dtype,
+    *,
+    h200: bool,
+    num_sms: int = _H200_SMS,
+) -> bool:
+    if not h200 or dtype != torch.float16 or dim != 128:
+        return False
+    if heads % heads_kv != 0 or seq_len % _WS_BLOCK_M != 0:
+        return False
+    return _gqa_ws_noncausal_total_work_items(batch, heads, heads_kv, seq_len) >= num_sms
+
+
+def _supports_gqa_ws_causal(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len: int,
+    dim: int,
+    dtype: torch.dtype,
+    *,
+    h200: bool,
+    num_sms: int = _H200_SMS,
+) -> bool:
+    if not h200 or dtype != torch.float16 or dim != 128:
+        return False
+    if heads % heads_kv != 0 or seq_len % _WS_BLOCK_M != 0:
+        return False
+    m_blocks = math.ceil(seq_len / _WS_BLOCK_M)
+    if m_blocks % 2 != 0:
+        return False
+    return _gqa_ws_causal_total_work_items(batch, heads, heads_kv, seq_len) >= num_sms
+
+
+def _select_gqa_fwd_kernel_cls(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len: int,
+    dim: int,
+    is_causal: bool,
+    dtype: torch.dtype,
+    *,
+    hopper: bool,
+    h200: bool,
+) -> Type[Kernel]:
+    if not hopper:
+        return GQAFwdKernel
+    if is_causal:
+        if _supports_gqa_ws_causal(batch, heads, heads_kv, seq_len, dim, dtype, h200=h200):
+            return GQAFwdWsPersistentCausalKernel
+        return GQAFwdWgmmaPipelinedKernel
+    if _supports_gqa_ws_noncausal(batch, heads, heads_kv, seq_len, dim, dtype, h200=h200):
+        return GQAFwdWsPersistentKernel
+    return GQAFwdWgmmaPipelinedKernel
 
 
 class GroupedQueryAttentionFwdOp(Op):
@@ -60,7 +140,18 @@ class GroupedQueryAttentionFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_fwd_kernel": GQAFwdWgmmaPipelinedKernel if is_hopper() else GQAFwdKernel}
+        kernel_cls = _select_gqa_fwd_kernel_cls(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.seq_len,
+            self.dim,
+            self.is_causal,
+            self.dtype,
+            hopper=is_hopper(),
+            h200=is_h200(),
+        )
+        return {"gqa_fwd_kernel": kernel_cls}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return self.kernel(q, k, v)
