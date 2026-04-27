@@ -2054,12 +2054,15 @@ ops:
       params:
         dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
+      # PyTorch: torch.all(x, dim=()) / dim=[] is a no-op (returns x.shape),
+      # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
+      # list/tuple yields an empty reduction set.
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Mask validation (batch, seq_len)
@@ -2068,8 +2071,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
       # N-1 logical AND per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (1 byte for bool)
@@ -2097,12 +2100,15 @@ ops:
       params:
         dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
+      # PyTorch: torch.any(x, dim=()) / dim=[] is a no-op (returns x.shape),
+      # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
+      # list/tuple yields an empty reduction set.
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
         - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(y.ndim))"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+        - "not keepdim or all(y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(y.ndim))"
 
     workloads:
       # Mask validation (batch, seq_len)
@@ -2111,8 +2117,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
       # N-1 logical OR per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (1 byte for bool)
