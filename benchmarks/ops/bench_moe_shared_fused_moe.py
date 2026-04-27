@@ -188,7 +188,7 @@ def test_shared_fused_moe_bench(
     bm = SharedFusedMoEBenchmark(test)
     hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down = test.gen_inputs()
 
-    # ── TileOPs ───────────────────────────────────────────────────────────────
+    # ── TileOPs (stateless: full weights, op slices internally) ──────────────
     op = SharedFusedMoE(
         num_tokens=num_tokens,
         num_experts=num_experts,
@@ -217,6 +217,52 @@ def test_shared_fused_moe_bench(
         shared_w_gate_up, shared_w_down,
     )
     BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    # ── TileOPs pre_sharded (tp_size=2, rank=0, weights pre-sliced by caller) ──
+    # Simulates the TP use-case: caller pre-slices weights at model-load time so
+    # forward() skips the internal cat/narrow/contiguous on every call.
+    # This is the path the optimization is designed to accelerate.
+    _tp_size = 2
+    _tp_rank = 0
+    _shard = shared_ffn_size // _tp_size
+    # Pre-slice: gate[r*s:(r+1)*s] + up[r*s:(r+1)*s] → [2*s, H], down → [H, s]
+    _gate_up_local = torch.cat([
+        shared_w_gate_up[_tp_rank * _shard : (_tp_rank + 1) * _shard],
+        shared_w_gate_up[shared_ffn_size + _tp_rank * _shard : shared_ffn_size + (_tp_rank + 1) * _shard],
+    ], dim=0).contiguous()
+    _down_local = shared_w_down[:, _tp_rank * _shard : (_tp_rank + 1) * _shard].contiguous()
+
+    op_pre = SharedFusedMoE(
+        num_tokens=num_tokens,
+        num_experts=num_experts,
+        top_k=top_k,
+        hidden_size=hidden_size,
+        ffn_size=ffn_size,
+        scoring_func=scoring_func,
+        renormalize=renormalize,
+        with_correction_bias=with_correction_bias,
+        routed_scaling_factor=routed_scaling_factor,
+        layout="nopad",
+        dtype=dtype,
+        shared_ffn_size=shared_ffn_size,
+        tp_size=_tp_size,
+        tp_rank=_tp_rank,
+        pre_sharded=True,
+    )
+    op_pre(hidden, gating, w_gate_up, w_down, correction_bias,
+           shared_w_gate_up=_gate_up_local, shared_w_down=_down_local)  # warmup
+    torch.cuda.synchronize()
+
+    def _tileops_pre_fn(hidden, gating, w_gate_up, w_down, correction_bias,
+                        gate_up_local, down_local):
+        return op_pre(hidden, gating, w_gate_up, w_down, correction_bias,
+                      shared_w_gate_up=gate_up_local, shared_w_down=down_local)
+
+    result_pre = bm.profile(
+        _tileops_pre_fn, hidden, gating, w_gate_up, w_down, correction_bias,
+        _gate_up_local, _down_local,
+    )
+    BenchmarkReport.record(op_pre, locals(), result_pre, tag="tileops-pre-sharded")
 
     # ── vLLM baseline (optional) ──────────────────────────────────────────────
     if _VLLM_AVAILABLE:

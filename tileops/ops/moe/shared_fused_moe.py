@@ -30,6 +30,24 @@ Usage (TP, tp_size>1):
     )
     # dist.all_reduce(shared_out_partial, group=tp_group)  ← caller's responsibility
     # Must use the TP process group, not the default group (important in EP/DP setups).
+
+Usage (TP, pre_sharded=True — weights already sliced at model-load time):
+    shard_size = F_s // tp_size
+    gate_up_local = torch.cat([
+        shared_w_gate_up[tp_rank*shard_size : (tp_rank+1)*shard_size],
+        shared_w_gate_up[F_s + tp_rank*shard_size : F_s + (tp_rank+1)*shard_size],
+    ], dim=0).contiguous()  # [2*shard_size, H]
+    down_local = shared_w_down[:, tp_rank*shard_size : (tp_rank+1)*shard_size].contiguous()
+
+    op = SharedFusedMoE(
+        ..., tp_size=tp_size, tp_rank=tp_rank, pre_sharded=True,
+    )
+    shared_out_partial, routed_out = op(
+        hidden, gating, w_gate_up, w_down,
+        shared_w_gate_up=gate_up_local,   # [2*shard_size, H]
+        shared_w_down=down_local,          # [H, shard_size]
+    )
+    # dist.all_reduce(shared_out_partial, group=tp_group)  ← caller's responsibility
 """
 
 from typing import Dict, Optional
@@ -61,6 +79,10 @@ class SharedFusedMoE(FusedMoe):
             before TP sharding). If None, no shared expert is computed.
         tp_size: Tensor parallel world size. Default 1 (no TP).
         tp_rank: This rank's index in the TP group. Default 0.
+        pre_sharded: If True, caller must pass TP-local weight shards directly
+            to forward() instead of full weights. The op will skip internal
+            slicing entirely. Only has effect when tp_size > 1 (tp_size=1 never
+            slices regardless). Default False.
         Other args: same as FusedMoe.
 
     Returns:
@@ -86,6 +108,7 @@ class SharedFusedMoE(FusedMoe):
         shared_ffn_size: Optional[int] = None,
         tp_size: int = 1,
         tp_rank: int = 0,
+        pre_sharded: bool = False,
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -116,6 +139,7 @@ class SharedFusedMoE(FusedMoe):
         self.shared_ffn_size = shared_ffn_size
         self.tp_size = tp_size
         self.tp_rank = tp_rank
+        self.pre_sharded = pre_sharded
 
         # Kernel operates on the local shard size
         self._shared_mlp_kernel = (
@@ -151,12 +175,14 @@ class SharedFusedMoE(FusedMoe):
             w_gate_up: [E, 2F, H] routed expert gate+up weights.
             w_down: [E, H, F] routed expert down weights.
             correction_bias: Optional [E] bias for Kimi-style routing.
-            shared_w_gate_up: [2*F_s, H] shared expert gate+up weights (full).
+            shared_w_gate_up: Shared expert gate+up weights.
+                When pre_sharded=False (default): full weights [2*F_s, H].
+                When pre_sharded=True: TP-local shard [2*(F_s//tp_size), H].
                 Required when shared_ffn_size is not None.
-                When tp_size > 1, sharded along dim=0 internally.
-            shared_w_down: [H, F_s] shared expert down weight (full).
+            shared_w_down: Shared expert down weight.
+                When pre_sharded=False (default): full weights [H, F_s].
+                When pre_sharded=True: TP-local shard [H, F_s//tp_size].
                 Required when shared_ffn_size is not None.
-                When tp_size > 1, sharded along dim=1 internally.
 
         Returns:
             (shared_output, routed_output): tuple of [T, H] tensors.
@@ -172,24 +198,40 @@ class SharedFusedMoE(FusedMoe):
                 )
             F_s = self.shared_ffn_size
             H = shared_w_gate_up.shape[1]
-            # Validate that caller passes full weights, not TP-local shards.
-            # In TP mode the op shards internally; passing pre-sharded weights
-            # would produce silently wrong results.
-            if shared_w_gate_up.shape != (2 * F_s, H):
-                raise ValueError(
-                    f"shared_w_gate_up must be full weights with shape ({2 * F_s}, {H}), "
-                    f"got {tuple(shared_w_gate_up.shape)}. "
-                    "Pass complete weights; the op shards them internally per tp_rank."
-                )
-            if shared_w_down.shape != (H, F_s):
-                raise ValueError(
-                    f"shared_w_down must be full weights with shape ({H}, {F_s}), "
-                    f"got {tuple(shared_w_down.shape)}. "
-                    "Pass complete weights; the op shards them internally per tp_rank."
-                )
+            # Validate shape — behaviour depends on pre_sharded flag.
+            if self.pre_sharded and self.tp_size > 1:
+                # Caller passes TP-local shards; validate shard shapes.
+                shard_size = self.shared_ffn_size // self.tp_size
+                if shared_w_gate_up.shape != (2 * shard_size, H):
+                    raise ValueError(
+                        f"pre_sharded=True: shared_w_gate_up must be TP-local shard "
+                        f"with shape ({2 * shard_size}, {H}), "
+                        f"got {tuple(shared_w_gate_up.shape)}."
+                    )
+                if shared_w_down.shape != (H, shard_size):
+                    raise ValueError(
+                        f"pre_sharded=True: shared_w_down must be TP-local shard "
+                        f"with shape ({H}, {shard_size}), "
+                        f"got {tuple(shared_w_down.shape)}."
+                    )
+            else:
+                # Stateless path (pre_sharded=False, or tp_size=1 where shard == full):
+                # Always validate full-weight shapes.
+                if shared_w_gate_up.shape != (2 * F_s, H):
+                    raise ValueError(
+                        f"shared_w_gate_up must be full weights with shape ({2 * F_s}, {H}), "
+                        f"got {tuple(shared_w_gate_up.shape)}. "
+                        "Pass complete weights; the op shards them internally per tp_rank."
+                    )
+                if shared_w_down.shape != (H, F_s):
+                    raise ValueError(
+                        f"shared_w_down must be full weights with shape ({H}, {F_s}), "
+                        f"got {tuple(shared_w_down.shape)}. "
+                        "Pass complete weights; the op shards them internally per tp_rank."
+                    )
             # TP sharding: ColumnParallel on gate_up (dim=0), RowParallel on down (dim=1)
-            if self.tp_size > 1:
-                F_s = self.shared_ffn_size
+            if self.tp_size > 1 and not self.pre_sharded:
+                # Stateless path: slice full weights internally each forward() call.
                 shard_size = F_s // self.tp_size
                 r, s = self.tp_rank, shard_size
                 # shared_w_gate_up is [2*F_s, H]: first F_s rows = gate, last F_s rows = up.
@@ -197,11 +239,13 @@ class SharedFusedMoE(FusedMoe):
                 # gate[r*s:(r+1)*s] and up[r*s:(r+1)*s] concatenated into [2*s, H].
                 gate_shard = shared_w_gate_up[r * s : (r + 1) * s]          # [s, H]
                 up_shard   = shared_w_gate_up[F_s + r * s : F_s + (r + 1) * s]  # [s, H]
-                gate_up_shard = torch.cat([gate_shard, up_shard], dim=0).contiguous()  # [2*s, H]
+                gate_up_shard = torch.cat([gate_shard, up_shard], dim=0)  # [2*s, H], cat is contiguous
                 down_shard = shared_w_down.narrow(1, r * s, s).contiguous()
             else:
-                gate_up_shard = shared_w_gate_up
-                down_shard = shared_w_down
+                # Weights already sliced (pre_sharded=True) or no slicing needed (tp_size=1).
+                # Normalize contiguity: caller may pass non-contiguous views (e.g. slices).
+                gate_up_shard = shared_w_gate_up.contiguous()
+                down_shard = shared_w_down.contiguous()
 
             shared_out = self._shared_mlp_kernel(hidden_states, gate_up_shard, down_shard)
         else:
