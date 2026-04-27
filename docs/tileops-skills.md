@@ -16,16 +16,17 @@ Orchestrators are the day-to-day entry points. Atomics are their sub-skills — 
 
 ## What do I want to do?
 
-| Intent                                                            | Run                                        |
-| ----------------------------------------------------------------- | ------------------------------------------ |
-| Align / add a single op to its manifest entry (the common case)   | `/align-op <op_name>`                      |
-| Find out which case an op is in, without touching anything        | `/align-op <op_name> --classify-only`      |
-| Migrate every spec-only op in a whole family (historical backlog) | `/align-family <family>`                   |
-| Read-only audit of a family's spec gaps                           | `/audit-family <family>`                   |
-| Add a new manifest entry from a PyTorch docs URL                  | `/add-manifest <op_path> <torch_api>`      |
-| Patch a single missing field in an existing manifest entry        | `/fix-manifest <op_name>`                  |
-| Scaffold a fresh op file, bypassing the orchestrator              | `/scaffold-op <op_name>`                   |
-| Debug one atomic phase by hand                                    | `/test-op` · `/implement-op` · `/bench-op` |
+| Intent                                                                               | Run                                                         |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| Align / add a single op to its manifest entry (the common case)                      | `/align-op <op_name>`                                       |
+| Find out which case an op is in, without touching anything                           | `/align-op <op_name> --classify-only`                       |
+| Migrate every spec-only op in a whole family (historical backlog)                    | `/align-family <family>`                                    |
+| Read-only audit of a family's spec gaps                                              | `/audit-family <family>`                                    |
+| Add a new manifest entry from a PyTorch docs URL                                     | `/add-manifest <op_path> <torch_api>`                       |
+| Re-align an existing entry's spec to PyTorch (workloads / source / status preserved) | `/add-manifest <op_path> <torch_api> --regenerate-existing` |
+| Patch a single missing field in an existing manifest entry                           | `/fix-manifest <op_name>`                                   |
+| Scaffold a fresh op file, bypassing the orchestrator                                 | `/scaffold-op <op_name>`                                    |
+| Debug one atomic phase by hand                                                       | `/test-op` · `/implement-op` · `/bench-op`                  |
 
 ## Skills in detail
 
@@ -88,10 +89,16 @@ Compares each op's code signature against its manifest spec, classifies gaps (`r
 
 ### `add-manifest` · manifest atomic
 
-Generates a fresh `ops_manifest.yaml` entry for a legacy op from its PyTorch reference. Reads the PyTorch docs URL as the sole source of truth, drafts `signature` / `shape_rules` / `roofline`, validates, and opens a draft PR with a follow-up issue capturing semantic-gap analysis.
+Reads the PyTorch docs URL as the sole source of truth and writes the auto-derivable fields (`signature.{inputs,outputs,params,shape_rules,dtype_combos}`, `roofline` for well-known ops). Two modes:
 
-- **Use when.** A code-side op exists but has no manifest entry yet. Greenfield path.
-- **Don't use when.** The entry already exists — use `fix-manifest` for surgical patches, or open a manifest-review issue if the change touches `signature`.
+- **Greenfield**: creates a new entry. `workloads = []`; `status = spec-only`; `source.kernel_map` left empty for `fix-manifest` to fill.
+
+- **`--regenerate-existing`**: rewrites the auto-derivable fields on an existing entry. **Preserves verbatim**: `workloads`, `parity_opt_out`, `source.{kernel, op, test, bench, kernel_map, bench_manifest_driven}`, `status`, `family`. Use this when the manifest entry has drifted from PyTorch and needs re-alignment without losing human-curated decisions.
+
+- **Use when.** Adding a new op (greenfield), or re-aligning a stale entry to PyTorch (`--regenerate-existing`).
+
+- **Don't use when.** The gap is a single missing structural field (use `fix-manifest`).
+
 - **Contract:** [SKILL.md](../.claude/skills/add-manifest/SKILL.md)
 
 ### `fix-manifest` · manifest atomic
@@ -134,13 +141,13 @@ align-op <op_name>                       ← per-op orchestrator
 
 ## Trust model  ·  who may write what
 
-| Resource                          | Writer                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ops_manifest.yaml`               | Three writers, disjoint slices: `add-manifest` creates new entries; `fix-manifest` patches one structural field on an existing entry (allowed: `kernel_map`, `static_dims`, `shape_rules`, `roofline.vars`, `dtype_combos`; never `signature.{inputs,outputs,params}` or `status`); `align-op` at `FLIP_STATUS` writes only the `status` field. No other skill writes the manifest. |
-| `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                                                                                                                                                                                                                                        |
-| `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work.                                                                                                                                                                                                                  |
-| `tests/ops/**`                    | `test-op`.                                                                                                                                                                                                                                                                                                                                                                          |
-| `benchmarks/ops/**`               | `bench-op`.                                                                                                                                                                                                                                                                                                                                                                         |
+| Resource                          | Writer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ops_manifest.yaml`               | Three writers, disjoint write-scopes: `add-manifest` creates new entries (greenfield) or rewrites an existing entry's auto-derivable fields under `--regenerate-existing` (`signature.*`, `shape_rules`, `roofline` for well-known ops; preserves `workloads`, `source.*`, `status`, `parity_opt_out`); `fix-manifest` patches one structural field on an existing entry (`kernel_map`, `static_dims`, `shape_rules`, `roofline.vars`, `dtype_combos`; never `signature.{inputs,outputs,params}` or `status`); `align-op` at `FLIP_STATUS` writes only the `status` field. No other skill writes the manifest. |
+| `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `tests/ops/**`                    | `test-op`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `benchmarks/ops/**`               | `bench-op`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ## Maintenance
 

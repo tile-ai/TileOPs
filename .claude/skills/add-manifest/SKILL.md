@@ -1,21 +1,47 @@
 ---
 name: add-manifest
-description: Generate a spec-only ops_manifest.yaml entry for a legacy op from its PyTorch docs URL. Validates, runs audit-family, opens a draft PR linked to a follow-up issue.
+description: Generate a spec-only ops_manifest.yaml entry from a PyTorch docs URL. Greenfield mode creates a new entry; --regenerate-existing rewrites the auto-derivable fields of an existing entry while preserving human-curated fields. Validates, runs audit-family, opens a draft PR.
 ---
 
 ## Arguments
 
-| Argument    | Required | Description                                                                                 |
-| ----------- | -------- | ------------------------------------------------------------------------------------------- |
-| `op_path`   | Yes      | Op file path relative to project root (e.g., `tileops/ops/conv1d.py`).                      |
-| `torch_api` | Yes      | PyTorch docs URL matching `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$`. |
+| Argument                | Required | Description                                                                                                                                                        |
+| ----------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `op_path`               | Yes      | Op file path relative to project root (e.g., `tileops/ops/conv1d.py`).                                                                                             |
+| `torch_api`             | Yes      | PyTorch docs URL matching `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$`.                                                                        |
+| `--regenerate-existing` | No       | Rewrite the auto-derivable fields of an existing entry instead of refusing. Without this flag, the skill refuses to overwrite an existing entry (greenfield-only). |
 
 ## Contract
 
-- **Output**: new entry in `ops_manifest.yaml` + follow-up issue + draft PR.
-- **MAY write**: `ops_manifest.yaml` (new entry only).
-- **MUST NOT write**: existing manifest entries; op / kernel / test / bench code.
-- **Termination**: draft PR created, or BLOCKED on input or inference failure.
+Two modes — greenfield (default) and regenerate (`--regenerate-existing`).
+
+### Field protection (both modes)
+
+| Field                                                                 | Greenfield  | Regenerate                                                        |
+| --------------------------------------------------------------------- | ----------- | ----------------------------------------------------------------- |
+| `signature.{inputs, outputs, params}`                                 | written     | **rewritten from PyTorch**                                        |
+| `signature.shape_rules`                                               | written     | **rewritten from PyTorch**                                        |
+| `signature.dtype_combos`                                              | written     | **rewritten from PyTorch**                                        |
+| `roofline.{flops, bytes, vars}` (well-known op)                       | written     | **rewritten**                                                     |
+| `family`                                                              | written     | preserved                                                         |
+| `ref_api`                                                             | written     | preserved (already aligns with `torch_api`; rewriting is no-op)   |
+| `workloads`                                                           | `[]`        | **preserved verbatim** (human decision)                           |
+| `parity_opt_out`                                                      | omitted     | **preserved verbatim** if present                                 |
+| `source.{kernel, op, test, bench, kernel_map, bench_manifest_driven}` | written     | **preserved verbatim**                                            |
+| `status`                                                              | `spec-only` | **preserved verbatim** (only `align-op@FLIP_STATUS` flips status) |
+| Adjacent comments                                                     | n/a         | preserved when feasible                                           |
+
+### Termination
+
+- **Success**: draft PR created.
+- **BLOCKED**: input invalid, inference impossible, or `--regenerate-existing` not passed when entry already exists.
+
+### Other constraints
+
+- **MUST NOT** edit op / kernel / test / bench code.
+- **MUST NOT** invent params outside PyTorch API.
+- **MUST NOT** flip `status` (only `align-op@FLIP_STATUS`).
+- Ambiguous PyTorch mapping → STOP, ask user.
 
 ## Workflow
 
@@ -23,7 +49,11 @@ description: Generate a spec-only ops_manifest.yaml entry for a legacy op from i
 stateDiagram-v2
     [*] --> VALIDATE_INPUT
     VALIDATE_INPUT --> [*]: URL malformed → abort
-    VALIDATE_INPUT --> RESOLVE_SOURCES
+    VALIDATE_INPUT --> CHECK_EXISTING
+    CHECK_EXISTING --> READ_EXISTING: entry exists & --regenerate-existing
+    CHECK_EXISTING --> [*]: entry exists & no flag → BLOCKED
+    CHECK_EXISTING --> RESOLVE_SOURCES: greenfield
+    READ_EXISTING --> RESOLVE_SOURCES: human-curated fields snapshot saved
     RESOLVE_SOURCES --> READ_PYTORCH
     READ_PYTORCH --> SPLIT_VARIANTS: Optional Tensor present
     READ_PYTORCH --> DRAFT_ENTRY
@@ -42,9 +72,30 @@ stateDiagram-v2
 
 `torch_api` must match `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$`. Else abort.
 
-### 2. RESOLVE_SOURCES
+### 2. CHECK_EXISTING
 
-Locate from `op_path`:
+Look up `<op_name>` in `tileops/ops_manifest.yaml` (op_name derived from `op_path` + variant suffix in Step 4):
+
+- Entry **does not exist** → greenfield mode. Proceed to RESOLVE_SOURCES.
+- Entry **exists** + `--regenerate-existing` flag passed → regenerate mode. Proceed to READ_EXISTING.
+- Entry **exists** + no flag → BLOCKED: `"<op_name> already in manifest; pass --regenerate-existing to rewrite auto-derivable fields, or fix-manifest for single-field patches"`.
+
+### 2b. READ_EXISTING (regenerate mode only)
+
+Snapshot the human-curated fields from the existing entry into memory:
+
+- `family`
+- `workloads` (verbatim, even if `[]`)
+- `parity_opt_out` (if present)
+- `source.{kernel, op, test, bench, kernel_map, bench_manifest_driven}` (each that is present)
+- `status`
+- Comments adjacent to the entry (best-effort)
+
+These will be merged back in DRAFT_ENTRY without modification.
+
+### 3. RESOLVE_SOURCES
+
+Greenfield only — locate from `op_path`:
 
 | Source | Path                                                  |
 | ------ | ----------------------------------------------------- |
@@ -55,17 +106,13 @@ Locate from `op_path`:
 
 Missing files: record absent, continue.
 
-**Set `family` by copying from the manifest, not by inferring from kernel paths.** The manifest uses a closed family vocabulary that does not match the kernel layout 1:1 (e.g., `tileops/kernels/convolution.py` → family `convolution`; `tileops/kernels/norm/` → family `normalization`). Procedure:
+**Set `family` by copying from a sibling manifest entry** (matching `source.kernel` path / parent dir / basename). Never invent a new `family` value.
 
-1. Find any existing entry in `tileops/ops_manifest.yaml` whose `source.kernel` matches (same path, parent dir, or basename).
-1. Copy that entry's `family` value verbatim.
-1. If nothing matches, scan all `family` values used in the manifest and pick the closest by domain. Still ambiguous → STOP, ask user.
+In regenerate mode this step is skipped — `family` and `source.*` come from READ_EXISTING.
 
-Never invent a new `family` value.
+### 4. READ_PYTORCH
 
-### 3. READ_PYTORCH
-
-`WebFetch` `torch_api`. The page is the **sole source of truth**. Extract:
+`WebFetch` `torch_api`. The page is the **sole source of truth**:
 
 | PyTorch param kind | Goes to                                     |
 | ------------------ | ------------------------------------------- |
@@ -74,9 +121,9 @@ Never invent a new `family` value.
 | non-Tensor         | `signature.params` (with `type`, `default`) |
 | return             | `signature.outputs`                         |
 
-Names must match PyTorch exactly. Include every PyTorch param even if the kernel ignores it. Exclude `float64` and complex types (`complex32/64/128`) from dtypes.
+Names match PyTorch exactly. Include every PyTorch param even if the kernel ignores it. Exclude `float64` and `complex32/64/128` from dtypes.
 
-### 4. SPLIT_VARIANTS
+### 5. SPLIT_VARIANTS
 
 Skip if no `Optional[Tensor]` input. Otherwise emit two entries (PascalCase per `docs/ops-design-reference.md`):
 
@@ -89,22 +136,28 @@ Skip if no `Optional[Tensor]` input. Otherwise emit two entries (PascalCase per 
 
 Multiple `Optional[Tensor]`: follow decision tree in `docs/manifest.md`.
 
-### 5. DRAFT_ENTRY
+### 6. DRAFT_ENTRY
 
-Per entry:
+Per entry, assemble fields from the protection table in the contract:
 
-- `family`: from RESOLVE_SOURCES.
-- `status`: always `spec-only`. **Never** set `implemented` (that is `align-op@FLIP_STATUS`).
+**Auto-derivable (always rewritten):**
+
 - `signature.inputs`: ordered dict, PyTorch positional order. Per input: `dtype` is the supported set (PyTorch dtypes minus `float64` and `complex32/64/128`) joined with `|`; `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
 - `signature.outputs`: same shape as inputs. Use `same_as(<ref>)` where applicable.
 - `signature.params`: ordered dict, each `{type, default}`.
 - `signature.shape_rules`: Python expressions for derived dims and inter-tensor constraints.
 - `signature.dtype_combos`: only if supported set ⊂ Cartesian product; else omit.
-- `workloads`: `[]` (schema requires a list; human fills shapes in a follow-up).
-- `roofline`: required by L0 (cannot be `null` or empty). For well-known ops (conv / pool / matmul / norm / reduction): emit standard formulas. Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: use `vars` mapping. If the formula is not derivable from PyTorch docs alone → BLOCKED `evidence_needed: roofline.flops|bytes for <op>`. **Never guess.**
-- `source`: paths from RESOLVE_SOURCES; `bench_manifest_driven: false`.
+- `roofline`: required by L0 (cannot be `null` or empty). Well-known ops (conv / pool / matmul / norm / reduction): emit standard formulas. Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: use `vars` mapping. If not derivable from PyTorch docs alone → BLOCKED `evidence_needed: roofline.flops|bytes for <op>`. **Never guess.**
 
-### 6. VALIDATE
+**Human-curated (greenfield default OR regenerate preserved):**
+
+- `family`: greenfield = from RESOLVE_SOURCES; regenerate = from READ_EXISTING.
+- `status`: greenfield = `spec-only`; regenerate = preserved from READ_EXISTING. **Never** set `implemented`.
+- `workloads`: greenfield = `[]`; regenerate = preserved from READ_EXISTING.
+- `parity_opt_out`: greenfield = omitted; regenerate = preserved if present.
+- `source`: greenfield = paths from RESOLVE_SOURCES + `bench_manifest_driven: false`; regenerate = preserved from READ_EXISTING (including `kernel_map`).
+
+### 7. VALIDATE
 
 ```bash
 python scripts/validate_manifest.py --check-op <op_name>
@@ -112,11 +165,11 @@ python scripts/validate_manifest.py --check-op <op_name>
 
 L0 must pass. On fail: edit entry, rerun. Higher-level (L1–L4) failures are surfaced as gap items in the follow-up issue, not blocking.
 
-### 7. RUN_AUDIT
+### 8. RUN_AUDIT
 
 Invoke `audit-family` for the op's family → writes `.foundry/migrations/<family>.json`.
 
-### 8. CREATE_ISSUE
+### 9. CREATE_ISSUE
 
 Invoke `foundry:creating-issue`. Issue body MUST contain, per `semantic_gap` op:
 
@@ -134,15 +187,16 @@ MUST NOT duplicate validator-reported facts (missing params, wrong names) — th
 
 Record the issue URL.
 
-### 9. CREATE_PR
+### 10. CREATE_PR
 
 Invoke `foundry:creating-pull-request` (draft):
 
-| Element | Value                                                                                             |
-| ------- | ------------------------------------------------------------------------------------------------- |
-| title   | `[Maintain][Manifest] Add <Op> manifest entries`                                                  |
-| branch  | `maintain/manifest/<op-slug>-entries` (slug: kebab-case of `<Op>`)                                |
-| body    | manifest entries added (name, family, status); validator results; `Related: #<issue from step 8>` |
+| Mode       | Title                                                          | Branch                                   |
+| ---------- | -------------------------------------------------------------- | ---------------------------------------- |
+| greenfield | `[Maintain][Manifest] Add <Op> manifest entries`               | `maintain/manifest/<op-slug>-entries`    |
+| regenerate | `[Refactor][Manifest] Re-align <Op> spec to PyTorch <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
+
+Body lists: entries written, fields rewritten vs. preserved (regenerate mode), validator results, `Related: #<issue from step 9>`.
 
 Title and branch must match `.claude/conventions/types.sh`.
 
@@ -151,6 +205,7 @@ Title and branch must match `.claude/conventions/types.sh`.
 - Non-URL `torch_api` → abort.
 - Never edit op / kernel / test / bench files.
 - Never invent params outside PyTorch API.
-- `status` is always `spec-only`. Never set `implemented`.
+- `status` is always preserved (regenerate) or `spec-only` (greenfield); never set `implemented`.
+- Regenerate mode preserves `workloads`, `source.*`, `parity_opt_out`, `family` verbatim.
 - Ambiguous PyTorch mapping → STOP, ask user.
 - Mapping clearly wrong → STOP, explain.
