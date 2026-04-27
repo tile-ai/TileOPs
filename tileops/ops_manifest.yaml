@@ -3038,7 +3038,8 @@ ops:
     roofline:
       vars:
         N_total: "product(x.shape)"
-      flops: "N_total"
+      # tanh(x) = 2 * sigmoid(2x) - 1: ~5 ops/elem (1 mul for 2x + 4 sigmoid ops)
+      flops: "5 * N_total"
       bytes: "2 * N_total * elem_bytes"
 
     source:
