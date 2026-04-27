@@ -1309,80 +1309,6 @@ ops:
       bench: benchmarks/ops/bench_moe_unpermute.py
       bench_manifest_driven: true
 
-  FusedMoeExpertsFwdOp:
-    ref_api: "none"
-    family: moe
-    status: spec-only
-
-    signature:
-      inputs:
-        hidden_states: {dtype: "float16 | bfloat16"}
-        w_gate_up: {dtype: "same_as(hidden_states)"}
-        w_down: {dtype: "same_as(hidden_states)"}
-        topk_weights: {dtype: "float32"}
-        topk_ids: {dtype: "int32"}
-      outputs:
-        output: {dtype: "same_as(hidden_states)"}
-      params:
-        num_tokens: {type: int}
-        num_experts: {type: int}
-        top_k: {type: int}
-        hidden_size: {type: int}
-        ffn_size: {type: int}
-        routed_scaling_factor: {type: float, default: 1.0}
-      shape_rules:
-        - "output.shape == hidden_states.shape"
-
-    workloads:
-      - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
-
-    roofline:
-      flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
-      bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
-
-    source:
-      kernel: tileops/ops/moe/fused_moe_experts.py
-      op: tileops/ops/moe/fused_moe_experts.py
-      test: tests/ops/test_moe_fused_moe.py
-      bench: benchmarks/ops/bench_moe_fused_moe.py
-
-  FusedMoeExpertsPaddedFwdOp:
-    ref_api: "none"
-    family: moe
-    status: spec-only
-
-    signature:
-      inputs:
-        hidden_states: {dtype: "float16 | bfloat16"}
-        w_gate_up: {dtype: "same_as(hidden_states)"}
-        w_down: {dtype: "same_as(hidden_states)"}
-        topk_weights: {dtype: "float32"}
-        topk_ids: {dtype: "int32"}
-      outputs:
-        output: {dtype: "same_as(hidden_states)"}
-      params:
-        num_tokens: {type: int}
-        num_experts: {type: int}
-        top_k: {type: int}
-        hidden_size: {type: int}
-        ffn_size: {type: int}
-        routed_scaling_factor: {type: float, default: 1.0}
-      shape_rules:
-        - "output.shape == hidden_states.shape"
-
-    workloads:
-      - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
-
-    roofline:
-      flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
-      bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
-
-    source:
-      kernel: tileops/ops/moe/fused_moe_experts.py
-      op: tileops/ops/moe/fused_moe_experts.py
-      test: tests/ops/test_moe_fused_moe.py
-      bench: benchmarks/ops/bench_moe_fused_moe.py
-
   MoeGroupedGemmNopadFwdOp:
     ref_api: "none"
     family: moe
@@ -1416,6 +1342,169 @@ ops:
       op: tileops/ops/moe/moe_grouped_gemm_nopad.py
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
+
+  MoEExpertsNopadFwdOp:
+    ref_api: "none"
+    family: moe
+    status: spec-only
+    signature:
+      inputs:
+        hidden_states:  {dtype: "float16 | bfloat16"}
+        w_gate_up:      {dtype: "same_as(hidden_states)"}
+        w_down:         {dtype: "same_as(hidden_states)"}
+        topk_weights:   {dtype: "float32"}
+        topk_ids:       {dtype: "int32"}
+      outputs:
+        output: {dtype: "same_as(hidden_states)"}
+      params:
+        num_tokens:            {type: int}
+        num_experts:           {type: int}
+        top_k:                 {type: int}
+        hidden_size:           {type: int}
+        ffn_size:              {type: int}
+        routed_scaling_factor: {type: float, default: 1.0}
+      shape_rules:
+        - "hidden_states.shape == (num_tokens, hidden_size)"
+        - "w_gate_up.shape     == (num_experts, 2 * ffn_size, hidden_size)"
+        - "w_down.shape        == (num_experts, hidden_size, ffn_size)"
+        - "topk_weights.shape  == (num_tokens, top_k)"
+        - "topk_ids.shape      == (num_tokens, top_k)"
+        - "output.shape        == (num_tokens, hidden_size)"
+    roofline:
+      flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
+      bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
+    workloads:
+      - {num_tokens: 512,  num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "qwen3-235b-decode"}
+      - {num_tokens: 4096, num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
+      - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode"}
+      - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+    source:
+      kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
+      op:     tileops/ops/moe/experts/nopad.py
+      test:   tests/ops/test_moe_experts_nopad.py
+      bench:  benchmarks/ops/bench_moe_experts_nopad.py
+      bench_manifest_driven: true
+
+  MoEExpertsPaddedFwdOp:
+    ref_api: "none"
+    family: moe
+    status: spec-only
+    signature:
+      inputs:
+        hidden_states:  {dtype: "float16 | bfloat16"}
+        w_gate_up:      {dtype: "same_as(hidden_states)"}
+        w_down:         {dtype: "same_as(hidden_states)"}
+        topk_weights:   {dtype: "float32"}
+        topk_ids:       {dtype: "int32"}
+      outputs:
+        output: {dtype: "same_as(hidden_states)"}
+      params:
+        num_tokens:            {type: int}
+        num_experts:           {type: int}
+        top_k:                 {type: int}
+        hidden_size:           {type: int}
+        ffn_size:              {type: int}
+        routed_scaling_factor: {type: float, default: 1.0}
+      shape_rules:
+        - "hidden_states.shape == (num_tokens, hidden_size)"
+        - "w_gate_up.shape     == (num_experts, 2 * ffn_size, hidden_size)"
+        - "w_down.shape        == (num_experts, hidden_size, ffn_size)"
+        - "topk_weights.shape  == (num_tokens, top_k)"
+        - "topk_ids.shape      == (num_tokens, top_k)"
+        - "output.shape        == (num_tokens, hidden_size)"
+    roofline:
+      flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
+      bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
+    workloads:
+      - {num_tokens: 512,  num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "qwen3-235b-decode"}
+      - {num_tokens: 4096, num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
+      - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode"}
+      - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+    source:
+      kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py  # padded 复用同一底层 GEMM kernel
+      op:     tileops/ops/moe/experts/padded.py
+      test:   tests/ops/test_moe_experts_nopad.py            # 共用测试文件，参数区分 layout
+      bench:  benchmarks/ops/bench_moe_experts_nopad.py
+      bench_manifest_driven: true
+
+  FusedMoeFwdOp:
+    ref_api: "none"
+    family: moe
+    status: spec-only
+    signature:
+      inputs:
+        hidden_states:  {dtype: "float16 | bfloat16"}
+        gating_output:  {dtype: "float32"}
+        w_gate_up:      {dtype: "same_as(hidden_states)"}
+        w_down:         {dtype: "same_as(hidden_states)"}
+      outputs:
+        output: {dtype: "same_as(hidden_states)"}
+      params:
+        num_tokens:            {type: int}
+        num_experts:           {type: int}
+        top_k:                 {type: int}
+        hidden_size:           {type: int}
+        ffn_size:              {type: int}
+        scoring_func:          {type: str,   default: "softmax"}
+        renormalize:           {type: bool,  default: false}
+        routed_scaling_factor: {type: float, default: 1.0}
+      shape_rules:
+        - "hidden_states.shape == (num_tokens, hidden_size)"
+        - "gating_output.shape == (num_tokens, num_experts)"
+        - "output.shape        == (num_tokens, hidden_size)"
+    roofline:
+      func: "tileops.perf.formulas.fused_moe_fwd_bytes"
+    workloads:
+      - {num_tokens: 512,  num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: softmax,  renormalize: false, dtypes: [bfloat16], label: "qwen3-235b-decode"}
+      - {num_tokens: 4096, num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: softmax,  renormalize: false, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
+      - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid,  renormalize: false, dtypes: [bfloat16], label: "deepseek-v3-decode"}
+      - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid,  renormalize: false, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+    source:
+      kernel: tileops/ops/moe/fused_moe.py
+      op:   tileops/ops/moe/fused_moe.py
+      test: tests/ops/test_moe_fused_moe.py
+      bench: benchmarks/ops/bench_moe_fused_moe.py
+      bench_manifest_driven: true
+
+  FusedMoeFwdCbFwdOp:
+    variant_of: FusedMoeFwdOp
+    ref_api: "none"
+    family: moe
+    status: spec-only
+    signature:
+      inputs:
+        hidden_states:   {dtype: "float16 | bfloat16"}
+        gating_output:   {dtype: "float32"}
+        w_gate_up:       {dtype: "same_as(hidden_states)"}
+        w_down:          {dtype: "same_as(hidden_states)"}
+        correction_bias: {dtype: "float32"}
+      outputs:
+        output: {dtype: "same_as(hidden_states)"}
+      params:
+        num_tokens:            {type: int}
+        num_experts:           {type: int}
+        top_k:                 {type: int}
+        hidden_size:           {type: int}
+        ffn_size:              {type: int}
+        scoring_func:          {type: str,   default: "sigmoid"}
+        renormalize:           {type: bool,  default: false}
+        routed_scaling_factor: {type: float, default: 1.0}
+      shape_rules:
+        - "hidden_states.shape   == (num_tokens, hidden_size)"
+        - "gating_output.shape   == (num_tokens, num_experts)"
+        - "correction_bias.shape == (num_experts,)"
+        - "output.shape          == (num_tokens, hidden_size)"
+    roofline:
+      func: "tileops.perf.formulas.fused_moe_fwd_bytes"
+    workloads:
+      - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "kimi-k2-decode"}
+      - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "kimi-k2-prefill"}
+    source:
+      kernel: tileops/ops/moe/fused_moe.py
+      op:   tileops/ops/moe/fused_moe.py
+      test: tests/ops/test_moe_fused_moe.py
+      bench: benchmarks/ops/bench_moe_fused_moe.py
+      bench_manifest_driven: true
 
   # ---------------------------------------------------------------------------
   # reduction -- softmax family (output shape == input shape, no keepdim)
