@@ -76,9 +76,15 @@ Derive source paths from `op_name`. The lookup is **class-based**, not filename-
    - Exactly one match → `source.op` is that file path.
    - Zero matches → true greenfield. Default `source.op` to `tileops/ops/<snake_name>.py` (or under a family subdirectory if a sibling manifest entry has the same family — copy that entry's `source.op` parent dir). `<snake_name>` is `op_name` minus the trailing `FwdOp` / `BwdOp`, snake_cased (e.g., `RMSNormFwdOp` → `rms_norm`, `Conv1dBiasFwdOp` → `conv1d_bias`). The file may not exist yet — that is fine; the caller scaffolds afterward.
    - Multiple matches → BLOCKED with the list of files; ask the caller to disambiguate.
-1. **Resolve `source.kernel`.** Record absent — the kernel-class identity isn't reliably derivable from `op_name` alone. `fix-manifest --field=kernel_map` fills it later from the op file's `_kernel_key` / `default_kernel_map` once the op exists.
+1. **Resolve `source.kernel`** (required by L0; cannot be left absent — `fix-manifest` is forbidden from writing `source.kernel`):
+   - If `source.op` was found by class lookup, read that file's imports for a `Kernel` subclass (typically a single `from tileops.kernels.<...> import <KernelClass>` line). Apply the same class-lookup rule under `tileops/kernels/**/*.py` for `<KernelClass>`. One match → that file's path. Multiple → BLOCKED disambiguation.
+   - If no kernel import is found (op has no separate kernel program — TileOPs convention for kernel-less ops), set `source.kernel = source.op`.
+   - If imports cannot be parsed or none of the above resolves → BLOCKED `evidence_needed: source.kernel for <op_name>`.
 1. `source.test = tests/ops/test_<snake_name>.py`; `source.bench = benchmarks/ops/bench_<snake_name>.py`. Missing files: record absent, continue.
-1. `family`: copy verbatim from a sibling manifest entry whose `source.op` parent-dir or basename overlaps. If no sibling matches, leave `family` empty for human review. Never invent.
+1. **Resolve `family`** (required by L0; cannot be left empty):
+   - Copy verbatim from a sibling manifest entry whose `source.op` parent-dir or basename overlaps with `source.op`.
+   - No matching sibling → BLOCKED `evidence_needed: family for <op_name>` (caller must declare the family explicitly, e.g., by extending an existing family or adding it to the closed vocabulary).
+   - Never invent.
 
 ### 4. READ_REFERENCE
 
