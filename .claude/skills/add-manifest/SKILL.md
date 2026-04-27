@@ -99,11 +99,18 @@ Skip if no `Optional[Tensor]`. Otherwise emit two entries (PascalCase per `docs/
 
 ### 6. DRAFT_ENTRY
 
-For each entry emitted in Step 5 (primary, plus variant if any), resolve the human-curated fields in this priority order:
+For each entry emitted in Step 5, resolve the human-curated fields. Inheritance is **only** anchored to the emitted primary's group — never to arbitrary candidates that happen to share `source.op` (e.g., `tileops/ops/attention/mha.py` backs unrelated fwd/bwd/decode/paged entries with different kernels; copying their identity would be wrong).
 
-1. **Emitted key in candidate map** (re-align): use that snapshot verbatim.
-1. **Emitted key NOT in candidate map, but candidate map non-empty** (partial-greenfield — e.g., primary exists, new variant emitted): inherit shared fields from any candidate snapshot — `family`, `source.kernel`, `source.op`, `source.kernel_map`, `source.bench_manifest_driven` (variants share these per Step 5). Per-entry fields (`workloads`, `parity_opt_out`, `status`, `source.test`, `source.bench`) take Contract defaults.
-1. **Emitted key NOT in candidate map AND map empty** (full greenfield): all human-curated fields take Contract defaults (`family` and `source.*` from RESOLVE_SOURCES).
+**For the emitted PRIMARY key K_p**:
+
+1. `K_p` in candidate map → preserve that snapshot verbatim (re-align).
+1. Else → full greenfield. All human-curated fields take Contract defaults (`family` and `source.*` from RESOLVE_SOURCES).
+
+**For an emitted VARIANT key K_v with `variant_of: K_p`**:
+
+1. `K_v` in candidate map → preserve that snapshot verbatim (re-align).
+1. Else if `K_p` in candidate map (partial-greenfield: primary exists, new variant emitted) → inherit shared fields from `K_p`'s snapshot — `family`, `source.kernel`, `source.op`, `source.kernel_map`, `source.bench_manifest_driven` (variants share these per Step 5). Per-entry fields (`workloads`, `parity_opt_out`, `status`, `source.test`, `source.bench`) take Contract defaults.
+1. Else → full greenfield (defaults as above).
 
 Auto-derivable details:
 
@@ -134,9 +141,9 @@ Invoke `foundry:creating-issue`. Per `semantic_gap` op the body MUST contain: ke
 
 Invoke `foundry:creating-pull-request` (draft):
 
-| Emitted-key match against candidate map | Title                                                  | Branch                                   |
-| --------------------------------------- | ------------------------------------------------------ | ---------------------------------------- |
-| 0 emitted keys match                    | `[Maintain][Manifest] Add <Op> manifest entries`       | `maintain/manifest/<op-slug>-entries`    |
-| ≥1 emitted key matches                  | `[Refactor][Manifest] Re-align <Op> spec to <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
+| Emitted primary `K_p` in candidate map | Title                                                  | Branch                                   |
+| -------------------------------------- | ------------------------------------------------------ | ---------------------------------------- |
+| no                                     | `[Maintain][Manifest] Add <Op> manifest entries`       | `maintain/manifest/<op-slug>-entries`    |
+| yes                                    | `[Refactor][Manifest] Re-align <Op> spec to <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
 
 Body: entries written, fields rewritten vs. preserved, validator results, `Related: #<issue from step 9>`. Title and branch must match `.claude/conventions/types.sh`.
