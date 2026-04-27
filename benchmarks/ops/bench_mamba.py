@@ -93,7 +93,7 @@ def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, tune):
     def baseline(dt, A):
         return da_cumsum_fwd_ref(dt, A, num_chunks, chunk_len)
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record("da_cumsum_fwd", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
