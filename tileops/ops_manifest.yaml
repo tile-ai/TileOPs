@@ -4142,7 +4142,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
+        input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "same_as(input)"}
@@ -4172,7 +4172,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
+        input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "same_as(input)"}
@@ -4205,7 +4205,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
+        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "bool"}
@@ -4235,7 +4235,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
+        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "bool"}
@@ -4264,7 +4264,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
+        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "bool"}
@@ -4293,7 +4293,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
+        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "bool"}
@@ -4322,7 +4322,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
+        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "bool"}
@@ -4351,7 +4351,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
+        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "bool"}
