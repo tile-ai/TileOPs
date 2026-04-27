@@ -1,10 +1,15 @@
 """Tests for MoEExpertsNopad/Padded and supporting ABCs."""
 import pytest
 import torch
+
 from tileops.ops.moe.abc import (
-    PrepareResult, WeightedReduce, WeightedReduceNoOp,
-    MoEPrepareAndFinalize, MoEExperts, MoEExpertsModular,
+    WeightedReduce,
+    WeightedReduceNoOp,
 )
+from tileops.ops.moe.experts.nopad import MoEExpertsNopad
+from tileops.ops.moe.experts.padded import MoEExpertsPadded
+from tileops.ops.moe.fused_moe_experts import FusedMoeExpertsFwdOp, FusedMoeExpertsPaddedFwdOp
+from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 
 
 @pytest.mark.smoke
@@ -42,9 +47,6 @@ def test_weighted_reduce_noop_same_tensor():
 # MoEPrepareAndFinalizeNoDPEP
 # ---------------------------------------------------------------------------
 
-from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
-
-
 class TestMoEPrepareAndFinalizeNoDPEP:
 
     @pytest.mark.smoke
@@ -75,10 +77,6 @@ class TestMoEPrepareAndFinalizeNoDPEP:
 # ---------------------------------------------------------------------------
 # MoEExpertsNopad
 # ---------------------------------------------------------------------------
-
-from tileops.ops.moe.experts.nopad import MoEExpertsNopad
-from tileops.ops.moe.fused_moe_experts import FusedMoeExpertsFwdOp
-
 
 @pytest.fixture
 def moe_tensors():
@@ -147,10 +145,6 @@ class TestMoEExpertsNopad:
 # MoEExpertsPadded
 # ---------------------------------------------------------------------------
 
-from tileops.ops.moe.experts.padded import MoEExpertsPadded
-from tileops.ops.moe.fused_moe_experts import FusedMoeExpertsPaddedFwdOp
-
-
 class TestMoEExpertsPadded:
 
     @pytest.mark.smoke
@@ -171,4 +165,3 @@ class TestMoEExpertsPadded:
                   d["E"], None, ws1, ws2)
 
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
-

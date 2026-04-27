@@ -22,26 +22,23 @@ from .shared_fused_moe import SharedFusedMoE
 from .unpermute import MoeUnpermuteFwdOp
 
 __all__ = [
-    # ABCs and data structures
-    "MoEExperts",
-    "MoEExpertsModular",
-    "MoEPrepareAndFinalize",
-    "PrepareResult",
-    "WeightedReduce",
-    "WeightedReduceNoOp",
-    # Concrete implementations
-    "MoEExpertsNopad",
-    "MoEExpertsPadded",
-    "MoEPrepareAndFinalizeNoDPEP",
-    # Existing ops (kept for backwards compatibility)
     "FusedMoe",
     "FusedMoeExpertsFwdOp",
     "FusedMoeExpertsPaddedFwdOp",
     "FusedTopKOp",
+    "MoEExperts",
+    "MoEExpertsModular",
+    "MoEExpertsNopad",
+    "MoEExpertsPadded",
+    "MoEPrepareAndFinalize",
+    "MoEPrepareAndFinalizeNoDPEP",
     "MoeGroupedGemmNopadFwdOp",
     "MoePermuteAlignFwdOp",
     "MoePermuteNopadFwdOp",
     "MoePermutePaddedFwdOp",
     "MoeUnpermuteFwdOp",
+    "PrepareResult",
     "SharedFusedMoE",
+    "WeightedReduce",
+    "WeightedReduceNoOp",
 ]
