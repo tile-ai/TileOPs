@@ -103,6 +103,10 @@ class _SoftmaxBaseOp(Op):
                     "Use a scalar dim."
                 )
             dims = normalize_dim(self.dim, x.ndim)
+            # Bind the dynamic static-axes (param-dependent reduction axes) so
+            # the Op-layer cache-key / introspection consumers see the
+            # committed axes. Mirrors the single-dim path below.
+            self._static_axes = frozenset((0, d) for d in dims)
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
             M = prod(x.shape[:-1])
