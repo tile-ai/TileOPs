@@ -30,8 +30,6 @@ TILELANG_019_SKIP_REASON = (
 
 TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = (
     "tests/ops/test_batch_norm.py",
-    "tests/ops/test_fft.py",
-    "tests/ops/test_topk_selector.py",
     "tests/ops/attention/test_deepseek_nsa.py",
     "tests/ops/attention/test_gqa_decode.py",
     "tests/ops/attention/test_gqa_decode_paged.py",
@@ -123,8 +121,6 @@ TILELANG_019_KNOWN_FAILING_NODEIDS = {
     "tests/ops/test_mamba.py::test_ssd_decode[1-4-64-16-1-dtype1-False]",
     "tests/ops/test_mamba.py::test_ssd_decode[2-8-128-64-4-dtype3-False]",
     "tests/ops/test_mamba.py::test_ssd_decode[2-8-64-32-2-dtype2-False]",
-    "tests/ops/test_mhc_post.py::test_mhc_post_op[2-4-1920-dtype1-False]",
-    "tests/ops/test_mhc_post.py::test_mhc_post_op[4-4-2560-dtype2-False]",
     "tests/ops/test_norm_ops.py::TestBatchNormCustomOp::test_fwd_torch_compile_smoke",
     "tests/ops/test_norm_ops.py::TestBatchNormCustomOp::test_bwd_torch_compile_smoke",
 }
