@@ -1959,7 +1959,8 @@ ops:
         - "dim is None or -x.ndim <= dim < x.ndim"
         - "y.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
         - "dim is not None or not keepdim or all(y.shape[i] == 1 for i in range(x.ndim))"
-        - "dim is None or (y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i])"
+        - "dim is None or not keepdim or all(y.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
+        - "dim is None or keepdim or all(y.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(y.ndim))"
 
     workloads:
       # LM head argmax (batch, vocab_size) -- greedy decoding
@@ -2001,7 +2002,8 @@ ops:
         - "dim is None or -x.ndim <= dim < x.ndim"
         - "y.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
         - "dim is not None or not keepdim or all(y.shape[i] == 1 for i in range(x.ndim))"
-        - "dim is None or (y.shape[i] == 1 if i == dim % x.ndim and keepdim else x.shape[i])"
+        - "dim is None or not keepdim or all(y.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
+        - "dim is None or keepdim or all(y.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(y.ndim))"
 
     workloads:
       # LM head argmin
