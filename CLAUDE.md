@@ -28,7 +28,7 @@ Activate a virtual environment, then `make install` (deps + pre-commit hooks).
 
 ## Reading `ops_manifest.yaml`
 
-This file is thousands of lines — never slurp it as text. To inspect an entry, parse it (`yaml.safe_load`) and index by op name. For edits, use a round-trip parser (`ruamel.yaml`) to preserve comments and key order. Reserve `Read`/`grep` for targeted line lookups, not structural reading.
+This file is thousands of lines — never slurp it as text. To inspect an entry, parse it (`yaml.safe_load`) and index the top-level `ops` dictionary by op name. For edits, use a round-trip parser (`ruamel.yaml`) to preserve comments and key order. Reserve `Read`/`grep` for targeted line lookups, not structural reading.
 
 ## Domain Rules (load on demand)
 
