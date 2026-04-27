@@ -1762,7 +1762,14 @@ ops:
   ProdFwdOp:
     ref_api: "torch.prod"
     family: reduction
-    status: spec-only  # dim=None not yet implemented; update when impl lands
+    status: spec-only
+    # NOTE: torch.prod has two overloads -- prod(input) for full reduction (no
+    # dim arg) and prod(input, dim, keepdim=False) where dim is a required int.
+    # Unlike torch.sum, torch.prod's dim overload rejects dim=None at runtime
+    # ("Please look up dimensions by name, got: name = None"), so the manifest
+    # types dim as int only. Full-reduction support (the no-dim overload) is
+    # not expressed in the manifest signature; the op layer must handle it
+    # separately if/when implemented.
     signature:
       inputs:
         x: {dtype: "float16 | bfloat16 | float32"}
@@ -1773,13 +1780,13 @@ ops:
         # dtype). The current manifest dtype DSL cannot express
         # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
         # omitted here; tracked as BLOCKED on missing-manifest-capability.
-        dim: {type: "int | None", default: null}
+        dim: {type: int, default: -1}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "dim is None or -x.ndim <= dim < x.ndim"
-        - "y.ndim == (x.ndim if keepdim else x.ndim - (x.ndim if dim is None else 1))"
-        - "not keepdim or all(y.shape[i] == (1 if (dim is None or i == dim % x.ndim) else x.shape[i]) for i in range(x.ndim))"
-        - "keepdim or dim is None or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i != dim % x.ndim][k]] for k in range(y.ndim))"
+        - "-x.ndim <= dim < x.ndim"
+        - "y.ndim == (x.ndim if keepdim else x.ndim - 1)"
+        - "not keepdim or all(y.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
+        - "keepdim or all(y.shape[k] == x.shape[[i for i in range(x.ndim) if i != dim % x.ndim][k]] for k in range(y.ndim))"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1789,8 +1796,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if (i not in (range(x.ndim) if dim is None else [dim % x.ndim])))"
-        N: "product(x.shape[i] for i in (range(x.ndim) if dim is None else [dim % x.ndim]))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i != dim % x.ndim)"
+        N: "x.shape[dim % x.ndim]"
       # N-1 multiplications per output element
       flops: "M * N"
       # Read x + write y
