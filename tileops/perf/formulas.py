@@ -1,7 +1,8 @@
 """Roofline cost-model functions for Tier 2 ops (attention, conv, MoE, etc.).
 
-Each function accepts keyword arguments matching the workload dimensions
-and returns a dict with ``"flops"`` and ``"bytes"`` keys (both int).
+Each function takes the bound Op instance and returns a ``(flops, bytes)``
+tuple of ints, matching the ``Op.eval_roofline(self) -> tuple[int, int]``
+shape that codegen emits for ``func`` mode (see ``docs/roofline.md`` §4.4.2).
 
 These are referenced from ``ops_manifest.yaml`` via the ``roofline.func``
 field, e.g.::
@@ -12,7 +13,10 @@ field, e.g.::
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tileops.ops.op_base import Op
 
 __all__ = [
     "deepseek_dsa_decode_roofline",
@@ -27,6 +31,7 @@ __all__ = [
     "mha_decode_paged_roofline",
     "mha_decode_roofline",
     "mha_fwd_roofline",
+    "where_fwd_roofline",
 ]
 
 
@@ -152,5 +157,24 @@ def deepseek_dsa_decode_roofline(**kwargs: Any) -> dict[str, int]:
     """Roofline for DeepSeek sparse attention decode.
 
     TODO: implement full formula based on B, H, S, S_kv, D, D_tail, topk.
+    """
+    raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
+# Elementwise — mixed-dtype ops requiring func-mode roofline
+# ---------------------------------------------------------------------------
+
+
+def where_fwd_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for ``torch.where`` forward (bool condition + float input/other).
+
+    Func-mode is required because the byte accounting mixes a 1-byte bool
+    condition with the float input/other dtype (see manifest comment on
+    ``WhereFwdOp.roofline``). Inline mode binds ``elem_bytes`` to a single
+    dtype and cannot express that.
+
+    TODO: implement the formula once ``WhereFwdOp`` flips from
+    ``status: spec-only`` to ``implemented``.
     """
     raise NotImplementedError

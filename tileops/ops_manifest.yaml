@@ -3703,6 +3703,14 @@ ops:
   WhereFwdOp:
     ref_api: "torch.where"
     family: elementwise
+    # status: spec-only — current tileops/ops/elementwise.py:WhereFwdOp does
+    # not conform to this spec:
+    #   - __init__ signature is (N_total, dtype) instead of the
+    #     PyTorch-aligned (condition, input, other) form.
+    #   - forward parameter names are (cond, x, y) instead of
+    #     (condition, input, other).
+    # Code conforms to this spec in a follow-up PR per the manifest trust
+    # model (.claude/rules/manifest-trust-model.md).
     status: spec-only
 
     signature:
@@ -3740,6 +3748,14 @@ ops:
     # Scalar-bound variant: PyTorch's torch.clamp also accepts Tensor min/max;
     # the manifest tracks the scalar (Number) slice that the kernel implements.
     family: elementwise
+    # status: spec-only — current tileops/ops/elementwise.py:ClampFwdOp does
+    # not conform to this spec:
+    #   - __init__ takes (N_total, dtype, min_val, max_val) instead of the
+    #     PyTorch-aligned (input, min, max) form.
+    #   - param names are (min_val, max_val) instead of (min, max).
+    #   - forward parameter is named `x` instead of `input`.
+    # Code conforms to this spec in a follow-up PR per the manifest trust
+    # model (.claude/rules/manifest-trust-model.md).
     status: spec-only
 
     signature:
@@ -3777,6 +3793,14 @@ ops:
     # value; the manifest tracks the scalar (Number) slice that the kernel
     # implements.
     family: elementwise
+    # status: spec-only — current tileops/ops/elementwise.py:MaskedFillFwdOp
+    # does not conform to this spec:
+    #   - __init__ takes (N_total, dtype, fill_value) instead of the
+    #     PyTorch-aligned (input, mask, value) form.
+    #   - param name is `fill_value` instead of `value`.
+    #   - forward parameter is named `x` instead of `input`.
+    # Code conforms to this spec in a follow-up PR per the manifest trust
+    # model (.claude/rules/manifest-trust-model.md).
     status: spec-only
 
     signature:
@@ -3813,6 +3837,17 @@ ops:
   NanToNumFwdOp:
     ref_api: "torch.nan_to_num"
     family: elementwise
+    # status: spec-only — current tileops/ops/elementwise.py:NanToNumFwdOp
+    # does not conform to this spec:
+    #   - __init__ takes (N_total, dtype, nan_val, posinf_val, neginf_val)
+    #     instead of the PyTorch-aligned (input, nan, posinf, neginf) form.
+    #   - param names are (nan_val, posinf_val, neginf_val) instead of
+    #     (nan, posinf, neginf).
+    #   - posinf/neginf default to 1e4/-1e4 instead of None (PyTorch's
+    #     default sentinel meaning "use dtype max/min").
+    #   - forward parameter is named `x` instead of `input`.
+    # Code conforms to this spec in a follow-up PR per the manifest trust
+    # model (.claude/rules/manifest-trust-model.md).
     status: spec-only
 
     signature:
