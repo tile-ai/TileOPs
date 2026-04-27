@@ -63,7 +63,7 @@ class InfNormFwdOp(_ReduceOpBase):
     ):
         if ord != self._required_ord:
             raise ValueError(
-                f"{type(self).__name__} only supports ord=float('inf'), "
+                f"{type(self).__name__} only supports ord={self._required_ord!r}, "
                 f"got ord={ord!r}"
             )
         self.ord = ord
