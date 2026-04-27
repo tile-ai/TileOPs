@@ -3297,8 +3297,8 @@ ops:
     roofline:
       vars:
         N: "product(input.shape)"
-      # 1 compare + 1 select per element
-      flops: "N"
+      # 1 compare + 1 select per element = 2 fp ops
+      flops: "2 * N"
       # Read input + write output
       bytes: "2 * N * elem_bytes"
 
@@ -3397,8 +3397,8 @@ ops:
     roofline:
       vars:
         N: "product(input.shape)"
-      # add + clamp (2 cmp/sel) + mul + div ~ 5 fp ops per element
-      flops: "5 * N"
+      # add (1) + clamp (2 cmp + 2 sel = 4) + mul (1) + div (1) = 7 fp ops per element
+      flops: "7 * N"
       bytes: "2 * N * elem_bytes"
 
     source:
@@ -3429,8 +3429,8 @@ ops:
     roofline:
       vars:
         N: "product(input.shape)"
-      # add + clamp (2 cmp/sel) + div ~ 4 fp ops per element
-      flops: "4 * N"
+      # add (1) + clamp (2 cmp + 2 sel = 4) + div (1) = 6 fp ops per element
+      flops: "6 * N"
       bytes: "2 * N * elem_bytes"
 
     source:
