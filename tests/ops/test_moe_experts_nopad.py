@@ -142,3 +142,33 @@ class TestMoEExpertsNopad:
 
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
+
+# ---------------------------------------------------------------------------
+# MoEExpertsPadded
+# ---------------------------------------------------------------------------
+
+from tileops.ops.moe.experts.padded import MoEExpertsPadded
+from tileops.ops.moe.fused_moe_experts import FusedMoeExpertsPaddedFwdOp
+
+
+class TestMoEExpertsPadded:
+
+    @pytest.mark.smoke
+    def test_apply_matches_fused_moe_experts_padded(self, moe_tensors):
+        """MoEExpertsPadded.apply() must match FusedMoeExpertsPaddedFwdOp.forward()."""
+        d = moe_tensors
+        kwargs = dict(num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+                      hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"])
+        ref = FusedMoeExpertsPaddedFwdOp(**kwargs)
+        new = MoEExpertsPadded(**kwargs)
+
+        ref_out = ref.forward(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
+
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
+        ws1 = torch.empty(0, device="cuda")
+        ws2 = torch.empty(0, device="cuda")
+        new.apply(output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+                  d["E"], None, ws1, ws2)
+
+        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
+
