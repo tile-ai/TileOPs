@@ -16,16 +16,16 @@ Orchestrators are the day-to-day entry points. Atomics are their sub-skills — 
 
 ## What do I want to do?
 
-| Intent                                                            | Run                                        |
-| ----------------------------------------------------------------- | ------------------------------------------ |
-| Align / add a single op to its manifest entry (the common case)   | `/align-op <op_name>`                      |
-| Find out which case an op is in, without touching anything        | `/align-op <op_name> --classify-only`      |
-| Migrate every spec-only op in a whole family (historical backlog) | `/align-family <family>`                   |
-| Read-only audit of a family's spec gaps                           | `/audit-family <family>`                   |
-| Add a new manifest entry from a PyTorch docs URL                  | `/add-manifest <op_path> <torch_api>`      |
-| Patch a single missing field in an existing manifest entry        | `/fix-manifest <op_name>`                  |
-| Scaffold a fresh op file, bypassing the orchestrator              | `/scaffold-op <op_name>`                   |
-| Debug one atomic phase by hand                                    | `/test-op` · `/implement-op` · `/bench-op` |
+| Intent                                                             | Run                                        |
+| ------------------------------------------------------------------ | ------------------------------------------ |
+| Align / add a single op to its manifest entry (the common case)    | `/align-op <op_name>`                      |
+| Find out which case an op is in, without touching anything         | `/align-op <op_name> --classify-only`      |
+| Migrate every spec-only op in a whole family (historical backlog)  | `/align-family <family>`                   |
+| Read-only audit of a family's spec gaps                            | `/audit-family <family>`                   |
+| Generate / re-align a manifest entry from a reference-API docs URL | `/add-manifest <op_name> <ref_url>`        |
+| Patch `kernel_map` or `static_dims` on an existing manifest entry  | `/fix-manifest <op_name>`                  |
+| Scaffold a fresh op file, bypassing the orchestrator               | `/scaffold-op <op_name>`                   |
+| Debug one atomic phase by hand                                     | `/test-op` · `/implement-op` · `/bench-op` |
 
 ## Skills in detail
 
@@ -88,19 +88,19 @@ Compares each op's code signature against its manifest spec, classifies gaps (`r
 
 ### `add-manifest` · manifest atomic
 
-Generates a fresh `ops_manifest.yaml` entry for a legacy op from its PyTorch reference. Reads the PyTorch docs URL as the sole source of truth, drafts `signature` / `shape_rules` / `roofline`, validates, and opens a draft PR with a follow-up issue capturing semantic-gap analysis.
+Reads a reference-API docs URL (PyTorch / equivalent) and writes the auto-derivable fields of a manifest entry (`signature.{inputs,outputs,params,shape_rules,dtype_combos}`, `roofline` for well-known ops). Idempotent: human-curated fields (`workloads`, `parity_opt_out`, `source.*`, `status`, `family`, `ref_api`) are preserved verbatim if the entry already exists, defaulted otherwise. Same invocation works for greenfield and re-alignment.
 
-- **Use when.** A code-side op exists but has no manifest entry yet. Greenfield path.
-- **Don't use when.** The entry already exists — use `fix-manifest` for surgical patches, or open a manifest-review issue if the change touches `signature`.
+- **Use when.** Adding a new op, or re-aligning a stale entry whose signature / shape rules / dtype combos / roofline have drifted from the reference.
+- **Don't use when.** The gap is `kernel_map` or `static_dims` — those come from on-disk op / kernel code, not the reference; use `fix-manifest`.
 - **Contract:** [SKILL.md](../.claude/skills/add-manifest/SKILL.md)
 
 ### `fix-manifest` · manifest atomic
 
-Surgical patch of an existing manifest entry. Diagnoses one missing structural field via the validator, infers the patch from on-disk evidence (op source, kernel class, PyTorch reference), writes a single-field change, and opens a manifest PR.
+Surgical patch of an existing manifest entry for fields **derived from on-disk op / kernel evidence** — `source.kernel_map` and `signature.static_dims`. Diagnoses the missing field via the validator, reads the op file to infer the patch payload, writes the single-field change, opens a manifest PR.
 
-- **Allowed fields.** `kernel_map`, `static_dims`, `shape_rules`, `roofline.vars`, `dtype_combos`. Everything else (signature, status, sources) is out of scope by design.
-- **Use when.** The validator rejects an existing entry for a missing structural field — most commonly `kernel_map`, which `align-op`'s PRE_CHECK requires.
-- **Don't use when.** The entry doesn't exist (`add-manifest`), the gap is in `signature.*` (open a manifest-review issue), or you want to flip `status: spec-only → implemented` (that is `align-op`'s `FLIP_STATUS`).
+- **Allowed fields.** `kernel_map`, `static_dims` only. Reference-derivable fields (`signature.*`, `shape_rules`, `dtype_combos`, `roofline`) belong to `add-manifest`.
+- **Use when.** Validator says `kernel_map` or `static_dims` is missing on an existing entry. `kernel_map` is the most common case — it's required by `align-op`'s PRE_CHECK.
+- **Don't use when.** The entry doesn't exist (`add-manifest`); the gap is in a reference-derivable field (`add-manifest` re-aligns the whole entry from the reference URL); you want to flip `status` (that is `align-op`'s `FLIP_STATUS`).
 - **Contract:** [SKILL.md](../.claude/skills/fix-manifest/SKILL.md)
 
 ## Composition
@@ -134,13 +134,13 @@ align-op <op_name>                       ← per-op orchestrator
 
 ## Trust model  ·  who may write what
 
-| Resource                          | Writer                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ops_manifest.yaml`               | Three writers, disjoint slices: `add-manifest` creates new entries; `fix-manifest` patches one structural field on an existing entry (allowed: `kernel_map`, `static_dims`, `shape_rules`, `roofline.vars`, `dtype_combos`; never `signature.{inputs,outputs,params}` or `status`); `align-op` at `FLIP_STATUS` writes only the `status` field. No other skill writes the manifest. |
-| `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                                                                                                                                                                                                                                        |
-| `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work.                                                                                                                                                                                                                  |
-| `tests/ops/**`                    | `test-op`.                                                                                                                                                                                                                                                                                                                                                                          |
-| `benchmarks/ops/**`               | `bench-op`.                                                                                                                                                                                                                                                                                                                                                                         |
+| Resource                          | Writer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ops_manifest.yaml`               | Three writers, disjoint slices. `add-manifest` writes reference-derivable fields (`signature.{inputs,outputs,params,shape_rules,dtype_combos}`, `roofline.{flops,bytes,vars}` for well-known ops); preserves `workloads`, `parity_opt_out`, `source.*`, `status`, `family`, `ref_api` verbatim if the entry exists, defaults otherwise. `fix-manifest` writes on-disk-derivable fields (`source.kernel_map`, `signature.static_dims`) on existing entries only. `align-op@FLIP_STATUS` writes only `status`. No other skill writes the manifest. |
+| `tileops/ops/**` op files         | `scaffold-op` creates; `implement-op` edits.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `tileops/kernels/**` kernel files | No TileOPs skill writes kernels. `align-op --mode=redesign` surfaces mismatches via `kernel-check.json`; a future `kernel-align` skill will own kernel-layer work.                                                                                                                                                                                                                                                                                                                                                                               |
+| `tests/ops/**`                    | `test-op`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `benchmarks/ops/**`               | `bench-op`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ## Maintenance
 

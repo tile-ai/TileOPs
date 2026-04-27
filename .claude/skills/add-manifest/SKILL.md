@@ -1,33 +1,49 @@
 ---
 name: add-manifest
-description: Generate a spec-only ops_manifest.yaml entry for a legacy op from its PyTorch docs URL. Validates, runs audit-family, opens a draft PR linked to a follow-up issue.
+description: Generate or re-align one `ops_manifest.yaml` entry from a reference-API docs URL. Caller provides the manifest key (`op_name`); skill writes that one entry. Idempotent.
 ---
 
 ## Arguments
 
-| Argument    | Required | Description                                                                                 |
-| ----------- | -------- | ------------------------------------------------------------------------------------------- |
-| `op_path`   | Yes      | Op file path relative to project root (e.g., `tileops/ops/conv1d.py`).                      |
-| `torch_api` | Yes      | PyTorch docs URL matching `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$`. |
+| Argument  | Required | Description                                                                                                             |
+| --------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `op_name` | Yes      | Manifest key (e.g., `RMSNormFwdOp`). Caller-supplied, never derived. For variants, caller invokes once per emitted key. |
+| `ref_url` | Yes      | HTTPS docs URL for the Tensor op. Must match `^https://[A-Za-z0-9./_-]+\.html$`.                                        |
 
 ## Contract
 
-- **Output**: new entry in `ops_manifest.yaml` + follow-up issue + draft PR.
-- **MAY write**: `ops_manifest.yaml` (new entry only).
-- **MUST NOT write**: existing manifest entries; op / kernel / test / bench code.
-- **Termination**: draft PR created, or BLOCKED on input or inference failure.
+**One entry per invocation.** No splitting, no variant orchestration. For primary + variant, caller invokes the skill twice with different `op_name`s.
+
+**Idempotent.** Auto-derivable fields are rewritten from the reference; human-curated fields are preserved if the entry exists, defaulted otherwise.
+
+| Auto-derivable (always rewritten from reference) | Human-curated (preserved if entry exists, else default)                                                                           |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `signature.{inputs,outputs,params}`              | `family` (default: from sibling-entry copy or BLOCKED)                                                                            |
+| `signature.shape_rules`                          | `ref_api` (default: derived from `ref_url`'s last path segment)                                                                   |
+| `signature.dtype_combos`                         | `workloads` (default: `[]`)                                                                                                       |
+| `roofline.{flops,bytes,vars}` (well-known op)    | `parity_opt_out` (default: omit)                                                                                                  |
+|                                                  | `source.{kernel,op,test,bench,kernel_map,bench_manifest_driven}` (default: from RESOLVE_SOURCES + `bench_manifest_driven: false`) |
+|                                                  | `status` (default: `spec-only`)                                                                                                   |
+|                                                  | Adjacent comments (best-effort)                                                                                                   |
+
+**Termination**: draft PR created → success. Invalid URL / un-derivable roofline / source-path or family resolution failure → BLOCKED.
+
+**Constraints**: never edit op / kernel / test / bench code. Never invent params outside the reference. Never set `status: implemented` (that is `align-op@FLIP_STATUS`).
+
+**Caller responsibility**: `op_name` and `ref_url` must point at the same op. The skill does not enforce alignment between them — TileOPs identity may legitimately differ from any reference's naming (e.g., `MultiHeadAttentionFwdOp` ↔ `torch.nn.functional.scaled_dot_product_attention`). Wrong pairing produces a broken manifest entry silently.
 
 ## Workflow
 
 ```mermaid
 stateDiagram-v2
     [*] --> VALIDATE_INPUT
-    VALIDATE_INPUT --> [*]: URL malformed → abort
-    VALIDATE_INPUT --> RESOLVE_SOURCES
-    RESOLVE_SOURCES --> READ_PYTORCH
-    READ_PYTORCH --> SPLIT_VARIANTS: Optional Tensor present
-    READ_PYTORCH --> DRAFT_ENTRY
-    SPLIT_VARIANTS --> DRAFT_ENTRY
+    VALIDATE_INPUT --> [*]: invalid
+    VALIDATE_INPUT --> READ_EXISTING
+    READ_EXISTING --> READ_REFERENCE: snapshot saved (entry present)
+    READ_EXISTING --> RESOLVE_SOURCES: entry absent
+    RESOLVE_SOURCES --> READ_REFERENCE
+    RESOLVE_SOURCES --> [*]: source / family resolution failed → BLOCKED
+    READ_REFERENCE --> DRAFT_ENTRY
     DRAFT_ENTRY --> VALIDATE
     VALIDATE --> DRAFT_ENTRY: L0 fail
     VALIDATE --> RUN_AUDIT: L0 pass
@@ -40,69 +56,56 @@ stateDiagram-v2
 
 ### 1. VALIDATE_INPUT
 
-`torch_api` must match `^https://(docs\.)?pytorch\.org/docs/stable/generated/.*\.html$`. Else abort.
+Reject `ref_url` not matching the regex. Reject `op_name` not matching `^[A-Z][A-Za-z0-9]+(Fwd|Bwd)Op$`.
 
-### 2. RESOLVE_SOURCES
+### 2. READ_EXISTING
 
-Locate from `op_path`:
+Look up `op_name` in `tileops/ops_manifest.yaml`.
 
-| Source | Path                                                  |
-| ------ | ----------------------------------------------------- |
-| kernel | search under `tileops/kernels/` for matching basename |
-| op     | `op_path`                                             |
-| test   | `tests/ops/test_<name>.py`                            |
-| bench  | `benchmarks/ops/bench_<name>.py`                      |
+- **Present** → snapshot the human-curated fields per the Contract table. Source paths come from the existing `source.*`. Proceed to READ_REFERENCE.
+- **Absent** → greenfield. Proceed to RESOLVE_SOURCES.
 
-Missing files: record absent, continue.
+### 3. RESOLVE_SOURCES (greenfield only)
 
-**Set `family` by copying from the manifest, not by inferring from kernel paths.** The manifest uses a closed family vocabulary that does not match the kernel layout 1:1 (e.g., `tileops/kernels/convolution.py` → family `convolution`; `tileops/kernels/norm/` → family `normalization`). Procedure:
+Lookup is **class-based**, not filename-based — many TileOPs ops share a file (e.g., `SumFwdOp` and `MeanFwdOp` both in `tileops/ops/reduction/reduce.py`).
 
-1. Find any existing entry in `tileops/ops_manifest.yaml` whose `source.kernel` matches (same path, parent dir, or basename).
-1. Copy that entry's `family` value verbatim.
-1. If nothing matches, scan all `family` values used in the manifest and pick the closest by domain. Still ambiguous → STOP, ask user.
+1. **`source.op`**: scan `tileops/ops/**/*.py` for `class <op_name>(...)` (AST or `grep -rlE "^class <op_name>\(" tileops/ops/`).
+   - Exactly one match → that file path.
+   - Zero matches → true greenfield. Default to `tileops/ops/<snake_name>.py` (use a family subdirectory if a sibling-family entry suggests one). `<snake_name>` = `op_name` minus trailing `FwdOp` / `BwdOp`, snake_cased (`RMSNormFwdOp` → `rms_norm`). File may not exist yet; caller scaffolds afterward.
+   - Multiple → BLOCKED disambiguation.
+1. **`source.kernel`** (required by L0; `fix-manifest` cannot fill it later):
+   - If `source.op` was found by class lookup: read its imports for a `Kernel` subclass; apply class-lookup under `tileops/kernels/**/*.py`. One match → that file. Multiple → BLOCKED disambiguation.
+   - No kernel import (kernel-less op) → `source.kernel = source.op`.
+   - Otherwise → BLOCKED `evidence_needed: source.kernel for <op_name>`.
+1. `source.test = tests/ops/test_<snake_name>.py`; `source.bench = benchmarks/ops/bench_<snake_name>.py`. Missing files: record absent.
+1. **`family`** (required by L0; cannot be empty):
+   - Copy from a sibling manifest entry whose `source.op` parent-dir or basename overlaps.
+   - No matching sibling → BLOCKED `evidence_needed: family for <op_name>`. Never invent.
 
-Never invent a new `family` value.
+### 4. READ_REFERENCE
 
-### 3. READ_PYTORCH
+`WebFetch(ref_url)`. Sole source of truth.
 
-`WebFetch` `torch_api`. The page is the **sole source of truth**. Extract:
+| Reference param kind | Goes to                                |
+| -------------------- | -------------------------------------- |
+| Tensor               | `signature.inputs` (positional order)  |
+| non-Tensor           | `signature.params` (`type`, `default`) |
+| return               | `signature.outputs`                    |
 
-| PyTorch param kind | Goes to                                     |
-| ------------------ | ------------------------------------------- |
-| Tensor             | `signature.inputs` (positional order)       |
-| Optional[Tensor]   | flag for SPLIT_VARIANTS                     |
-| non-Tensor         | `signature.params` (with `type`, `default`) |
-| return             | `signature.outputs`                         |
+Names match the reference verbatim. Include every reference param even if the kernel ignores it. Exclude `float64` and `complex32/64/128` (TileOPs is GPU-only).
 
-Names must match PyTorch exactly. Include every PyTorch param even if the kernel ignores it. Exclude `float64` and complex types (`complex32/64/128`) from dtypes.
-
-### 4. SPLIT_VARIANTS
-
-Skip if no `Optional[Tensor]` input. Otherwise emit two entries (PascalCase per `docs/ops-design-reference.md`):
-
-| Entry   | Key                 | Inputs                | Extra                   |
-| ------- | ------------------- | --------------------- | ----------------------- |
-| primary | `<Op>FwdOp`         | required Tensors only | —                       |
-| variant | `<Op><Suffix>FwdOp` | required + optional   | `variant_of: <Op>FwdOp` |
-
-`<Suffix>` = PascalCase of the optional input name (e.g., `Bias`). Variants share `source.kernel` and `source.op`. Each gets its own `signature`, `workloads`, `roofline`.
-
-Multiple `Optional[Tensor]`: follow decision tree in `docs/manifest.md`.
+For references with `Optional[Tensor]` inputs, the caller has decided which slice corresponds to `op_name` (primary = required only; variant = primary + chosen optional). The skill emits inputs accordingly.
 
 ### 5. DRAFT_ENTRY
 
-Per entry:
+Snapshot present (re-align) → preserve human-curated fields verbatim. Snapshot absent (greenfield) → use Contract defaults. Auto-derivable fields:
 
-- `family`: from RESOLVE_SOURCES.
-- `status`: always `spec-only`. **Never** set `implemented` (that is `align-op@FLIP_STATUS`).
-- `signature.inputs`: ordered dict, PyTorch positional order. Per input: `dtype` is the supported set (PyTorch dtypes minus `float64` and `complex32/64/128`) joined with `|`; `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
+- `signature.inputs`: ordered dict in the reference's positional order. Per input: `dtype` = supported set joined with `|` (reference dtypes minus `float64` and complex types); `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
 - `signature.outputs`: same shape as inputs. Use `same_as(<ref>)` where applicable.
 - `signature.params`: ordered dict, each `{type, default}`.
 - `signature.shape_rules`: Python expressions for derived dims and inter-tensor constraints.
 - `signature.dtype_combos`: only if supported set ⊂ Cartesian product; else omit.
-- `workloads`: `[]` (schema requires a list; human fills shapes in a follow-up).
-- `roofline`: required by L0 (cannot be `null` or empty). For well-known ops (conv / pool / matmul / norm / reduction): emit standard formulas. Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: use `vars` mapping. If the formula is not derivable from PyTorch docs alone → BLOCKED `evidence_needed: roofline.flops|bytes for <op>`. **Never guess.**
-- `source`: paths from RESOLVE_SOURCES; `bench_manifest_driven: false`.
+- `roofline`: required by L0. Well-known op (conv / pool / matmul / norm / reduction): standard formula. Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: `vars` mapping. Not derivable → BLOCKED `evidence_needed: roofline.flops|bytes for <op_name>`.
 
 ### 6. VALIDATE
 
@@ -110,47 +113,23 @@ Per entry:
 python scripts/validate_manifest.py --check-op <op_name>
 ```
 
-L0 must pass. On fail: edit entry, rerun. Higher-level (L1–L4) failures are surfaced as gap items in the follow-up issue, not blocking.
+L0 must pass. On fail: edit entry, rerun. L1–L4 failures go to the follow-up issue, not blocking.
 
 ### 7. RUN_AUDIT
 
-Invoke `audit-family` for the op's family → writes `.foundry/migrations/<family>.json`.
+Invoke `audit-family` for the op's family → `.foundry/migrations/<family>.json`.
 
 ### 8. CREATE_ISSUE
 
-Invoke `foundry:creating-issue`. Issue body MUST contain, per `semantic_gap` op:
-
-- **Kernel feasibility**: cite specific kernel code; classify each missing param as `trivial` / `kernel-change` / `blocked`.
-- **Class structure impact**: does variant split fit the inheritance hierarchy?
-- **Effort per gap item**: same three-way classification.
-- **Family dependencies**: do changes cascade?
-
-Issue body MUST also list:
-
-- Outstanding human decisions: `workloads`, `roofline`.
-- Resolution path: which spec-pipeline steps apply.
-
-MUST NOT duplicate validator-reported facts (missing params, wrong names) — the reader has the validator.
-
-Record the issue URL.
+Invoke `foundry:creating-issue`. Per `semantic_gap` op the body MUST contain: kernel feasibility (cite kernel code; classify each missing param `trivial` / `kernel-change` / `blocked`); class-structure impact; effort per gap item; family dependencies. MUST also list outstanding human decisions (`workloads`, `roofline`) and resolution path. MUST NOT duplicate validator-reported facts. Record the issue URL.
 
 ### 9. CREATE_PR
 
 Invoke `foundry:creating-pull-request` (draft):
 
-| Element | Value                                                                                             |
-| ------- | ------------------------------------------------------------------------------------------------- |
-| title   | `[Maintain][Manifest] Add <Op> manifest entries`                                                  |
-| branch  | `maintain/manifest/<op-slug>-entries` (slug: kebab-case of `<Op>`)                                |
-| body    | manifest entries added (name, family, status); validator results; `Related: #<issue from step 8>` |
+| Snapshot at READ_EXISTING | Title                                                       | Branch                                   |
+| ------------------------- | ----------------------------------------------------------- | ---------------------------------------- |
+| absent                    | `[Maintain][Manifest] Add <op_name>`                        | `maintain/manifest/<op-slug>`            |
+| present                   | `[Refactor][Manifest] Re-align <op_name> spec to <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
 
-Title and branch must match `.claude/conventions/types.sh`.
-
-## Guardrails
-
-- Non-URL `torch_api` → abort.
-- Never edit op / kernel / test / bench files.
-- Never invent params outside PyTorch API.
-- `status` is always `spec-only`. Never set `implemented`.
-- Ambiguous PyTorch mapping → STOP, ask user.
-- Mapping clearly wrong → STOP, explain.
+Body: which fields were rewritten vs. preserved, validator results, `Related: #<issue from step 8>`. Title and branch must match `.claude/conventions/types.sh`.
