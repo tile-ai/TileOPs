@@ -1436,12 +1436,16 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | None", default: null}
-        dtype: {type: "torch.dtype | None", default: null}
+        # NOTE: PyTorch also accepts dim=None (deprecated, emits a warning and
+        # picks an implicit axis) and dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
+        dim: {type: int, default: -1}
       static_dims:
         N: "x.shape[dim]"
       shape_rules:
-        - "dim is None or -x.ndim <= dim < x.ndim"
+        - "-x.ndim <= dim < x.ndim"
         - "y.shape == x.shape"
 
     workloads:
@@ -1480,12 +1484,16 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | None", default: null}
-        dtype: {type: "torch.dtype | None", default: null}
+        # NOTE: PyTorch also accepts dim=None (deprecated, emits a warning and
+        # picks an implicit axis) and dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
+        dim: {type: int, default: -1}
       static_dims:
         N: "x.shape[dim]"
       shape_rules:
-        - "dim is None or -x.ndim <= dim < x.ndim"
+        - "-x.ndim <= dim < x.ndim"
         - "y.shape == x.shape"
 
     workloads:
@@ -1573,9 +1581,12 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
         dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
-        dtype: {type: "torch.dtype | None", default: null}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
         - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
@@ -1621,9 +1632,12 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
         dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
-        dtype: {type: "torch.dtype | None", default: null}
       shape_rules:
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
         - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
@@ -1665,14 +1679,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...]", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - (1 if isinstance(dim, int) else len({d % x.ndim for d in dim}))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}) and keepdim else x.shape[i])"
-        - "isinstance(dim, int) or len(dim) > 0"
-        - "isinstance(dim, int) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1682,8 +1695,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}))"
-        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x + write y
@@ -1709,14 +1722,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
-        dim: {type: "int | list[int] | tuple[int, ...]", default: -1}
+        dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
       shape_rules:
-        - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-        - "y.ndim == x.ndim if keepdim else x.ndim - (1 if isinstance(dim, int) else len({d % x.ndim for d in dim}))"
-        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}) and keepdim else x.shape[i])"
-        - "isinstance(dim, int) or len(dim) > 0"
-        - "isinstance(dim, int) or len({d % x.ndim for d in dim}) == len(dim)"
+        - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+        - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+        - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
+        - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
     workloads:
       # Hidden state reduction (Llama-3.1-8B)
@@ -1726,8 +1738,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}))"
-        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}))"
+        M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+        N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x + write y
@@ -1752,9 +1764,12 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
+        # dtype). The current manifest dtype DSL cannot express
+        # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
+        # omitted here; tracked as BLOCKED on missing-manifest-capability.
         dim: {type: "int | None", default: null}
         keepdim: {type: bool, default: false}
-        dtype: {type: "torch.dtype | None", default: null}
       shape_rules:
         - "dim is None or -x.ndim <= dim < x.ndim"
         - "y.ndim == x.ndim if keepdim else x.ndim - (x.ndim if dim is None else 1)"
@@ -1940,8 +1955,6 @@ ops:
       params:
         dim: {type: "int | None", default: null}
         keepdim: {type: bool, default: false}
-      static_dims:
-        N: "x.shape[dim]"
       shape_rules:
         - "dim is None or -x.ndim <= dim < x.ndim"
         - "y.ndim == (x.ndim if keepdim else x.ndim - 1) if dim is not None else 0"
@@ -1955,8 +1968,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-        N: "x.shape[dim % x.ndim]"
+        M: "1 if dim is None else product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "product(x.shape) if dim is None else x.shape[dim % x.ndim]"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (8 bytes for int64)
@@ -1983,8 +1996,6 @@ ops:
       params:
         dim: {type: "int | None", default: null}
         keepdim: {type: bool, default: false}
-      static_dims:
-        N: "x.shape[dim]"
       shape_rules:
         - "dim is None or -x.ndim <= dim < x.ndim"
         - "y.ndim == (x.ndim if keepdim else x.ndim - 1) if dim is not None else 0"
@@ -1998,8 +2009,8 @@ ops:
 
     roofline:
       vars:
-        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-        N: "x.shape[dim % x.ndim]"
+        M: "1 if dim is None else product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "product(x.shape) if dim is None else x.shape[dim % x.ndim]"
       # N-1 comparisons per output element
       flops: "M * N"
       # Read x (elem_bytes) + write y (8 bytes for int64)
@@ -2158,10 +2169,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (equivalent to
+        # x.to(dtype) before reduction; returns the requested dtype). The
+        # current manifest dtype DSL cannot express that conditional, so dtype
+        # is omitted here; tracked as BLOCKED on missing-manifest-capability.
         ord: {type: "int | float", default: 1}
         dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
-        dtype: {type: "torch.dtype | None", default: null}
       shape_rules:
         - "ord == 1"
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
@@ -2204,10 +2218,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (equivalent to
+        # x.to(dtype) before reduction; returns the requested dtype). The
+        # current manifest dtype DSL cannot express that conditional, so dtype
+        # is omitted here; tracked as BLOCKED on missing-manifest-capability.
         ord: {type: "int | float", default: 2}
         dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
-        dtype: {type: "torch.dtype | None", default: null}
       shape_rules:
         - "ord == 2"
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
@@ -2250,10 +2267,13 @@ ops:
       outputs:
         y: {dtype: "same_as(x)"}
       params:
+        # NOTE: PyTorch also accepts dtype=<torch.dtype> (equivalent to
+        # x.to(dtype) before reduction; returns the requested dtype). The
+        # current manifest dtype DSL cannot express that conditional, so dtype
+        # is omitted here; tracked as BLOCKED on missing-manifest-capability.
         ord: {type: "int | float", default: .inf}
         dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
         keepdim: {type: bool, default: false}
-        dtype: {type: "torch.dtype | None", default: null}
       shape_rules:
         - "ord == float('inf')"
         - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
