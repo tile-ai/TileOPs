@@ -3285,6 +3285,8 @@ ops:
         input: {dtype: "float16 | bfloat16 | float32"}
       outputs:
         output: {dtype: "same_as(input)"}
+      params:
+        inplace: {type: bool, default: false}
       shape_rules:
         - "output.shape == input.shape"
 
@@ -3354,6 +3356,8 @@ ops:
         input: {dtype: "float16 | bfloat16 | float32"}
       outputs:
         output: {dtype: "same_as(input)"}
+      params:
+        inplace: {type: bool, default: false}
       shape_rules:
         - "output.shape == input.shape"
 
@@ -3386,6 +3390,8 @@ ops:
         input: {dtype: "float16 | bfloat16 | float32"}
       outputs:
         output: {dtype: "same_as(input)"}
+      params:
+        inplace: {type: bool, default: false}
       shape_rules:
         - "output.shape == input.shape"
 
@@ -3418,6 +3424,8 @@ ops:
         input: {dtype: "float16 | bfloat16 | float32"}
       outputs:
         output: {dtype: "same_as(input)"}
+      params:
+        inplace: {type: bool, default: false}
       shape_rules:
         - "output.shape == input.shape"
 
@@ -3450,6 +3458,8 @@ ops:
         input: {dtype: "float16 | bfloat16 | float32"}
       outputs:
         output: {dtype: "same_as(input)"}
+      params:
+        inplace: {type: bool, default: false}
       shape_rules:
         - "output.shape == input.shape"
 
@@ -3482,6 +3492,8 @@ ops:
         input: {dtype: "float16 | bfloat16 | float32"}
       outputs:
         output: {dtype: "same_as(input)"}
+      params:
+        inplace: {type: bool, default: false}
       shape_rules:
         - "output.shape == input.shape"
 
@@ -3516,6 +3528,7 @@ ops:
         output: {dtype: "same_as(input)"}
       params:
         negative_slope: {type: float, default: 0.01}
+        inplace: {type: bool, default: false}
       shape_rules:
         - "output.shape == input.shape"
 
@@ -3550,6 +3563,7 @@ ops:
         output: {dtype: "same_as(input)"}
       params:
         alpha: {type: float, default: 1.0}
+        inplace: {type: bool, default: false}
       shape_rules:
         - "output.shape == input.shape"
 
@@ -3585,6 +3599,7 @@ ops:
       params:
         min_val: {type: float, default: -1.0}
         max_val: {type: float, default: 1.0}
+        inplace: {type: bool, default: false}
       shape_rules:
         - "min_val <= max_val"
         - "output.shape == input.shape"
@@ -3655,10 +3670,9 @@ ops:
       outputs:
         output: {dtype: "same_as(input)"}
       shape_rules:
-        # PyTorch prelu: weight is either a scalar (numel==1) or per-channel
-        # along dim 1 for ndim>=2 (dim 0 for 1-D inputs).
-        - "weight.ndim == 1"
-        - "weight.shape[0] == 1 or weight.shape[0] == (input.shape[1] if input.ndim >= 2 else input.shape[0])"
+        # PyTorch prelu: weight is either scalar or per-channel along dim 1
+        # for inputs with ndim >= 2; 1-D inputs accept scalar weight only.
+        - "weight.ndim == 0 or (weight.ndim == 1 and (weight.shape[0] == 1 or (input.ndim >= 2 and weight.shape[0] == input.shape[1])))"
         - "output.shape == input.shape"
 
     workloads:
@@ -3669,10 +3683,11 @@ ops:
     roofline:
       vars:
         N: "product(input.shape)"
+        W: "1 if weight.ndim == 0 or weight.shape[0] == 1 else weight.shape[0]"
       # compare + mul + select per element
       flops: "3 * N"
       # Read input (N) + read weight (small, ~C) + write output (N)
-      bytes: "(2 * N + (1 if weight.shape[0] == 1 else weight.shape[0])) * elem_bytes"
+      bytes: "(2 * N + W) * elem_bytes"
 
     source:
       kernel: tileops/kernels/elementwise.py
