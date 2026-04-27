@@ -150,19 +150,27 @@ jobs:
           fi
 
           # `benchmark-contract-tests` is intentionally skipped on PRs that
-          # don't touch its inputs (see detect-changes), so accept `skipped`
-          # as well as `success` here — only genuine failures should block
-          # the ready_for_review short-circuit.
+          # don't touch its inputs (see detect-changes). Keep that job
+          # skippable, but still require the core preflight checks to be
+          # successful so `ready_for_review` re-runs them and unblocks
+          # gpu-smoke.
           CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" --jq '
             [
               .check_runs
               | group_by(.name)
               | map(max_by(.id))[]
               | select(.name == "pre-commit" or .name == "gitleaks" or .name == "actionlint" or .name == "benchmark-contract-tests")
-              | .conclusion
+              | {name: .name, conclusion: .conclusion}
             ]
           ')
-          ALL_OK=$(echo "$CHECKS" | jq 'all(. == "success" or . == "skipped")')
+          ALL_OK=$(echo "$CHECKS" | jq '
+            all(
+              if .name == "benchmark-contract-tests"
+              then (.conclusion == "success" or .conclusion == "skipped")
+              else (.conclusion == "success")
+              end
+            )
+          ')
           COUNT=$(echo "$CHECKS" | jq 'length')
           if [[ "$ALL_OK" == "true" && "$COUNT" -ge 4 ]]; then
             echo "CI already passed for SHA $HEAD_SHA; skipping"
