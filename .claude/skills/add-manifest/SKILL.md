@@ -1,6 +1,6 @@
 ---
 name: add-manifest
-description: Generate a spec-only ops_manifest.yaml entry for a Tensor op from a reference-API docs URL. Auto-derivable fields (signature, shape_rules, roofline for well-known ops) come from the reference; human-curated fields (workloads, source.*, status, parity_opt_out, family) come from the existing entry if one exists, else default. Validates, runs audit-family, opens a draft PR. The reference must document a Tensor-input → Tensor-output op with a stable signature (PyTorch is one example; not the only).
+description: Generate or re-align an `ops_manifest.yaml` entry from a reference-API docs URL. Idempotent — same args produce the same entry whether it already exists or not. PyTorch is one example reference, not the only.
 ---
 
 ## Arguments
@@ -12,35 +12,21 @@ description: Generate a spec-only ops_manifest.yaml entry for a Tensor op from a
 
 ## Contract
 
-The skill is **idempotent**: invoking it twice with the same arguments produces the same entry. Whether the entry already exists is not a flag — it's just whether `READ_EXISTING` finds anything.
+**Idempotent.** Auto-derivable fields are rewritten from the reference; human-curated fields are preserved if an entry exists, defaulted otherwise.
 
-### Field protection
+| Auto-derivable (always rewritten from reference) | Human-curated (preserved if entry exists, else default)                                                                           |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `signature.{inputs,outputs,params}`              | `family` (default: from RESOLVE_SOURCES)                                                                                          |
+| `signature.shape_rules`                          | `ref_api` (default: derived from `ref_url`)                                                                                       |
+| `signature.dtype_combos`                         | `workloads` (default: `[]`)                                                                                                       |
+| `roofline.{flops,bytes,vars}` (well-known op)    | `parity_opt_out` (default: omit)                                                                                                  |
+|                                                  | `source.{kernel,op,test,bench,kernel_map,bench_manifest_driven}` (default: from RESOLVE_SOURCES + `bench_manifest_driven: false`) |
+|                                                  | `status` (default: `spec-only`)                                                                                                   |
+|                                                  | Adjacent comments (best-effort)                                                                                                   |
 
-| Field                                                            | Source                                                   | Notes                                                         |
-| ---------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------- |
-| `signature.{inputs,outputs,params}`                              | reference docs                                           | rewritten on every invocation                                 |
-| `signature.shape_rules`                                          | reference docs                                           | rewritten                                                     |
-| `signature.dtype_combos`                                         | reference docs                                           | rewritten                                                     |
-| `roofline.{flops,bytes,vars}` (well-known op)                    | reference docs                                           | rewritten                                                     |
-| `family`                                                         | existing entry, else RESOLVE_SOURCES                     | preserved if entry exists                                     |
-| `ref_api`                                                        | existing entry, else canonical id derived from `ref_url` | preserved if entry exists                                     |
-| `workloads`                                                      | existing entry, else `[]`                                | preserved verbatim                                            |
-| `parity_opt_out`                                                 | existing entry (if present), else omitted                | preserved verbatim                                            |
-| `source.{kernel,op,test,bench,kernel_map,bench_manifest_driven}` | existing entry, else RESOLVE_SOURCES                     | preserved verbatim                                            |
-| `status`                                                         | existing entry, else `spec-only`                         | preserved verbatim — only `align-op@FLIP_STATUS` flips status |
-| Adjacent comments                                                | existing entry                                           | preserved best-effort                                         |
+**Termination**: draft PR created → success. Invalid URL / un-derivable roofline / ambiguous reference → BLOCKED.
 
-### Termination
-
-- **Success**: draft PR created.
-- **BLOCKED**: invalid URL; inference impossible (e.g., roofline not derivable for an unknown op); ambiguous reference mapping.
-
-### Constraints
-
-- MUST NOT edit op / kernel / test / bench code.
-- MUST NOT invent params outside the referenced API.
-- MUST NOT flip `status`.
-- Ambiguous reference-API mapping → STOP, ask user.
+**Constraints**: never edit op / kernel / test / bench code. Never invent params outside the reference. Never set `status: implemented` (that is `align-op@FLIP_STATUS`).
 
 ## Workflow
 
@@ -71,11 +57,9 @@ Reject `ref_url` not matching the regex.
 
 ### 2. READ_EXISTING
 
-Look up `<op_name>` in `tileops/ops_manifest.yaml` (op_name derived from `op_path` + variant suffix in Step 4). If present, snapshot in memory: `family`, `ref_api`, `workloads`, `parity_opt_out` (if present), `source.{kernel,op,test,bench,kernel_map,bench_manifest_driven}` (each present), `status`, adjacent comments. Used by DRAFT_ENTRY to preserve human-curated fields verbatim.
+Look up `<op_name>` in `tileops/ops_manifest.yaml` (op_name derived from `op_path` + variant suffix from Step 4). If present, snapshot the human-curated fields listed in the Contract table. If absent, proceed to RESOLVE_SOURCES.
 
-If absent, proceed to RESOLVE_SOURCES.
-
-### 3. RESOLVE_SOURCES (only when entry is absent)
+### 3. RESOLVE_SOURCES (only when entry absent)
 
 | Source | Path                                            |
 | ------ | ----------------------------------------------- |
@@ -84,13 +68,11 @@ If absent, proceed to RESOLVE_SOURCES.
 | test   | `tests/ops/test_<name>.py`                      |
 | bench  | `benchmarks/ops/bench_<name>.py`                |
 
-Missing files: record absent, continue.
-
-`family`: copy verbatim from a sibling manifest entry whose `source.kernel` matches by path / parent dir / basename. Never invent.
+Missing files: record absent, continue. `family`: copy verbatim from a sibling manifest entry whose `source.kernel` matches by path / parent dir / basename. Never invent.
 
 ### 4. READ_REFERENCE
 
-`WebFetch(ref_url)`. The page is the sole source of truth for the op's signature.
+`WebFetch(ref_url)`. Sole source of truth.
 
 | Reference param kind | Goes to                                |
 | -------------------- | -------------------------------------- |
@@ -99,9 +81,7 @@ Missing files: record absent, continue.
 | non-Tensor           | `signature.params` (`type`, `default`) |
 | return               | `signature.outputs`                    |
 
-Names match the reference verbatim. Include every reference param even if the kernel ignores it. Exclude `float64` and `complex32/64/128` from dtypes (TileOPs is a GPU-only library).
-
-If the entry was absent in READ_EXISTING, derive `ref_api` from `ref_url` (e.g., `torch.cumsum` for `https://docs.pytorch.org/.../torch.cumsum.html`). If the entry was present, `ref_api` is preserved from the snapshot.
+Names match the reference verbatim. Include every reference param even if the kernel ignores it. Exclude `float64` and `complex32/64/128` (TileOPs is GPU-only).
 
 ### 5. SPLIT_VARIANTS
 
@@ -116,23 +96,14 @@ Skip if no `Optional[Tensor]`. Otherwise emit two entries (PascalCase per `docs/
 
 ### 6. DRAFT_ENTRY
 
-Auto-derivable (always rewritten from the reference):
+Per the Contract table. Auto-derivable details:
 
-- `signature.inputs`: ordered dict, in the reference's positional order. Per input: `dtype` = supported set joined with `|` (reference dtypes minus `float64` and complex types); `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
+- `signature.inputs`: ordered dict in the reference's positional order. Per input: `dtype` = supported set joined with `|` (reference dtypes minus `float64` and complex types); `shape` only if fixed rank; `layout` only if non-default; `constraints` if applicable.
 - `signature.outputs`: same shape as inputs. Use `same_as(<ref>)` where applicable.
 - `signature.params`: ordered dict, each `{type, default}`.
 - `signature.shape_rules`: Python expressions for derived dims and inter-tensor constraints.
 - `signature.dtype_combos`: only if supported set ⊂ Cartesian product; else omit.
-- `roofline`: required by L0. Well-known op (conv / pool / matmul / norm / reduction): standard formula. Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: `vars` mapping. Not derivable from the reference docs alone → BLOCKED `evidence_needed: roofline.flops|bytes for <op>`.
-
-Human-curated (preserved from READ_EXISTING if entry was present, else defaulted):
-
-- `family`: snapshot, else from RESOLVE_SOURCES.
-- `ref_api`: snapshot, else derived from `ref_url`.
-- `status`: snapshot, else `spec-only`.
-- `workloads`: snapshot, else `[]`.
-- `parity_opt_out`: snapshot if present, else omitted.
-- `source`: snapshot, else paths from RESOLVE_SOURCES + `bench_manifest_driven: false`.
+- `roofline`: required by L0. Well-known op (conv / pool / matmul / norm / reduction): standard formula. Fixed-rank: shape names auto-bind, use `elem_bytes`. Arbitrary-rank: `vars` mapping. Not derivable → BLOCKED `evidence_needed: roofline.flops|bytes for <op>`.
 
 ### 7. VALIDATE
 
@@ -148,33 +119,15 @@ Invoke `audit-family` for the op's family → `.foundry/migrations/<family>.json
 
 ### 9. CREATE_ISSUE
 
-Invoke `foundry:creating-issue`. Per `semantic_gap` op, body MUST contain:
-
-- Kernel feasibility (cite specific kernel code; classify each missing param as `trivial` / `kernel-change` / `blocked`).
-- Class-structure impact (does variant split fit the inheritance hierarchy?).
-- Effort per gap item (same three-way classification).
-- Family dependencies (do changes cascade?).
-
-Body MUST also list outstanding human decisions (`workloads`, `roofline`) and resolution path (which spec-pipeline steps apply).
-
-MUST NOT duplicate validator-reported facts. Record the issue URL.
+Invoke `foundry:creating-issue`. Per `semantic_gap` op the body MUST contain: kernel feasibility (cite kernel code; classify each missing param `trivial` / `kernel-change` / `blocked`); class-structure impact; effort per gap item; family dependencies. MUST also list outstanding human decisions (`workloads`, `roofline`) and resolution path. MUST NOT duplicate validator-reported facts. Record the issue URL.
 
 ### 10. CREATE_PR
 
 Invoke `foundry:creating-pull-request` (draft):
 
-| Entry was                | Title                                                  | Branch                                   |
-| ------------------------ | ------------------------------------------------------ | ---------------------------------------- |
-| absent at READ_EXISTING  | `[Maintain][Manifest] Add <Op> manifest entries`       | `maintain/manifest/<op-slug>-entries`    |
-| present at READ_EXISTING | `[Refactor][Manifest] Re-align <Op> spec to <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
+| Entry was | Title                                                  | Branch                                   |
+| --------- | ------------------------------------------------------ | ---------------------------------------- |
+| absent    | `[Maintain][Manifest] Add <Op> manifest entries`       | `maintain/manifest/<op-slug>-entries`    |
+| present   | `[Refactor][Manifest] Re-align <Op> spec to <ref_api>` | `refactor/manifest/regenerate-<op-slug>` |
 
 Body: entries written, fields rewritten vs. preserved, validator results, `Related: #<issue from step 9>`. Title and branch must match `.claude/conventions/types.sh`.
-
-## Guardrails
-
-- Non-URL `ref_url` → abort.
-- Never edit op / kernel / test / bench files.
-- Never invent params outside the referenced API.
-- `status` is preserved when an entry exists; defaults to `spec-only` for new entries. Never set `implemented`.
-- Ambiguous reference-API mapping → STOP, ask user.
-- Mapping clearly wrong → STOP, explain.
