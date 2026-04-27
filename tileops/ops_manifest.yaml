@@ -3695,3 +3695,152 @@ ops:
       test: tests/ops/test_activation.py
       bench: benchmarks/ops/bench_activation.py
       bench_manifest_driven: false
+
+  # ---------------------------------------------------------------------------
+  # elementwise — multi-input parametric ops (where, clamp, masked_fill, nan_to_num)
+  # ---------------------------------------------------------------------------
+
+  WhereFwdOp:
+    ref_api: "torch.where"
+    family: elementwise
+    status: spec-only
+
+    signature:
+      inputs:
+        condition: {dtype: "bool"}
+        input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+        other: {dtype: "same_as(input)"}
+      outputs:
+        out: {dtype: "same_as(input)"}
+      shape_rules:
+        - "condition.shape == input.shape"
+        - "other.shape == input.shape"
+        - "out.shape == input.shape"
+
+    workloads:
+      - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+      - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+    roofline:
+      # Mixed-dtype op (bool condition + float input/other) — inline mode cannot
+      # express byte accounting because elem_bytes binds to the first input's
+      # dtype (condition = bool = 1 byte). Per docs/roofline.md §2.2, ops whose
+      # bytes depend on multiple input dtypes must use func mode.
+      func: "tileops.perf.formulas.where_fwd_roofline"
+
+    source:
+      kernel: tileops/kernels/elementwise.py
+      op: tileops/ops/elementwise.py
+      test: tests/ops/test_special_elementwise.py
+      bench: benchmarks/ops/bench_independent_elementwise.py
+      bench_manifest_driven: false
+
+  ClampFwdOp:
+    ref_api: "torch.clamp"
+    # Scalar-bound variant: PyTorch's torch.clamp also accepts Tensor min/max;
+    # the manifest tracks the scalar (Number) slice that the kernel implements.
+    family: elementwise
+    status: spec-only
+
+    signature:
+      inputs:
+        input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      outputs:
+        out: {dtype: "same_as(input)"}
+      params:
+        min: {type: "float | None", default: null}
+        max: {type: "float | None", default: null}
+      shape_rules:
+        - "out.shape == input.shape"
+
+    workloads:
+      - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+      - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+    roofline:
+      vars:
+        N_total: "product(input.shape)"
+      # At most one max + one min per element
+      flops: "2 * N_total"
+      bytes: "2 * N_total * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/elementwise.py
+      op: tileops/ops/elementwise.py
+      test: tests/ops/test_special_elementwise.py
+      bench: benchmarks/ops/bench_independent_elementwise.py
+      bench_manifest_driven: false
+
+  MaskedFillFwdOp:
+    ref_api: "torch.Tensor.masked_fill"
+    # Scalar-value variant: PyTorch's masked_fill also accepts a 0-dim Tensor
+    # value; the manifest tracks the scalar (Number) slice that the kernel
+    # implements.
+    family: elementwise
+    status: spec-only
+
+    signature:
+      inputs:
+        input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+        mask: {dtype: "bool"}
+      outputs:
+        out: {dtype: "same_as(input)"}
+      params:
+        value: {type: float, default: 0.0}
+      shape_rules:
+        - "mask.shape == input.shape"
+        - "out.shape == input.shape"
+
+    workloads:
+      - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+      - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+    roofline:
+      vars:
+        N_total: "product(input.shape)"
+      # One predicated select per element
+      flops: "N_total"
+      # Read input + read mask (1 byte) + write out
+      bytes: "N_total + 2 * N_total * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/elementwise.py
+      op: tileops/ops/elementwise.py
+      test: tests/ops/test_special_elementwise.py
+      bench: benchmarks/ops/bench_independent_elementwise.py
+      bench_manifest_driven: false
+
+  NanToNumFwdOp:
+    ref_api: "torch.nan_to_num"
+    family: elementwise
+    status: spec-only
+
+    signature:
+      inputs:
+        input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      outputs:
+        out: {dtype: "same_as(input)"}
+      params:
+        nan: {type: float, default: 0.0}
+        posinf: {type: "float | None", default: null}
+        neginf: {type: "float | None", default: null}
+      shape_rules:
+        - "out.shape == input.shape"
+
+    workloads:
+      - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+      - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+    roofline:
+      vars:
+        N_total: "product(input.shape)"
+      # isnan + isposinf + isneginf + 3 conditional selects per element
+      flops: "6 * N_total"
+      bytes: "2 * N_total * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/elementwise.py
+      op: tileops/ops/elementwise.py
+      test: tests/ops/test_special_elementwise.py
+      bench: benchmarks/ops/bench_independent_elementwise.py
+      bench_manifest_driven: false
