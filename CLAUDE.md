@@ -28,7 +28,7 @@ Activate a virtual environment, then `make install` (deps + pre-commit hooks).
 
 ## Reading the ops manifest
 
-The manifest lives at `tileops/manifest/`, one or more YAML files per op family (e.g. `reduction.yaml`; the `elementwise` family is sharded across `elementwise_unary_math.yaml`, `elementwise_unary_activation.yaml`, `elementwise_binary.yaml`, `elementwise_multi_input.yaml`). The `tileops.manifest` package merges them into a single `ops` dict at runtime.
+The manifest lives at `tileops/manifest/`, one or more YAML files per op family — most families use a single file; large families may be sharded across multiple files. The `tileops.manifest` package merges them into a single `ops` dict at runtime.
 
 - **Programmatic reads**: prefer `from tileops.manifest import load_manifest, load_workloads`. Never re-implement the merge.
 - **Structural inspection**: parse the relevant family file with `yaml.safe_load` and index `ops` by op name. Pick the file from the op's family field rather than scanning all of them.
