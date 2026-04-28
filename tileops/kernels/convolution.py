@@ -491,7 +491,14 @@ def _conv2d_kernel(
                                 T.cast(0.0, dtype),
                             )
 
-                    T.copy(weight_flat[k_iter * block_k, bx * block_n], weight_shared)
+                    for i, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + i
+                        oc = bx * block_n + j
+                        weight_shared[i, j] = T.if_then_else(
+                            (k_idx < k_total) & (oc < c_out),
+                            weight_flat[k_idx, oc],
+                            T.cast(0.0, dtype),
+                        )
 
                     T.gemm(data_shared, weight_shared, out_local)
 
@@ -1004,7 +1011,14 @@ def _conv3d_kernel(
                             T.cast(0.0, dtype),
                         )
 
-                    T.copy(weight_flat[k_iter * block_k, bx * block_n], weight_shared)
+                    for i, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + i
+                        oc = bx * block_n + j
+                        weight_shared[i, j] = T.if_then_else(
+                            (k_idx < k_total) & (oc < c_out),
+                            weight_flat[k_idx, oc],
+                            T.cast(0.0, dtype),
+                        )
                     T.gemm(data_shared, weight_shared, out_local)
 
                 for i, j in T.Parallel(block_m, block_n):
