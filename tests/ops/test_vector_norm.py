@@ -9,7 +9,27 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare
+from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.vector_norm import L1NormTest as _L1NormWorkload
+
+
+def _current_sm() -> int:
+    """Return the current CUDA SM major*10+minor, or -1 if no CUDA device."""
+    if not torch.cuda.is_available():
+        return -1
+    major, minor = torch.cuda.get_device_capability()
+    return major * 10 + minor
+
+
+_SM = _current_sm()
+pytestmark = pytest.mark.skipif(
+    _SM not in VectorNormKernel.supported_archs,
+    reason=(
+        f"VectorNormKernel does not support SM{_SM}; "
+        f"supported archs are {VectorNormKernel.supported_archs}. "
+        "Functional verification on supported archs runs in CI gpu-smoke."
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -1,10 +1,10 @@
 """CPU-only unit tests for ``normalize_dim``.
 
-These tests pin the empty-dim ``[] / ()`` semantics added for issue #1091 at
-the helper-function layer, so AC-1's behavioral contract is verifiable
-without invoking the GPU kernel. The kernel-level integration tests in
-``test_vector_norm.py`` continue to gate end-to-end correctness on supported
-architectures (sm80/86/89/90).
+These tests pin the empty-dim ``[] / ()`` semantics at the helper-function
+layer, so the behavioral contract is verifiable without invoking the GPU
+kernel. The kernel-level integration tests in ``test_vector_norm.py``
+continue to gate end-to-end correctness on supported architectures
+(sm80/86/89/90).
 
 Why a separate CPU-only layer:
 
@@ -23,7 +23,7 @@ import pytest
 from tileops.ops.reduction._multidim import normalize_dim
 
 # ---------------------------------------------------------------------------
-# Empty-dim semantics (issue #1091)
+# Empty-dim semantics
 # ---------------------------------------------------------------------------
 
 
@@ -45,14 +45,14 @@ def test_empty_tuple_equivalent_to_none(ndim: int) -> None:
 
 @pytest.mark.smoke
 def test_empty_list_does_not_raise() -> None:
-    """Pre-#1091 behavior raised ValueError; the new contract returns all dims."""
+    """Empty list must not raise; contract returns all dims."""
     # Must not raise.
     out = normalize_dim([], 3)
     assert out == [0, 1, 2]
 
 
 # ---------------------------------------------------------------------------
-# Existing paths must remain intact (no regressions on PR #1084)
+# Existing paths must remain intact (no regressions)
 # ---------------------------------------------------------------------------
 
 
