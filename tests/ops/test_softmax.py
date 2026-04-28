@@ -26,7 +26,7 @@ from workloads.softmax import LogSumExpTest as _LogSumExpTestWorkload
 from workloads.softmax import SoftmaxTest as _SoftmaxTestWorkload
 
 # ---------------------------------------------------------------------------
-# Tolerances (from docs/testing.md)
+# Tolerances (from docs/design/testing.md)
 # ---------------------------------------------------------------------------
 
 

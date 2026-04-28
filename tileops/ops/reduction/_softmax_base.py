@@ -44,7 +44,7 @@ class _SoftmaxBaseOp(Op):
 
     # `static_dims.N = x.shape[dim]` is param-dependent (depends on `dim`),
     # so the static-axis frozenset is bound at forward time after dim
-    # normalization, not at the class level (per docs/ops-design.md § Step 3).
+    # normalization, not at the class level (per docs/design/ops-design.md § Step 3).
     _static_axes: frozenset = frozenset()
 
     def __init__(

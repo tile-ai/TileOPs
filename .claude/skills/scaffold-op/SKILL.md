@@ -1,6 +1,6 @@
 ---
 name: scaffold-op
-description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.yaml` entry by following the 7-step playbook in docs/ops-design.md. Emits the 17 scaffold slots (S1-S7, S12-S21); leaves family-specific protocol variables, optional hooks, and kernel implementations to downstream skills.
+description: Scaffold a new T2 (L1-direct) Op file from a single `tileops/manifest/` entry by following the 7-step playbook in docs/design/ops-design.md. Emits the 17 scaffold slots (S1-S7, S12-S21); leaves family-specific protocol variables, optional hooks, and kernel implementations to downstream skills.
 ---
 
 ## Arguments
@@ -9,7 +9,7 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.y
 
 ## Contract
 
-- **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml) with `status: spec-only` and a non-empty `source.kernel_map`. `source.kernel_map` is manifest-level source of truth for Op→Kernel dispatch and cannot be derived by the scaffold (dispatch keys are kernel-internal conventions); adding it for a spec-only entry is a prerequisite manifest PR.
+- **Input**: `op_name` must be present in [`tileops/manifest/`](../../../tileops/manifest/) with `status: spec-only` and a non-empty `source.kernel_map`. `source.kernel_map` is manifest-level source of truth for Op→Kernel dispatch and cannot be derived by the scaffold (dispatch keys are kernel-internal conventions); adding it for a spec-only entry is a prerequisite manifest PR.
 - **Output**: new file at the exact path declared by manifest `source.op` (e.g., `tileops/ops/reduction/cumsum.py`), containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to the package `__init__.py` at that path's parent directory (e.g., `tileops/ops/reduction/__init__.py`) with a matching `__all__` entry. Note: the filesystem package directory (parent of `source.op`) is not always the same as the manifest `family` field — for example, `CumsumFwdOp` has `family: scan` but lives under `tileops/ops/reduction/`. Always key paths off `source.op`, never off `family`. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports **no errors** for this op. Warnings are allowed and passed through to the final summary.
 - **Termination (blocked)**: any validator error for `op_name` that the scaffold cannot fix by re-reading the playbook's slot rules. Do NOT commit; report with the failing rows from the validator.
@@ -17,7 +17,7 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.y
   - MUST NOT emit family-specific protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, `_kernel_handles_padding`, `_op_name`, `kernel_cls`).
   - MUST NOT emit optional hooks (`_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`, `_cache_key` override).
   - MUST NOT implement the kernel itself.
-  - MUST NOT modify `ops_manifest.yaml`, tests, benchmarks, or any existing op file.
+  - MUST NOT modify `tileops/manifest/`, tests, benchmarks, or any existing op file.
   - MUST NOT extend scope to a T1 (family-base) subclass — the scaffold is T2 only.
 
 ## Workflow
@@ -41,11 +41,11 @@ stateDiagram-v2
 
 ## Scope boundary
 
-The scaffold emits **exactly** the 17 slots defined in [`docs/ops-design-reference.md` § Slot Rules](../../../docs/ops-design-reference.md#slot-rules): S1-S7 (file header, imports, class, docstring), S12-S13 (`__init__` signature and body), S14-S16 (`default_kernel_map`, `forward`), S17-S19 (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`), S20 (package registration), S21 (`_static_axes`). S8-S11 are intentionally skipped (reserved from slot iteration for T1 thin-wrapper slots).
+The scaffold emits **exactly** the 17 slots defined in [`docs/design/ops-design-reference.md` § Slot Rules](../../../docs/design/ops-design-reference.md#slot-rules): S1-S7 (file header, imports, class, docstring), S12-S13 (`__init__` signature and body), S14-S16 (`default_kernel_map`, `forward`), S17-S19 (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`), S20 (package registration), S21 (`_static_axes`). S8-S11 are intentionally skipped (reserved from slot iteration for T1 thin-wrapper slots).
 
 Explicitly **out of scope** — leave empty, do not invent:
 
-- **Family-specific protocol variables** (e.g. `_op_kind` for reduction, `_op_name` for elementwise). Kernel-dispatch-convention-dependent; cannot be derived from the manifest. See [Family-Base Protocol (Appendix)](../../../docs/ops-design-reference.md#base-class-protocol).
+- **Family-specific protocol variables** (e.g. `_op_kind` for reduction, `_op_name` for elementwise). Kernel-dispatch-convention-dependent; cannot be derived from the manifest. See [Family-Base Protocol (Appendix)](../../../docs/design/ops-design-reference.md#base-class-protocol).
 - **Optional hooks** (`_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`). Op-specific business logic; no manifest derivation.
 - **`_cache_key` override**. Recommended for cache efficiency under dynamic shapes when `_static_axes` is empty — the `Op._cache_key` default is correctness-preserving (it keys by all non-static axis sizes) but may over-fragment under dynamic shapes and emits a once-per-type `UserWarning` to surface the missing override. The override logic depends on kernel math and is out of scope for scaffolding.
 - **Kernel implementations**. The scaffold only references the Kernel classes named in `source.kernel_map`; their implementation is out of scope.
@@ -64,12 +64,10 @@ Before running the snippet, substitute `<op_name>` with the requested manifest k
 ```bash
 python - "<op_name>" <<'PY'
 import sys
-import yaml
+from tileops.manifest import load_manifest
 
 op_name = sys.argv[1]
-with open('tileops/ops_manifest.yaml') as f:
-    m = yaml.safe_load(f)
-entry = m['ops'][op_name]
+entry = load_manifest()[op_name]
 print(entry)
 PY
 ```
@@ -80,9 +78,9 @@ Derive the target file path from `source.op` (e.g. `tileops/ops/reduction/cumsum
 
 ### 2. PRE_CHECK
 
-- `op_name` present in `ops_manifest.yaml` → proceed; otherwise BLOCKED ("op not in manifest").
+- `op_name` present in `tileops/manifest/` → proceed; otherwise BLOCKED ("op not in manifest").
 - `status` field explicitly set to `spec-only` → proceed; `status: implemented` → BLOCKED ("op already implemented; use implement-op to migrate"); missing `status` or any other value → BLOCKED ("manifest entry must declare a valid top-level `status`; the validator treats `status` as required").
-- `source.kernel_map` declared and non-empty → proceed; missing or empty → BLOCKED ("manifest entry needs `source.kernel_map` before scaffolding — add the dispatch map in a separate manifest PR per the trust model; the scaffold cannot invent dispatch keys because they are kernel-internal conventions"). Note: per `docs/manifest.md`, `source.kernel_map` is only required when `status: implemented`, so many existing `spec-only` entries lack it — these are the cases that need the manifest-PR prerequisite before scaffolding can run.
+- `source.kernel_map` declared and non-empty → proceed; missing or empty → BLOCKED ("manifest entry needs `source.kernel_map` before scaffolding — add the dispatch map in a separate manifest PR per the trust model; the scaffold cannot invent dispatch keys because they are kernel-internal conventions"). Note: per `docs/design/manifest.md`, `source.kernel_map` is only required when `status: implemented`, so many existing `spec-only` entries lack it — these are the cases that need the manifest-PR prerequisite before scaffolding can run.
 - Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path").
 - Target file `source.op` does NOT exist → proceed; exists → BLOCKED ("target file already present; scaffold would overwrite").
 
@@ -183,19 +181,19 @@ DRY_RUN terminates by writing `plan.json` and proceeding to EMIT unconditionally
 
 ### 4. EMIT
 
-Follow [`docs/ops-design.md` § Scaffolding an Op from a Manifest Entry](../../../docs/ops-design.md#scaffolding-an-op-from-a-manifest-entry) Steps 1-7 in order. For each scaffold slot, read the authoritative rule at `docs/ops-design-reference.md#slot-sN` before emitting.
+Follow [`docs/design/ops-design.md` § Scaffolding an Op from a Manifest Entry](../../../docs/design/ops-design.md#scaffolding-an-op-from-a-manifest-entry) Steps 1-7 in order. For each scaffold slot, read the authoritative rule at `docs/design/ops-design-reference.md#slot-sN` before emitting.
 
 Key slot pointers (follow the reference, do not re-derive):
 
-| Playbook step | Slots          | Reference anchor                                                                                                                                                    |
-| ------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Step 1        | S1, S2, S3, S4 | [S1](../../../docs/ops-design-reference.md#slot-s1)-[S4](../../../docs/ops-design-reference.md#slot-s4)                                                             |
-| Step 2        | S5, S6, S7     | [S5](../../../docs/ops-design-reference.md#slot-s5)-[S7](../../../docs/ops-design-reference.md#slot-s7)                                                             |
-| Step 3        | S21, S12, S13  | [S21](../../../docs/ops-design-reference.md#slot-s21), [S12](../../../docs/ops-design-reference.md#slot-s12), [S13](../../../docs/ops-design-reference.md#slot-s13) |
-| Step 4        | S14, S15, S16  | [S14](../../../docs/ops-design-reference.md#slot-s14)-[S16](../../../docs/ops-design-reference.md#slot-s16)                                                         |
-| Step 5        | S17, S18       | [S17](../../../docs/ops-design-reference.md#slot-s17), [S18](../../../docs/ops-design-reference.md#slot-s18)                                                        |
-| Step 6        | S19            | [S19](../../../docs/ops-design-reference.md#slot-s19)                                                                                                               |
-| Step 7        | S20            | [S20](../../../docs/ops-design-reference.md#slot-s20)                                                                                                               |
+| Playbook step | Slots          | Reference anchor                                                                                                                                                                         |
+| ------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Step 1        | S1, S2, S3, S4 | [S1](../../../docs/design/ops-design-reference.md#slot-s1)-[S4](../../../docs/design/ops-design-reference.md#slot-s4)                                                                    |
+| Step 2        | S5, S6, S7     | [S5](../../../docs/design/ops-design-reference.md#slot-s5)-[S7](../../../docs/design/ops-design-reference.md#slot-s7)                                                                    |
+| Step 3        | S21, S12, S13  | [S21](../../../docs/design/ops-design-reference.md#slot-s21), [S12](../../../docs/design/ops-design-reference.md#slot-s12), [S13](../../../docs/design/ops-design-reference.md#slot-s13) |
+| Step 4        | S14, S15, S16  | [S14](../../../docs/design/ops-design-reference.md#slot-s14)-[S16](../../../docs/design/ops-design-reference.md#slot-s16)                                                                |
+| Step 5        | S17, S18       | [S17](../../../docs/design/ops-design-reference.md#slot-s17), [S18](../../../docs/design/ops-design-reference.md#slot-s18)                                                               |
+| Step 6        | S19            | [S19](../../../docs/design/ops-design-reference.md#slot-s19)                                                                                                                             |
+| Step 7        | S20            | [S20](../../../docs/design/ops-design-reference.md#slot-s20)                                                                                                                             |
 
 If a slot's rule is ambiguous for the given manifest entry (e.g. multi-kernel `kernel_map`, multiple independent dtype axes, fixed-rank vs arbitrary-rank branching), STOP and surface the ambiguity in the final report instead of guessing. Do not expand scope.
 
@@ -273,7 +271,7 @@ On SUCCESS, commit the new file + `__init__.py` update with message `[Feat][OPS]
 
 ## Calibration against the playbook
 
-The scaffold's behaviour must stay in sync with `docs/ops-design.md` and `docs/ops-design-reference.md`. If you discover during EMIT or VALIDATE that a slot rule is internally inconsistent or cannot be mechanically followed, file a follow-up documentation issue and BLOCK; do NOT paper over by inventing slot behaviour.
+The scaffold's behaviour must stay in sync with `docs/design/ops-design.md` and `docs/design/ops-design-reference.md`. If you discover during EMIT or VALIDATE that a slot rule is internally inconsistent or cannot be mechanically followed, file a follow-up documentation issue and BLOCK; do NOT paper over by inventing slot behaviour.
 
 ## Non-goals
 

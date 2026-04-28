@@ -36,7 +36,7 @@ Read `manifest_signature` to determine target interface:
 
 - `signature.inputs` → `forward()` params (tensor inputs)
 - `signature.params` → `__init__()` params (configuration)
-- This follows Op design convention in `docs/ops-design.md`. The manifest is the source of truth.
+- This follows Op design convention in `docs/design/ops-design.md`. The manifest is the source of truth.
 
 ### 2. ASSESS_EXISTING
 
@@ -56,7 +56,7 @@ actual = op(x)
 torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
 ```
 
-- Use `TestBase` pattern (`gen_inputs()` + `ref_program()` + `check()`). Follow `docs/testing.md`.
+- Use `TestBase` pattern (`gen_inputs()` + `ref_program()` + `check()`). Follow `docs/design/testing.md`.
 - Write tests in `source_test` file. No new files.
 - For integer outputs (manifest `outputs.*.dtype` is int type), use `torch.equal` for exact comparison.
 - Parameterize: supported dtypes (FP16, BF16), representative dim values, keepdim True/False where applicable.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate ops_manifest.yaml.
+"""Validate the ops manifest.
 
 Checks:
   schema    — YAML structure: required fields, types, nesting
@@ -34,7 +34,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = REPO_ROOT / "tileops" / "ops_manifest.yaml"
+MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
 
 # Valid torch dtype base names (without same_as references)
 _TORCH_DTYPES = {
@@ -1412,7 +1412,7 @@ def _class_overrides_method(cls: type, name: str) -> bool:
 
 
 # Safe builtins allowed in shape_rules eval — matches the R11 / R11a
-# documented helper set (see docs/ops-design-reference.md). Keep this list
+# documented helper set (see docs/design/ops-design-reference.md). Keep this list
 # aligned with manifest spec; widening it changes the rule language.
 _SHAPE_RULE_BUILTINS: dict = {
     "len": len,
@@ -2906,7 +2906,10 @@ def validate_manifest(
     """Run applicable validation levels on the manifest.
 
     Args:
-        manifest_path: Path to ops_manifest.yaml.
+        manifest_path: Optional path to a single manifest YAML file. When None,
+            the merged manifest is loaded from the ``tileops.manifest`` package
+            (one file per family). Tests pass a temp file to validate synthetic
+            single-file manifests.
         repo_root: Repository root directory.
         verbose: If True, print progress.
         levels: Set of check names to run (e.g. {"schema", "shape", "dtype", "bench"}).
@@ -2919,17 +2922,23 @@ def validate_manifest(
         A tuple of (errors, warnings). Errors are hard failures; warnings
         are informational messages (e.g. signature skipped due to missing deps).
     """
-    if manifest_path is None:
-        manifest_path = MANIFEST_PATH
     if repo_root is None:
         repo_root = REPO_ROOT
     if levels is None:
         levels = ALL_LEVELS
 
-    with open(manifest_path) as f:
-        data = yaml.safe_load(f)
+    if manifest_path is None:
+        from tileops.manifest import load_manifest
 
-    ops = data.get("ops", {})
+        ops = load_manifest()
+    else:
+        with open(manifest_path) as f:
+            ops = yaml.safe_load(f) or {}
+        if not isinstance(ops, dict):
+            return [
+                f"--manifest-path: {manifest_path} must contain a top-level "
+                f"mapping of op name -> entry, got {type(ops).__name__}"
+            ], []
 
     # Fail fast: --check-op with a name not in the manifest
     if check_op is not None and check_op not in ops:
@@ -3087,7 +3096,7 @@ def main() -> int:
     level_label = ",".join(sorted(levels)) if levels else "all"
     check_op_label = f", check-op: {check_op}" if check_op else ""
     print(
-        f"Validating {MANIFEST_PATH.relative_to(REPO_ROOT)} "
+        f"Validating {MANIFEST_DIR.relative_to(REPO_ROOT)}/*.yaml "
         f"(levels: {level_label}{check_op_label})..."
     )
 

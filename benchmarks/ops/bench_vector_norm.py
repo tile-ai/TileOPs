@@ -1,7 +1,7 @@
 """Benchmarks for vector norm ops (l1_norm, l2_norm, inf_norm).
 
 Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
-Workload shapes and roofline formulas are loaded from ops_manifest.yaml.
+Workload shapes and roofline formulas are loaded from the ops manifest (tileops/manifest/).
 """
 
 import pytest

@@ -2,9 +2,9 @@
 
 Each function takes the bound Op instance and returns a ``(flops, bytes)``
 tuple of ints, matching the ``Op.eval_roofline(self) -> tuple[int, int]``
-shape that codegen emits for ``func`` mode (see ``docs/roofline.md`` §4.4.2).
+shape that codegen emits for ``func`` mode (see ``docs/design/roofline.md`` §4.4.2).
 
-These are referenced from ``ops_manifest.yaml`` via the ``roofline.func``
+These are referenced from ``tileops/manifest/`` via the ``roofline.func``
 field, e.g.::
 
     roofline:

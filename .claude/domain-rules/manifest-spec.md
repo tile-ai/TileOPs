@@ -1,11 +1,11 @@
 ## Boundary
 
-- **OWNS**: `tileops/ops_manifest.yaml`
+- **OWNS**: `tileops/manifest/`
 - **MUST NOT modify**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `benchmarks/`
 - **MAY READ**: PyTorch public API (to match signatures)
 - Manifest changes require human review in a separate PR.
 
-→ [trust-model.md §Manifest](../../docs/trust-model.md#manifest)
+→ [trust-model.md §Manifest](../../docs/design/trust-model.md#manifest)
 
 ______________________________________________________________________
 

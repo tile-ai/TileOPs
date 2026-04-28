@@ -1,10 +1,10 @@
 ## Boundary
 
 - **OWNS**: `benchmarks/`
-- **MUST NOT modify**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `workloads/`, `tileops/ops_manifest.yaml`
+- **MUST NOT modify**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `workloads/`, `tileops/manifest/`
 - **MAY READ**: `workloads/`, `tileops/ops/`
 
-→ [trust-model.md §Benchmark](../../docs/trust-model.md#benchmark) | [testing.md §Benchmarks](../../docs/testing.md#benchmarks)
+→ [trust-model.md §Benchmark](../../docs/design/trust-model.md#benchmark) | [testing.md §Benchmarks](../../docs/design/testing.md#benchmarks)
 
 ______________________________________________________________________
 

@@ -1,6 +1,6 @@
 # Roofline
 
-This document describes the `roofline` field in `ops_manifest.yaml`: what it is, how to author one, and who consumes it.
+This document describes the `roofline` field in `tileops/manifest/`: what it is, how to author one, and who consumes it.
 
 ## 1. Performance Model
 
@@ -65,7 +65,7 @@ roofline:
 
 ## 3. Consumers
 
-`ops_manifest.yaml` is the source of truth for the `roofline` field. Four modules read it:
+`tileops/manifest/` is the source of truth for the `roofline` field. Four modules read it:
 
 - **Schema validator / CI** — structural checks only (schema, mode exclusivity, `func` importability). Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
 - **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
@@ -78,7 +78,7 @@ Tests and workloads are not consumers: they may supply shapes and dtypes but mus
 
 ### 4.1 Schema Validator / CI
 
-Runs on every PR touching `ops_manifest.yaml`. Scope is structural.
+Runs on every PR touching `tileops/manifest/`. Scope is structural.
 
 In scope:
 

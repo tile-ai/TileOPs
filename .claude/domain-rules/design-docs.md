@@ -1,0 +1,2 @@
+- `docs/design/*.md` records top-level design decisions only — no file enumerations, line counts, or other implementation snapshots.
+- When a reviewer asks to add implementation detail (e.g. "list the current files"), push back unless the design itself changed. Test: would this wording survive the next 5 implementations?

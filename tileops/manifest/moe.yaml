@@ -1,0 +1,509 @@
+# moe.yaml -- manifest entries for the 'moe' family.
+#
+# Source of truth for op interfaces in this family. Loaded and merged with
+# other family files by tileops.manifest at runtime. See docs/design/manifest.md
+# for the full schema.
+
+MoePermutePaddedFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
+
+  signature:
+    inputs:
+      hidden_states: {dtype: "float16 | bfloat16"}
+      topk_ids: {dtype: "int32"}
+    outputs:
+      perm_h_pad: {dtype: "same_as(hidden_states)"}
+      padded_offsets: {dtype: "int32"}
+      padded_sizes: {dtype: "int32"}
+      expert_first_token_offset: {dtype: "int64"}
+      fwd_idx: {dtype: "int32"}
+    params:
+      total_tokens: {type: int}
+      top_k: {type: int}
+      num_experts: {type: int}
+      hidden_size: {type: int}
+    shape_rules:
+      - "hidden_states.shape == (total_tokens, hidden_size)"
+
+  workloads:
+    # Kimi K2: H=7168, E=384, K=8
+    - {total_tokens: 1, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-prefill"}
+    # DeepSeek-V3: H=7168, E=256, K=8
+    - {total_tokens: 1, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+    # Qwen3-235B-A22B: H=7168, E=128, K=8
+    - {total_tokens: 1, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
+    # Qwen3-30B-A3B: H=3072, E=128, K=8
+    - {total_tokens: 1, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-prefill"}
+
+  roofline:
+    # Permute is memory-bound (no compute); flops = 0
+    flops: "0"
+    # hidden_states read [T, H] + perm_h_pad write [T*K, H] + metadata
+    bytes: "(total_tokens * hidden_size + total_tokens * top_k * hidden_size) * elem_bytes + (num_experts + 1) * 8 + total_tokens * top_k * 4 + num_experts * 8"
+
+  source:
+    kernel: tileops/kernels/moe/permute_padded.py
+    op: tileops/ops/moe/permute_padded.py
+    test: tests/ops/test_moe_permute.py
+    bench: benchmarks/ops/bench_moe_permute.py
+    bench_manifest_driven: true
+
+MoePermuteAlignFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only  # impl uses numel instead of total_tokens/top_k; fix in follow-up PR
+
+  signature:
+    inputs:
+      topk_ids: {dtype: "int32"}
+    outputs:
+      sorted_token_ids: {dtype: "int32"}
+      expert_ids: {dtype: "int32"}
+      num_tokens_post_pad: {dtype: "int32"}
+    params:
+      total_tokens: {type: int}
+      top_k: {type: int}
+      num_experts: {type: int}
+      block_size: {type: int, default: 64}
+    shape_rules:
+      - "topk_ids.shape == (total_tokens, top_k)"
+
+  workloads:
+    # Kimi K2: E=384, K=8, block_size=64
+    - {total_tokens: 1, top_k: 8, num_experts: 384, block_size: 64, dtypes: [int32], label: "kimi-k2-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 384, block_size: 64, dtypes: [int32], label: "kimi-k2-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 384, block_size: 64, dtypes: [int32], label: "kimi-k2-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 384, block_size: 64, dtypes: [int32], label: "kimi-k2-prefill"}
+    # DeepSeek-V3: E=256, K=8, block_size=64
+    - {total_tokens: 1, top_k: 8, num_experts: 256, block_size: 64, dtypes: [int32], label: "deepseek-v3-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 256, block_size: 64, dtypes: [int32], label: "deepseek-v3-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 256, block_size: 64, dtypes: [int32], label: "deepseek-v3-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 256, block_size: 64, dtypes: [int32], label: "deepseek-v3-prefill"}
+    # Qwen3: E=128, K=8, block_size=64
+    - {total_tokens: 1, top_k: 8, num_experts: 128, block_size: 64, dtypes: [int32], label: "qwen3-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 128, block_size: 64, dtypes: [int32], label: "qwen3-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 128, block_size: 64, dtypes: [int32], label: "qwen3-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 128, block_size: 64, dtypes: [int32], label: "qwen3-prefill"}
+
+  roofline:
+    # Permute-align is integer index computation; no FLOPs
+    flops: "0"
+    # topk_ids read + sorted_token_ids write + expert_ids write + num_post_pad write (all int32)
+    bytes: "total_tokens * top_k * 4 + (total_tokens * top_k + (num_experts + 1) * (block_size - 1)) * 4 + ceil((total_tokens * top_k + (num_experts + 1) * (block_size - 1)) / block_size) * 4 + 4"
+
+  source:
+    kernel: tileops/kernels/moe/permute_align.py
+    op: tileops/ops/moe/permute_align.py
+    test: tests/ops/test_moe_permute_align.py
+    bench: benchmarks/ops/bench_moe_permute_align.py
+    bench_manifest_driven: true
+
+MoePermuteNopadFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
+
+  signature:
+    inputs:
+      hidden_states: {dtype: "float16 | bfloat16"}
+      topk_ids: {dtype: "int32"}
+    outputs:
+      perm_h: {dtype: "same_as(hidden_states)"}
+      true_offsets: {dtype: "int32"}
+      true_sizes: {dtype: "int32"}
+      expert_first_token_offset: {dtype: "int64"}
+      fwd_idx: {dtype: "int32"}
+    params:
+      total_tokens: {type: int}
+      top_k: {type: int}
+      num_experts: {type: int}
+      hidden_size: {type: int}
+    shape_rules:
+      - "hidden_states.shape == (total_tokens, hidden_size)"
+
+  workloads:
+    # Kimi K2: H=7168, E=384, K=8
+    - {total_tokens: 1, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-prefill"}
+    # DeepSeek-V3: H=7168, E=256, K=8
+    - {total_tokens: 1, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+    # Qwen3-235B-A22B: H=7168, E=128, K=8
+    - {total_tokens: 1, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
+    # Qwen3-30B-A3B: H=3072, E=128, K=8
+    - {total_tokens: 1, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-decode"}
+    - {total_tokens: 32, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-small"}
+    - {total_tokens: 512, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-medium"}
+    - {total_tokens: 4096, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-prefill"}
+
+  roofline:
+    # Permute is memory-bound; flops = 0
+    flops: "0"
+    # hidden_states read [T, H] + perm_h write [T*K, H] + metadata
+    bytes: "(total_tokens * hidden_size + total_tokens * top_k * hidden_size) * elem_bytes + (num_experts + 1) * 8 + total_tokens * top_k * 4 + num_experts * 8"
+
+  source:
+    kernel: tileops/kernels/moe/permute_nopad.py
+    op: tileops/ops/moe/permute_nopad.py
+    test: tests/ops/test_moe_permute.py
+    bench: benchmarks/ops/bench_moe_permute_nopad.py
+    bench_manifest_driven: true
+
+MoeUnpermuteFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
+
+  signature:
+    inputs:
+      mm2_pad: {dtype: "float16 | bfloat16"}
+      fwd_idx: {dtype: "int32"}
+      topk_weights: {dtype: "float32"}
+    outputs:
+      output: {dtype: "same_as(mm2_pad)"}
+    params:
+      total_tokens: {type: int}
+      top_k: {type: int}
+      hidden_size: {type: int}
+    shape_rules:
+      - "output.shape == (total_tokens, hidden_size)"
+
+  workloads:
+    # Kimi K2 / DeepSeek-V3 / Qwen3-235B-A22B: H=7168, K=8
+    - {total_tokens: 1, top_k: 8, hidden_size: 7168, dtypes: [bfloat16], label: "large-hidden-decode"}
+    - {total_tokens: 32, top_k: 8, hidden_size: 7168, dtypes: [bfloat16], label: "large-hidden-small"}
+    - {total_tokens: 512, top_k: 8, hidden_size: 7168, dtypes: [bfloat16], label: "large-hidden-medium"}
+    - {total_tokens: 4096, top_k: 8, hidden_size: 7168, dtypes: [bfloat16], label: "large-hidden-prefill"}
+    # Qwen3-30B-A3B: H=3072, K=8
+    - {total_tokens: 1, top_k: 8, hidden_size: 3072, dtypes: [bfloat16], label: "small-hidden-decode"}
+    - {total_tokens: 32, top_k: 8, hidden_size: 3072, dtypes: [bfloat16], label: "small-hidden-small"}
+    - {total_tokens: 512, top_k: 8, hidden_size: 3072, dtypes: [bfloat16], label: "small-hidden-medium"}
+    - {total_tokens: 4096, top_k: 8, hidden_size: 3072, dtypes: [bfloat16], label: "small-hidden-prefill"}
+
+  roofline:
+    # multiply + add per element per expert slot: 2 * T*K * H
+    flops: "2 * total_tokens * top_k * hidden_size"
+    # mm2_pad read [T*K, H] + output write [T, H] + fwd_idx read [T*K]*4 + topk_weights read [T*K]*4
+    bytes: "(total_tokens * top_k * hidden_size + total_tokens * hidden_size) * elem_bytes + total_tokens * top_k * 4 + total_tokens * top_k * 4"
+
+  source:
+    kernel: tileops/kernels/moe/unpermute.py
+    op: tileops/ops/moe/unpermute.py
+    test: tests/ops/test_moe_unpermute.py
+    bench: benchmarks/ops/bench_moe_unpermute.py
+    bench_manifest_driven: true
+
+FusedMoeExpertsFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+
+  signature:
+    inputs:
+      hidden_states: {dtype: "float16 | bfloat16"}
+      w_gate_up: {dtype: "same_as(hidden_states)"}
+      w_down: {dtype: "same_as(hidden_states)"}
+      topk_weights: {dtype: "float32"}
+      topk_ids: {dtype: "int32"}
+    outputs:
+      output: {dtype: "same_as(hidden_states)"}
+    params:
+      num_tokens: {type: int}
+      num_experts: {type: int}
+      top_k: {type: int}
+      hidden_size: {type: int}
+      ffn_size: {type: int}
+      routed_scaling_factor: {type: float, default: 1.0}
+    shape_rules:
+      - "output.shape == hidden_states.shape"
+
+  workloads:
+    - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+
+  roofline:
+    flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
+    bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
+
+  source:
+    kernel: tileops/ops/moe/fused_moe_experts.py
+    op: tileops/ops/moe/fused_moe_experts.py
+    test: tests/ops/test_moe_fused_moe.py
+    bench: benchmarks/ops/bench_moe_fused_moe.py
+
+FusedMoeExpertsPaddedFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+
+  signature:
+    inputs:
+      hidden_states: {dtype: "float16 | bfloat16"}
+      w_gate_up: {dtype: "same_as(hidden_states)"}
+      w_down: {dtype: "same_as(hidden_states)"}
+      topk_weights: {dtype: "float32"}
+      topk_ids: {dtype: "int32"}
+    outputs:
+      output: {dtype: "same_as(hidden_states)"}
+    params:
+      num_tokens: {type: int}
+      num_experts: {type: int}
+      top_k: {type: int}
+      hidden_size: {type: int}
+      ffn_size: {type: int}
+      routed_scaling_factor: {type: float, default: 1.0}
+    shape_rules:
+      - "output.shape == hidden_states.shape"
+
+  workloads:
+    - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+
+  roofline:
+    flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
+    bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
+
+  source:
+    kernel: tileops/ops/moe/fused_moe_experts.py
+    op: tileops/ops/moe/fused_moe_experts.py
+    test: tests/ops/test_moe_fused_moe.py
+    bench: benchmarks/ops/bench_moe_fused_moe.py
+
+MoeGroupedGemmNopadFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+
+  signature:
+    inputs:
+      a: {dtype: "float16 | bfloat16"}
+      b: {dtype: "same_as(a)"}
+      true_sizes: {dtype: "int32"}
+      true_offsets: {dtype: "int32"}
+    outputs:
+      c: {dtype: "same_as(a)"}
+    params:
+      numel: {type: int}
+      num_experts: {type: int}
+      n: {type: int}
+      k: {type: int}
+    shape_rules:
+      - "c.shape == (numel, n)"
+
+  workloads:
+    - {numel: 4096, num_experts: 256, n: 4096, k: 2048, dtypes: [bfloat16], label: "deepseek-v3-gate-up"}
+
+  roofline:
+    flops: "2 * numel * n * k"
+    bytes: "(numel * k + num_experts * n * k + numel * n) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
+    op: tileops/ops/moe/moe_grouped_gemm_nopad.py
+    test: tests/ops/test_moe_fused_moe.py
+    bench: benchmarks/ops/bench_moe_fused_moe.py
+
+MoEExpertsNopadFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+
+  signature:
+    inputs:
+      hidden_states: {dtype: "float16 | bfloat16"}
+      w_gate_up: {dtype: "same_as(hidden_states)"}
+      w_down: {dtype: "same_as(hidden_states)"}
+      topk_weights: {dtype: "float32"}
+      topk_ids: {dtype: "int32"}
+    outputs:
+      output: {dtype: "same_as(hidden_states)"}
+    params:
+      num_tokens: {type: int}
+      num_experts: {type: int}
+      top_k: {type: int}
+      hidden_size: {type: int}
+      ffn_size: {type: int}
+      routed_scaling_factor: {type: float, default: 1.0}
+    shape_rules:
+      - "hidden_states.shape == (num_tokens, hidden_size)"
+      - "w_gate_up.shape     == (num_experts, 2 * ffn_size, hidden_size)"
+      - "w_down.shape        == (num_experts, hidden_size, ffn_size)"
+      - "topk_weights.shape  == (num_tokens, top_k)"
+      - "topk_ids.shape      == (num_tokens, top_k)"
+      - "output.shape        == (num_tokens, hidden_size)"
+
+  workloads:
+    # Qwen3-235B-A22B: H=7168, F=2048, E=128, K=8
+    - {num_tokens: 512,  num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "qwen3-235b-decode"}
+    - {num_tokens: 4096, num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
+    # DeepSeek-V3: H=7168, F=2048, E=256, K=8
+    - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode"}
+    - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+
+  roofline:
+    flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
+    bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
+    op: tileops/ops/moe/experts/nopad.py
+    test: tests/ops/test_moe_experts_nopad.py
+    bench: benchmarks/ops/bench_moe_experts_nopad.py
+    bench_manifest_driven: false
+
+MoEExpertsPaddedFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+
+  signature:
+    inputs:
+      hidden_states: {dtype: "float16 | bfloat16"}
+      w_gate_up: {dtype: "same_as(hidden_states)"}
+      w_down: {dtype: "same_as(hidden_states)"}
+      topk_weights: {dtype: "float32"}
+      topk_ids: {dtype: "int32"}
+    outputs:
+      output: {dtype: "same_as(hidden_states)"}
+    params:
+      num_tokens: {type: int}
+      num_experts: {type: int}
+      top_k: {type: int}
+      hidden_size: {type: int}
+      ffn_size: {type: int}
+      routed_scaling_factor: {type: float, default: 1.0}
+    shape_rules:
+      - "hidden_states.shape == (num_tokens, hidden_size)"
+      - "w_gate_up.shape     == (num_experts, 2 * ffn_size, hidden_size)"
+      - "w_down.shape        == (num_experts, hidden_size, ffn_size)"
+      - "topk_weights.shape  == (num_tokens, top_k)"
+      - "topk_ids.shape      == (num_tokens, top_k)"
+      - "output.shape        == (num_tokens, hidden_size)"
+
+  workloads:
+    # Qwen3-235B-A22B: H=7168, F=2048, E=128, K=8
+    - {num_tokens: 512,  num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "qwen3-235b-decode"}
+    - {num_tokens: 4096, num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
+    # DeepSeek-V3: H=7168, F=2048, E=256, K=8
+    - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode"}
+    - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+
+  roofline:
+    flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
+    bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
+    op: tileops/ops/moe/experts/padded.py
+    test: tests/ops/test_moe_experts_nopad.py
+    bench: benchmarks/ops/bench_moe_experts_nopad.py
+    bench_manifest_driven: false
+
+FusedMoeFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+
+  signature:
+    inputs:
+      hidden_states: {dtype: "float16 | bfloat16"}
+      gating_output: {dtype: "float32"}
+      w_gate_up: {dtype: "same_as(hidden_states)"}
+      w_down: {dtype: "same_as(hidden_states)"}
+    outputs:
+      output: {dtype: "same_as(hidden_states)"}
+    params:
+      num_tokens: {type: int}
+      num_experts: {type: int}
+      top_k: {type: int}
+      hidden_size: {type: int}
+      ffn_size: {type: int}
+      scoring_func: {type: str, default: softmax}
+      renormalize: {type: bool, default: false}
+      routed_scaling_factor: {type: float, default: 1.0}
+    shape_rules:
+      - "hidden_states.shape == (num_tokens, hidden_size)"
+      - "gating_output.shape == (num_tokens, num_experts)"
+      - "output.shape        == (num_tokens, hidden_size)"
+
+  workloads:
+    # Qwen3-235B-A22B: scoring_func=softmax
+    - {num_tokens: 512,  num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: softmax, renormalize: false, dtypes: [bfloat16], label: "qwen3-235b-decode"}
+    - {num_tokens: 4096, num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: softmax, renormalize: false, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
+    # DeepSeek-V3: scoring_func=sigmoid
+    - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "deepseek-v3-decode"}
+    - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+
+  roofline:
+    func: "tileops.perf.formulas.fused_moe_fwd_bytes"
+
+  source:
+    kernel: tileops/ops/moe/fused_moe.py
+    op: tileops/ops/moe/fused_moe.py
+    test: tests/ops/test_moe_fused_moe.py
+    bench: benchmarks/ops/bench_moe_fused_moe.py
+    bench_manifest_driven: true
+
+FusedMoeFwdCbFwdOp:
+  ref_api: "none"
+  family: moe
+  status: spec-only
+  variant_of: FusedMoeFwdOp
+
+  signature:
+    inputs:
+      hidden_states: {dtype: "float16 | bfloat16"}
+      gating_output: {dtype: "float32"}
+      correction_bias: {dtype: "float32"}
+      w_gate_up: {dtype: "same_as(hidden_states)"}
+      w_down: {dtype: "same_as(hidden_states)"}
+    outputs:
+      output: {dtype: "same_as(hidden_states)"}
+    params:
+      num_tokens: {type: int}
+      num_experts: {type: int}
+      top_k: {type: int}
+      hidden_size: {type: int}
+      ffn_size: {type: int}
+      scoring_func: {type: str, default: sigmoid}
+      renormalize: {type: bool, default: false}
+      routed_scaling_factor: {type: float, default: 1.0}
+    shape_rules:
+      - "hidden_states.shape   == (num_tokens, hidden_size)"
+      - "gating_output.shape   == (num_tokens, num_experts)"
+      - "correction_bias.shape == (num_experts,)"
+      - "output.shape          == (num_tokens, hidden_size)"
+
+  workloads:
+    # Kimi K2: scoring_func=sigmoid, correction_bias
+    - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "kimi-k2-decode"}
+    - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "kimi-k2-prefill"}
+
+  roofline:
+    func: "tileops.perf.formulas.fused_moe_fwd_bytes"
+
+  source:
+    kernel: tileops/ops/moe/fused_moe.py
+    op: tileops/ops/moe/fused_moe.py
+    test: tests/ops/test_moe_fused_moe.py
+    bench: benchmarks/ops/bench_moe_fused_moe.py
+    bench_manifest_driven: true

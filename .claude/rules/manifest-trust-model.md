@@ -1,4 +1,4 @@
-- `ops_manifest.yaml` is the source of truth for op interfaces. A PR that implements/modifies ops or kernels must not also modify the manifest. Manifest changes go in their own PR with human review.
+- `tileops/manifest/` is the source of truth for op interfaces. A PR that implements/modifies ops or kernels must not also modify the manifest. Manifest changes go in their own PR with human review.
 - When the op name matches a PyTorch op (`torch.nn.*`, `torch.nn.functional.*`), the manifest signature must match PyTorch's public API. Do not invent parameters.
 - Implementation does not conform to spec → set `status: spec-only`, fix code in follow-up PR. Never modify manifest to match code.
 - Do not remove `roofline.vars`, `shape_rules`, or `params` to silence validator errors.

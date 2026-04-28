@@ -1,0 +1,564 @@
+# attention.yaml -- manifest entries for the 'attention' family.
+#
+# Source of truth for op interfaces in this family. Loaded and merged with
+# other family files by tileops.manifest at runtime. See docs/design/manifest.md
+# for the full schema.
+
+MultiHeadAttentionFwdOp:
+  ref_api: "torch.nn.functional.scaled_dot_product_attention"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool, default: true}
+    shape_rules:
+      - "q.shape == (B, S, H, D)"
+      - "k.shape == (B, S, H, D)"
+      - "v.shape == (B, S, H, D)"
+      - "o.shape == (B, S, H, D)"
+
+  workloads:
+    # Llama-3.1-8B (H=32, D=128)
+    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 32, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-short"}
+    - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 32, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-long"}
+    # Llama-3.1-70B (H=64, D=128)
+    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short"}
+    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long"}
+
+  roofline:
+    func: "tileops.perf.formulas.mha_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_fwd.py
+    kernel_map:
+      mha_fwd_kernel: MHAFwdKernel
+    op: tileops/ops/attention/mha.py
+    test: tests/ops/attention/test_mha.py
+    bench: benchmarks/ops/attention/bench_mha.py
+
+MultiHeadAttentionBwdOp:
+  ref_api: "torch.nn.functional.scaled_dot_product_attention"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      o: {dtype: "same_as(q)"}
+      do: {dtype: "same_as(q)"}
+      lse: {dtype: "float32"}
+    outputs:
+      dq: {dtype: "same_as(q)"}
+      dk: {dtype: "same_as(q)"}
+      dv: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool, default: true}
+    shape_rules:
+      - "q.shape == (B, S, H, D)"
+      - "k.shape == (B, S, H, D)"
+      - "v.shape == (B, S, H, D)"
+      - "o.shape == (B, S, H, D)"
+      - "do.shape == (B, S, H, D)"
+      - "lse.shape == (B, H, S)"
+      - "dq.shape == (B, S, H, D)"
+      - "dk.shape == (B, S, H, D)"
+      - "dv.shape == (B, S, H, D)"
+
+  workloads:
+    # Llama-3.1-8B (H=32, D=128)
+    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 32, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-short"}
+    - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 32, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-long"}
+    # Llama-3.1-70B (H=64, D=128)
+    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short"}
+    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long"}
+
+  roofline:
+    func: "tileops.perf.formulas.mha_bwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_bwd.py
+    kernel_map:
+      mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+      mha_bwd_kernel: MHABwdKernel
+      mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
+    op: tileops/ops/attention/mha.py
+    test: tests/ops/attention/test_mha.py
+    bench: benchmarks/ops/attention/bench_mha.py
+
+GroupedQueryAttentionFwdOp:
+  ref_api: "torch.nn.functional.scaled_dot_product_attention"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool, default: true}
+    shape_rules:
+      - "q.shape == (B, S, H, D)"
+      - "k.shape == (B, S, H_kv, D)"
+      - "v.shape == (B, S, H_kv, D)"
+      - "o.shape == (B, S, H, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    # Llama-3.1-8B (H=32, H_kv=8, D=128)
+    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-short"}
+    - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-long"}
+    # Llama-3.1-70B (H=64, H_kv=8, D=128)
+    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short"}
+    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_fwd.py
+    kernel_map:
+      gqa_fwd_kernel: GQAFwdKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa.py
+    bench: benchmarks/ops/attention/bench_gqa.py
+
+GroupedQueryAttentionBwdOp:
+  ref_api: "torch.nn.functional.scaled_dot_product_attention"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      o: {dtype: "same_as(q)"}
+      do: {dtype: "same_as(q)"}
+      lse: {dtype: "float32"}
+    outputs:
+      dq: {dtype: "same_as(q)"}
+      dk: {dtype: "same_as(q)"}
+      dv: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool, default: true}
+    shape_rules:
+      - "q.shape == (B, S, H, D)"
+      - "k.shape == (B, S, H_kv, D)"
+      - "v.shape == (B, S, H_kv, D)"
+      - "o.shape == (B, S, H, D)"
+      - "do.shape == (B, S, H, D)"
+      - "lse.shape == (B, H, S)"
+      - "dq.shape == (B, S, H, D)"
+      - "dk.shape == (B, S, H_kv, D)"
+      - "dv.shape == (B, S, H_kv, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    # Llama-3.1-8B (H=32, H_kv=8, D=128)
+    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-short"}
+    - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-long"}
+    # Llama-3.1-70B (H=64, H_kv=8, D=128)
+    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short"}
+    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_bwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_bwd.py
+    kernel_map:
+      gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+      gqa_bwd_kernel: GQABwdKernel
+      gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa.py
+    bench: benchmarks/ops/attention/bench_gqa.py
+
+# ---------------------------------------------------------------------------
+# attention — decode (single-query against KV cache)
+# ---------------------------------------------------------------------------
+
+MultiHeadAttentionDecodeWithKVCacheFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params: {}
+    shape_rules:
+      - "q.shape == (B, S_q, H, D)"
+      - "k.shape == (B, N_kv, H, D)"
+      - "v.shape == (B, N_kv, H, D)"
+      - "o.shape == (B, S_q, H, D)"
+
+  workloads:
+    # Llama-3.1-8B (H=32, D=128), short KV
+    - {q_shape: [32, 1, 32, 128], kv_shape: [32, 4096, 32, 128], dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k"}
+    # Llama-3.1-8B, long KV
+    - {q_shape: [8, 1, 32, 128], kv_shape: [8, 32768, 32, 128], dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k"}
+    # Llama-3.1-70B (H=64, D=128), short KV
+    - {q_shape: [16, 1, 64, 128], kv_shape: [16, 4096, 64, 128], dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k"}
+    # Llama-3.1-70B, long KV
+    - {q_shape: [4, 1, 64, 128], kv_shape: [4, 32768, 64, 128], dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k"}
+
+  roofline:
+    func: "tileops.perf.formulas.mha_decode_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/mha_decode.py
+    kernel_map:
+      mha_decode_kernel: MHADecodeKernel
+    op: tileops/ops/attention/mha.py
+    test: tests/ops/attention/test_mha_decode.py
+    bench: benchmarks/ops/attention/bench_mha_decode.py
+
+MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      real_seqlen_kv: {dtype: "int32"}
+      block_table: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      page_size: {type: int}
+      is_causal: {type: bool, default: false}
+    shape_rules:
+      - "q.shape == (B, S_q, H, D)"
+      - "k.shape == (N_kv, H, D)"
+      - "v.shape == (N_kv, H, D)"
+      - "real_seqlen_kv.shape == (B,)"
+      - "block_table.shape == (B, num_pages)"
+      - "o.shape == (B, S_q, H, D)"
+
+  workloads:
+    # Llama-3.1-8B (H=32, D=128), short KV, page_size=1
+    - {q_shape: [32, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg1"}
+    # Llama-3.1-8B, short KV, page_size=64
+    - {q_shape: [32, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg64"}
+    # Llama-3.1-8B, long KV, page_size=1
+    - {q_shape: [8, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg1"}
+    # Llama-3.1-8B, long KV, page_size=64
+    - {q_shape: [8, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg64"}
+    # Llama-3.1-70B (H=64, D=128), short KV, page_size=1
+    - {q_shape: [16, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg1"}
+    # Llama-3.1-70B, short KV, page_size=64
+    - {q_shape: [16, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg64"}
+    # Llama-3.1-70B, long KV, page_size=1
+    - {q_shape: [4, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg1"}
+    # Llama-3.1-70B, long KV, page_size=64
+    - {q_shape: [4, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg64"}
+
+  roofline:
+    func: "tileops.perf.formulas.mha_decode_paged_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/mha_decode_paged.py
+    kernel_map:
+      mha_decode_paged_kernel: MHADecodePagedKernel
+    op: tileops/ops/attention/mha.py
+    test: tests/ops/attention/test_mha_decode_paged.py
+    bench: benchmarks/ops/attention/bench_mha_decode_paged.py
+
+GroupedQueryAttentionDecodeWithKVCacheFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params: {}
+    shape_rules:
+      - "q.shape == (B, H, D)"
+      - "k.shape == (B, N_kv, H_kv, D)"
+      - "v.shape == (B, N_kv, H_kv, D)"
+      - "o.shape == (B, H, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    # Llama-3.1-8B (H=32, H_kv=8, D=128), short KV
+    - {q_shape: [32, 32, 128], kv_shape: [32, 4096, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k"}
+    # Llama-3.1-8B, long KV
+    - {q_shape: [8, 32, 128], kv_shape: [8, 32768, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k"}
+    # Llama-3.1-70B (H=64, H_kv=8, D=128), short KV
+    - {q_shape: [16, 64, 128], kv_shape: [16, 4096, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k"}
+    # Llama-3.1-70B, long KV
+    - {q_shape: [4, 64, 128], kv_shape: [4, 32768, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_decode_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_decode.py
+    kernel_map:
+      gqa_decode_kernel: GQADecodeKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa_decode.py
+    bench: benchmarks/ops/attention/bench_gqa_decode.py
+
+GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      real_seqlen_kv: {dtype: "int32"}
+      block_table: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      page_size: {type: int}
+    shape_rules:
+      - "q.shape == (B, H, D)"
+      - "k.shape == (N_kv, H_kv, D)"
+      - "v.shape == (N_kv, H_kv, D)"
+      - "real_seqlen_kv.shape == (B,)"
+      - "block_table.shape == (B, num_pages)"
+      - "o.shape == (B, H, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    # Llama-3.1-8B (H=32, H_kv=8, D=128), short KV, page_size=1
+    - {q_shape: [32, 32, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg1"}
+    # Llama-3.1-8B, short KV, page_size=64
+    - {q_shape: [32, 32, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg64"}
+    # Llama-3.1-8B, long KV, page_size=1
+    - {q_shape: [8, 32, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg1"}
+    # Llama-3.1-8B, long KV, page_size=64
+    - {q_shape: [8, 32, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg64"}
+    # Llama-3.1-70B (H=64, H_kv=8, D=128), short KV, page_size=1
+    - {q_shape: [16, 64, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg1"}
+    # Llama-3.1-70B, short KV, page_size=64
+    - {q_shape: [16, 64, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg64"}
+    # Llama-3.1-70B, long KV, page_size=1
+    - {q_shape: [4, 64, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg1"}
+    # Llama-3.1-70B, long KV, page_size=64
+    - {q_shape: [4, 64, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg64"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_decode_paged_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_decode_paged.py
+    kernel_map:
+      gqa_decode_paged_kernel: GQADecodePagedKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa_decode_paged.py
+    bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
+
+# ---------------------------------------------------------------------------
+# attention — sliding window
+# ---------------------------------------------------------------------------
+
+GroupedQueryAttentionSlidingWindowFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool, default: true}
+      window_size_left: {type: int, default: -1}
+      window_size_right: {type: int, default: -1}
+    shape_rules:
+      - "q.shape == (B, S, H, D)"
+      - "k.shape == (B, S, H_kv, D)"
+      - "v.shape == (B, S, H_kv, D)"
+      - "o.shape == (B, S, H, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    # Llama-3.1-8B (H=32, H_kv=8, D=128), short seq
+    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 8, 128], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-3.1-8b-short-w256"}
+    - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 8, 128], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-3.1-8b-long-w1024"}
+    # Llama-3.1-70B (H=64, H_kv=8, D=128)
+    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 8, 128], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short-w256"}
+    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 8, 128], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long-w1024"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_sliding_window_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_sliding_window_fwd.py
+    kernel_map:
+      gqa_sliding_window_fwd: GQASlidingWindowFwdKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa_sliding_window.py
+    bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
+
+GroupedQueryAttentionSlidingWindowVarlenFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      cu_seqlens_q: {dtype: "int32"}
+      cu_seqlens_k: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool, default: true}
+      window_size_left: {type: int, default: -1}
+      window_size_right: {type: int, default: -1}
+      max_seqlen_q: {type: int}
+    shape_rules:
+      - "q.shape == (total_q, H, D)"
+      - "k.shape == (total_k, H_kv, D)"
+      - "v.shape == (total_k, H_kv, D)"
+      - "cu_seqlens_q.shape == (B + 1,)"
+      - "cu_seqlens_k.shape == (B + 1,)"
+      - "o.shape == (total_q, H, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    # Llama-3.1-8B (H=32, H_kv=8, D=128), short seq
+    - {total_q: 2048, total_k: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-3.1-8b-short-w256"}
+    - {total_q: 8192, total_k: 8192, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-3.1-8b-long-w1024"}
+    # Llama-3.1-70B (H=64, H_kv=8, D=128)
+    - {total_q: 2048, total_k: 2048, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-3.1-70b-short-w256"}
+    - {total_q: 8192, total_k: 8192, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-3.1-70b-long-w1024"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_sliding_window_varlen_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
+    kernel_map:
+      gqa_sliding_window_varlen_fwd: GQASlidingWindowVarlenFwdKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa_sliding_window_varlen.py
+    bench: benchmarks/ops/attention/bench_gqa_sliding_window_varlen.py
+
+# ---------------------------------------------------------------------------
+# attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
+# ---------------------------------------------------------------------------
+
+MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      q_pe: {dtype: "same_as(q)"}
+      k: {dtype: "same_as(q)"}
+      k_pe: {dtype: "same_as(q)"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      pe_dim: {type: int}
+    shape_rules:
+      - "q.shape == (B, H, D)"
+      - "q_pe.shape == (B, H, pe_dim)"
+      - "k.shape == (B, N_kv, H_kv, D)"
+      - "k_pe.shape == (B, N_kv, H_kv, pe_dim)"
+      - "o.shape == (B, H, D)"
+
+  workloads:
+    # DeepSeek-V2 (H=128, H_kv=1, D=128, pe_dim=64), short KV
+    - {q_shape: [32, 128, 128], q_pe_shape: [32, 128, 64], kv_shape: [32, 4096, 1, 128], k_pe_shape: [32, 4096, 1, 64], pe_dim: 64, dtypes: [float16, bfloat16], label: "deepseek-v2-4k"}
+    # DeepSeek-V2, long KV
+    - {q_shape: [8, 128, 128], q_pe_shape: [8, 128, 64], kv_shape: [8, 32768, 1, 128], k_pe_shape: [8, 32768, 1, 64], pe_dim: 64, dtypes: [float16, bfloat16], label: "deepseek-v2-32k"}
+    # DeepSeek-V3 (H=128, H_kv=1, D=128, pe_dim=64), short KV
+    - {q_shape: [16, 128, 128], q_pe_shape: [16, 128, 64], kv_shape: [16, 4096, 1, 128], k_pe_shape: [16, 4096, 1, 64], pe_dim: 64, dtypes: [bfloat16], label: "deepseek-v3-4k"}
+    # DeepSeek-V3, long KV
+    - {q_shape: [4, 128, 128], q_pe_shape: [4, 128, 64], kv_shape: [4, 32768, 1, 128], k_pe_shape: [4, 32768, 1, 64], pe_dim: 64, dtypes: [bfloat16], label: "deepseek-v3-32k"}
+
+  roofline:
+    func: "tileops.perf.formulas.deepseek_mla_decode_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/deepseek_mla_decode.py
+    kernel_map:
+      mla_decode_kernel: MLADecodeKernel
+    op: tileops/ops/attention/deepseek_mla.py
+    test: tests/ops/attention/test_deepseek_mla_decode.py
+    bench: benchmarks/ops/attention/bench_deepseek_mla_decode.py
+
+DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      kv: {dtype: "same_as(q)"}
+      indices: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      dim_tail: {type: int}
+      topk: {type: int}
+      stride_kv: {type: int}
+      q_start_index_s: {type: int}
+      is_causal: {type: bool, default: true}
+      sm_scale: {type: float, default: null}
+    shape_rules:
+      - "q.shape == (B, S, H, D + dim_tail)"
+      - "kv.shape == (B, S_kv, H_kv, D + dim_tail)"
+      - "indices.shape == (B, S, H_kv, topk)"
+      - "o.shape == (B, S, H, D)"
+
+  workloads:
+    # DeepSeek-V2 (H=128, H_kv=1, D=128, dim_tail=64, topk=8, stride_kv=64)
+    - {q_shape: [4, 1, 128, 192], kv_shape: [4, 4096, 1, 192], indices_shape: [4, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [float16, bfloat16], label: "deepseek-v2-4k"}
+    - {q_shape: [2, 1, 128, 192], kv_shape: [2, 32768, 1, 192], indices_shape: [2, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [float16, bfloat16], label: "deepseek-v2-32k"}
+    # DeepSeek-V3 (H=128, H_kv=1, D=128, dim_tail=64, topk=8, stride_kv=64)
+    - {q_shape: [4, 1, 128, 192], kv_shape: [4, 4096, 1, 192], indices_shape: [4, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [bfloat16], label: "deepseek-v3-4k"}
+    - {q_shape: [2, 1, 128, 192], kv_shape: [2, 32768, 1, 192], indices_shape: [2, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [bfloat16], label: "deepseek-v3-32k"}
+
+  roofline:
+    func: "tileops.perf.formulas.deepseek_dsa_decode_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/deepseek_dsa_decode.py
+    kernel_map:
+      sparse_mla_kernel: SparseMlaKernel
+    op: tileops/ops/attention/deepseek_dsa.py
+    test: tests/ops/attention/test_deepseek_dsa_decode.py
+    bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py

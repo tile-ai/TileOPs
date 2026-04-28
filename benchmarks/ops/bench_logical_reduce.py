@@ -1,7 +1,7 @@
 """Benchmarks for logical reduce ops (any, all, count_nonzero).
 
 Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
-Workload shapes and roofline formulas are loaded from ops_manifest.yaml.
+Workload shapes and roofline formulas are loaded from the ops manifest (tileops/manifest/).
 """
 
 import pytest

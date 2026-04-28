@@ -11,7 +11,7 @@ description: Per-op orchestrator that brings a single op into alignment with its
 
 ## Contract
 
-- **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as scaffold-op; see [PRE_CHECK](#pre_check)).
+- **Input**: `op_name` must be present in [`tileops/manifest/`](../../../tileops/manifest/) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as scaffold-op; see [PRE_CHECK](#pre_check)).
 - **Path and data bindings used throughout this skill** (resolved by the orchestrator once at `PRE_CHECK` when the manifest entry is first loaded, then passed into every sub-skill invocation):
   - `<source_op>` — manifest `source.op` path (e.g., `tileops/ops/reduction/cumsum.py`).
   - `<source_test>` — manifest `source.test` path (e.g., `tests/ops/test_cumulative.py`).
@@ -23,7 +23,7 @@ description: Per-op orchestrator that brings a single op into alignment with its
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports no errors + `python -m pytest <source_test> -v` passes + benchmark produces numbers + manifest status flipped.
 - **Termination (blocked)**: any sub-skill (scaffold-op / test-op / implement-op / bench-op) returns blocked; or scaffold-op §1 drift; or REVALIDATE fails. Kernel-layer mismatches surfaced by `KERNEL_CHECK` are **informational only** and never cause BLOCKED by themselves — BLOCKED is reached only if a kernel drift propagates into a downstream sub-skill failure (e.g., bench-op runtime error, REVALIDATE regression). Archives are kept for post-mortem.
 - **Constraints**:
-  - Only align-op (and only at FLIP_STATUS) may modify `ops_manifest.yaml`. Sub-skills never touch the manifest.
+  - Only align-op (and only at FLIP_STATUS) may modify `tileops/manifest/`. Sub-skills never touch the manifest.
   - MUST NOT modify kernel code. Kernel-layer work, if needed, is surfaced via `kernel-check.json` as a separate follow-up.
   - MUST NOT expand to multi-op scope; that is `align-family`'s role.
 
@@ -83,7 +83,7 @@ stateDiagram-v2
 
 Preconditions identical to `scaffold-op`'s — orchestrator enforces them up front so sub-skills never see ill-formed input:
 
-- `op_name` in `ops_manifest.yaml` → proceed; otherwise BLOCKED ("op not in manifest").
+- `op_name` in `tileops/manifest/` → proceed; otherwise BLOCKED ("op not in manifest").
 - `status: spec-only` → proceed; `implemented` → BLOCKED ("already aligned; flip status to spec-only in a manifest PR first if you intend to re-align"); missing/other → BLOCKED.
 - `source.kernel_map` declared and non-empty → proceed; missing → BLOCKED with the same guidance scaffold-op uses (add in a prerequisite manifest PR).
 - Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path" — kernel must exist for op layer to align, regardless of case).
@@ -102,7 +102,7 @@ Decide which case applies. Machine-decidable input: does `source.op` exist?
 - `source.op` **missing** → only `green` is valid. `--mode=minor` → BLOCKED ("`source.op` is missing; cannot edit a non-existent op file; use `--mode=green` or omit `--mode`"). `--mode=redesign` → BLOCKED ("`source.op` is missing; no archive source to rewrite; use `--mode=green` or omit `--mode`").
 - `source.op` **exists** → `--mode=green` → BLOCKED ("`source.op` already exists; green-field scaffold would silently overwrite; use `--mode=redesign` for rewrite+port or `--mode=minor` for in-place edit").
 
-**First-op bias.** If no op in the same `family` has `status: implemented` and follows the canonical pattern (`docs/ops-design.md` § Step 3), set `auto-case = redesign` (skip the prompt). mode.json: `decided_by: "auto"`, `reason: "no canonical-pattern precedent in family <name>"`. User may override with `--mode=minor`.
+**First-op bias.** If no op in the same `family` has `status: implemented` and follows the canonical pattern (`docs/design/ops-design.md` § Step 3), set `auto-case = redesign` (skip the prompt). mode.json: `decided_by: "auto"`, `reason: "no canonical-pattern precedent in family <name>"`. User may override with `--mode=minor`.
 
 Write `.foundry/plan/<op_name>/mode.json`:
 

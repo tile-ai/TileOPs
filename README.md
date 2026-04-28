@@ -30,7 +30,7 @@ This separation keeps user-facing behavior independent of GPU strategy, allowing
 
 ### Key Properties
 
-- **Spec-driven** — each operator is declared in a machine-readable manifest (`ops_manifest.yaml`) that specifies signatures, workloads, and roofline formulas, serving as the entry point for both agent code generation and automated validation
+- **Spec-driven** — each operator is declared in a machine-readable manifest (`tileops/manifest/`) that specifies signatures, workloads, and roofline formulas, serving as the entry point for both agent code generation and automated validation
 - **Roofline-evaluated** — kernel performance is measured against Speed-of-Light hardware bounds, not relative baselines
 - **Auto-tuning** — built-in search over tile sizes, pipelines, and scheduling parameters
 - **Lightweight** — depends only on TileLang, PyTorch, and einops

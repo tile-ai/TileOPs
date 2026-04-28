@@ -1,12 +1,20 @@
 # Op Manifest Specification
 
-[`ops_manifest.yaml`](../tileops/ops_manifest.yaml) is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
+The [`tileops/manifest/`](../../tileops/manifest/) package is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
+
+## Layout
+
+The manifest is split across one or more YAML files per op family. A family is normally a single file; large families may be sharded across multiple files. Each file is a flat top-level mapping of op name → entry (no wrapper key). The `tileops.manifest` package merges all files at load time; duplicate op names across files are an error.
+
+- **Add or edit an op**: edit the family file matching the op's `family` field. Use `ruamel.yaml` for round-trip edits.
+- **Read programmatically**: `from tileops.manifest import load_manifest, load_workloads, manifest_files`. `load_manifest()` returns the merged `ops` dict.
+- **Read for inspection**: parse the relevant family file with `yaml.safe_load`. There is no aggregate file on disk.
 
 ## Trust Model
 
 ```mermaid
 flowchart LR
-    H["Human reviewer"] -->|writes / approves| M["ops_manifest.yaml"]
+    H["Human reviewer"] -->|writes / approves| M["tileops/manifest/"]
     M -->|reads spec from| A["Agent (codegen)"]
     A -->|produces| C["Op code, tests, benchmarks"]
     M -->|validates against| V["Validator (CI)"]
@@ -15,7 +23,7 @@ flowchart LR
 
 - **Human reviewer** — only actor that modifies the manifest. All changes require PR review.
 - **Agent** — generates Ops, tests, benchmarks from the manifest. Reads only, never modifies.
-- **Validator** — [`scripts/validate_manifest.py`](../scripts/validate_manifest.py) in CI. Enforces manifest ↔ code consistency.
+- **Validator** — [`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) in CI. Enforces manifest ↔ code consistency.
 
 **Invariants:**
 
@@ -194,7 +202,7 @@ The base class emits a once-per-type runtime warning if the default `_cache_key`
 
 ## Manifest Key Format
 
-Each entry in `ops:` is keyed by the **Python class name** of the Op — PascalCase with a mandatory direction suffix and `Op` suffix:
+Each top-level entry is keyed by the **Python class name** of the Op — PascalCase with a mandatory direction suffix and `Op` suffix:
 
 ```
 {PascalCaseName}{Direction}Op
@@ -421,43 +429,42 @@ These rules are `shape_rules` (Python expressions) rather than a new manifest fi
 **Full entry — RMSNorm:**
 
 ```yaml
-ops:
-  RMSNormFwdOp:
-    family: normalization
-    ref_api: "torch.nn.functional.rms_norm"
-    status: implemented
+RMSNormFwdOp:
+  family: normalization
+  ref_api: "torch.nn.functional.rms_norm"
+  status: implemented
 
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16"}
-        weight: {dtype: "same_as(x)"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      params:
-        dim: {type: int, default: -1}
-        eps: {type: float, default: 1e-6}
-      static_dims:
-        N: "x.shape[dim]"
-      shape_rules:
-        - "y.shape == x.shape"
-        - "weight.shape == (x.shape[dim],)"
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16"}
+      weight: {dtype: "same_as(x)"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    params:
+      dim: {type: int, default: -1}
+      eps: {type: float, default: 1e-6}
+    static_dims:
+      N: "x.shape[dim]"
+    shape_rules:
+      - "y.shape == x.shape"
+      - "weight.shape == (x.shape[dim],)"
 
-    workloads:
-      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-      - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+  workloads:
+    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
 
-    roofline:
-      vars:
-        M: "product(x.shape[:dim])"
-        N: "x.shape[dim]"
-      flops: "4 * M * N"
-      bytes: "(2 * M * N + N) * elem_bytes"
+  roofline:
+    vars:
+      M: "product(x.shape[:dim])"
+      N: "x.shape[dim]"
+    flops: "4 * M * N"
+    bytes: "(2 * M * N + N) * elem_bytes"
 
-    source:
-      kernel: tileops/kernels/norm/rms_norm.py
-      op: tileops/ops/norm/rms_norm.py
-      test: tests/ops/test_rms_norm.py
-      bench: benchmarks/ops/bench_rms_norm.py
+  source:
+    kernel: tileops/kernels/norm/rms_norm.py
+    op: tileops/ops/norm/rms_norm.py
+    test: tests/ops/test_rms_norm.py
+    bench: benchmarks/ops/bench_rms_norm.py
 ```
 
 ## Benchmark Pattern
@@ -491,7 +498,7 @@ workloads:
 
 ## Manifest Validation
 
-[`scripts/validate_manifest.py`](../scripts/validate_manifest.py) runs five levels:
+[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) runs five levels:
 
 | Level | Check     | Description                                                                                                                 |
 | ----- | --------- | --------------------------------------------------------------------------------------------------------------------------- |

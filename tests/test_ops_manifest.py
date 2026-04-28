@@ -1,4 +1,4 @@
-"""Schema validation for ops_manifest.yaml.
+"""Schema validation for the ops manifest.
 
 Validates structural invariants across all ops in the manifest.
 Not op-specific — tests apply to every entry.
@@ -7,44 +7,36 @@ Not op-specific — tests apply to every entry.
 from pathlib import Path
 
 import pytest
-import yaml
+
+from tileops.manifest import load_manifest, manifest_files
 
 pytestmark = pytest.mark.smoke
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = REPO_ROOT / "tileops" / "ops_manifest.yaml"
+MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
 
 
 @pytest.fixture(scope="module")
-def manifest():
-    """Load and parse the ops manifest."""
-    assert MANIFEST_PATH.exists(), f"ops_manifest.yaml not found at {MANIFEST_PATH}"
-    with open(MANIFEST_PATH) as f:
-        data = yaml.safe_load(f)
-    assert isinstance(data, dict), "Manifest root must be a YAML mapping"
-    return data
-
-
-@pytest.fixture(scope="module")
-def all_ops(manifest):
-    """Return the ops dict from the manifest."""
-    assert "ops" in manifest, "Manifest must have top-level 'ops' key"
-    assert isinstance(manifest["ops"], dict)
-    return manifest["ops"]
+def all_ops():
+    """Return the merged ops dict from the manifest package."""
+    ops = load_manifest()
+    assert isinstance(ops, dict)
+    return ops
 
 
 class TestManifestStructure:
-    """Manifest file exists, parses, and has the expected top-level structure."""
+    """Manifest package exists and contributes at least one family file."""
 
-    def test_manifest_exists(self):
-        assert MANIFEST_PATH.exists()
+    def test_manifest_dir_exists(self):
+        assert MANIFEST_DIR.is_dir()
 
-    def test_manifest_is_valid_yaml(self, manifest):
-        assert manifest is not None
+    def test_manifest_has_family_files(self):
+        files = manifest_files()
+        assert len(files) >= 1
+        assert all(p.name.endswith(".yaml") for p in files)
 
-    def test_has_ops_key(self, manifest):
-        assert "ops" in manifest
-        assert isinstance(manifest["ops"], dict)
+    def test_manifest_loads(self, all_ops):
+        assert all_ops
 
 
 class TestOpSchema:

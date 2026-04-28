@@ -4,13 +4,13 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 ## Core Abstractions
 
-| Class              | Location                                                          | Role                                                                                                                                                                                |
-| ------------------ | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkloadBase`     | [`workloads/workload_base.py`](../workloads/workload_base.py)     | ABC defining `gen_inputs()`. Shared base for input generation used by both tests and benchmarks.                                                                                    |
-| `FixtureBase`      | [`workloads/workload_base.py`](../workloads/workload_base.py)     | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.                                                     |
-| `TestBase`         | [`tests/test_base.py`](../tests/test_base.py)                     | Inherits `WorkloadBase`. Adds `ref_program()` and `check()`. Each op subclasses this for correctness testing.                                                                       |
-| `BenchmarkBase[W]` | [`benchmarks/benchmark_base.py`](../benchmarks/benchmark_base.py) | Generic ABC parameterized by workload type `W` (a capability protocol, not `WorkloadBase`). Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
-| `BenchmarkReport`  | [`benchmarks/benchmark_base.py`](../benchmarks/benchmark_base.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                                                                          |
+| Class              | Location                                                             | Role                                                                                                                                                                                |
+| ------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkloadBase`     | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | ABC defining `gen_inputs()`. Shared base for input generation used by both tests and benchmarks.                                                                                    |
+| `FixtureBase`      | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.                                                     |
+| `TestBase`         | [`tests/test_base.py`](../../tests/test_base.py)                     | Inherits `WorkloadBase`. Adds `ref_program()` and `check()`. Each op subclasses this for correctness testing.                                                                       |
+| `BenchmarkBase[W]` | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Generic ABC parameterized by workload type `W` (a capability protocol, not `WorkloadBase`). Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
+| `BenchmarkReport`  | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                                                                          |
 
 ## Wiring
 
@@ -28,9 +28,9 @@ Rules:
 
 ## Tests
 
-→ Trust boundary: [trust-model.md §Test](trust-model.md#test) | Rules: [testing-budget.md](../.claude/domain-rules/testing-budget.md)
+→ Trust boundary: [trust-model.md §Test](trust-model.md#test) | Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md)
 
-**Framework:** pytest. **Location:** [`tests/ops/`](../tests/ops/).
+**Framework:** pytest. **Location:** [`tests/ops/`](../../tests/ops/).
 
 ### File checklist
 
@@ -73,7 +73,7 @@ No performance exploration, autotune sweeps, or duplicate code-path coverage.
 - **Degenerate dimension** — size=1 (broadcast, squeeze paths)
 - **Dispatch branch** — different shape ranges triggering different kernel variants
 
-The implementer selects the smallest shape that triggers each branch. Do not generate test fixtures from [`ops_manifest.yaml`](../tileops/ops_manifest.yaml) workloads.
+The implementer selects the smallest shape that triggers each branch. Do not generate test fixtures from [`tileops/manifest/`](../../tileops/manifest/) workloads.
 
 **Growth rules:**
 
@@ -83,7 +83,7 @@ The implementer selects the smallest shape that triggers each branch. Do not gen
 
 ### Test node growth detection
 
-[`scripts/test_node_delta.py`](../scripts/test_node_delta.py) compares **pytest collected node count** (test cases after parametrize expansion) between current branch and main. Always exits 0 (non-blocking).
+[`scripts/test_node_delta.py`](../../scripts/test_node_delta.py) compares **pytest collected node count** (test cases after parametrize expansion) between current branch and main. Always exits 0 (non-blocking).
 
 ```bash
 python scripts/test_node_delta.py                    # auto-detect changed test files
@@ -97,23 +97,23 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 
 ### Testing layers
 
-| Layer             | Responsibility                                      | Shape source                                                  |
-| ----------------- | --------------------------------------------------- | ------------------------------------------------------------- |
-| UT smoke/full     | Guard PR correctness                                | Implementer selects based on kernel code paths                |
-| Nightly benchmark | Performance regression + typical/stress correctness | [`ops_manifest.yaml`](../tileops/ops_manifest.yaml) workloads |
-| Local dev         | Performance tuning verification                     | Developer decides ad-hoc                                      |
+| Layer             | Responsibility                                      | Shape source                                             |
+| ----------------- | --------------------------------------------------- | -------------------------------------------------------- |
+| UT smoke/full     | Guard PR correctness                                | Implementer selects based on kernel code paths           |
+| Nightly benchmark | Performance regression + typical/stress correctness | [`tileops/manifest/`](../../tileops/manifest/) workloads |
+| Local dev         | Performance tuning verification                     | Developer decides ad-hoc                                 |
 
 ### Infrastructure rules
 
-- Changes to shared test infrastructure ([`tests/test_base.py`](../tests/test_base.py), common fixtures, shared comparators) must preserve existing default semantics unless all affected tests are migrated in the same PR.
+- Changes to shared test infrastructure ([`tests/test_base.py`](../../tests/test_base.py), common fixtures, shared comparators) must preserve existing default semantics unless all affected tests are migrated in the same PR.
 - If a PR touches shared test infrastructure, run a broader `pytest -m smoke` pass before merge.
 - Run full targeted test files for the affected op family on a real GPU before claiming readiness.
 
 ## Benchmarks
 
-→ Trust boundary: [trust-model.md §Benchmark](trust-model.md#benchmark) | Rules: [benchmark.md](../.claude/domain-rules/benchmark.md)
+→ Trust boundary: [trust-model.md §Benchmark](trust-model.md#benchmark) | Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md)
 
-**Framework:** `benchmarks.benchmark_base.BenchmarkBase`. **Location:** [`benchmarks/ops/`](../benchmarks/ops/).
+**Framework:** `benchmarks.benchmark_base.BenchmarkBase`. **Location:** [`benchmarks/ops/`](../../benchmarks/ops/).
 
 **Execution:** `pytest benchmarks/` auto-generates `profile_run.log` (markdown format).
 

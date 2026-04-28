@@ -28,7 +28,7 @@ from tileops.manifest import load_workloads
 # families that declare ``q_shape`` / ``kv_shape``) are not supported:
 # :func:`workloads_to_params` will raise ``KeyError`` if ``x_shape`` is
 # absent. Extending to signature-aware tensor binding is tracked as a
-# follow-up and must also update ``docs/manifest.md``.
+# follow-up and must also update ``docs/design/manifest.md``.
 _WORKLOAD_META_KEYS: frozenset[str] = frozenset(
     {"x_shape", "dtypes", "label"}
 )

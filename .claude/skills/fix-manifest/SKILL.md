@@ -1,6 +1,6 @@
 ---
 name: fix-manifest
-description: Patch one missing structural field (kernel_map, static_dims) on an existing ops_manifest.yaml entry. Auto-detects the field via the validator or takes `--field=<name>`. Reference-derivable fields (signature.*, shape_rules, dtype_combos, roofline) belong to add-manifest, not here.
+description: Patch one missing structural field (kernel_map, static_dims) on an existing tileops/manifest/ entry. Auto-detects the field via the validator or takes `--field=<name>`. Reference-derivable fields (signature.*, shape_rules, dtype_combos, roofline) belong to add-manifest, not here.
 ---
 
 ## Arguments
@@ -15,7 +15,7 @@ Multi-op: same `--field` applied to every op in the list. Multi-field is not sup
 
 ## Contract
 
-- **MAY write** in `ops_manifest.yaml`: `source.kernel_map`, `signature.static_dims`. These two fields are derived from on-disk op / kernel evidence, not from the reference API.
+- **MAY write** in `tileops/manifest/<family>.yaml` (the family file owning the entry): `source.kernel_map`, `signature.static_dims`. These two fields are derived from on-disk op / kernel evidence, not from the reference API. Use `ruamel.yaml` for round-trip preservation.
 - **MUST NOT write** anything else. Reference-derivable fields (`signature.{inputs,outputs,params,shape_rules,dtype_combos}`, `roofline.*`) belong to `add-manifest` — re-aligning those fields requires re-fetching the reference URL, which is `add-manifest`'s job. Other fields (`status`, `family`, `ref_api`, `workloads`, `parity_opt_out`, `source.{kernel,op,test,bench,bench_manifest_driven}`) are human-curated and not touched by either skill.
 - **MUST NOT** create new entries — use `add-manifest`.
 - **MUST NOT** flip `status` (that is `align-op@FLIP_STATUS`).
@@ -45,7 +45,7 @@ stateDiagram-v2
 
 ### 1. PRE_CHECK
 
-Resolve `op_name` in `tileops/ops_manifest.yaml`. Missing → BLOCKED: `op not in manifest; use add-manifest`.
+Resolve `op_name` in `tileops/manifest/`. Missing → BLOCKED: `op not in manifest; use add-manifest`.
 
 ### 2. DIAGNOSE
 
@@ -55,7 +55,7 @@ When `--field=` is omitted, run two checks in strict order:
 
 **Check A — `kernel_map` presence.** If `source.kernel_map` is missing or empty → target = `kernel_map`, jump to INFER.
 
-The validator only warns on missing `kernel_map` when `status == implemented`, so spec-only entries need this explicit check. Do NOT extend it to `static_dims` — `docs/manifest.md` (R7, R20) explicitly allows `static_dims` to be absent on fixed-rank ops; absence-only patching would manufacture changes for valid entries.
+The validator only warns on missing `kernel_map` when `status == implemented`, so spec-only entries need this explicit check. Do NOT extend it to `static_dims` — `docs/design/manifest.md` (R7, R20) explicitly allows `static_dims` to be absent on fixed-rank ops; absence-only patching would manufacture changes for valid entries.
 
 **Check B — validator output.** Run `python scripts/validate_manifest.py --check-op <op_name>`. Parse the first error:
 
@@ -73,10 +73,10 @@ Build the patch payload from on-disk evidence. **Never guess** — if inference 
 **`kernel_map`** — read the op file:
 
 - T2 (L1-direct): copy `default_kernel_map()`'s return dict verbatim.
-- T1 (thin wrapper, see `docs/ops-design.md` § "Family-specific protocol variables"): family bases expose `default_kernel_map()` returning `{self._kernel_key: self._kernel_cls}`. Read it; substitute the subclass's `_kernel_key` / `_kernel_cls`.
-- Output format per `docs/manifest.md` § kernel_map: `{<dispatch_key>: <BareKernelClassName>}` — bare class name, NOT fully-qualified.
+- T1 (thin wrapper, see `docs/design/ops-design.md` § "Family-specific protocol variables"): family bases expose `default_kernel_map()` returning `{self._kernel_key: self._kernel_cls}`. Read it; substitute the subclass's `_kernel_key` / `_kernel_cls`.
+- Output format per `docs/design/manifest.md` § kernel_map: `{<dispatch_key>: <BareKernelClassName>}` — bare class name, NOT fully-qualified.
 
-**`static_dims`** — `signature.inputs` shape names that the op binds at construction time (each entry in the op's `__init__` kwarg block, excluding `dtype` / `kernel_map` / `tune` / `signature.params` entries — see `docs/ops-design.md` § "Step 3"). Cross-check with `roofline.vars` if present.
+**`static_dims`** — `signature.inputs` shape names that the op binds at construction time (each entry in the op's `__init__` kwarg block, excluding `dtype` / `kernel_map` / `tune` / `signature.params` entries — see `docs/design/ops-design.md` § "Step 3"). Cross-check with `roofline.vars` if present.
 
 ### 4. PATCH
 
@@ -95,7 +95,7 @@ Then insert each new key as a **sibling** of existing keys in its parent block, 
 | `kernel_map`  | `source.kernel_map`     | between `source.kernel` and `source.op`                                                               |
 | `static_dims` | `signature.static_dims` | between `signature.params` and `signature.shape_rules`; if `params` absent, after `signature.outputs` |
 
-Preserve adjacent comments. Do not reorder unrelated keys. If the existing entry deviates from the canonical layout, fall back to the order in `docs/manifest.md`.
+Preserve adjacent comments. Do not reorder unrelated keys. If the existing entry deviates from the canonical layout, fall back to the order in `docs/design/manifest.md`.
 
 ### 5. VALIDATE
 
