@@ -78,6 +78,7 @@ class FusedMoe(Op):
         self.routed_scaling_factor = routed_scaling_factor
         self.layout = layout
         self.dtype = dtype
+        self.expert_map = expert_map
 
         self._fused_topk = FusedTopKOp(
             num_tokens=num_tokens,
@@ -128,7 +129,7 @@ class FusedMoe(Op):
         # 2. Prepare (quantization / EP dispatch)
         r = self._prepare.prepare(
             hidden_states, topk_weights, topk_ids,
-            self.num_experts, expert_map=None,
+            self.num_experts, expert_map=self.expert_map,
         )
 
         # 3. Expert GEMM
@@ -137,21 +138,20 @@ class FusedMoe(Op):
             T_prime, self.ffn_size, self.hidden_size,
             self.top_k, self.num_experts,
         )
-        ws1 = hidden_states.new_empty(ws1_shape) if ws1_shape != (0,) else hidden_states.new_empty(0)
-        ws2 = hidden_states.new_empty(ws2_shape) if ws2_shape != (0,) else hidden_states.new_empty(0)
+        ws1 = hidden_states.new_empty(ws1_shape)
+        ws2 = hidden_states.new_empty(ws2_shape)
 
-        expert_out = hidden_states.new_empty(
-            self._experts.output_shape(T_prime, self.hidden_size)
-        )
+        output = hidden_states.new_empty(hidden_states.shape)
+        expert_out_shape = self._experts.output_shape(T_prime, self.hidden_size)
+        expert_out = output if expert_out_shape == tuple(hidden_states.shape) else hidden_states.new_empty(expert_out_shape)
         self._experts.apply(
             expert_out, r.hidden_q, w_gate_up, w_down,
             r.topk_weights, r.topk_ids,
-            self.num_experts, expert_map=None,
+            self.num_experts, expert_map=self.expert_map,
             workspace1=ws1, workspace2=ws2,
         )
 
         # 4. Finalize (weighted reduction / EP gather)
-        output = hidden_states.new_empty(hidden_states.shape)
         self._prepare.finalize(
             output, expert_out,
             r.topk_weights, r.topk_ids,

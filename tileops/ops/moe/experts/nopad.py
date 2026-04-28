@@ -91,5 +91,6 @@ class MoEExpertsNopad(MoEExpertsModular):
         mm2 = self._gemm_down(act, w2, true_sizes, true_offsets)
         result = self._unpermute(mm2, fwd_idx, topk_weights)
         if self._routed_scaling_factor != 1.0:
-            result = result * self._routed_scaling_factor
-        output.copy_(result)
+            torch.mul(result, self._routed_scaling_factor, out=output)
+        else:
+            output.copy_(result)
