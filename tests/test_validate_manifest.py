@@ -3040,7 +3040,7 @@ class TestCheckOp:
         # Build a temp manifest and call validate_manifest directly.
         manifest_file = tmp_path / "ops_manifest.yaml"
         import yaml
-        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+        manifest_file.write_text(yaml.safe_dump({"my_op": entry}))
 
         # Without check_op: spec-only op skips L1-L4
         errors_no_flag, warnings_no_flag = validator.validate_manifest(
@@ -3071,7 +3071,7 @@ class TestCheckOp:
 
         manifest_file = tmp_path / "ops_manifest.yaml"
         import yaml
-        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+        manifest_file.write_text(yaml.safe_dump({"my_op": entry}))
 
         errors, warnings = validator.validate_manifest(
             manifest_path=manifest_file,
@@ -3089,7 +3089,7 @@ class TestCheckOp:
 
         manifest_file = tmp_path / "ops_manifest.yaml"
         import yaml
-        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+        manifest_file.write_text(yaml.safe_dump({"my_op": entry}))
 
         errors, warnings = validator.validate_manifest(
             manifest_path=manifest_file,
@@ -3106,7 +3106,7 @@ class TestCheckOp:
 
         manifest_file = tmp_path / "ops_manifest.yaml"
         import yaml
-        manifest_file.write_text(yaml.safe_dump({"ops": {"my_op": entry}}))
+        manifest_file.write_text(yaml.safe_dump({"my_op": entry}))
 
         errors, warnings = validator.validate_manifest(
             manifest_path=manifest_file,
@@ -3134,7 +3134,7 @@ class TestCheckOp:
 
         manifest_file = tmp_path / "ops_manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(
-            {"ops": {"target_op": target_entry, "other_op": other_entry}},
+            {"target_op": target_entry, "other_op": other_entry},
         ))
 
         # With check_op="target_op": only target_op is validated.
@@ -3171,7 +3171,7 @@ class TestCheckOp:
 
         manifest_file = tmp_path / "ops_manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(
-            {"ops": {"target_op": target_entry, "other_op": other_entry}},
+            {"target_op": target_entry, "other_op": other_entry},
         ))
 
         # With check_op="target_op": the invalid variant_of on other_op
@@ -3217,11 +3217,11 @@ class TestCheckOp:
         broken_variant["variant_of"] = "primary_op"
 
         manifest_file = tmp_path / "ops_manifest.yaml"
-        manifest_file.write_text(yaml.safe_dump({"ops": {
+        manifest_file.write_text(yaml.safe_dump({
             "primary_op": primary,
             "good_variant": valid_variant,
             "bad_variant": broken_variant,
-        }}))
+        }))
 
         # check_op="primary_op" must catch the R16 violation on bad_variant
         errors, _ = validator.validate_manifest(
@@ -3263,10 +3263,10 @@ class TestCheckOp:
         }
 
         manifest_file = tmp_path / "ops_manifest.yaml"
-        manifest_file.write_text(yaml.safe_dump({"ops": {
+        manifest_file.write_text(yaml.safe_dump({
             "primary_op": primary,
             "broken_var": broken_variant,
-        }}))
+        }))
 
         errors, _ = validator.validate_manifest(
             manifest_path=manifest_file,

@@ -44,8 +44,7 @@ def load_manifest() -> dict[str, Any]:
     origin: dict[str, str] = {}
     for path in manifest_files():
         text = path.read_text(encoding="utf-8")
-        data = yaml.safe_load(text) or {}
-        ops = data.get("ops") or {}
+        ops = yaml.safe_load(text) or {}
         for name, entry in ops.items():
             if name in merged:
                 raise ValueError(
@@ -54,10 +53,6 @@ def load_manifest() -> dict[str, Any]:
             merged[name] = entry
             origin[name] = path.name
     return merged
-
-
-# Backwards-compatible private alias.
-_load_manifest = load_manifest
 
 
 def load_workloads(op_name: str) -> list[dict[str, Any]]:
@@ -77,7 +72,6 @@ def load_workloads(op_name: str) -> list[dict[str, Any]]:
 
 
 __all__ = [
-    "_load_manifest",
     "load_manifest",
     "load_workloads",
     "manifest_files",

@@ -4,2027 +4,2026 @@
 # other family files by tileops.manifest at runtime. See docs/manifest.md
 # for the full schema.
 
-ops:
-  ExpFwdOp:
-    ref_api: "torch.exp"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  LogFwdOp:
-    ref_api: "torch.log"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  SqrtFwdOp:
-    ref_api: "torch.sqrt"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  RsqrtFwdOp:
-    ref_api: "torch.rsqrt"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  AbsFwdOp:
-    ref_api: "torch.abs"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  NegFwdOp:
-    ref_api: "torch.neg"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  ReciprocalFwdOp:
-    ref_api: "torch.reciprocal"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  SignFwdOp:
-    ref_api: "torch.sign"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      # 2 comparisons per element (sign uses two compares + selects)
-      flops: "2 * N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  SinFwdOp:
-    ref_api: "torch.sin"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  CosFwdOp:
-    ref_api: "torch.cos"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  FloorFwdOp:
-    ref_api: "torch.floor"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  CeilFwdOp:
-    ref_api: "torch.ceil"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  RoundFwdOp:
-    ref_api: "torch.round"
-    family: elementwise
-    status: spec-only  # impl ignores 'decimals' param (kernel only supports decimals=0); fix in follow-up
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      params:
-        decimals: {type: int, default: 0}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  TruncFwdOp:
-    ref_api: "torch.trunc"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  ErfFwdOp:
-    ref_api: "torch.erf"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  Log1pFwdOp:
-    ref_api: "torch.log1p"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      # log(1 + x): 1 add + 1 log
-      flops: "2 * N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  Expm1FwdOp:
-    ref_api: "torch.expm1"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      # exp(x) - 1: 1 exp + 1 sub
-      flops: "2 * N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_unary_math.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  SigmoidFwdOp:
-    ref_api: "torch.sigmoid"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      # sigmoid(x) = 1 / (1 + exp(-x)): ~4 ops/elem
-      flops: "4 * N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  TanhFwdOp:
-    ref_api: "torch.tanh"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      # tanh(x) = 2 * sigmoid(2x) - 1: ~5 ops/elem (1 mul for 2x + 4 sigmoid ops)
-      flops: "5 * N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  LogicalNotFwdOp:
-    ref_api: "torch.logical_not"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "bool"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [bool, float16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [bool], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      # Read x (elem_bytes) + write y (1 byte for bool)
-      bytes: "N_total * elem_bytes + N_total"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_logical.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  BitwiseNotFwdOp:
-    ref_api: "torch.bitwise_not"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
-      outputs:
-        y: {dtype: "same_as(x)"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [int32, int64], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [int32], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_bitwise.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  IsnanFwdOp:
-    ref_api: "torch.isnan"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "bool"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      # Read x (elem_bytes) + write y (1 byte for bool)
-      bytes: "N_total * elem_bytes + N_total"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_special_elementwise.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  IsinfFwdOp:
-    ref_api: "torch.isinf"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "bool"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      # Read x (elem_bytes) + write y (1 byte for bool)
-      bytes: "N_total * elem_bytes + N_total"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_special_elementwise.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  IsfiniteFwdOp:
-    ref_api: "torch.isfinite"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        y: {dtype: "bool"}
-      shape_rules:
-        - "y.shape == x.shape"
-
-    workloads:
-      - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(x.shape)"
-      flops: "N_total"
-      # Read x (elem_bytes) + write y (1 byte for bool)
-      bytes: "N_total * elem_bytes + N_total"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_special_elementwise.py
-      bench: benchmarks/ops/bench_unary_elementwise.py
-      bench_manifest_driven: false
-
-  # ---------------------------------------------------------------------------
-  # elementwise -- unary functional activations (torch.nn.functional.<op>)
-  # All ops operate elementwise over arbitrary-rank tensors; output shape == input shape.
-  # ---------------------------------------------------------------------------
-
-  ReluFwdOp:
-    ref_api: "torch.nn.functional.relu"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        inplace: {type: bool, default: false}
-      shape_rules:
-        - "output.shape == input.shape"
-
-    workloads:
-      # Hidden-state activation (Llama-3.1-8B prefill)
-      - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-prefill"}
-      # Decode (single token)
-      - {input_shape: [1, 4096], dtypes: [bfloat16], label: "hidden-state-decode"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # 1 compare + 1 select per element = 2 fp ops
-      flops: "2 * N"
-      # Read input + write output
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  GeluFwdOp:
-    ref_api: "torch.nn.functional.gelu"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        approximate: {type: str, default: "none"}
-      shape_rules:
-        - "approximate in ('none', 'tanh')"
-        - "output.shape == input.shape"
-
-    workloads:
-      # Llama-3.1-8B FFN intermediate (hidden_dim=14336)
-      - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
-      - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # erf-based: ~8 fp ops per element (mul, erf, add, mul, mul); tanh approx similar
-      flops: "8 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  SiluFwdOp:
-    ref_api: "torch.nn.functional.silu"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        inplace: {type: bool, default: false}
-      shape_rules:
-        - "output.shape == input.shape"
-
-    workloads:
-      # Llama-3.1-8B SwiGLU FFN intermediate
-      - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
-      - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # sigmoid (exp + add + recip ~3) + mul = 4 fp ops per element
-      flops: "4 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  HardswishFwdOp:
-    ref_api: "torch.nn.functional.hardswish"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        inplace: {type: bool, default: false}
-      shape_rules:
-        - "output.shape == input.shape"
-
-    workloads:
-      # Mobile-style activation map (NHW C, e.g. MobileNetV3 stage)
-      - {input_shape: [32, 96, 56, 56], dtypes: [float16, bfloat16], label: "mbv3-stage2"}
-      - {input_shape: [32, 240, 28, 28], dtypes: [float16, bfloat16], label: "mbv3-stage3"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # add (1) + clamp (2 cmp + 2 sel = 4) + mul (1) + div (1) = 7 fp ops per element
-      flops: "7 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  HardsigmoidFwdOp:
-    ref_api: "torch.nn.functional.hardsigmoid"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        inplace: {type: bool, default: false}
-      shape_rules:
-        - "output.shape == input.shape"
-
-    workloads:
-      # SE-block gating (B, C, 1, 1)
-      - {input_shape: [32, 240, 1, 1], dtypes: [float16, bfloat16], label: "mbv3-se-gate"}
-      - {input_shape: [32, 960, 1, 1], dtypes: [float16, bfloat16], label: "mbv3-se-gate-deep"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # add (1) + clamp (2 cmp + 2 sel = 4) + div (1) = 6 fp ops per element
-      flops: "6 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  MishFwdOp:
-    ref_api: "torch.nn.functional.mish"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        inplace: {type: bool, default: false}
-      shape_rules:
-        - "output.shape == input.shape"
-
-    workloads:
-      # YOLO-style feature map activation
-      - {input_shape: [16, 256, 80, 80], dtypes: [float16, bfloat16], label: "yolo-p3"}
-      - {input_shape: [16, 512, 40, 40], dtypes: [float16, bfloat16], label: "yolo-p4"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # softplus (exp + log1p ~ 3) + tanh (~3) + mul = 7 fp ops per element
-      flops: "7 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  SeluFwdOp:
-    ref_api: "torch.nn.functional.selu"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        inplace: {type: bool, default: false}
-      shape_rules:
-        - "output.shape == input.shape"
-
-    workloads:
-      # SNN-style fully connected activation
-      - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "snn-fc"}
-      - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "snn-fc-wide"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # branch select + (exp + sub + mul) on negative branch + mul by lambda ~ 5 fp ops per element
-      flops: "5 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  LeakyReluFwdOp:
-    ref_api: "torch.nn.functional.leaky_relu"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        negative_slope: {type: float, default: 0.01}
-        inplace: {type: bool, default: false}
-      shape_rules:
-        - "output.shape == input.shape"
-
-    workloads:
-      # GAN feature map activation
-      - {input_shape: [16, 256, 64, 64], dtypes: [float16, bfloat16], label: "gan-feat"}
-      - {input_shape: [16, 512, 32, 32], dtypes: [float16, bfloat16], label: "gan-feat-deep"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # compare + mul + select = 3 fp ops per element
-      flops: "3 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  EluFwdOp:
-    ref_api: "torch.nn.functional.elu"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        alpha: {type: float, default: 1.0}
-        inplace: {type: bool, default: false}
-      shape_rules:
-        - "output.shape == input.shape"
-
-    workloads:
-      # MLP hidden activation
-      - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "mlp-hidden"}
-      - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "mlp-hidden-wide"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # compare + (exp + sub + mul) on negative branch ~ 5 fp ops per element
-      flops: "5 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  HardtanhFwdOp:
-    ref_api: "torch.nn.functional.hardtanh"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        min_val: {type: float, default: -1.0}
-        max_val: {type: float, default: 1.0}
-        inplace: {type: bool, default: false}
-      shape_rules:
-        - "min_val <= max_val"
-        - "output.shape == input.shape"
-
-    workloads:
-      # Quantization-friendly bounded activation
-      - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "bounded-hidden"}
-      - {input_shape: [16, 256, 56, 56], dtypes: [float16, bfloat16], label: "bounded-conv-feat"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # 2 compares + 2 selects per element
-      flops: "4 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  SoftplusFwdOp:
-    ref_api: "torch.nn.functional.softplus"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      params:
-        beta: {type: float, default: 1.0}
-        threshold: {type: float, default: 20.0}
-      shape_rules:
-        - "output.shape == input.shape"
-
-    workloads:
-      # Distribution-modeling MLP activation
-      - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "mlp-hidden"}
-      - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "mlp-hidden-wide"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-      # mul (beta*x) + threshold compare + (exp + log1p + div) on log-branch ~ 6 fp ops per element
-      flops: "6 * N"
-      bytes: "2 * N * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  PreluFwdOp:
-    ref_api: "torch.nn.functional.prelu"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-        weight: {dtype: "same_as(input)"}
-      outputs:
-        output: {dtype: "same_as(input)"}
-      shape_rules:
-        # PyTorch prelu: weight is either scalar or per-channel along dim 1
-        # for inputs with ndim >= 2; 1-D inputs accept scalar weight only.
-        - "weight.ndim == 0 or (weight.ndim == 1 and (weight.shape[0] == 1 or (input.ndim >= 2 and weight.shape[0] == input.shape[1])))"
-        - "output.shape == input.shape"
-
-    workloads:
-      # PReLU CNN feature map (per-channel weight)
-      - {input_shape: [16, 256, 56, 56], weight_shape: [256], dtypes: [float16, bfloat16], label: "cnn-feat-per-channel"}
-      - {input_shape: [16, 512, 28, 28], weight_shape: [512], dtypes: [float16, bfloat16], label: "cnn-feat-per-channel-deep"}
-
-    roofline:
-      vars:
-        N: "product(input.shape)"
-        W: "1 if weight.ndim == 0 or weight.shape[0] == 1 else weight.shape[0]"
-      # compare + mul + select per element
-      flops: "3 * N"
-      # Read input (N) + read weight (small, ~C) + write output (N)
-      bytes: "(2 * N + W) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_activation.py
-      bench: benchmarks/ops/bench_activation.py
-      bench_manifest_driven: false
-
-  # ---------------------------------------------------------------------------
-  # elementwise — multi-input parametric ops (where, clamp, masked_fill, nan_to_num)
-  # ---------------------------------------------------------------------------
-
-  WhereFwdOp:
-    ref_api: "torch.where"
-    family: elementwise
-    # status: spec-only — current tileops/ops/elementwise.py:WhereFwdOp does
-    # not conform to this spec:
-    #   - __init__ signature is (N_total, dtype) instead of the
-    #     PyTorch-aligned (condition, input, other) form.
-    #   - forward parameter names are (cond, x, y) instead of
-    #     (condition, input, other).
-    # Code conforms to this spec in a follow-up PR per the manifest trust
-    # model (.claude/rules/manifest-trust-model.md).
-    status: spec-only
-
-    signature:
-      inputs:
-        condition: {dtype: "bool"}
-        input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "condition.shape == input.shape"
-        - "other.shape == input.shape"
-        - "out.shape == input.shape"
-
-    workloads:
-      - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      # Mixed-dtype op (bool condition + float input/other) — inline mode cannot
-      # express byte accounting because elem_bytes binds to the first input's
-      # dtype (condition = bool = 1 byte). Per docs/roofline.md §2.2, ops whose
-      # bytes depend on multiple input dtypes must use func mode.
-      func: "tileops.perf.formulas.where_fwd_roofline"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_special_elementwise.py
-      bench: benchmarks/ops/bench_independent_elementwise.py
-      bench_manifest_driven: false
-
-  ClampFwdOp:
-    ref_api: "torch.clamp"
-    # Scalar-bound variant: PyTorch's torch.clamp also accepts Tensor min/max;
-    # the manifest tracks the scalar (Number) slice that the kernel implements.
-    family: elementwise
-    # status: spec-only — current tileops/ops/elementwise.py:ClampFwdOp does
-    # not conform to this spec:
-    #   - __init__ takes (N_total, dtype, min_val, max_val) instead of the
-    #     PyTorch-aligned (input, min, max) form.
-    #   - param names are (min_val, max_val) instead of (min, max).
-    #   - forward parameter is named `x` instead of `input`.
-    # Code conforms to this spec in a follow-up PR per the manifest trust
-    # model (.claude/rules/manifest-trust-model.md).
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      params:
-        min: {type: "float | None", default: null}
-        max: {type: "float | None", default: null}
-      shape_rules:
-        - "out.shape == input.shape"
-
-    workloads:
-      - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(input.shape)"
-      # At most one max + one min per element
-      flops: "2 * N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_special_elementwise.py
-      bench: benchmarks/ops/bench_independent_elementwise.py
-      bench_manifest_driven: false
-
-  MaskedFillFwdOp:
-    ref_api: "torch.Tensor.masked_fill"
-    # Scalar-value variant: PyTorch's masked_fill also accepts a 0-dim Tensor
-    # value; the manifest tracks the scalar (Number) slice that the kernel
-    # implements.
-    family: elementwise
-    # status: spec-only — current tileops/ops/elementwise.py:MaskedFillFwdOp
-    # does not conform to this spec:
-    #   - __init__ takes (N_total, dtype, fill_value) instead of the
-    #     PyTorch-aligned (input, mask, value) form.
-    #   - param name is `fill_value` instead of `value`.
-    #   - forward parameter is named `x` instead of `input`.
-    # Code conforms to this spec in a follow-up PR per the manifest trust
-    # model (.claude/rules/manifest-trust-model.md).
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-        mask: {dtype: "bool"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      params:
-        value: {type: float, default: 0.0}
-      shape_rules:
-        - "mask.shape == input.shape"
-        - "out.shape == input.shape"
-
-    workloads:
-      - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(input.shape)"
-      # One predicated select per element
-      flops: "N_total"
-      # Read input + read mask (1 byte) + write out
-      bytes: "N_total + 2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_special_elementwise.py
-      bench: benchmarks/ops/bench_independent_elementwise.py
-      bench_manifest_driven: false
-
-  NanToNumFwdOp:
-    ref_api: "torch.nan_to_num"
-    family: elementwise
-    # status: spec-only — current tileops/ops/elementwise.py:NanToNumFwdOp
-    # does not conform to this spec:
-    #   - __init__ takes (N_total, dtype, nan_val, posinf_val, neginf_val)
-    #     instead of the PyTorch-aligned (input, nan, posinf, neginf) form.
-    #   - param names are (nan_val, posinf_val, neginf_val) instead of
-    #     (nan, posinf, neginf).
-    #   - posinf/neginf default to 1e4/-1e4 instead of None (PyTorch's
-    #     default sentinel meaning "use dtype max/min").
-    #   - forward parameter is named `x` instead of `input`.
-    # Code conforms to this spec in a follow-up PR per the manifest trust
-    # model (.claude/rules/manifest-trust-model.md).
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      params:
-        nan: {type: float, default: 0.0}
-        posinf: {type: "float | None", default: null}
-        neginf: {type: "float | None", default: null}
-      shape_rules:
-        - "out.shape == input.shape"
-
-    workloads:
-      - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-      - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
-
-    roofline:
-      vars:
-        N_total: "product(input.shape)"
-      # isnan + isposinf + isneginf + 3 conditional selects per element
-      flops: "6 * N_total"
-      bytes: "2 * N_total * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_special_elementwise.py
-      bench: benchmarks/ops/bench_independent_elementwise.py
-      bench_manifest_driven: false
-
-  # ---------------------------------------------------------------------------
-  # elementwise -- binary arithmetic ops (broadcast, output: same_as(input))
-  # ---------------------------------------------------------------------------
-
-  AddFwdOp:
-    ref_api: "torch.add"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      params:
-        alpha: {type: "int | float", default: 1}
-      shape_rules:
-        # Output follows PyTorch broadcasting; numel uses the broadcast shape.
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      # 1 multiply (alpha * other) + 1 add per output element
-      flops: "2 * N"
-      # Read input + read other + write out
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  SubFwdOp:
-    ref_api: "torch.sub"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      params:
-        alpha: {type: "int | float", default: 1}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      # 1 multiply (alpha * other) + 1 subtract per output element
-      flops: "2 * N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  MulFwdOp:
-    ref_api: "torch.mul"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  DivFwdOp:
-    ref_api: "torch.div"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      params:
-        rounding_mode: {type: "str | None", default: null}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-        - "rounding_mode is None or rounding_mode in ('trunc', 'floor')"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  RemainderFwdOp:
-    ref_api: "torch.remainder"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      # remainder ~= div + floor + mul + sub per element
-      flops: "4 * N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  PowFwdOp:
-    ref_api: "torch.pow"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-        exponent: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, exponent.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, exponent.shape))"
-      # pow ~= exp(exponent * log(input)) ~= 3 ops per element
-      flops: "3 * N"
-      bytes: "(product(input.shape) + product(exponent.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  FloorDivideFwdOp:
-    ref_api: "torch.floor_divide"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      # div + floor per element
-      flops: "2 * N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  LerpFwdOp:
-    ref_api: "torch.lerp"
-    # Scalar-weight variant: PyTorch's torch.lerp also accepts a Tensor
-    # weight (see LerpTensorFwdOp); this entry tracks the scalar (Number)
-    # slice that the existing kernel implements.
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-        end: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      params:
-        weight: {type: float, default: 0.5}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, end.shape))"
-      # sub + mul + add per element
-      flops: "3 * N"
-      bytes: "(product(input.shape) + product(end.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  LerpTensorFwdOp:
-    ref_api: "torch.lerp"
-    # Tensor-weight variant: weight is a tensor that broadcasts together
-    # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
-    # overload). No kernel implementation yet — spec-only placeholder.
-    family: elementwise
-    status: spec-only
-    variant_of: LerpFwdOp
-
-    signature:
-      inputs:
-        input: {dtype: "float16 | bfloat16 | float32"}
-        end: {dtype: "same_as(input)"}
-        weight: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
-      # sub + mul + add per element
-      flops: "3 * N"
-      bytes: "(product(input.shape) + product(end.shape) + product(weight.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  MaximumFwdOp:
-    ref_api: "torch.maximum"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      # one comparison-and-select per element
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  MinimumFwdOp:
-    ref_api: "torch.minimum"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_binary_arith.py
-      bench: benchmarks/ops/bench_binary_arith.py
-      bench_manifest_driven: false
-
-  # ---------------------------------------------------------------------------
-  # elementwise -- binary comparison ops (broadcast, output: bool)
-  # ---------------------------------------------------------------------------
-
-  EqFwdOp:
-    ref_api: "torch.eq"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "bool"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      # 1 byte per bool output
-      bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_comparison.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  NeFwdOp:
-    ref_api: "torch.ne"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "bool"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_comparison.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  GtFwdOp:
-    ref_api: "torch.gt"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "bool"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_comparison.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  LtFwdOp:
-    ref_api: "torch.lt"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "bool"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_comparison.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  GeFwdOp:
-    ref_api: "torch.ge"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "bool"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_comparison.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  LeFwdOp:
-    ref_api: "torch.le"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "bool"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_comparison.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  # ---------------------------------------------------------------------------
-  # elementwise -- binary logical ops (broadcast, output: bool)
-  # ---------------------------------------------------------------------------
-
-  LogicalAndFwdOp:
-    ref_api: "torch.logical_and"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "bool"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      # 2 nonzero comparisons + 1 logical-and per element
-      flops: "3 * N"
-      bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_logical.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  LogicalOrFwdOp:
-    ref_api: "torch.logical_or"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "bool"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "3 * N"
-      bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_logical.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  # ---------------------------------------------------------------------------
-  # elementwise -- binary bitwise ops (broadcast, output: same_as(input))
-  # ---------------------------------------------------------------------------
-
-  BitwiseAndFwdOp:
-    ref_api: "torch.bitwise_and"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_bitwise.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  BitwiseOrFwdOp:
-    ref_api: "torch.bitwise_or"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_bitwise.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
-
-  BitwiseXorFwdOp:
-    ref_api: "torch.bitwise_xor"
-    family: elementwise
-    status: spec-only
-
-    signature:
-      inputs:
-        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
-        other: {dtype: "same_as(input)"}
-      outputs:
-        out: {dtype: "same_as(input)"}
-      shape_rules:
-        - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
-
-    workloads: []
-
-    roofline:
-      vars:
-        N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-      flops: "N"
-      bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
-
-    source:
-      kernel: tileops/kernels/elementwise.py
-      op: tileops/ops/elementwise.py
-      test: tests/ops/test_bitwise.py
-      bench: benchmarks/ops/bench_binary_elementwise.py
-      bench_manifest_driven: false
+ExpFwdOp:
+  ref_api: "torch.exp"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+LogFwdOp:
+  ref_api: "torch.log"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+SqrtFwdOp:
+  ref_api: "torch.sqrt"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+RsqrtFwdOp:
+  ref_api: "torch.rsqrt"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+AbsFwdOp:
+  ref_api: "torch.abs"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+NegFwdOp:
+  ref_api: "torch.neg"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+ReciprocalFwdOp:
+  ref_api: "torch.reciprocal"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+SignFwdOp:
+  ref_api: "torch.sign"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    # 2 comparisons per element (sign uses two compares + selects)
+    flops: "2 * N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+SinFwdOp:
+  ref_api: "torch.sin"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+CosFwdOp:
+  ref_api: "torch.cos"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+FloorFwdOp:
+  ref_api: "torch.floor"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+CeilFwdOp:
+  ref_api: "torch.ceil"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+RoundFwdOp:
+  ref_api: "torch.round"
+  family: elementwise
+  status: spec-only  # impl ignores 'decimals' param (kernel only supports decimals=0); fix in follow-up
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    params:
+      decimals: {type: int, default: 0}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+TruncFwdOp:
+  ref_api: "torch.trunc"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+ErfFwdOp:
+  ref_api: "torch.erf"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+Log1pFwdOp:
+  ref_api: "torch.log1p"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    # log(1 + x): 1 add + 1 log
+    flops: "2 * N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+Expm1FwdOp:
+  ref_api: "torch.expm1"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    # exp(x) - 1: 1 exp + 1 sub
+    flops: "2 * N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_unary_math.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+SigmoidFwdOp:
+  ref_api: "torch.sigmoid"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    # sigmoid(x) = 1 / (1 + exp(-x)): ~4 ops/elem
+    flops: "4 * N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+TanhFwdOp:
+  ref_api: "torch.tanh"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    # tanh(x) = 2 * sigmoid(2x) - 1: ~5 ops/elem (1 mul for 2x + 4 sigmoid ops)
+    flops: "5 * N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+LogicalNotFwdOp:
+  ref_api: "torch.logical_not"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "bool"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [bool, float16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [bool], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    # Read x (elem_bytes) + write y (1 byte for bool)
+    bytes: "N_total * elem_bytes + N_total"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_logical.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+BitwiseNotFwdOp:
+  ref_api: "torch.bitwise_not"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
+    outputs:
+      y: {dtype: "same_as(x)"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [int32, int64], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [int32], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_bitwise.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+IsnanFwdOp:
+  ref_api: "torch.isnan"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "bool"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    # Read x (elem_bytes) + write y (1 byte for bool)
+    bytes: "N_total * elem_bytes + N_total"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+IsinfFwdOp:
+  ref_api: "torch.isinf"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "bool"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    # Read x (elem_bytes) + write y (1 byte for bool)
+    bytes: "N_total * elem_bytes + N_total"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+IsfiniteFwdOp:
+  ref_api: "torch.isfinite"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      y: {dtype: "bool"}
+    shape_rules:
+      - "y.shape == x.shape"
+
+  workloads:
+    - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(x.shape)"
+    flops: "N_total"
+    # Read x (elem_bytes) + write y (1 byte for bool)
+    bytes: "N_total * elem_bytes + N_total"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_unary_elementwise.py
+    bench_manifest_driven: false
+
+# ---------------------------------------------------------------------------
+# elementwise -- unary functional activations (torch.nn.functional.<op>)
+# All ops operate elementwise over arbitrary-rank tensors; output shape == input shape.
+# ---------------------------------------------------------------------------
+
+ReluFwdOp:
+  ref_api: "torch.nn.functional.relu"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      inplace: {type: bool, default: false}
+    shape_rules:
+      - "output.shape == input.shape"
+
+  workloads:
+    # Hidden-state activation (Llama-3.1-8B prefill)
+    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-prefill"}
+    # Decode (single token)
+    - {input_shape: [1, 4096], dtypes: [bfloat16], label: "hidden-state-decode"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # 1 compare + 1 select per element = 2 fp ops
+    flops: "2 * N"
+    # Read input + write output
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+GeluFwdOp:
+  ref_api: "torch.nn.functional.gelu"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      approximate: {type: str, default: "none"}
+    shape_rules:
+      - "approximate in ('none', 'tanh')"
+      - "output.shape == input.shape"
+
+  workloads:
+    # Llama-3.1-8B FFN intermediate (hidden_dim=14336)
+    - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
+    - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # erf-based: ~8 fp ops per element (mul, erf, add, mul, mul); tanh approx similar
+    flops: "8 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+SiluFwdOp:
+  ref_api: "torch.nn.functional.silu"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      inplace: {type: bool, default: false}
+    shape_rules:
+      - "output.shape == input.shape"
+
+  workloads:
+    # Llama-3.1-8B SwiGLU FFN intermediate
+    - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
+    - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # sigmoid (exp + add + recip ~3) + mul = 4 fp ops per element
+    flops: "4 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+HardswishFwdOp:
+  ref_api: "torch.nn.functional.hardswish"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      inplace: {type: bool, default: false}
+    shape_rules:
+      - "output.shape == input.shape"
+
+  workloads:
+    # Mobile-style activation map (NHW C, e.g. MobileNetV3 stage)
+    - {input_shape: [32, 96, 56, 56], dtypes: [float16, bfloat16], label: "mbv3-stage2"}
+    - {input_shape: [32, 240, 28, 28], dtypes: [float16, bfloat16], label: "mbv3-stage3"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # add (1) + clamp (2 cmp + 2 sel = 4) + mul (1) + div (1) = 7 fp ops per element
+    flops: "7 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+HardsigmoidFwdOp:
+  ref_api: "torch.nn.functional.hardsigmoid"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      inplace: {type: bool, default: false}
+    shape_rules:
+      - "output.shape == input.shape"
+
+  workloads:
+    # SE-block gating (B, C, 1, 1)
+    - {input_shape: [32, 240, 1, 1], dtypes: [float16, bfloat16], label: "mbv3-se-gate"}
+    - {input_shape: [32, 960, 1, 1], dtypes: [float16, bfloat16], label: "mbv3-se-gate-deep"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # add (1) + clamp (2 cmp + 2 sel = 4) + div (1) = 6 fp ops per element
+    flops: "6 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+MishFwdOp:
+  ref_api: "torch.nn.functional.mish"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      inplace: {type: bool, default: false}
+    shape_rules:
+      - "output.shape == input.shape"
+
+  workloads:
+    # YOLO-style feature map activation
+    - {input_shape: [16, 256, 80, 80], dtypes: [float16, bfloat16], label: "yolo-p3"}
+    - {input_shape: [16, 512, 40, 40], dtypes: [float16, bfloat16], label: "yolo-p4"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # softplus (exp + log1p ~ 3) + tanh (~3) + mul = 7 fp ops per element
+    flops: "7 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+SeluFwdOp:
+  ref_api: "torch.nn.functional.selu"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      inplace: {type: bool, default: false}
+    shape_rules:
+      - "output.shape == input.shape"
+
+  workloads:
+    # SNN-style fully connected activation
+    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "snn-fc"}
+    - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "snn-fc-wide"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # branch select + (exp + sub + mul) on negative branch + mul by lambda ~ 5 fp ops per element
+    flops: "5 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+LeakyReluFwdOp:
+  ref_api: "torch.nn.functional.leaky_relu"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      negative_slope: {type: float, default: 0.01}
+      inplace: {type: bool, default: false}
+    shape_rules:
+      - "output.shape == input.shape"
+
+  workloads:
+    # GAN feature map activation
+    - {input_shape: [16, 256, 64, 64], dtypes: [float16, bfloat16], label: "gan-feat"}
+    - {input_shape: [16, 512, 32, 32], dtypes: [float16, bfloat16], label: "gan-feat-deep"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # compare + mul + select = 3 fp ops per element
+    flops: "3 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+EluFwdOp:
+  ref_api: "torch.nn.functional.elu"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      alpha: {type: float, default: 1.0}
+      inplace: {type: bool, default: false}
+    shape_rules:
+      - "output.shape == input.shape"
+
+  workloads:
+    # MLP hidden activation
+    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "mlp-hidden"}
+    - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "mlp-hidden-wide"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # compare + (exp + sub + mul) on negative branch ~ 5 fp ops per element
+    flops: "5 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+HardtanhFwdOp:
+  ref_api: "torch.nn.functional.hardtanh"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      min_val: {type: float, default: -1.0}
+      max_val: {type: float, default: 1.0}
+      inplace: {type: bool, default: false}
+    shape_rules:
+      - "min_val <= max_val"
+      - "output.shape == input.shape"
+
+  workloads:
+    # Quantization-friendly bounded activation
+    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "bounded-hidden"}
+    - {input_shape: [16, 256, 56, 56], dtypes: [float16, bfloat16], label: "bounded-conv-feat"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # 2 compares + 2 selects per element
+    flops: "4 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+SoftplusFwdOp:
+  ref_api: "torch.nn.functional.softplus"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    params:
+      beta: {type: float, default: 1.0}
+      threshold: {type: float, default: 20.0}
+    shape_rules:
+      - "output.shape == input.shape"
+
+  workloads:
+    # Distribution-modeling MLP activation
+    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "mlp-hidden"}
+    - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "mlp-hidden-wide"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+    # mul (beta*x) + threshold compare + (exp + log1p + div) on log-branch ~ 6 fp ops per element
+    flops: "6 * N"
+    bytes: "2 * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+PreluFwdOp:
+  ref_api: "torch.nn.functional.prelu"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+      weight: {dtype: "same_as(input)"}
+    outputs:
+      output: {dtype: "same_as(input)"}
+    shape_rules:
+      # PyTorch prelu: weight is either scalar or per-channel along dim 1
+      # for inputs with ndim >= 2; 1-D inputs accept scalar weight only.
+      - "weight.ndim == 0 or (weight.ndim == 1 and (weight.shape[0] == 1 or (input.ndim >= 2 and weight.shape[0] == input.shape[1])))"
+      - "output.shape == input.shape"
+
+  workloads:
+    # PReLU CNN feature map (per-channel weight)
+    - {input_shape: [16, 256, 56, 56], weight_shape: [256], dtypes: [float16, bfloat16], label: "cnn-feat-per-channel"}
+    - {input_shape: [16, 512, 28, 28], weight_shape: [512], dtypes: [float16, bfloat16], label: "cnn-feat-per-channel-deep"}
+
+  roofline:
+    vars:
+      N: "product(input.shape)"
+      W: "1 if weight.ndim == 0 or weight.shape[0] == 1 else weight.shape[0]"
+    # compare + mul + select per element
+    flops: "3 * N"
+    # Read input (N) + read weight (small, ~C) + write output (N)
+    bytes: "(2 * N + W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_activation.py
+    bench: benchmarks/ops/bench_activation.py
+    bench_manifest_driven: false
+
+# ---------------------------------------------------------------------------
+# elementwise — multi-input parametric ops (where, clamp, masked_fill, nan_to_num)
+# ---------------------------------------------------------------------------
+
+WhereFwdOp:
+  ref_api: "torch.where"
+  family: elementwise
+  # status: spec-only — current tileops/ops/elementwise.py:WhereFwdOp does
+  # not conform to this spec:
+  #   - __init__ signature is (N_total, dtype) instead of the
+  #     PyTorch-aligned (condition, input, other) form.
+  #   - forward parameter names are (cond, x, y) instead of
+  #     (condition, input, other).
+  # Code conforms to this spec in a follow-up PR per the manifest trust
+  # model (.claude/rules/manifest-trust-model.md).
+  status: spec-only
+
+  signature:
+    inputs:
+      condition: {dtype: "bool"}
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "condition.shape == input.shape"
+      - "other.shape == input.shape"
+      - "out.shape == input.shape"
+
+  workloads:
+    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    # Mixed-dtype op (bool condition + float input/other) — inline mode cannot
+    # express byte accounting because elem_bytes binds to the first input's
+    # dtype (condition = bool = 1 byte). Per docs/roofline.md §2.2, ops whose
+    # bytes depend on multiple input dtypes must use func mode.
+    func: "tileops.perf.formulas.where_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+ClampFwdOp:
+  ref_api: "torch.clamp"
+  # Scalar-bound variant: PyTorch's torch.clamp also accepts Tensor min/max;
+  # the manifest tracks the scalar (Number) slice that the kernel implements.
+  family: elementwise
+  # status: spec-only — current tileops/ops/elementwise.py:ClampFwdOp does
+  # not conform to this spec:
+  #   - __init__ takes (N_total, dtype, min_val, max_val) instead of the
+  #     PyTorch-aligned (input, min, max) form.
+  #   - param names are (min_val, max_val) instead of (min, max).
+  #   - forward parameter is named `x` instead of `input`.
+  # Code conforms to this spec in a follow-up PR per the manifest trust
+  # model (.claude/rules/manifest-trust-model.md).
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    params:
+      min: {type: "float | None", default: null}
+      max: {type: "float | None", default: null}
+    shape_rules:
+      - "out.shape == input.shape"
+
+  workloads:
+    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(input.shape)"
+    # At most one max + one min per element
+    flops: "2 * N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+MaskedFillFwdOp:
+  ref_api: "torch.Tensor.masked_fill"
+  # Scalar-value variant: PyTorch's masked_fill also accepts a 0-dim Tensor
+  # value; the manifest tracks the scalar (Number) slice that the kernel
+  # implements.
+  family: elementwise
+  # status: spec-only — current tileops/ops/elementwise.py:MaskedFillFwdOp
+  # does not conform to this spec:
+  #   - __init__ takes (N_total, dtype, fill_value) instead of the
+  #     PyTorch-aligned (input, mask, value) form.
+  #   - param name is `fill_value` instead of `value`.
+  #   - forward parameter is named `x` instead of `input`.
+  # Code conforms to this spec in a follow-up PR per the manifest trust
+  # model (.claude/rules/manifest-trust-model.md).
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      mask: {dtype: "bool"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    params:
+      value: {type: float, default: 0.0}
+    shape_rules:
+      - "mask.shape == input.shape"
+      - "out.shape == input.shape"
+
+  workloads:
+    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(input.shape)"
+    # One predicated select per element
+    flops: "N_total"
+    # Read input + read mask (1 byte) + write out
+    bytes: "N_total + 2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+NanToNumFwdOp:
+  ref_api: "torch.nan_to_num"
+  family: elementwise
+  # status: spec-only — current tileops/ops/elementwise.py:NanToNumFwdOp
+  # does not conform to this spec:
+  #   - __init__ takes (N_total, dtype, nan_val, posinf_val, neginf_val)
+  #     instead of the PyTorch-aligned (input, nan, posinf, neginf) form.
+  #   - param names are (nan_val, posinf_val, neginf_val) instead of
+  #     (nan, posinf, neginf).
+  #   - posinf/neginf default to 1e4/-1e4 instead of None (PyTorch's
+  #     default sentinel meaning "use dtype max/min").
+  #   - forward parameter is named `x` instead of `input`.
+  # Code conforms to this spec in a follow-up PR per the manifest trust
+  # model (.claude/rules/manifest-trust-model.md).
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    params:
+      nan: {type: float, default: 0.0}
+      posinf: {type: "float | None", default: null}
+      neginf: {type: "float | None", default: null}
+    shape_rules:
+      - "out.shape == input.shape"
+
+  workloads:
+    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    vars:
+      N_total: "product(input.shape)"
+    # isnan + isposinf + isneginf + 3 conditional selects per element
+    flops: "6 * N_total"
+    bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+# ---------------------------------------------------------------------------
+# elementwise -- binary arithmetic ops (broadcast, output: same_as(input))
+# ---------------------------------------------------------------------------
+
+AddFwdOp:
+  ref_api: "torch.add"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    params:
+      alpha: {type: "int | float", default: 1}
+    shape_rules:
+      # Output follows PyTorch broadcasting; numel uses the broadcast shape.
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    # 1 multiply (alpha * other) + 1 add per output element
+    flops: "2 * N"
+    # Read input + read other + write out
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+SubFwdOp:
+  ref_api: "torch.sub"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    params:
+      alpha: {type: "int | float", default: 1}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    # 1 multiply (alpha * other) + 1 subtract per output element
+    flops: "2 * N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+MulFwdOp:
+  ref_api: "torch.mul"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+DivFwdOp:
+  ref_api: "torch.div"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    params:
+      rounding_mode: {type: "str | None", default: null}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "rounding_mode is None or rounding_mode in ('trunc', 'floor')"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+RemainderFwdOp:
+  ref_api: "torch.remainder"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    # remainder ~= div + floor + mul + sub per element
+    flops: "4 * N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+PowFwdOp:
+  ref_api: "torch.pow"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+      exponent: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, exponent.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, exponent.shape))"
+    # pow ~= exp(exponent * log(input)) ~= 3 ops per element
+    flops: "3 * N"
+    bytes: "(product(input.shape) + product(exponent.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+FloorDivideFwdOp:
+  ref_api: "torch.floor_divide"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    # div + floor per element
+    flops: "2 * N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+LerpFwdOp:
+  ref_api: "torch.lerp"
+  # Scalar-weight variant: PyTorch's torch.lerp also accepts a Tensor
+  # weight (see LerpTensorFwdOp); this entry tracks the scalar (Number)
+  # slice that the existing kernel implements.
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+      end: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    params:
+      weight: {type: float, default: 0.5}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, end.shape))"
+    # sub + mul + add per element
+    flops: "3 * N"
+    bytes: "(product(input.shape) + product(end.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+LerpTensorFwdOp:
+  ref_api: "torch.lerp"
+  # Tensor-weight variant: weight is a tensor that broadcasts together
+  # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
+  # overload). No kernel implementation yet — spec-only placeholder.
+  family: elementwise
+  status: spec-only
+  variant_of: LerpFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+      end: {dtype: "same_as(input)"}
+      weight: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+    # sub + mul + add per element
+    flops: "3 * N"
+    bytes: "(product(input.shape) + product(end.shape) + product(weight.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+MaximumFwdOp:
+  ref_api: "torch.maximum"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    # one comparison-and-select per element
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+MinimumFwdOp:
+  ref_api: "torch.minimum"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
+
+# ---------------------------------------------------------------------------
+# elementwise -- binary comparison ops (broadcast, output: bool)
+# ---------------------------------------------------------------------------
+
+EqFwdOp:
+  ref_api: "torch.eq"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "bool"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    # 1 byte per bool output
+    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_comparison.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+NeFwdOp:
+  ref_api: "torch.ne"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "bool"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_comparison.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+GtFwdOp:
+  ref_api: "torch.gt"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "bool"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_comparison.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+LtFwdOp:
+  ref_api: "torch.lt"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "bool"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_comparison.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+GeFwdOp:
+  ref_api: "torch.ge"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "bool"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_comparison.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+LeFwdOp:
+  ref_api: "torch.le"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "bool"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_comparison.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+# ---------------------------------------------------------------------------
+# elementwise -- binary logical ops (broadcast, output: bool)
+# ---------------------------------------------------------------------------
+
+LogicalAndFwdOp:
+  ref_api: "torch.logical_and"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "bool"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    # 2 nonzero comparisons + 1 logical-and per element
+    flops: "3 * N"
+    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_logical.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+LogicalOrFwdOp:
+  ref_api: "torch.logical_or"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "bool"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "3 * N"
+    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_logical.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+# ---------------------------------------------------------------------------
+# elementwise -- binary bitwise ops (broadcast, output: same_as(input))
+# ---------------------------------------------------------------------------
+
+BitwiseAndFwdOp:
+  ref_api: "torch.bitwise_and"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_bitwise.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+BitwiseOrFwdOp:
+  ref_api: "torch.bitwise_or"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_bitwise.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+BitwiseXorFwdOp:
+  ref_api: "torch.bitwise_xor"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
+    flops: "N"
+    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_bitwise.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false

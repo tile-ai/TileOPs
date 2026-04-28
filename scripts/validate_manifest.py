@@ -2933,8 +2933,7 @@ def validate_manifest(
         ops = load_manifest()
     else:
         with open(manifest_path) as f:
-            data = yaml.safe_load(f)
-        ops = data.get("ops", {})
+            ops = yaml.safe_load(f) or {}
 
     # Fail fast: --check-op with a name not in the manifest
     if check_op is not None and check_op not in ops:
