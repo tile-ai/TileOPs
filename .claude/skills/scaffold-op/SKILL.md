@@ -1,6 +1,6 @@
 ---
 name: scaffold-op
-description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.yaml` entry by following the 7-step playbook in docs/ops-design.md. Emits the 17 scaffold slots (S1-S7, S12-S21); leaves family-specific protocol variables, optional hooks, and kernel implementations to downstream skills.
+description: Scaffold a new T2 (L1-direct) Op file from a single `tileops/manifest/` entry by following the 7-step playbook in docs/ops-design.md. Emits the 17 scaffold slots (S1-S7, S12-S21); leaves family-specific protocol variables, optional hooks, and kernel implementations to downstream skills.
 ---
 
 ## Arguments
@@ -9,7 +9,7 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.y
 
 ## Contract
 
-- **Input**: `op_name` must be present in [`tileops/ops_manifest.yaml`](../../../tileops/ops_manifest.yaml) with `status: spec-only` and a non-empty `source.kernel_map`. `source.kernel_map` is manifest-level source of truth for Op→Kernel dispatch and cannot be derived by the scaffold (dispatch keys are kernel-internal conventions); adding it for a spec-only entry is a prerequisite manifest PR.
+- **Input**: `op_name` must be present in [`tileops/manifest/`](../../../tileops/manifest/) with `status: spec-only` and a non-empty `source.kernel_map`. `source.kernel_map` is manifest-level source of truth for Op→Kernel dispatch and cannot be derived by the scaffold (dispatch keys are kernel-internal conventions); adding it for a spec-only entry is a prerequisite manifest PR.
 - **Output**: new file at the exact path declared by manifest `source.op` (e.g., `tileops/ops/reduction/cumsum.py`), containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to the package `__init__.py` at that path's parent directory (e.g., `tileops/ops/reduction/__init__.py`) with a matching `__all__` entry. Note: the filesystem package directory (parent of `source.op`) is not always the same as the manifest `family` field — for example, `CumsumFwdOp` has `family: scan` but lives under `tileops/ops/reduction/`. Always key paths off `source.op`, never off `family`. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports **no errors** for this op. Warnings are allowed and passed through to the final summary.
 - **Termination (blocked)**: any validator error for `op_name` that the scaffold cannot fix by re-reading the playbook's slot rules. Do NOT commit; report with the failing rows from the validator.
@@ -17,7 +17,7 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `ops_manifest.y
   - MUST NOT emit family-specific protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, `_kernel_handles_padding`, `_op_name`, `kernel_cls`).
   - MUST NOT emit optional hooks (`_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`, `_cache_key` override).
   - MUST NOT implement the kernel itself.
-  - MUST NOT modify `ops_manifest.yaml`, tests, benchmarks, or any existing op file.
+  - MUST NOT modify `tileops/manifest/`, tests, benchmarks, or any existing op file.
   - MUST NOT extend scope to a T1 (family-base) subclass — the scaffold is T2 only.
 
 ## Workflow
@@ -64,12 +64,10 @@ Before running the snippet, substitute `<op_name>` with the requested manifest k
 ```bash
 python - "<op_name>" <<'PY'
 import sys
-import yaml
+from tileops.manifest import load_manifest
 
 op_name = sys.argv[1]
-with open('tileops/ops_manifest.yaml') as f:
-    m = yaml.safe_load(f)
-entry = m['ops'][op_name]
+entry = load_manifest()[op_name]
 print(entry)
 PY
 ```
@@ -80,7 +78,7 @@ Derive the target file path from `source.op` (e.g. `tileops/ops/reduction/cumsum
 
 ### 2. PRE_CHECK
 
-- `op_name` present in `ops_manifest.yaml` → proceed; otherwise BLOCKED ("op not in manifest").
+- `op_name` present in `tileops/manifest/` → proceed; otherwise BLOCKED ("op not in manifest").
 - `status` field explicitly set to `spec-only` → proceed; `status: implemented` → BLOCKED ("op already implemented; use implement-op to migrate"); missing `status` or any other value → BLOCKED ("manifest entry must declare a valid top-level `status`; the validator treats `status` as required").
 - `source.kernel_map` declared and non-empty → proceed; missing or empty → BLOCKED ("manifest entry needs `source.kernel_map` before scaffolding — add the dispatch map in a separate manifest PR per the trust model; the scaffold cannot invent dispatch keys because they are kernel-internal conventions"). Note: per `docs/manifest.md`, `source.kernel_map` is only required when `status: implemented`, so many existing `spec-only` entries lack it — these are the cases that need the manifest-PR prerequisite before scaffolding can run.
 - Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path").

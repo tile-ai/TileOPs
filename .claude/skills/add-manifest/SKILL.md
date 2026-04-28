@@ -1,6 +1,6 @@
 ---
 name: add-manifest
-description: Generate or re-align one `ops_manifest.yaml` entry from a reference-API docs URL. Caller provides the manifest key (`op_name`); skill writes that one entry. Idempotent.
+description: Generate or re-align one `tileops/manifest/` entry from a reference-API docs URL. Caller provides the manifest key (`op_name`); skill writes that one entry. Idempotent.
 ---
 
 ## Arguments
@@ -29,6 +29,8 @@ description: Generate or re-align one `ops_manifest.yaml` entry from a reference
 **Termination**: draft PR created → success. Invalid URL / un-derivable roofline / source-path or family resolution failure → BLOCKED.
 
 **Constraints**: never edit op / kernel / test / bench code. Never invent params outside the reference. Never set `status: implemented` (that is `align-op@FLIP_STATUS`).
+
+**File to edit**: write the entry into `tileops/manifest/<family>.yaml`, where `<family>` is the entry's `family` field. The manifest is split one file per family; do not create new files or move entries between files. Use `ruamel.yaml` for round-trip preservation of comments and key order.
 
 **Caller responsibility**: `op_name` and `ref_url` must point at the same op. The skill does not enforce alignment between them — TileOPs identity may legitimately differ from any reference's naming (e.g., `MultiHeadAttentionFwdOp` ↔ `torch.nn.functional.scaled_dot_product_attention`). Wrong pairing produces a broken manifest entry silently.
 
@@ -60,7 +62,7 @@ Reject `ref_url` not matching the regex. Reject `op_name` not matching `^[A-Z][A
 
 ### 2. READ_EXISTING
 
-Look up `op_name` in `tileops/ops_manifest.yaml`.
+Look up `op_name` in `tileops/manifest/`.
 
 - **Present** → snapshot the human-curated fields per the Contract table. Source paths come from the existing `source.*`. Proceed to READ_REFERENCE.
 - **Absent** → greenfield. Proceed to RESOLVE_SOURCES.

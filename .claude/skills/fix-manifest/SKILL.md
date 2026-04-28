@@ -1,6 +1,6 @@
 ---
 name: fix-manifest
-description: Patch one missing structural field (kernel_map, static_dims) on an existing ops_manifest.yaml entry. Auto-detects the field via the validator or takes `--field=<name>`. Reference-derivable fields (signature.*, shape_rules, dtype_combos, roofline) belong to add-manifest, not here.
+description: Patch one missing structural field (kernel_map, static_dims) on an existing tileops/manifest/ entry. Auto-detects the field via the validator or takes `--field=<name>`. Reference-derivable fields (signature.*, shape_rules, dtype_combos, roofline) belong to add-manifest, not here.
 ---
 
 ## Arguments
@@ -15,7 +15,7 @@ Multi-op: same `--field` applied to every op in the list. Multi-field is not sup
 
 ## Contract
 
-- **MAY write** in `ops_manifest.yaml`: `source.kernel_map`, `signature.static_dims`. These two fields are derived from on-disk op / kernel evidence, not from the reference API.
+- **MAY write** in `tileops/manifest/<family>.yaml` (the family file owning the entry): `source.kernel_map`, `signature.static_dims`. These two fields are derived from on-disk op / kernel evidence, not from the reference API. Use `ruamel.yaml` for round-trip preservation.
 - **MUST NOT write** anything else. Reference-derivable fields (`signature.{inputs,outputs,params,shape_rules,dtype_combos}`, `roofline.*`) belong to `add-manifest` — re-aligning those fields requires re-fetching the reference URL, which is `add-manifest`'s job. Other fields (`status`, `family`, `ref_api`, `workloads`, `parity_opt_out`, `source.{kernel,op,test,bench,bench_manifest_driven}`) are human-curated and not touched by either skill.
 - **MUST NOT** create new entries — use `add-manifest`.
 - **MUST NOT** flip `status` (that is `align-op@FLIP_STATUS`).
@@ -45,7 +45,7 @@ stateDiagram-v2
 
 ### 1. PRE_CHECK
 
-Resolve `op_name` in `tileops/ops_manifest.yaml`. Missing → BLOCKED: `op not in manifest; use add-manifest`.
+Resolve `op_name` in `tileops/manifest/`. Missing → BLOCKED: `op not in manifest; use add-manifest`.
 
 ### 2. DIAGNOSE
 

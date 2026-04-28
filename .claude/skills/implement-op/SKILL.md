@@ -13,7 +13,7 @@ description: Modify op code to match the manifest-declared interface, making spe
 - **Output**: modified op code + commit + `observations` list (returned to orchestrator)
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <name>` all levels pass + new tests pass.
 - **Termination (blocked)**: fix requires changes beyond Op layer. Return `blocked` with reason.
-- **Constraint**: must NOT modify `ops_manifest.yaml`. Must NOT modify tests written by `test-op` in this align-op run (spec contract). MAY update pre-existing tests in `<source_test>` whose call-sites use the legacy API.
+- **Constraint**: must NOT modify `tileops/manifest/`. Must NOT modify tests written by `test-op` in this align-op run (spec contract). MAY update pre-existing tests in `<source_test>` whose call-sites use the legacy API.
 - **Behavioral compatibility**: default param values (from manifest) must produce identical results to the old implementation. The old API shape (e.g., `__init__(M, N)`) is NOT preserved — the manifest defines the target interface.
 
 ## Workflow

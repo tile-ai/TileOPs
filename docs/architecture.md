@@ -1,6 +1,6 @@
 # Architecture
 
-TileOPs is a spec-driven GPU operator platform built on TileLang. Every operator has a declarative specification in `ops_manifest.yaml` before code is written. The spec drives code generation, test validation, performance evaluation, and documentation — but the runtime interface remains plain Python imports.
+TileOPs is a spec-driven GPU operator platform built on TileLang. Every operator has a declarative specification in `tileops/manifest/` before code is written. The spec drives code generation, test validation, performance evaluation, and documentation — but the runtime interface remains plain Python imports.
 
 ## Modules
 
@@ -12,7 +12,7 @@ One diagram, all modules. Edge color = which flow owns that edge.
 
 ```mermaid
 graph TD
-    M1["M1: Spec<br/>ops_manifest.yaml"]
+    M1["M1: Spec<br/>tileops/manifest/"]
     M2["M2: Op + Kernel"]
     M3["M3: Correctness"]
     M6["M6: HW Profile"]
@@ -68,7 +68,7 @@ graph TD
 
 | Module                                       | Responsibility                                                                                                                         | Key Artifact                       |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **M1: Spec**                                 | Declare op interface, workloads, roofline formulas                                                                                     | `ops_manifest.yaml`                |
+| **M1: Spec**                                 | Declare op interface, workloads, roofline formulas                                                                                     | `tileops/manifest/`                |
 | **M2: Kernel + Op**                          | GPU kernel implementations and user-facing Python API                                                                                  | `tileops/kernels/`, `tileops/ops/` |
 | **M3: Correctness**                          | Numerical correctness against PyTorch reference                                                                                        | `tests/`                           |
 | **M4: Perf Tuning**                          | Benchmark execution time and drive kernel optimization loop                                                                            | `benchmarks/`                      |
@@ -84,9 +84,9 @@ Modules communicate through data contracts. The topology diagram above is simpli
 
 | From | To  | Artifact                         | Format                           |
 | ---- | --- | -------------------------------- | -------------------------------- |
-| M1   | M2  | signature, workloads             | `ops_manifest.yaml`              |
-| M1   | M4  | workloads (shapes, dtypes)       | `ops_manifest.yaml`              |
-| M1   | M5  | roofline formulas (flops, bytes) | `ops_manifest.yaml`              |
+| M1   | M2  | signature, workloads             | `tileops/manifest/`              |
+| M1   | M4  | workloads (shapes, dtypes)       | `tileops/manifest/`              |
+| M1   | M5  | roofline formulas (flops, bytes) | `tileops/manifest/`              |
 | M2   | M3  | Op callable                      | Python import                    |
 | M2   | M4  | Op callable                      | Python import                    |
 | M2   | M8  | design docs, docstrings          | Markdown, Google-style in source |
@@ -135,7 +135,7 @@ Design documents are authored during development and published alongside auto-ge
 ```
 TileOPs/
 ├── tileops/
-│   ├── ops_manifest.yaml             # Op registry (agent entry point, packaged)
+│   ├── manifest/                     # Op registry (per-family YAML files + loader; agent entry point, packaged)
 │   ├── kernels/                      # L1: GPU kernel implementations
 │   ├── ops/                          # L2: User-facing Op classes
 │   ├── utils/
