@@ -45,7 +45,7 @@ TileOPs can be installed from PyPI or built from source. A CUDA-capable GPU is r
 - PyTorch >= 2.1
 - CUDA Toolkit
 - NVIDIA GPU: **Hopper** (SM_90)
-- [TileLang](https://github.com/tile-ai/tilelang) == 0.1.8
+- [TileLang](https://github.com/tile-ai/tilelang) == 0.1.9
 
 ### From PyPI
 

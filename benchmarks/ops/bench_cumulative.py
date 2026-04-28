@@ -71,7 +71,7 @@ def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
         "cumprod": CumprodFwdOp,
     }
     cls = op_map[op_kind]
-    return cls(M=m, N=n, dtype=dtype)
+    return cls(N=n, dtype=dtype)
 
 
 @CumulativeBenchFixture

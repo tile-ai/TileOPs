@@ -5,6 +5,12 @@ import torch
 from torch.nn import functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tileops.kernels.attention import (
+    GQAFwdKernel,
+    GQAFwdWgmmaPipelinedKernel,
+    GQAFwdWsPersistentCausalKernel,
+    GQAFwdWsPersistentKernel,
+)
 from tileops.ops import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdTest,
@@ -128,6 +134,19 @@ def _torch_gqa_bwd(test):
     return fn
 
 
+def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp) -> str:
+    kernel = op.kernel
+    if isinstance(kernel, GQAFwdWsPersistentCausalKernel):
+        return "ws_causal"
+    if isinstance(kernel, GQAFwdWsPersistentKernel):
+        return "ws_noncausal"
+    if isinstance(kernel, GQAFwdWgmmaPipelinedKernel):
+        return "wgmma_pipelined"
+    if isinstance(kernel, GQAFwdKernel):
+        return "legacy"
+    return kernel.__class__.__name__
+
+
 # GQA forward benchmark parameters.
 #
 # Three head profiles cover the mainstream LLM GQA configurations:
@@ -143,6 +162,9 @@ def _torch_gqa_bwd(test):
 # B=1-2 reflects typical micro-batch sizes.  No long-context training configs
 # since >90% of pretraining compute is at 4K-8K.
 _GQA_FWD_BENCH_PARAMS = [
+    # ── WS/anchor validation cases on H200 ──
+    pytest.param(4, 512, 64, 4, 128, False, torch.float16, True, id="ws-noncausal-4x512"),
+    pytest.param(4, 512, 64, 4, 128, True, torch.float16, True, id="ws-causal-4x512"),
     # ── Inference prefill: B=1, causal, fp16 ──
     # Short chat prompt
     pytest.param(1, 1024, 32, 8, 128, True, torch.float16, True, id="llama8b-1k"),
@@ -183,8 +205,9 @@ def test_gqa_fwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    tileops_variant = _tileops_gqa_variant(op)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag=f"tileops_{tileops_variant}")
 
     fa3_fn = _fa3_gqa_fwd(test)
     if fa3_fn is not None:

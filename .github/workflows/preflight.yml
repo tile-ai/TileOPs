@@ -3,6 +3,7 @@ name: Preflight Checks
 permissions:
   contents: read
   checks: read
+  pull-requests: read
 
 on:
   push:
@@ -47,6 +48,75 @@ jobs:
           fi
           echo "PR title is valid: $PR_TITLE"
 
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      manifest: ${{ steps.filter.outputs.manifest }}
+      benchmark: ${{ steps.filter.outputs.benchmark }}
+    steps:
+      - name: Detect relevant changed paths
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          REPO: ${{ github.repository }}
+          WORKFLOW_PATH: .github/workflows/preflight.yml
+        run: |
+          set -euo pipefail
+
+          # Non-PR events (push to main, tags, manual dispatch) always run
+          # both gated jobs — no base ref to diff against.
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "manifest=true" >> "$GITHUB_OUTPUT"
+            echo "benchmark=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Fail-open: if the API call errors out or returns nothing, run
+          # everything. The optimization must never reduce CI reliability.
+          if ! FILES=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[].filename' 2>&1); then
+            echo "::warning::gh api failed; defaulting to run all gated jobs"
+            echo "$FILES"
+            echo "manifest=true" >> "$GITHUB_OUTPUT"
+            echo "benchmark=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$FILES" ]]; then
+            echo "::warning::no files returned; defaulting to run all gated jobs"
+            echo "manifest=true" >> "$GITHUB_OUTPUT"
+            echo "benchmark=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Changed files in PR #$PR_NUMBER:"
+          echo "$FILES"
+
+          manifest=false
+          benchmark=false
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            case "$f" in
+              tileops/ops_manifest.yaml|scripts/validate_manifest.py|"$WORKFLOW_PATH")
+                manifest=true
+                ;;
+            esac
+            # `benchmark-contract-tests` runs `pytest benchmarks/tests`, which
+            # imports `workloads.workload_base`, `tileops.manifest`, and reads
+            # `tileops/ops_manifest.yaml` via `load_workloads()` /
+            # `workloads_to_params()`. Any of those layers can break the
+            # contract tests, so include them all.
+            case "$f" in
+              benchmarks/*|workloads/*|tileops/manifest.py|tileops/ops_manifest.yaml|"$WORKFLOW_PATH")
+                benchmark=true
+                ;;
+            esac
+          done <<< "$FILES"
+
+          echo "manifest=$manifest"
+          echo "benchmark=$benchmark"
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+          echo "benchmark=$benchmark" >> "$GITHUB_OUTPUT"
+
   ci-gate:
     runs-on: ubuntu-latest
     outputs:
@@ -79,18 +149,30 @@ jobs:
             exit 0
           fi
 
+          # `benchmark-contract-tests` is intentionally skipped on PRs that
+          # don't touch its inputs (see detect-changes). Keep that job
+          # skippable, but still require the core preflight checks to be
+          # successful so `ready_for_review` re-runs them and unblocks
+          # gpu-smoke.
           CHECKS=$(gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" --jq '
             [
               .check_runs
               | group_by(.name)
               | map(max_by(.id))[]
               | select(.name == "pre-commit" or .name == "gitleaks" or .name == "actionlint" or .name == "benchmark-contract-tests")
-              | .conclusion
+              | {name: .name, conclusion: .conclusion}
             ]
           ')
-          ALL_SUCCESS=$(echo "$CHECKS" | jq 'all(. == "success")')
+          ALL_OK=$(echo "$CHECKS" | jq '
+            all(
+              if .name == "benchmark-contract-tests"
+              then (.conclusion == "success" or .conclusion == "skipped")
+              else (.conclusion == "success")
+              end
+            )
+          ')
           COUNT=$(echo "$CHECKS" | jq 'length')
-          if [[ "$ALL_SUCCESS" == "true" && "$COUNT" -ge 4 ]]; then
+          if [[ "$ALL_OK" == "true" && "$COUNT" -ge 4 ]]; then
             echo "CI already passed for SHA $HEAD_SHA; skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
@@ -146,8 +228,8 @@ jobs:
         run: gitleaks dir . --redact --no-banner
 
   validate-manifest:
-    needs: [validate-pr-title]
-    if: ${{ github.repository == 'tile-ai/TileOPs' }}
+    needs: [validate-pr-title, ci-gate, detect-changes]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' && needs.detect-changes.outputs.manifest == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -195,8 +277,8 @@ jobs:
     # CPU-only contract tests for benchmark workload protocols.
     # Scoped to `benchmarks/tests/` so the GPU-bound `benchmarks/ops/`
     # suites (nightly-only) are NOT collected on PR CI.
-    needs: [validate-pr-title, ci-gate]
-    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
+    needs: [validate-pr-title, ci-gate, detect-changes]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' && needs.detect-changes.outputs.benchmark == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

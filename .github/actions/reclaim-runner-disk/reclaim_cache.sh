@@ -11,7 +11,7 @@
 # validate behaviour against a tmp_path fixture.
 #
 # The core safety invariant this script enforces is that some cache
-# roots (notably /home/ci-runner/.tilelang/cache/autotuner) store
+# roots (notably /data7/shared/ci-cache/tilelang/autotuner) store
 # *atomic* first-level subdirectories: consumers assume "directory
 # exists => contents complete" and the directory is only valid if the
 # sentinel file (best_config.json) is present. File-level `-mtime`
@@ -37,8 +37,8 @@
 #   trim-files <age-days> <root> [<root>...]
 #       File-level `-mtime +N -delete` trim for non-atomic cache
 #       roots, followed by empty-directory cleanup. This is the legacy
-#       behaviour used for /home/ci-runner/.triton/cache,
-#       /home/ci-runner/.cache/pip, /home/ci-runner/.wheel-cache, etc.
+#       behaviour used for /data7/shared/ci-cache/triton,
+#       /data7/shared/ci-cache/pip, /data7/shared/ci-cache/wheels, etc.
 #
 # All subcommands are idempotent, tolerate missing roots (skipped
 # silently), and never exit non-zero for per-directory errors so a

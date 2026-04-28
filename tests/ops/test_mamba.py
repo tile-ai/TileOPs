@@ -1,12 +1,19 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, allclose_compare
+from tests.test_base import TestBase, allclose_compare
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.ssd_decode import SSDDecodeOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
+from workloads.mamba import (
+    DaCumsumFwdFixture,
+    SSDChunkScanFwdFixture,
+    SSDChunkStateFwdFixture,
+    SSDDecodeFixture,
+    SSDStatePassingFwdFixture,
+)
 from workloads.mamba import DaCumsumFwdTest as _DaCumsumFwdTestWorkload
 from workloads.mamba import SSDChunkScanFwdTest as _SSDChunkScanFwdTestWorkload
 from workloads.mamba import SSDChunkStateFwdTest as _SSDChunkStateFwdTestWorkload
@@ -14,84 +21,6 @@ from workloads.mamba import SSDDecodeTest as _SSDDecodeTestWorkload
 from workloads.mamba import (
     SSDStatePassingFwdTest as _SSDStatePassingFwdTestWorkload,
 )
-
-
-class DaCumsumFwdFixture(FixtureBase):
-    PARAMS = [
-        ("batch, num_chunks, chunk_len, n_heads, tune", [
-            pytest.param(1, 2, 64, 4, False, marks=pytest.mark.smoke),
-            pytest.param(2, 4, 64, 8, False, marks=pytest.mark.full),
-            pytest.param(1, 2, 128, 4, False, marks=pytest.mark.full),
-            pytest.param(2, 4, 128, 16, False, marks=pytest.mark.full),
-        ]),
-    ]
-
-
-class SSDChunkScanFwdFixture(FixtureBase):
-    PARAMS = [
-        ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype, tune", [
-            pytest.param(1, 2, 64, 4, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 2, 64, 4, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 4, 64, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1, 2, 128, 4, 128, 32, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 2, 64, 4, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
-    ]
-
-
-class SSDChunkStateFwdFixture(FixtureBase):
-    PARAMS = [
-        ("batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx", [
-            pytest.param(
-                1, 2, 64, 4, 64, 32, 1, torch.float16, False, False, marks=pytest.mark.smoke,
-            ),
-            pytest.param(
-                1, 2, 64, 4, 64, 32, 1, torch.bfloat16, False, False, marks=pytest.mark.smoke,
-            ),
-            pytest.param(
-                2, 4, 64, 8, 64, 64, 2, torch.float16, False, False, marks=pytest.mark.full,
-            ),
-            pytest.param(
-                1, 2, 128, 4, 128, 32, 1, torch.bfloat16, False, False, marks=pytest.mark.full,
-            ),
-            pytest.param(
-                2, 2, 64, 4, 64, 32, 2, torch.bfloat16, False, False, marks=pytest.mark.full,
-            ),
-            pytest.param(
-                2, 4, 64, 8, 64, 64, 2, torch.float16, False, True, marks=pytest.mark.full,
-            ),
-        ]),
-    ]
-
-
-class SSDDecodeFixture(FixtureBase):
-    PARAMS = [
-        ("batch, n_heads, d_head, d_state, n_groups, dtype, tune", [
-            pytest.param(
-                1, 4, 64, 16, 1, torch.float16, False, marks=pytest.mark.smoke,
-            ),
-            pytest.param(
-                1, 4, 64, 16, 1, torch.bfloat16, False, marks=pytest.mark.smoke,
-            ),
-            pytest.param(
-                2, 8, 64, 32, 2, torch.float16, False, marks=pytest.mark.full,
-            ),
-            pytest.param(
-                2, 8, 128, 64, 4, torch.bfloat16, False, marks=pytest.mark.full,
-            ),
-        ]),
-    ]
-
-
-class SSDStatePassingFwdFixture(FixtureBase):
-    PARAMS = [
-        ("batch, num_chunks, n_heads, d_state, dtype, tune", [
-            pytest.param(1, 2, 4, 32, torch.float16, False, marks=pytest.mark.smoke),
-            pytest.param(1, 2, 4, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 4, 8, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 4, 8, 64, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
-    ]
 
 
 def da_cumsum_fwd_ref(
@@ -135,7 +64,7 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
       cb:          [B, C, G, L, L]     dtype    group-owned
       dA_cumsum:   [B, H, C, L]        float32
       C:           [B, S, G, N]        dtype    group-owned
-      prev_states: [B, C, H, P, N]     dtype    P before N
+      prev_states: [B, C, H, P, N]     float32  P before N
       dt:          [B, H, C, L]        dtype
 
     Output: [B, S, H, P]  float32
@@ -298,33 +227,55 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
 
 
 def ssd_decode_ref(
-    A: torch.Tensor,      # (H,)          float32
-    dt: torch.Tensor,     # (B, H)        float32
+    A: torch.Tensor,      # (H, P, N)     float32
+    dt: torch.Tensor,     # (B, H, P)     float32
     x: torch.Tensor,      # (B, H, P)     any dtype
     B_in: torch.Tensor,   # (B, G, N)     any dtype
     C_in: torch.Tensor,   # (B, G, N)     any dtype
     state: torch.Tensor,  # (B, H, P, N)  float32  -- updated in-place
 ) -> torch.Tensor:
-    """PyTorch reference for ssd_decode."""
-    B, H = dt.shape
+    """PyTorch reference for ssd_decode.
+
+    Matches the official Mamba-2 selective_state_update interface:
+      A:  (nheads, headdim, d_state)   — repeated from (nheads,) in mamba2.step()
+      dt: (batch,  nheads,  headdim)   — repeated from (batch, nheads) in mamba2.step()
+
+    Returns:
+      y_out: (B, H, P)  float32
+
+    Semantics:
+      g                = h // (n_heads // n_groups)
+      dA[b, h, p, n]   = exp(dt[b,h,p] * A[h,p,n])
+      state[b,h,p,n]  <- dA[b,h,p,n] * state[b,h,p,n]
+                         + dt[b,h,p] * B_in[b,g,n] * x[b,h,p]   (in-place)
+      y_out[b, h, p]   = sum_n  state[b, h, p, n] * C_in[b, g, n]
+    """
+    B, H, P = dt.shape
     G = B_in.shape[1]
     heads_per_group = H // G
 
-    dA = torch.exp(dt.float() * A.float())
-
+    # Expand B/C from groups to heads: (B, H, N)
     head_idx = torch.arange(H, device=B_in.device) // heads_per_group
-    B_heads = B_in.float()[:, head_idx, :]
-    C_heads = C_in.float()[:, head_idx, :]
+    B_heads = B_in.float()[:, head_idx, :]   # (B, H, N)
+    C_heads = C_in.float()[:, head_idx, :]   # (B, H, N)
 
+    # dA[b, h, p, n] = exp(dt[b,h,p] * A[h,p,n])
+    dA = torch.exp(
+        dt.float()[:, :, :, None] * A.float()[None, :, :, :]
+    )  # (B, H, P, N)
+
+    # dBx[b, h, p, n] = dt[b,h,p] * B[b,h,n] * x[b,h,p]
     dBx = (
-        dt.float()[:, :, None, None]
+        dt.float()[:, :, :, None]
         * x.float()[:, :, :, None]
         * B_heads[:, :, None, :]
-    )
+    )  # (B, H, P, N)
 
-    new_state = dA[:, :, None, None] * state.float() + dBx
+    # Update state in-place
+    new_state = dA * state.float() + dBx
     state.copy_(new_state)
 
+    # y_out[b, h, p] = sum_n state[b, h, p, n] * C[b, h, n]
     y_out = torch.einsum("bhpn,bhn->bhp", state.float(), C_heads)
     return y_out
 

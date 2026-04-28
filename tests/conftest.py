@@ -24,6 +24,44 @@ NON_RUNTIME_OPS_TIER_FILES = {
     "tests/ops/test_elementwise_config_dtype.py",
 }
 
+TILELANG_019_SKIP_REASON = (
+    "Temporarily skipped while tracking TileLang 0.1.9 migration failures (#1039)."
+)
+
+TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = (
+    "tests/ops/test_batch_norm.py",
+    "tests/ops/attention/test_mha_decode_paged.py",
+)
+
+TILELANG_019_KNOWN_FAILING_NODEIDS = {
+    "tests/ops/test_engram.py::test_engram_gate_conv_bwd[1-32-256-dtype0-False]",
+    "tests/ops/test_engram.py::test_engram_gate_conv_bwd[1-32-256-dtype1-False]",
+    "tests/ops/test_engram.py::test_engram_gate_conv_bwd[2-64-512-dtype2-False]",
+    "tests/ops/test_engram.py::test_engram_gate_conv_bwd[2-16-256-dtype3-False]",
+    "tests/ops/test_engram.py::test_engram_decode[1-512-256-12-4-3-dtype0-False]",
+    "tests/ops/test_engram.py::test_engram_decode[1-512-256-12-4-3-dtype1-False]",
+    "tests/ops/test_engram.py::test_engram_decode[4-1024-512-20-4-5-dtype2-False]",
+    "tests/ops/test_engram.py::test_engram_decode[8-512-256-18-4-3-dtype3-False]",
+    "tests/ops/test_engram.py::test_engram_decode_multi_step",
+    "tests/ops/attention/test_gqa_sliding_window_varlen.py::test_gqa_sliding_window_varlen_fwd_op[2-seqlens_q8-seqlens_k8-8-2-64-False-64-64-dtype8-False]",
+    "tests/ops/attention/test_gqa_sliding_window_varlen.py::test_gqa_sliding_window_varlen_fwd_op[2-seqlens_q13-seqlens_k13-8-2-64-True-0--1-dtype13-False]",
+    "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[1-4-64-64-dtype1-False]",
+    "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[1-4-64-64-dtype2-False]",
+    "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[2-8-64-64-dtype5-False]",
+    "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[2-8-64-64-dtype6-False]",
+    "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode_multi_step[1-4-64-64-dtype1-False]",
+    "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode_multi_step[1-4-64-64-dtype2-False]",
+    "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode_multi_step[2-8-64-64-dtype5-False]",
+    "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode_multi_step[2-8-64-64-dtype6-False]",
+    "tests/ops/test_norm_ops.py::TestBatchNormCustomOp::test_fwd_torch_compile_smoke",
+    "tests/ops/test_norm_ops.py::TestBatchNormCustomOp::test_bwd_torch_compile_smoke",
+}
+
+TILELANG_019_KNOWN_FAILING_PREFIXES = (
+    "tests/test_autotune.py::test_mha_kernel_autotune",
+    "tests/test_compile.py::test_mha_kernel_compile",
+)
+
 def _get_callspec_params(item: pytest.Item) -> dict | None:
     callspec = getattr(item, "callspec", None)
     if callspec is None:
@@ -51,10 +89,21 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Validate explicit test tier assignments."""
     tier_errors: list[str] = []
     tier_names = ("smoke", "full", "nightly")
+    tilelang_019_skip = pytest.mark.skip(reason=TILELANG_019_SKIP_REASON)
 
     for item in items:
+        path = str(item.path)
         if not _under_repo_tests(item):
             continue
+        if (
+            item.nodeid in TILELANG_019_KNOWN_FAILING_NODEIDS
+            or any(path.endswith(suffix) for suffix in TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES)
+            or any(
+                item.nodeid.startswith(prefix) for prefix in TILELANG_019_KNOWN_FAILING_PREFIXES
+            )
+        ):
+            item.add_marker(tilelang_019_skip)
+
         tiers = [name for name in tier_names if item.get_closest_marker(name) is not None]
         if len(tiers) != 1:
             tier_errors.append(

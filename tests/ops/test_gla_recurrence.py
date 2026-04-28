@@ -83,7 +83,7 @@ class GLADecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.smoke,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision GLA decode failures under TileLang 5f70374c (#999)."
+                        reason="Temporarily skipped while isolating low-precision GLA decode failures under TileLang 0.1.9 (#1039)."
                     ),
                 ],
             ),
@@ -97,7 +97,7 @@ class GLADecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.smoke,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision GLA decode failures under TileLang 5f70374c (#999)."
+                        reason="Temporarily skipped while isolating low-precision GLA decode failures under TileLang 0.1.9 (#1039)."
                     ),
                 ],
             ),
@@ -113,7 +113,7 @@ class GLADecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.full,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision GLA decode failures under TileLang 5f70374c (#999)."
+                        reason="Temporarily skipped while isolating low-precision GLA decode failures under TileLang 0.1.9 (#1039)."
                     ),
                 ],
             ),
@@ -127,7 +127,7 @@ class GLADecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.full,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision GLA decode failures under TileLang 5f70374c (#999)."
+                        reason="Temporarily skipped while isolating low-precision GLA decode failures under TileLang 0.1.9 (#1039)."
                     ),
                 ],
             ),
@@ -144,10 +144,6 @@ def test_gla_decode(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    pytest.skip(
-        "Temporarily skipping GLA decode correctness coverage under TileLang 5f70374c (#999): "
-        "fp32 currently returns NaNs and fp16/bf16 are tracked separately as low-precision launch failures."
-    )
     torch.manual_seed(42)
     test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype)
     op = GLADecodeOp(batch, heads, dim_k, dim_v, dtype=dtype, tune=tune)
@@ -165,10 +161,6 @@ def test_gla_decode_multi_step(
     tune: bool,
 ) -> None:
     """Test multiple sequential decode steps to verify state propagation."""
-    pytest.skip(
-        "Temporarily skipping GLA multi-step decode coverage under TileLang 5f70374c (#999): "
-        "fp32 currently returns NaNs and fp16/bf16 are tracked separately as low-precision launch failures."
-    )
     torch.manual_seed(42)
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v

@@ -7,7 +7,14 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.attention import (
+    GQAFwdKernel,
+    GQAFwdWgmmaPipelinedKernel,
+    GQAFwdWsPersistentCausalKernel,
+    GQAFwdWsPersistentKernel,
+)
 from tileops.ops import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
+from tileops.ops.attention.gqa import _select_gqa_fwd_kernel_cls
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdTest as _GroupedQueryAttentionBwdTestWorkload,
 )
@@ -50,6 +57,8 @@ class GroupedQueryAttentionFwdFixture(FixtureBase):
         ("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
             pytest.param(1, 1024, 8, 4, 64, False, torch.float16, False, marks=pytest.mark.smoke),
             pytest.param(1, 1024, 8, 4, 64, False, torch.bfloat16, False, marks=pytest.mark.smoke),
+            pytest.param(4, 512, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(4, 512, 64, 4, 128, True, torch.float16, False, marks=pytest.mark.smoke),
             pytest.param(4, 2048, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.full),
             pytest.param(4, 2048, 64, 4, 128, False, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
@@ -78,10 +87,42 @@ def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, 
 @GroupedQueryAttentionBwdFixture
 def test_gqa_bwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
-    pytest.skip("Temporarily skipping known GQA backward failures under TileLang 5f70374c (#999).")
+    pytest.skip("Temporarily skipping known GQA backward failures under TileLang 0.1.9 (#1039).")
     test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_gqa_fwd_dispatch_selects_ws_noncausal_on_h200() -> None:
+    kernel_cls = _select_gqa_fwd_kernel_cls(
+        4, 64, 4, 512, 128, False, torch.float16, hopper=True, h200=True)
+    assert kernel_cls is GQAFwdWsPersistentKernel
+
+
+@pytest.mark.smoke
+def test_gqa_fwd_dispatch_selects_ws_causal_on_h200() -> None:
+    kernel_cls = _select_gqa_fwd_kernel_cls(
+        4, 64, 4, 512, 128, True, torch.float16, hopper=True, h200=True)
+    assert kernel_cls is GQAFwdWsPersistentCausalKernel
+
+
+@pytest.mark.smoke
+def test_gqa_fwd_dispatch_falls_back_for_small_causal_shape() -> None:
+    kernel_cls = _select_gqa_fwd_kernel_cls(
+        1, 32, 8, 1024, 128, True, torch.float16, hopper=True, h200=True)
+    assert kernel_cls is GQAFwdWgmmaPipelinedKernel
+
+
+@pytest.mark.smoke
+def test_gqa_fwd_dispatch_falls_back_off_h200() -> None:
+    hopper_cls = _select_gqa_fwd_kernel_cls(
+        4, 64, 4, 512, 128, False, torch.float16, hopper=True, h200=False)
+    assert hopper_cls is GQAFwdWgmmaPipelinedKernel
+
+    non_hopper_cls = _select_gqa_fwd_kernel_cls(
+        4, 64, 4, 512, 128, False, torch.float16, hopper=False, h200=False)
+    assert non_hopper_cls is GQAFwdKernel
 
 
 if __name__ == "__main__":

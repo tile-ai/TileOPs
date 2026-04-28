@@ -89,7 +89,7 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.smoke,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 5f70374c (#999)."
+                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 0.1.9 (#1039)."
                     ),
                 ],
             ),
@@ -103,7 +103,7 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.smoke,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 5f70374c (#999)."
+                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 0.1.9 (#1039)."
                     ),
                 ],
             ),
@@ -119,7 +119,7 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.full,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 5f70374c (#999)."
+                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 0.1.9 (#1039)."
                     ),
                 ],
             ),
@@ -133,7 +133,7 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.full,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 5f70374c (#999)."
+                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 0.1.9 (#1039)."
                     ),
                 ],
             ),

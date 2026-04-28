@@ -62,8 +62,6 @@ def test_binary_kernel_accepts_fp8(dtype):
 @Fp8DtypeAcceptanceFixture
 def test_fused_gated_kernel_accepts_fp8(dtype):
     """FusedGatedKernel base class can be instantiated with fp8 dtype."""
-    if dtype == torch.float8_e4m3fn:
-        pytest.skip("Temporarily skipping known e4m3fn fused-gated fp8 failure under TileLang 5f70374c (#999).")
     from tileops.kernels.elementwise import SiluAndMulFwdKernel
 
     M, N = 64, 128
@@ -291,8 +289,6 @@ class Fp8SiluAndMulTest(TestBase):
 @Fp8FusedGatedFixture
 def test_silu_and_mul_fp8(dtype):
     """SiLU-and-Mul correctness with fp8."""
-    if dtype == torch.float8_e4m3fn:
-        pytest.skip("Temporarily skipping known e4m3fn silu_and_mul fp8 failure under TileLang 5f70374c (#999).")
     from tileops.ops.elementwise import SiluAndMulFwdOp
 
     M, N = 64, 128
@@ -426,7 +422,6 @@ def test_e5m2_log_zero_produces_neg_inf():
 @pytest.mark.smoke
 def test_e4m3fn_exp_overflow_saturates():
     """e4m3fn exp(large) should saturate to 448.0, not produce Inf."""
-    pytest.skip("Temporarily skipping known e4m3fn exp overflow failure under TileLang 5f70374c (#999).")
     from tileops.ops.elementwise import ExpFwdOp
 
     n = 1024
@@ -455,7 +450,6 @@ def test_fp8_accumulation_in_higher_precision():
     SiLU involves sigmoid which requires higher precision. The result
     should match fp16 computation cast back to fp8, not direct fp8 arithmetic.
     """
-    pytest.skip("Temporarily skipping known fp8 accumulation failure under TileLang 5f70374c (#999).")
     from tileops.ops.elementwise import SiluFwdOp
 
     n = _N

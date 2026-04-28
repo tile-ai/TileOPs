@@ -1,11 +1,11 @@
 ---
-name: spec-implement
+name: implement-op
 description: Modify op code to match the manifest-declared interface, making spec tests pass.
 ---
 
 ## Arguments
 
-`op_name`, `manifest_signature`, `source_op`, `source_test` — passed by spec-pipeline orchestrator.
+`op_name`, `manifest_signature`, `source_op`, `source_test` — passed by align-family orchestrator.
 
 ## Contract
 
@@ -13,7 +13,7 @@ description: Modify op code to match the manifest-declared interface, making spe
 - **Output**: modified op code + commit + `observations` list (returned to orchestrator)
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <name>` all levels pass + new tests pass.
 - **Termination (blocked)**: fix requires changes beyond Op layer. Return `blocked` with reason.
-- **Constraint**: must NOT modify `ops_manifest.yaml` (orchestrator's responsibility). Must NOT modify tests from spec-test.
+- **Constraint**: must NOT modify `ops_manifest.yaml`. Must NOT modify tests written by `test-op` in this align-op run (spec contract). MAY update pre-existing tests in `<source_test>` whose call-sites use the legacy API.
 - **Behavioral compatibility**: default param values (from manifest) must produce identical results to the old implementation. The old API shape (e.g., `__init__(M, N)`) is NOT preserved — the manifest defines the target interface.
 
 ## Workflow
@@ -35,9 +35,16 @@ stateDiagram-v2
 
 ## Dual-path policy
 
-When rewriting a base class shared by sibling ops, it is acceptable to create a dual-path `__init__` — a runtime branch supporting both the legacy `(M, N)` interface and the new spec `(dim)` interface. This keeps unmigrated siblings' tests passing.
+Before refactoring a base class, count its subclasses:
 
-Dual-path is temporary debt. The orchestrator's cleanup gate removes it after all siblings are promoted or blocked. The implementer should NOT try to avoid dual-path by preemptively migrating siblings — that violates per-op scope.
+```bash
+grep -rlE "class\s+[A-Z][A-Za-z0-9]*\s*\(\s*<BaseName>\s*\)" tileops/ops/
+```
+
+- **One subclass** (the op being migrated): refactor the base in place. No dual-path.
+- **Multiple subclasses**: keep the legacy `__init__` path alongside the new one so unmigrated siblings still pass. Cleanup gate removes the legacy path after all siblings migrate.
+
+Do NOT preemptively migrate siblings to avoid dual-path — that violates per-op scope.
 
 ## Steps
 
