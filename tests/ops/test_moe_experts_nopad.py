@@ -78,10 +78,10 @@ class TestMoEPrepareAndFinalizeNoDPEP:
 # MoEExpertsNopadFwdOp
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def moe_tensors():
+@pytest.fixture(params=[torch.bfloat16, torch.float16], ids=["bfloat16", "float16"])
+def moe_tensors(request):
     T, H, F, E, K = 16, 64, 32, 4, 2
-    dtype = torch.bfloat16
+    dtype = request.param
     hidden = torch.randn(T, H, dtype=dtype, device="cuda")
     w1 = torch.randn(E, 2 * F, H, dtype=dtype, device="cuda")
     w2 = torch.randn(E, H, F, dtype=dtype, device="cuda")

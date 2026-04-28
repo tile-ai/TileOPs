@@ -1387,7 +1387,7 @@ ops:
       op:     tileops/ops/moe/experts/nopad.py
       test:   tests/ops/test_moe_experts_nopad.py
       bench:  benchmarks/ops/bench_moe_experts_nopad.py
-      bench_manifest_driven: true
+      bench_manifest_driven: false
 
   MoEExpertsPaddedFwdOp:
     ref_api: "none"
@@ -1429,7 +1429,7 @@ ops:
       op:     tileops/ops/moe/experts/padded.py
       test:   tests/ops/test_moe_experts_nopad.py            # 共用测试文件，参数区分 layout
       bench:  benchmarks/ops/bench_moe_experts_nopad.py
-      bench_manifest_driven: true
+      bench_manifest_driven: false
 
   FusedMoeFwdOp:
     ref_api: "none"

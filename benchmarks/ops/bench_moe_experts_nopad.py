@@ -1,7 +1,8 @@
 """Benchmark for MoEExpertsNopadFwdOp and MoEExpertsPaddedFwdOp (expert GEMM layer only).
 
 Measures the permute + grouped-GEMM + unpermute pipeline without routing.
-Both nopad and padded layouts are benchmarked side-by-side.
+Both nopad and padded layouts are benchmarked side-by-side against vLLM
+fused_experts (or a torch per-expert loop when vLLM is unavailable).
 
 Workloads match the manifest entries for MoEExpertsNopadFwdOp and
 MoEExpertsPaddedFwdOp (shared workload set):
@@ -12,6 +13,10 @@ MoEExpertsPaddedFwdOp (shared workload set):
   DeepSeek-V3       512  7168  2048  256   8   (decode)
   DeepSeek-V3      4096  7168  2048  256   8   (prefill)
 
+Baselines:
+  - vllm:      vLLM fused_experts (expert GEMM only, no routing)
+  - torch-ref: per-expert GEMM loop with index_add_ (fallback when vLLM absent)
+
 Usage:
     conda run -n tileops python -m pytest benchmarks/ops/bench_moe_experts_nopad.py -vvs
 """
@@ -20,6 +25,15 @@ from typing import Optional
 
 import pytest
 import torch
+import torch.nn.functional as F
+
+try:
+    from vllm.model_executor.layers.fused_moe.fused_moe import (
+        fused_experts as _vllm_fused_experts,
+    )
+    _VLLM_AVAILABLE = True
+except ImportError:
+    _VLLM_AVAILABLE = False
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import load_workloads
@@ -146,6 +160,42 @@ def test_moe_experts_nopad_bench(
 
     result_pad = bm.profile(_padded_fn, hidden, w1, w2, topk_weights, topk_ids)
     BenchmarkReport.record(padded, locals(), result_pad, tag="tileops-padded")
+
+    # -- Baseline -------------------------------------------------------------
+    if _VLLM_AVAILABLE:
+        def _vllm_fn(hidden, w1, w2, topk_weights, topk_ids):
+            return _vllm_fused_experts(hidden, w1, w2, topk_weights, topk_ids)
+
+        _vllm_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
+        torch.cuda.synchronize()
+
+        result_vllm = bm.profile(_vllm_fn, hidden, w1, w2, topk_weights, topk_ids)
+        BenchmarkReport.record(nopad, locals(), result_vllm, tag="vllm")
+    else:
+        # torch per-expert loop (memory-efficient, O(T*H) intermediate)
+        output_buf = torch.zeros(num_tokens, hidden_size, dtype=torch.float32, device=hidden.device)
+        ids_i64 = topk_ids.to(torch.int64)
+
+        def _torch_fn(hidden, w1, w2, topk_weights, topk_ids):
+            output_buf.zero_()
+            for e in range(num_experts):
+                mask = (ids_i64 == e)
+                if not mask.any():
+                    continue
+                t_idx, k_idx = mask.nonzero(as_tuple=True)
+                h = hidden[t_idx].float()
+                gate_up = h @ w1[e].float().t()
+                ffn_dim = w1.shape[1] // 2
+                act = F.silu(gate_up[:, :ffn_dim]) * gate_up[:, ffn_dim:]
+                down = act @ w2[e].float().t()
+                output_buf.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
+            return output_buf.to(hidden.dtype)
+
+        _torch_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
+        torch.cuda.synchronize()
+
+        result_torch = bm.profile(_torch_fn, hidden, w1, w2, topk_weights, topk_ids)
+        BenchmarkReport.record(nopad, locals(), result_torch, tag="torch-ref")
 
 
 if __name__ == "__main__":
