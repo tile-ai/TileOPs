@@ -1,10 +1,10 @@
-"""Benchmark for MoEExpertsNopad and MoEExpertsPadded (expert GEMM layer only).
+"""Benchmark for MoEExpertsNopadFwdOp and MoEExpertsPaddedFwdOp (expert GEMM layer only).
 
 Measures the permute + grouped-GEMM + unpermute pipeline without routing.
 Both nopad and padded layouts are benchmarked side-by-side.
 
-Workloads match the manifest entries for MoEExpertsNopad and
-MoEExpertsPadded (shared workload set):
+Workloads match the manifest entries for MoEExpertsNopadFwdOp and
+MoEExpertsPaddedFwdOp (shared workload set):
 
   Model              T     H     F     E    K
   Qwen3-235B-A22B   512  7168  2048  128   8   (decode)
@@ -23,10 +23,10 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import load_workloads
-from tileops.ops.moe import MoEExpertsNopad, MoEExpertsPadded
+from tileops.ops.moe import MoEExpertsNopadFwdOp, MoEExpertsPaddedFwdOp
 from workloads.workload_base import WorkloadBase
 
-_OP_NAME = "MoEExpertsNopad"
+_OP_NAME = "MoEExpertsNopadFwdOp"
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ def test_moe_experts_nopad_bench(
     ws2 = torch.empty(0, device="cuda")
 
     # -- TileOPs nopad --------------------------------------------------------
-    nopad = MoEExpertsNopad(**kwargs)
+    nopad = MoEExpertsNopadFwdOp(**kwargs)
 
     def _nopad_fn(hidden, w1, w2, topk_weights, topk_ids):
         nopad.apply(output, hidden, w1, w2, topk_weights, topk_ids, num_experts, None, ws1, ws2)
@@ -135,7 +135,7 @@ def test_moe_experts_nopad_bench(
     BenchmarkReport.record(nopad, locals(), result, tag="tileops-nopad")
 
     # -- TileOPs padded -------------------------------------------------------
-    padded = MoEExpertsPadded(**kwargs)
+    padded = MoEExpertsPaddedFwdOp(**kwargs)
 
     def _padded_fn(hidden, w1, w2, topk_weights, topk_ids):
         padded.apply(output, hidden, w1, w2, topk_weights, topk_ids, num_experts, None, ws1, ws2)

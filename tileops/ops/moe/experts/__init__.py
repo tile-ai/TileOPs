@@ -1,6 +1,6 @@
 """MoE expert GEMM implementations."""
 
-from .nopad import MoEExpertsNopad
-from .padded import MoEExpertsPadded
+from .nopad import MoEExpertsNopadFwdOp
+from .padded import MoEExpertsPaddedFwdOp
 
-__all__ = ["MoEExpertsNopad", "MoEExpertsPadded"]
+__all__ = ["MoEExpertsNopadFwdOp", "MoEExpertsPaddedFwdOp"]

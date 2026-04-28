@@ -1,4 +1,4 @@
-"""Tests for MoEExpertsNopad/Padded and supporting ABCs."""
+"""Tests for MoEExpertsNopadFwdOp/PaddedFwdOp and supporting ABCs."""
 import pytest
 import torch
 
@@ -6,8 +6,8 @@ from tileops.ops.moe.abc import (
     WeightedReduce,
     WeightedReduceNoOp,
 )
-from tileops.ops.moe.experts.nopad import MoEExpertsNopad
-from tileops.ops.moe.experts.padded import MoEExpertsPadded
+from tileops.ops.moe.experts.nopad import MoEExpertsNopadFwdOp
+from tileops.ops.moe.experts.padded import MoEExpertsPaddedFwdOp
 from tileops.ops.moe.fused_moe_experts import FusedMoeExpertsFwdOp, FusedMoeExpertsPaddedFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 
@@ -75,7 +75,7 @@ class TestMoEPrepareAndFinalizeNoDPEP:
 
 
 # ---------------------------------------------------------------------------
-# MoEExpertsNopad
+# MoEExpertsNopadFwdOp
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -91,12 +91,12 @@ def moe_tensors():
                 hidden=hidden, w1=w1, w2=w2, weights=weights, ids=ids)
 
 
-class TestMoEExpertsNopad:
+class TestMoEExpertsNopadFwdOp:
 
     @pytest.mark.smoke
     def test_workspace_shapes(self, moe_tensors):
         d = moe_tensors
-        experts = MoEExpertsNopad(
+        experts = MoEExpertsNopadFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
         )
@@ -106,7 +106,7 @@ class TestMoEExpertsNopad:
     @pytest.mark.smoke
     def test_output_shape(self, moe_tensors):
         d = moe_tensors
-        experts = MoEExpertsNopad(
+        experts = MoEExpertsNopadFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
         )
@@ -115,7 +115,7 @@ class TestMoEExpertsNopad:
     @pytest.mark.smoke
     def test_make_weighted_reduce_is_noop(self, moe_tensors):
         d = moe_tensors
-        experts = MoEExpertsNopad(
+        experts = MoEExpertsNopadFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
         )
@@ -123,12 +123,12 @@ class TestMoEExpertsNopad:
 
     @pytest.mark.smoke
     def test_apply_matches_fused_moe_experts(self, moe_tensors):
-        """MoEExpertsNopad.apply() must match FusedMoeExpertsFwdOp.forward()."""
+        """MoEExpertsNopadFwdOp.apply() must match FusedMoeExpertsFwdOp.forward()."""
         d = moe_tensors
         kwargs = dict(num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
                       hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"])
         ref = FusedMoeExpertsFwdOp(**kwargs)
-        new = MoEExpertsNopad(**kwargs)
+        new = MoEExpertsNopadFwdOp(**kwargs)
 
         ref_out = ref.forward(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 
@@ -142,19 +142,19 @@ class TestMoEExpertsNopad:
 
 
 # ---------------------------------------------------------------------------
-# MoEExpertsPadded
+# MoEExpertsPaddedFwdOp
 # ---------------------------------------------------------------------------
 
-class TestMoEExpertsPadded:
+class TestMoEExpertsPaddedFwdOp:
 
     @pytest.mark.smoke
     def test_apply_matches_fused_moe_experts_padded(self, moe_tensors):
-        """MoEExpertsPadded.apply() must match FusedMoeExpertsPaddedFwdOp.forward()."""
+        """MoEExpertsPaddedFwdOp.apply() must match FusedMoeExpertsPaddedFwdOp.forward()."""
         d = moe_tensors
         kwargs = dict(num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
                       hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"])
         ref = FusedMoeExpertsPaddedFwdOp(**kwargs)
-        new = MoEExpertsPadded(**kwargs)
+        new = MoEExpertsPaddedFwdOp(**kwargs)
 
         ref_out = ref.forward(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 

@@ -15,8 +15,8 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops.moe.abc import MoEExpertsModular, MoEPrepareAndFinalize
-from tileops.ops.moe.experts.nopad import MoEExpertsNopad
-from tileops.ops.moe.experts.padded import MoEExpertsPadded
+from tileops.ops.moe.experts.nopad import MoEExpertsNopadFwdOp
+from tileops.ops.moe.experts.padded import MoEExpertsPaddedFwdOp
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 
@@ -47,7 +47,7 @@ class FusedMoe(Op):
         prepare_finalize: Override the PrepareAndFinalize implementation.
             Default: MoEPrepareAndFinalizeNoDPEP (no EP, no quantization).
         experts: Override the Experts implementation.
-            Default: MoEExpertsNopad (layout="nopad") or MoEExpertsPadded.
+            Default: MoEExpertsNopadFwdOp (layout="nopad") or MoEExpertsPaddedFwdOp.
     """
 
     def __init__(
@@ -99,7 +99,7 @@ class FusedMoe(Op):
         else:
             if layout not in ("nopad", "padded"):
                 raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
-            experts_cls = MoEExpertsNopad if layout == "nopad" else MoEExpertsPadded
+            experts_cls = MoEExpertsNopadFwdOp if layout == "nopad" else MoEExpertsPaddedFwdOp
             self._experts = experts_cls(
                 num_tokens=num_tokens,
                 num_experts=num_experts,

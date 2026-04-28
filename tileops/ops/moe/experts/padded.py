@@ -1,4 +1,4 @@
-"""MoEExpertsPadded — block_m-aligned padded layout expert GEMM."""
+"""MoEExpertsPaddedFwdOp — block_m-aligned padded layout expert GEMM."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ from tileops.ops.moe.abc import MoEExpertsModular, WeightedReduce, WeightedReduc
 from tileops.ops.moe.permute_padded import MoePermutePaddedFwdOp
 from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
 
-__all__ = ["MoEExpertsPadded"]
+__all__ = ["MoEExpertsPaddedFwdOp"]
 
 _BLOCK_M: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
 
 
-class MoEExpertsPadded(MoEExpertsModular):
+class MoEExpertsPaddedFwdOp(MoEExpertsModular):
     """Expert GEMM using block_m-aligned padded layout (reference baseline).
 
     Internal pipeline: MoePermutePaddedFwdOp → gate_up GEMM → SwiGLU →
@@ -42,7 +42,7 @@ class MoEExpertsPadded(MoEExpertsModular):
         if expert_map is not None:
             raise NotImplementedError(
                 "expert_map is not supported for padded layout. "
-                "Use MoEExpertsNopad for EP mode."
+                "Use MoEExpertsNopadFwdOp for EP mode."
             )
         numel = num_tokens * top_k
         padded_batch_sum = numel + (num_experts * (_BLOCK_M - 1))

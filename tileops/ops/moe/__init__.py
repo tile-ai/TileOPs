@@ -8,8 +8,8 @@ from .abc import (
     WeightedReduce,
     WeightedReduceNoOp,
 )
-from .experts.nopad import MoEExpertsNopad
-from .experts.padded import MoEExpertsPadded
+from .experts.nopad import MoEExpertsNopadFwdOp
+from .experts.padded import MoEExpertsPaddedFwdOp
 from .fused_moe import FusedMoe
 from .fused_moe_experts import FusedMoeExpertsFwdOp, FusedMoeExpertsPaddedFwdOp
 from .fused_topk import FusedTopKOp
@@ -28,8 +28,8 @@ __all__ = [
     "FusedTopKOp",
     "MoEExperts",
     "MoEExpertsModular",
-    "MoEExpertsNopad",
-    "MoEExpertsPadded",
+    "MoEExpertsNopadFwdOp",
+    "MoEExpertsPaddedFwdOp",
     "MoEPrepareAndFinalize",
     "MoEPrepareAndFinalizeNoDPEP",
     "MoeGroupedGemmNopadFwdOp",

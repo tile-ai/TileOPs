@@ -1,4 +1,4 @@
-"""MoEExpertsNopad — tight (no-pad) layout expert GEMM."""
+"""MoEExpertsNopadFwdOp — tight (no-pad) layout expert GEMM."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from tileops.ops.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
 from tileops.ops.moe.permute_nopad import MoePermuteNopadFwdOp
 from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
 
-__all__ = ["MoEExpertsNopad"]
+__all__ = ["MoEExpertsNopadFwdOp"]
 
 
-class MoEExpertsNopad(MoEExpertsModular):
+class MoEExpertsNopadFwdOp(MoEExpertsModular):
     """Expert GEMM using tight (T*K rows, no-pad) layout with GPU tile scheduler.
 
     Internal pipeline: MoePermuteNopadFwdOp → gate_up GEMM → SwiGLU →
