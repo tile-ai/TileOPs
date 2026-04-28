@@ -11,6 +11,7 @@ layer detects rows containing NaN before the kernel call and patches the
 output to NaN for those rows.
 """
 
+from math import inf
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
@@ -38,6 +39,9 @@ class InfNormFwdOp(_ReduceOpBase):
         dim: Reduction dimension (default -1).  Accepts ``int`` or
             ``list[int]`` for multi-dim reduction.
         keepdim: Whether to retain the reduced dimension as size 1.
+        ord: Norm order. Must equal ``float('inf')`` for ``InfNormFwdOp``
+            (manifest fixes ``ord == float('inf')``); accepted as a kwarg to
+            mirror ``torch.linalg.vector_norm``.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -45,6 +49,7 @@ class InfNormFwdOp(_ReduceOpBase):
     _op_kind = "inf"
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
+    _required_ord: Union[int, float] = inf
 
     def __init__(
         self,
@@ -52,9 +57,16 @@ class InfNormFwdOp(_ReduceOpBase):
         dtype: torch.dtype,
         dim: Union[int, List[int], None] = -1,
         keepdim: bool = False,
+        ord: Union[int, float] = inf,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        if ord != self._required_ord:
+            raise ValueError(
+                f"{type(self).__name__} only supports ord={self._required_ord!r}, "
+                f"got ord={ord!r}"
+            )
+        self.ord = ord
         super().__init__(
             dtype=dtype, dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
