@@ -64,7 +64,7 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
       cb:          [B, C, G, L, L]     dtype    group-owned
       dA_cumsum:   [B, H, C, L]        float32
       C:           [B, S, G, N]        dtype    group-owned
-      prev_states: [B, C, H, P, N]     dtype    P before N
+      prev_states: [B, C, H, P, N]     float32  P before N
       dt:          [B, H, C, L]        dtype
 
     Output: [B, S, H, P]  float32

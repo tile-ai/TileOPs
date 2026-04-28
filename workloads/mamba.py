@@ -85,7 +85,7 @@ class SSDChunkScanFwdTest(WorkloadBase):
         cb          = torch.randn(b, c, g, L, L, dtype=self.dtype,    device="cuda") * 0.1
         dA_cumsum   = -torch.rand(b, h, c, L,    dtype=torch.float32, device="cuda").cumsum(-1)
         C           = torch.randn(b, S, g, n,    dtype=self.dtype,    device="cuda") * 0.1
-        prev_states = torch.randn(b, c, h, p, n, dtype=self.dtype,    device="cuda") * 0.1
+        prev_states = torch.randn(b, c, h, p, n, dtype=torch.float32,  device="cuda") * 0.1
         dt          = torch.rand( b, h, c, L,    dtype=self.dtype,    device="cuda") * 0.1 + 0.01
         return x, cb, dA_cumsum, C, prev_states, dt
 

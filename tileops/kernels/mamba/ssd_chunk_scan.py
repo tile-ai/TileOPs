@@ -9,7 +9,7 @@ Official-aligned interface (matches _chunk_scan_fwd in mamba_ssm):
   dA_cumsum:    (batch, n_heads, num_chunks, chunk_len)        float32
   C:            (batch, seqlen, n_groups, d_state)             dtype
                 -- readout matrix; seqlen-fused, group-owned
-  prev_states:  (batch, num_chunks, n_heads, d_head, d_state)  dtype
+  prev_states:  (batch, num_chunks, n_heads, d_head, d_state)  float32
                 -- state entering each chunk; P before N (official convention)
   dt:           (batch, n_heads, num_chunks, chunk_len)        dtype
 
@@ -109,7 +109,7 @@ def _ssd_chunk_scan_fwd_kernel(
             cb:          T.Tensor(cb_shape, dtype),           # type: ignore
             dA_cumsum:   T.Tensor(dA_shape, accum_dtype),    # type: ignore
             C_mat:       T.Tensor(c_shape, dtype),            # type: ignore
-            prev_states: T.Tensor(states_shape, dtype),       # type: ignore
+            prev_states: T.Tensor(states_shape, accum_dtype),  # type: ignore
             dt:          T.Tensor(dt_shape, dtype),           # type: ignore
             out:         T.Tensor(out_shape, accum_dtype),   # type: ignore
         ):
@@ -170,13 +170,13 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]
+                    # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]  float32
                     for nn, pp in T.Parallel(block_n, block_p):
                         n_abs = n0 + nn
                         p_abs = p0 + pp
                         state_tile[nn, pp] = T.if_then_else(
                             (n_abs < N) and (p_abs < P),
-                            prev_states[bz, bc, bh, p_abs, n_abs],
+                            T.cast(prev_states[bz, bc, bh, p_abs, n_abs], dtype),
                             T.cast(T.float32(0.0), dtype),
                         )
 
@@ -337,7 +337,7 @@ class SSDChunkScanFwdKernel(Kernel):
       cb:          [B, C, G, L, L]     dtype       group-owned
       dA_cumsum:   [B, H, C, L]        float32
       C:           [B, S, G, N]        dtype       seqlen-fused, group-owned
-      prev_states: [B, C, H, P, N]     dtype       P before N
+      prev_states: [B, C, H, P, N]     float32     P before N
       dt:          [B, H, C, L]        dtype
 
     Output:
@@ -410,7 +410,7 @@ class SSDChunkScanFwdKernel(Kernel):
             cb:          [B, C, G, L, L]     dtype
             dA_cumsum:   [B, H, C, L]        float32
             C:           [B, S, G, N]        dtype
-            prev_states: [B, C, H, P, N]     dtype
+            prev_states: [B, C, H, P, N]     float32     P before N
             dt:          [B, H, C, L]        dtype
 
         Returns:
