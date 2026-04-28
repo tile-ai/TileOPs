@@ -1,9 +1,10 @@
 """Programmatic access to the ops manifest.
 
-The manifest is split across one YAML file per op family in this package
-directory (e.g. ``elementwise.yaml``, ``reduction.yaml``). At load time all
-files are merged into a single ``ops`` dict; duplicate op names across files
-raise :class:`ValueError`.
+The manifest is split across one or more YAML files per op family in this
+package directory. Most families use a single file (e.g. ``reduction.yaml``),
+but a family MAY be sharded across multiple files when it grows large (e.g.
+the ``elementwise`` family). At load time all files are merged into a single
+``ops`` dict; duplicate op names across files raise :class:`ValueError`.
 
 Public entry points:
 
