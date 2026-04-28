@@ -36,18 +36,18 @@ def normalize_dim(
 
     Raises:
         IndexError: If any dim is out of range.
-        ValueError: If duplicate dims are given or dim is an empty list.
+        ValueError: If duplicate dims are given.
     """
     if dim is None:
         return list(range(ndim))
 
     dims = [dim] if isinstance(dim, int) else list(dim)
 
+    # PyTorch semantics: empty list/tuple means "reduce over all dimensions",
+    # equivalent to ``dim=None``. Match torch.linalg.vector_norm and
+    # torch.sum on this behavior.
     if len(dims) == 0:
-        raise ValueError(
-            "dim=[] is not supported. Provide at least one dimension to reduce, "
-            "or omit dim to reduce over all dimensions."
-        )
+        return list(range(ndim))
 
     normalized = []
     for d in dims:

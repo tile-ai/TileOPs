@@ -768,7 +768,7 @@ CountNonzeroFwdOp:
 L1NormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction
-  status: spec-only  # dim=[]/() (manifest treats as full reduction) not yet implemented; _ReduceOpBase.normalize_dim raises on empty. Flip to implemented when empty-dim path lands.
+  status: implemented
 
   signature:
     inputs:
@@ -818,7 +818,7 @@ L1NormFwdOp:
 L2NormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction
-  status: spec-only  # dim=[]/() (manifest treats as full reduction) not yet implemented; _ReduceOpBase.normalize_dim raises on empty. Flip to implemented when empty-dim path lands.
+  status: implemented
 
   signature:
     inputs:
@@ -868,7 +868,7 @@ L2NormFwdOp:
 InfNormFwdOp:
   ref_api: "torch.linalg.vector_norm"
   family: reduction
-  status: spec-only  # dim=[]/() (manifest treats as full reduction) not yet implemented; _ReduceOpBase.normalize_dim raises on empty. Flip to implemented when empty-dim path lands.
+  status: implemented
 
   signature:
     inputs:

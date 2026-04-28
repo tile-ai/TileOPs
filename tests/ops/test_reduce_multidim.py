@@ -391,39 +391,46 @@ def test_inf_norm_multidim(
 
 
 # ---------------------------------------------------------------------------
-# Regression: empty dim list must be rejected before reaching the helper
+# Empty dim list / tuple is full-reduction (matches PyTorch semantics)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
-def test_empty_dim_list_raises() -> None:
-    """dim=[] must raise ValueError; the helper cannot produce correct semantics."""
+def test_empty_dim_list_full_reduction() -> None:
+    """normalize_dim([], ndim) returns all dims (PyTorch full-reduction semantics)."""
     from tileops.ops.reduction._multidim import normalize_dim
 
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        normalize_dim([], ndim=3)
+    assert normalize_dim([], ndim=3) == [0, 1, 2]
+    assert normalize_dim((), ndim=3) == [0, 1, 2]
+    assert normalize_dim([], ndim=1) == [0]
 
 
 @pytest.mark.smoke
-def test_sum_empty_dim_raises() -> None:
-    """SumFwdOp(dim=[]) must raise before dispatching to the multi-dim helper."""
+def test_sum_empty_dim_full_reduction() -> None:
+    """SumFwdOp(dim=[]) reduces over all dims (matches dim=None path)."""
     from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
     op = SumFwdOp(dtype=torch.float16, dim=[], keepdim=False)
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        op(x)
+    op_none = SumFwdOp(dtype=torch.float16, dim=None, keepdim=False)
+    y = op(x)
+    y_none = op_none(x)
+    assert y.shape == y_none.shape
+    assert torch.allclose(y, y_none, **_tol(torch.float16))
 
 
 @pytest.mark.smoke
-def test_mean_empty_dim_raises() -> None:
-    """MeanFwdOp(dim=[]) must raise before dispatching to the multi-dim helper."""
+def test_mean_empty_dim_full_reduction() -> None:
+    """MeanFwdOp(dim=()) reduces over all dims (matches dim=None path)."""
     from tileops.ops.reduction.reduce import MeanFwdOp
 
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
-    op = MeanFwdOp(dtype=torch.float16, dim=[], keepdim=False)
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        op(x)
+    op = MeanFwdOp(dtype=torch.float16, dim=(), keepdim=True)
+    op_none = MeanFwdOp(dtype=torch.float16, dim=None, keepdim=True)
+    y = op(x)
+    y_none = op_none(x)
+    assert y.shape == y_none.shape
+    assert torch.allclose(y, y_none, **_tol(torch.float16))
 
 
 @pytest.mark.smoke
