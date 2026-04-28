@@ -370,7 +370,7 @@ def test_conv2d(
     tune: bool,
 ) -> None:
     if (n, c_in, h, w, c_out, kernel_size, stride, padding, dtype, tune) in SKIPPED_CONV2D_CASES:
-        pytest.skip("Temporarily skipping known Conv2d failures under TileLang 5f70374c (#999).")
+        pytest.skip("Temporarily skipping known Conv2d failures under TileLang 0.1.9 (#1039).")
     test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dtype)
     op = Conv2dOp(
         n=n,
@@ -391,7 +391,7 @@ def test_conv2d(
 
 @pytest.mark.smoke
 def test_conv2d_accepts_zero_bias() -> None:
-    pytest.skip("Temporarily skipping known Conv2d zero-bias failure under TileLang 5f70374c (#999).")
+    pytest.skip("Temporarily skipping known Conv2d zero-bias failure under TileLang 0.1.9 (#1039).")
     op = Conv2dOp(
         n=1,
         c_in=32,
@@ -573,7 +573,7 @@ def test_conv3d(
     tune: bool,
 ) -> None:
     if (n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype, tune) in SKIPPED_CONV3D_CASES:
-        pytest.skip("Temporarily skipping known Conv3d failures under TileLang 5f70374c (#999).")
+        pytest.skip("Temporarily skipping known Conv3d failures under TileLang 0.1.9 (#1039).")
     test = Conv3dTest(n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype)
     op = Conv3dOp(
         n=n,
@@ -595,7 +595,7 @@ def test_conv3d(
 
 @pytest.mark.smoke
 def test_conv3d_accepts_zero_bias() -> None:
-    pytest.skip("Temporarily skipping known Conv3d zero-bias failure under TileLang 5f70374c (#999).")
+    pytest.skip("Temporarily skipping known Conv3d zero-bias failure under TileLang 0.1.9 (#1039).")
     op = Conv3dOp(
         n=1,
         c_in=8,

@@ -1,6 +1,6 @@
 # Op Interface Design — Reference
 
-Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) and the `op-scaffold` skill. Each `### Slot S{N}` entry states the authoritative **Rule**, its manifest **Derivation**, a concrete **Example** modelled on [`tileops/ops/reduction/cumsum.py`](../tileops/ops/reduction/cumsum.py), and **Common mistakes**. Non-slot content lives in the appendices. Slot IDs S8–S11 are intentionally absent (reserved during iteration for T1 thin-wrapper slots later declared out of scope).
+Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) and the `scaffold-op` skill. Each `### Slot S{N}` entry states the authoritative **Rule**, its manifest **Derivation**, a concrete **Example** modelled on [`tileops/ops/reduction/cumsum.py`](../tileops/ops/reduction/cumsum.py), and **Common mistakes**. Non-slot content lives in the appendices. Slot IDs S8–S11 are intentionally absent (reserved during iteration for T1 thin-wrapper slots later declared out of scope).
 
 ## Slot Rules
 
@@ -269,16 +269,16 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
-| Variable                  | Family          | Purpose                                                   |
-| ------------------------- | --------------- | --------------------------------------------------------- |
-| `_kernel_key`             | norm, reduction | Kernel-map lookup key                                     |
-| `_kernel_cls`             | norm, reduction | Kernel class reference                                    |
-| `_op_kind`                | reduction       | Reduction kind string (`"sum"`, `"mean"`, `"std"`, etc.)  |
-| `_kernel_handles_padding` | reduction       | `True` → kernel uses masked loads, skip host-side padding |
-| `_op_name`                | elementwise     | `torch.library.custom_op` registration key                |
-| `kernel_cls`              | elementwise     | Kernel class reference                                    |
+| Variable                  | Family          | Purpose                                                                                                          |
+| ------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `_kernel_key`             | norm, reduction | Kernel-map lookup key                                                                                            |
+| `_kernel_cls`             | norm, reduction | Kernel class reference                                                                                           |
+| `_op_kind`                | reduction, scan | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
+| `_kernel_handles_padding` | reduction       | `True` → kernel uses masked loads, skip host-side padding                                                        |
+| `_op_name`                | elementwise     | `torch.library.custom_op` registration key                                                                       |
+| `kernel_cls`              | elementwise     | Kernel class reference                                                                                           |
 
-**The `op-scaffold` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); filled in during family-specific refactoring (future skill). Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
+**The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); filled in during family-specific refactoring (future skill). Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
 ### `Op` base class attributes ([`tileops/ops/op_base.py`](../tileops/ops/op_base.py))
 
@@ -307,7 +307,7 @@ Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `auto
 
 ## Optional Hooks (Appendix)
 
-Hooks family bases expose for op-specific semantics. The `op-scaffold` skill does NOT emit these.
+Hooks family bases expose for op-specific semantics. The `scaffold-op` skill does NOT emit these.
 
 | Hook              | Family    | Default                     | Override example                                                       |
 | ----------------- | --------- | --------------------------- | ---------------------------------------------------------------------- |

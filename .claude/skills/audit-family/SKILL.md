@@ -1,5 +1,5 @@
 ---
-name: spec-audit
+name: audit-family
 description: Compare each op's code signature against its manifest spec, classify gaps, produce a structured report.
 ---
 
@@ -42,7 +42,7 @@ Key gate: `pytorch_equivalent` determines autonomous vs human-required migration
 | Classification | Condition                                                          | Downstream                          |
 | -------------- | ------------------------------------------------------------------ | ----------------------------------- |
 | `ready`        | `--check-op` passes, no signature difference                       | Orchestrator flips status directly  |
-| `semantic_gap` | Manifest-code difference + `pytorch_equivalent` exists             | spec-test → spec-implement          |
+| `semantic_gap` | Manifest-code difference + `pytorch_equivalent` exists             | test-op → implement-op              |
 | `blocked`      | Difference but no PyTorch reference; or kernel-level change needed | Terminate. `reason` field explains. |
 
 ## Gap Report Format

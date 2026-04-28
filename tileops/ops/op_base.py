@@ -121,7 +121,7 @@ class Op(ABC):
         #     of eval_roofline on every concrete Op subclass.
         # Why: Introducing @abstractmethod now would break every existing
         #     concrete op under tileops/ops/ (none of them ship an
-        #     eval_roofline yet). The op-scaffold codegen work that will
+        #     eval_roofline yet). The scaffold-op codegen work that will
         #     generate these bodies per docs/roofline.md §4.4 is pre-
         #     requisite; the trust model requires a separate per-op migration
         #     PR to flip any given op from stub to generated body.

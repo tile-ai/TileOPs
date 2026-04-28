@@ -16,10 +16,10 @@ class SSDDecodeOp(Op):
     Performs a single decode step of the Mamba-2 State Space Model (SSM) core: updates the
     recurrent state in-place and returns the output y for the current token:
 
-      dA[b, h]         = exp(dt[b, h] * A[h])
       g                = h // (n_heads // n_groups)
-      state[b,h,p,n]  <- dA[b,h] * state[b,h,p,n]
-                         + dt[b,h] * B_in[b,g,n] * x[b,h,p]
+      dA[b, h, p, n]   = exp(dt[b, h, p] * A[h, p, n])
+      state[b,h,p,n]  <- dA[b,h,p,n] * state[b,h,p,n]
+                         + dt[b,h,p] * B_in[b,g,n] * x[b,h,p]
       y_out[b, h, p]   = sum_n  state[b, h, p, n] * C_in[b, g, n]
 
     The skip connection (D * x) and output gate (z * silu) are not fused
@@ -77,8 +77,8 @@ class SSDDecodeOp(Op):
         """Run a single Mamba-2 decode step.
 
         Args:
-            A:     (n_heads,) float32  -- SSM decay parameter (A <= 0)
-            dt:    (batch, n_heads) float32  -- discretization step (post-softplus)
+            A:     (n_heads, d_head, d_state) float32  -- SSM decay parameter (A <= 0)
+            dt:    (batch, n_heads, d_head) float32  -- discretization step (post-softplus)
             x:     (batch, n_heads, d_head) dtype  -- input features per head
             B_in:  (batch, n_groups, d_state) dtype  -- SSM B matrix (per group)
             C_in:  (batch, n_groups, d_state) dtype  -- SSM C matrix (per group)

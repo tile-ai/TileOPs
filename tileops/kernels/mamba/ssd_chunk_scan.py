@@ -1,52 +1,55 @@
 """
 Mamba-2 State-Space Dual (SSD) fused chunk output forward kernel (history + intra-chunk paths).
 
-Inputs (pre-reshaped to chunked view):
-  x:            (batch, num_chunks, chunk_len, n_heads, d_head)
-  cb:           (batch, num_chunks, n_heads, chunk_len, chunk_len)
-                -- precomputed source-target coupling term
-                   cb[l, s] = sum_n C[l, n] * B[s, n]
-  dA_cumsum:    (batch, n_heads, num_chunks, chunk_len)
-                -- chunk-local prefix sums of dA, where dA = dt * A
-  C:            (batch, num_chunks, chunk_len, n_heads, d_state)
-  prev_states:  (batch, num_chunks, n_heads, d_state, d_head)
-                -- state entering each chunk from previous chunks
-  dt:           (batch, num_chunks, chunk_len, n_heads)
-                -- per-position discretization factor
+Official-aligned interface (matches _chunk_scan_fwd in mamba_ssm):
+
+  x:            (batch, seqlen, n_heads, d_head)              dtype
+  cb:           (batch, num_chunks, n_groups, chunk_len, chunk_len)  dtype
+                -- precomputed C@B coupling; group-owned (not head-owned)
+  dA_cumsum:    (batch, n_heads, num_chunks, chunk_len)        float32
+  C:            (batch, seqlen, n_groups, d_state)             dtype
+                -- readout matrix; seqlen-fused, group-owned
+  prev_states:  (batch, num_chunks, n_heads, d_head, d_state)  float32
+                -- state entering each chunk; P before N (official convention)
+  dt:           (batch, n_heads, num_chunks, chunk_len)        dtype
 
 Output:
-  out:          (batch, num_chunks, chunk_len, n_heads, d_head)
+  out:          (batch, seqlen, n_heads, d_head)               float32
+                -- seqlen-fused output
 
 For each (b, c, l, h, p), the kernel computes:
 
-  out[l, p] = Y_off[l, p] + Y_diag[l, p]
+  out[b, c*Q+l, h, p] = Y_off[b,c,l,h,p] + Y_diag[b,c,l,h,p]
 
-where the history / Step-4 contribution is
+where the history / prev-state contribution is:
 
-  Y_off[l, p]
-    = exp(dA_cumsum[l]) * sum_n C[l, n] * prev_states[n, p]
+  Y_off[b,c,l,h,p]
+    = exp(dA_cumsum[b,h,c,l]) * sum_n C[b,c*Q+l,g(h),n] * prev_states[b,c,h,p,n]
 
-and the intra-chunk / Step-1 contribution is
+and the intra-chunk / causal-diagonal contribution is:
 
-  Y_diag[l, p]
+  Y_diag[b,c,l,h,p]
     = sum_{s <= l}
-        cb[l, s]
-        * exp(dA_cumsum[l] - dA_cumsum[s])
-        * dt[s]
-        * x[s, p]
+        cb[b,c,g(h),l,s]
+        * exp(dA_cumsum[b,h,c,l] - dA_cumsum[b,h,c,s])
+        * dt[b,h,c,s]
+        * x[b,c*Q+s,h,p]
 
-Thus the kernel fuses:
-  - Step 4: state -> output conversion from chunk-entry states
-  - Step 1: intra-chunk diagonal contribution
+where g(h) = h // heads_per_group.
+
+Layout changes vs old TileOPs version
+--------------------------------------
+  old                              new (official)
+  x:          [B,C,L,H,P]         [B,S,H,P]          seqlen-fused
+  cb:         [B,C,H,L,L]         [B,C,G,L,L]        group-owned
+  C:          [B,C,L,H,N]         [B,S,G,N]           seqlen-fused, group-owned
+  prev_states:[B,C,H,N,P]         [B,C,H,P,N]        P before N
+  dt:         [B,C,L,H]           [B,H,C,L]          H before C
+  out:        [B,C,L,H,P]         [B,S,H,P]          seqlen-fused
 
 Notation:
-  b = batch, T = sequence length, h = n_heads, p = d_head, n = d_state
-  Q = chunk_len, c = T / Q = num_chunks
-
-Note:
-  dA_cumsum uses layout (batch, head, chunk, position),
-  while x/C/out use layout (batch, chunk, position, head, ...).
-  The tensor cb uses layout (batch, chunk, head, target_position, source_position).
+  B = batch, S = seqlen = C*Q, H = n_heads, P = d_head, G = n_groups,
+  N = d_state, C = num_chunks, Q = chunk_len
 """
 
 import itertools
@@ -68,9 +71,20 @@ def _ssd_chunk_scan_fwd_kernel(
     n_heads: int,
     d_head: int,
     d_state: int,
+    n_groups: int,
     dtype: str = "float16",
 ) -> Callable:
     accum_dtype = "float"
+
+    B = batch
+    C = num_chunks
+    Q = chunk_len
+    H = n_heads
+    P = d_head
+    N = d_state
+    G = n_groups
+    S = C * Q
+    HEADS_PER_GROUP = H // G
 
     @tilelang.jit(out_idx=[-1])
     def kernel_func(
@@ -80,178 +94,177 @@ def _ssd_chunk_scan_fwd_kernel(
         block_s: int,
         threads: int,
     ):
-        x_shape = (batch, num_chunks, chunk_len, n_heads, d_head)
-        cb_shape = (batch, num_chunks, n_heads, chunk_len, chunk_len)
-        d_a_shape = (batch, n_heads, num_chunks, chunk_len)
-        c_shape = (batch, num_chunks, chunk_len, n_heads, d_state)
-        state_shape = (batch, num_chunks, n_heads, d_state, d_head)
-        d_t_shape = (batch, num_chunks, chunk_len, n_heads)
-        out_shape = (batch, num_chunks, chunk_len, n_heads, d_head)
+        # Official layouts
+        x_shape          = (B, S, H, P)        # [B, S, H, P]
+        cb_shape         = (B, C, G, Q, Q)     # [B, C, G, L, L]  group-owned
+        dA_shape         = (B, H, C, Q)        # [B, H, C, L]
+        c_shape          = (B, S, G, N)        # [B, S, G, N]     group-owned
+        states_shape     = (B, C, H, P, N)     # [B, C, H, P, N]  P before N
+        dt_shape         = (B, H, C, Q)        # [B, H, C, L]
+        out_shape        = (B, S, H, P)        # [B, S, H, P]
 
         @T.prim_func
         def main(
-            x: T.Tensor(x_shape, dtype),                   # type: ignore
-            cb: T.Tensor(cb_shape, dtype),                  # type: ignore
-            dA_cumsum: T.Tensor(d_a_shape, accum_dtype),    # type: ignore
-            C: T.Tensor(c_shape, dtype),                    # type: ignore
-            prev_states: T.Tensor(state_shape, dtype),      # type: ignore
-            d_t: T.Tensor(d_t_shape, dtype),                # type: ignore
-            out: T.Tensor(out_shape, accum_dtype),          # type: ignore
+            x:           T.Tensor(x_shape, dtype),           # type: ignore
+            cb:          T.Tensor(cb_shape, dtype),           # type: ignore
+            dA_cumsum:   T.Tensor(dA_shape, accum_dtype),    # type: ignore
+            C_mat:       T.Tensor(c_shape, dtype),            # type: ignore
+            prev_states: T.Tensor(states_shape, accum_dtype),  # type: ignore
+            dt:          T.Tensor(dt_shape, dtype),           # type: ignore
+            out:         T.Tensor(out_shape, accum_dtype),   # type: ignore
         ):
-            # grid = (b*h*c, l_tile, p_tile) -- CUDA supports at most 3D grids;
-            # recover (bz, bh, bc) from the fused first dimension.
+            # Grid: fuse (B, H, C) into axis-0; tile L and P
             with T.Kernel(
-                batch * n_heads * num_chunks,
-                T.ceildiv(chunk_len, block_l),
-                T.ceildiv(d_head, block_p),
+                B * H * C,
+                T.ceildiv(Q, block_l),
+                T.ceildiv(P, block_p),
                 threads=threads,
-            ) as (b_h_c, bl, bp):
-                bz = b_h_c // (n_heads * num_chunks)
-                bh = (b_h_c % (n_heads * num_chunks)) // num_chunks
-                bc = b_h_c % num_chunks
+            ) as (bhc, bl, bp):
 
-                # ----------------------------
-                # output tile accumulator
-                # ----------------------------
-                acc = T.alloc_fragment((block_l, block_p), accum_dtype)
-                T.clear(acc)
+                bz = bhc // (H * C)
+                bh = (bhc % (H * C)) // C
+                bc = bhc % C
+
+                bg = bh // HEADS_PER_GROUP   # head -> group
+                chunk_start = bc * Q         # first token index of this chunk
 
                 l0 = bl * block_l
                 p0 = bp * block_p
 
-                # ----------------------------
-                # load target-side dA_cumsum[l]
-                # used in both step4 and step1
-                # ----------------------------
-                dA_l = T.alloc_fragment((block_l,), accum_dtype)
+                # output accumulator [block_l, block_p]
+                acc = T.alloc_fragment((block_l, block_p), accum_dtype)
+                T.clear(acc)
 
-                for l in T.Parallel(block_l):
-                    l_abs = l0 + l
-                    dA_l[l] = T.if_then_else(
-                        l_abs < chunk_len,
+                # load target-side dA_cumsum[b,h,c,l] for this l-tile
+                # alloc_shared so it is visible across all thread-parallel loops
+                dA_l = T.alloc_shared((block_l,), accum_dtype)
+                for ll in T.Parallel(block_l):
+                    l_abs = l0 + ll
+                    dA_l[ll] = T.if_then_else(
+                        l_abs < Q,
                         dA_cumsum[bz, bh, bc, l_abs],
                         T.float32(0.0),
                     )
+                T.sync_threads()
 
-                # =========================================================
-                # PART 1: history / Step-4 path
-                #   acc[l,p] += sum_n C[l,n] * prev_states[n,p] * exp(dA_l[l])
-                # =========================================================
-
-                # local accumulator before multiplying target decay
+                # =====================================================
+                # PART 1: history path
+                #   acc[l,p] += exp(dA_l[l]) * sum_n C[l,g,n] * prev_states[h,p,n]
+                # =====================================================
                 hist_acc = T.alloc_fragment((block_l, block_p), accum_dtype)
                 T.clear(hist_acc)
 
-                c_tile = T.alloc_shared((block_l, block_n), dtype)
+                c_tile     = T.alloc_shared((block_l, block_n), dtype)
                 state_tile = T.alloc_shared((block_n, block_p), dtype)
 
-                for n0 in T.serial(T.ceildiv(d_state, block_n)):
-                    # load C tile: (l_tile, n_tile)
-                    # C: (b, c, l, h, n)
-                    T.copy(
-                        C[bz, bc, l0:l0 + block_l, bh, n0 * block_n:(n0 + 1) * block_n],
-                        c_tile,
-                    )
+                for n_blk in T.serial(T.ceildiv(N, block_n)):
+                    n0 = n_blk * block_n
 
-                    # load prev_states tile: (n_tile, p_tile)
-                    # prev_states: (b, c, h, n, p)
-                    T.copy(
-                        prev_states[bz, bc, bh,
-                                    n0 * block_n:(n0 + 1) * block_n,
-                                    p0:p0 + block_p],
-                        state_tile,
-                    )
+                    # C_mat[b, chunk_start+l, g, n]  layout: [B, S, G, N]
+                    for ll, nn in T.Parallel(block_l, block_n):
+                        l_abs = l0 + ll
+                        n_abs = n0 + nn
+                        c_tile[ll, nn] = T.if_then_else(
+                            (l_abs < Q) and (n_abs < N),
+                            C_mat[bz, chunk_start + l_abs, bg, n_abs],
+                            T.cast(T.float32(0.0), dtype),
+                        )
 
-                    # hist_acc += C_tile @ state_tile
+                    # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]  float32
+                    for nn, pp in T.Parallel(block_n, block_p):
+                        n_abs = n0 + nn
+                        p_abs = p0 + pp
+                        state_tile[nn, pp] = T.if_then_else(
+                            (n_abs < N) and (p_abs < P),
+                            T.cast(prev_states[bz, bc, bh, p_abs, n_abs], dtype),
+                            T.cast(T.float32(0.0), dtype),
+                        )
+
+                    # hist_acc += c_tile @ state_tile
                     T.gemm(c_tile, state_tile, hist_acc)
 
-                # multiply by exp(dA_l[l]) row-wise
-                for l, p in T.Parallel(block_l, block_p):
-                    l_abs = l0 + l
-                    p_abs = p0 + p
-                    valid = (l_abs < chunk_len) and (p_abs < d_head)
-                    hist_scale = T.exp(dA_l[l])
-                    acc[l, p] += T.if_then_else(
-                        valid,
-                        hist_acc[l, p] * hist_scale,
-                        T.float32(0.0),
-                    )
+                # scale by exp(dA_l[l]) and accumulate into acc
+                for ll, pp in T.Parallel(block_l, block_p):
+                    l_abs = l0 + ll
+                    p_abs = p0 + pp
+                    if (l_abs < Q) and (p_abs < P):
+                        acc[ll, pp] += hist_acc[ll, pp] * T.exp(dA_l[ll])
 
-                # =========================================================
-                # PART 2: intra-chunk / Step-1 path
-                #   acc[l,p] += sum_s cb[l,s] * exp(dA_l[l] - dA_s[s]) * dt[s] * x[s,p]
-                # =========================================================
-
-                cb_tile = T.alloc_shared((block_l, block_s), dtype)
-                x_tile = T.alloc_shared((block_s, block_p), dtype)
-                dA_s = T.alloc_fragment((block_s,), accum_dtype)
-                lcb = T.alloc_fragment((block_l, block_s), accum_dtype)
-                # lcb_cast holds lcb downcast to dtype for gemm.
-                # TileLang requires A.dtype == B.dtype for T.gemm, and x_tile is dtype
-                # (fp16/bf16).  Both Part 1 and Part 2 share the same `acc` fragment;
-                # changing the input dtype of the Part-2 gemm (e.g. to float32) would
-                # alter the fragment layout inferred for `acc`, conflicting with the
-                # layout from Part-1's gemm_ss (fp16/bf16 × fp16/bf16 → fp32).
-                # The precision loss here is bounded: cb_tile is already fp16/bf16,
-                # so lcb is limited by that quantization anyway.
-                # TODO: if TileLang adds mixed-precision gemm or a way to pin fragment
-                # layouts, remove this cast and use lcb directly.
+                # =====================================================
+                # PART 2: intra-chunk causal path
+                #   acc[l,p] += sum_{s<=l} cb[c,g,l,s]
+                #               * exp(dA_l[l] - dA_s[s]) * dt[h,c,s] * x[s,h,p]
+                # =====================================================
+                cb_tile  = T.alloc_shared((block_l, block_s), dtype)
+                x_tile   = T.alloc_shared((block_s, block_p), dtype)
+                dA_s     = T.alloc_shared((block_s,), accum_dtype)
+                dt_s     = T.alloc_shared((block_s,), accum_dtype)
+                lcb      = T.alloc_fragment((block_l, block_s), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
-                dt_tile = T.alloc_fragment((block_s,), accum_dtype)
 
-                for s0 in T.serial(T.ceildiv(chunk_len, block_s)):
-                    # load cb tile: (l_tile, s_tile)
-                    # cb: (b, c, h, l, s)
-                    T.copy(
-                        cb[bz, bc, bh, l0:l0 + block_l, s0 * block_s:(s0 + 1) * block_s],
-                        cb_tile,
-                    )
+                for s_blk in T.serial(T.ceildiv(Q, block_s)):
+                    s0 = s_blk * block_s
 
-                    # load x tile: (s_tile, p_tile)
-                    # x: (b, c, s, h, p)
-                    T.copy(
-                        x[bz, bc, s0 * block_s:(s0 + 1) * block_s, bh, p0:p0 + block_p],
-                        x_tile,
-                    )
-
-                    # load source-side dA_cumsum[s] and dt[s]
-                    for s in T.Parallel(block_s):
-                        s_abs = s0 * block_s + s
-                        dt_tile[s] = T.if_then_else(
-                            s_abs < chunk_len,
-                            d_t[bz, bc, s_abs, bh],
-                            T.float32(0.0),
+                    # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
+                    for ll, ss in T.Parallel(block_l, block_s):
+                        l_abs = l0 + ll
+                        s_abs = s0 + ss
+                        cb_tile[ll, ss] = T.if_then_else(
+                            (l_abs < Q) and (s_abs < Q),
+                            cb[bz, bc, bg, l_abs, s_abs],
+                            T.cast(T.float32(0.0), dtype),
                         )
-                        dA_s[s] = T.if_then_else(
-                            s_abs < chunk_len,
+
+                    # x[b, chunk_start+s, h, p]  layout: [B, S, H, P]
+                    for ss, pp in T.Parallel(block_s, block_p):
+                        s_abs = s0 + ss
+                        p_abs = p0 + pp
+                        x_tile[ss, pp] = T.if_then_else(
+                            (s_abs < Q) and (p_abs < P),
+                            x[bz, chunk_start + s_abs, bh, p_abs],
+                            T.cast(T.float32(0.0), dtype),
+                        )
+
+                    # dA_cumsum[b,h,c,s] and dt[b,h,c,s]  layout: [B,H,C,L]
+                    for ss in T.Parallel(block_s):
+                        s_abs = s0 + ss
+                        dA_s[ss] = T.if_then_else(
+                            s_abs < Q,
                             dA_cumsum[bz, bh, bc, s_abs],
                             T.float32(0.0),
                         )
+                        dt_s[ss] = T.if_then_else(
+                            s_abs < Q,
+                            T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
+                            T.float32(0.0),
+                        )
+                    T.sync_threads()
 
-                    # build lcb[l,s] = cb[l,s] * exp(dA_l[l] - dA_s[s]) * dt[s] if s <= l else 0
-                    for l, s in T.Parallel(block_l, block_s):
-                        l_abs = l0 + l
-                        s_abs = s0 * block_s + s
-                        valid = (l_abs < chunk_len) and (s_abs < chunk_len) and (s_abs <= l_abs)
-                        lcb[l, s] = T.if_then_else(
+                    # lcb[l,s] = cb[l,s] * exp(dA_l[l] - dA_s[s]) * dt[s]  if s<=l else 0
+                    for ll, ss in T.Parallel(block_l, block_s):
+                        l_abs = l0 + ll
+                        s_abs = s0 + ss
+                        valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
+                        lcb[ll, ss] = T.if_then_else(
                             valid,
-                            cb_tile[l, s] * T.exp(dA_l[l] - dA_s[s]) * dt_tile[s],
+                            T.cast(cb_tile[ll, ss], accum_dtype)
+                            * T.exp(dA_l[ll] - dA_s[ss])
+                            * dt_s[ss],
                             T.float32(0.0),
                         )
 
-                    # cast lcb float32 -> dtype so both operands match for gemm
+                    # cast to dtype for gemm (both operands must share dtype)
                     T.copy(lcb, lcb_cast)
 
                     # acc += lcb_cast @ x_tile
                     T.gemm(lcb_cast, x_tile, acc)
 
-                # ----------------------------
-                # write back once
-                # ----------------------------
-                T.copy(
-                    acc,
-                    out[bz, bc, l0:l0 + block_l, bh, p0:p0 + block_p],
-                )
+                # write back: out[b, chunk_start+l, h, p]  layout: [B, S, H, P]
+                for ll, pp in T.Parallel(block_l, block_p):
+                    l_abs = l0 + ll
+                    p_abs = p0 + pp
+                    if (l_abs < Q) and (p_abs < P):
+                        out[bz, chunk_start + l_abs, bh, p_abs] = acc[ll, pp]
 
         return main
 
@@ -266,6 +279,7 @@ def _ssd_chunk_scan_fwd_wrapped(
     n_heads: int,
     d_head: int,
     d_state: int,
+    n_groups: int,
     dtype: str,
     block_l: int,
     block_p: int,
@@ -280,7 +294,7 @@ def _ssd_chunk_scan_fwd_wrapped(
     dt: torch.Tensor,
 ) -> torch.Tensor:
     return _ssd_chunk_scan_fwd_kernel(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, dtype)(
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype)(
         block_l, block_p, block_n, block_s, threads,
     )(x, cb, dA_cumsum, C, prev_states, dt)
 
@@ -293,6 +307,7 @@ def _(
     n_heads: int,
     d_head: int,
     d_state: int,
+    n_groups: int,
     dtype: str,
     block_l: int,
     block_p: int,
@@ -306,20 +321,27 @@ def _(
     prev_states: torch.Tensor,
     dt: torch.Tensor,
 ) -> torch.Tensor:
-    return x.new_empty((batch, num_chunks, chunk_len, n_heads, d_head), dtype=torch.float32)
+    # output: [B, S, H, P]
+    return x.new_empty(
+        (batch, num_chunks * chunk_len, n_heads, d_head), dtype=torch.float32,
+    )
 
 
 class SSDChunkScanFwdKernel(Kernel):
     """Mamba-2 SSD fused chunk output forward kernel.
 
-    Fuses the history (prev_states) contribution and intra-chunk causal decay
-    into a single pass, computing:
+    Official-aligned interface (matches _chunk_scan_fwd in mamba_ssm):
 
-      out[l, p] = exp(dA_cumsum[l]) * (C[l] @ prev_states)
-                + sum_{s <= l} cb[l, s] * exp(dA_cumsum[l] - dA_cumsum[s]) * dt[s] * x[s, p]
+    Inputs:
+      x:           [B, S, H, P]        dtype       seqlen-fused
+      cb:          [B, C, G, L, L]     dtype       group-owned
+      dA_cumsum:   [B, H, C, L]        float32
+      C:           [B, S, G, N]        dtype       seqlen-fused, group-owned
+      prev_states: [B, C, H, P, N]     float32     P before N
+      dt:          [B, H, C, L]        dtype
 
-    Inputs:  x, cb, dA_cumsum, C, prev_states, dt
-    Output:  out  (batch, num_chunks, chunk_len, n_heads, d_head), float32
+    Output:
+      out:         [B, S, H, P]        float32     seqlen-fused
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -332,6 +354,7 @@ class SSDChunkScanFwdKernel(Kernel):
         n_heads: int,
         d_head: int,
         d_state: int,
+        n_groups: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
@@ -343,9 +366,10 @@ class SSDChunkScanFwdKernel(Kernel):
         self.n_heads = n_heads
         self.d_head = d_head
         self.d_state = d_state
+        self.n_groups = n_groups
         self.dtype = dtype
         self.kernel = _ssd_chunk_scan_fwd_kernel(
-            batch, num_chunks, chunk_len, n_heads, d_head, d_state, self.dtype_str,
+            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, self.dtype_str,
         )
         self.init_config(config, tune)
 
@@ -366,14 +390,10 @@ class SSDChunkScanFwdKernel(Kernel):
         block_n = [16, 32]
         block_s = [32, 64]
         threads = [128, 256]
-        _configs = list(itertools.product(block_l, block_p, block_n, block_s, threads))
-        return [{
-            "block_l": c[0],
-            "block_p": c[1],
-            "block_n": c[2],
-            "block_s": c[3],
-            "threads": c[4],
-        } for c in _configs]
+        return [
+            {"block_l": c[0], "block_p": c[1], "block_n": c[2], "block_s": c[3], "threads": c[4]}
+            for c in itertools.product(block_l, block_p, block_n, block_s, threads)
+        ]
 
     def forward(
         self,
@@ -384,9 +404,23 @@ class SSDChunkScanFwdKernel(Kernel):
         prev_states: torch.Tensor,
         dt: torch.Tensor,
     ) -> torch.Tensor:
+        """
+        Args:
+            x:           [B, S, H, P]        dtype
+            cb:          [B, C, G, L, L]     dtype
+            dA_cumsum:   [B, H, C, L]        float32
+            C:           [B, S, G, N]        dtype
+            prev_states: [B, C, H, P, N]     float32     P before N
+            dt:          [B, H, C, L]        dtype
+
+        Returns:
+            out: [B, S, H, P]  float32
+        """
         return _ssd_chunk_scan_fwd_wrapped(
-            self.batch, self.num_chunks, self.chunk_len, self.n_heads, self.d_head, self.d_state,
-            self.dtype_str, self.config["block_l"], self.config["block_p"], self.config["block_n"],
+            self.batch, self.num_chunks, self.chunk_len, self.n_heads,
+            self.d_head, self.d_state, self.n_groups, self.dtype_str,
+            self.config["block_l"], self.config["block_p"], self.config["block_n"],
             self.config["block_s"], self.config["threads"],
-            x, cb, dA_cumsum, C, prev_states, dt,
+            x.contiguous(), cb.contiguous(), dA_cumsum.contiguous(),
+            C.contiguous(), prev_states.contiguous(), dt.contiguous(),
         )

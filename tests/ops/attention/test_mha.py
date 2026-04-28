@@ -106,7 +106,7 @@ def test_mha_fwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, d
 @MhaBwdFixture
 def test_mha_bwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype,
                  tune: bool) -> None:
-    pytest.skip("Temporarily skipping known MHA backward failures under TileLang 5f70374c (#999).")
+    pytest.skip("Temporarily skipping known MHA backward failures under TileLang 0.1.9 (#1039).")
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)

@@ -44,7 +44,7 @@ name = "tileops"
 version = "0.0.1"
 dependencies = [
     "torch>=2.1.0",
-    "tilelang==0.1.8",
+    "tilelang==0.1.9",
 ]
 requires-python = ">=3.10"
 
@@ -100,8 +100,8 @@ def test_hash_changes_when_project_dependencies_change(tmp_path: Path) -> None:
     """AC-2: adding a runtime dep MUST change the hash."""
     base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
     mutated = BASE_PYPROJECT.replace(
-        '"tilelang==0.1.8",',
-        '"tilelang==0.1.8",\n    "einops",',
+        '"tilelang==0.1.9",',
+        '"tilelang==0.1.9",\n    "einops",',
     )
     new = CI_VENV_HASH.compute(_write(tmp_path, mutated))
     assert new != base
@@ -154,8 +154,8 @@ def test_hash_stable_when_dependencies_reordered(tmp_path: Path) -> None:
     """
     base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
     reordered = BASE_PYPROJECT.replace(
-        '    "torch>=2.1.0",\n    "tilelang==0.1.8",',
-        '    "tilelang==0.1.8",\n    "torch>=2.1.0",',
+        '    "torch>=2.1.0",\n    "tilelang==0.1.9",',
+        '    "tilelang==0.1.9",\n    "torch>=2.1.0",',
     )
     new = CI_VENV_HASH.compute(_write(tmp_path, reordered))
     assert new == base, "reordering runtime deps must not invalidate the venv"

@@ -18,11 +18,11 @@ concurrency:
 # ---------------------------------------------------------------------------
 
 env:
-  TILELANG_CACHE_DIR: /cache/tilelang
-  TILELANG_TMP_DIR: /cache/tilelang/tmp
-  TRITON_CACHE_DIR: /cache/triton
-  PIP_CACHE_DIR: /cache/pip
-  WHEEL_DIR: /cache/wheels
+  TILELANG_CACHE_DIR: /data7/shared/ci-cache/tilelang
+  TILELANG_TMP_DIR: /data7/shared/ci-cache/tilelang/tmp
+  TRITON_CACHE_DIR: /data7/shared/ci-cache/triton
+  PIP_CACHE_DIR: /data7/shared/ci-cache/pip
+  WHEEL_DIR: /data7/shared/ci-cache/wheels
   MAX_JOBS: "64"
 
 jobs:

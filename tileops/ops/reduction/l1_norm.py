@@ -29,6 +29,9 @@ class L1NormFwdOp(_ReduceOpBase):
         dim: Reduction dimension (default -1).  Accepts ``int`` or
             ``list[int]`` for multi-dim reduction.
         keepdim: Whether to retain the reduced dimension as size 1.
+        ord: Norm order. Must equal 1 for ``L1NormFwdOp`` (manifest fixes
+            ``ord == 1``); accepted as a kwarg to mirror
+            ``torch.linalg.vector_norm``.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -36,6 +39,7 @@ class L1NormFwdOp(_ReduceOpBase):
     _op_kind = "l1"
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
+    _required_ord: Union[int, float] = 1
 
     def __init__(
         self,
@@ -43,9 +47,16 @@ class L1NormFwdOp(_ReduceOpBase):
         dtype: torch.dtype,
         dim: Union[int, List[int], None] = -1,
         keepdim: bool = False,
+        ord: Union[int, float] = 1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        if ord != self._required_ord:
+            raise ValueError(
+                f"{type(self).__name__} only supports ord={self._required_ord!r}, "
+                f"got ord={ord!r}"
+            )
+        self.ord = ord
         super().__init__(
             dtype=dtype, dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,

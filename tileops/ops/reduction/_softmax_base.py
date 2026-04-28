@@ -42,16 +42,23 @@ class _SoftmaxBaseOp(Op):
     _kernel_class: type  # set by subclass
     _supports_multidim: bool = False  # override to True in reduced-dim ops (e.g. LogSumExpFwdOp)
 
+    # `static_dims.N = x.shape[dim]` is param-dependent (depends on `dim`),
+    # so the static-axis frozenset is bound at forward time after dim
+    # normalization, not at the class level (per docs/ops-design.md § Step 3).
+    _static_axes: frozenset = frozenset()
+
     def __init__(
         self,
         *,
         dtype: torch.dtype,
         dim: Union[int, List[int]] = -1,
+        N: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.dtype = dtype
         self.dim = dim
+        self.N = N
         self.keepdim = False
         self._tune = tune
         self.dispatch_kernel(kernel_map)
@@ -96,6 +103,10 @@ class _SoftmaxBaseOp(Op):
                     "Use a scalar dim."
                 )
             dims = normalize_dim(self.dim, x.ndim)
+            # Bind the dynamic static-axes (param-dependent reduction axes) so
+            # the Op-layer cache-key / introspection consumers see the
+            # committed axes. Mirrors the single-dim path below.
+            self._static_axes = frozenset((0, d) for d in dims)
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
             M = prod(x.shape[:-1])
@@ -120,6 +131,14 @@ class _SoftmaxBaseOp(Op):
 
         # N = size along reduction dim, M = product of all other dims.
         N = x.shape[dim]
+        if self.N is not None and N != self.N:
+            raise ValueError(
+                f"{type(self).__name__}: committed N={self.N} does not match "
+                f"x.shape[{self.dim}]={N}"
+            )
+        # Bind the dynamic static-axis (param-dependent N axis) so the
+        # Op-layer cache-key / introspection consumers see the committed axis.
+        self._static_axes = frozenset({(0, dim)})
         M = prod(s for i, s in enumerate(x.shape) if i != dim)
         self._last_roofline_mn = (M, N)
 
