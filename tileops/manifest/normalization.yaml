@@ -501,7 +501,3 @@ ops:
       op: tileops/ops/norm/instance_norm.py
       test: tests/ops/test_instance_norm.py
       bench: benchmarks/ops/bench_instance_norm.py
-
-  # ---------------------------------------------------------------------------
-  # attention — multi-head / grouped-query attention (prefill, decode, paged)
-  # ---------------------------------------------------------------------------

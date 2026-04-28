@@ -322,7 +322,3 @@ ops:
       op: tileops/ops/moe/moe_grouped_gemm_nopad.py
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
-
-  # ---------------------------------------------------------------------------
-  # reduction -- softmax family (output shape == input shape, no keepdim)
-  # ---------------------------------------------------------------------------

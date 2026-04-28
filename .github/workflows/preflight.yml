@@ -96,7 +96,7 @@ jobs:
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             case "$f" in
-              tileops/manifest/*.yaml|scripts/validate_manifest.py|"$WORKFLOW_PATH")
+              tileops/manifest/*.yaml|tileops/manifest/__init__.py|scripts/validate_manifest.py|"$WORKFLOW_PATH")
                 manifest=true
                 ;;
             esac

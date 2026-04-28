@@ -86,7 +86,3 @@ ops:
       op: tileops/ops/reduction/cumprod.py
       test: tests/ops/test_cumulative.py
       bench: benchmarks/ops/bench_cumulative.py
-
-  # ---------------------------------------------------------------------------
-  # conv — convolution ops (1D/2D/3D forward)
-  # ---------------------------------------------------------------------------

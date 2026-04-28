@@ -915,7 +915,3 @@ ops:
       test: tests/ops/test_vector_norm.py
       bench: benchmarks/ops/bench_vector_norm.py
       bench_manifest_driven: true
-
-  # ---------------------------------------------------------------------------
-  # scan -- prefix scan ops (output shape == input shape, no keepdim)
-  # ---------------------------------------------------------------------------

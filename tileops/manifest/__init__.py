@@ -28,7 +28,7 @@ def manifest_files() -> list[Traversable]:
     """Return the YAML files contributing to the merged manifest, sorted by name."""
     root = resources.files(_PACKAGE)
     return sorted(
-        (p for p in root.iterdir() if p.name.endswith(".yaml")),
+        (p for p in root.iterdir() if p.is_file() and p.name.endswith(".yaml")),
         key=lambda p: p.name,
     )
 

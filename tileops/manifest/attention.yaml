@@ -563,5 +563,3 @@ ops:
       op: tileops/ops/attention/deepseek_dsa.py
       test: tests/ops/attention/test_deepseek_dsa_decode.py
       bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py
-  # moe — Mixture-of-Experts ops
-  # ---------------------------------------------------------------------------
