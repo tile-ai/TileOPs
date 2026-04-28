@@ -1412,7 +1412,7 @@ def _class_overrides_method(cls: type, name: str) -> bool:
 
 
 # Safe builtins allowed in shape_rules eval — matches the R11 / R11a
-# documented helper set (see docs/ops-design-reference.md). Keep this list
+# documented helper set (see docs/design/ops-design-reference.md). Keep this list
 # aligned with manifest spec; widening it changes the rule language.
 _SHAPE_RULE_BUILTINS: dict = {
     "len": len,

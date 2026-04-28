@@ -2,7 +2,7 @@
 # 3+ input tensors.
 #
 # Source of truth for op interfaces in this family. Loaded and merged with
-# other family files by tileops.manifest at runtime. See docs/manifest.md
+# other family files by tileops.manifest at runtime. See docs/design/manifest.md
 # for the full schema.
 
 WhereFwdOp:
@@ -37,7 +37,7 @@ WhereFwdOp:
   roofline:
     # Mixed-dtype op (bool condition + float input/other) — inline mode cannot
     # express byte accounting because elem_bytes binds to the first input's
-    # dtype (condition = bool = 1 byte). Per docs/roofline.md §2.2, ops whose
+    # dtype (condition = bool = 1 byte). Per docs/design/roofline.md §2.2, ops whose
     # bytes depend on multiple input dtypes must use func mode.
     func: "tileops.perf.formulas.where_fwd_roofline"
 

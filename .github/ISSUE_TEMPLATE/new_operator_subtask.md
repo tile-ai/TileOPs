@@ -26,7 +26,7 @@ Part of #
 
 ## Checklist
 
-<!-- Refer to docs/workflow.md and docs/testing.md for specific requirements for each layer -->
+<!-- Refer to docs/workflow.md and docs/design/testing.md for specific requirements for each layer -->
 
 - [ ] Implementation follows **Google Python Style** for code and docstrings.
 - [ ] **(L1 Only)** Kernel verified on unit tests.

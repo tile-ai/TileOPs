@@ -1,9 +1,9 @@
-- These are condensed rules. If unclear, read [docs/manifest.md](../../docs/manifest.md) (Manifest Validation section) for full spec.
+- These are condensed rules. If unclear, read [docs/design/manifest.md](../../docs/design/manifest.md) (Manifest Validation section) for full spec.
 - `scripts/validate_manifest.py` is infrastructure, not part of normal op implementation work. When adding or updating an op manifest entry, do not modify the validator to make the new entry pass.
 - The validator resolves manifest keys to Op classes via direct equality: `assert cls.__name__ == manifest_key`. There is no heuristic snake_case-to-PascalCase resolution. Manifest keys must be PascalCase Op class names (e.g., `RMSNormFwdOp`).
 - Treat validator failures as issues in the op, manifest, or benchmark unless the manifest schema or trust model has explicitly changed.
 - Only modify validator-related files when the PR is explicitly about manifest schema, trust-model policy, or validator infrastructure. In that case, document the schema/policy change in the PR.
-- Files that count as validator-related infrastructure: `scripts/validate_manifest.py`, `tests/test_validate_manifest.py`, and `docs/manifest.md`.
+- Files that count as validator-related infrastructure: `scripts/validate_manifest.py`, `tests/test_validate_manifest.py`, and `docs/design/manifest.md`.
 - Do not weaken validation rules, downgrade errors to warnings, add skip paths, or special-case a new op just to get CI green.
 - Do not change `source.bench_manifest_driven`, signature rules, or spec-only handling for a new op unless the project-wide policy is intentionally changing.
 - If a new op cannot satisfy the current validator, stop and surface the mismatch clearly instead of editing validator behavior.

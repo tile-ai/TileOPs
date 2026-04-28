@@ -7,7 +7,7 @@
 # smooth math function (sigmoid, tanh), bitwise/logical not, and predicate
 # checks (isnan, isinf, isfinite). Source of truth for op interfaces in
 # this family. Loaded and merged with other family files by tileops.manifest
-# at runtime. See docs/manifest.md for the full schema.
+# at runtime. See docs/design/manifest.md for the full schema.
 
 ExpFwdOp:
   ref_api: "torch.exp"

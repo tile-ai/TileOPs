@@ -14,17 +14,17 @@ Activate a virtual environment, then `make install` (deps + pre-commit hooks).
 
 ### Design
 
-- [architecture.md](docs/architecture.md) — system modules (M1-M8), data flow, agent production loop, directory structure
-- [ops-design.md](docs/ops-design.md) — Op interface execution guide (how to add a new op)
-- [ops-design-reference.md](docs/ops-design-reference.md) — Op interface detail reference (interface tables, codegen, naming, protocol)
-- [manifest.md](docs/manifest.md) — `tileops/manifest/` spec format (signature, workloads, roofline, source)
-- [roofline.md](docs/roofline.md) — `tileops/manifest/` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator / benchmark / M5 / codegen)
+- [architecture.md](docs/design/architecture.md) — system modules (M1-M8), data flow, agent production loop, directory structure
+- [ops-design.md](docs/design/ops-design.md) — Op interface execution guide (how to add a new op)
+- [ops-design-reference.md](docs/design/ops-design-reference.md) — Op interface detail reference (interface tables, codegen, naming, protocol)
+- [manifest.md](docs/design/manifest.md) — `tileops/manifest/` spec format (signature, workloads, roofline, source)
+- [roofline.md](docs/design/roofline.md) — `tileops/manifest/` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator / benchmark / M5 / codegen)
 
 ### Process
 
-- [trust-model.md](docs/trust-model.md) — trust boundaries (manifest → test → implementation → benchmark), workloads layer contract
-- [testing.md](docs/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
-- [tileops-skills.md](docs/tileops-skills.md) — developer decision guide: which repo-provided skill to use for which task
+- [trust-model.md](docs/design/trust-model.md) — trust boundaries (manifest → test → implementation → benchmark), workloads layer contract
+- [testing.md](docs/design/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
+- [tileops-skills.md](docs/design/tileops-skills.md) — developer decision guide: which repo-provided skill to use for which task
 
 ## Reading the ops manifest
 
@@ -46,4 +46,5 @@ Read the relevant context file **before** modifying files in that domain. Do not
 | `scripts/validate_manifest.py`, `tests/test_validate_manifest.py` | [.claude/domain-rules/manifest-validator.md](.claude/domain-rules/manifest-validator.md) |
 | `tileops/ops/`, `tileops/kernels/`                                | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
 | `benchmarks/`                                                     | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |
-| `workloads/`                                                      | [docs/trust-model.md](docs/trust-model.md)                                               |
+| `workloads/`                                                      | [docs/design/trust-model.md](docs/design/trust-model.md)                                 |
+| `docs/design/`                                                    | [.claude/domain-rules/design-docs.md](.claude/domain-rules/design-docs.md)               |

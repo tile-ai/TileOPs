@@ -5,7 +5,7 @@
 # leaky_relu, elu, hardtanh, softplus), and value-range transforms (clamp,
 # nan_to_num). Source of truth for op interfaces in this family. Loaded
 # and merged with other family files by tileops.manifest at runtime.
-# See docs/manifest.md for the full schema.
+# See docs/design/manifest.md for the full schema.
 
 ReluFwdOp:
   ref_api: "torch.nn.functional.relu"

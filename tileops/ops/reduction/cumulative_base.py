@@ -1,6 +1,6 @@
 """CumulativeOp base class for scan operators (cumsum, cumprod).
 
-Implements the canonical static_dims pattern from docs/ops-design.md § Step 3:
+Implements the canonical static_dims pattern from docs/design/ops-design.md § Step 3:
 ctor binds only `static_dims` (`N`) + `signature.params` (`dim`); `M` (the
 leading-dims product) is derived at forward time, kernels are built lazily
 and cached by `M`.
@@ -42,7 +42,7 @@ class CumulativeOp(Op):
 
     # `static_dims.N = x.shape[dim]` is param-dependent (depends on `dim`),
     # so the static-axis frozenset is bound at forward time after dim
-    # normalization, not at the class level (per docs/ops-design.md § Step 3).
+    # normalization, not at the class level (per docs/design/ops-design.md § Step 3).
     _static_axes: frozenset = frozenset()
 
     def __init__(

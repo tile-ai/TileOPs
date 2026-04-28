@@ -3,7 +3,7 @@
 # Two-input single-output elementwise ops (arithmetic, comparison, logical,
 # bitwise). Source of truth for op interfaces in this family. Loaded and
 # merged with other family files by tileops.manifest at runtime. See
-# docs/manifest.md for the full schema.
+# docs/design/manifest.md for the full schema.
 
 PreluFwdOp:
   ref_api: "torch.nn.functional.prelu"

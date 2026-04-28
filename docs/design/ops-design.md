@@ -14,7 +14,7 @@ Op                          ← L1: thin base, shared by all ops
         └── ConcreteOp      ← L3: leaf class emitted by the scaffold
 ```
 
-- **L1 (`Op`, [`tileops/ops/op_base.py`](../tileops/ops/op_base.py)):** provides `__call__`, `dispatch_kernel()`, `autotune()`, the default `_cache_key()`, and `NotImplementedError` stubs for the three codegen methods (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline` — `FIXME(staged-rollout)`, per PR #1012).
+- **L1 (`Op`, [`tileops/ops/op_base.py`](../../tileops/ops/op_base.py)):** provides `__call__`, `dispatch_kernel()`, `autotune()`, the default `_cache_key()`, and `NotImplementedError` stubs for the three codegen methods (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline` — `FIXME(staged-rollout)`, per PR #1012).
 - **L2 (`FamilyBase`):** per-family shared `forward()` pipeline (one per family). **Not produced by this playbook** — see [Family-Base Refactoring (Future Work)](#family-base-refactoring-future-work).
 - **L3 (`ConcreteOp`):** this playbook's target. New ops start by inheriting L1 directly (T2 shape). Once 2-3 ops accumulate in a family with identical `forward()` flow, extract an L2 base via refactoring.
 
@@ -31,7 +31,7 @@ Op                          ← L1: thin base, shared by all ops
 
 ## Scaffolding an Op from a Manifest Entry
 
-The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). All examples are for `CumsumFwdOp` ([`tileops/manifest/`](../tileops/manifest/), [`tileops/ops/reduction/cumsum.py`](../tileops/ops/reduction/cumsum.py)).
+The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). All examples are for `CumsumFwdOp` ([`tileops/manifest/`](../../tileops/manifest/), [`tileops/ops/reduction/cumsum.py`](../../tileops/ops/reduction/cumsum.py)).
 
 ### Step 1: File header + imports
 

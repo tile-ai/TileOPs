@@ -1,6 +1,6 @@
 # Op Manifest Specification
 
-The [`tileops/manifest/`](../tileops/manifest/) package is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
+The [`tileops/manifest/`](../../tileops/manifest/) package is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
 
 ## Layout
 
@@ -23,7 +23,7 @@ flowchart LR
 
 - **Human reviewer** — only actor that modifies the manifest. All changes require PR review.
 - **Agent** — generates Ops, tests, benchmarks from the manifest. Reads only, never modifies.
-- **Validator** — [`scripts/validate_manifest.py`](../scripts/validate_manifest.py) in CI. Enforces manifest ↔ code consistency.
+- **Validator** — [`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) in CI. Enforces manifest ↔ code consistency.
 
 **Invariants:**
 
@@ -498,7 +498,7 @@ workloads:
 
 ## Manifest Validation
 
-[`scripts/validate_manifest.py`](../scripts/validate_manifest.py) runs five levels:
+[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) runs five levels:
 
 | Level | Check     | Description                                                                                                                 |
 | ----- | --------- | --------------------------------------------------------------------------------------------------------------------------- |

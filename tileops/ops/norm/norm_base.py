@@ -1,6 +1,6 @@
 """RowNormOp base class for row-wise normalization operators.
 
-Implements the canonical static_dims pattern from docs/ops-design.md: ctor
+Implements the canonical static_dims pattern from docs/design/ops-design.md: ctor
 binds only what the manifest declares as `static_dims` (`N`) plus
 signature.params (`dim`, `eps`); `M` (the leading-dims product) is derived
 at forward time and used to lazily build / cache kernels keyed by `M`.
@@ -51,7 +51,7 @@ class RowNormOp(Op):
 
     # `static_dims.N = x.shape[dim]` is param-dependent (depends on `dim`),
     # so the static-axis frozenset is bound at forward time after dim
-    # normalization, not at the class level (per docs/ops-design.md § Step 3).
+    # normalization, not at the class level (per docs/design/ops-design.md § Step 3).
     _static_axes: frozenset = frozenset()
 
     def __init__(
