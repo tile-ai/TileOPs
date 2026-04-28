@@ -94,6 +94,12 @@ class FusedMoe(Op):
             else MoEPrepareAndFinalizeNoDPEP()
         )
 
+        if prepare_finalize is not None and experts is None:
+            raise ValueError(
+                "prepare_finalize may change the dispatched token count (T'); "
+                "you must also supply a matching experts= instance sized for T'."
+            )
+
         if experts is not None:
             self._experts: MoEExpertsModular = experts
         else:

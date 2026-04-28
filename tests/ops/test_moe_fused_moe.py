@@ -455,3 +455,25 @@ def test_fused_moe_vs_vllm(
         f"PASS vs vLLM [T={num_tokens}, E={num_experts}, K={top_k}, "
         f"H={hidden_size}, F={ffn_size}, scale={routed_scaling_factor}, {dtype}]"
     )
+
+
+# ---------------------------------------------------------------------------
+# prepare_finalize / experts contract
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_prepare_finalize_without_experts_raises() -> None:
+    """Supplying prepare_finalize= without experts= must raise ValueError.
+
+    prepare_finalize can change the dispatched token count T'; the default
+    experts instance is JIT-compiled for the original T and cannot be reused.
+    """
+    from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
+
+    with pytest.raises(ValueError, match="experts="):
+        FusedMoe(
+            num_tokens=16, num_experts=4, top_k=2,
+            hidden_size=64, ffn_size=32,
+            prepare_finalize=MoEPrepareAndFinalizeNoDPEP(),
+        )
