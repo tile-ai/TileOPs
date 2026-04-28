@@ -28,27 +28,12 @@ from tileops.ops.reduction._multidim import normalize_dim
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("empty_dim", [[], ()], ids=["list", "tuple"])
 @pytest.mark.parametrize("ndim", [1, 2, 3, 4, 5])
-def test_empty_list_equivalent_to_none(ndim: int) -> None:
-    """``dim=[]`` reduces over all dims, matching ``dim=None``."""
-    assert normalize_dim([], ndim) == normalize_dim(None, ndim)
-    assert normalize_dim([], ndim) == list(range(ndim))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("ndim", [1, 2, 3, 4, 5])
-def test_empty_tuple_equivalent_to_none(ndim: int) -> None:
-    """``dim=()`` reduces over all dims, matching ``dim=None``."""
-    assert normalize_dim((), ndim) == normalize_dim(None, ndim)
-    assert normalize_dim((), ndim) == list(range(ndim))
-
-
-@pytest.mark.smoke
-def test_empty_list_does_not_raise() -> None:
-    """Empty list must not raise; contract returns all dims."""
-    # Must not raise.
-    out = normalize_dim([], 3)
-    assert out == [0, 1, 2]
+def test_empty_dim_equivalent_to_none(empty_dim, ndim: int) -> None:
+    """``dim=[]`` and ``dim=()`` reduce over all dims, matching ``dim=None``."""
+    assert normalize_dim(empty_dim, ndim) == normalize_dim(None, ndim)
+    assert normalize_dim(empty_dim, ndim) == list(range(ndim))
 
 
 # ---------------------------------------------------------------------------
