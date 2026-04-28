@@ -44,7 +44,7 @@ PreluFwdOp:
     bench_manifest_driven: false
 
 # ---------------------------------------------------------------------------
-# elementwise — multi-input parametric ops (where, clamp, masked_fill, nan_to_num)
+# elementwise — two-input parametric ops (prelu, masked_fill)
 # ---------------------------------------------------------------------------
 
 MaskedFillFwdOp:

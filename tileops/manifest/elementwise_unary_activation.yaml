@@ -479,7 +479,3 @@ NanToNumFwdOp:
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: false
-
-# ---------------------------------------------------------------------------
-# elementwise -- binary arithmetic ops (broadcast, output: same_as(input))
-# ---------------------------------------------------------------------------

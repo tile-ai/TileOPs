@@ -739,8 +739,3 @@ IsfiniteFwdOp:
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
     bench_manifest_driven: false
-
-# ---------------------------------------------------------------------------
-# elementwise -- unary functional activations (torch.nn.functional.<op>)
-# All ops operate elementwise over arbitrary-rank tensors; output shape == input shape.
-# ---------------------------------------------------------------------------
