@@ -8,8 +8,8 @@ This corresponds to the step() path in the official Mamba-2 implementation:
   https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba2.py
 
 Inputs:
-  A:      (n_heads,)                           float32  -- SSM decay parameter (A <= 0)
-  dt:     (batch, n_heads)                     float32  -- discretization step (post-softplus)
+  A:      (n_heads, d_head, d_state)           float32  -- SSM decay parameter (A <= 0)
+  dt:     (batch, n_heads, d_head)             float32  -- discretization step (post-softplus)
   x:      (batch, n_heads, d_head)             dtype    -- input features per head
   B_in:   (batch, n_groups, d_state)           dtype    -- SSM B matrix (per group)
   C_in:   (batch, n_groups, d_state)           dtype    -- SSM C matrix (per group)
@@ -20,14 +20,15 @@ Output:
 
 Math (for each b, h, p, n):
   g                = h // (n_heads // n_groups)
-  dA[b, h]         = exp(dt[b, h] * A[h])
-  dBx[b, h, p, n]  = dt[b, h] * B_in[b, g, n] * x[b, h, p]
-  state[b,h,p,n]  <- dA[b,h] * state[b,h,p,n] + dBx[b,h,p,n]   (in-place)
+  dA[b, h, p, n]   = exp(dt[b, h, p] * A[h, p, n])
+  dBx[b, h, p, n]  = dt[b, h, p] * B_in[b, g, n] * x[b, h, p]
+  state[b,h,p,n]  <- dA[b,h,p,n] * state[b,h,p,n] + dBx[b,h,p,n]   (in-place)
   y_out[b, h, p]   = sum_n  state[b, h, p, n] * C_in[b, g, n]
 
 Notes:
   - dt is assumed post-softplus (positive). A is negative (Mamba-2 decay parameter).
-    In Mamba-2, A = -exp(A_log) and dt = softplus(dt_raw + dt_bias). Because
+    In Mamba-2, A = -exp(A_log) repeated to (nheads, headdim, d_state), and
+    dt = softplus(dt_raw + dt_bias) repeated to (batch, nheads, headdim). Because
     dt > 0 and A < 0, dA = exp(dt * A) is always in (0, 1) (a decaying factor).
   - ngroups divides n_heads; with ngroups=1 all heads share the same B/C.
     With ngroups=n_heads each head has its own B/C.
@@ -72,8 +73,10 @@ __all__ = ["SSDDecodeKernel"]
 #              and add dt_bias before passing dt into this kernel.
 #
 # 4. A parameter derivation
-#    Official: A = -torch.exp(self.A_log.float())   — derived from a log param
-#    Here:     A is passed directly as a pre-computed (negative) float32 tensor.
+#    Official: A = -torch.exp(self.A_log.float())   — derived from a log param, then
+#              repeated to (nheads, headdim, d_state) before passing to the triton kernel.
+#    Here:     A is passed directly as a pre-computed (negative) float32 tensor with
+#              shape (n_heads, d_head, d_state), matching the triton path exactly.
 #
 # 5. D skip connection
 #    Official: y = y + rearrange(self.D, "h -> h 1") * x
@@ -130,13 +133,13 @@ def _ssd_decode_kernel(
     ):
         @T.prim_func
         def main(
-            A: T.Tensor((H,), accum_dtype),                    # type: ignore
-            dt: T.Tensor((B, H), accum_dtype),                 # type: ignore
-            x: T.Tensor((B, H, P), dtype),                     # type: ignore
-            B_in: T.Tensor((B, G, N), dtype),                  # type: ignore
-            C_in: T.Tensor((B, G, N), dtype),                  # type: ignore
-            state: T.Tensor((B, H, P, N), accum_dtype),        # type: ignore  in-place
-            y_out: T.Tensor((B, H, P), accum_dtype),           # type: ignore
+            A: T.Tensor((H, P, N), accum_dtype),                # type: ignore
+            dt: T.Tensor((B, H, P), accum_dtype),               # type: ignore
+            x: T.Tensor((B, H, P), dtype),                      # type: ignore
+            B_in: T.Tensor((B, G, N), dtype),                   # type: ignore
+            C_in: T.Tensor((B, G, N), dtype),                   # type: ignore
+            state: T.Tensor((B, H, P, N), accum_dtype),         # type: ignore  in-place
+            y_out: T.Tensor((B, H, P), accum_dtype),            # type: ignore
         ):
             # ----------------------------------------------------------------
             # Grid: axis-0 fuses (batch, head); axis-1 tiles d_head.
@@ -154,13 +157,7 @@ def _ssd_decode_kernel(
                 p0 = bp * block_p
 
                 # --------------------------------------------------------
-                # 1. Per-block scalars (uniform across all threads).
-                # --------------------------------------------------------
-                dA_val = T.exp(dt[b, h] * A[h])
-                dt_val = dt[b, h]
-
-                # --------------------------------------------------------
-                # 2. Load x tile into a fragment.
+                # 1. Load x tile into a fragment.
                 #    Each thread owns x_tile[pp] for its pp index and never
                 #    needs to share it with other threads.
                 # --------------------------------------------------------
@@ -174,28 +171,40 @@ def _ssd_decode_kernel(
                     )
 
                 # --------------------------------------------------------
-                # 3. y accumulator — explicitly zeroed via T.Parallel,
-                #    matching the ssd_state_passing_fwd initialisation pattern
-                #    (T.clear is for 2D WMMA fragments, not 1D fragments).
+                # 2. y accumulator — explicitly zeroed via T.Parallel.
                 # --------------------------------------------------------
                 y_acc = T.alloc_fragment((block_p,), accum_dtype)
                 for pp in T.Parallel(block_p):
                     y_acc[pp] = T.float32(0.0)
 
                 # --------------------------------------------------------
-                # 4. Sweep d_state (N) in tiles of block_n.
+                # 3. Sweep d_state (N) in tiles of block_n.
                 #    Each thread processes its own pp for all nn serially —
                 #    no shared memory required, no cross-thread sync needed.
+                #
+                #    dt[b, h, p_idx] and A[h, p_idx, n_idx] are read per
+                #    (pp, nn), matching the official selective_state_update
+                #    triton kernel's per-element access pattern.
                 # --------------------------------------------------------
                 for n_blk in T.serial(T.ceildiv(N, block_n)):
                     n0 = n_blk * block_n
 
                     for pp in T.Parallel(block_p):
                         p_idx = p0 + pp
+                        dt_val = T.if_then_else(
+                            p_idx < P,
+                            dt[b, h, p_idx],
+                            T.float32(0.0),
+                        )
                         for nn in T.serial(block_n):
                             n_idx = n0 + nn
                             valid = (p_idx < P) and (n_idx < N)
 
+                            A_val = T.if_then_else(
+                                valid,
+                                A[h, p_idx, n_idx],
+                                T.float32(0.0),
+                            )
                             B_val = T.if_then_else(
                                 valid,
                                 T.cast(B_in[b, g, n_idx], accum_dtype),
@@ -212,7 +221,8 @@ def _ssd_decode_kernel(
                                 T.float32(0.0),
                             )
 
-                            # State update: new_s = dA * old_s + dt * x[p] * B[n]
+                            # State update: new_s = exp(dt*A) * old_s + dt * x[p] * B[n]
+                            dA_val = T.exp(dt_val * A_val)
                             new_s = dA_val * old_s + dt_val * x_tile[pp] * B_val
                             if valid:
                                 state[b, h, p_idx, n_idx] = new_s
@@ -221,7 +231,7 @@ def _ssd_decode_kernel(
                             y_acc[pp] += new_s * C_val
 
                 # --------------------------------------------------------
-                # 5. Write y_out.
+                # 4. Write y_out.
                 # --------------------------------------------------------
                 for pp in T.Parallel(block_p):
                     p_idx = p0 + pp
@@ -283,14 +293,18 @@ class SSDDecodeKernel(Kernel):
     Performs a single decode step: updates the SSM state in-place and
     returns the output for the current token:
 
-      dA[b, h]         = exp(dt[b, h] * A[h])
       g                = h // (n_heads // n_groups)
-      state[b,h,p,n]  <- dA[b,h] * state[b,h,p,n]
-                         + dt[b,h] * B_in[b,g,n] * x[b,h,p]
+      dA[b, h, p, n]   = exp(dt[b, h, p] * A[h, p, n])
+      state[b,h,p,n]  <- dA[b,h,p,n] * state[b,h,p,n]
+                         + dt[b,h,p] * B_in[b,g,n] * x[b,h,p]
       y_out[b, h, p]   = sum_n  state[b, h, p, n] * C_in[b, g, n]
 
-    Inputs:  A, dt, x, B_in, C_in, state (mutated in-place)
+    Inputs:  A (n_heads,d_head,d_state), dt (batch,n_heads,d_head),
+             x, B_in, C_in, state (mutated in-place)
     Output:  y_out  (batch, n_heads, d_head), float32
+
+    Matches the interface of the official Mamba-2 selective_state_update
+    triton kernel (selective_state_update.py in mamba_ssm).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
