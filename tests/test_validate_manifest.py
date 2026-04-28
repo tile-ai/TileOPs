@@ -3117,6 +3117,23 @@ class TestCheckOp:
             f"Expected error about 'nonexistent_op' not found in manifest, got: {errors}"
         )
 
+    def test_manifest_path_non_mapping_root_reports_error(self, validator, tmp_path):
+        """A manifest yaml whose root is not a mapping yields a schema error,
+        not an AttributeError on .items()."""
+        import yaml
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        # Top-level sequence — common malformed shape (e.g. accidental list).
+        manifest_file.write_text(yaml.safe_dump(["my_op", "other_op"]))
+
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+        )
+        assert any("top-level mapping" in e for e in errors), (
+            f"Expected a top-level-mapping error, got: {errors}"
+        )
+
     def test_check_op_scopes_to_single_op(self, validator, tmp_path):
         """--check-op validates only the named op; unrelated ops are not processed."""
         import yaml

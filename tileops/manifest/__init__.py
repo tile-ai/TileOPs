@@ -45,6 +45,11 @@ def load_manifest() -> dict[str, Any]:
     for path in manifest_files():
         text = path.read_text(encoding="utf-8")
         ops = yaml.safe_load(text) or {}
+        if not isinstance(ops, dict):
+            raise ValueError(
+                f"manifest file {path.name} must contain a top-level mapping of "
+                f"op name -> entry, got {type(ops).__name__}"
+            )
         for name, entry in ops.items():
             if name in merged:
                 raise ValueError(

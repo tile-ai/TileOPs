@@ -2934,6 +2934,11 @@ def validate_manifest(
     else:
         with open(manifest_path) as f:
             ops = yaml.safe_load(f) or {}
+        if not isinstance(ops, dict):
+            return [
+                f"--manifest-path: {manifest_path} must contain a top-level "
+                f"mapping of op name -> entry, got {type(ops).__name__}"
+            ], []
 
     # Fail fast: --check-op with a name not in the manifest
     if check_op is not None and check_op not in ops:

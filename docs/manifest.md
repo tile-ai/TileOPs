@@ -467,10 +467,6 @@ RMSNormFwdOp:
     bench: benchmarks/ops/bench_rms_norm.py
 ```
 
-Each family file is a flat top-level mapping of op name → entry. There is no
-wrapper key. The `tileops.manifest` loader merges all family files into one
-dict; op names must remain unique across files.
-
 ## Benchmark Pattern
 
 Benchmarks must use manifest-driven workloads. See [testing.md](testing.md)
