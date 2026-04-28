@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 __all__ = [
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
+    "fused_moe_fwd_bytes",
     "gqa_bwd_roofline",
     "gqa_decode_paged_roofline",
     "gqa_decode_roofline",
@@ -178,3 +179,28 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     ``status: spec-only`` to ``implemented``.
     """
     raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
+# MoE
+# ---------------------------------------------------------------------------
+
+
+def fused_moe_fwd_bytes(**kwargs: Any) -> dict[str, int]:
+    """Roofline for FusedMoeFwdOp / FusedMoeFwdCbFwdOp.
+
+    Mixed-dtype inputs: hidden_states (bf16/fp16) + gating_output (float32).
+    elem_bytes applies only to the bf16/fp16 tensors.
+    """
+    num_tokens = kwargs["num_tokens"]
+    num_experts = kwargs["num_experts"]
+    top_k = kwargs["top_k"]
+    hidden_size = kwargs["hidden_size"]
+    ffn_size = kwargs["ffn_size"]
+    elem_bytes = kwargs.get("elem_bytes", 2)  # bf16 default
+
+    flops = num_tokens * top_k * 6 * ffn_size * hidden_size
+    weight_bytes = num_experts * 3 * ffn_size * hidden_size * elem_bytes
+    token_bytes = 2 * num_tokens * hidden_size * elem_bytes
+    gating_bytes = num_tokens * num_experts * 4  # float32
+    return {"flops": flops, "bytes": weight_bytes + token_bytes + gating_bytes}

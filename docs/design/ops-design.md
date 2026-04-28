@@ -276,6 +276,61 @@ Brief reference surface for the device-side class that a scaffolded Op depends o
 
 See [Kernel base class attributes](ops-design-reference.md#base-class-protocol) for the full attribute table.
 
+## MoE Modular Protocol
+
+The MoE family uses a **strategy-pattern** layering that sits alongside but separate from the `Op` / `Kernel` hierarchy. Understanding where these classes fit prevents confusion when reading or extending MoE code.
+
+### Component overview
+
+```
+tileops/ops/moe/abc.py
+
+PrepareResult (dataclass)          — carries hidden_q, scale, topk_weights, topk_ids
+                                     from prepare() to apply()
+
+WeightedReduce (ABC)               — apply(output, expert_out, topk_weights, topk_ids)
+WeightedReduceNoOp(WeightedReduce) — no-op when reduction is already done inside apply()
+
+MoEPrepareAndFinalize (ABC)        — owns EP communication + optional quantization
+  prepare(hidden, topk_weights, topk_ids, num_experts, expert_map) → PrepareResult
+  finalize(output, expert_out, topk_weights, topk_ids, weight_and_reduce) → None
+
+MoEExperts (ABC)                   — owns expert GEMM (permute + GEMM + unpermute)
+  workspace_shapes(M, N, K, topk, num_experts) → (shape1, shape2)
+  output_shape(T_prime, H) → (int, int)
+  apply(output, hidden_q, w1, w2, topk_weights, topk_ids,
+        num_experts, expert_map, workspace1, workspace2) → None
+
+MoEExpertsModular(MoEExperts, ABC) — extends MoEExperts with pluggable reduction
+  make_weighted_reduce() → WeightedReduce
+```
+
+Concrete implementations live in `prepare_finalize/` and `experts/`:
+
+| Class                         | Base                    | File                           |
+| ----------------------------- | ----------------------- | ------------------------------ |
+| `MoEPrepareAndFinalizeNoDPEP` | `MoEPrepareAndFinalize` | `prepare_finalize/no_dp_ep.py` |
+| `MoEExpertsNopadFwdOp`        | `MoEExpertsModular`     | `experts/nopad.py`             |
+| `MoEExpertsPaddedFwdOp`       | `MoEExpertsModular`     | `experts/padded.py`            |
+
+### Relationship to `Op` and manifest entries
+
+`MoEPrepareAndFinalize` and `MoEExperts*` are **not** `Op` subclasses. They are pluggable strategy objects injected into `FusedMoe` (which *is* an `Op`). The manifest entry for each strategy class (`MoEExpertsNopadFwdOp`, `MoEExpertsPaddedFwdOp`) declares the expert-GEMM contract independently of the end-to-end routing op (`FusedMoeFwdOp`).
+
+`FusedMoe` wires the pieces together:
+
+```
+FusedMoe.forward()
+  1. FusedTopKOp            → topk_weights, topk_ids
+  2. MoEPrepareAndFinalize.prepare()  → PrepareResult
+  3. MoEExpertsModular.apply()        → expert_out
+  4. MoEPrepareAndFinalize.finalize() → output
+```
+
+### Extension points
+
+To plug in a new EP or quantization backend, subclass `MoEPrepareAndFinalize` and pass it as `FusedMoe(prepare_finalize=...)`. To swap the expert GEMM kernel, subclass `MoEExpertsModular` and pass it as `FusedMoe(experts=...)`. Both defaults (`MoEPrepareAndFinalizeNoDPEP`, `MoEExpertsNopadFwdOp`) are created automatically when the arguments are omitted.
+
 ## Family-Base Refactoring (Future Work)
 
 The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sharing an identical `forward()` flow, extract an L2 family base via refactoring; concrete ops then become T1 thin wrappers declaring family protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, …). This transformation is driven by a separate family-specific skill, not the scaffold-op. See [Development Path](ops-design-reference.md#development-path) for when to extract an L2 base and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the step-by-step process.
