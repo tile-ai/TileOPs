@@ -4,7 +4,7 @@ The [`tileops/manifest/`](../tileops/manifest/) package is the **source of truth
 
 ## Layout
 
-The manifest is split across one YAML file per op family — `elementwise.yaml`, `reduction.yaml`, `attention.yaml`, `normalization.yaml`, `moe.yaml`, `scan.yaml`, `convolution.yaml`. Each file is a flat top-level mapping of op name → entry (no wrapper key). The `tileops.manifest` package merges all files at load time; duplicate op names across files are an error.
+The manifest is split across one or more YAML files per op family. Most families use a single file (`reduction.yaml`, `attention.yaml`, `normalization.yaml`, `moe.yaml`, `scan.yaml`, `convolution.yaml`), but a family MAY be sharded across multiple files when it grows large — currently the `elementwise` family is sharded into `elementwise_unary_math.yaml`, `elementwise_unary_activation.yaml`, `elementwise_binary.yaml`, and `elementwise_multi_input.yaml`. Each file is a flat top-level mapping of op name → entry (no wrapper key). The `tileops.manifest` package merges all files at load time; duplicate op names across files are an error.
 
 - **Add or edit an op**: edit the family file matching the op's `family` field. Use `ruamel.yaml` for round-trip edits.
 - **Read programmatically**: `from tileops.manifest import load_manifest, load_workloads, manifest_files`. `load_manifest()` returns the merged `ops` dict.
