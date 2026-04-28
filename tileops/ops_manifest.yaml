@@ -4143,6 +4143,7 @@ ops:
     # overload). No kernel implementation yet — spec-only placeholder.
     family: elementwise
     status: spec-only
+    variant_of: LerpFwdOp
 
     signature:
       inputs:
