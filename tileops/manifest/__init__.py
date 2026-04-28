@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import functools
 from importlib import resources
-from importlib.resources.abc import Traversable
 from typing import Any
 
 import yaml
@@ -24,8 +23,13 @@ import yaml
 _PACKAGE = "tileops.manifest"
 
 
-def manifest_files() -> list[Traversable]:
-    """Return the YAML files contributing to the merged manifest, sorted by name."""
+def manifest_files() -> list:
+    """Return the YAML files contributing to the merged manifest, sorted by name.
+
+    Each element is an ``importlib.resources`` ``Traversable`` (file-like
+    handle with ``read_text``); typed as ``list`` for Python 3.10
+    compatibility, since ``importlib.resources.abc`` was added in 3.11.
+    """
     root = resources.files(_PACKAGE)
     return sorted(
         (p for p in root.iterdir() if p.is_file() and p.name.endswith(".yaml")),
