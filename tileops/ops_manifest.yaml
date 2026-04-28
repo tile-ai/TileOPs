@@ -1343,7 +1343,7 @@ ops:
       test: tests/ops/test_moe_fused_moe.py
       bench: benchmarks/ops/bench_moe_fused_moe.py
 
-  MoEExpertsNopadFwdOp:
+  MoEExpertsNopad:
     ref_api: "none"
     family: moe
     status: spec-only
@@ -1385,7 +1385,7 @@ ops:
       bench:  benchmarks/ops/bench_moe_experts_nopad.py
       bench_manifest_driven: true
 
-  MoEExpertsPaddedFwdOp:
+  MoEExpertsPadded:
     ref_api: "none"
     family: moe
     status: spec-only

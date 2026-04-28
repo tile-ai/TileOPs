@@ -3,8 +3,8 @@
 Measures the permute + grouped-GEMM + unpermute pipeline without routing.
 Both nopad and padded layouts are benchmarked side-by-side.
 
-Workloads match the manifest entries for MoEExpertsNopadFwdOp and
-MoEExpertsPaddedFwdOp (shared workload set):
+Workloads match the manifest entries for MoEExpertsNopad and
+MoEExpertsPadded (shared workload set):
 
   Model              T     H     F     E    K
   Qwen3-235B-A22B   512  7168  2048  128   8   (decode)
@@ -26,7 +26,7 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import MoEExpertsNopad, MoEExpertsPadded
 from workloads.workload_base import WorkloadBase
 
-_OP_NAME = "MoEExpertsNopadFwdOp"
+_OP_NAME = "MoEExpertsNopad"
 
 
 # ---------------------------------------------------------------------------
