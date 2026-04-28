@@ -1,6 +1,6 @@
 # Op Interface Design — Reference
 
-Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) and the `scaffold-op` skill. Each `### Slot S{N}` entry states the authoritative **Rule**, its manifest **Derivation**, a concrete **Example** modelled on [`tileops/ops/reduction/cumsum.py`](../tileops/ops/reduction/cumsum.py), and **Common mistakes**. Non-slot content lives in the appendices. Slot IDs S8–S11 are intentionally absent (reserved during iteration for T1 thin-wrapper slots later declared out of scope).
+Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) and the `scaffold-op` skill. Each `### Slot S{N}` entry states the authoritative **Rule**, its manifest **Derivation**, a concrete **Example** modelled on [`tileops/ops/reduction/cumsum.py`](../../tileops/ops/reduction/cumsum.py), and **Common mistakes**. Non-slot content lives in the appendices. Slot IDs S8–S11 are intentionally absent (reserved during iteration for T1 thin-wrapper slots later declared out of scope).
 
 ## Slot Rules
 
@@ -263,7 +263,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
       _static_axes: frozenset[tuple[int, int]] = frozenset()
   ```
 
-- **Common mistakes.** Omitting `_static_axes` entirely when `static_dims` is non-empty (relies on `Op`'s empty default, silently disables static-axis projection in `_cache_key`); emitting a literal `(input_index, axis)` pair when `axis` is actually a ctor param (produces a wrong axis under arbitrary rank); binding `self._static_axes` inside `__init__` when the axis comes from a param — `x.ndim` is not known yet, so a negative `dim` cannot be normalized (bind at `forward()` instead); storing a negative axis (must be non-negative per [`op_base.py`](../tileops/ops/op_base.py)); empty `_static_axes` without overriding `_cache_key` (emits a once-per-type `UserWarning` — see [Optional Hooks (Appendix)](#optional-hooks-appendix)).
+- **Common mistakes.** Omitting `_static_axes` entirely when `static_dims` is non-empty (relies on `Op`'s empty default, silently disables static-axis projection in `_cache_key`); emitting a literal `(input_index, axis)` pair when `axis` is actually a ctor param (produces a wrong axis under arbitrary rank); binding `self._static_axes` inside `__init__` when the axis comes from a param — `x.ndim` is not known yet, so a negative `dim` cannot be normalized (bind at `forward()` instead); storing a negative axis (must be non-negative per [`op_base.py`](../../tileops/ops/op_base.py)); empty `_static_axes` without overriding `_cache_key` (emits a once-per-type `UserWarning` — see [Optional Hooks (Appendix)](#optional-hooks-appendix)).
 
 ## Family-Base Protocol (Appendix) <a id="base-class-protocol"></a>
 
@@ -280,7 +280,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 **The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); filled in during family-specific refactoring (future skill). Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
-### `Op` base class attributes ([`tileops/ops/op_base.py`](../tileops/ops/op_base.py))
+### `Op` base class attributes ([`tileops/ops/op_base.py`](../../tileops/ops/op_base.py))
 
 | Attribute      | Type                                 | Purpose                                                                                      |
 | -------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
@@ -293,7 +293,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-driven methods (codegen-emitted by concrete ops): `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
 
-### `Kernel` base class attributes ([`tileops/kernels/kernel_base.py`](../tileops/kernels/kernel_base.py))
+### `Kernel` base class attributes ([`tileops/kernels/kernel_base.py`](../../tileops/kernels/kernel_base.py))
 
 | Attribute          | Type                    | Purpose                                        |
 | ------------------ | ----------------------- | ---------------------------------------------- |
@@ -339,7 +339,7 @@ class RMSNormFwdOp(Op):
 
 ## Codegen Details (Appendix) <a id="codegen"></a>
 
-The manifest ([`tileops/manifest/`](../tileops/manifest/)) is the sole source of truth. Dtype validation and shape inference derive from manifest; roofline codegen is defined in [roofline.md](roofline.md).
+The manifest ([`tileops/manifest/`](../../tileops/manifest/)) is the sole source of truth. Dtype validation and shape inference derive from manifest; roofline codegen is defined in [roofline.md](roofline.md).
 
 ### Parameter design <a id="parameter-design"></a>
 

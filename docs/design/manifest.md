@@ -1,10 +1,10 @@
 # Op Manifest Specification
 
-The [`tileops/manifest/`](../tileops/manifest/) package is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
+The [`tileops/manifest/`](../../tileops/manifest/) package is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
 
 ## Layout
 
-The manifest is split across one YAML file per op family — `elementwise.yaml`, `reduction.yaml`, `attention.yaml`, `normalization.yaml`, `moe.yaml`, `scan.yaml`, `convolution.yaml`. Each file is a flat top-level mapping of op name → entry (no wrapper key). The `tileops.manifest` package merges all files at load time; duplicate op names across files are an error.
+The manifest is split across one or more YAML files per op family. A family is normally a single file; large families may be sharded across multiple files. Each file is a flat top-level mapping of op name → entry (no wrapper key). The `tileops.manifest` package merges all files at load time; duplicate op names across files are an error.
 
 - **Add or edit an op**: edit the family file matching the op's `family` field. Use `ruamel.yaml` for round-trip edits.
 - **Read programmatically**: `from tileops.manifest import load_manifest, load_workloads, manifest_files`. `load_manifest()` returns the merged `ops` dict.
@@ -23,7 +23,7 @@ flowchart LR
 
 - **Human reviewer** — only actor that modifies the manifest. All changes require PR review.
 - **Agent** — generates Ops, tests, benchmarks from the manifest. Reads only, never modifies.
-- **Validator** — [`scripts/validate_manifest.py`](../scripts/validate_manifest.py) in CI. Enforces manifest ↔ code consistency.
+- **Validator** — [`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) in CI. Enforces manifest ↔ code consistency.
 
 **Invariants:**
 
@@ -498,7 +498,7 @@ workloads:
 
 ## Manifest Validation
 
-[`scripts/validate_manifest.py`](../scripts/validate_manifest.py) runs five levels:
+[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) runs five levels:
 
 | Level | Check     | Description                                                                                                                 |
 | ----- | --------- | --------------------------------------------------------------------------------------------------------------------------- |

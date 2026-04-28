@@ -1,7 +1,7 @@
 # moe.yaml -- manifest entries for the 'moe' family.
 #
 # Source of truth for op interfaces in this family. Loaded and merged with
-# other family files by tileops.manifest at runtime. See docs/manifest.md
+# other family files by tileops.manifest at runtime. See docs/design/manifest.md
 # for the full schema.
 
 MoePermutePaddedFwdOp:

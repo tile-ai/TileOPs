@@ -52,4 +52,4 @@ If the error is NOT about interface mismatch (e.g., kernel crash, CUDA error) â†
 
 ### 3. COMMIT
 
-Commit benchmark changes only. Follow `docs/testing.md` benchmark requirements.
+Commit benchmark changes only. Follow `docs/design/testing.md` benchmark requirements.

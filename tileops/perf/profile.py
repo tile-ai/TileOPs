@@ -1,7 +1,7 @@
 """GPU profile loader.
 
 Reads YAML profiles from tileops/perf/profiles/ and returns them as dicts.
-This is the M6 -> M5 data contract interface (see docs/architecture.md).
+This is the M6 -> M5 data contract interface (see docs/design/architecture.md).
 
 YAML files store only ``theoretical`` and ``calibration`` values.
 ``effective = theoretical * calibration`` is computed at load time.
