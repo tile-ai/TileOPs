@@ -1,0 +1,84 @@
+# elementwise_multi_input.yaml -- manifest entries for elementwise ops with
+# 3+ input tensors.
+#
+# Source of truth for op interfaces in this family. Loaded and merged with
+# other family files by tileops.manifest at runtime. See docs/manifest.md
+# for the full schema.
+
+WhereFwdOp:
+  ref_api: "torch.where"
+  family: elementwise
+  # status: spec-only — current tileops/ops/elementwise.py:WhereFwdOp does
+  # not conform to this spec:
+  #   - __init__ signature is (N_total, dtype) instead of the
+  #     PyTorch-aligned (condition, input, other) form.
+  #   - forward parameter names are (cond, x, y) instead of
+  #     (condition, input, other).
+  # Code conforms to this spec in a follow-up PR per the manifest trust
+  # model (.claude/rules/manifest-trust-model.md).
+  status: spec-only
+
+  signature:
+    inputs:
+      condition: {dtype: "bool"}
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      other: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "condition.shape == input.shape"
+      - "other.shape == input.shape"
+      - "out.shape == input.shape"
+
+  workloads:
+    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+
+  roofline:
+    # Mixed-dtype op (bool condition + float input/other) — inline mode cannot
+    # express byte accounting because elem_bytes binds to the first input's
+    # dtype (condition = bool = 1 byte). Per docs/roofline.md §2.2, ops whose
+    # bytes depend on multiple input dtypes must use func mode.
+    func: "tileops.perf.formulas.where_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+LerpTensorFwdOp:
+  ref_api: "torch.lerp"
+  # Tensor-weight variant: weight is a tensor that broadcasts together
+  # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
+  # overload). No kernel implementation yet — spec-only placeholder.
+  family: elementwise
+  status: spec-only
+  variant_of: LerpFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32"}
+      end: {dtype: "same_as(input)"}
+      weight: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N: "product(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+    # sub + mul + add per element
+    flops: "3 * N"
+    bytes: "(product(input.shape) + product(end.shape) + product(weight.shape) + N) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_binary_arith.py
+    bench: benchmarks/ops/bench_binary_arith.py
+    bench_manifest_driven: false
