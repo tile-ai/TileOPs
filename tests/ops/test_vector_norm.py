@@ -9,7 +9,27 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare
+from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.vector_norm import L1NormTest as _L1NormWorkload
+
+
+def _current_sm() -> int:
+    """Return the current CUDA SM major*10+minor, or -1 if no CUDA device."""
+    if not torch.cuda.is_available():
+        return -1
+    major, minor = torch.cuda.get_device_capability()
+    return major * 10 + minor
+
+
+_SM = _current_sm()
+pytestmark = pytest.mark.skipif(
+    _SM not in VectorNormKernel.supported_archs,
+    reason=(
+        f"VectorNormKernel does not support SM{_SM}; "
+        f"supported archs are {VectorNormKernel.supported_archs}. "
+        "Functional verification on supported archs runs in CI gpu-smoke."
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -520,6 +540,85 @@ def test_inf_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
     op = _make_op(dtype, "inf")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+# ---------------------------------------------------------------------------
+# Empty-dim full-reduction tests (dim=[] / dim=())
+# ---------------------------------------------------------------------------
+#
+# PyTorch's torch.linalg.vector_norm treats dim=() and dim=[] as "reduce over
+# all dimensions", equivalent to dim=None. These tests pin that semantic for
+# L1/L2/Inf and guard against regressions on the dim=None path.
+
+
+class VectorNormEmptyDimFixture(FixtureBase):
+    PARAMS = [
+        (
+            "op_kind, empty_dim, keepdim, dtype",
+            [
+                pytest.param(op_kind, empty_dim, keepdim, dtype, marks=pytest.mark.smoke)
+                for op_kind in ("l1", "l2", "inf")
+                for empty_dim in ([], ())
+                for keepdim in (False, True)
+                for dtype in (torch.float16, torch.float32)
+            ],
+        ),
+    ]
+
+
+@VectorNormEmptyDimFixture
+def test_empty_dim_full_reduction_2d(
+    op_kind: str, empty_dim, keepdim: bool, dtype: torch.dtype,
+) -> None:
+    """dim=[] / dim=() must full-reduce a 2D tensor (matches PyTorch)."""
+    x = torch.randn(32, 256, dtype=dtype, device="cuda")
+    op = _make_op(dtype, op_kind, dim=empty_dim, keepdim=keepdim)
+    ord_val = _ORD_MAP[op_kind]
+    ref = torch.linalg.vector_norm(
+        x.float(), ord=ord_val, dim=empty_dim, keepdim=keepdim,
+    ).to(dtype)
+    y = op(x)
+    assert y.shape == ref.shape, (
+        f"shape mismatch: got {y.shape}, expected {ref.shape} "
+        f"(op_kind={op_kind}, empty_dim={empty_dim!r}, keepdim={keepdim})"
+    )
+    atol, rtol = _get_tolerances(dtype)
+    allclose_compare(y, ref, atol=atol, rtol=rtol)
+
+
+@VectorNormEmptyDimFixture
+def test_empty_dim_full_reduction_3d(
+    op_kind: str, empty_dim, keepdim: bool, dtype: torch.dtype,
+) -> None:
+    """dim=[] / dim=() must full-reduce a 3D tensor (matches PyTorch)."""
+    x = torch.randn(2, 16, 128, dtype=dtype, device="cuda")
+    op = _make_op(dtype, op_kind, dim=empty_dim, keepdim=keepdim)
+    ord_val = _ORD_MAP[op_kind]
+    ref = torch.linalg.vector_norm(
+        x.float(), ord=ord_val, dim=empty_dim, keepdim=keepdim,
+    ).to(dtype)
+    y = op(x)
+    assert y.shape == ref.shape, (
+        f"shape mismatch: got {y.shape}, expected {ref.shape} "
+        f"(op_kind={op_kind}, empty_dim={empty_dim!r}, keepdim={keepdim})"
+    )
+    atol, rtol = _get_tolerances(dtype)
+    allclose_compare(y, ref, atol=atol, rtol=rtol)
+
+
+@VectorNormEmptyDimFixture
+def test_empty_dim_matches_dim_none(
+    op_kind: str, empty_dim, keepdim: bool, dtype: torch.dtype,
+) -> None:
+    """dim=[] / dim=() must produce identical output to dim=None."""
+    x = torch.randn(4, 32, 64, dtype=dtype, device="cuda")
+    op_empty = _make_op(dtype, op_kind, dim=empty_dim, keepdim=keepdim)
+    op_none = _make_op(dtype, op_kind, dim=None, keepdim=keepdim)
+    y_empty = op_empty(x)
+    y_none = op_none(x)
+    assert y_empty.shape == y_none.shape
+    atol, rtol = _get_tolerances(dtype)
+    allclose_compare(y_empty, y_none, atol=atol, rtol=rtol)
 
 
 if __name__ == "__main__":
