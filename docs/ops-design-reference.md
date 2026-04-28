@@ -339,7 +339,7 @@ class RMSNormFwdOp(Op):
 
 ## Codegen Details (Appendix) <a id="codegen"></a>
 
-The manifest ([`ops_manifest.yaml`](../tileops/ops_manifest.yaml)) is the sole source of truth. Dtype validation and shape inference derive from manifest; roofline codegen is defined in [roofline.md](roofline.md).
+The manifest ([`tileops/manifest/`](../tileops/manifest/)) is the sole source of truth. Dtype validation and shape inference derive from manifest; roofline codegen is defined in [roofline.md](roofline.md).
 
 ### Parameter design <a id="parameter-design"></a>
 

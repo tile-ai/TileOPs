@@ -31,7 +31,7 @@ Op                          ← L1: thin base, shared by all ops
 
 ## Scaffolding an Op from a Manifest Entry
 
-The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). All examples are for `CumsumFwdOp` ([`tileops/ops_manifest.yaml`](../tileops/ops_manifest.yaml), [`tileops/ops/reduction/cumsum.py`](../tileops/ops/reduction/cumsum.py)).
+The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). All examples are for `CumsumFwdOp` ([`tileops/manifest/`](../tileops/manifest/), [`tileops/ops/reduction/cumsum.py`](../tileops/ops/reduction/cumsum.py)).
 
 ### Step 1: File header + imports
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate ops_manifest.yaml.
+"""Validate the ops manifest.
 
 Checks:
   schema    — YAML structure: required fields, types, nesting
@@ -34,7 +34,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = REPO_ROOT / "tileops" / "ops_manifest.yaml"
+MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
 
 # Valid torch dtype base names (without same_as references)
 _TORCH_DTYPES = {
@@ -2906,7 +2906,10 @@ def validate_manifest(
     """Run applicable validation levels on the manifest.
 
     Args:
-        manifest_path: Path to ops_manifest.yaml.
+        manifest_path: Optional path to a single manifest YAML file. When None,
+            the merged manifest is loaded from the ``tileops.manifest`` package
+            (one file per family). Tests pass a temp file to validate synthetic
+            single-file manifests.
         repo_root: Repository root directory.
         verbose: If True, print progress.
         levels: Set of check names to run (e.g. {"schema", "shape", "dtype", "bench"}).
@@ -2919,17 +2922,19 @@ def validate_manifest(
         A tuple of (errors, warnings). Errors are hard failures; warnings
         are informational messages (e.g. signature skipped due to missing deps).
     """
-    if manifest_path is None:
-        manifest_path = MANIFEST_PATH
     if repo_root is None:
         repo_root = REPO_ROOT
     if levels is None:
         levels = ALL_LEVELS
 
-    with open(manifest_path) as f:
-        data = yaml.safe_load(f)
+    if manifest_path is None:
+        from tileops.manifest import load_manifest
 
-    ops = data.get("ops", {})
+        ops = load_manifest()
+    else:
+        with open(manifest_path) as f:
+            data = yaml.safe_load(f)
+        ops = data.get("ops", {})
 
     # Fail fast: --check-op with a name not in the manifest
     if check_op is not None and check_op not in ops:
@@ -3087,7 +3092,7 @@ def main() -> int:
     level_label = ",".join(sorted(levels)) if levels else "all"
     check_op_label = f", check-op: {check_op}" if check_op else ""
     print(
-        f"Validating {MANIFEST_PATH.relative_to(REPO_ROOT)} "
+        f"Validating {MANIFEST_DIR.relative_to(REPO_ROOT)}/*.yaml "
         f"(levels: {level_label}{check_op_label})..."
     )
 

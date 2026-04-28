@@ -1,0 +1,88 @@
+# scan.yaml -- manifest entries for the 'scan' family.
+#
+# Source of truth for op interfaces in this family. Loaded and merged with
+# other family files by tileops.manifest at runtime. See docs/manifest.md
+# for the full schema.
+
+ops:
+  CumsumFwdOp:
+    ref_api: "torch.cumsum"
+    family: scan
+    status: implemented
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: int, default: -1}
+      static_dims:
+        N: "x.shape[dim]"
+      shape_rules:
+        - "-x.ndim <= dim < x.ndim"
+        - "y.shape == x.shape"
+
+    workloads:
+      # Hidden state cumulative sum (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
+      # Long sequence cumulative sum
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # N-1 additions per scan line
+      flops: "M * N"
+      # Read x + write y
+      bytes: "2 * M * N * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/cumulative.py
+      kernel_map:
+        cumulative_fwd: CumulativeKernel
+      op: tileops/ops/reduction/cumsum.py
+      test: tests/ops/test_cumulative.py
+      bench: benchmarks/ops/bench_cumulative.py
+
+  CumprodFwdOp:
+    ref_api: "torch.cumprod"
+    family: scan
+    status: implemented
+
+    signature:
+      inputs:
+        x: {dtype: "float16 | bfloat16 | float32"}
+      outputs:
+        y: {dtype: "same_as(x)"}
+      params:
+        dim: {type: int, default: -1}
+      static_dims:
+        N: "x.shape[dim]"
+      shape_rules:
+        - "-x.ndim <= dim < x.ndim"
+        - "y.shape == x.shape"
+
+    workloads:
+      # Hidden state cumulative product (Llama-3.1-8B)
+      - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
+      # Long sequence cumulative product
+      - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
+
+    roofline:
+      vars:
+        M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
+        N: "x.shape[dim % x.ndim]"
+      # N-1 multiplications per scan line
+      flops: "M * N"
+      # Read x + write y
+      bytes: "2 * M * N * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/reduction/cumulative.py
+      kernel_map:
+        cumulative_fwd: CumulativeKernel
+      op: tileops/ops/reduction/cumprod.py
+      test: tests/ops/test_cumulative.py
+      bench: benchmarks/ops/bench_cumulative.py

@@ -96,17 +96,17 @@ jobs:
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             case "$f" in
-              tileops/ops_manifest.yaml|scripts/validate_manifest.py|"$WORKFLOW_PATH")
+              tileops/manifest/*.yaml|tileops/manifest/__init__.py|scripts/validate_manifest.py|"$WORKFLOW_PATH")
                 manifest=true
                 ;;
             esac
             # `benchmark-contract-tests` runs `pytest benchmarks/tests`, which
             # imports `workloads.workload_base`, `tileops.manifest`, and reads
-            # `tileops/ops_manifest.yaml` via `load_workloads()` /
-            # `workloads_to_params()`. Any of those layers can break the
-            # contract tests, so include them all.
+            # the per-family files under `tileops/manifest/*.yaml` via
+            # `load_workloads()` / `workloads_to_params()`. Any of those layers
+            # can break the contract tests, so include them all.
             case "$f" in
-              benchmarks/*|workloads/*|tileops/manifest.py|tileops/ops_manifest.yaml|"$WORKFLOW_PATH")
+              benchmarks/*|workloads/*|tileops/manifest/*.yaml|tileops/manifest/__init__.py|"$WORKFLOW_PATH")
                 benchmark=true
                 ;;
             esac
@@ -245,7 +245,7 @@ jobs:
       - name: Install TileOPs and validator dependencies
         run: pip install -e .
 
-      - name: Validate ops_manifest.yaml
+      - name: Validate ops manifest
         run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench
 
   actionlint:

@@ -5,7 +5,7 @@ description: Drive the full migration for an op family — audit, delegate per-o
 
 ## Arguments
 
-Family name from `ops_manifest.yaml` (e.g., `reduction`, `norm`, `attention`).
+Family name from `tileops/manifest/` (e.g., `reduction`, `norm`, `attention`).
 
 ## Contract
 
@@ -19,7 +19,7 @@ Family name from `ops_manifest.yaml` (e.g., `reduction`, `norm`, `attention`).
 
 - `align-family` delegates every per-op stage to `align-op`, invoked as a **separate sub-agent** per op. The family orchestrator never runs any atomic per-op skill directly — those live inside `align-op`'s contract.
 
-- `align-family` does **not** write `ops_manifest.yaml`. After the refactor, `align-op` is the sole manifest writer (at its own FLIP_STATUS step); `align-family` observes status transitions via `align-op`'s SUCCESS return. No `align-family` stage edits, modifies, or flips the manifest.
+- `align-family` does **not** write `tileops/manifest/`. After the refactor, `align-op` is the sole manifest writer (at its own FLIP_STATUS step); `align-family` observes status transitions via `align-op`'s SUCCESS return. No `align-family` stage edits, modifies, or flips the manifest.
 
 - Directly-invoked sub-skills of `align-family` are exactly two: `audit-family` (in AUDIT) and `align-op` (per op).
 

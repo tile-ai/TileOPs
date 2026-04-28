@@ -2,7 +2,7 @@
 
 Verifies that the manifest validator correctly implements schema/signature/shape/dtype/bench checks.
 Uses synthetic manifest data to test individual check functions,
-plus an integration test against the real ops_manifest.yaml.
+plus an integration test against the real ops manifest (tileops/manifest/).
 """
 
 import subprocess

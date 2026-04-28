@@ -67,7 +67,7 @@ def test_keepdim_workload_is_surfaced_as_op_param(monkeypatch):
 
     Uses a synthetic workload list (patched in place of ``load_workloads``)
     so the assertion describes the helper's contract, not the contents or
-    ordering of ``ops_manifest.yaml``.
+    ordering of the ops manifest (`tileops/manifest/`).
     """
     synthetic = [
         {"x_shape": [8, 16], "dtypes": ["bfloat16"], "label": "no-extras"},

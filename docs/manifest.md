@@ -1,12 +1,20 @@
 # Op Manifest Specification
 
-[`ops_manifest.yaml`](../tileops/ops_manifest.yaml) is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
+The [`tileops/manifest/`](../tileops/manifest/) package is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
+
+## Layout
+
+The manifest is split across one YAML file per op family — `elementwise.yaml`, `reduction.yaml`, `attention.yaml`, `normalization.yaml`, `moe.yaml`, `scan.yaml`, `convolution.yaml`. Each file has a single top-level `ops:` mapping. The `tileops.manifest` package merges all files at load time; duplicate op names across files are an error.
+
+- **Add or edit an op**: edit the family file matching the op's `family` field. Use `ruamel.yaml` for round-trip edits.
+- **Read programmatically**: `from tileops.manifest import load_manifest, load_workloads, manifest_files`. `load_manifest()` returns the merged `ops` dict.
+- **Read for inspection**: parse the relevant family file with `yaml.safe_load`. There is no aggregate file on disk.
 
 ## Trust Model
 
 ```mermaid
 flowchart LR
-    H["Human reviewer"] -->|writes / approves| M["ops_manifest.yaml"]
+    H["Human reviewer"] -->|writes / approves| M["tileops/manifest/"]
     M -->|reads spec from| A["Agent (codegen)"]
     A -->|produces| C["Op code, tests, benchmarks"]
     M -->|validates against| V["Validator (CI)"]
