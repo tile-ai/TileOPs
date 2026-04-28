@@ -4103,6 +4103,9 @@ ops:
 
   LerpFwdOp:
     ref_api: "torch.lerp"
+    # Scalar-weight variant: PyTorch's torch.lerp also accepts a Tensor
+    # weight (see LerpTensorFwdOp); this entry tracks the scalar (Number)
+    # slice that the existing kernel implements.
     family: elementwise
     status: spec-only
 
@@ -4113,9 +4116,7 @@ ops:
       outputs:
         out: {dtype: "same_as(input)"}
       params:
-        # PyTorch torch.lerp accepts a float or Tensor weight; the TileOPs Op
-        # currently bakes it as a construction-time scalar.
-        weight: {type: "float | Tensor", default: 0.5}
+        weight: {type: float, default: 0.5}
       shape_rules:
         - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape))"
 
@@ -4135,6 +4136,40 @@ ops:
       bench: benchmarks/ops/bench_binary_arith.py
       bench_manifest_driven: false
 
+  LerpTensorFwdOp:
+    ref_api: "torch.lerp"
+    # Tensor-weight variant: weight is a tensor that broadcasts together
+    # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
+    # overload). No kernel implementation yet — spec-only placeholder.
+    family: elementwise
+    status: spec-only
+
+    signature:
+      inputs:
+        input: {dtype: "float16 | bfloat16 | float32"}
+        end: {dtype: "same_as(input)"}
+        weight: {dtype: "same_as(input)"}
+      outputs:
+        out: {dtype: "same_as(input)"}
+      shape_rules:
+        - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+
+    workloads: []
+
+    roofline:
+      vars:
+        N: "product(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+      # sub + mul + add per element
+      flops: "3 * N"
+      bytes: "(product(input.shape) + product(end.shape) + product(weight.shape) + N) * elem_bytes"
+
+    source:
+      kernel: tileops/kernels/elementwise.py
+      op: tileops/ops/elementwise.py
+      test: tests/ops/test_binary_arith.py
+      bench: benchmarks/ops/bench_binary_arith.py
+      bench_manifest_driven: false
+
   MaximumFwdOp:
     ref_api: "torch.maximum"
     family: elementwise
@@ -4142,7 +4177,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "same_as(input)"}
@@ -4172,7 +4207,7 @@ ops:
 
     signature:
       inputs:
-        input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+        input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
         other: {dtype: "same_as(input)"}
       outputs:
         out: {dtype: "same_as(input)"}
