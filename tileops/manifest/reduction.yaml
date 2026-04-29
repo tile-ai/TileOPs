@@ -540,7 +540,7 @@ VarMeanFwdOp:
 ArgmaxFwdOp:
   ref_api: "torch.argmax"
   family: reduction
-  status: spec-only  # dim=None (full-tensor reduction) not yet implemented; _validate_dim rejects None. Flip to implemented when full-reduction path lands.
+  status: implemented
 
   signature:
     inputs:
@@ -583,7 +583,7 @@ ArgmaxFwdOp:
 ArgminFwdOp:
   ref_api: "torch.argmin"
   family: reduction
-  status: spec-only  # dim=None (full-tensor reduction) not yet implemented; _validate_dim rejects None. Flip to implemented when full-reduction path lands.
+  status: implemented
 
   signature:
     inputs:

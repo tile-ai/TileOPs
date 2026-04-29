@@ -51,12 +51,18 @@ class ArgminFwdOp(_ReduceOpBase):
         )
 
     def _validate_dim(self) -> None:
-        """Argmin only supports single-dim reduction."""
-        if not isinstance(self.dim, int):
-            raise ValueError(
-                f"ArgminFwdOp only supports scalar dim (int), "
-                f"got {type(self.dim).__name__}: {self.dim!r}"
-            )
+        """Argmin accepts a scalar ``int`` dim or ``None`` (full-tensor reduction).
+
+        ``dim=None`` matches ``torch.argmin(x)`` semantics: the input is
+        treated as a contiguous flattened 1D buffer and the returned index
+        is into that flattened tensor.
+        """
+        if self.dim is None or isinstance(self.dim, int):
+            return
+        raise ValueError(
+            f"ArgminFwdOp only supports scalar dim (int) or None, "
+            f"got {type(self.dim).__name__}: {self.dim!r}"
+        )
 
     def _pad_value(self) -> float:
         """Pad with +inf so padded positions never win argmin."""
