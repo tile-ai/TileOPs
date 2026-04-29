@@ -359,7 +359,7 @@ def test_r4_where_bench(
     bm = WhereBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = WhereFwdOp(N_total=n_total, dtype=dtype)
+    op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_where",
