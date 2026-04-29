@@ -7,9 +7,11 @@ Correctness-only logic (ref_program, check, tolerances) stays in tests/.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import torch
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 class WorkloadBase(ABC):
@@ -58,7 +60,7 @@ class FixtureMeta(type):
     compatibility when pytest is already importable at module scope.
     """
 
-    def __call__(cls, fn):
+    def __call__(cls, fn: _F) -> _F:
         import pytest  # lazy import: pytest is only needed when applying parametrize decorators
 
         params = cls.get_params() if hasattr(cls, "get_params") else cls.PARAMS
