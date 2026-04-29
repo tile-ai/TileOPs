@@ -97,22 +97,15 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 
 ### Test triage before merge
 
-Issue acceptance criteria (AC) are written for the **development phase**: they may demand exhaustive coverage (full dtype × shape × layout matrices) so that a developer agent cannot claim "done" by hitting a lucky subset. That trust-model role ends at approval — the suite checked into `main` must follow [Test case policy](#test-case-policy), not the AC text.
+Issue acceptance criteria may demand exhaustive matrices (e.g. full dtype × shape combinations) to keep developer agents honest. That role ends at approval — the suite checked into `main` follows [Test case policy](#test-case-policy), not the AC text.
 
-**Reviewer is the gate.** Before giving approval on a PR that adds or modifies tests, the reviewer must triage the new/changed cases and classify each one:
+Before approving a PR that adds or modifies tests, the reviewer triages each new/changed case:
 
-- **keep** — covers a distinct code path or dtype per [Test case policy](#test-case-policy).
-- **shrink** — combinatorial expansion (e.g. shapes × dtypes Cartesian product) that should be folded to "boundary + one representative interior point". The reviewer cites the specific cases to drop.
-- **delete** — same-failure-mode redundancy with an already-kept case. The reviewer cites the kept case it duplicates.
+- **keep** — guards a distinct code path or dtype per [Test case policy](#test-case-policy).
+- **shrink** — Cartesian expansion to fold to "boundary + one representative interior point".
+- **delete** — same-failure-mode duplicate of a kept case.
 
-**Outcome:**
-
-- If all new cases are `keep` → approve.
-- Otherwise → request changes, list the `shrink` / `delete` items by node ID, and let the developer push a triage commit. Do not approve until triage lands.
-
-**Why a separate step:** the AC and the merged suite serve different consumers (reward-hacking defense vs. long-term CI health). Forcing them to be the same set either weakens AC (developer cherry-picks) or bloats CI (every PR drags its full proof matrix forward). Triage at the review gate is what reconciles them.
-
-**Critical-path floor:** triage must not delete the last guarding case for a code path identified in [Test case policy](#test-case-policy) (tile boundary, vectorization alignment, degenerate dim, dispatch branch). When in doubt, keep one.
+If anything is `shrink` or `delete`, request changes naming the node IDs and wait for a triage commit before approving. Never delete the last guarding case for a critical path (tile boundary, vectorization alignment, degenerate dim, dispatch branch).
 
 ### Testing layers
 
