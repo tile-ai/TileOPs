@@ -41,7 +41,6 @@ class L2NormFwdOp(_ReduceOpBase):
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
     _required_ord: Union[int, float] = 2
-    # torch.linalg.vector_norm(x, dim=[]) full-reduces.
     _empty_dim_policy: EmptyDimPolicy = "full"
 
     def __init__(

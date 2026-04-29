@@ -41,8 +41,6 @@ class _SoftmaxBaseOp(Op):
     _kernel_key: str  # set by subclass
     _kernel_class: type  # set by subclass
     _supports_multidim: bool = False  # override to True in reduced-dim ops (e.g. LogSumExpFwdOp)
-    # Empty-dim policy (see _ReduceOpBase). Softmax-family default rejects;
-    # logsumexp keeps reject per its manifest contract.
     _empty_dim_policy: EmptyDimPolicy = "reject"
 
     # `static_dims.N = x.shape[dim]` is param-dependent (depends on `dim`),

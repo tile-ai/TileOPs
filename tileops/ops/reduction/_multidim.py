@@ -35,16 +35,10 @@ def normalize_dim(
     Args:
         dim: Single int, list of ints, or ``None`` (reduce all dims).
         ndim: Number of dimensions in the input tensor.
-        empty_dim_policy: How to treat ``dim=[]`` / ``dim=()``.
-            ``"reject"`` (default) raises ``ValueError`` — caller's
-            PyTorch / manifest contract does not define empty-dim
-            semantics. ``"full"`` returns ``list(range(ndim))``,
-            matching PyTorch ops whose contract treats empty-dim as
-            full reduction (e.g. ``torch.sum``, ``torch.mean``,
-            ``torch.linalg.vector_norm``). The default is ``"reject"``
-            because shared callers (``_SoftmaxBaseOp``, ``logsumexp``,
-            logical ops) have *different* empty-dim contracts; each
-            op opts in explicitly.
+        empty_dim_policy: ``"reject"`` (default) raises on ``dim=[] / ()``;
+            ``"full"`` returns ``list(range(ndim))``. Each op opts in
+            explicitly because shared callers have different empty-dim
+            contracts.
 
     Returns:
         Sorted list of non-negative dim indices (ascending).
@@ -63,9 +57,8 @@ def normalize_dim(
         if empty_dim_policy == "full":
             return list(range(ndim))
         raise ValueError(
-            "dim=[] is not supported by this op; the helper is "
-            "policy-neutral. Pass empty_dim_policy=\"full\" if your op's "
-            "PyTorch / manifest contract treats empty-dim as full reduction."
+            "dim=[] is not supported by this op; pass "
+            "empty_dim_policy=\"full\" to opt in to full-reduction."
         )
 
     normalized = []
