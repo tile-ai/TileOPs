@@ -11,11 +11,11 @@ Applies to PRs prefixed `[Refactor]` — restructures code without changing exte
 
 ## Sub-type: `[Refactor][Manifest]`
 
-Treat as a manifest-spec change. Load `.claude/domain-rules/manifest-spec.md`. Code under `tileops/ops/` and `tileops/kernels/` must NOT be touched in the same PR (trust model).
+Treat as a manifest-spec change. Load `manifest.md` instead — the manifest review rule covers restructuring as well as additions and status flips. Code under `tileops/ops/` and `tileops/kernels/` must NOT be touched in the same PR (trust model).
 
 ## Sub-type: `[Refactor][Ops]` / `[Refactor][<Family>]`
 
-Code-side migration. Often co-occurs with a `status: spec-only → implemented` flip — if so, also load `manifest-flip.md`.
+Code-side migration. Often co-occurs with a `status: spec-only → implemented` flip — if so, also load `manifest.md` alongside this rule.
 
 ## Don't gate on
 

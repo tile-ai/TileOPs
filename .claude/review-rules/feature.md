@@ -1,6 +1,6 @@
 # Review rule: feature
 
-Applies to PRs prefixed `[Feat]` — adds new behavior (op, kernel, module, skill, tooling).
+Applies to PRs prefixed `[Feat]` or `[Enhancement]` — adds new behavior or extends existing behavior (op, kernel, module, skill, tooling).
 
 ## Must check
 
