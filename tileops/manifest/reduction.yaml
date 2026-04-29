@@ -7,7 +7,7 @@
 SoftmaxFwdOp:
   ref_api: "torch.nn.functional.softmax"
   family: reduction
-  status: spec-only  # impl __init__ defaults dim=-1 (PyTorch default is None, deprecated implicit-axis); dtype kwarg not supported. Flip to implemented when both gaps close.
+  status: implemented
 
   signature:
     inputs:
@@ -57,7 +57,7 @@ SoftmaxFwdOp:
 LogSoftmaxFwdOp:
   ref_api: "torch.nn.functional.log_softmax"
   family: reduction
-  status: spec-only  # impl __init__ defaults dim=-1 (PyTorch default is None, deprecated implicit-axis); dtype kwarg not supported. Flip to implemented when both gaps close.
+  status: implemented
 
   signature:
     inputs:

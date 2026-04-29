@@ -538,5 +538,103 @@ def test_logsumexp_accepts_multidim() -> None:
     assert torch.allclose(y, y_ref, atol=1e-5, rtol=1e-5)
 
 
+# ===================================================================
+# dim=None implicit-axis tests (PyTorch parity)
+#
+# Per the manifest, ``dim`` defaults to ``None`` (PyTorch's deprecated
+# implicit-axis fallback). The op resolves to PyTorch's ``_get_softmax_dim``
+# choice at forward time: 0 for ``ndim in {0, 1, 3}`` else 1, with a
+# UserWarning. These tests exercise 1D / 2D / 3D × {fp16, bf16, fp32} and
+# assert bit-equivalence with ``F.softmax(x, dim=None)`` /
+# ``F.log_softmax(x, dim=None)`` within the standard tolerances.
+# ===================================================================
+
+
+class SoftmaxImplicitDimFixture(FixtureBase):
+    # Smoke covers one dtype per rank (1D fp32, 2D fp16, 3D bf16) so all three
+    # dtypes appear in smoke and each ndim in {1, 2, 3} (the three implicit-axis
+    # branches: ndim=1->0, ndim=2->1, ndim=3->0) is exercised at least once.
+    # Full fills in the remaining dtype × ndim cells.
+    PARAMS = [
+        (
+            "shape, dtype",
+            [
+                # Smoke: one per dtype, one per ndim branch (1D, 2D, 3D).
+                pytest.param((256,), torch.float32, marks=pytest.mark.smoke),
+                pytest.param((32, 256), torch.float16, marks=pytest.mark.smoke),
+                pytest.param((4, 16, 32), torch.bfloat16, marks=pytest.mark.smoke),
+                # Full: distinct shapes per ndim × dtype to broaden coverage
+                # without colliding with smoke shapes.
+                pytest.param((300,), torch.float16, marks=pytest.mark.full),
+                pytest.param((300,), torch.bfloat16, marks=pytest.mark.full),
+                pytest.param((32, 300), torch.float32, marks=pytest.mark.full),
+                pytest.param((32, 300), torch.bfloat16, marks=pytest.mark.full),
+                pytest.param((2, 16, 64), torch.float32, marks=pytest.mark.full),
+                pytest.param((2, 16, 64), torch.float16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+def _expected_implicit_dim(ndim: int) -> int:
+    """Mirror torch.nn.functional._get_softmax_dim for test reference."""
+    return 0 if ndim in (0, 1, 3) else 1
+
+
+@SoftmaxImplicitDimFixture
+def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
+    """SoftmaxFwdOp(dim=None) must match F.softmax(x, dim=None) and warn."""
+    import warnings as _warnings
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    expected_dim = _expected_implicit_dim(x.ndim)
+    op = SoftmaxFwdOp(N=shape[expected_dim], dtype=dtype, dim=None)
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        y = op(x)
+        # Must emit the same UserWarning PyTorch emits for dim=None.
+        assert any(
+            issubclass(w.category, UserWarning) and "Implicit dimension choice" in str(w.message)
+            for w in caught
+        ), f"Expected implicit-dim UserWarning, got {[str(w.message) for w in caught]}"
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", UserWarning)
+        y_ref = F.softmax(x.float(), dim=None).to(dtype)
+
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"dim=None softmax (shape={shape}, dtype={dtype}) failed, "
+        f"max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@SoftmaxImplicitDimFixture
+def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
+    """LogSoftmaxFwdOp(dim=None) must match F.log_softmax(x, dim=None) and warn."""
+    import warnings as _warnings
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    expected_dim = _expected_implicit_dim(x.ndim)
+    op = LogSoftmaxFwdOp(N=shape[expected_dim], dtype=dtype, dim=None)
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        y = op(x)
+        assert any(
+            issubclass(w.category, UserWarning) and "Implicit dimension choice" in str(w.message)
+            for w in caught
+        ), f"Expected implicit-dim UserWarning, got {[str(w.message) for w in caught]}"
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", UserWarning)
+        y_ref = F.log_softmax(x.float(), dim=None).to(dtype)
+
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"dim=None log_softmax (shape={shape}, dtype={dtype}) failed, "
+        f"max err: {(y - y_ref).abs().max()}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

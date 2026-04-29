@@ -9,6 +9,7 @@ from the input tensor at forward time, and kernels are cached by
 ``(M, N)`` to avoid rebuilds.
 """
 
+import warnings
 from math import prod
 from typing import Dict, List, Optional, Union
 
@@ -21,6 +22,31 @@ from ..op_base import Op
 from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = ["_SoftmaxBaseOp"]
+
+
+def _resolve_implicit_softmax_dim(name: str, ndim: int) -> int:
+    """Resolve ``dim=None`` to a scalar axis matching PyTorch's implicit choice.
+
+    Mirrors ``torch.nn.functional._get_softmax_dim``: pick 0 for
+    ``ndim in {0, 1, 3}`` else 1, and emit the same deprecation
+    ``UserWarning`` PyTorch emits.
+
+    Args:
+        name: Op name used in the warning message (e.g. ``"softmax"``).
+        ndim: Rank of the input tensor.
+
+    Returns:
+        Resolved scalar reduction axis (non-negative).
+    """
+    warnings.warn(
+        f"Implicit dimension choice for {name} has been deprecated. "
+        "Change the call to include dim=X as an argument.",
+        UserWarning,
+        stacklevel=3,
+    )
+    if ndim == 0 or ndim == 1 or ndim == 3:
+        return 0
+    return 1
 
 
 class _SoftmaxBaseOp(Op):
@@ -95,6 +121,14 @@ class _SoftmaxBaseOp(Op):
         """
         self._validate(x)
         orig_shape = x.shape
+
+        # PyTorch implicit-axis fallback for scalar-dim ops (softmax, log_softmax):
+        # when ``dim=None`` and the op does not support multi-dim full-reduction,
+        # resolve to PyTorch's _get_softmax_dim choice and emit the same
+        # deprecation UserWarning. Mutating ``self.dim`` here keeps a single
+        # source of truth for kernel-cache keying / introspection consumers.
+        if self.dim is None and not self._supports_multidim:
+            self.dim = _resolve_implicit_softmax_dim(self._op_kind, x.ndim)
 
         # --- multi-dim path (includes dim=None for full reduction) ---
         if isinstance(self.dim, (list, tuple)) or self.dim is None:
