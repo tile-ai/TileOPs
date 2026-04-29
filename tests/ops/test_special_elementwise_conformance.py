@@ -198,6 +198,18 @@ def test_clamp_both_none_rejected():
 
 
 @pytest.mark.smoke
+def test_clamp_scalar_both_none_rejected():
+    """ClampScalarFwdOp must reject min=None and max=None.
+
+    Mirrors torch.clamp(input, None, None), which raises
+    RuntimeError("At least one of min or max must not be None").
+    """
+    from tileops.ops.elementwise import ClampScalarFwdOp
+    with pytest.raises(ValueError, match="at least one of"):
+        ClampScalarFwdOp(input=(4,), min=None, max=None, dtype=torch.float32)
+
+
+@pytest.mark.smoke
 def test_clamp_runtime_tensor_none_must_match_init():
     """Forward-time None / Tensor presence must agree with __init__ config."""
     from tileops.ops.elementwise import ClampFwdOp

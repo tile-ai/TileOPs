@@ -1881,6 +1881,11 @@ class ClampScalarFwdOp(Op):
         max: Optional[float] = None,  # noqa: A002
         dtype: torch.dtype = torch.float32,
     ):
+        if min is None and max is None:
+            raise ValueError(
+                "ClampScalarFwdOp requires at least one of `min` or `max` to be a "
+                "Number; both None is not a valid clamp."
+            )
         if min is not None:
             _validate_scalar_param_repr("min", min, dtype, self._op_name)
         if max is not None:
