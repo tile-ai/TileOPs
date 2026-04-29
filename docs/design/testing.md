@@ -95,18 +95,6 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 - **Growth on existing files**: include script output and a one-line justification in PR description.
 - **New test files only**: no delta to report — follow the policy above.
 
-### Test triage before merge
-
-Issue acceptance criteria may demand exhaustive matrices (e.g. full dtype × shape combinations) to keep developer agents honest. That role ends at approval — the suite checked into `main` follows [Test case policy](#test-case-policy), not the AC text.
-
-Before approving a PR that adds or modifies tests, the reviewer triages each new/changed case:
-
-- **keep** — guards a distinct code path or dtype per [Test case policy](#test-case-policy).
-- **shrink** — Cartesian expansion to fold to "boundary + one representative interior point".
-- **delete** — same-failure-mode duplicate of a kept case.
-
-If anything is `shrink` or `delete`, request changes naming the node IDs and wait for a triage commit before approving. Never delete the last guarding case for a critical path (tile boundary, vectorization alignment, degenerate dim, dispatch branch).
-
 ### Testing layers
 
 | Layer             | Responsibility                                      | Shape source                                             |

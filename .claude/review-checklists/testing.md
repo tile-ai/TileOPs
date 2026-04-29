@@ -14,3 +14,9 @@ Load `.claude/domain-rules/testing-budget.md` and `docs/design/testing.md §Test
 - [ ] **Trigger.** Compute `delta_pct = (HEAD − Base) / Base × 100` from the PR body's `## Test node delta`. If `delta_pct > 10%`, every check below is required; otherwise this file is informational.
 - [ ] **Per-case purpose stated.** Each new case (or each new parametrize cell) serves exactly one of: dtype correctness / kernel-branch shape coverage / feature coverage / regression — per `docs/design/testing.md §Test case policy`. The PR body justification names which, with file:line.
 - [ ] **No Cartesian-product expansion.** Reject parametrize stacks whose growth is the product of two or more axes' cardinalities without a per-cell rationale. Crossing axes is allowed only when each cell maps to a distinct code path the author can name; otherwise the stack is a performance sweep, not a UT.
+
+## AC text does not bind the merged suite
+
+Issue acceptance criteria may mandate exhaustive matrices (e.g. full dtype × shape combinations) so a developer agent cannot claim "done" by hitting a lucky subset. That role ends at approval. The suite checked into `main` follows the policy above, not the AC text — "AC-N required this matrix" is not a defense against the checks above.
+
+If any new case fails a check, request changes naming the node IDs to drop or fold, and wait for a triage commit before approving. Never delete the last guarding case for a critical path (tile boundary, vectorization alignment, degenerate dim, dispatch branch).
