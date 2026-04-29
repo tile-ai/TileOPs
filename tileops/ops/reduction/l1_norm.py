@@ -21,14 +21,15 @@ __all__ = ["L1NormFwdOp"]
 class L1NormFwdOp(_ReduceOpBase):
     """L1 norm reduction along a configurable dim.
 
-    Construction: ``L1NormFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
-    derived from the input tensor at forward time, and kernels are cached
+    Construction: ``L1NormFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N
+    are derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
     Args:
         dtype: Input data type (float16, bfloat16, float32).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension (default ``None`` -> full reduction, matching
+            ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
+            ``None``.
         keepdim: Whether to retain the reduced dimension as size 1.
         ord: Norm order. Must equal 1 for ``L1NormFwdOp`` (manifest fixes
             ``ord == 1``); accepted as a kwarg to mirror
@@ -47,7 +48,7 @@ class L1NormFwdOp(_ReduceOpBase):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = -1,
+        dim: Union[int, List[int], None] = None,
         keepdim: bool = False,
         ord: Union[int, float] = 1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
