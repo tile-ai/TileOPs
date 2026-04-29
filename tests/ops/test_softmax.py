@@ -538,33 +538,15 @@ def test_logsumexp_accepts_multidim() -> None:
     assert torch.allclose(y, y_ref, atol=1e-5, rtol=1e-5)
 
 
-# ===================================================================
-# dim=None implicit-axis tests (PyTorch parity)
-#
-# Per the manifest, ``dim`` defaults to ``None`` (PyTorch's deprecated
-# implicit-axis fallback). The op resolves to PyTorch's ``_get_softmax_dim``
-# choice at forward time: 0 for ``ndim in {0, 1, 3}`` else 1, with a
-# UserWarning. These tests exercise 1D / 2D / 3D × {fp16, bf16, fp32} and
-# assert bit-equivalence with ``F.softmax(x, dim=None)`` /
-# ``F.log_softmax(x, dim=None)`` within the standard tolerances.
-# ===================================================================
-
-
 class SoftmaxImplicitDimFixture(FixtureBase):
-    # Smoke covers one dtype per rank (1D fp32, 2D fp16, 3D bf16) so all three
-    # dtypes appear in smoke and each ndim in {1, 2, 3} (the three implicit-axis
-    # branches: ndim=1->0, ndim=2->1, ndim=3->0) is exercised at least once.
-    # Full fills in the remaining dtype × ndim cells.
+    # Smoke covers each ndim branch (1D, 2D, 3D) and each dtype at least once.
     PARAMS = [
         (
             "shape, dtype",
             [
-                # Smoke: one per dtype, one per ndim branch (1D, 2D, 3D).
                 pytest.param((256,), torch.float32, marks=pytest.mark.smoke),
                 pytest.param((32, 256), torch.float16, marks=pytest.mark.smoke),
                 pytest.param((4, 16, 32), torch.bfloat16, marks=pytest.mark.smoke),
-                # Full: distinct shapes per ndim × dtype to broaden coverage
-                # without colliding with smoke shapes.
                 pytest.param((300,), torch.float16, marks=pytest.mark.full),
                 pytest.param((300,), torch.bfloat16, marks=pytest.mark.full),
                 pytest.param((32, 300), torch.float32, marks=pytest.mark.full),
@@ -577,7 +559,6 @@ class SoftmaxImplicitDimFixture(FixtureBase):
 
 
 def _expected_implicit_dim(ndim: int) -> int:
-    """Mirror torch.nn.functional._get_softmax_dim for test reference."""
     return 0 if ndim in (0, 1, 3) else 1
 
 
@@ -592,7 +573,6 @@ def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> Non
     with _warnings.catch_warnings(record=True) as caught:
         _warnings.simplefilter("always")
         y = op(x)
-        # Must emit the same UserWarning PyTorch emits for dim=None.
         assert any(
             issubclass(w.category, UserWarning) and "Implicit dimension choice" in str(w.message)
             for w in caught
@@ -636,36 +616,14 @@ def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) ->
     )
 
 
-# ===================================================================
-# dim=None must not mutate self.dim — reused op instance across ranks.
-#
-# Regression for the bug where forward() resolved ``dim=None`` by writing
-# the resolved scalar back to ``self.dim``: the second call with a
-# different-rank input would then reuse the stale resolved axis (and a
-# stale ``self.N``) and either pick the wrong axis or raise a spurious
-# committed-N mismatch. PyTorch's ``F.softmax(x, dim=None)`` re-resolves
-# per call, so the same op instance must accept inputs of different ranks.
-# ===================================================================
-
-
 @pytest.mark.smoke
 def test_softmax_dim_none_reused_across_ranks() -> None:
-    """SoftmaxFwdOp(dim=None) must re-resolve per call (no self.dim mutation).
-
-    Mirrors the exact reproducer from review F001: a single op instance
-    constructed with ``N=4, dim=None`` must accept inputs of different
-    ranks. Pre-fix, the first rank-1 call wrote ``self.dim=0`` and the
-    rank-2 call then raised ``committed N=4 does not match x.shape[0]=2``.
-    """
+    """SoftmaxFwdOp(dim=None) must re-resolve per call across input ranks."""
     import warnings as _warnings
     op = SoftmaxFwdOp(N=4, dtype=torch.float32, dim=None)
 
-    # Rank 1: implicit dim resolves to 0; N = x.shape[0] = 4 (matches committed N).
     x1 = torch.randn(4, dtype=torch.float32, device="cuda")
-    # Rank 2: implicit dim resolves to 1; N = x.shape[1] = 4 (matches committed N).
-    # This is the case that previously raised due to self.dim mutation.
     x2 = torch.randn(2, 4, dtype=torch.float32, device="cuda")
-    # Rank 3: implicit dim resolves to 0; N = x.shape[0] = 4 (matches committed N).
     x3 = torch.randn(4, 3, 5, dtype=torch.float32, device="cuda")
 
     with _warnings.catch_warnings():
@@ -677,7 +635,6 @@ def test_softmax_dim_none_reused_across_ranks() -> None:
         y2_ref = F.softmax(x2.float(), dim=None)
         y3_ref = F.softmax(x3.float(), dim=None)
 
-    # self.dim must remain None across calls (no mutation).
     assert op.dim is None, f"op.dim was mutated to {op.dim!r}; expected None"
 
     atol, rtol = _get_tolerances(torch.float32)
