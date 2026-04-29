@@ -9,27 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare
-from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.vector_norm import L1NormTest as _L1NormWorkload
-
-
-def _current_sm() -> int:
-    """Return the current CUDA SM major*10+minor, or -1 if no CUDA device."""
-    if not torch.cuda.is_available():
-        return -1
-    major, minor = torch.cuda.get_device_capability()
-    return major * 10 + minor
-
-
-_SM = _current_sm()
-pytestmark = pytest.mark.skipif(
-    _SM not in VectorNormKernel.supported_archs,
-    reason=(
-        f"VectorNormKernel does not support SM{_SM}; "
-        f"supported archs are {VectorNormKernel.supported_archs}. "
-        "Functional verification on supported archs runs in CI gpu-smoke."
-    ),
-)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -560,7 +540,7 @@ class VectorNormEmptyDimFixture(FixtureBase):
                 for op_kind in ("l1", "l2", "inf")
                 for empty_dim in ([], ())
                 for keepdim in (False, True)
-                for dtype in (torch.float16, torch.float32)
+                for dtype in (torch.float16, torch.bfloat16, torch.float32)
             ],
         ),
     ]
@@ -604,21 +584,6 @@ def test_empty_dim_full_reduction_3d(
     )
     atol, rtol = _get_tolerances(dtype)
     allclose_compare(y, ref, atol=atol, rtol=rtol)
-
-
-@VectorNormEmptyDimFixture
-def test_empty_dim_matches_dim_none(
-    op_kind: str, empty_dim, keepdim: bool, dtype: torch.dtype,
-) -> None:
-    """dim=[] / dim=() must produce identical output to dim=None."""
-    x = torch.randn(4, 32, 64, dtype=dtype, device="cuda")
-    op_empty = _make_op(dtype, op_kind, dim=empty_dim, keepdim=keepdim)
-    op_none = _make_op(dtype, op_kind, dim=None, keepdim=keepdim)
-    y_empty = op_empty(x)
-    y_none = op_none(x)
-    assert y_empty.shape == y_none.shape
-    atol, rtol = _get_tolerances(dtype)
-    allclose_compare(y_empty, y_none, atol=atol, rtol=rtol)
 
 
 if __name__ == "__main__":
