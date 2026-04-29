@@ -7,11 +7,11 @@
 SoftmaxFwdOp:
   ref_api: "torch.nn.functional.softmax"
   family: reduction
-  status: spec-only  # impl/tests still accept float32; manifest x dtype is float16 | bfloat16 only. Flip to implemented when dtype parity matches.
+  status: implemented
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       y: {dtype: "same_as(x)"}
     params:
@@ -33,6 +33,8 @@ SoftmaxFwdOp:
     - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits (batch, vocab_size)
     - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+    - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
+    - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
 
   roofline:
     vars:
@@ -55,11 +57,11 @@ SoftmaxFwdOp:
 LogSoftmaxFwdOp:
   ref_api: "torch.nn.functional.log_softmax"
   family: reduction
-  status: spec-only  # impl/tests still accept float32; manifest x dtype is float16 | bfloat16 only. Flip to implemented when dtype parity matches.
+  status: implemented
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       y: {dtype: "same_as(x)"}
     params:
@@ -81,6 +83,8 @@ LogSoftmaxFwdOp:
     - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits
     - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+    - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
+    - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
 
   roofline:
     vars:
