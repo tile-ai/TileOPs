@@ -4,8 +4,7 @@ For `[Feat]` and `[Enhancement]`. If the PR adds an op/kernel, the structural ax
 
 ## Checklist
 
-- [ ] [REQ] Op/kernel public interface matches its `tileops/manifest/` entry. No entry → wrong PR order
-- [ ] [REQ] Diff does not modify `tileops/manifest/` (`.claude/rules/manifest-trust-model.md`)
-- [ ] [REQ] Spot-check at least one `[REQ]` item from `## Structural Readiness` against the diff; flag dishonest pass
-- [ ] [REC] New module placement matches `docs/design/architecture.md` M1–M8 boundaries
-- [ ] [REC] If feature is an op, follows `docs/design/ops-design.md`
+- [ ] Op/kernel public interface matches its `tileops/manifest/` entry. No entry → wrong PR order
+- [ ] Diff does not modify `tileops/manifest/` (`.claude/rules/manifest-trust-model.md`)
+- [ ] Spot-check at least one `[REQ]` item from `## Structural Readiness` against the diff; flag dishonest pass
+- [ ] If feature is an op, follows `docs/design/ops-design.md`

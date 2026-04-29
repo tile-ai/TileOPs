@@ -4,8 +4,8 @@ For `[Refactor]`.
 
 ## Checklist
 
-- [ ] [REQ] Any `xfail` / `skip` / loosened assertion has a `FIXME(staged-rollout)` block per `.claude/rules/code-style.md`
-- [ ] [REQ] If the op has a manifest entry, signature still matches it
+- [ ] Any `xfail` / `skip` / loosened assertion has a `FIXME(staged-rollout)` block per `.claude/rules/code-style.md`
+- [ ] If the op has a manifest entry, signature still matches it
 
 ## Sub-types
 
