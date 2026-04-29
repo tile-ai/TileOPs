@@ -24,7 +24,7 @@ Activate a virtual environment, then `make install` (deps + pre-commit hooks).
 
 - [trust-model.md](docs/design/trust-model.md) — trust boundaries (manifest → test → implementation → benchmark), workloads layer contract
 - [testing.md](docs/design/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
-- [tileops-skills.md](docs/design/tileops-skills.md) — developer decision guide: which repo-provided skill to use for which task
+- [tileops-skills.md](docs/tileops-skills.md) — developer decision guide: which repo-provided skill to use for which task
 
 ## Reading the ops manifest
 
