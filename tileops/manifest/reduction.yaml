@@ -7,37 +7,39 @@
 SoftmaxFwdOp:
   ref_api: "torch.nn.functional.softmax"
   family: reduction
-  status: spec-only  # impl/tests still accept float32; manifest x dtype is float16 | bfloat16 only. Flip to implemented when dtype parity matches.
+  status: spec-only  # impl __init__ defaults dim=-1 (PyTorch default is None, deprecated implicit-axis); dtype kwarg not supported. Flip to implemented when both gaps close.
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       y: {dtype: "same_as(x)"}
     params:
-      # NOTE: PyTorch also accepts dim=None (deprecated, emits a warning and
-      # picks an implicit axis) and dtype=<torch.dtype> (returns the requested
-      # dtype). The current manifest dtype DSL cannot express
-      # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
-      # omitted here; tracked as BLOCKED on missing-manifest-capability.
-      dim: {type: int, default: -1}
-    static_dims:
-      N: "x.shape[dim]"
+      # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
+      # dtype, equivalent to x.to(dtype) before softmax). The current manifest
+      # DSL cannot express "y.dtype = dtype if dtype is not None else x.dtype",
+      # so dtype is omitted here; tracked as BLOCKED on missing-manifest-capability.
+      dim: {type: "int | None", default: null}
     shape_rules:
-      - "-x.ndim <= dim < x.ndim"
+      - "dim is None or -x.ndim <= dim < x.ndim"
       - "y.shape == x.shape"
 
   workloads:
     # Attention weight matrices (batch * heads, seq, seq)
     - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
+    - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
     - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits (batch, vocab_size)
     - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+    - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
 
   roofline:
     vars:
-      M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-      N: "x.shape[dim % x.ndim]"
+      # dim defaults to None in the manifest (PyTorch's deprecated implicit-axis).
+      # Concrete benchmark workloads do not set dim, so we treat None as the
+      # impl's effective default (-1 = last axis) for roofline accounting.
+      M: "product(x.shape[:(dim if dim is not None else -1) % x.ndim]) * product(x.shape[(dim if dim is not None else -1) % x.ndim + 1:])"
+      N: "x.shape[(dim if dim is not None else -1) % x.ndim]"
     # Per row: max (N), subtract+exp (2N), sum (N), div (N) = 5N
     flops: "5 * M * N"
     # Read x + write y
@@ -55,37 +57,38 @@ SoftmaxFwdOp:
 LogSoftmaxFwdOp:
   ref_api: "torch.nn.functional.log_softmax"
   family: reduction
-  status: spec-only  # impl/tests still accept float32; manifest x dtype is float16 | bfloat16 only. Flip to implemented when dtype parity matches.
+  status: spec-only  # impl __init__ defaults dim=-1 (PyTorch default is None, deprecated implicit-axis); dtype kwarg not supported. Flip to implemented when both gaps close.
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16"}
+      x: {dtype: "float16 | bfloat16 | float32"}
     outputs:
       y: {dtype: "same_as(x)"}
     params:
-      # NOTE: PyTorch also accepts dim=None (deprecated, emits a warning and
-      # picks an implicit axis) and dtype=<torch.dtype> (returns the requested
-      # dtype). The current manifest dtype DSL cannot express
-      # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
-      # omitted here; tracked as BLOCKED on missing-manifest-capability.
-      dim: {type: int, default: -1}
-    static_dims:
-      N: "x.shape[dim]"
+      # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
+      # dtype, equivalent to x.to(dtype) before log_softmax). The current
+      # manifest DSL cannot express "y.dtype = dtype if dtype is not None
+      # else x.dtype", so dtype is omitted here; tracked as BLOCKED on
+      # missing-manifest-capability.
+      dim: {type: "int | None", default: null}
     shape_rules:
-      - "-x.ndim <= dim < x.ndim"
+      - "dim is None or -x.ndim <= dim < x.ndim"
       - "y.shape == x.shape"
 
   workloads:
     # Attention weight matrices
     - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
+    - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
     - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits
     - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+    - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
 
   roofline:
     vars:
-      M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-      N: "x.shape[dim % x.ndim]"
+      # See SoftmaxFwdOp.roofline.vars for the dim=None fallback rationale.
+      M: "product(x.shape[:(dim if dim is not None else -1) % x.ndim]) * product(x.shape[(dim if dim is not None else -1) % x.ndim + 1:])"
+      N: "x.shape[(dim if dim is not None else -1) % x.ndim]"
     # Per row: max (N), subtract+exp (2N), sum (N), log+subtract (2N) = 6N
     flops: "6 * M * N"
     # Read x + write y
