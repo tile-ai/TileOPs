@@ -580,12 +580,16 @@ class CumulativeMultidimBenchmark(BenchmarkBase[CumulativeMultidimTest]):
 
 
 def _make_cumulative_op(M, N, dtype, op_kind):
+    import inspect
+
     from tileops.ops.reduction.cumprod import CumprodFwdOp
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     op_map = {"cumsum": CumsumFwdOp, "cumprod": CumprodFwdOp}
     cls = op_map[op_kind]
-    return cls(M=M, N=N, dtype=dtype)
+    if "M" in inspect.signature(cls.__init__).parameters:
+        return cls(M=M, N=N, dtype=dtype)
+    return cls(N=N, dtype=dtype, dim=-1)
 
 
 @CumulativeMultidimFixture
