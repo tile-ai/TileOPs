@@ -523,65 +523,60 @@ def test_inf_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Empty-dim full-reduction tests (dim=[] / dim=())
+# Empty-dim full-reduction tests (dim=[])
 # ---------------------------------------------------------------------------
 #
-# PyTorch's torch.linalg.vector_norm treats dim=() and dim=[] as "reduce over
-# all dimensions", equivalent to dim=None. These tests pin that semantic for
-# L1/L2/Inf and guard against regressions on the dim=None path.
+# torch.linalg.vector_norm treats dim=() / dim=[] as "reduce over all
+# dimensions" (equivalent to dim=None). The L1/L2/Inf NormFwdOp opt into
+# _empty_dim_policy="full" so normalize_dim translates [] -> all axes
+# before kernel dispatch.
+#
+# Coverage strategy (per docs/design/testing.md):
+# - dim=[] is the integration probe; dim=() ↔ [] equivalence is pinned at
+#   the helper layer in test_reduce_multidim.test_normalize_dim_empty_*,
+#   so we do not re-cross () with every (ord, keepdim, dtype, rank).
+# - One fixture per code path being guarded:
+#     * 2D × keepdim ∈ {False, True} guards restore_multidim_shape
+#       branches on the empty-dim path.
+#     * 3D × dtype ∈ {fp16, bf16, fp32} guards flatten_for_multidim
+#       permutation and per-dtype kernel codegen.
 
 
-class VectorNormEmptyDimFixture(FixtureBase):
-    PARAMS = [
-        (
-            "op_kind, empty_dim, keepdim, dtype",
-            [
-                pytest.param(op_kind, empty_dim, keepdim, dtype, marks=pytest.mark.smoke)
-                for op_kind in ("l1", "l2", "inf")
-                for empty_dim in ([], ())
-                for keepdim in (False, True)
-                for dtype in (torch.float16, torch.bfloat16, torch.float32)
-            ],
-        ),
-    ]
-
-
-@VectorNormEmptyDimFixture
-def test_empty_dim_full_reduction_2d(
-    op_kind: str, empty_dim, keepdim: bool, dtype: torch.dtype,
-) -> None:
-    """dim=[] / dim=() must full-reduce a 2D tensor (matches PyTorch)."""
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
+@pytest.mark.parametrize("keepdim", [False, True])
+def test_empty_dim_full_reduction_keepdim(op_kind: str, keepdim: bool) -> None:
+    """dim=[] full-reduces; keepdim toggles restore_multidim_shape branch."""
+    dtype = torch.float16
     x = torch.randn(32, 256, dtype=dtype, device="cuda")
-    op = _make_op(dtype, op_kind, dim=empty_dim, keepdim=keepdim)
+    op = _make_op(dtype, op_kind, dim=[], keepdim=keepdim)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(
-        x.float(), ord=ord_val, dim=empty_dim, keepdim=keepdim,
+        x.float(), ord=ord_val, dim=[], keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    assert y.shape == ref.shape, (
-        f"shape mismatch: got {y.shape}, expected {ref.shape} "
-        f"(op_kind={op_kind}, empty_dim={empty_dim!r}, keepdim={keepdim})"
-    )
+    assert y.shape == ref.shape
     atol, rtol = _get_tolerances(dtype)
     allclose_compare(y, ref, atol=atol, rtol=rtol)
 
 
-@VectorNormEmptyDimFixture
-def test_empty_dim_full_reduction_3d(
-    op_kind: str, empty_dim, keepdim: bool, dtype: torch.dtype,
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
+@pytest.mark.parametrize(
+    "dtype", [torch.float16, torch.bfloat16, torch.float32],
+)
+def test_empty_dim_full_reduction_3d_dtypes(
+    op_kind: str, dtype: torch.dtype,
 ) -> None:
-    """dim=[] / dim=() must full-reduce a 3D tensor (matches PyTorch)."""
+    """dim=[] on 3D × all supported dtypes; guards flatten + per-dtype codegen."""
     x = torch.randn(2, 16, 128, dtype=dtype, device="cuda")
-    op = _make_op(dtype, op_kind, dim=empty_dim, keepdim=keepdim)
+    op = _make_op(dtype, op_kind, dim=[], keepdim=False)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(
-        x.float(), ord=ord_val, dim=empty_dim, keepdim=keepdim,
+        x.float(), ord=ord_val, dim=[], keepdim=False,
     ).to(dtype)
     y = op(x)
-    assert y.shape == ref.shape, (
-        f"shape mismatch: got {y.shape}, expected {ref.shape} "
-        f"(op_kind={op_kind}, empty_dim={empty_dim!r}, keepdim={keepdim})"
-    )
+    assert y.shape == ref.shape
     atol, rtol = _get_tolerances(dtype)
     allclose_compare(y, ref, atol=atol, rtol=rtol)
 

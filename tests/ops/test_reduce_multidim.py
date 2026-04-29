@@ -444,23 +444,21 @@ def test_mean_empty_dim_full_reduction() -> None:
     assert torch.allclose(y, y_none, **_tol(torch.float16))
 
 
+# `dim=[]` ↔ `dim=()` equivalence is pinned at the helper layer above
+# (test_normalize_dim_empty_full_opt_in); the integration tests below use
+# `dim=[]` only and do not cross `()` with each op.
+
+
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op_name, empty_dim",
-    [
-        ("amin", []), ("amin", ()),
-        ("amax", []), ("amax", ()),
-        ("count_nonzero", []), ("count_nonzero", ()),
-    ],
-)
-def test_simple_op_empty_dim_full_reduction(op_name: str, empty_dim) -> None:
-    """amin/amax/count_nonzero(dim=[] | ()) reduce over all dims (PyTorch parity)."""
+@pytest.mark.parametrize("op_name", ["amin", "amax", "count_nonzero"])
+def test_simple_op_empty_dim_full_reduction(op_name: str) -> None:
+    """amin/amax/count_nonzero(dim=[]) reduce over all dims (PyTorch parity)."""
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
     from tileops.ops.reduction.reduce import AmaxFwdOp, AminFwdOp
 
     op_cls = {"amin": AminFwdOp, "amax": AmaxFwdOp, "count_nonzero": CountNonzeroFwdOp}[op_name]
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
-    op_empty = op_cls(dtype=torch.float16, dim=empty_dim)
+    op_empty = op_cls(dtype=torch.float16, dim=[])
     op_none = op_cls(dtype=torch.float16, dim=None)
     y_empty = op_empty(x)
     y_none = op_none(x)
@@ -472,20 +470,14 @@ def test_simple_op_empty_dim_full_reduction(op_name: str, empty_dim) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op_name, empty_dim",
-    [
-        ("std", []), ("std", ()),
-        ("var", []), ("var", ()),
-    ],
-)
-def test_welford_op_empty_dim_full_reduction(op_name: str, empty_dim) -> None:
-    """std/var(dim=[] | ()) reduce over all dims (PyTorch parity)."""
+@pytest.mark.parametrize("op_name", ["std", "var"])
+def test_welford_op_empty_dim_full_reduction(op_name: str) -> None:
+    """std/var(dim=[]) reduce over all dims (PyTorch parity)."""
     from tileops.ops.reduction.reduce import StdFwdOp, VarFwdOp
 
     op_cls = {"std": StdFwdOp, "var": VarFwdOp}[op_name]
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
-    op_empty = op_cls(dtype=torch.float16, dim=empty_dim, keepdim=False)
+    op_empty = op_cls(dtype=torch.float16, dim=[], keepdim=False)
     op_none = op_cls(dtype=torch.float16, dim=None, keepdim=False)
     y_empty = op_empty(x)
     y_none = op_none(x)
@@ -494,13 +486,12 @@ def test_welford_op_empty_dim_full_reduction(op_name: str, empty_dim) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("empty_dim", [[], ()])
-def test_var_mean_empty_dim_full_reduction(empty_dim) -> None:
-    """var_mean(dim=[] | ()) returns (var, mean) over all dims."""
+def test_var_mean_empty_dim_full_reduction() -> None:
+    """var_mean(dim=[]) returns (var, mean) over all dims."""
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
-    op_empty = VarMeanFwdOp(dtype=torch.float16, dim=empty_dim, keepdim=False)
+    op_empty = VarMeanFwdOp(dtype=torch.float16, dim=[], keepdim=False)
     op_none = VarMeanFwdOp(dtype=torch.float16, dim=None, keepdim=False)
     var_e, mean_e = op_empty(x)
     var_n, mean_n = op_none(x)
