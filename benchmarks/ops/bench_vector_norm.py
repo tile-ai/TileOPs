@@ -32,7 +32,7 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = L1NormTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = L1NormFwdOp(dtype=dtype)
+    op = L1NormFwdOp(dtype=dtype, dim=-1)
     bm = ManifestBenchmark(_L1_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -59,7 +59,7 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = L2NormTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = L2NormFwdOp(dtype=dtype)
+    op = L2NormFwdOp(dtype=dtype, dim=-1)
     bm = ManifestBenchmark(_L2_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -86,7 +86,7 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = InfNormTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = InfNormFwdOp(dtype=dtype)
+    op = InfNormFwdOp(dtype=dtype, dim=-1)
     bm = ManifestBenchmark(_INF_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)

@@ -23,7 +23,7 @@ from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.reduce import ReduceKernel
 
 from ..op_base import Op
-from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
+from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = [
     "AmaxFwdOp",
@@ -69,6 +69,7 @@ class _ReduceOpBase(Op):
     _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
     _kernel_cls: type = ReduceKernel  # overridden by subclasses for different kernel classes
     _kernel_handles_padding: bool = False  # True when kernel accepts (M, N) with masked loads
+    _empty_dim_policy: EmptyDimPolicy = "reject"
 
     def __init__(
         self,
@@ -259,7 +260,9 @@ class _ReduceOpBase(Op):
 
         # --- multi-dim path (includes dim=None for full reduction) ---
         if isinstance(self.dim, (list, tuple)) or self.dim is None:
-            dims = normalize_dim(self.dim, x.ndim)
+            dims = normalize_dim(
+                self.dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
+            )
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
             M = prod(x.shape[:-1])
@@ -358,24 +361,28 @@ class SumFwdOp(_SimpleReduceOp):
     """Sum reduction along dim=-1."""
 
     _op_kind = "sum"
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
 
 class MeanFwdOp(_SimpleReduceOp):
     """Mean reduction along dim=-1."""
 
     _op_kind = "mean"
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
 
 class AminFwdOp(_SimpleReduceOp):
     """Amin (element-wise minimum) reduction along dim=-1."""
 
     _op_kind = "amin"
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
 
 class AmaxFwdOp(_SimpleReduceOp):
     """Amax (element-wise maximum) reduction along dim=-1."""
 
     _op_kind = "amax"
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
 
 class ProdFwdOp(_SimpleReduceOp):
@@ -410,6 +417,7 @@ class _WelfordReduceOp(_ReduceOpBase):
     """
 
     _kernel_handles_padding = True
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
     def __init__(
         self,

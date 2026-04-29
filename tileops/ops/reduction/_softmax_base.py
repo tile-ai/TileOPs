@@ -18,7 +18,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 
 from ..op_base import Op
-from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
+from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = ["_SoftmaxBaseOp"]
 
@@ -41,6 +41,7 @@ class _SoftmaxBaseOp(Op):
     _kernel_key: str  # set by subclass
     _kernel_class: type  # set by subclass
     _supports_multidim: bool = False  # override to True in reduced-dim ops (e.g. LogSumExpFwdOp)
+    _empty_dim_policy: EmptyDimPolicy = "reject"
 
     # `static_dims.N = x.shape[dim]` is param-dependent (depends on `dim`),
     # so the static-axis frozenset is bound at forward time after dim
@@ -102,7 +103,9 @@ class _SoftmaxBaseOp(Op):
                     f"{type(self).__name__} does not support multi-dim reduction. "
                     "Use a scalar dim."
                 )
-            dims = normalize_dim(self.dim, x.ndim)
+            dims = normalize_dim(
+                self.dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
+            )
             # Bind the dynamic static-axes (param-dependent reduction axes) so
             # the Op-layer cache-key / introspection consumers see the
             # committed axes. Mirrors the single-dim path below.

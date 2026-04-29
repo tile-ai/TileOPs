@@ -522,5 +522,45 @@ def test_inf_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
+# ---------------------------------------------------------------------------
+# Empty-dim full-reduction (dim=[])
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
+@pytest.mark.parametrize("keepdim", [False, True])
+def test_empty_dim_full_reduction_keepdim(op_kind: str, keepdim: bool) -> None:
+    dtype = torch.float16
+    x = torch.randn(32, 256, dtype=dtype, device="cuda")
+    op = _make_op(dtype, op_kind, dim=[], keepdim=keepdim)
+    ref = torch.linalg.vector_norm(
+        x.float(), ord=_ORD_MAP[op_kind], dim=[], keepdim=keepdim,
+    ).to(dtype)
+    y = op(x)
+    assert y.shape == ref.shape
+    atol, rtol = _get_tolerances(dtype)
+    allclose_compare(y, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
+@pytest.mark.parametrize(
+    "dtype", [torch.float16, torch.bfloat16, torch.float32],
+)
+def test_empty_dim_full_reduction_3d_dtypes(
+    op_kind: str, dtype: torch.dtype,
+) -> None:
+    x = torch.randn(2, 16, 128, dtype=dtype, device="cuda")
+    op = _make_op(dtype, op_kind, dim=[], keepdim=False)
+    ref = torch.linalg.vector_norm(
+        x.float(), ord=_ORD_MAP[op_kind], dim=[], keepdim=False,
+    ).to(dtype)
+    y = op(x)
+    assert y.shape == ref.shape
+    atol, rtol = _get_tolerances(dtype)
+    allclose_compare(y, ref, atol=atol, rtol=rtol)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
