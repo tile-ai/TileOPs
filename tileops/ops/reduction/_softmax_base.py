@@ -44,7 +44,7 @@ def _resolve_implicit_softmax_dim(name: str, ndim: int) -> int:
         UserWarning,
         stacklevel=3,
     )
-    if ndim == 0 or ndim == 1 or ndim == 3:
+    if ndim in (0, 1, 3):
         return 0
     return 1
 
