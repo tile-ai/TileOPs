@@ -9,12 +9,19 @@ class DaCumsumFwdFixture(FixtureBase):
         import pytest
         return [
             ("batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, tune", [
-                # no bias, no softplus
+                # feature: no bias, no softplus (baseline path)
                 pytest.param(1, 2,  64,  4, False, False, False, marks=pytest.mark.smoke),
-                # with bias + softplus (full pipeline)
-                pytest.param(1, 2,  64,  4, True,  True,  False, marks=pytest.mark.smoke),
+                # feature: bias only (has_dt_bias branch, no softplus)
+                pytest.param(1, 2,  64,  4, True,  False, False, marks=pytest.mark.smoke),
+                # feature: softplus only (no bias, dt_softplus branch)
+                pytest.param(1, 2,  64,  4, False, True,  False, marks=pytest.mark.smoke),
+                # feature: bias + softplus (full pipeline)
+                pytest.param(1, 2,  64,  4, True,  True,  False, marks=pytest.mark.full),
+                # shape: larger batch and chunk count
                 pytest.param(2, 4,  64,  8, False, False, False, marks=pytest.mark.full),
+                # shape: larger chunk_len tile
                 pytest.param(1, 2, 128,  4, False, False, False, marks=pytest.mark.full),
+                # shape + feature: large shape with full pipeline
                 pytest.param(2, 4, 128, 16, True,  True,  False, marks=pytest.mark.full),
             ]),
         ]

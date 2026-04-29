@@ -248,13 +248,6 @@ class DaCumsumFwdKernel(Kernel):
             dt_out: (batch, n_heads, num_chunks, chunk_len) float32 — processed dt.
             dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
         """
-        if self.has_dt_bias and dt_bias is None:
-            raise ValueError("dt_bias is required when has_dt_bias=True")
-        if not dt.is_cuda:
-            raise ValueError("dt must be a CUDA tensor")
-        if dt.dtype != torch.float32:
-            raise ValueError(f"Expected float32 dt, got {dt.dtype}")
-
         dt = dt.contiguous()
         A = A.contiguous()
         # Allocate a dummy zero bias when has_dt_bias=False so the kernel
