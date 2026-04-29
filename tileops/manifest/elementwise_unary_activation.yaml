@@ -458,8 +458,8 @@ ClampScalarFwdOp:
     outputs:
       out: {dtype: "same_as(input)"}
     params:
-      min: {type: "float | None", default: null}
-      max: {type: "float | None", default: null}
+      min: {type: "Number | None", default: null}
+      max: {type: "Number | None", default: null}
     shape_rules:
       - "out.shape == input.shape"
 

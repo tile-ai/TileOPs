@@ -118,7 +118,7 @@ MaskedFillScalarFwdOp:
     outputs:
       out: {dtype: "same_as(input)"}
     params:
-      value: {type: float, default: 0.0}
+      value: {type: Number, default: 0.0}
     shape_rules:
       # mask broadcasts unidirectionally to input.shape; out follows input.
       - "is_broadcastable_to(mask.shape, input.shape)"
