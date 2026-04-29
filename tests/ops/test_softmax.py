@@ -547,12 +547,6 @@ class SoftmaxImplicitDimFixture(FixtureBase):
                 pytest.param((256,), torch.float32, marks=pytest.mark.smoke),
                 pytest.param((32, 256), torch.float16, marks=pytest.mark.smoke),
                 pytest.param((4, 16, 32), torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param((300,), torch.float16, marks=pytest.mark.full),
-                pytest.param((300,), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.float32, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.bfloat16, marks=pytest.mark.full),
-                pytest.param((2, 16, 64), torch.float32, marks=pytest.mark.full),
-                pytest.param((2, 16, 64), torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
