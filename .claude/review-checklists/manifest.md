@@ -1,26 +1,46 @@
 # Review checklist: manifest
 
-For `[Maintain]` (almost always `[Maintain][Manifest]`) — any `tileops/manifest/` change. Also load this checklist for `[Refactor][Manifest]` and for `[Refactor][Ops]` PRs that flip `status`.
-
-Sub-cases:
-
-1. Add new entry → lands as `status: spec-only`.
-1. Restructure entry → split yaml, realign to PyTorch reference, refine `roofline` / `shape_rules`.
-1. Status flip → `spec-only → implemented` (or back).
+For `[Maintain]`, `[Refactor][Manifest]`, and any PR that flips a manifest entry's `status`. The manifest is the authoritative spec for op interfaces — every check below exists to keep that authority real.
 
 Load `.claude/domain-rules/manifest-spec.md` before reviewing.
 
-## Checklist
+## How to apply
 
-- [ ] [REQ] PyTorch parity: when op name maps to `torch.nn.*` / `torch.nn.functional.*`, signature matches PyTorch's public API exactly — names, order, defaults; no invented parameters (`.claude/rules/manifest-trust-model.md`)
-- [ ] [REQ] `source` field points to authoritative docs (PyTorch, paper, vendor); shape/dtype rules verifiable from that link alone
-- [ ] [REQ] Required fields present: `signature`, `shape_rules`, `dtype_combos`, `roofline`; `kernel_map` and `static_dims` where applicable
-- [ ] [REQ] `scripts/validate_manifest.py` is green; no validator check disabled
-- [ ] [REQ] New entries land as `status: spec-only`
-- [ ] [REQ] Flip to `implemented`: spec tests pass without xfail/skip; op signature matches the entry field-by-field; related `FIXME(staged-rollout)` markers removed
-- [ ] [REQ] Flip back to `spec-only` only when implementation is removed or broken
-- [ ] [REQ] Same PR does NOT modify `tileops/ops/` or `tileops/kernels/`, except a pure `status` flip aligned with a code-side migration in the same PR
-- [ ] [REQ] No removal of `roofline.vars`, `shape_rules`, or `params` to silence the validator
-- [ ] [REQ] Manifest entry not rewritten to match what the code does — spec is authoritative
-- [ ] [REC] Op family file placement consistent with existing conventions
-- [ ] [REC] Roofline numerical precision — first-pass estimates OK; refinement is a follow-up
+- **Open set, not exhaustive.** The agent may add checks for the PR's specifics; the items below are the floor.
+- **Every check must be concrete and decidable.** Cite the entry path, the field name, the reference URL, the test name, or the offending diff line. "Looks reasonable", "may want to verify", "consider double-checking" do not qualify.
+- **Stance.** Reviewer verifies alignment with the reference; does not propose new spec content beyond what fixes a flagged item.
+
+Two non-negotiable principles cut across every event:
+
+- **Reference semantic alignment.** Any change to an op's spec (signature, shape rules, dtype combos, roofline vars) must map back to an authoritative reference — PyTorch public API for `torch.nn.*` / `torch.nn.functional.*` names; the paper or vendor docs otherwise. Reverse-engineering from current TileOps code is forbidden — spec is upstream of code.
+- **`status` field truthfulness.** `status: implemented` is a hard claim that code conforms to the entry. The reviewer's job is to *disprove* it, not to take it on faith. Status flips that don't reflect actual conformance corrupt the trust model.
+
+## Add-manifest (new entry)
+
+PRs from the `add-manifest` skill, or any PR that adds a previously-absent op entry.
+
+- [ ] **Reference cited and authoritative.** Entry's `source` field points to PyTorch / paper / vendor docs. Reviewer can derive shape and dtype rules from that link alone.
+- [ ] **Signature matches reference exactly.** For `torch.nn.*` / `torch.nn.functional.*` names: parameter names, order, and defaults all match PyTorch's public API. No invented parameters.
+- [ ] **Required fields present.** `signature`, `shape_rules`, `dtype_combos`, `roofline`; `kernel_map` and `static_dims` where the family requires them.
+- [ ] **Lands as `spec-only`.** New entries never land as `implemented`, regardless of any existing code claiming to be ready.
+- [ ] **Validator green.** `scripts/validate_manifest.py` passes with no checks disabled.
+- [ ] **No code change.** Diff does not modify `tileops/ops/` or `tileops/kernels/`.
+
+## Fix-manifest (patch existing entry)
+
+PRs from the `fix-manifest` skill — patches one missing structural field (`kernel_map`, `static_dims`) on an existing entry.
+
+- [ ] **Scope is one structural field.** Diff modifies exactly one missing field. Edits to `signature`, `shape_rules`, `dtype_combos`, or `roofline` belong to `add-manifest`, not `fix-manifest` — reject and split.
+- [ ] **Reference still aligns.** Other reference-derivable fields (`signature`, `shape_rules`, `dtype_combos`) on the same entry have not silently drifted from the source URL. Spot-check at least one.
+- [ ] **Validator green.**
+- [ ] **No code change.** Diff does not modify `tileops/ops/` or `tileops/kernels/`.
+
+## Status flip (`spec-only` ↔ `implemented`)
+
+Often bundled with a `[Refactor][Ops]` op-migration PR.
+
+- [ ] **Conformance verified, not asserted.** Reviewer diffs the op's `__init__` and `forward` against the manifest entry field-by-field — names, types, defaults, shapes.
+- [ ] **Spec tests actually run.** No `pytest.skip`, `xfail`, or weakened assertion left from the `spec-only` era. Grep the test file before approving.
+- [ ] **`FIXME(staged-rollout)` markers tied to this op removed.**
+- [ ] **Flip back to `spec-only`** is legitimate only when implementation is removed or known-broken. Challenge any other rationale.
+- [ ] **Pure flip.** This PR changes `status` only — no rewrite of `signature` / `shape_rules` / `roofline`. If the entry needs spec edits to match implementation, that is reverse-engineering from code; reject and require a separate `add-manifest`- or `fix-manifest`-style PR.
