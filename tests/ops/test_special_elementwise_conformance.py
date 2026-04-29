@@ -100,6 +100,122 @@ def test_clamp_init_signature_pytorch_aligned():
     assert fwd_params[1:] == ["input", "min", "max"], fwd_params
 
 
+# AC-2 (mixed): ClampFwdOp must accept Tensor min with max=None and
+# Tensor max with min=None, matching torch.clamp(input, min=tensor, max=None)
+# and torch.clamp(input, min=None, max=tensor) on CUDA.
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "input_shape, bound_shape, dtype",
+    [
+        ((4, 8), (4, 8), torch.float16),
+        ((4, 8), (1, 8), torch.float32),
+        ((4, 8), (), torch.bfloat16),
+    ],
+)
+def test_clamp_min_only_tensor_parity(input_shape, bound_shape, dtype):
+    from tileops.ops.elementwise import ClampFwdOp
+
+    inp = torch.randn(input_shape, device="cuda", dtype=dtype)
+    mn = torch.randn(bound_shape, device="cuda", dtype=dtype) - 0.5
+    ref = torch.clamp(inp, mn, None)
+    op = ClampFwdOp(input=tuple(inp.shape), min=tuple(mn.shape), max=None, dtype=dtype)
+    out = op(inp, mn, None)
+    if dtype == torch.float16:
+        atol, rtol = 1e-3, 1e-3
+    elif dtype == torch.bfloat16:
+        atol, rtol = 1.6e-2, 1.6e-2
+    else:
+        atol, rtol = 1e-5, 1e-5
+    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "input_shape, bound_shape, dtype",
+    [
+        ((4, 8), (4, 8), torch.float16),
+        ((4, 8), (1, 8), torch.float32),
+        ((4, 8), (), torch.bfloat16),
+    ],
+)
+def test_clamp_max_only_tensor_parity(input_shape, bound_shape, dtype):
+    from tileops.ops.elementwise import ClampFwdOp
+
+    inp = torch.randn(input_shape, device="cuda", dtype=dtype)
+    mx = torch.randn(bound_shape, device="cuda", dtype=dtype) + 0.5
+    ref = torch.clamp(inp, None, mx)
+    op = ClampFwdOp(input=tuple(inp.shape), min=None, max=tuple(mx.shape), dtype=dtype)
+    out = op(inp, None, mx)
+    if dtype == torch.float16:
+        atol, rtol = 1e-3, 1e-3
+    elif dtype == torch.bfloat16:
+        atol, rtol = 1.6e-2, 1.6e-2
+    else:
+        atol, rtol = 1e-5, 1e-5
+    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "fp8_dtype",
+    [
+        pytest.param(torch.float8_e4m3fn, id="e4m3fn"),
+        pytest.param(torch.float8_e5m2, id="e5m2"),
+    ],
+)
+@pytest.mark.parametrize(
+    "which", ["min_only", "max_only"],
+)
+def test_clamp_mixed_tensor_none_fp8(which, fp8_dtype):
+    """fp8 routing for mixed Tensor/None bounds (matches both-Tensor case)."""
+    from tileops.ops.elementwise import ClampFwdOp
+
+    n = 256
+    inp_fp16 = torch.randn(n, device="cuda", dtype=torch.float16)
+    bound_fp16 = (torch.randn(n, device="cuda", dtype=torch.float16)
+                  - (0.5 if which == "min_only" else -0.5))
+    inp = inp_fp16.to(fp8_dtype)
+    bound = bound_fp16.to(fp8_dtype)
+    if which == "min_only":
+        op = ClampFwdOp(input=(n,), min=(n,), max=None, dtype=fp8_dtype)
+        out = op(inp, bound, None)
+        ref = torch.clamp(inp.to(torch.float16), bound.to(torch.float16), None).to(fp8_dtype)
+    else:
+        op = ClampFwdOp(input=(n,), min=None, max=(n,), dtype=fp8_dtype)
+        out = op(inp, None, bound)
+        ref = torch.clamp(inp.to(torch.float16), None, bound.to(torch.float16)).to(fp8_dtype)
+    # fp8 has no torch.testing.assert_close support; compare via fp16 view.
+    torch.testing.assert_close(out.to(torch.float16), ref.to(torch.float16),
+                               atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_clamp_both_none_rejected():
+    """ClampFwdOp must reject min=None and max=None (no-op clamp is invalid)."""
+    from tileops.ops.elementwise import ClampFwdOp
+    with pytest.raises(ValueError, match="at least one of"):
+        ClampFwdOp(input=(4,), min=None, max=None, dtype=torch.float32)
+
+
+@pytest.mark.smoke
+def test_clamp_runtime_tensor_none_must_match_init():
+    """Forward-time None / Tensor presence must agree with __init__ config."""
+    from tileops.ops.elementwise import ClampFwdOp
+
+    inp = torch.randn(4, device="cuda", dtype=torch.float32)
+    mn = torch.zeros(4, device="cuda", dtype=torch.float32)
+
+    # Configured for min-only at __init__, then passed a Tensor for max:
+    op = ClampFwdOp(input=(4,), min=(4,), max=None, dtype=torch.float32)
+    with pytest.raises(ValueError, match="max"):
+        op(inp, mn, mn)
+
+    # Configured for max-only at __init__, then passed a Tensor for min:
+    op2 = ClampFwdOp(input=(4,), min=None, max=(4,), dtype=torch.float32)
+    with pytest.raises(ValueError, match="min"):
+        op2(inp, mn, mn)
+
+
 # ---------------------------------------------------------------------------
 # AC-3: ClampScalarFwdOp / ClampMinFwdOp / ClampMaxFwdOp
 # ---------------------------------------------------------------------------

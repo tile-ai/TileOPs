@@ -1626,20 +1626,24 @@ class _ClampTensorBase(Op):
 
 
 class ClampFwdOp(_ClampTensorBase):
-    """Clamp with Tensor lower and upper bounds (broadcasting).
+    """Clamp with Tensor lower and/or upper bounds (broadcasting).
 
-    Conforms to ``torch.clamp(input, min: Tensor, max: Tensor)``: all three
-    operands broadcast together. Implemented by expanding to the broadcast
-    shape and applying ``torch.maximum``/``torch.minimum`` via PyTorch ops
-    (the elementwise kernel layer is reused for the unary ``input`` path
-    only; the bound tensors are folded in eagerly to keep the broadcasting
-    logic in one place).
+    Conforms to ``torch.clamp(input, min, max)`` where ``min`` and ``max``
+    are each either a Tensor or ``None``. At least one of the two bounds
+    must be a Tensor. All Tensor operands broadcast together. The
+    primary spec entry in ``tileops/manifest/`` covers the both-Tensor
+    form; the mixed Tensor/``None`` cases are runtime-equivalent to
+    ``ClampMinFwdOp`` / ``ClampMaxFwdOp`` and are accepted here so callers
+    can mirror PyTorch's ``torch.clamp`` API directly.
 
     Args:
         input: Shape of the input tensor.
-        min: Shape of the lower-bound tensor.
-        max: Shape of the upper-bound tensor.
+        min: Shape of the lower-bound tensor, or ``None`` for no lower bound.
+        max: Shape of the upper-bound tensor, or ``None`` for no upper bound.
         dtype: Torch dtype for all operands.
+
+    Raises:
+        ValueError: If both ``min`` and ``max`` are ``None``.
     """
 
     _op_name = "clamp"
@@ -1647,17 +1651,25 @@ class ClampFwdOp(_ClampTensorBase):
     def __init__(
         self,
         input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
-        min: tuple,    # noqa: A002 — manifest-aligned PyTorch param name
-        max: tuple,    # noqa: A002 — manifest-aligned PyTorch param name
-        dtype: torch.dtype,
+        min: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
+        max: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
+        dtype: torch.dtype = torch.float32,
     ):
+        if min is None and max is None:
+            raise ValueError(
+                "ClampFwdOp requires at least one of `min` or `max` to be a "
+                "Tensor shape; both None is not a valid clamp."
+            )
         self.input_shape = tuple(input)
-        self.min_shape = tuple(min)
-        self.max_shape = tuple(max)
+        self.min_shape = None if min is None else tuple(min)
+        self.max_shape = None if max is None else tuple(max)
         self.dtype = dtype
-        self.out_shape = tuple(
-            torch.broadcast_shapes(self.input_shape, self.min_shape, self.max_shape)
-        )
+        broadcast_args = [self.input_shape]
+        if self.min_shape is not None:
+            broadcast_args.append(self.min_shape)
+        if self.max_shape is not None:
+            broadcast_args.append(self.max_shape)
+        self.out_shape = tuple(torch.broadcast_shapes(*broadcast_args))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -1667,7 +1679,10 @@ class ClampFwdOp(_ClampTensorBase):
         return {}
 
     def _eager_forward(
-        self, input: torch.Tensor, min: torch.Tensor, max: torch.Tensor,  # noqa: A002
+        self,
+        input: torch.Tensor,  # noqa: A002
+        min: Optional[torch.Tensor] = None,  # noqa: A002
+        max: Optional[torch.Tensor] = None,  # noqa: A002
     ) -> torch.Tensor:
         # Use torch.clamp for full PyTorch parity (handles NaN / dtype
         # promotion identically). Broadcasting is implicit. PyTorch's CUDA
@@ -1677,20 +1692,40 @@ class ClampFwdOp(_ClampTensorBase):
         # post-cast.
         if _is_fp8(self.dtype):
             compute = _fp8_compute_dtype(self.dtype)
-            result = torch.clamp(input.to(compute), min.to(compute), max.to(compute))
+            mn_c = None if min is None else min.to(compute)
+            mx_c = None if max is None else max.to(compute)
+            result = torch.clamp(input.to(compute), mn_c, mx_c)
             return result.to(self.dtype)
         return torch.clamp(input, min, max)
 
     def forward(
-        self, input: torch.Tensor, min: torch.Tensor, max: torch.Tensor,  # noqa: A002
+        self,
+        input: torch.Tensor,  # noqa: A002
+        min: Optional[torch.Tensor] = None,  # noqa: A002
+        max: Optional[torch.Tensor] = None,  # noqa: A002
     ) -> torch.Tensor:
-        if not (input.is_cuda and min.is_cuda and max.is_cuda):
-            raise ValueError("Inputs must be CUDA tensors")
-        for name, t, expected in [
-            ("input", input, self.input_shape),
-            ("min", min, self.min_shape),
-            ("max", max, self.max_shape),
-        ]:
+        # Validate that the runtime None / Tensor pattern matches what
+        # __init__ was configured for — the broadcast shape and the
+        # presence of each bound is baked in at construction.
+        if (min is None) != (self.min_shape is None):
+            raise ValueError(
+                f"min was {'None' if self.min_shape is None else 'a Tensor shape'} at "
+                f"__init__ but {'None' if min is None else 'a Tensor'} at forward()"
+            )
+        if (max is None) != (self.max_shape is None):
+            raise ValueError(
+                f"max was {'None' if self.max_shape is None else 'a Tensor shape'} at "
+                f"__init__ but {'None' if max is None else 'a Tensor'} at forward()"
+            )
+        tensors = [("input", input, self.input_shape)]
+        if min is not None:
+            tensors.append(("min", min, self.min_shape))
+        if max is not None:
+            tensors.append(("max", max, self.max_shape))
+        for _, t, _ in tensors:
+            if not t.is_cuda:
+                raise ValueError("Inputs must be CUDA tensors")
+        for name, t, expected in tensors:
             if t.dtype != self.dtype:
                 raise ValueError(f"Expected {name}.dtype {self.dtype}, got {t.dtype}")
             if tuple(t.shape) != expected:
