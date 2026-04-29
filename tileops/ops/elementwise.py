@@ -222,7 +222,12 @@ def _register_prelu_custom_op(op_cls):
 
 
 def _register_where_custom_op(op_cls):
-    """Register a where-style op (cond, x, y -> out) for torch.compile."""
+    """Register a where-style op (cond, x, y -> out) for torch.compile.
+
+    The fake function computes the broadcast output shape from
+    ``cond`` / ``x`` / ``y`` so that ``torch.compile(fullgraph=True)``
+    works for both same-shape and broadcasting inputs.
+    """
     op_name = op_cls._op_name
 
     @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
@@ -242,7 +247,8 @@ def _register_where_custom_op(op_cls):
         y: torch.Tensor,
         instance_key: int,
     ) -> torch.Tensor:
-        return torch.empty_like(x)
+        out_shape = torch.broadcast_shapes(cond.shape, x.shape, y.shape)
+        return x.new_empty(out_shape)
 
     op_cls._wrapped = _wrapped
 
@@ -2297,6 +2303,11 @@ _register_prelu_custom_op(PreluFwdOp)
 # not registered as a custom_op because the 0-dim Tensor value cannot be
 # folded into a static schema cleanly.
 _register_masked_fill_custom_op(MaskedFillScalarFwdOp)
+
+# --- Where op (1 op: cond, x, y -> out) ---
+# The fake function is broadcast-aware so torch.compile(fullgraph=True)
+# traces correctly for both same-shape and broadcasting inputs.
+_register_where_custom_op(WhereFwdOp)
 
 # --- Generative ops (2 ops: no tensor input -> out) ---
 _register_generative_custom_op(

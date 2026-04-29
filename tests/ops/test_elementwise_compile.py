@@ -69,6 +69,7 @@ from tileops.ops.elementwise import (
     SubFwdOp,
     TanhFwdOp,
     TruncFwdOp,
+    WhereFwdOp,
 )
 
 
@@ -593,6 +594,45 @@ def test_fused_gated_compile(op_cls, name):
     out = compiled_op(x)
     assert out.shape == (M, N)
     assert out.dtype == _DTYPE
+
+
+# --- Where op (cond, x, y -> out): same-shape and broadcasting ---
+
+@pytest.mark.full
+def test_where_compile_same_shape():
+    """Compile-smoke for WhereFwdOp with all three inputs same-shape.
+
+    Regression: ensures WhereFwdOp registers a custom_op so
+    torch.compile(fullgraph=True) does not fail with
+    "torch.* op returned non-Tensor".
+    """
+    shape = (16,)
+    cond = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    x = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    y = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    op = WhereFwdOp(condition=shape, input=shape, other=shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(cond, x, y)
+    ref = torch.where(cond, x, y)
+    assert out.shape == ref.shape
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.full
+def test_where_compile_broadcast():
+    """Compile-smoke for WhereFwdOp with broadcasting inputs."""
+    cond_shape = (4, 1)
+    x_shape = (1, 8)
+    y_shape = (1,)
+    cond = torch.randint(0, 2, cond_shape, dtype=torch.bool, device="cuda")
+    x = torch.randn(x_shape, dtype=_DTYPE, device="cuda")
+    y = torch.randn(y_shape, dtype=_DTYPE, device="cuda")
+    op = WhereFwdOp(condition=cond_shape, input=x_shape, other=y_shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(cond, x, y)
+    ref = torch.where(cond, x, y)
+    assert out.shape == ref.shape == (4, 8)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 if __name__ == "__main__":
