@@ -118,7 +118,9 @@ __all__ = [
     "PreluFwdKernel",
     "WhereFwdKernel",
     "ClampFwdKernel",
+    "ClampTensorFwdKernel",
     "MaskedFillFwdKernel",
+    "MaskedFillTensorValueFwdKernel",
     "NanToNumFwdKernel",
     "AlibiFwdKernel",
     "SinusoidalFwdKernel",
@@ -2539,6 +2541,224 @@ class ClampFwdKernel(ParametricUnaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
+def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
+                              output_dtype=None, is_fp8=False,
+                              threads=256, npt=8):
+    """Build Tensor-bound clamp kernel.
+
+    Inputs (all flat, length N, pre-broadcast/expanded by the Op layer):
+        x: data tensor.
+        lo: lower-bound tensor (only present when ``has_min``).
+        hi: upper-bound tensor (only present when ``has_max``).
+
+    Output:
+        y: clamp result, same dtype as ``output_dtype`` (or ``dtype``).
+
+    For fp8 the cast/compute uses fp32 to preserve precision; for non-fp8
+    the kernel uses register_copy with fp32 accumulation.
+    """
+    if not (has_min or has_max):
+        raise ValueError(
+            "_make_clamp_tensor_kernel requires has_min or has_max to be True",
+        )
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    if is_fp8:
+        if has_min and has_max:
+            @tilelang.jit(out_idx=[3])
+            def kernel(threads_arg, npt_arg):
+                @T.prim_func
+                def main(
+                    x: T.Tensor((N,), dtype),
+                    lo: T.Tensor((N,), dtype),
+                    hi: T.Tensor((N,), dtype),
+                    y: T.Tensor((N,), out_dtype),
+                ):
+                    with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                        for i, j in T.Parallel(threads_arg, npt_arg):
+                            idx = (bx * threads_arg + i) * npt_arg + j
+                            if idx < N:
+                                v32 = T.cast(x[idx], "float32")
+                                lo32 = T.cast(lo[idx], "float32")
+                                hi32 = T.cast(hi[idx], "float32")
+                                v32 = T.max(v32, lo32)
+                                v32 = T.min(v32, hi32)
+                                y[idx] = T.Cast(out_dtype, v32)
+
+                return main
+
+            return kernel
+        if has_min:
+            @tilelang.jit(out_idx=[2])
+            def kernel(threads_arg, npt_arg):
+                @T.prim_func
+                def main(
+                    x: T.Tensor((N,), dtype),
+                    lo: T.Tensor((N,), dtype),
+                    y: T.Tensor((N,), out_dtype),
+                ):
+                    with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                        for i, j in T.Parallel(threads_arg, npt_arg):
+                            idx = (bx * threads_arg + i) * npt_arg + j
+                            if idx < N:
+                                v32 = T.cast(x[idx], "float32")
+                                lo32 = T.cast(lo[idx], "float32")
+                                v32 = T.max(v32, lo32)
+                                y[idx] = T.Cast(out_dtype, v32)
+
+                return main
+
+            return kernel
+
+        # has_max only
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                hi: T.Tensor((N,), dtype),
+                y: T.Tensor((N,), out_dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            v32 = T.cast(x[idx], "float32")
+                            hi32 = T.cast(hi[idx], "float32")
+                            v32 = T.min(v32, hi32)
+                            y[idx] = T.Cast(out_dtype, v32)
+
+            return main
+
+        return kernel
+
+    # non-fp8 path (register_copy)
+    if has_min and has_max:
+        @tilelang.jit(out_idx=[3])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                lo: T.Tensor((N,), dtype),
+                hi: T.Tensor((N,), dtype),
+                y: T.Tensor((N,), dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    lo_reg = T.alloc_fragment((block_size,), dtype)
+                    hi_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    T.copy(lo[bx * block_size : (bx + 1) * block_size], lo_reg)
+                    T.copy(hi[bx * block_size : (bx + 1) * block_size], hi_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        v32 = T.cast(x_reg[k], "float32")
+                        lo32 = T.cast(lo_reg[k], "float32")
+                        hi32 = T.cast(hi_reg[k], "float32")
+                        v32 = T.max(v32, lo32)
+                        v32 = T.min(v32, hi32)
+                        x_reg[k] = T.Cast(dtype, v32)
+                    T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
+
+        return kernel
+    if has_min:
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                lo: T.Tensor((N,), dtype),
+                y: T.Tensor((N,), dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    lo_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    T.copy(lo[bx * block_size : (bx + 1) * block_size], lo_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        v32 = T.cast(x_reg[k], "float32")
+                        lo32 = T.cast(lo_reg[k], "float32")
+                        v32 = T.max(v32, lo32)
+                        x_reg[k] = T.Cast(dtype, v32)
+                    T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
+
+        return kernel
+
+    # has_max only
+    @tilelang.jit(out_idx=[2])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((N,), dtype),
+            hi: T.Tensor((N,), dtype),
+            y: T.Tensor((N,), dtype),
+        ):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                hi_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                T.copy(hi[bx * block_size : (bx + 1) * block_size], hi_reg)
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    k = i * npt_arg + j
+                    v32 = T.cast(x_reg[k], "float32")
+                    hi32 = T.cast(hi_reg[k], "float32")
+                    v32 = T.min(v32, hi32)
+                    x_reg[k] = T.Cast(dtype, v32)
+                T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
+
+        return main
+
+    return kernel
+
+
+class ClampTensorFwdKernel(ParametricUnaryKernel):
+    """Tensor-bound clamp kernel.
+
+    Computes ``y = clamp(x, lo, hi)`` over flat tensors of length
+    ``N_total``. The Op layer broadcasts ``input`` / ``min`` / ``max``
+    to the output shape and flattens them before dispatch. ``has_min``
+    / ``has_max`` select between the three forms used by the Tensor
+    clamp, clamp_min, and clamp_max ops.
+    """
+
+    _DEFAULT_THREADS = 512
+
+    def __init__(self, N_total, dtype, has_min, has_max,
+                 config=None, tune=False):
+        if not (has_min or has_max):
+            raise ValueError(
+                "ClampTensorFwdKernel requires has_min or has_max to be True",
+            )
+        self.has_min = bool(has_min)
+        self.has_max = bool(has_max)
+        super().__init__(N_total, dtype, config=config, tune=tune)
+
+    @staticmethod
+    def _builder_fn():
+        return _make_clamp_tensor_kernel
+
+    def _builder_args(self):
+        return (self.has_min, self.has_max)
+
+    def forward(self, x, lo=None, hi=None):
+        if self.has_min and self.has_max:
+            result = self._compiled_fn(x, lo, hi)
+        elif self.has_min:
+            result = self._compiled_fn(x, lo)
+        else:
+            result = self._compiled_fn(x, hi)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
+
+
+@functools.lru_cache(maxsize=32)
 def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
                              is_fp8=False, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
@@ -2629,6 +2849,96 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
 
     def forward(self, x, mask):
         return self._compiled_fn(x, mask)
+
+
+@functools.lru_cache(maxsize=32)
+def _make_masked_fill_tensor_value_kernel(N, dtype, output_dtype=None,
+                                          is_fp8=False, threads=256, npt=8):
+    """Build masked_fill kernel with a 0-dim Tensor fill value.
+
+    Inputs (all flat, length N, pre-broadcast/expanded by the Op layer):
+        x: data tensor (length N).
+        mask: bool mask packed as uint8 (length N).
+        value: scalar fill value carried as a length-1 tensor (the Op
+            layer reshapes the 0-dim Tensor to ``(1,)``).
+
+    Output:
+        out: ``out[i] = value[0] if mask[i] else x[i]``.
+    """
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    if is_fp8:
+        @tilelang.jit(out_idx=[3])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                mask: T.Tensor((N,), "uint8"),
+                value: T.Tensor((1,), dtype),
+                out: T.Tensor((N,), out_dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            fv = T.Cast(out_dtype, value[0])
+                            x_val = T.Cast(out_dtype, x[idx])
+                            out[idx] = T.if_then_else(
+                                mask[idx] != T.cast(0, "uint8"), fv, x_val,
+                            )
+
+            return main
+
+        return kernel
+
+    @tilelang.jit(out_idx=[3])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((N,), dtype),
+            mask: T.Tensor((N,), "uint8"),
+            value: T.Tensor((1,), dtype),
+            out: T.Tensor((N,), dtype),
+        ):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                m_reg = T.alloc_fragment((block_size,), "uint8")
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(mask[bx * block_size : (bx + 1) * block_size], m_reg)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    k = i * npt_arg + j
+                    fv = value[0]
+                    x_reg[k] = T.if_then_else(
+                        m_reg[k] != T.cast(0, "uint8"), fv, x_reg[k],
+                    )
+                T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
+
+        return main
+
+    return kernel
+
+
+class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
+    """MaskedFill kernel with 0-dim Tensor fill value.
+
+    Computes ``out = mask ? value : x`` over flat tensors of length
+    ``N_total``. The Op layer broadcasts ``input`` and ``mask`` to the
+    output shape, flattens them, packs the mask as uint8, and reshapes
+    the 0-dim ``value`` to a length-1 tensor before dispatch.
+    """
+
+    _DEFAULT_THREADS = 512
+
+    @staticmethod
+    def _builder_fn():
+        return _make_masked_fill_tensor_value_kernel
+
+    def forward(self, x, mask, value):
+        result = self._compiled_fn(x, mask, value)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
 
 
 @functools.lru_cache(maxsize=32)

@@ -32,6 +32,7 @@ from tileops.kernels.elementwise import (
     BitwiseXorFwdKernel,
     CeilFwdKernel,
     ClampFwdKernel,
+    ClampTensorFwdKernel,
     CosFwdKernel,
     DivFwdKernel,
     EluFwdKernel,
@@ -62,6 +63,7 @@ from tileops.kernels.elementwise import (
     LogicalOrFwdKernel,
     LtFwdKernel,
     MaskedFillFwdKernel,
+    MaskedFillTensorValueFwdKernel,
     MaximumFwdKernel,
     MinimumFwdKernel,
     MishFwdKernel,
@@ -1671,12 +1673,17 @@ class ClampFwdOp(_ClampTensorBase):
             broadcast_args.append(self.max_shape)
         self.out_shape = tuple(torch.broadcast_shapes(*broadcast_args))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.kernel = ClampTensorFwdKernel(
+            self.N_total, dtype,
+            has_min=self.min_shape is not None,
+            has_max=self.max_shape is not None,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {}
+        return {"clamp_tensor": ClampTensorFwdKernel}
 
     def _eager_forward(
         self,
@@ -1684,19 +1691,16 @@ class ClampFwdOp(_ClampTensorBase):
         min: Optional[torch.Tensor] = None,  # noqa: A002
         max: Optional[torch.Tensor] = None,  # noqa: A002
     ) -> torch.Tensor:
-        # Use torch.clamp for full PyTorch parity (handles NaN / dtype
-        # promotion identically). Broadcasting is implicit. PyTorch's CUDA
-        # ``clamp`` has no fp8 implementation (raises NotImplementedError
-        # ``clamp_cuda``), so we route fp8 inputs through fp16 and cast
-        # back — preserves Inf/NaN for e5m2 via the non-saturating fp16
-        # post-cast.
-        if _is_fp8(self.dtype):
-            compute = _fp8_compute_dtype(self.dtype)
-            mn_c = None if min is None else min.to(compute)
-            mx_c = None if max is None else max.to(compute)
-            result = torch.clamp(input.to(compute), mn_c, mx_c)
-            return result.to(self.dtype)
-        return torch.clamp(input, min, max)
+        # Broadcast all operands to ``out_shape`` and dispatch the
+        # TileLang Tensor-bound clamp kernel. The kernel branches on
+        # ``has_min`` / ``has_max`` at build time, so this single Op
+        # class also covers the mixed Tensor/None cases.
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        lo_flat = None if min is None else self._expand_flat(min, out_shape)
+        hi_flat = None if max is None else self._expand_flat(max, out_shape)
+        result = self.kernel(x_flat, lo_flat, hi_flat)
+        return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
         self,
@@ -1757,23 +1761,26 @@ class ClampMinFwdOp(_ClampTensorBase):
         self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.min_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.kernel = ClampTensorFwdKernel(
+            self.N_total, dtype, has_min=True, has_max=False,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {}
+        return {"clamp_tensor": ClampTensorFwdKernel}
 
     def _eager_forward(
         self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
-        # ``torch.maximum`` has no fp8 CUDA kernel (NotImplementedError
-        # ``max_elementwise_cuda``); route fp8 through fp16 and cast back.
-        if _is_fp8(self.dtype):
-            compute = _fp8_compute_dtype(self.dtype)
-            result = torch.maximum(input.to(compute), min.to(compute))
-            return result.to(self.dtype)
-        return torch.maximum(input, min)
+        # Broadcast input/min to out_shape and dispatch the TileLang
+        # min-only Tensor-bound clamp kernel.
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        lo_flat = self._expand_flat(min, out_shape)
+        result = self.kernel(x_flat, lo_flat, None)
+        return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
         self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
@@ -1815,23 +1822,26 @@ class ClampMaxFwdOp(_ClampTensorBase):
         self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.max_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.kernel = ClampTensorFwdKernel(
+            self.N_total, dtype, has_min=False, has_max=True,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {}
+        return {"clamp_tensor": ClampTensorFwdKernel}
 
     def _eager_forward(
         self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
-        # ``torch.minimum`` has no fp8 CUDA kernel (NotImplementedError
-        # ``min_elementwise_cuda``); route fp8 through fp16 and cast back.
-        if _is_fp8(self.dtype):
-            compute = _fp8_compute_dtype(self.dtype)
-            result = torch.minimum(input.to(compute), max.to(compute))
-            return result.to(self.dtype)
-        return torch.minimum(input, max)
+        # Broadcast input/max to out_shape and dispatch the TileLang
+        # max-only Tensor-bound clamp kernel.
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        hi_flat = self._expand_flat(max, out_shape)
+        result = self.kernel(x_flat, None, hi_flat)
+        return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
         self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
@@ -1947,29 +1957,32 @@ class MaskedFillFwdOp(Op):
         self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.mask_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.kernel = MaskedFillTensorValueFwdKernel(self.N_total, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
-        return {}
+        return {"masked_fill_tensor_value": MaskedFillTensorValueFwdKernel}
+
+    @staticmethod
+    def _expand_flat(t: torch.Tensor, target_shape: tuple) -> torch.Tensor:
+        if tuple(t.shape) != tuple(target_shape):
+            t = t.expand(target_shape)
+        return t.contiguous().view(-1)
 
     def _eager_forward(
         self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
-        # PyTorch's Tensor.masked_fill with a 0-dim Tensor value is
-        # semantically identical to the scalar form; defer to it for full
-        # parity (broadcasts ``input`` and ``mask`` together).
-        # ``masked_fill_`` has no fp8 CUDA kernel (NotImplementedError); for
-        # fp8 we run masked_fill in fp16 and cast back.
-        if _is_fp8(self.dtype):
-            compute = _fp8_compute_dtype(self.dtype)
-            inp_b = input.to(compute).expand(self.out_shape).contiguous()
-            value_c = value.to(compute)
-            result = torch.masked_fill(inp_b, mask.expand(self.out_shape), value_c)
-            return result.to(self.dtype)
-        return torch.masked_fill(input.expand(self.out_shape).contiguous(),
-                                 mask.expand(self.out_shape), value)
+        # Broadcast input/mask to out_shape, pack mask as uint8, reshape
+        # the 0-dim value to (1,), and dispatch the TileLang kernel.
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        mask_b = mask if mask.dtype == torch.bool else mask.bool()
+        mask_flat = self._expand_flat(mask_b, out_shape).view(torch.uint8)
+        value_1d = value.contiguous().view(1)
+        result = self.kernel(x_flat, mask_flat, value_1d)
+        return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
         self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,  # noqa: A002
@@ -2027,20 +2040,13 @@ class MaskedFillScalarFwdOp(Op):
         self.fill_value = value
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.mask_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        # When input/mask shapes match exactly, reuse the existing flat
-        # vectorized kernel; otherwise fall back to the broadcasting path.
+        # The kernel is always built on the broadcast (output) flat size.
+        # When input/mask already match out_shape, this is a no-op expand;
+        # otherwise the Op layer broadcasts both before dispatch.
         self._needs_broadcast = (
             self.input_shape != self.out_shape or self.mask_shape != self.out_shape
         )
-        # Note: ``kernel`` is typed as ``Kernel`` on the base class but we
-        # legitimately need a None sentinel here for the broadcasting fallback
-        # path (no flat kernel is dispatched in that case). The type ignore is
-        # narrow and intentional.
-        self.kernel: Optional[Kernel] = (  # type: ignore[assignment]
-            MaskedFillFwdKernel(self.N_total, dtype, value)
-            if not self._needs_broadcast
-            else None
-        )
+        self.kernel = MaskedFillFwdKernel(self.N_total, dtype, value)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -2048,22 +2054,18 @@ class MaskedFillScalarFwdOp(Op):
     def default_kernel_map(self):
         return {"masked_fill": MaskedFillFwdKernel}
 
+    @staticmethod
+    def _expand_flat(t: torch.Tensor, target_shape: tuple) -> torch.Tensor:
+        if tuple(t.shape) != tuple(target_shape):
+            t = t.expand(target_shape)
+        return t.contiguous().view(-1)
+
     def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        if self._needs_broadcast or self.kernel is None:
-            mask_b = mask.expand(self.out_shape)
-            # ``masked_fill_`` has no fp8 CUDA kernel; route fp8 through fp16
-            # and cast back to preserve manifest-declared fp8 support on the
-            # broadcasting fallback path.
-            if _is_fp8(self.dtype):
-                compute = _fp8_compute_dtype(self.dtype)
-                inp_b = input.to(compute).expand(self.out_shape).contiguous()
-                return inp_b.masked_fill(mask_b, self.value).to(self.dtype)
-            inp_b = input.expand(self.out_shape).contiguous()
-            return inp_b.masked_fill(mask_b, self.value)
-        orig_shape = input.shape
-        mask_flat = (mask if mask.dtype == torch.bool else mask.bool()).contiguous().view(-1)
-        x_flat = input.contiguous().view(-1)
-        result = self.kernel(x_flat, mask_flat.view(torch.uint8)).view(orig_shape)
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        mask_b = mask if mask.dtype == torch.bool else mask.bool()
+        mask_flat = self._expand_flat(mask_b, out_shape).view(torch.uint8)
+        result = self.kernel(x_flat, mask_flat).view(self.out_shape if self.out_shape else ())
         return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
