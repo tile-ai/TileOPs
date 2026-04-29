@@ -2,12 +2,7 @@
 
 For `[Doc]` and `[Design]`.
 
-## How to apply
-
-- **Open set, not exhaustive.** The agent may add checks for the PR's specifics; the items below are the floor.
-- **Every check must be concrete and decidable.** A check names one of: a contradiction (cite file:line on both sides), a missing follow-up reference, a scope violation (quote the offending line), or a re-introduced removal (cite the prior commit). Anything else does not qualify.
-- **Vague feedback is forbidden.** Phrases like "consider revising", "may want to clarify", "could be clearer" are not flags — either locate the violation or stay silent.
-- **Stance is reviewer-restraint.** Do not push the author to add design-doc content beyond what fixes a flagged item.
+A flag in this domain names one of: a contradiction (cite file:line on both sides), a missing follow-up reference, a scope violation (quote the offending line), or a re-introduced removal (cite the prior commit).
 
 ## Design docs (`docs/design/*.md`)
 

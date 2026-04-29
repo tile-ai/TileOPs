@@ -4,12 +4,6 @@ For `[Maintain]`, `[Refactor][Manifest]`, and any PR that flips a manifest entry
 
 Load `.claude/domain-rules/manifest-spec.md` before reviewing.
 
-## How to apply
-
-- **Open set, not exhaustive.** The agent may add checks for the PR's specifics; the items below are the floor.
-- **Every check must be concrete and decidable.** Cite the entry path, the field name, the reference URL, the test name, or the offending diff line. "Looks reasonable", "may want to verify", "consider double-checking" do not qualify.
-- **Stance.** Reviewer verifies alignment with the reference; does not propose new spec content beyond what fixes a flagged item.
-
 Two non-negotiable principles cut across every event:
 
 - **Reference semantic alignment.** Any change to an op's spec (signature, shape rules, dtype combos, roofline vars) must map back to an authoritative reference — PyTorch public API for `torch.nn.*` / `torch.nn.functional.*` names; the paper or vendor docs otherwise. Reverse-engineering from current TileOps code is forbidden — spec is upstream of code.

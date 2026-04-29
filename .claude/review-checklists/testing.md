@@ -4,10 +4,7 @@ For PRs that add or modify files under `tests/`. Single focus: justify the test 
 
 Load `.claude/domain-rules/testing-budget.md` and `docs/design/testing.md §Test case policy` before reviewing.
 
-## How to apply
-
-- **Concrete and decidable.** Cite the test file:line, the parametrize axis, or the offending fixture row. "Looks like too many tests" does not qualify.
-- **Burden of proof flips above threshold.** If growth crosses the threshold below, the author justifies; reviewer silence is not approval.
+**Burden of proof flips above threshold.** If growth crosses the threshold below, the author justifies; reviewer silence is not approval.
 
 ## Checklist
 
