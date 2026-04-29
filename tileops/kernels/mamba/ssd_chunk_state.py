@@ -128,11 +128,21 @@ def _ssd_chunk_state_fwd_kernel(
             ) as (bhc, bp, bn):
 
                 # --------------------------------------------------------
-                # 1. Decode fused axis
+                # 1. Decode fused axis  (b, c, h — h is fastest-changing)
+                #
+                # Consecutive CTAs share the same (b, c), so they cover the
+                # same chunk rows in Bmat.  When HEADS_PER_GROUP > 1, the
+                # HEADS_PER_GROUP consecutive h values that belong to the same
+                # group map to the same bg and therefore load identical b_tile
+                # data.  Those loads are served from L2 after the first CTA
+                # warms the cache, reducing effective Bmat bandwidth by up to
+                # HEADS_PER_GROUP×.  The alternative b,h,c order (c fastest)
+                # shifts chunk_start on every CTA step so no Bmat rows are
+                # reused between consecutive CTAs.
                 # --------------------------------------------------------
-                bz = bhc // (H * C)
-                bh = (bhc % (H * C)) // C
-                bc = bhc % C
+                bz = bhc // (C * H)
+                bc = (bhc % (C * H)) // H
+                bh = bhc % H
 
                 n0 = bn * block_n
                 p0 = bp * block_p
@@ -162,20 +172,29 @@ def _ssd_chunk_state_fwd_kernel(
                 #    x_scaled[l, p] = x[l, p] * w(l)   (row-scaled x, dtype)
                 #    b_tile[l, n]   = B[l, n]            (unscaled, dtype)
                 #
-                #    w_tile[block_l] holds the per-position scalar weight in shared
-                #    memory. It is filled by T.Parallel(block_l) — one load of
-                #    dA_cumsum[l] and dt[l] per l — then T.sync_threads() makes it
-                #    visible to the subsequent T.Parallel(block_l, block_p) loop,
-                #    avoiding block_p redundant global loads per l.
+                #    w_tile[block_l] holds the per-position scalar weight in
+                #    shared memory.  It is filled by T.Parallel(block_l) — one
+                #    load of dA_cumsum[l] and dt[l] per l — then
+                #    T.sync_threads() makes it visible to the subsequent
+                #    T.Parallel(block_l, block_p) loop, avoiding block_p
+                #    redundant global loads per l.
+                #
+                #    x_scaled is written directly as dtype (cast in-place):
+                #      x_scaled[ll, pp] = cast(float(x[ll, pp]) * w_tile[ll])
+                #    This eliminates the x_scaled_f32 register fragment
+                #    (block_l * block_p / 32 fp32 regs per thread) and the
+                #    separate T.copy cast step, freeing register budget for
+                #    larger output tiles without changing the shared-memory
+                #    footprint or numerical behavior (the multiply is still
+                #    done in fp32 before truncation to dtype).
                 #
                 #    GEMM:  acc[p, n] += x_scaled^T @ b_tile
                 #           i.e. (block_l x block_p)^T @ (block_l x block_n)
                 #                = (block_p x block_l) @ (block_l x block_n)
                 # --------------------------------------------------------
-                w_tile       = T.alloc_shared((block_l,), accum_dtype)
-                x_scaled_f32 = T.alloc_fragment((block_l, block_p), accum_dtype)
-                x_scaled     = T.alloc_shared((block_l, block_p), dtype)
-                b_tile       = T.alloc_shared((block_l, block_n), dtype)
+                w_tile   = T.alloc_shared((block_l,), accum_dtype)
+                x_scaled = T.alloc_shared((block_l, block_p), dtype)
+                b_tile   = T.alloc_shared((block_l, block_n), dtype)
 
                 # --------------------------------------------------------
                 # 5. Reduce over chunk positions in L-tiles
@@ -212,8 +231,9 @@ def _ssd_chunk_state_fwd_kernel(
                             w_tile[ll] = T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l
                     T.sync_threads()
 
-                    # 5.1 Compute x_scaled[ll, pp] = x[ll, pp] * w_tile[ll]
-                    #     w_tile[ll] is read from shared — one value reused block_p times.
+                    # 5.1 Compute x_scaled[ll, pp] = cast(float(x[ll,pp]) * w_tile[ll])
+                    #     Written directly to shared memory as dtype, bypassing
+                    #     the intermediate fp32 register fragment.
                     for ll, pp in T.Parallel(block_l, block_p):
                         l_idx = l0 + ll
                         p_idx = p0 + pp
@@ -222,10 +242,7 @@ def _ssd_chunk_state_fwd_kernel(
                             T.cast(x[bz, chunk_start + l_idx, bh, p_idx], accum_dtype),
                             T.float32(0.0),
                         )
-                        x_scaled_f32[ll, pp] = x_val * w_tile[ll]
-
-                    # Cast scaled-x to kernel dtype for tensor-core GEMM
-                    T.copy(x_scaled_f32, x_scaled)
+                        x_scaled[ll, pp] = T.cast(x_val * w_tile[ll], dtype)
 
                     # 5.2 Cooperative load: B
                     #     b_tile[ll, nn] = Bmat[bz, chunk_start + l0 + ll, bg, n0 + nn]
@@ -360,8 +377,12 @@ class SSDChunkStateFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        # (block_p=64, block_n=64, block_l=64) gives the highest arithmetic
+        # intensity for the GEMM: K=64 doubles MMA phases vs K=32, and the
+        # removal of the x_scaled_f32 register fragment (saving block_l *
+        # block_p / 32 fp32 regs per thread) makes this size register-safe.
         return {
-            "block_n": 32,
+            "block_n": 64,
             "block_p": 64,
             "block_l": 64,
             "threads": 128,
@@ -369,8 +390,17 @@ class SSDChunkStateFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_n = [16, 32]
-        block_p = [32, 64]
+        # Grid rationale:
+        #   block_p in {16, 32, 64}: 16 is the minimum MMA M-atom; 64 only
+        #     viable after the x_scaled_f32 fragment was removed.
+        #   block_n in {64, 128}: aligns to common d_state values; 128 covers
+        #     the full d_state in one tile and maximises N-reuse per L-tile.
+        #   block_l in {32, 64}: larger K improves GEMM arithmetic intensity;
+        #     32 keeps shared-memory pressure low for small d_head configs.
+        #   threads in {128, 256}: 128 warps = 4, 256 warps = 8; higher thread
+        #     count hides latency but increases register/shared pressure.
+        block_n = [64, 128]
+        block_p = [16, 32, 64]
         block_l = [32, 64]
         threads = [128, 256]
         _configs = list(itertools.product(block_n, block_p, block_l, threads))

@@ -2,6 +2,7 @@ from typing import Optional
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.da_cumsum import DaCumsumFwdOp
@@ -26,6 +27,11 @@ from workloads.mamba import (
 # Optional mamba_ssm Triton baselines
 # ---------------------------------------------------------------------------
 try:
+    from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_cumsum_fwd as _mamba_chunk_cumsum_fwd
+except ImportError:
+    _mamba_chunk_cumsum_fwd = None
+
+try:
     from mamba_ssm.ops.triton.ssd_chunk_scan import _chunk_scan_fwd as _mamba_chunk_scan_fwd
 except ImportError:
     _mamba_chunk_scan_fwd = None
@@ -48,15 +54,31 @@ def da_cumsum_fwd_ref(
     A: torch.Tensor,
     num_chunks: int,
     chunk_len: int,
-) -> torch.Tensor:
-    """PyTorch reference for da_cumsum_fwd (benchmark-local copy)."""
+    dt_bias: torch.Tensor | None = None,
+    dt_softplus: bool = False,
+    dt_min: float = 0.0,
+    dt_max: float = float("inf"),
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """PyTorch reference for da_cumsum_fwd (benchmark-local copy).
+
+    Returns:
+        dt_out:    (batch, n_heads, num_chunks, chunk_len) float32
+        dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32
+    """
     b, S, h = dt.shape
     Q = chunk_len
     C = num_chunks
-    dt_chunked = dt.float().reshape(b, C, Q, h)
+    dt_val = dt.float()
+    if dt_bias is not None:
+        dt_val = dt_val + dt_bias.float()
+    if dt_softplus:
+        dt_val = F.softplus(dt_val)
+    dt_val = torch.clamp(dt_val, min=dt_min, max=dt_max)
+    dt_chunked = dt_val.reshape(b, C, Q, h)
+    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous()          # (b, h, C, Q)
     dA = dt_chunked * A.float()
-    dA_cumsum = dA.cumsum(dim=2)
-    return dA_cumsum.permute(0, 3, 1, 2).contiguous()
+    dA_cumsum = dA.cumsum(dim=2).permute(0, 3, 1, 2).contiguous() # (b, h, C, Q)
+    return dt_out, dA_cumsum
 
 
 class DaCumsumFwdBenchmark(BenchmarkBase[DaCumsumFwdTest]):
@@ -64,36 +86,69 @@ class DaCumsumFwdBenchmark(BenchmarkBase[DaCumsumFwdTest]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         b, c, L, h = t.batch, t.num_chunks, t.chunk_len, t.n_heads
-        # One multiply (dt * A) and one add per element for the inclusive scan
-        # Total: 2 * b * c * L * h
-        return float(2 * b * c * L * h)
+        # Core ops per element: 1 mul (dt*A) + 1 add (cumsum) = 2
+        # Optional bias add: +1; optional softplus (exp+log+add): +3; clamp (min+max): +2
+        bias_ops = 1 if t.has_dt_bias else 0
+        softplus_ops = 3 if t.dt_softplus else 0
+        ops_per_elem = 2 + bias_ops + softplus_ops + 2  # +2 for clamp always
+        return float(ops_per_elem * b * c * L * h)
 
     def calculate_memory(self) -> Optional[float]:
         t = self.workload
         b, c, L, h = t.batch, t.num_chunks, t.chunk_len, t.n_heads
-        # float32 throughout
-        elem = 4
-        # Reads: dt (b, c*L, h) + A (h,)
-        reads = (b * c * L * h + h) * elem
-        # Writes: dA_cumsum (b, h, c, L)
-        writes = b * h * c * L * elem
+        elem = 4  # float32
+        # Reads: dt_raw (b, c*L, h) + A (h,) + optional dt_bias (h,)
+        reads = (b * c * L * h + h + (h if t.has_dt_bias else 0)) * elem
+        # Writes: dt_out (b, h, c, L) + dA_cumsum (b, h, c, L)
+        writes = 2 * b * h * c * L * elem
         return float(reads + writes)
 
 
 @DaCumsumFwdFixture
-def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, tune):
-    test = DaCumsumFwdTest(batch, num_chunks, chunk_len, n_heads)
+def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, tune):
+    test = DaCumsumFwdTest(
+        batch, num_chunks, chunk_len, n_heads,
+        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus,
+    )
     bm = DaCumsumFwdBenchmark(test)
-    inputs = test.gen_inputs()
+    inputs = test.gen_inputs()  # (dt_raw, A, dt_bias)
 
-    op = DaCumsumFwdOp(batch, num_chunks, chunk_len, n_heads, seq_len=num_chunks * chunk_len, tune=tune)
+    op = DaCumsumFwdOp(
+        batch, num_chunks, chunk_len, n_heads,
+        seq_len=num_chunks * chunk_len,
+        has_dt_bias=has_dt_bias,
+        dt_softplus=dt_softplus,
+        tune=tune,
+    )
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    def baseline(dt, A):
-        return da_cumsum_fwd_ref(dt, A, num_chunks, chunk_len)
-    result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    # ── Mamba-2 Triton baseline ──
+    # _chunk_cumsum_fwd(dt, A, chunk_size, dt_bias=None, dt_softplus=False, dt_limit=...)
+    # returns (dA_cumsum, dt_out) — note reversed order vs TileOPs (dt_out, dA_cumsum)
+    if _mamba_chunk_cumsum_fwd is not None:
+        mamba_dt_bias = inputs[2] if has_dt_bias else None
+
+        def mamba_fwd():
+            return _mamba_chunk_cumsum_fwd(
+                inputs[0].contiguous(),
+                inputs[1].contiguous(),
+                chunk_len,
+                dt_bias=mamba_dt_bias.contiguous() if mamba_dt_bias is not None else None,
+                dt_softplus=dt_softplus,
+            )
+
+        result_mamba = bm.profile(mamba_fwd)
+        BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")
+    else:
+        def baseline(dt_raw, A, dt_bias):
+            return da_cumsum_fwd_ref(
+                dt_raw, A, num_chunks, chunk_len,
+                dt_bias=dt_bias if has_dt_bias else None,
+                dt_softplus=dt_softplus,
+            )
+        result_bl = bm.profile(baseline, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
